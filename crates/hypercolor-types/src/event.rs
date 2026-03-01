@@ -191,6 +191,84 @@ pub struct ZoneColors {
     pub colors: Vec<[u8; 3]>,
 }
 
+// ── Spectrum Data Types ─────────────────────────────────────────────────
+
+/// Audio spectrum analysis data.
+///
+/// Published by the audio processor at ~30-60 fps via `watch::Sender`.
+/// Subscribers skip stale data automatically -- only the latest value matters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpectrumData {
+    /// Millis since daemon start.
+    pub timestamp_ms: u32,
+
+    /// Overall audio level (RMS), 0.0-1.0.
+    pub level: f32,
+    /// Low-frequency energy, 0.0-1.0.
+    pub bass: f32,
+    /// Mid-frequency energy, 0.0-1.0.
+    pub mid: f32,
+    /// High-frequency energy, 0.0-1.0.
+    pub treble: f32,
+
+    /// Beat detected this frame.
+    pub beat: bool,
+    /// Beat detection confidence, 0.0-1.0.
+    pub beat_confidence: f32,
+    /// Estimated BPM (`None` if insufficient data).
+    pub bpm: Option<f32>,
+
+    /// FFT frequency bins, normalized 0.0-1.0.
+    /// Full resolution: 200 bins.
+    pub bins: Vec<f32>,
+}
+
+impl SpectrumData {
+    /// Returns an empty spectrum with all values zeroed out.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            timestamp_ms: 0,
+            level: 0.0,
+            bass: 0.0,
+            mid: 0.0,
+            treble: 0.0,
+            beat: false,
+            beat_confidence: 0.0,
+            bpm: None,
+            bins: Vec::new(),
+        }
+    }
+
+    /// Downsample bins to the requested count using averaging.
+    ///
+    /// Returns empty if bins are empty or `target_bins` is zero.
+    /// Returns a clone if `target_bins >= self.bins.len()`.
+    #[must_use]
+    pub fn downsample(&self, target_bins: usize) -> Vec<f32> {
+        if self.bins.is_empty() || target_bins == 0 {
+            return Vec::new();
+        }
+        if target_bins >= self.bins.len() {
+            return self.bins.clone();
+        }
+        let bin_count = self.bins.len();
+        (0..target_bins)
+            .map(|i| {
+                // Integer arithmetic for chunk boundaries avoids f32->usize casts.
+                let start = i * bin_count / target_bins;
+                let end = ((i + 1) * bin_count / target_bins).min(bin_count);
+                let slice = &self.bins[start..end];
+                let sum: f32 = slice.iter().sum();
+                // Slice is never empty: target_bins < bin_count guarantees >= 1 element per chunk.
+                #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
+                let avg = sum / slice.len() as f32;
+                avg
+            })
+            .collect()
+    }
+}
+
 // ── Event Taxonomy ──────────────────────────────────────────────────────
 
 /// Every discrete state change in Hypercolor.

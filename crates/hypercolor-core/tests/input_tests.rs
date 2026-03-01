@@ -1,0 +1,333 @@
+//! Tests for the input source abstraction layer.
+
+use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
+use hypercolor_core::types::audio::AudioData;
+use hypercolor_core::types::event::ZoneColors;
+
+// ── Mock Sources ───────────────────────────────────────────────────────────
+
+/// A mock audio input source that produces a known `AudioData` snapshot.
+struct MockAudioSource {
+    running: bool,
+    rms_level: f32,
+}
+
+impl MockAudioSource {
+    fn new(rms_level: f32) -> Self {
+        Self {
+            running: false,
+            rms_level,
+        }
+    }
+}
+
+impl InputSource for MockAudioSource {
+    fn name(&self) -> &'static str {
+        "MockAudio"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        let mut data = AudioData::silence();
+        data.rms_level = self.rms_level;
+        Ok(InputData::Audio(data))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+/// A mock screen capture source that produces a known set of zone colors.
+struct MockScreenSource {
+    running: bool,
+    zone_count: usize,
+}
+
+impl MockScreenSource {
+    fn new(zone_count: usize) -> Self {
+        Self {
+            running: false,
+            zone_count,
+        }
+    }
+}
+
+impl InputSource for MockScreenSource {
+    fn name(&self) -> &'static str {
+        "MockScreen"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        let zones: Vec<ZoneColors> = (0..self.zone_count)
+            .map(|i| ZoneColors {
+                zone_id: format!("screen:zone_{i}"),
+                colors: vec![[128, 64, 32]; 10],
+            })
+            .collect();
+        Ok(InputData::Screen(ScreenData { zone_colors: zones }))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+/// A mock source that always fails on start.
+struct FailingSource;
+
+impl InputSource for FailingSource {
+    fn name(&self) -> &'static str {
+        "FailingSource"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        anyhow::bail!("device not found")
+    }
+
+    fn stop(&mut self) {}
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        anyhow::bail!("not running")
+    }
+
+    fn is_running(&self) -> bool {
+        false
+    }
+}
+
+/// A mock source that starts fine but fails on sample.
+struct FaultySampleSource {
+    running: bool,
+}
+
+impl FaultySampleSource {
+    fn new() -> Self {
+        Self { running: false }
+    }
+}
+
+impl InputSource for FaultySampleSource {
+    fn name(&self) -> &'static str {
+        "FaultySample"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        anyhow::bail!("capture stream died")
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
+// ── InputSource Trait Tests ────────────────────────────────────────────────
+
+#[test]
+fn audio_source_lifecycle() {
+    let mut src = MockAudioSource::new(0.75);
+    assert!(!src.is_running());
+    assert_eq!(src.name(), "MockAudio");
+
+    src.start().expect("start should succeed");
+    assert!(src.is_running());
+
+    src.stop();
+    assert!(!src.is_running());
+}
+
+#[test]
+fn audio_source_produces_known_data() {
+    let mut src = MockAudioSource::new(0.42);
+    let data = src.sample().expect("sample should succeed");
+
+    match data {
+        InputData::Audio(audio) => {
+            assert!((audio.rms_level - 0.42).abs() < f32::EPSILON);
+            assert!(!audio.beat_detected);
+        }
+        _ => panic!("expected InputData::Audio"),
+    }
+}
+
+#[test]
+fn screen_source_produces_zone_colors() {
+    let mut src = MockScreenSource::new(3);
+    let data = src.sample().expect("sample should succeed");
+
+    match data {
+        InputData::Screen(screen) => {
+            assert_eq!(screen.zone_colors.len(), 3);
+            assert_eq!(screen.zone_colors[0].zone_id, "screen:zone_0");
+            assert_eq!(screen.zone_colors[2].zone_id, "screen:zone_2");
+            assert_eq!(screen.zone_colors[1].colors.len(), 10);
+            assert_eq!(screen.zone_colors[1].colors[0], [128, 64, 32]);
+        }
+        _ => panic!("expected InputData::Screen"),
+    }
+}
+
+#[test]
+fn failing_source_reports_error() {
+    let mut src = FailingSource;
+    let result = src.start();
+    assert!(result.is_err());
+    assert!(!src.is_running());
+}
+
+#[test]
+fn input_data_none_variant() {
+    // Verify None variant can be created and matched.
+    let data = InputData::None;
+    assert!(matches!(data, InputData::None));
+}
+
+// ── InputManager Tests ─────────────────────────────────────────────────────
+
+#[test]
+fn manager_starts_empty() {
+    let mut mgr = InputManager::new();
+    let samples = mgr.sample_all();
+    assert!(samples.is_empty());
+}
+
+#[test]
+fn manager_default_is_empty() {
+    let mut mgr = InputManager::default();
+    let samples = mgr.sample_all();
+    assert!(samples.is_empty());
+}
+
+#[test]
+fn manager_samples_multiple_sources() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(MockAudioSource::new(0.5)));
+    mgr.add_source(Box::new(MockScreenSource::new(2)));
+
+    let samples = mgr.sample_all();
+    assert_eq!(samples.len(), 2);
+    assert!(matches!(&samples[0], InputData::Audio(_)));
+    assert!(matches!(&samples[1], InputData::Screen(_)));
+}
+
+#[test]
+fn manager_start_all_succeeds() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(MockAudioSource::new(0.1)));
+    mgr.add_source(Box::new(MockScreenSource::new(1)));
+
+    mgr.start_all().expect("start_all should succeed");
+}
+
+#[test]
+fn manager_start_all_rolls_back_on_failure() {
+    let mut mgr = InputManager::new();
+
+    // First source starts fine, second will fail.
+    mgr.add_source(Box::new(MockAudioSource::new(0.1)));
+    mgr.add_source(Box::new(FailingSource));
+
+    let result = mgr.start_all();
+    assert!(result.is_err());
+}
+
+#[test]
+fn manager_stop_all_is_idempotent() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(MockAudioSource::new(0.1)));
+    mgr.start_all().expect("start should succeed");
+
+    // Stop twice — should not panic or error.
+    mgr.stop_all();
+    mgr.stop_all();
+}
+
+#[test]
+fn manager_sample_gracefully_handles_errors() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(MockAudioSource::new(0.8)));
+    mgr.add_source(Box::new(FaultySampleSource::new()));
+    mgr.add_source(Box::new(MockScreenSource::new(1)));
+
+    let samples = mgr.sample_all();
+    assert_eq!(samples.len(), 3);
+
+    // First source: audio data.
+    assert!(matches!(&samples[0], InputData::Audio(_)));
+    // Second source: graceful fallback to None.
+    assert!(matches!(&samples[1], InputData::None));
+    // Third source: screen data still works.
+    assert!(matches!(&samples[2], InputData::Screen(_)));
+}
+
+#[test]
+fn manager_sample_preserves_source_order() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(MockScreenSource::new(5)));
+    mgr.add_source(Box::new(MockAudioSource::new(0.33)));
+    mgr.add_source(Box::new(MockScreenSource::new(1)));
+
+    let samples = mgr.sample_all();
+    assert_eq!(samples.len(), 3);
+    assert!(matches!(&samples[0], InputData::Screen(_)));
+    assert!(matches!(&samples[1], InputData::Audio(_)));
+    assert!(matches!(&samples[2], InputData::Screen(_)));
+}
+
+#[test]
+fn audio_data_values_propagate_through_input_data() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(MockAudioSource::new(0.99)));
+
+    let samples = mgr.sample_all();
+    assert_eq!(samples.len(), 1);
+
+    match &samples[0] {
+        InputData::Audio(audio) => {
+            assert!((audio.rms_level - 0.99).abs() < f32::EPSILON);
+            // Silence defaults for everything else.
+            assert!((audio.bpm - 0.0).abs() < f32::EPSILON);
+            assert!(!audio.onset_detected);
+        }
+        _ => panic!("expected audio data"),
+    }
+}
+
+#[test]
+fn screen_data_empty_zones_is_valid() {
+    let mut src = MockScreenSource::new(0);
+    let data = src.sample().expect("sample should succeed");
+
+    match data {
+        InputData::Screen(screen) => {
+            assert!(screen.zone_colors.is_empty());
+        }
+        _ => panic!("expected InputData::Screen"),
+    }
+}
