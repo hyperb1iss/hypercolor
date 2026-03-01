@@ -315,7 +315,8 @@ fn accumulate_region(
         for x in x_start..x_end {
             let px = row_offset + (x * 4) as usize;
             // Bounds check — skip if pixel would read past the buffer.
-            if px + 2 >= frame.len() {
+            // We need at least 3 bytes (R, G, B) starting at `px`.
+            if px + 3 > frame.len() {
                 continue;
             }
             sum_r += u64::from(frame[px]);

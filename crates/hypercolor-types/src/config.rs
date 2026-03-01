@@ -155,6 +155,27 @@ pub struct HypercolorConfig {
     pub features: FeatureFlags,
 }
 
+/// Current schema version for newly created configurations.
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+
+impl Default for HypercolorConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            include: Vec::new(),
+            daemon: DaemonConfig::default(),
+            web: WebConfig::default(),
+            effect_engine: EffectEngineConfig::default(),
+            audio: AudioConfig::default(),
+            capture: CaptureConfig::default(),
+            discovery: DiscoveryConfig::default(),
+            dbus: DbusConfig::default(),
+            tui: TuiConfig::default(),
+            features: FeatureFlags::default(),
+        }
+    }
+}
+
 // ─── Daemon ──────────────────────────────────────────────────────────────────
 
 /// Core daemon settings: networking, render loop, lifecycle.

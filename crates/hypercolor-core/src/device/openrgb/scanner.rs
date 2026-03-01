@@ -11,13 +11,10 @@ use tokio::net::TcpStream;
 use tracing::{debug, info};
 
 use crate::device::discovery::{DiscoveredDevice, TransportScanner};
-use crate::types::device::{
-    ColorFormat, ConnectionType, DeviceCapabilities, DeviceFamily, DeviceId, DeviceIdentifier,
-    DeviceInfo, LedTopology, ZoneInfo,
-};
+use crate::types::device::{ConnectionType, DeviceFamily, DeviceIdentifier};
 
 use super::client::{ClientConfig, OpenRgbClient};
-use super::proto::{self, ControllerData, ZoneType};
+use super::proto::{self, ControllerData};
 
 // ── Scanner Configuration ────────────────────────────────────────────────
 
@@ -88,61 +85,13 @@ impl OpenRgbScanner {
 
     /// Map an `OpenRGB` controller to a [`DiscoveredDevice`].
     fn map_controller_to_discovered(index: u32, controller: &ControllerData) -> DiscoveredDevice {
-        let zones: Vec<ZoneInfo> = controller
-            .zones
-            .iter()
-            .map(|zone| {
-                let topology = match zone.zone_type {
-                    ZoneType::Single => {
-                        if zone.leds_count == 1 {
-                            LedTopology::Point
-                        } else {
-                            LedTopology::Custom
-                        }
-                    }
-                    ZoneType::Linear => LedTopology::Strip,
-                    ZoneType::Matrix => LedTopology::Matrix {
-                        rows: zone.matrix_height,
-                        cols: zone.matrix_width,
-                    },
-                };
-
-                ZoneInfo {
-                    name: zone.name.clone(),
-                    led_count: zone.leds_count,
-                    topology,
-                    color_format: ColorFormat::Rgb,
-                }
-            })
-            .collect();
-
-        let total_leds: u32 = zones.iter().map(|z| z.led_count).sum();
-
         let identifier = DeviceIdentifier::OpenRgb {
             controller_name: controller.name.clone(),
             location: controller.location.clone(),
         };
         let fingerprint = identifier.fingerprint();
 
-        let info = DeviceInfo {
-            id: DeviceId::new(),
-            name: controller.name.clone(),
-            vendor: controller.vendor.clone(),
-            family: DeviceFamily::OpenRgb,
-            connection_type: ConnectionType::Network,
-            zones,
-            firmware_version: if controller.version.is_empty() {
-                None
-            } else {
-                Some(controller.version.clone())
-            },
-            capabilities: DeviceCapabilities {
-                led_count: total_leds,
-                supports_direct: true,
-                supports_brightness: false,
-                max_fps: 60,
-            },
-        };
+        let info = super::build_device_info(controller);
 
         let mut metadata = HashMap::new();
         metadata.insert("openrgb_index".to_owned(), index.to_string());

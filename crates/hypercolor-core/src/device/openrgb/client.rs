@@ -399,6 +399,10 @@ impl OpenRgbClient {
 
     /// Receive a complete packet (header + payload) from the TCP stream.
     async fn recv_packet(&mut self) -> Result<(PacketHeader, Vec<u8>)> {
+        /// Maximum payload size we'll accept (16 MiB). Protects against
+        /// corrupt or malicious servers that advertise absurd data lengths.
+        const MAX_PAYLOAD_SIZE: u32 = 16 * 1024 * 1024;
+
         let stream = self.stream.as_mut().context("no active connection")?;
 
         // Read header
@@ -410,9 +414,17 @@ impl OpenRgbClient {
 
         let header = PacketHeader::from_bytes(&header_buf)?;
 
+        // Guard against absurd payload sizes
+        anyhow::ensure!(
+            header.data_length <= MAX_PAYLOAD_SIZE,
+            "payload size {} exceeds maximum allowed ({MAX_PAYLOAD_SIZE} bytes)",
+            header.data_length
+        );
+
         // Read payload
-        let mut payload =
-            vec![0u8; usize::try_from(header.data_length).expect("data_length fits in usize")];
+        let payload_len =
+            usize::try_from(header.data_length).context("data_length exceeds usize")?;
+        let mut payload = vec![0u8; payload_len];
         if !payload.is_empty() {
             tokio::time::timeout(self.config.io_timeout, stream.read_exact(&mut payload))
                 .await

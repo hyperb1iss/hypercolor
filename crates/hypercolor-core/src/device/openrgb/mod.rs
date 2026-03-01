@@ -36,3 +36,67 @@ pub use proto::{
     Command, ControllerData, HEADER_SIZE, MAGIC, PacketHeader, RgbColor, ZoneData, ZoneType,
 };
 pub use scanner::{OpenRgbScanner, ScannerConfig};
+
+use crate::types::device::{
+    ColorFormat, ConnectionType, DeviceCapabilities, DeviceFamily, DeviceId, DeviceInfo,
+    LedTopology, ZoneInfo,
+};
+
+// ── Shared Mapping ────────────────────────────────────────────────────────
+
+/// Map an `OpenRGB` [`ZoneData`] to a Hypercolor [`ZoneInfo`].
+///
+/// Shared between the backend and scanner to avoid duplicating the
+/// zone-type-to-topology conversion logic.
+fn map_zone(zone: &proto::ZoneData) -> ZoneInfo {
+    let topology = match zone.zone_type {
+        proto::ZoneType::Single => {
+            if zone.leds_count == 1 {
+                LedTopology::Point
+            } else {
+                LedTopology::Custom
+            }
+        }
+        proto::ZoneType::Linear => LedTopology::Strip,
+        proto::ZoneType::Matrix => LedTopology::Matrix {
+            rows: zone.matrix_height,
+            cols: zone.matrix_width,
+        },
+    };
+
+    ZoneInfo {
+        name: zone.name.clone(),
+        led_count: zone.leds_count,
+        topology,
+        color_format: ColorFormat::Rgb,
+    }
+}
+
+/// Build a [`DeviceInfo`] from an `OpenRGB` controller.
+///
+/// Shared between the backend and scanner to avoid duplicating the
+/// controller-to-device mapping logic.
+fn build_device_info(controller: &proto::ControllerData) -> DeviceInfo {
+    let zones: Vec<ZoneInfo> = controller.zones.iter().map(map_zone).collect();
+    let total_leds: u32 = zones.iter().map(|z| z.led_count).sum();
+
+    DeviceInfo {
+        id: DeviceId::new(),
+        name: controller.name.clone(),
+        vendor: controller.vendor.clone(),
+        family: DeviceFamily::OpenRgb,
+        connection_type: ConnectionType::Network,
+        zones,
+        firmware_version: if controller.version.is_empty() {
+            None
+        } else {
+            Some(controller.version.clone())
+        },
+        capabilities: DeviceCapabilities {
+            led_count: total_leds,
+            supports_direct: true,
+            supports_brightness: false,
+            max_fps: 60,
+        },
+    }
+}

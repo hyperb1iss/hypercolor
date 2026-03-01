@@ -288,7 +288,11 @@ impl TempoTracker {
         #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
         let raw_bpm = (60.0 / median) as f32;
         self.bpm = normalize_bpm(raw_bpm);
-        self.beat_interval = 60.0 / f64::from(self.bpm);
+        self.beat_interval = if self.bpm > 0.0 {
+            60.0 / f64::from(self.bpm)
+        } else {
+            0.0
+        };
 
         // Confidence: how consistent are the intervals?
         // Low variance relative to median = high confidence.
@@ -488,7 +492,12 @@ fn lerp(current: f32, target: f32, alpha: f32) -> f32 {
 }
 
 /// Normalize a raw BPM to the 60–180 range by halving or doubling.
+///
+/// Returns 0.0 for non-positive or non-finite inputs.
 fn normalize_bpm(raw_bpm: f32) -> f32 {
+    if !raw_bpm.is_finite() || raw_bpm <= 0.0 {
+        return 0.0;
+    }
     let mut bpm = raw_bpm;
     while bpm < BPM_MIN {
         bpm *= 2.0;

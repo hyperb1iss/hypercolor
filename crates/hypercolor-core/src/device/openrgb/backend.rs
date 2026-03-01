@@ -10,13 +10,9 @@ use anyhow::{Context, Result, bail};
 use tracing::{debug, info, warn};
 
 use crate::device::traits::{BackendInfo, DeviceBackend};
-use crate::types::device::{
-    ColorFormat, ConnectionType, DeviceCapabilities, DeviceFamily, DeviceId, DeviceInfo,
-    LedTopology, ZoneInfo,
-};
+use crate::types::device::{DeviceId, DeviceInfo};
 
 use super::client::{ClientConfig, OpenRgbClient};
-use super::proto::{ControllerData, ZoneType};
 
 // ── Controller Mapping ───────────────────────────────────────────────────
 
@@ -69,56 +65,8 @@ impl OpenRgbBackend {
     }
 
     /// Map an `OpenRGB` controller to a Hypercolor [`DeviceInfo`].
-    fn map_controller(_index: u32, controller: &ControllerData) -> DeviceInfo {
-        let zones: Vec<ZoneInfo> = controller
-            .zones
-            .iter()
-            .map(|zone| {
-                let topology = match zone.zone_type {
-                    ZoneType::Single => {
-                        if zone.leds_count == 1 {
-                            LedTopology::Point
-                        } else {
-                            LedTopology::Custom
-                        }
-                    }
-                    ZoneType::Linear => LedTopology::Strip,
-                    ZoneType::Matrix => LedTopology::Matrix {
-                        rows: zone.matrix_height,
-                        cols: zone.matrix_width,
-                    },
-                };
-
-                ZoneInfo {
-                    name: zone.name.clone(),
-                    led_count: zone.leds_count,
-                    topology,
-                    color_format: ColorFormat::Rgb,
-                }
-            })
-            .collect();
-
-        let total_leds: u32 = zones.iter().map(|z| z.led_count).sum();
-
-        DeviceInfo {
-            id: DeviceId::new(),
-            name: controller.name.clone(),
-            vendor: controller.vendor.clone(),
-            family: DeviceFamily::OpenRgb,
-            connection_type: ConnectionType::Network,
-            zones,
-            firmware_version: if controller.version.is_empty() {
-                None
-            } else {
-                Some(controller.version.clone())
-            },
-            capabilities: DeviceCapabilities {
-                led_count: total_leds,
-                supports_direct: true,
-                supports_brightness: false,
-                max_fps: 60,
-            },
-        }
+    fn map_controller(controller: &super::proto::ControllerData) -> DeviceInfo {
+        super::build_device_info(controller)
     }
 }
 
@@ -157,7 +105,7 @@ impl DeviceBackend for OpenRgbBackend {
         let mut devices = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
 
         for (&index, controller) in self.client.controllers() {
-            let device_info = Self::map_controller(index, controller);
+            let device_info = Self::map_controller(controller);
             let device_id = device_info.id;
 
             self.device_map.insert(

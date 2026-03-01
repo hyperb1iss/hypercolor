@@ -16,8 +16,6 @@ use crate::types::device::{
     DeviceInfo, LedTopology, ZoneInfo,
 };
 
-use super::backend::parse_wled_info;
-
 /// mDNS service type for WLED devices.
 const WLED_SERVICE_TYPE: &str = "_wled._tcp.local.";
 
@@ -210,22 +208,5 @@ impl TransportScanner for WledScanner {
 
 /// Fetch `/json/info` from a WLED device over HTTP.
 async fn enrich_via_http(ip: std::net::IpAddr) -> Result<super::backend::WledDeviceInfo> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .context("Failed to build HTTP client")?;
-
-    let url = format!("http://{ip}/json/info");
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("HTTP request to {url} failed"))?;
-
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .with_context(|| format!("Failed to parse JSON from {url}"))?;
-
-    parse_wled_info(&json)
+    super::fetch_wled_info(ip).await
 }

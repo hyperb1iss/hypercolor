@@ -6,9 +6,6 @@
 
 use crate::types::audio::{CHROMA_BINS, SPECTRUM_BINS};
 
-#[cfg(test)]
-use crate::types::audio::MEL_BANDS;
-
 // ── Mel Filterbank ───────────────────────────────────────────────────────
 
 /// 24-band mel-scale filterbank.
@@ -348,6 +345,7 @@ impl ArraySmoother {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::audio::MEL_BANDS;
 
     #[test]
     fn mel_hz_roundtrip() {

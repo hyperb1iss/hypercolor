@@ -14,10 +14,7 @@ use anyhow::{Context, Result};
 use arc_swap::{ArcSwap, Guard};
 use tracing::{debug, info};
 
-use crate::types::config::{
-    AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
-    FeatureFlags, HypercolorConfig, TuiConfig, WebConfig,
-};
+use crate::types::config::HypercolorConfig;
 
 // ─── ConfigManager ──────────────────────────────────────────────────────────
 
@@ -125,20 +122,8 @@ impl ConfigManager {
         toml::from_str(toml_str).context("failed to parse configuration TOML")
     }
 
-    /// Returns a default config suitable for first-run (schema version 3).
+    /// Returns a default config suitable for first-run.
     fn default_config() -> HypercolorConfig {
-        HypercolorConfig {
-            schema_version: 3,
-            include: Vec::new(),
-            daemon: DaemonConfig::default(),
-            web: WebConfig::default(),
-            effect_engine: EffectEngineConfig::default(),
-            audio: AudioConfig::default(),
-            capture: CaptureConfig::default(),
-            discovery: DiscoveryConfig::default(),
-            dbus: DbusConfig::default(),
-            tui: TuiConfig::default(),
-            features: FeatureFlags::default(),
-        }
+        HypercolorConfig::default()
     }
 }

@@ -12,7 +12,7 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, warn};
 
 use crate::api::AppState;
@@ -68,20 +68,27 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>
 /// Process a single WebSocket connection.
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     // Default subscriptions: events only.
-    let mut subscriptions: HashSet<String> = HashSet::new();
-    subscriptions.insert("events".to_owned());
+    // Wrapped in Arc<RwLock<_>> so the relay task sees subscription changes.
+    let subscriptions = Arc::new(RwLock::new({
+        let mut set = HashSet::new();
+        set.insert("events".to_owned());
+        set
+    }));
 
     // Send hello message.
-    let hello = ServerMessage::Hello {
-        version: "1.0".to_owned(),
-        capabilities: vec![
-            "frames".to_owned(),
-            "spectrum".to_owned(),
-            "events".to_owned(),
-            "canvas".to_owned(),
-            "metrics".to_owned(),
-        ],
-        subscriptions: subscriptions.iter().cloned().collect(),
+    let hello = {
+        let subs = subscriptions.read().await;
+        ServerMessage::Hello {
+            version: "1.0".to_owned(),
+            capabilities: vec![
+                "frames".to_owned(),
+                "spectrum".to_owned(),
+                "events".to_owned(),
+                "canvas".to_owned(),
+                "metrics".to_owned(),
+            ],
+            subscriptions: subs.iter().cloned().collect(),
+        }
     };
     if send_json(&mut socket, &hello).await.is_err() {
         return;
@@ -93,8 +100,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     // Bounded relay channel for backpressure.
     let (relay_tx, mut relay_rx) = tokio::sync::mpsc::channel::<String>(WS_BUFFER_SIZE);
 
-    // Spawn event relay task.
-    let relay_subs = subscriptions.clone();
+    // Spawn event relay task — shares the subscription set via Arc<RwLock<_>>.
+    let relay_subs = Arc::clone(&subscriptions);
     let relay_handle = tokio::spawn(relay_events(event_rx, relay_tx, relay_subs));
 
     // Main loop: multiplex between incoming client messages and outbound events.
@@ -116,7 +123,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        handle_client_message(&text, &mut subscriptions, &mut socket).await;
+                        handle_client_message(&text, &subscriptions, &mut socket).await;
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Err(e)) => {
@@ -138,12 +145,13 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 async fn relay_events(
     mut event_rx: broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
     relay_tx: tokio::sync::mpsc::Sender<String>,
-    subscriptions: HashSet<String>,
+    subscriptions: Arc<RwLock<HashSet<String>>>,
 ) {
     loop {
         match event_rx.recv().await {
             Ok(timestamped) => {
-                if !subscriptions.contains("events") {
+                let has_events = subscriptions.read().await.contains("events");
+                if !has_events {
                     continue;
                 }
                 let event_type = format!("{:?}", timestamped.event.category()).to_lowercase();
@@ -171,7 +179,7 @@ async fn relay_events(
 /// Process a client subscription/unsubscription message.
 async fn handle_client_message(
     text: &str,
-    subscriptions: &mut HashSet<String>,
+    subscriptions: &Arc<RwLock<HashSet<String>>>,
     socket: &mut WebSocket,
 ) {
     let Ok(msg) = serde_json::from_str::<ClientMessage>(text) else {
@@ -181,8 +189,11 @@ async fn handle_client_message(
 
     match msg {
         ClientMessage::Subscribe { channels } => {
-            for ch in &channels {
-                subscriptions.insert(ch.clone());
+            {
+                let mut subs = subscriptions.write().await;
+                for ch in &channels {
+                    subs.insert(ch.clone());
+                }
             }
             let ack = ServerMessage::Subscribed {
                 channels: channels.clone(),
@@ -190,10 +201,13 @@ async fn handle_client_message(
             let _ = send_json(socket, &ack).await;
         }
         ClientMessage::Unsubscribe { channels } => {
-            for ch in &channels {
-                subscriptions.remove(ch);
-            }
-            let remaining: Vec<String> = subscriptions.iter().cloned().collect();
+            let remaining = {
+                let mut subs = subscriptions.write().await;
+                for ch in &channels {
+                    subs.remove(ch);
+                }
+                subs.iter().cloned().collect()
+            };
             let ack = ServerMessage::Unsubscribed {
                 channels: channels.clone(),
                 remaining,

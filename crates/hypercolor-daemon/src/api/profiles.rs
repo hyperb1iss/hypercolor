@@ -149,13 +149,13 @@ pub async fn apply_profile(State(state): State<Arc<AppState>>, Path(id): Path<St
     // In a full implementation, this would set the effect, controls,
     // layout, device states, and brightness from the profile.
     // For now, publish an event and return the profile reference.
-    state.event_bus.publish(
-        hypercolor_core::types::event::HypercolorEvent::ProfileLoaded {
+    state
+        .event_bus
+        .publish(hypercolor_types::event::HypercolorEvent::ProfileLoaded {
             profile_id: profile.id.clone(),
             profile_name: profile.name.clone(),
-            trigger: hypercolor_core::types::event::ChangeTrigger::Api,
-        },
-    );
+            trigger: hypercolor_types::event::ChangeTrigger::Api,
+        });
 
     ApiResponse::ok(serde_json::json!({
         "profile": {

@@ -211,7 +211,7 @@ pub async fn discover_devices(
 
     // Publish discovery started event.
     state.event_bus.publish(
-        hypercolor_core::types::event::HypercolorEvent::DeviceDiscoveryStarted {
+        hypercolor_types::event::HypercolorEvent::DeviceDiscoveryStarted {
             backends: backends.clone(),
         },
     );

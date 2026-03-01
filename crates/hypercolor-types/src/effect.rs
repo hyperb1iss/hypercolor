@@ -1,7 +1,7 @@
 //! Effect metadata, controls, and lifecycle types.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
@@ -104,7 +104,7 @@ pub enum EffectSource {
 impl EffectSource {
     /// Returns the path to the primary source file.
     #[must_use]
-    pub fn path(&self) -> &PathBuf {
+    pub fn path(&self) -> &Path {
         match self {
             Self::Native { path } | Self::Html { path } | Self::Shader { path } => path,
         }

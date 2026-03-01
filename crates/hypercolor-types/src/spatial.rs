@@ -129,7 +129,7 @@ impl Default for NormalizedPosition {
 /// Normalized rectangle in `[0.0, 1.0]` canvas space.
 ///
 /// Used for space regions in multi-room layouts.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct NormalizedRect {
     /// Left edge x-coordinate.
     pub x: f32,
@@ -148,7 +148,7 @@ pub struct NormalizedRect {
 /// Each variant computes zone-local positions in normalized `[0.0, 1.0]` space.
 /// The topology determines how many LEDs exist and where they sit within
 /// the zone's rectangular bounds.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LedTopology {
     /// Linear strip: LEDs in a straight line across the zone.
@@ -290,7 +290,7 @@ pub enum Winding {
 }
 
 /// Definition for a single ring within [`LedTopology::ConcentricRings`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RingDef {
     /// Number of LEDs in this ring.
     pub count: u32,

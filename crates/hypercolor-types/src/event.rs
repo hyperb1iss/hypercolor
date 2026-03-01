@@ -159,6 +159,7 @@ pub struct FrameData {
 
 impl FrameData {
     /// Creates an empty frame with no zone data.
+    #[must_use]
     pub fn empty() -> Self {
         Self {
             frame_number: 0,
@@ -168,6 +169,7 @@ impl FrameData {
     }
 
     /// Creates a new frame with the given zone data.
+    #[must_use]
     pub fn new(zones: Vec<ZoneColors>, frame_number: u32, timestamp_ms: u32) -> Self {
         Self {
             frame_number,
@@ -177,6 +179,7 @@ impl FrameData {
     }
 
     /// Total LED count across all zones.
+    #[must_use]
     pub fn total_leds(&self) -> usize {
         self.zones.iter().map(|z| z.colors.len()).sum()
     }
@@ -644,6 +647,7 @@ pub enum EventPriority {
 
 impl HypercolorEvent {
     /// Returns the category this event belongs to, for filtering purposes.
+    #[must_use]
     pub fn category(&self) -> EventCategory {
         match self {
             Self::DeviceDiscovered { .. }
@@ -710,6 +714,7 @@ impl HypercolorEvent {
     /// - **High:** Delivered within 1 ms of occurrence.
     /// - **Normal:** Delivered within 5 ms.
     /// - **Low:** Best-effort, may be coalesced or dropped under congestion.
+    #[must_use]
     pub fn priority(&self) -> EventPriority {
         match self {
             Self::DaemonShutdown { .. }

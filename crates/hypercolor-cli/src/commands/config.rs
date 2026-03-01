@@ -19,12 +19,20 @@ pub enum ConfigCommand {
     /// Show the complete current configuration.
     Show,
     /// Get a config value by dotted key path.
-    #[command(alias = "get")]
+    Get(ConfigGetArgs),
+    /// Set a config value by dotted key path.
     Set(ConfigSetArgs),
     /// Reset config to defaults (or a specific key).
     Reset(ConfigResetArgs),
     /// Print the config file path.
     Path,
+}
+
+/// Arguments for `config get`.
+#[derive(Debug, Args)]
+pub struct ConfigGetArgs {
+    /// Dotted key path (e.g., daemon.fps, audio.gain).
+    pub key: String,
 }
 
 /// Arguments for `config set`.
@@ -33,8 +41,8 @@ pub struct ConfigSetArgs {
     /// Dotted key path (e.g., daemon.fps, audio.gain).
     pub key: String,
 
-    /// New value (omit to get current value).
-    pub value: Option<String>,
+    /// New value to set.
+    pub value: String,
 
     /// Apply change to running daemon immediately (hot-reload).
     #[arg(long)]
@@ -61,6 +69,7 @@ pub struct ConfigResetArgs {
 pub async fn execute(args: &ConfigArgs, client: &DaemonClient, ctx: &OutputContext) -> Result<()> {
     match &args.command {
         ConfigCommand::Show => execute_show(client, ctx).await,
+        ConfigCommand::Get(get_args) => execute_get(get_args, client, ctx).await,
         ConfigCommand::Set(set_args) => execute_set(set_args, client, ctx).await,
         ConfigCommand::Reset(reset_args) => execute_reset(reset_args, client, ctx).await,
         ConfigCommand::Path => execute_path(ctx),
@@ -82,46 +91,50 @@ async fn execute_show(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
     Ok(())
 }
 
+async fn execute_get(
+    args: &ConfigGetArgs,
+    client: &DaemonClient,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let path = format!("/config/get?key={}", &args.key);
+    let response = client.get(&path).await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain | OutputFormat::Table => {
+            if let Some(val) = response.get("value") {
+                match val {
+                    serde_json::Value::String(s) => println!("{s}"),
+                    other => println!("{other}"),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn execute_set(
     args: &ConfigSetArgs,
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    if let Some(value) = &args.value {
-        // Set operation
-        let body = serde_json::json!({
-            "key": args.key,
-            "value": value,
-            "live": args.live,
-        });
-        let response = client.post("/config/set", &body).await?;
+    let body = serde_json::json!({
+        "key": args.key,
+        "value": args.value,
+        "live": args.live,
+    });
+    let response = client.post("/config/set", &body).await?;
 
-        match ctx.format {
-            OutputFormat::Json => ctx.print_json(&response)?,
-            OutputFormat::Plain | OutputFormat::Table => {
-                let applied = if args.live {
-                    "  (applied to running daemon)"
-                } else {
-                    ""
-                };
-                ctx.success(&format!("{}: {value}{applied}", args.key));
-            }
-        }
-    } else {
-        // Get operation
-        let path = format!("/config/get?key={}", &args.key);
-        let response = client.get(&path).await?;
-
-        match ctx.format {
-            OutputFormat::Json => ctx.print_json(&response)?,
-            OutputFormat::Plain | OutputFormat::Table => {
-                if let Some(val) = response.get("value") {
-                    match val {
-                        serde_json::Value::String(s) => println!("{s}"),
-                        other => println!("{other}"),
-                    }
-                }
-            }
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain | OutputFormat::Table => {
+            let applied = if args.live {
+                "  (applied to running daemon)"
+            } else {
+                ""
+            };
+            ctx.success(&format!("{}: {}{applied}", args.key, args.value));
         }
     }
 

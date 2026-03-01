@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 use crate::client::DaemonClient;
-use crate::output::{OutputContext, OutputFormat};
+use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
 
 /// Device discovery and management.
 #[derive(Debug, Args)]
@@ -266,9 +266,9 @@ async fn execute_set_color(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let path = format!("/devices/{}/color", urlencoded(&args.device));
+    let path = format!("/devices/{}", urlencoded(&args.device));
     let body = serde_json::json!({ "color": args.color });
-    let response = client.post(&path, &body).await?;
+    let response = client.put(&path, &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -278,18 +278,4 @@ async fn execute_set_color(
     }
 
     Ok(())
-}
-
-/// Extract a string field from a JSON value, returning "?" if missing.
-fn extract_str(value: &serde_json::Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("?")
-        .to_string()
-}
-
-/// Simple percent-encoding for URL path segments.
-fn urlencoded(s: &str) -> String {
-    s.replace(' ', "%20")
 }

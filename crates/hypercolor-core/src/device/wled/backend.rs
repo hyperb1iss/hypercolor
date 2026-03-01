@@ -401,24 +401,7 @@ impl WledBackend {
 
     /// Probe a single IP for a WLED device via HTTP.
     async fn probe_ip(ip: IpAddr) -> Result<WledDeviceInfo> {
-        let url = format!("http://{ip}/json/info");
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .context("Failed to build HTTP client")?;
-
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("HTTP request to {url} failed"))?;
-
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .with_context(|| format!("Failed to parse JSON from {url}"))?;
-
-        parse_wled_info(&json)
+        super::fetch_wled_info(ip).await
     }
 }
 

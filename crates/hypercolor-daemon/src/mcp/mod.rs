@@ -253,7 +253,7 @@ impl McpServer {
                 "description": "AI-powered RGB lighting control for Linux. Manage effects, devices, profiles, audio reactivity, screen capture, and automation through natural language.",
                 "websiteUrl": "https://github.com/hyperb1iss/hypercolor"
             },
-            "instructions": "You are controlling Hypercolor, an RGB lighting system. Use get_status to understand the current setup before making changes. Use list_effects to discover available effects before applying them. Natural language queries work for effect names — you don't need exact IDs. When the user describes a mood or activity, consider using suggest_lighting first, then apply the recommendation."
+            "instructions": "You are controlling Hypercolor, an RGB lighting system. Use get_status to understand the current setup before making changes. Use list_effects to discover available effects before applying them. Natural language queries work for effect names — you don't need exact IDs. When the user describes a mood or activity, use set_effect with a descriptive query to find and apply a matching effect."
         }))
     }
 

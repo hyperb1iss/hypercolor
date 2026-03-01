@@ -11,11 +11,9 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Pixels per E1.31 universe for RGB data (170 * 3 = 510 channels).
-#[allow(dead_code)]
 pub const E131_PIXELS_PER_UNIVERSE_RGB: usize = 170;
 
 /// Pixels per E1.31 universe for RGBW data (127 * 4 = 508 channels).
-#[allow(dead_code)]
 pub const E131_PIXELS_PER_UNIVERSE_RGBW: usize = 127;
 
 /// Max DMX channels per universe (not counting start code).

@@ -267,26 +267,9 @@ fn resolve_config_path(explicit: Option<&Path>) -> PathBuf {
     )
 }
 
-/// Construct a default configuration (schema version 3, all defaults).
+/// Construct a default configuration (all defaults, current schema version).
 pub fn default_config() -> HypercolorConfig {
-    use hypercolor_types::config::{
-        AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
-        FeatureFlags, TuiConfig, WebConfig,
-    };
-
-    HypercolorConfig {
-        schema_version: 3,
-        include: Vec::new(),
-        daemon: DaemonConfig::default(),
-        web: WebConfig::default(),
-        effect_engine: EffectEngineConfig::default(),
-        audio: AudioConfig::default(),
-        capture: CaptureConfig::default(),
-        discovery: DiscoveryConfig::default(),
-        dbus: DbusConfig::default(),
-        tui: TuiConfig::default(),
-        features: FeatureFlags::default(),
-    }
+    HypercolorConfig::default()
 }
 
 // ── Signal Handling ─────────────────────────────────────────────────────────

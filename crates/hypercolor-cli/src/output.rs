@@ -153,6 +153,22 @@ impl OutputContext {
     }
 }
 
+// ── Shared Helpers ──────────────────────────────────────────────────────
+
+/// Extract a string field from a JSON value, returning "?" if missing.
+pub fn extract_str(value: &serde_json::Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("?")
+        .to_string()
+}
+
+/// Simple percent-encoding for URL path segments.
+pub fn urlencoded(s: &str) -> String {
+    s.replace(' ', "%20")
+}
+
 /// Check if the `NO_COLOR` environment variable is set.
 fn is_no_color_env() -> bool {
     std::env::var_os("NO_COLOR").is_some()

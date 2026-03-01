@@ -67,6 +67,10 @@ pub struct AppState {
 
 impl AppState {
     /// Create a new `AppState` with default empty subsystems.
+    ///
+    /// Primarily useful for testing. In production, prefer
+    /// [`from_daemon_state`](Self::from_daemon_state) to share subsystems
+    /// with the daemon lifecycle.
     pub fn new() -> Self {
         Self {
             device_registry: DeviceRegistry::new(),
@@ -74,6 +78,25 @@ impl AppState {
             effect_engine: Mutex::new(EffectEngine::new()),
             scene_manager: RwLock::new(SceneManager::new()),
             event_bus: Arc::new(HypercolorBus::new()),
+            profiles: RwLock::new(HashMap::new()),
+            layouts: RwLock::new(HashMap::new()),
+            start_time: Instant::now(),
+        }
+    }
+
+    /// Create an `AppState` from a live [`DaemonState`](crate::startup::DaemonState).
+    ///
+    /// The device registry is cloned (it's internally `Arc`-wrapped), and
+    /// the effect engine, scene manager, and event bus are shared by
+    /// `Arc` reference. This ensures the API operates on the same live
+    /// subsystems as the daemon.
+    pub fn from_daemon_state(daemon: &crate::startup::DaemonState) -> Self {
+        Self {
+            device_registry: daemon.device_registry.clone(),
+            effect_registry: RwLock::new(EffectRegistry::default()),
+            effect_engine: Mutex::new(EffectEngine::new()),
+            scene_manager: RwLock::new(SceneManager::new()),
+            event_bus: Arc::clone(&daemon.event_bus),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
             start_time: Instant::now(),

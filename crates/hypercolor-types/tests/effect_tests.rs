@@ -1,6 +1,6 @@
 //! Tests for effect metadata, controls, and lifecycle types.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use hypercolor_types::effect::{
@@ -155,7 +155,7 @@ fn effect_source_native_path() {
     let src = EffectSource::Native {
         path: PathBuf::from("native/aurora.wgsl"),
     };
-    assert_eq!(src.path(), &PathBuf::from("native/aurora.wgsl"));
+    assert_eq!(src.path(), Path::new("native/aurora.wgsl"));
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn effect_source_html_path() {
     let src = EffectSource::Html {
         path: PathBuf::from("community/borealis.html"),
     };
-    assert_eq!(src.path(), &PathBuf::from("community/borealis.html"));
+    assert_eq!(src.path(), Path::new("community/borealis.html"));
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn effect_source_shader_path() {
     let src = EffectSource::Shader {
         path: PathBuf::from("shaders/plasma.wgsl"),
     };
-    assert_eq!(src.path(), &PathBuf::from("shaders/plasma.wgsl"));
+    assert_eq!(src.path(), Path::new("shaders/plasma.wgsl"));
 }
 
 #[test]

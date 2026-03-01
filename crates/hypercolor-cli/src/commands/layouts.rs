@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 use crate::client::DaemonClient;
-use crate::output::{OutputContext, OutputFormat};
+use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
 
 /// Spatial layout management.
 #[derive(Debug, Args)]
@@ -154,16 +154,4 @@ async fn execute_update(
     }
 
     Ok(())
-}
-
-fn extract_str(value: &serde_json::Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("?")
-        .to_string()
-}
-
-fn urlencoded(s: &str) -> String {
-    s.replace(' ', "%20")
 }

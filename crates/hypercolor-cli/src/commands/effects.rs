@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 use crate::client::DaemonClient;
-use crate::output::{OutputContext, OutputFormat};
+use crate::output::{OutputContext, OutputFormat, extract_str, urlencoded};
 
 /// Effect browsing and control.
 #[derive(Debug, Args)]
@@ -188,12 +188,17 @@ async fn execute_activate(
     }
 
     let body = serde_json::json!({
-        "effect": args.effect,
         "controls": controls,
-        "transition_ms": args.transition,
+        "transition": {
+            "type": "crossfade",
+            "duration_ms": args.transition,
+        },
     });
 
-    let response = client.post("/effects/activate", &body).await?;
+    // The daemon's apply endpoint uses effect IDs in the path.
+    // URL-encode the effect name/slug for path-based lookup.
+    let path = format!("/effects/{}/apply", urlencoded(&args.effect));
+    let response = client.post(&path, &body).await?;
 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
@@ -263,16 +268,4 @@ async fn execute_info(
     }
 
     Ok(())
-}
-
-fn extract_str(value: &serde_json::Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("?")
-        .to_string()
-}
-
-fn urlencoded(s: &str) -> String {
-    s.replace(' ', "%20")
 }

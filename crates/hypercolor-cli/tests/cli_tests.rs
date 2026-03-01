@@ -228,10 +228,15 @@ fn build_cmd() -> clap::Command {
                 .subcommand_required(true)
                 .subcommand(Command::new("show").about("Show config"))
                 .subcommand(
+                    Command::new("get")
+                        .about("Get config value")
+                        .arg(Arg::new("key").required(true)),
+                )
+                .subcommand(
                     Command::new("set")
                         .about("Set config value")
                         .arg(Arg::new("key").required(true))
-                        .arg(Arg::new("value"))
+                        .arg(Arg::new("value").required(true))
                         .arg(Arg::new("live").long("live").action(ArgAction::SetTrue)),
                 )
                 .subcommand(
@@ -567,6 +572,20 @@ fn parse_config_show() {
     let cmd = build_cmd();
     cmd.try_get_matches_from(["hyper", "config", "show"])
         .expect("config show should parse");
+}
+
+#[test]
+fn parse_config_get() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from(["hyper", "config", "get", "daemon.fps"])
+        .expect("config get should parse");
+    let (_, sub) = matches.subcommand().expect("should have subcommand");
+    let (_, get) = sub.subcommand().expect("should have get");
+    assert_eq!(
+        get.get_one::<String>("key").map(String::as_str),
+        Some("daemon.fps")
+    );
 }
 
 #[test]

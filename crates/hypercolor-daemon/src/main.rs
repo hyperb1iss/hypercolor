@@ -1,10 +1,12 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::startup::{DaemonState, install_signal_handlers, load_config};
 
 // ── CLI Arguments ───────────────────────────────────────────────────────────
@@ -55,22 +57,35 @@ async fn main() -> Result<()> {
     );
 
     // 3. Initialize all subsystems.
-    let state = DaemonState::initialize(&config, config_path)?;
+    let daemon_state = DaemonState::initialize(&config, config_path)?;
 
     // 4. Start subsystems (render loop, discovery, etc.).
-    state.start().await?;
+    daemon_state.start().await?;
 
-    // 5. Install signal handlers for graceful shutdown.
+    // 5. Build the API server with shared daemon state.
+    let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
+    let router = api::build_router(app_state);
+
+    let listener = tokio::net::TcpListener::bind(&args.bind)
+        .await
+        .with_context(|| format!("failed to bind API server to {}", args.bind))?;
+
+    info!(bind = %args.bind, "API server listening");
+
+    // 6. Install signal handlers for graceful shutdown.
     let mut shutdown_rx = install_signal_handlers();
 
-    // 6. Wait for shutdown signal.
-    shutdown_rx
-        .changed()
+    // 7. Serve HTTP with graceful shutdown.
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.changed().await;
+            info!("Shutdown signal received, stopping API server");
+        })
         .await
-        .expect("shutdown signal channel closed unexpectedly");
+        .context("API server error")?;
 
-    // 7. Graceful shutdown.
-    state.shutdown().await?;
+    // 8. Graceful shutdown of daemon subsystems.
+    daemon_state.shutdown().await?;
 
     info!("Hypercolor daemon exited cleanly");
     Ok(())

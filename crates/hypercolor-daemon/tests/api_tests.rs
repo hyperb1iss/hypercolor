@@ -403,10 +403,6 @@ async fn scene_crud_lifecycle() {
 // ── Profiles ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "CRUD lifecycle test covers full create-read-update-delete flow"
-)]
 async fn profile_crud_lifecycle() {
     let state = Arc::new(AppState::new());
 

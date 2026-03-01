@@ -43,7 +43,7 @@ impl fmt::Display for SceneId {
 /// Scenes are self-contained: they carry their own transition preference,
 /// their target scope, and every zone assignment needed to reproduce the
 /// lighting state from scratch. No ambient state is assumed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scene {
     /// UUID v7 — time-sortable, globally unique.
     pub id: SceneId,
@@ -80,7 +80,7 @@ pub struct Scene {
 ///
 /// Applying a scene with a non-`Full` scope leaves all out-of-scope zones
 /// in their current state. This enables independent PC vs. room control.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SceneScope {
     /// Every device the daemon manages.
     Full,
@@ -105,7 +105,7 @@ pub enum SceneScope {
 /// The zone is identified by name (a composite of device + zone from the
 /// spatial layout). The effect is referenced by string ID matching the
 /// effect registry. Parameters are effect-specific key-value pairs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ZoneAssignment {
     /// Target zone identifier.
     pub zone_name: String,
@@ -131,7 +131,7 @@ pub struct ZoneAssignment {
 ///
 /// Carried on every scene as a default, but can be overridden at activation
 /// time by the caller (schedule rule, automation rule, or manual API call).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TransitionSpec {
     /// Total wall-clock duration of the transition in milliseconds.
     pub duration_ms: u64,
@@ -148,7 +148,7 @@ pub struct TransitionSpec {
 /// Easing functions for transition progress curves.
 ///
 /// Maps raw linear progress `t` in `[0, 1]` to an eased value `t'` in `[0, 1]`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EasingFunction {
     /// `t' = t`. Constant velocity.
     Linear,
@@ -234,7 +234,7 @@ fn bezier_component_derivative(c1: f32, c2: f32, s: f32) -> f32 {
 // ── Color Interpolation ──────────────────────────────────────────────────
 
 /// Color space used for interpolation during transitions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColorInterpolation {
     /// Standard sRGB linear interpolation.
     Srgb,
@@ -292,7 +292,7 @@ impl fmt::Display for ScenePriority {
 /// Each variant represents a different domain the system monitors.
 /// The rule engine evaluates incoming trigger events against these
 /// to decide when rules should fire.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TriggerSource {
     /// Fire at a specific time of day (24-hour clock).
     TimeOfDay {
@@ -331,7 +331,7 @@ pub enum TriggerSource {
 /// Rules are the declarative building blocks of Hypercolor's reactive
 /// intelligence. They are event-driven (unlike schedules, which are
 /// time-driven).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AutomationRule {
     /// Human-readable rule name.
     pub name: String,
@@ -357,7 +357,7 @@ pub struct AutomationRule {
 // ── Action Kind ──────────────────────────────────────────────────────────
 
 /// Actions that automation rules can perform.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ActionKind {
     /// Activate a scene by name.
     ActivateScene(String),

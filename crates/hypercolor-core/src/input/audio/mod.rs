@@ -127,7 +127,8 @@ impl AudioAnalyzer {
         let raw_rms = compute_rms(&self.time_buf);
         let peak = compute_peak(&self.time_buf);
 
-        // Noise gate: if below threshold, return silence.
+        // Noise gate: if below threshold, decay smoothers and beat state
+        // but return silence. This ensures beat pulses decay rather than freeze.
         let rms_db = if raw_rms > 0.0 {
             20.0 * raw_rms.log10()
         } else {
@@ -135,6 +136,17 @@ impl AudioAnalyzer {
         };
         if rms_db < self.config.noise_floor {
             self.rms_smoother.update(0.0);
+            self.centroid_smoother.update(0.0);
+            self.flux_smoother.update(0.0);
+            // Feed silence to beat detector so pulses decay properly.
+            self.beat.update(&BeatFrame {
+                bass: 0.0,
+                mid: 0.0,
+                treble: 0.0,
+                spectral_flux: 0.0,
+                dt,
+                current_time: self.elapsed,
+            });
             return Ok(Some(AudioData::silence()));
         }
 
