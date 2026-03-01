@@ -22,7 +22,16 @@ pub struct SystemStatus {
     pub device_count: usize,
     pub effect_count: usize,
     pub scene_count: usize,
+    pub active_effect: Option<String>,
+    pub render_loop: RenderLoopStatus,
     pub event_bus_subscribers: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RenderLoopStatus {
+    pub state: String,
+    pub fps_tier: String,
+    pub total_frames: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,6 +58,23 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let scene_count = state.scene_manager.read().await.scene_count();
     let subscribers = state.event_bus.subscriber_count();
 
+    // Query the live effect engine for the active effect name.
+    let active_effect = {
+        let engine = state.effect_engine.lock().await;
+        engine.active_metadata().map(|m| m.name.clone())
+    };
+
+    // Query the live render loop for timing data.
+    let render_loop_status = {
+        let rl = state.render_loop.read().await;
+        let snapshot = rl.stats();
+        RenderLoopStatus {
+            state: snapshot.state.to_string(),
+            fps_tier: snapshot.tier.to_string(),
+            total_frames: snapshot.total_frames,
+        }
+    };
+
     let uptime_seconds = state.start_time.elapsed().as_secs();
 
     ApiResponse::ok(SystemStatus {
@@ -58,6 +84,8 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         device_count,
         effect_count,
         scene_count,
+        active_effect,
+        render_loop: render_loop_status,
         event_bus_subscribers: subscribers,
     })
 }

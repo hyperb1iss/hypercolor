@@ -12,8 +12,8 @@ use tracing::{debug, info, warn};
 
 use crate::device::discovery::{DiscoveredDevice, TransportScanner};
 use crate::types::device::{
-    ColorFormat, ConnectionType, DeviceCapabilities, DeviceFamily, DeviceFingerprint, DeviceId,
-    DeviceInfo, LedTopology, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
+    DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 
 /// mDNS service type for WLED devices.
@@ -68,9 +68,9 @@ impl WledScanner {
         };
 
         let color_format = if rgbw {
-            ColorFormat::Rgbw
+            DeviceColorFormat::Rgbw
         } else {
-            ColorFormat::Rgb
+            DeviceColorFormat::Rgb
         };
 
         // Use MAC address for fingerprint if available, else hostname
@@ -91,7 +91,7 @@ impl WledScanner {
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
                 led_count: u32::from(led_count),
-                topology: LedTopology::Strip,
+                topology: DeviceTopologyHint::Strip,
                 color_format,
             }],
             firmware_version,

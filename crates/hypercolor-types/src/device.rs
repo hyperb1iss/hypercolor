@@ -18,7 +18,7 @@ use uuid::Uuid;
 /// Wraps a `UUIDv7` so identifiers are time-ordered and safe to use as
 /// database keys, map keys, and log correlation IDs.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct DeviceId(Uuid);
+pub struct DeviceId(pub Uuid);
 
 impl DeviceId {
     /// Generate a fresh identifier (`UUIDv7` -- time-ordered).
@@ -156,17 +156,22 @@ pub struct ZoneInfo {
     pub led_count: u32,
 
     /// Physical arrangement of LEDs.
-    pub topology: LedTopology,
+    pub topology: DeviceTopologyHint,
 
     /// Wire-level color format for this zone.
-    pub color_format: ColorFormat,
+    pub color_format: DeviceColorFormat,
 }
 
-// ── LedTopology ───────────────────────────────────────────────────────────
+// ── DeviceTopologyHint ────────────────────────────────────────────────────
 
-/// Physical LED arrangement within a zone.
+/// Hardware-level hint about the physical LED arrangement within a zone.
+///
+/// This is a simplified topology used during device discovery and registration.
+/// For the richer spatial layout topology (with directional params, serpentine
+/// wiring, concentric rings, etc.), see
+/// [`spatial::LedTopology`](crate::spatial::LedTopology).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LedTopology {
+pub enum DeviceTopologyHint {
     /// Linear strip of LEDs.
     Strip,
 
@@ -292,14 +297,18 @@ impl fmt::Display for DeviceState {
     }
 }
 
-// ── ColorFormat ───────────────────────────────────────────────────────────
+// ── DeviceColorFormat ─────────────────────────────────────────────────────
 
 /// Wire-level color format used by a device zone.
 ///
 /// Backends apply the conversion in `push_frame` before writing bytes to
 /// the transport.
+///
+/// This is the *device-side* format hint (2 variants). For the richer
+/// canvas-level color format (including `RgbW16`), see
+/// [`canvas::ColorFormat`](crate::canvas::ColorFormat).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ColorFormat {
+pub enum DeviceColorFormat {
     /// Standard RGB byte order (WLED, Prism S, Prism Mini).
     Rgb,
 
@@ -307,7 +316,7 @@ pub enum ColorFormat {
     Rgbw,
 }
 
-impl fmt::Display for ColorFormat {
+impl fmt::Display for DeviceColorFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Rgb => write!(f, "RGB"),

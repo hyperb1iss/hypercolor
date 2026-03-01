@@ -21,7 +21,7 @@ pub mod features;
 pub mod fft;
 
 use crate::input::traits::{InputData, InputSource};
-use crate::types::audio::{AudioConfig, AudioData};
+use crate::types::audio::{AudioData, AudioPipelineConfig};
 
 use beat::{BeatDetector, BeatFrame};
 use features::{
@@ -41,7 +41,7 @@ use crate::types::audio::{CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 /// [`AudioData`] snapshot. This is the core of the audio input module,
 /// usable in tests with synthetic data.
 pub struct AudioAnalyzer {
-    config: AudioConfig,
+    config: AudioPipelineConfig,
     ring: RingBuffer,
     fft: FftPipeline,
     mel: MelFilterbank,
@@ -65,7 +65,7 @@ pub struct AudioAnalyzer {
 impl AudioAnalyzer {
     /// Create a new analyzer from the given audio config.
     #[must_use]
-    pub fn new(config: &AudioConfig) -> Self {
+    pub fn new(config: &AudioPipelineConfig) -> Self {
         let fft_size = config.fft_size;
         // Ring buffer holds 4x the FFT size for comfortable overlap.
         let ring_capacity = fft_size * 4;
@@ -229,7 +229,7 @@ pub struct AudioInput {
 impl AudioInput {
     /// Create a new audio input with the given config.
     #[must_use]
-    pub fn new(config: &AudioConfig) -> Self {
+    pub fn new(config: &AudioPipelineConfig) -> Self {
         Self {
             name: "AudioInput".to_owned(),
             running: false,

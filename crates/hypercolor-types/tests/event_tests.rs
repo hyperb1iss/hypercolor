@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use hypercolor_types::event::{
-    ChangeTrigger, ContextType, ControlValue, DisconnectReason, EffectRef, EffectStopReason,
-    EventCategory, EventPriority, FrameData, FrameTiming, HypercolorEvent, Severity, TransitionRef,
-    ZoneColors, ZoneRef,
+    ChangeTrigger, ContextType, DisconnectReason, EffectRef, EffectStopReason, EventCategory,
+    EventControlValue, EventPriority, FrameData, FrameTiming, HypercolorEvent, Severity,
+    TransitionRef, ZoneColors, ZoneRef,
 };
 
 // ── Category Tests ──────────────────────────────────────────────────────
@@ -87,8 +87,8 @@ fn effect_events_have_effect_category() {
         HypercolorEvent::EffectControlChanged {
             effect_id: "rainbow".into(),
             control_id: "speed".into(),
-            old_value: ControlValue::Number(0.5),
-            new_value: ControlValue::Number(0.8),
+            old_value: EventControlValue::Number(0.5),
+            new_value: EventControlValue::Number(0.8),
             trigger: ChangeTrigger::Api,
         },
         HypercolorEvent::EffectLayerAdded {
@@ -697,26 +697,26 @@ fn serde_tagged_format() {
 
 #[test]
 fn control_value_number_roundtrip() {
-    let val = ControlValue::Number(0.75);
+    let val = EventControlValue::Number(0.75);
     let json = serde_json::to_string(&val).expect("serialize");
-    let deserialized: ControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, ControlValue::Number(0.75));
+    let deserialized: EventControlValue = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(deserialized, EventControlValue::Number(0.75));
 }
 
 #[test]
 fn control_value_boolean_roundtrip() {
-    let val = ControlValue::Boolean(true);
+    let val = EventControlValue::Boolean(true);
     let json = serde_json::to_string(&val).expect("serialize");
-    let deserialized: ControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, ControlValue::Boolean(true));
+    let deserialized: EventControlValue = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(deserialized, EventControlValue::Boolean(true));
 }
 
 #[test]
 fn control_value_string_roundtrip() {
-    let val = ControlValue::String("rainbow".into());
+    let val = EventControlValue::String("rainbow".into());
     let json = serde_json::to_string(&val).expect("serialize");
-    let deserialized: ControlValue = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(deserialized, ControlValue::String("rainbow".into()));
+    let deserialized: EventControlValue = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(deserialized, EventControlValue::String("rainbow".into()));
 }
 
 // ── FrameData Tests ─────────────────────────────────────────────────────

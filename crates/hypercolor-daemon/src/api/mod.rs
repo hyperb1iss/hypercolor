@@ -25,6 +25,7 @@ use tower_http::trace::TraceLayer;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::DeviceRegistry;
 use hypercolor_core::effect::{EffectEngine, EffectRegistry};
+use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -37,23 +38,31 @@ use hypercolor_types::spatial::SpatialLayout;
 ///
 /// `EffectEngine` uses `Mutex` rather than `RwLock` because
 /// `dyn EffectRenderer` is `Send` but not `Sync`.
+///
+/// The `effect_engine`, `scene_manager`, and `render_loop` fields are
+/// `Arc`-wrapped so they can be shared with the daemon's live instances
+/// via [`from_daemon_state`](Self::from_daemon_state). This guarantees
+/// that API calls operate on the same subsystems as the render pipeline.
 pub struct AppState {
     /// Device tracking and lifecycle management.
     pub device_registry: DeviceRegistry,
 
     /// Effect catalog (metadata, search, categories).
-    pub effect_registry: RwLock<EffectRegistry>,
+    pub effect_registry: Arc<RwLock<EffectRegistry>>,
 
     /// Active effect lifecycle and frame production.
     /// Uses `Mutex` because `EffectEngine` contains `dyn EffectRenderer`
     /// which is `Send` but not `Sync`.
-    pub effect_engine: Mutex<EffectEngine>,
+    pub effect_engine: Arc<Mutex<EffectEngine>>,
 
     /// Scene CRUD, priority stack, and transitions.
-    pub scene_manager: RwLock<SceneManager>,
+    pub scene_manager: Arc<RwLock<SceneManager>>,
 
     /// System-wide event bus (broadcast + watch channels).
     pub event_bus: Arc<HypercolorBus>,
+
+    /// Render loop — frame timing and pipeline skeleton.
+    pub render_loop: Arc<RwLock<RenderLoop>>,
 
     /// In-memory profile store.
     pub profiles: RwLock<HashMap<String, profiles::Profile>>,
@@ -74,10 +83,11 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             device_registry: DeviceRegistry::new(),
-            effect_registry: RwLock::new(EffectRegistry::default()),
-            effect_engine: Mutex::new(EffectEngine::new()),
-            scene_manager: RwLock::new(SceneManager::new()),
+            effect_registry: Arc::new(RwLock::new(EffectRegistry::default())),
+            effect_engine: Arc::new(Mutex::new(EffectEngine::new())),
+            scene_manager: Arc::new(RwLock::new(SceneManager::new())),
             event_bus: Arc::new(HypercolorBus::new()),
+            render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
             start_time: Instant::now(),
@@ -86,17 +96,18 @@ impl AppState {
 
     /// Create an `AppState` from a live [`DaemonState`](crate::startup::DaemonState).
     ///
-    /// The device registry is cloned (it's internally `Arc`-wrapped), and
-    /// the effect engine, scene manager, and event bus are shared by
-    /// `Arc` reference. This ensures the API operates on the same live
-    /// subsystems as the daemon.
+    /// The device registry is cloned (it's internally `Arc`-wrapped).
+    /// The effect engine, scene manager, render loop, and event bus are
+    /// shared by `Arc::clone` — the API operates on the exact same live
+    /// instances as the daemon's render pipeline.
     pub fn from_daemon_state(daemon: &crate::startup::DaemonState) -> Self {
         Self {
             device_registry: daemon.device_registry.clone(),
-            effect_registry: RwLock::new(EffectRegistry::default()),
-            effect_engine: Mutex::new(EffectEngine::new()),
-            scene_manager: RwLock::new(SceneManager::new()),
+            effect_registry: Arc::new(RwLock::new(EffectRegistry::default())),
+            effect_engine: Arc::clone(&daemon.effect_engine),
+            scene_manager: Arc::clone(&daemon.scene_manager),
             event_bus: Arc::clone(&daemon.event_bus),
+            render_loop: Arc::clone(&daemon.render_loop),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
             start_time: Instant::now(),

@@ -1,5 +1,5 @@
 use hypercolor_types::audio::{
-    AudioConfig, AudioData, AudioSourceType, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS,
+    AudioData, AudioPipelineConfig, AudioSourceType, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS,
 };
 
 // ─── AudioData::silence ───────────────────────────────────────────────
@@ -156,11 +156,11 @@ fn source_type_variants_are_distinct() {
     assert_ne!(AudioSourceType::None, AudioSourceType::Named(String::new()));
 }
 
-// ─── AudioConfig ──────────────────────────────────────────────────────
+// ─── AudioPipelineConfig ──────────────────────────────────────────────────────
 
 #[test]
 fn config_default_values() {
-    let cfg = AudioConfig::default();
+    let cfg = AudioPipelineConfig::default();
     assert_eq!(cfg.source, AudioSourceType::SystemMonitor);
     assert_eq!(cfg.fft_size, 1024);
     assert!((cfg.smoothing - 0.15).abs() < f32::EPSILON);
@@ -171,7 +171,7 @@ fn config_default_values() {
 
 #[test]
 fn config_custom_values() {
-    let cfg = AudioConfig {
+    let cfg = AudioPipelineConfig {
         source: AudioSourceType::Microphone,
         fft_size: 2048,
         smoothing: 0.3,
@@ -197,7 +197,7 @@ fn audio_data_json_round_trip() {
 
 #[test]
 fn audio_config_json_round_trip() {
-    let original = AudioConfig {
+    let original = AudioPipelineConfig {
         source: AudioSourceType::Named("hw:0".into()),
         fft_size: 4096,
         smoothing: 0.5,
@@ -205,8 +205,9 @@ fn audio_config_json_round_trip() {
         noise_floor: -50.0,
         beat_sensitivity: 2.0,
     };
-    let json = serde_json::to_string(&original).expect("serialize AudioConfig");
-    let restored: AudioConfig = serde_json::from_str(&json).expect("deserialize AudioConfig");
+    let json = serde_json::to_string(&original).expect("serialize AudioPipelineConfig");
+    let restored: AudioPipelineConfig =
+        serde_json::from_str(&json).expect("deserialize AudioPipelineConfig");
     assert_eq!(original, restored);
 }
 

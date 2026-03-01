@@ -15,8 +15,8 @@ use tracing::{debug, info};
 
 use crate::device::traits::{BackendInfo, DeviceBackend};
 use crate::types::device::{
-    ColorFormat, ConnectionType, DeviceCapabilities, DeviceFamily, DeviceId, DeviceInfo,
-    LedTopology, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
+    DeviceTopologyHint, ZoneInfo,
 };
 
 use super::ddp::{DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DDP_PORT, DdpSequence, build_ddp_frame};
@@ -323,9 +323,9 @@ pub fn parse_wled_segments(json: &serde_json::Value) -> Result<Vec<WledSegmentIn
 /// Build a [`DeviceInfo`] from parsed WLED data.
 fn build_device_info(device_id: DeviceId, wled_info: &WledDeviceInfo, _ip: IpAddr) -> DeviceInfo {
     let color_format = if wled_info.rgbw {
-        ColorFormat::Rgbw
+        DeviceColorFormat::Rgbw
     } else {
-        ColorFormat::Rgb
+        DeviceColorFormat::Rgb
     };
 
     DeviceInfo {
@@ -337,7 +337,7 @@ fn build_device_info(device_id: DeviceId, wled_info: &WledDeviceInfo, _ip: IpAdd
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
             led_count: u32::from(wled_info.led_count),
-            topology: LedTopology::Strip,
+            topology: DeviceTopologyHint::Strip,
             color_format,
         }],
         firmware_version: Some(wled_info.firmware_version.clone()),

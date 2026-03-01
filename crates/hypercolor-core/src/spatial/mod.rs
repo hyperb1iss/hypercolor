@@ -23,7 +23,7 @@
 mod sampler;
 mod topology;
 
-pub use sampler::sample_led;
+pub use sampler::{sample_led, sample_zone};
 pub use topology::generate_positions;
 
 use hypercolor_types::canvas::Canvas;

@@ -1,8 +1,9 @@
 //! Tests for device identity, capabilities, and state types.
 
 use hypercolor_types::device::{
-    ColorFormat, ConnectionType, DeviceCapabilities, DeviceError, DeviceFamily, DeviceFingerprint,
-    DeviceId, DeviceIdentifier, DeviceInfo, DeviceState, LedTopology, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFingerprint, DeviceId, DeviceIdentifier, DeviceInfo, DeviceState, DeviceTopologyHint,
+    ZoneInfo,
 };
 use uuid::Uuid;
 
@@ -65,14 +66,14 @@ fn sample_device_info() -> DeviceInfo {
             ZoneInfo {
                 name: "Main".into(),
                 led_count: 60,
-                topology: LedTopology::Strip,
-                color_format: ColorFormat::Rgb,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
             },
             ZoneInfo {
                 name: "Accent".into(),
                 led_count: 30,
-                topology: LedTopology::Ring { count: 30 },
-                color_format: ColorFormat::Rgbw,
+                topology: DeviceTopologyHint::Ring { count: 30 },
+                color_format: DeviceColorFormat::Rgbw,
             },
         ],
         firmware_version: Some("0.15.0".into()),
@@ -186,20 +187,20 @@ fn device_state_serde_round_trip() {
 #[test]
 fn led_topology_variants_exist() {
     let topologies = [
-        LedTopology::Strip,
-        LedTopology::Matrix { rows: 8, cols: 32 },
-        LedTopology::Ring { count: 24 },
-        LedTopology::Point,
-        LedTopology::Custom,
+        DeviceTopologyHint::Strip,
+        DeviceTopologyHint::Matrix { rows: 8, cols: 32 },
+        DeviceTopologyHint::Ring { count: 24 },
+        DeviceTopologyHint::Point,
+        DeviceTopologyHint::Custom,
     ];
     assert_eq!(topologies.len(), 5);
 }
 
 #[test]
 fn led_topology_serde_round_trip() {
-    let matrix = LedTopology::Matrix { rows: 4, cols: 16 };
+    let matrix = DeviceTopologyHint::Matrix { rows: 4, cols: 16 };
     let json = serde_json::to_string(&matrix).expect("serialize");
-    let back: LedTopology = serde_json::from_str(&json).expect("deserialize");
+    let back: DeviceTopologyHint = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(back, matrix);
 }
 
@@ -272,15 +273,15 @@ fn device_family_serde_round_trip() {
 
 #[test]
 fn color_format_display() {
-    assert_eq!(ColorFormat::Rgb.to_string(), "RGB");
-    assert_eq!(ColorFormat::Rgbw.to_string(), "RGBW");
+    assert_eq!(DeviceColorFormat::Rgb.to_string(), "RGB");
+    assert_eq!(DeviceColorFormat::Rgbw.to_string(), "RGBW");
 }
 
 #[test]
 fn color_format_serde_round_trip() {
-    for fmt in [ColorFormat::Rgb, ColorFormat::Rgbw] {
+    for fmt in [DeviceColorFormat::Rgb, DeviceColorFormat::Rgbw] {
         let json = serde_json::to_string(&fmt).expect("serialize");
-        let back: ColorFormat = serde_json::from_str(&json).expect("deserialize");
+        let back: DeviceColorFormat = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, fmt);
     }
 }
@@ -547,15 +548,15 @@ fn zone_info_serde_round_trip() {
     let zone = ZoneInfo {
         name: "Main Strip".into(),
         led_count: 144,
-        topology: LedTopology::Strip,
-        color_format: ColorFormat::Rgb,
+        topology: DeviceTopologyHint::Strip,
+        color_format: DeviceColorFormat::Rgb,
     };
     let json = serde_json::to_string(&zone).expect("serialize");
     let back: ZoneInfo = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(back.name, "Main Strip");
     assert_eq!(back.led_count, 144);
-    assert_eq!(back.topology, LedTopology::Strip);
-    assert_eq!(back.color_format, ColorFormat::Rgb);
+    assert_eq!(back.topology, DeviceTopologyHint::Strip);
+    assert_eq!(back.color_format, DeviceColorFormat::Rgb);
 }
 
 #[test]
@@ -563,10 +564,10 @@ fn zone_info_matrix_topology() {
     let zone = ZoneInfo {
         name: "Panel".into(),
         led_count: 256,
-        topology: LedTopology::Matrix { rows: 16, cols: 16 },
-        color_format: ColorFormat::Rgbw,
+        topology: DeviceTopologyHint::Matrix { rows: 16, cols: 16 },
+        color_format: DeviceColorFormat::Rgbw,
     };
-    if let LedTopology::Matrix { rows, cols } = zone.topology {
+    if let DeviceTopologyHint::Matrix { rows, cols } = zone.topology {
         assert_eq!(rows, 16);
         assert_eq!(cols, 16);
     } else {

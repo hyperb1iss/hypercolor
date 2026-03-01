@@ -61,7 +61,7 @@ fn zone(name: &str, effect: &str, brightness: Option<f32>) -> ZoneAssignment {
 fn scene_manager_create_and_get() {
     let mut mgr = SceneManager::new();
     let scene = make_scene("Cozy Evening");
-    let id = scene.id.clone();
+    let id = scene.id;
 
     mgr.create(scene).expect("create should succeed");
 
@@ -95,7 +95,7 @@ fn scene_manager_list() {
 fn scene_manager_update() {
     let mut mgr = SceneManager::new();
     let mut scene = make_scene("Original");
-    let id = scene.id.clone();
+    let id = scene.id;
     mgr.create(scene.clone()).expect("create");
 
     scene.name = "Updated".to_string();
@@ -117,7 +117,7 @@ fn scene_manager_update_nonexistent_fails() {
 fn scene_manager_delete() {
     let mut mgr = SceneManager::new();
     let scene = make_scene("Doomed");
-    let id = scene.id.clone();
+    let id = scene.id;
     mgr.create(scene).expect("create");
 
     let deleted = mgr.delete(&id).expect("delete should succeed");
@@ -138,7 +138,7 @@ fn scene_manager_delete_nonexistent_fails() {
 fn scene_manager_activate_and_active_tracking() {
     let mut mgr = SceneManager::new();
     let scene = make_scene("Active One");
-    let id = scene.id.clone();
+    let id = scene.id;
     mgr.create(scene).expect("create");
 
     mgr.activate(&id, None).expect("activate should succeed");
@@ -160,12 +160,12 @@ fn scene_manager_deactivate_restores_previous() {
     let mut mgr = SceneManager::new();
 
     let scene_a = make_scene("Base");
-    let id_a = scene_a.id.clone();
+    let id_a = scene_a.id;
     mgr.create(scene_a).expect("create A");
 
     let mut scene_b = make_scene("Overlay");
     scene_b.priority = ScenePriority::TRIGGER;
-    let id_b = scene_b.id.clone();
+    let id_b = scene_b.id;
     mgr.create(scene_b).expect("create B");
 
     // Activate base first, then overlay.
@@ -353,8 +353,8 @@ fn priority_stack_push_peek_returns_highest() {
     let low_id = SceneId::new();
     let high_id = SceneId::new();
 
-    stack.push(low_id.clone(), ScenePriority::AMBIENT);
-    stack.push(high_id.clone(), ScenePriority::ALERT);
+    stack.push(low_id, ScenePriority::AMBIENT);
+    stack.push(high_id, ScenePriority::ALERT);
 
     let top = stack.peek().expect("stack should not be empty");
     assert_eq!(top.scene_id, high_id);
@@ -368,8 +368,8 @@ fn priority_stack_pop_restores_next_highest() {
     let base_id = SceneId::new();
     let overlay_id = SceneId::new();
 
-    stack.push(base_id.clone(), ScenePriority::AMBIENT);
-    stack.push(overlay_id.clone(), ScenePriority::USER);
+    stack.push(base_id, ScenePriority::AMBIENT);
+    stack.push(overlay_id, ScenePriority::USER);
 
     // Pop the overlay.
     let popped = stack.pop().expect("pop should succeed");
@@ -387,10 +387,10 @@ fn priority_stack_equal_priority_fifo() {
     let first_id = SceneId::new();
     let second_id = SceneId::new();
 
-    stack.push(first_id.clone(), ScenePriority::USER);
+    stack.push(first_id, ScenePriority::USER);
     // Small sleep to ensure distinct timestamps for FIFO ordering.
     thread::sleep(Duration::from_millis(2));
-    stack.push(second_id.clone(), ScenePriority::USER);
+    stack.push(second_id, ScenePriority::USER);
 
     // The most recently pushed entry should win (FIFO: last-in is active).
     let top = stack.peek().expect("stack should not be empty");
@@ -416,9 +416,9 @@ fn priority_stack_remove_by_id() {
     let b = SceneId::new();
     let c = SceneId::new();
 
-    stack.push(a.clone(), ScenePriority::AMBIENT);
-    stack.push(b.clone(), ScenePriority::USER);
-    stack.push(c.clone(), ScenePriority::TRIGGER);
+    stack.push(a, ScenePriority::AMBIENT);
+    stack.push(b, ScenePriority::USER);
+    stack.push(c, ScenePriority::TRIGGER);
 
     // Remove the middle entry.
     assert!(stack.remove(&b));
@@ -445,10 +445,10 @@ fn priority_stack_multiple_priorities_order() {
     let alert_id = SceneId::new();
 
     // Push in arbitrary order.
-    stack.push(user_id.clone(), ScenePriority::USER);
-    stack.push(alert_id.clone(), ScenePriority::ALERT);
-    stack.push(ambient_id.clone(), ScenePriority::AMBIENT);
-    stack.push(trigger_id.clone(), ScenePriority::TRIGGER);
+    stack.push(user_id, ScenePriority::USER);
+    stack.push(alert_id, ScenePriority::ALERT);
+    stack.push(ambient_id, ScenePriority::AMBIENT);
+    stack.push(trigger_id, ScenePriority::TRIGGER);
 
     // Top should be alert (highest).
     let entries = stack.entries();
@@ -742,11 +742,11 @@ fn scene_manager_activate_starts_transition() {
     let mut mgr = SceneManager::new();
 
     let scene_a = make_scene("Scene A");
-    let id_a = scene_a.id.clone();
+    let id_a = scene_a.id;
     mgr.create(scene_a).expect("create A");
 
     let scene_b = make_scene("Scene B");
-    let id_b = scene_b.id.clone();
+    let id_b = scene_b.id;
     mgr.create(scene_b).expect("create B");
 
     // Activate A — no transition (first activation).
@@ -771,11 +771,11 @@ fn scene_manager_tick_transition_clears_on_complete() {
     let mut mgr = SceneManager::new();
 
     let a = make_scene("A");
-    let id_a = a.id.clone();
+    let id_a = a.id;
     mgr.create(a).expect("create A");
 
     let b = make_scene("B");
-    let id_b = b.id.clone();
+    let id_b = b.id;
     mgr.create(b).expect("create B");
 
     mgr.activate(&id_a, None).expect("activate A");

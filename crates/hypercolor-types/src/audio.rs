@@ -144,11 +144,16 @@ impl Default for AudioSourceType {
     }
 }
 
-// ─── AudioConfig ──────────────────────────────────────────────────────
+// ─── AudioPipelineConfig ──────────────────────────────────────────────
 
-/// User-facing audio pipeline configuration (maps to `[audio]` in config TOML).
+/// DSP pipeline configuration for the audio analysis engine.
+///
+/// Controls FFT size, smoothing, gain, noise floor, and beat sensitivity.
+/// This is the *pipeline-tuning* config. For the TOML user-facing `[audio]`
+/// section (enable/disable, device selection), see
+/// [`config::AudioConfig`](crate::config::AudioConfig).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AudioConfig {
+pub struct AudioPipelineConfig {
     /// Audio capture source selection.
     pub source: AudioSourceType,
 
@@ -168,7 +173,7 @@ pub struct AudioConfig {
     pub beat_sensitivity: f32,
 }
 
-impl Default for AudioConfig {
+impl Default for AudioPipelineConfig {
     fn default() -> Self {
         Self {
             source: AudioSourceType::default(),

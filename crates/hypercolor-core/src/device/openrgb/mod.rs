@@ -38,8 +38,8 @@ pub use proto::{
 pub use scanner::{OpenRgbScanner, ScannerConfig};
 
 use crate::types::device::{
-    ColorFormat, ConnectionType, DeviceCapabilities, DeviceFamily, DeviceId, DeviceInfo,
-    LedTopology, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
+    DeviceTopologyHint, ZoneInfo,
 };
 
 // ── Shared Mapping ────────────────────────────────────────────────────────
@@ -52,13 +52,13 @@ fn map_zone(zone: &proto::ZoneData) -> ZoneInfo {
     let topology = match zone.zone_type {
         proto::ZoneType::Single => {
             if zone.leds_count == 1 {
-                LedTopology::Point
+                DeviceTopologyHint::Point
             } else {
-                LedTopology::Custom
+                DeviceTopologyHint::Custom
             }
         }
-        proto::ZoneType::Linear => LedTopology::Strip,
-        proto::ZoneType::Matrix => LedTopology::Matrix {
+        proto::ZoneType::Linear => DeviceTopologyHint::Strip,
+        proto::ZoneType::Matrix => DeviceTopologyHint::Matrix {
             rows: zone.matrix_height,
             cols: zone.matrix_width,
         },
@@ -68,7 +68,7 @@ fn map_zone(zone: &proto::ZoneData) -> ZoneInfo {
         name: zone.name.clone(),
         led_count: zone.leds_count,
         topology,
-        color_format: ColorFormat::Rgb,
+        color_format: DeviceColorFormat::Rgb,
     }
 }
 

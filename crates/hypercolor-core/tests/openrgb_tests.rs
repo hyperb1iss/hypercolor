@@ -510,7 +510,7 @@ fn zone_type_defaults_to_single_for_unknown() {
 
 #[test]
 fn zone_topology_mapping() {
-    use hypercolor_types::device::LedTopology;
+    use hypercolor_types::device::DeviceTopologyHint;
 
     // Linear zone -> Strip topology
     let linear_zone = ZoneData {
@@ -526,24 +526,24 @@ fn zone_topology_mapping() {
     let topology = match linear_zone.zone_type {
         ZoneType::Single => {
             if linear_zone.leds_count == 1 {
-                LedTopology::Point
+                DeviceTopologyHint::Point
             } else {
-                LedTopology::Custom
+                DeviceTopologyHint::Custom
             }
         }
-        ZoneType::Linear => LedTopology::Strip,
-        ZoneType::Matrix => LedTopology::Matrix {
+        ZoneType::Linear => DeviceTopologyHint::Strip,
+        ZoneType::Matrix => DeviceTopologyHint::Matrix {
             rows: linear_zone.matrix_height,
             cols: linear_zone.matrix_width,
         },
     };
 
-    assert_eq!(topology, LedTopology::Strip);
+    assert_eq!(topology, DeviceTopologyHint::Strip);
 }
 
 #[test]
 fn single_zone_with_one_led_maps_to_point() {
-    use hypercolor_types::device::LedTopology;
+    use hypercolor_types::device::DeviceTopologyHint;
 
     let zone = ZoneData {
         name: "Power".to_owned(),
@@ -558,24 +558,24 @@ fn single_zone_with_one_led_maps_to_point() {
     let topology = match zone.zone_type {
         ZoneType::Single => {
             if zone.leds_count == 1 {
-                LedTopology::Point
+                DeviceTopologyHint::Point
             } else {
-                LedTopology::Custom
+                DeviceTopologyHint::Custom
             }
         }
-        ZoneType::Linear => LedTopology::Strip,
-        ZoneType::Matrix => LedTopology::Matrix {
+        ZoneType::Linear => DeviceTopologyHint::Strip,
+        ZoneType::Matrix => DeviceTopologyHint::Matrix {
             rows: zone.matrix_height,
             cols: zone.matrix_width,
         },
     };
 
-    assert_eq!(topology, LedTopology::Point);
+    assert_eq!(topology, DeviceTopologyHint::Point);
 }
 
 #[test]
 fn single_zone_with_multiple_leds_maps_to_custom() {
-    use hypercolor_types::device::LedTopology;
+    use hypercolor_types::device::DeviceTopologyHint;
 
     let zone = ZoneData {
         name: "Multi".to_owned(),
@@ -590,24 +590,24 @@ fn single_zone_with_multiple_leds_maps_to_custom() {
     let topology = match zone.zone_type {
         ZoneType::Single => {
             if zone.leds_count == 1 {
-                LedTopology::Point
+                DeviceTopologyHint::Point
             } else {
-                LedTopology::Custom
+                DeviceTopologyHint::Custom
             }
         }
-        ZoneType::Linear => LedTopology::Strip,
-        ZoneType::Matrix => LedTopology::Matrix {
+        ZoneType::Linear => DeviceTopologyHint::Strip,
+        ZoneType::Matrix => DeviceTopologyHint::Matrix {
             rows: zone.matrix_height,
             cols: zone.matrix_width,
         },
     };
 
-    assert_eq!(topology, LedTopology::Custom);
+    assert_eq!(topology, DeviceTopologyHint::Custom);
 }
 
 #[test]
 fn matrix_zone_maps_to_matrix_topology() {
-    use hypercolor_types::device::LedTopology;
+    use hypercolor_types::device::DeviceTopologyHint;
 
     let zone = ZoneData {
         name: "Keyboard".to_owned(),
@@ -622,19 +622,19 @@ fn matrix_zone_maps_to_matrix_topology() {
     let topology = match zone.zone_type {
         ZoneType::Single => {
             if zone.leds_count == 1 {
-                LedTopology::Point
+                DeviceTopologyHint::Point
             } else {
-                LedTopology::Custom
+                DeviceTopologyHint::Custom
             }
         }
-        ZoneType::Linear => LedTopology::Strip,
-        ZoneType::Matrix => LedTopology::Matrix {
+        ZoneType::Linear => DeviceTopologyHint::Strip,
+        ZoneType::Matrix => DeviceTopologyHint::Matrix {
             rows: zone.matrix_height,
             cols: zone.matrix_width,
         },
     };
 
-    assert_eq!(topology, LedTopology::Matrix { rows: 6, cols: 10 });
+    assert_eq!(topology, DeviceTopologyHint::Matrix { rows: 6, cols: 10 });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

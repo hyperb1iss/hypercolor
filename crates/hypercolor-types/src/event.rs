@@ -117,10 +117,14 @@ pub enum ContextType {
     Custom,
 }
 
-/// Control values (effect parameters).
+/// Lightweight control value for event payloads (3 variants).
+///
+/// Used within [`HypercolorEvent::EffectControlChanged`] to carry
+/// old/new values across the event bus without pulling in the full
+/// 7-variant [`effect::ControlValue`](crate::effect::ControlValue).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum ControlValue {
+pub enum EventControlValue {
     Number(f32),
     Boolean(bool),
     String(String),
@@ -370,8 +374,8 @@ pub enum HypercolorEvent {
     EffectControlChanged {
         effect_id: String,
         control_id: String,
-        old_value: ControlValue,
-        new_value: ControlValue,
+        old_value: EventControlValue,
+        new_value: EventControlValue,
         trigger: ChangeTrigger,
     },
 

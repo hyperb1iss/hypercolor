@@ -5,6 +5,7 @@
 //! LED color data to devices over any transport (USB HID, UDP, TCP, HTTP).
 
 mod discovery;
+pub mod mock;
 pub mod openrgb;
 mod registry;
 mod traits;

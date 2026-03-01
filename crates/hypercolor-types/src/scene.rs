@@ -13,7 +13,7 @@ use uuid::Uuid;
 // ── Scene Identity ───────────────────────────────────────────────────────
 
 /// Opaque scene identifier. UUID v7 for time-sortable ordering.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SceneId(pub Uuid);
 
 impl SceneId {

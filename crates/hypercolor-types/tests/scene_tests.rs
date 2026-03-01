@@ -52,7 +52,7 @@ fn scene_id_default_creates_unique_ids() {
 #[test]
 fn scene_id_clone_is_equal() {
     let id = SceneId::new();
-    let cloned = id.clone();
+    let cloned = id;
     assert_eq!(id, cloned);
 }
 
@@ -66,7 +66,7 @@ fn scene_id_display_matches_uuid() {
 fn scene_id_hash_works_in_collections() {
     let id = SceneId::new();
     let mut map = HashMap::new();
-    map.insert(id.clone(), "scene_a");
+    map.insert(id, "scene_a");
     assert_eq!(map.get(&id), Some(&"scene_a"));
 }
 

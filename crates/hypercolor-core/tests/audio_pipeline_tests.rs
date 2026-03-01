@@ -16,7 +16,9 @@ use hypercolor_core::input::audio::features::{
 };
 use hypercolor_core::input::audio::fft::{FftPipeline, RingBuffer, precompute_hann, spectral_flux};
 use hypercolor_core::input::{InputData, InputSource};
-use hypercolor_types::audio::{AudioConfig, AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
+use hypercolor_types::audio::{
+    AudioData, AudioPipelineConfig, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS,
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -672,7 +674,7 @@ fn ring_buffer_partial_read() {
 
 #[test]
 fn audio_input_lifecycle() {
-    let config = AudioConfig::default();
+    let config = AudioPipelineConfig::default();
     let mut input = AudioInput::new(&config);
 
     assert!(!input.is_running());
@@ -687,7 +689,7 @@ fn audio_input_lifecycle() {
 
 #[test]
 fn audio_input_returns_none_without_samples() {
-    let config = AudioConfig::default();
+    let config = AudioPipelineConfig::default();
     let mut input = AudioInput::new(&config);
     input.start().expect("start");
 
@@ -700,7 +702,7 @@ fn audio_input_returns_none_without_samples() {
 
 #[test]
 fn audio_input_produces_audio_data_with_samples() {
-    let config = AudioConfig::default();
+    let config = AudioPipelineConfig::default();
     let mut input = AudioInput::new(&config);
     input.start().expect("start");
 
@@ -723,9 +725,9 @@ fn audio_input_produces_audio_data_with_samples() {
 
 #[test]
 fn audio_input_silence_produces_near_zero() {
-    let config = AudioConfig {
+    let config = AudioPipelineConfig {
         noise_floor: -120.0, // Very low floor so silence still gets processed
-        ..AudioConfig::default()
+        ..AudioPipelineConfig::default()
     };
     let mut input = AudioInput::new(&config);
     input.start().expect("start");
@@ -751,14 +753,14 @@ fn audio_input_silence_produces_near_zero() {
 
 #[test]
 fn audio_input_custom_name() {
-    let config = AudioConfig::default();
+    let config = AudioPipelineConfig::default();
     let input = AudioInput::new(&config).with_name("PipeWire Monitor");
     assert_eq!(input.name(), "PipeWire Monitor");
 }
 
 #[test]
 fn audio_input_multiple_frames() {
-    let config = AudioConfig::default();
+    let config = AudioPipelineConfig::default();
     let mut input = AudioInput::new(&config);
     input.start().expect("start");
 

@@ -14,8 +14,8 @@ use hypercolor_core::device::{
     DiscoveryOrchestrator, TransportScanner,
 };
 use hypercolor_types::device::{
-    ColorFormat, ConnectionType, DeviceCapabilities, DeviceFamily, DeviceFingerprint, DeviceId,
-    DeviceInfo, DeviceState, LedTopology, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
+    DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
@@ -31,8 +31,8 @@ fn mock_device_info(name: &str) -> DeviceInfo {
         zones: vec![ZoneInfo {
             name: "Zone 1".to_owned(),
             led_count: 30,
-            topology: LedTopology::Strip,
-            color_format: ColorFormat::Rgb,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
         }],
         firmware_version: Some("1.0.0".to_owned()),
         capabilities: DeviceCapabilities::default(),

@@ -5,6 +5,7 @@
 //! orchestrates the active effect lifecycle, and the `EffectRegistry` indexes
 //! all discovered effects from the filesystem.
 
+pub mod builtin;
 mod engine;
 mod registry;
 mod traits;

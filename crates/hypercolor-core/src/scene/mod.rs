@@ -68,7 +68,7 @@ impl SceneManager {
         if self.scenes.contains_key(&scene.id) {
             bail!("scene already exists: {}", scene.id);
         }
-        self.scenes.insert(scene.id.clone(), scene);
+        self.scenes.insert(scene.id, scene);
         Ok(())
     }
 
@@ -90,7 +90,7 @@ impl SceneManager {
         if !self.scenes.contains_key(&scene.id) {
             bail!("scene not found: {}", scene.id);
         }
-        self.scenes.insert(scene.id.clone(), scene);
+        self.scenes.insert(scene.id, scene);
         Ok(())
     }
 
@@ -134,10 +134,10 @@ impl SceneManager {
         let spec = transition_override.unwrap_or_else(|| scene.transition.clone());
         let priority = scene.priority;
         let to_assignments = scene.zone_assignments.clone();
-        let to_id = scene.id.clone();
+        let to_id = scene.id;
 
         // Capture from-state before pushing.
-        let from_state = self.active_scene_id().cloned();
+        let from_state = self.active_scene_id().copied();
         let from_assignments = from_state
             .as_ref()
             .and_then(|fid| self.scenes.get(fid))
@@ -145,11 +145,11 @@ impl SceneManager {
             .unwrap_or_default();
 
         // Record history.
-        if let Some(prev_id) = &from_state {
-            self.activation_history.insert(0, prev_id.clone());
+        if let Some(prev_id) = from_state {
+            self.activation_history.insert(0, prev_id);
         }
 
-        self.priority_stack.push(to_id.clone(), priority);
+        self.priority_stack.push(to_id, priority);
 
         // Start transition if there's a from-scene.
         if from_state.is_some() && spec.duration_ms > 0 {
