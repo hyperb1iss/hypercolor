@@ -1,0 +1,22 @@
+[package]
+name = "hypercolor-types"
+description = "Shared type definitions for the Hypercolor RGB lighting engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+strum = { workspace = true }
+
+[dev-dependencies]
+toml = { workspace = true }

@@ -1,0 +1,28 @@
+[package]
+name = "hypercolor-cli"
+description = "Command-line interface for the Hypercolor RGB lighting engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hyper"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-types = { workspace = true }
+hypercolor-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }

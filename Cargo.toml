@@ -1,0 +1,109 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Stefanie Jane <stef@hyperbliss.tech>"]
+license = "Apache-2.0"
+repository = "https://github.com/hyperb1iss/hypercolor"
+homepage = "https://github.com/hyperb1iss/hypercolor"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = 0 }
+style = { level = "warn", priority = 1 }
+perf = { level = "deny", priority = 1 }
+pedantic = { level = "deny", priority = 10 }
+missing_errors_doc = { level = "allow", priority = 20 }
+missing_panics_doc = { level = "allow", priority = 20 }
+missing_safety_doc = { level = "allow", priority = 20 }
+module_name_repetitions = { level = "allow", priority = 21 }
+significant_drop_tightening = { level = "allow", priority = 21 }
+must_use_candidate = { level = "allow", priority = 21 }
+cast_precision_loss = { level = "warn", priority = 22 }
+cast_possible_truncation = { level = "warn", priority = 22 }
+cast_sign_loss = { level = "warn", priority = 22 }
+as_conversions = { level = "warn", priority = 22 }
+out_of_bounds_indexing = { level = "deny", priority = 30 }
+enum_glob_use = { level = "deny", priority = 30 }
+unwrap_used = { level = "deny", priority = 30 }
+undocumented_unsafe_blocks = { level = "deny", priority = 30 }
+dbg_macro = { level = "warn", priority = 31 }
+todo = { level = "warn", priority = 31 }
+manual_let_else = { level = "warn", priority = 36 }
+redundant_else = { level = "warn", priority = 36 }
+semicolon_if_nothing_returned = { level = "warn", priority = 36 }
+cloned_instead_of_copied = { level = "warn", priority = 36 }
+flat_map_option = { level = "warn", priority = 36 }
+from_iter_instead_of_collect = { level = "warn", priority = 36 }
+needless_pass_by_value = { level = "warn", priority = 36 }
+trivially_copy_pass_by_ref = { level = "warn", priority = 36 }
+if_not_else = { level = "warn", priority = 36 }
+match_same_arms = { level = "warn", priority = 36 }
+needless_continue = { level = "warn", priority = 36 }
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Async runtime
+tokio = { version = "1.44", features = ["full"] }
+async-trait = "0.1"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Data structures
+uuid = { version = "1.11", features = ["v7", "serde"] }
+arc-swap = "1.7"
+strum = { version = "0.27", features = ["derive"] }
+
+# Config
+dirs = "6.0"
+notify = "7.0"
+
+# Workspace crates
+hypercolor-types = { path = "crates/hypercolor-types" }
+hypercolor-core = { path = "crates/hypercolor-core" }
+
+# Audio
+realfft = "3.4"
+cpal = "0.15"
+
+# Network / device backends
+mdns-sd = "0.11"
+tonic = "0.12"
+prost = "0.13"
+
+# Screen capture
+xcap = "0.7"
+
+# HTTP / API
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "cargo"] }
+clap_complete = "4.5"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
