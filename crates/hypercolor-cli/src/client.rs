@@ -1,0 +1,135 @@
+//! HTTP client for daemon communication.
+//!
+//! Builds and sends requests to the Hypercolor daemon's REST API.
+//! When the daemon is not running, all requests return a descriptive error
+//! rather than panicking.
+
+use anyhow::{Context, Result};
+use serde::Serialize;
+
+/// HTTP client for the Hypercolor daemon REST API.
+#[derive(Debug, Clone)]
+pub struct DaemonClient {
+    /// Base URL for the daemon (e.g., `http://localhost:9420`).
+    base_url: String,
+    /// Inner `reqwest` async client.
+    http: reqwest::Client,
+}
+
+impl DaemonClient {
+    /// Create a new client targeting the given host and port.
+    #[must_use]
+    pub fn new(host: &str, port: u16) -> Self {
+        let base_url = format!("http://{host}:{port}");
+        let http = reqwest::Client::new();
+        Self { base_url, http }
+    }
+
+    /// Send a GET request to the daemon and parse the JSON response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the daemon is unreachable or returns a non-success
+    /// status code.
+    pub async fn get(&self, path: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/api/v1{path}", self.base_url);
+        let response = self.http.get(&url).send().await.with_context(|| {
+            format!("Failed to connect to daemon at {url}. Is the daemon running?")
+        })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Daemon returned {status}: {body}");
+        }
+
+        response
+            .json()
+            .await
+            .context("Failed to parse daemon response as JSON")
+    }
+
+    /// Send a POST request with a JSON body and parse the response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the daemon is unreachable, the body cannot be
+    /// serialized, or the daemon returns a non-success status code.
+    pub async fn post(&self, path: &str, body: &impl Serialize) -> Result<serde_json::Value> {
+        let url = format!("{}/api/v1{path}", self.base_url);
+        let response = self
+            .http
+            .post(&url)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| {
+                format!("Failed to connect to daemon at {url}. Is the daemon running?")
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Daemon returned {status}: {body}");
+        }
+
+        response
+            .json()
+            .await
+            .context("Failed to parse daemon response as JSON")
+    }
+
+    /// Send a PUT request with a JSON body and parse the response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the daemon is unreachable, the body cannot be
+    /// serialized, or the daemon returns a non-success status code.
+    pub async fn put(&self, path: &str, body: &impl Serialize) -> Result<serde_json::Value> {
+        let url = format!("{}/api/v1{path}", self.base_url);
+        let response = self
+            .http
+            .put(&url)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| {
+                format!("Failed to connect to daemon at {url}. Is the daemon running?")
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Daemon returned {status}: {body}");
+        }
+
+        response
+            .json()
+            .await
+            .context("Failed to parse daemon response as JSON")
+    }
+
+    /// Send a DELETE request and parse the response.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the daemon is unreachable or returns a non-success
+    /// status code.
+    pub async fn delete(&self, path: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/api/v1{path}", self.base_url);
+        let response = self.http.delete(&url).send().await.with_context(|| {
+            format!("Failed to connect to daemon at {url}. Is the daemon running?")
+        })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Daemon returned {status}: {body}");
+        }
+
+        response
+            .json()
+            .await
+            .context("Failed to parse daemon response as JSON")
+    }
+}
