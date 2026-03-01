@@ -80,7 +80,11 @@ hypercolor-core = { path = "crates/hypercolor-core" }
 
 # Audio
 realfft = "3.4"
+rustfft = "6.2"
 cpal = "0.15"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
 
 # Network / device backends
 mdns-sd = "0.11"

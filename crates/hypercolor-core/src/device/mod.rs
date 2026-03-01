@@ -5,8 +5,10 @@
 //! LED color data to devices over any transport (USB HID, UDP, TCP, HTTP).
 
 mod discovery;
+pub mod openrgb;
 mod registry;
 mod traits;
+pub mod wled;
 
 pub use discovery::{DiscoveredDevice, DiscoveryOrchestrator, DiscoveryReport, TransportScanner};
 pub use registry::DeviceRegistry;

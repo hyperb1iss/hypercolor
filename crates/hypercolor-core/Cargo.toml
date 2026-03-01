@@ -25,6 +25,10 @@ arc-swap = { workspace = true }
 toml = { workspace = true }
 dirs = { workspace = true }
 notify = { workspace = true }
+mdns-sd = { workspace = true }
+reqwest = { workspace = true }
+realfft = { workspace = true }
+rustfft = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

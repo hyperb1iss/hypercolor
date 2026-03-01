@@ -10,4 +10,5 @@ pub mod device;
 pub mod effect;
 pub mod engine;
 pub mod input;
+pub mod scene;
 pub mod spatial;

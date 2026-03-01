@@ -4,6 +4,8 @@
 //! and the [`InputManager`] that orchestrates them. The render loop calls
 //! `sample_all()` each frame to collect fresh data from every active source.
 
+pub mod audio;
+pub mod screen;
 mod traits;
 
 pub use traits::{InputData, InputSource, ScreenData};
