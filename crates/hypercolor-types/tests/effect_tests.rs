@@ -1,0 +1,589 @@
+//! Tests for effect metadata, controls, and lifecycle types.
+
+use std::path::PathBuf;
+use std::str::FromStr;
+
+use hypercolor_types::effect::{
+    ControlDefinition, ControlType, ControlValue, EffectCategory, EffectId, EffectMetadata,
+    EffectSource, EffectState, GradientStop,
+};
+use uuid::Uuid;
+
+// ── EffectId ──────────────────────────────────────────────────────────────
+
+#[test]
+fn effect_id_from_uuid_round_trips() {
+    let uuid = Uuid::now_v7();
+    let id = EffectId::new(uuid);
+    assert_eq!(*id.as_uuid(), uuid);
+}
+
+#[test]
+fn effect_id_display_matches_uuid() {
+    let uuid = Uuid::now_v7();
+    let id = EffectId::new(uuid);
+    assert_eq!(id.to_string(), uuid.to_string());
+}
+
+#[test]
+fn effect_id_from_uuid_conversion() {
+    let uuid = Uuid::now_v7();
+    let id: EffectId = uuid.into();
+    assert_eq!(*id.as_uuid(), uuid);
+}
+
+#[test]
+fn effect_id_equality() {
+    let uuid = Uuid::now_v7();
+    let a = EffectId::new(uuid);
+    let b = EffectId::new(uuid);
+    assert_eq!(a, b);
+}
+
+#[test]
+fn effect_id_inequality() {
+    let a = EffectId::new(Uuid::now_v7());
+    let b = EffectId::new(Uuid::now_v7());
+    assert_ne!(a, b);
+}
+
+#[test]
+fn effect_id_is_copy() {
+    let id = EffectId::new(Uuid::now_v7());
+    let id2 = id; // Copy
+    assert_eq!(id, id2);
+}
+
+#[test]
+fn effect_id_serde_round_trip() {
+    let id = EffectId::new(Uuid::now_v7());
+    let json = serde_json::to_string(&id).expect("serialize");
+    let back: EffectId = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, id);
+}
+
+// ── EffectCategory ────────────────────────────────────────────────────────
+
+#[test]
+fn effect_category_default_is_ambient() {
+    assert_eq!(EffectCategory::default(), EffectCategory::Ambient);
+}
+
+#[test]
+fn effect_category_all_variants_exist() {
+    let categories = [
+        EffectCategory::Ambient,
+        EffectCategory::Reactive,
+        EffectCategory::Audio,
+        EffectCategory::Gaming,
+        EffectCategory::Productivity,
+        EffectCategory::Utility,
+        EffectCategory::Interactive,
+        EffectCategory::Generative,
+    ];
+    assert_eq!(categories.len(), 8);
+}
+
+#[test]
+fn effect_category_is_copy() {
+    let cat = EffectCategory::Gaming;
+    let cat2 = cat; // Copy
+    assert_eq!(cat, cat2);
+}
+
+#[test]
+fn effect_category_display_via_strum() {
+    assert_eq!(EffectCategory::Ambient.to_string(), "ambient");
+    assert_eq!(EffectCategory::Reactive.to_string(), "reactive");
+    assert_eq!(EffectCategory::Audio.to_string(), "audio");
+    assert_eq!(EffectCategory::Gaming.to_string(), "gaming");
+    assert_eq!(EffectCategory::Productivity.to_string(), "productivity");
+    assert_eq!(EffectCategory::Utility.to_string(), "utility");
+    assert_eq!(EffectCategory::Interactive.to_string(), "interactive");
+    assert_eq!(EffectCategory::Generative.to_string(), "generative");
+}
+
+#[test]
+fn effect_category_from_str_via_strum() {
+    assert_eq!(
+        EffectCategory::from_str("ambient").expect("parse"),
+        EffectCategory::Ambient
+    );
+    assert_eq!(
+        EffectCategory::from_str("reactive").expect("parse"),
+        EffectCategory::Reactive
+    );
+    assert_eq!(
+        EffectCategory::from_str("generative").expect("parse"),
+        EffectCategory::Generative
+    );
+}
+
+#[test]
+fn effect_category_from_str_invalid() {
+    assert!(EffectCategory::from_str("nonexistent").is_err());
+}
+
+#[test]
+fn effect_category_serde_round_trip() {
+    for cat in [
+        EffectCategory::Ambient,
+        EffectCategory::Reactive,
+        EffectCategory::Audio,
+        EffectCategory::Gaming,
+        EffectCategory::Productivity,
+        EffectCategory::Utility,
+        EffectCategory::Interactive,
+        EffectCategory::Generative,
+    ] {
+        let json = serde_json::to_string(&cat).expect("serialize");
+        let back: EffectCategory = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, cat);
+    }
+}
+
+#[test]
+fn effect_category_serde_snake_case() {
+    let json = serde_json::to_string(&EffectCategory::Interactive).expect("serialize");
+    assert_eq!(json, "\"interactive\"");
+}
+
+// ── EffectSource ──────────────────────────────────────────────────────────
+
+#[test]
+fn effect_source_native_path() {
+    let src = EffectSource::Native {
+        path: PathBuf::from("native/aurora.wgsl"),
+    };
+    assert_eq!(src.path(), &PathBuf::from("native/aurora.wgsl"));
+}
+
+#[test]
+fn effect_source_html_path() {
+    let src = EffectSource::Html {
+        path: PathBuf::from("community/borealis.html"),
+    };
+    assert_eq!(src.path(), &PathBuf::from("community/borealis.html"));
+}
+
+#[test]
+fn effect_source_shader_path() {
+    let src = EffectSource::Shader {
+        path: PathBuf::from("shaders/plasma.wgsl"),
+    };
+    assert_eq!(src.path(), &PathBuf::from("shaders/plasma.wgsl"));
+}
+
+#[test]
+fn effect_source_serde_round_trip() {
+    let sources = vec![
+        EffectSource::Native {
+            path: PathBuf::from("native/aurora.wgsl"),
+        },
+        EffectSource::Html {
+            path: PathBuf::from("builtin/rainbow.html"),
+        },
+        EffectSource::Shader {
+            path: PathBuf::from("shaders/compute.wgsl"),
+        },
+    ];
+
+    for src in sources {
+        let json = serde_json::to_string(&src).expect("serialize");
+        let back: EffectSource = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, src);
+    }
+}
+
+// ── EffectState ───────────────────────────────────────────────────────────
+
+#[test]
+fn effect_state_default_is_loading() {
+    assert_eq!(EffectState::default(), EffectState::Loading);
+}
+
+#[test]
+fn effect_state_all_variants_exist() {
+    let states = [
+        EffectState::Loading,
+        EffectState::Initializing,
+        EffectState::Running,
+        EffectState::Paused,
+        EffectState::Destroying,
+    ];
+    assert_eq!(states.len(), 5);
+}
+
+#[test]
+fn effect_state_is_copy() {
+    let state = EffectState::Running;
+    let state2 = state; // Copy
+    assert_eq!(state, state2);
+}
+
+#[test]
+fn effect_state_serde_round_trip() {
+    for state in [
+        EffectState::Loading,
+        EffectState::Initializing,
+        EffectState::Running,
+        EffectState::Paused,
+        EffectState::Destroying,
+    ] {
+        let json = serde_json::to_string(&state).expect("serialize");
+        let back: EffectState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, state);
+    }
+}
+
+#[test]
+fn effect_state_serde_snake_case() {
+    assert_eq!(
+        serde_json::to_string(&EffectState::Initializing).expect("serialize"),
+        "\"initializing\""
+    );
+    assert_eq!(
+        serde_json::to_string(&EffectState::Destroying).expect("serialize"),
+        "\"destroying\""
+    );
+}
+
+// ── GradientStop ──────────────────────────────────────────────────────────
+
+#[test]
+fn gradient_stop_construction() {
+    let stop = GradientStop {
+        position: 0.5,
+        color: [1.0, 0.0, 0.5, 1.0],
+    };
+    assert!((stop.position - 0.5).abs() < f32::EPSILON);
+    assert!((stop.color[0] - 1.0).abs() < f32::EPSILON);
+    assert!((stop.color[2] - 0.5).abs() < f32::EPSILON);
+}
+
+#[test]
+fn gradient_stop_serde_round_trip() {
+    let stop = GradientStop {
+        position: 0.75,
+        color: [0.2, 0.4, 0.6, 0.8],
+    };
+    let json = serde_json::to_string(&stop).expect("serialize");
+    let back: GradientStop = serde_json::from_str(&json).expect("deserialize");
+    assert!((back.position - stop.position).abs() < f32::EPSILON);
+    for i in 0..4 {
+        assert!((back.color[i] - stop.color[i]).abs() < f32::EPSILON);
+    }
+}
+
+// ── ControlType ───────────────────────────────────────────────────────────
+
+#[test]
+fn control_type_all_variants_exist() {
+    let types = [
+        ControlType::Slider,
+        ControlType::Toggle,
+        ControlType::ColorPicker,
+        ControlType::GradientEditor,
+        ControlType::Dropdown,
+        ControlType::TextInput,
+    ];
+    assert_eq!(types.len(), 6);
+}
+
+#[test]
+fn control_type_serde_round_trip() {
+    for ct in [
+        ControlType::Slider,
+        ControlType::Toggle,
+        ControlType::ColorPicker,
+        ControlType::GradientEditor,
+        ControlType::Dropdown,
+        ControlType::TextInput,
+    ] {
+        let json = serde_json::to_string(&ct).expect("serialize");
+        let back: ControlType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, ct);
+    }
+}
+
+// ── ControlValue ──────────────────────────────────────────────────────────
+
+#[test]
+fn control_value_float() {
+    let val = ControlValue::Float(3.5);
+    assert!((val.as_f32().expect("should be numeric") - 3.5).abs() < f32::EPSILON);
+}
+
+#[test]
+fn control_value_integer() {
+    let val = ControlValue::Integer(42);
+    assert!((val.as_f32().expect("should be numeric") - 42.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn control_value_boolean_as_f32() {
+    assert!((ControlValue::Boolean(true).as_f32().expect("numeric") - 1.0).abs() < f32::EPSILON);
+    assert!(
+        ControlValue::Boolean(false)
+            .as_f32()
+            .expect("numeric")
+            .abs()
+            < f32::EPSILON
+    );
+}
+
+#[test]
+fn control_value_color_not_numeric() {
+    let val = ControlValue::Color([1.0, 0.0, 0.5, 1.0]);
+    assert!(val.as_f32().is_none());
+}
+
+#[test]
+fn control_value_gradient_not_numeric() {
+    let val = ControlValue::Gradient(vec![GradientStop {
+        position: 0.0,
+        color: [0.0, 0.0, 0.0, 1.0],
+    }]);
+    assert!(val.as_f32().is_none());
+}
+
+#[test]
+fn control_value_enum_not_numeric() {
+    let val = ControlValue::Enum("option_a".into());
+    assert!(val.as_f32().is_none());
+}
+
+#[test]
+fn control_value_text_not_numeric() {
+    let val = ControlValue::Text("hello".into());
+    assert!(val.as_f32().is_none());
+}
+
+#[test]
+fn control_value_js_literal_float() {
+    let val = ControlValue::Float(5.0);
+    assert_eq!(val.to_js_literal(), "5");
+}
+
+#[test]
+fn control_value_js_literal_integer() {
+    let val = ControlValue::Integer(42);
+    assert_eq!(val.to_js_literal(), "42");
+}
+
+#[test]
+fn control_value_js_literal_boolean() {
+    assert_eq!(ControlValue::Boolean(true).to_js_literal(), "true");
+    assert_eq!(ControlValue::Boolean(false).to_js_literal(), "false");
+}
+
+#[test]
+fn control_value_js_literal_color() {
+    let val = ControlValue::Color([1.0, 0.5, 0.0, 1.0]);
+    assert_eq!(val.to_js_literal(), "[1, 0.5, 0, 1]");
+}
+
+#[test]
+fn control_value_js_literal_enum_escapes_quotes() {
+    let val = ControlValue::Enum("say \"hello\"".into());
+    assert_eq!(val.to_js_literal(), r#""say \"hello\"""#);
+}
+
+#[test]
+fn control_value_js_literal_text_escapes_backslash() {
+    let val = ControlValue::Text(r"path\to\file".into());
+    assert_eq!(val.to_js_literal(), r#""path\\to\\file""#);
+}
+
+#[test]
+fn control_value_js_literal_gradient() {
+    let val = ControlValue::Gradient(vec![
+        GradientStop {
+            position: 0.0,
+            color: [1.0, 0.0, 0.0, 1.0],
+        },
+        GradientStop {
+            position: 1.0,
+            color: [0.0, 0.0, 1.0, 1.0],
+        },
+    ]);
+    let js = val.to_js_literal();
+    assert!(js.starts_with('['));
+    assert!(js.ends_with(']'));
+    assert!(js.contains("pos:0"));
+    assert!(js.contains("pos:1"));
+}
+
+#[test]
+fn control_value_serde_round_trip() {
+    let values = vec![
+        ControlValue::Float(2.5),
+        ControlValue::Integer(-10),
+        ControlValue::Boolean(true),
+        ControlValue::Color([0.1, 0.2, 0.3, 0.4]),
+        ControlValue::Gradient(vec![
+            GradientStop {
+                position: 0.0,
+                color: [1.0, 1.0, 1.0, 1.0],
+            },
+            GradientStop {
+                position: 1.0,
+                color: [0.0, 0.0, 0.0, 1.0],
+            },
+        ]),
+        ControlValue::Enum("option_b".into()),
+        ControlValue::Text("hello world".into()),
+    ];
+
+    for val in values {
+        let json = serde_json::to_string(&val).expect("serialize");
+        let back: ControlValue = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, val);
+    }
+}
+
+// ── ControlDefinition ─────────────────────────────────────────────────────
+
+fn sample_slider_control() -> ControlDefinition {
+    ControlDefinition {
+        name: "Speed".into(),
+        control_type: ControlType::Slider,
+        default_value: ControlValue::Float(5.0),
+        min: Some(1.0),
+        max: Some(20.0),
+        step: Some(0.5),
+        labels: vec![],
+        group: Some("Animation".into()),
+        tooltip: Some("Animation speed multiplier".into()),
+    }
+}
+
+fn sample_dropdown_control() -> ControlDefinition {
+    ControlDefinition {
+        name: "Palette".into(),
+        control_type: ControlType::Dropdown,
+        default_value: ControlValue::Enum("Aurora".into()),
+        min: None,
+        max: None,
+        step: None,
+        labels: vec!["Aurora".into(), "Sunset".into(), "Ocean".into()],
+        group: None,
+        tooltip: None,
+    }
+}
+
+#[test]
+fn control_definition_slider() {
+    let ctrl = sample_slider_control();
+    assert_eq!(ctrl.name, "Speed");
+    assert_eq!(ctrl.control_type, ControlType::Slider);
+    assert_eq!(ctrl.min, Some(1.0));
+    assert_eq!(ctrl.max, Some(20.0));
+    assert_eq!(ctrl.step, Some(0.5));
+    assert_eq!(ctrl.group, Some("Animation".into()));
+    assert!(ctrl.tooltip.is_some());
+}
+
+#[test]
+fn control_definition_dropdown() {
+    let ctrl = sample_dropdown_control();
+    assert_eq!(ctrl.name, "Palette");
+    assert_eq!(ctrl.control_type, ControlType::Dropdown);
+    assert_eq!(ctrl.labels.len(), 3);
+    assert!(ctrl.labels.contains(&"Aurora".into()));
+}
+
+#[test]
+fn control_definition_serde_round_trip() {
+    let ctrl = sample_slider_control();
+    let json = serde_json::to_string_pretty(&ctrl).expect("serialize");
+    let back: ControlDefinition = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.name, ctrl.name);
+    assert_eq!(back.control_type, ctrl.control_type);
+    assert_eq!(back.min, ctrl.min);
+    assert_eq!(back.max, ctrl.max);
+    assert_eq!(back.step, ctrl.step);
+    assert_eq!(back.tooltip, ctrl.tooltip);
+}
+
+// ── EffectMetadata ────────────────────────────────────────────────────────
+
+fn sample_metadata() -> EffectMetadata {
+    EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: "Aurora".into(),
+        author: "hyperb1iss".into(),
+        version: "1.0.0".into(),
+        description: "Northern lights simulation with audio-reactive wave intensity".into(),
+        category: EffectCategory::Ambient,
+        tags: vec!["ambient".into(), "audio-reactive".into(), "nature".into()],
+        source: EffectSource::Native {
+            path: PathBuf::from("native/aurora.wgsl"),
+        },
+        license: Some("Apache-2.0".into()),
+    }
+}
+
+#[test]
+fn effect_metadata_construction() {
+    let meta = sample_metadata();
+    assert_eq!(meta.name, "Aurora");
+    assert_eq!(meta.author, "hyperb1iss");
+    assert_eq!(meta.version, "1.0.0");
+    assert_eq!(meta.category, EffectCategory::Ambient);
+    assert_eq!(meta.tags.len(), 3);
+    assert_eq!(meta.license, Some("Apache-2.0".into()));
+}
+
+#[test]
+fn effect_metadata_default_version() {
+    let json = r#"{
+        "id": "01935e7c-3333-7000-aaaa-bbbbccccdddd",
+        "name": "Test",
+        "author": "test",
+        "description": "A test effect",
+        "category": "utility",
+        "source": { "native": { "path": "test.wgsl" } }
+    }"#;
+    let meta: EffectMetadata = serde_json::from_str(json).expect("deserialize");
+    assert_eq!(meta.version, "0.1.0");
+}
+
+#[test]
+fn effect_metadata_serde_json_round_trip() {
+    let meta = sample_metadata();
+    let json = serde_json::to_string_pretty(&meta).expect("serialize");
+    let back: EffectMetadata = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.name, meta.name);
+    assert_eq!(back.author, meta.author);
+    assert_eq!(back.version, meta.version);
+    assert_eq!(back.description, meta.description);
+    assert_eq!(back.category, meta.category);
+    assert_eq!(back.tags, meta.tags);
+    assert_eq!(back.license, meta.license);
+}
+
+#[test]
+fn effect_metadata_serde_toml_round_trip() {
+    let meta = sample_metadata();
+    let toml_str = toml::to_string_pretty(&meta).expect("toml serialize");
+    let back: EffectMetadata = toml::from_str(&toml_str).expect("toml deserialize");
+    assert_eq!(back.name, meta.name);
+    assert_eq!(back.author, meta.author);
+    assert_eq!(back.category, meta.category);
+}
+
+#[test]
+fn effect_metadata_empty_tags_default() {
+    let json = r#"{
+        "id": "01935e7c-3333-7000-aaaa-bbbbccccdddd",
+        "name": "Minimal",
+        "author": "test",
+        "description": "Minimal effect",
+        "category": "utility",
+        "source": { "html": { "path": "test.html" } }
+    }"#;
+    let meta: EffectMetadata = serde_json::from_str(json).expect("deserialize");
+    assert!(meta.tags.is_empty());
+    assert!(meta.license.is_none());
+}

@@ -1,0 +1,586 @@
+//! Tests for device identity, capabilities, and state types.
+
+use hypercolor_types::device::{
+    ColorFormat, ConnectionType, DeviceCapabilities, DeviceError, DeviceFamily, DeviceFingerprint,
+    DeviceId, DeviceIdentifier, DeviceInfo, DeviceState, LedTopology, ZoneInfo,
+};
+use uuid::Uuid;
+
+// ── DeviceId ──────────────────────────────────────────────────────────────
+
+#[test]
+fn device_id_unique_on_each_call() {
+    let a = DeviceId::new();
+    let b = DeviceId::new();
+    assert_ne!(a, b);
+}
+
+#[test]
+fn device_id_from_uuid_round_trips() {
+    let uuid = Uuid::now_v7();
+    let id = DeviceId::from_uuid(uuid);
+    assert_eq!(id.as_uuid(), uuid);
+}
+
+#[test]
+fn device_id_display_matches_uuid() {
+    let uuid = Uuid::now_v7();
+    let id = DeviceId::from_uuid(uuid);
+    assert_eq!(id.to_string(), uuid.to_string());
+}
+
+#[test]
+fn device_id_parse_from_string() {
+    let id = DeviceId::new();
+    let s = id.to_string();
+    let parsed: DeviceId = s.parse().expect("valid uuid string");
+    assert_eq!(parsed, id);
+}
+
+#[test]
+fn device_id_serde_round_trip() {
+    let id = DeviceId::new();
+    let json = serde_json::to_string(&id).expect("serialize");
+    let back: DeviceId = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, id);
+}
+
+#[test]
+fn device_id_default_generates_unique() {
+    let a = DeviceId::default();
+    let b = DeviceId::default();
+    assert_ne!(a, b);
+}
+
+// ── DeviceInfo ────────────────────────────────────────────────────────────
+
+fn sample_device_info() -> DeviceInfo {
+    DeviceInfo {
+        id: DeviceId::new(),
+        name: "Test Strip".into(),
+        vendor: "WLED".into(),
+        family: DeviceFamily::Wled,
+        connection_type: ConnectionType::Network,
+        zones: vec![
+            ZoneInfo {
+                name: "Main".into(),
+                led_count: 60,
+                topology: LedTopology::Strip,
+                color_format: ColorFormat::Rgb,
+            },
+            ZoneInfo {
+                name: "Accent".into(),
+                led_count: 30,
+                topology: LedTopology::Ring { count: 30 },
+                color_format: ColorFormat::Rgbw,
+            },
+        ],
+        firmware_version: Some("0.15.0".into()),
+        capabilities: DeviceCapabilities {
+            led_count: 90,
+            supports_direct: true,
+            supports_brightness: true,
+            max_fps: 60,
+        },
+    }
+}
+
+#[test]
+fn device_info_total_led_count() {
+    let info = sample_device_info();
+    assert_eq!(info.total_led_count(), 90);
+}
+
+#[test]
+fn device_info_serde_round_trip() {
+    let info = sample_device_info();
+    let json = serde_json::to_string_pretty(&info).expect("serialize");
+    let back: DeviceInfo = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.name, "Test Strip");
+    assert_eq!(back.total_led_count(), 90);
+    assert_eq!(back.firmware_version, Some("0.15.0".into()));
+}
+
+#[test]
+fn device_info_empty_zones_yields_zero_leds() {
+    let info = DeviceInfo {
+        id: DeviceId::new(),
+        name: "Empty".into(),
+        vendor: "Test".into(),
+        family: DeviceFamily::Custom("test".into()),
+        connection_type: ConnectionType::Bridge,
+        zones: vec![],
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    assert_eq!(info.total_led_count(), 0);
+}
+
+// ── DeviceCapabilities ────────────────────────────────────────────────────
+
+#[test]
+fn capabilities_default_values() {
+    let caps = DeviceCapabilities::default();
+    assert_eq!(caps.led_count, 0);
+    assert!(caps.supports_direct);
+    assert!(!caps.supports_brightness);
+    assert_eq!(caps.max_fps, 60);
+}
+
+#[test]
+fn capabilities_serde_round_trip() {
+    let caps = DeviceCapabilities {
+        led_count: 144,
+        supports_direct: false,
+        supports_brightness: true,
+        max_fps: 30,
+    };
+    let json = serde_json::to_string(&caps).expect("serialize");
+    let back: DeviceCapabilities = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, caps);
+}
+
+// ── DeviceState ───────────────────────────────────────────────────────────
+
+#[test]
+fn device_state_variant_names() {
+    assert_eq!(DeviceState::Known.variant_name(), "Known");
+    assert_eq!(DeviceState::Connected.variant_name(), "Connected");
+    assert_eq!(DeviceState::Active.variant_name(), "Active");
+    assert_eq!(DeviceState::Reconnecting.variant_name(), "Reconnecting");
+    assert_eq!(DeviceState::Disabled.variant_name(), "Disabled");
+}
+
+#[test]
+fn device_state_is_renderable() {
+    assert!(!DeviceState::Known.is_renderable());
+    assert!(DeviceState::Connected.is_renderable());
+    assert!(DeviceState::Active.is_renderable());
+    assert!(!DeviceState::Reconnecting.is_renderable());
+    assert!(!DeviceState::Disabled.is_renderable());
+}
+
+#[test]
+fn device_state_display() {
+    assert_eq!(DeviceState::Active.to_string(), "Active");
+    assert_eq!(DeviceState::Reconnecting.to_string(), "Reconnecting");
+}
+
+#[test]
+fn device_state_serde_round_trip() {
+    for state in [
+        DeviceState::Known,
+        DeviceState::Connected,
+        DeviceState::Active,
+        DeviceState::Reconnecting,
+        DeviceState::Disabled,
+    ] {
+        let json = serde_json::to_string(&state).expect("serialize");
+        let back: DeviceState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, state);
+    }
+}
+
+// ── LedTopology ───────────────────────────────────────────────────────────
+
+#[test]
+fn led_topology_variants_exist() {
+    let topologies = [
+        LedTopology::Strip,
+        LedTopology::Matrix { rows: 8, cols: 32 },
+        LedTopology::Ring { count: 24 },
+        LedTopology::Point,
+        LedTopology::Custom,
+    ];
+    assert_eq!(topologies.len(), 5);
+}
+
+#[test]
+fn led_topology_serde_round_trip() {
+    let matrix = LedTopology::Matrix { rows: 4, cols: 16 };
+    let json = serde_json::to_string(&matrix).expect("serialize");
+    let back: LedTopology = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, matrix);
+}
+
+// ── ConnectionType ────────────────────────────────────────────────────────
+
+#[test]
+fn connection_type_is_copy() {
+    let ct = ConnectionType::Usb;
+    let ct2 = ct; // Copy
+    assert_eq!(ct, ct2);
+}
+
+#[test]
+fn connection_type_serde_round_trip() {
+    for ct in [
+        ConnectionType::Usb,
+        ConnectionType::Network,
+        ConnectionType::Bluetooth,
+        ConnectionType::Bridge,
+    ] {
+        let json = serde_json::to_string(&ct).expect("serialize");
+        let back: ConnectionType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, ct);
+    }
+}
+
+// ── DeviceFamily ──────────────────────────────────────────────────────────
+
+#[test]
+fn device_family_display() {
+    assert_eq!(DeviceFamily::OpenRgb.to_string(), "OpenRGB");
+    assert_eq!(DeviceFamily::Wled.to_string(), "WLED");
+    assert_eq!(DeviceFamily::Hue.to_string(), "Philips Hue");
+    assert_eq!(
+        DeviceFamily::Custom("PrismRGB".into()).to_string(),
+        "PrismRGB"
+    );
+}
+
+#[test]
+fn device_family_equality() {
+    assert_eq!(DeviceFamily::Wled, DeviceFamily::Wled);
+    assert_ne!(DeviceFamily::Wled, DeviceFamily::Hue);
+    assert_eq!(
+        DeviceFamily::Custom("Foo".into()),
+        DeviceFamily::Custom("Foo".into())
+    );
+    assert_ne!(
+        DeviceFamily::Custom("Foo".into()),
+        DeviceFamily::Custom("Bar".into())
+    );
+}
+
+#[test]
+fn device_family_serde_round_trip() {
+    let families = vec![
+        DeviceFamily::OpenRgb,
+        DeviceFamily::Wled,
+        DeviceFamily::Hue,
+        DeviceFamily::Custom("PrismRGB".into()),
+    ];
+    for family in families {
+        let json = serde_json::to_string(&family).expect("serialize");
+        let back: DeviceFamily = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, family);
+    }
+}
+
+// ── ColorFormat ───────────────────────────────────────────────────────────
+
+#[test]
+fn color_format_display() {
+    assert_eq!(ColorFormat::Rgb.to_string(), "RGB");
+    assert_eq!(ColorFormat::Rgbw.to_string(), "RGBW");
+}
+
+#[test]
+fn color_format_serde_round_trip() {
+    for fmt in [ColorFormat::Rgb, ColorFormat::Rgbw] {
+        let json = serde_json::to_string(&fmt).expect("serialize");
+        let back: ColorFormat = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, fmt);
+    }
+}
+
+// ── DeviceError ───────────────────────────────────────────────────────────
+
+#[test]
+fn device_error_display_messages() {
+    let err = DeviceError::ConnectionFailed {
+        device: "WLED-Kitchen".into(),
+        reason: "TCP refused".into(),
+    };
+    assert_eq!(
+        err.to_string(),
+        "connection to WLED-Kitchen failed: TCP refused"
+    );
+
+    let err = DeviceError::NotFound {
+        device: "Prism 8".into(),
+    };
+    assert_eq!(err.to_string(), "device not found: Prism 8");
+
+    let err = DeviceError::Timeout {
+        device: "LED Strip".into(),
+        operation: "push_frame".into(),
+    };
+    assert_eq!(
+        err.to_string(),
+        "timeout communicating with LED Strip: push_frame"
+    );
+
+    let err = DeviceError::WriteError {
+        device: "USB Controller".into(),
+        detail: "HID write returned -1".into(),
+    };
+    assert_eq!(
+        err.to_string(),
+        "write error on USB Controller: HID write returned -1"
+    );
+
+    let err = DeviceError::ProtocolError {
+        device: "OpenRGB".into(),
+        detail: "unexpected packet type 0xFF".into(),
+    };
+    assert_eq!(
+        err.to_string(),
+        "protocol error for OpenRGB: unexpected packet type 0xFF"
+    );
+}
+
+#[test]
+fn device_error_is_recoverable() {
+    assert!(
+        DeviceError::ConnectionFailed {
+            device: String::new(),
+            reason: String::new()
+        }
+        .is_recoverable()
+    );
+
+    assert!(
+        DeviceError::WriteError {
+            device: String::new(),
+            detail: String::new()
+        }
+        .is_recoverable()
+    );
+
+    assert!(
+        DeviceError::Timeout {
+            device: String::new(),
+            operation: String::new()
+        }
+        .is_recoverable()
+    );
+
+    assert!(
+        DeviceError::ProtocolError {
+            device: String::new(),
+            detail: String::new()
+        }
+        .is_recoverable()
+    );
+
+    assert!(
+        !DeviceError::NotFound {
+            device: String::new()
+        }
+        .is_recoverable()
+    );
+}
+
+// ── DeviceIdentifier ──────────────────────────────────────────────────────
+
+#[test]
+fn device_identifier_usb_display_with_serial() {
+    let id = DeviceIdentifier::UsbHid {
+        vendor_id: 0x16D5,
+        product_id: 0x1F01,
+        serial: Some("ABC123".into()),
+        usb_path: None,
+    };
+    assert_eq!(id.display_short(), "USB 16D5:1F01 [ABC123]");
+    assert_eq!(id.to_string(), "USB 16D5:1F01 [ABC123]");
+}
+
+#[test]
+fn device_identifier_usb_display_without_serial() {
+    let id = DeviceIdentifier::UsbHid {
+        vendor_id: 0x16D5,
+        product_id: 0x1F01,
+        serial: None,
+        usb_path: Some("usb-0000:00:14.0-2.3".into()),
+    };
+    assert_eq!(id.display_short(), "USB 16D5:1F01");
+}
+
+#[test]
+fn device_identifier_network_display_with_hostname() {
+    let id = DeviceIdentifier::Network {
+        mac_address: "A4:CF:12:34:AB:CD".into(),
+        last_ip: Some("192.168.1.42".parse().expect("valid ip")),
+        mdns_hostname: Some("wled-kitchen".into()),
+    };
+    assert_eq!(id.display_short(), "wled-kitchen (A4:CF:12:34:AB:CD)");
+}
+
+#[test]
+fn device_identifier_network_display_without_hostname() {
+    let id = DeviceIdentifier::Network {
+        mac_address: "A4:CF:12:34:AB:CD".into(),
+        last_ip: None,
+        mdns_hostname: None,
+    };
+    assert_eq!(id.display_short(), "A4:CF:12:34:AB:CD");
+}
+
+#[test]
+fn device_identifier_hue_display() {
+    let id = DeviceIdentifier::HueBridge {
+        bridge_id: "001788FFFE123456".into(),
+        light_id: "3".into(),
+    };
+    assert_eq!(id.display_short(), "Hue 001788FF:3");
+}
+
+#[test]
+fn device_identifier_openrgb_display() {
+    let id = DeviceIdentifier::OpenRgb {
+        controller_name: "ASUS Aura LED Controller".into(),
+        location: "HID: /dev/hidraw3".into(),
+    };
+    assert_eq!(id.display_short(), "ASUS Aura LED Controller");
+}
+
+#[test]
+fn device_identifier_fingerprint_usb_serial() {
+    let id = DeviceIdentifier::UsbHid {
+        vendor_id: 0x16D5,
+        product_id: 0x1F01,
+        serial: Some("SN001".into()),
+        usb_path: Some("usb-0000:00:14.0-2".into()),
+    };
+    // Serial takes precedence over path
+    assert_eq!(
+        id.fingerprint(),
+        DeviceFingerprint("usb:16d5:1f01:SN001".into())
+    );
+}
+
+#[test]
+fn device_identifier_fingerprint_usb_path_fallback() {
+    let id = DeviceIdentifier::UsbHid {
+        vendor_id: 0x16D5,
+        product_id: 0x1F01,
+        serial: None,
+        usb_path: Some("usb-0000:00:14.0-2".into()),
+    };
+    assert_eq!(
+        id.fingerprint(),
+        DeviceFingerprint("usb:16d5:1f01:usb-0000:00:14.0-2".into())
+    );
+}
+
+#[test]
+fn device_identifier_fingerprint_network() {
+    let id = DeviceIdentifier::Network {
+        mac_address: "A4:CF:12:34:AB:CD".into(),
+        last_ip: Some("10.0.0.5".parse().expect("valid ip")),
+        mdns_hostname: None,
+    };
+    // IP is transient — fingerprint uses only MAC
+    assert_eq!(
+        id.fingerprint(),
+        DeviceFingerprint("net:a4:cf:12:34:ab:cd".into())
+    );
+}
+
+#[test]
+fn device_identifier_fingerprint_hue() {
+    let id = DeviceIdentifier::HueBridge {
+        bridge_id: "001788FFFE123456".into(),
+        light_id: "7".into(),
+    };
+    assert_eq!(
+        id.fingerprint(),
+        DeviceFingerprint("hue:001788FFFE123456:7".into())
+    );
+}
+
+#[test]
+fn device_identifier_fingerprint_openrgb() {
+    let id = DeviceIdentifier::OpenRgb {
+        controller_name: "Corsair Vengeance".into(),
+        location: "I2C: /dev/i2c-1".into(),
+    };
+    assert_eq!(
+        id.fingerprint(),
+        DeviceFingerprint("orgb:Corsair Vengeance:I2C: /dev/i2c-1".into())
+    );
+}
+
+#[test]
+fn device_identifier_serde_round_trip() {
+    let identifiers = vec![
+        DeviceIdentifier::UsbHid {
+            vendor_id: 0x16D5,
+            product_id: 0x1F01,
+            serial: Some("SN001".into()),
+            usb_path: None,
+        },
+        DeviceIdentifier::Network {
+            mac_address: "AA:BB:CC:DD:EE:FF".into(),
+            last_ip: None,
+            mdns_hostname: Some("wled-desk".into()),
+        },
+        DeviceIdentifier::HueBridge {
+            bridge_id: "BRIDGE1".into(),
+            light_id: "1".into(),
+        },
+        DeviceIdentifier::OpenRgb {
+            controller_name: "MSI Mystic".into(),
+            location: "HID: /dev/hidraw0".into(),
+        },
+    ];
+
+    for ident in identifiers {
+        let json = serde_json::to_string(&ident).expect("serialize");
+        let back: DeviceIdentifier = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, ident);
+    }
+}
+
+#[test]
+fn device_fingerprint_display() {
+    let fp = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".into());
+    assert_eq!(fp.to_string(), "net:aa:bb:cc:dd:ee:ff");
+}
+
+// ── ZoneInfo ──────────────────────────────────────────────────────────────
+
+#[test]
+fn zone_info_serde_round_trip() {
+    let zone = ZoneInfo {
+        name: "Main Strip".into(),
+        led_count: 144,
+        topology: LedTopology::Strip,
+        color_format: ColorFormat::Rgb,
+    };
+    let json = serde_json::to_string(&zone).expect("serialize");
+    let back: ZoneInfo = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.name, "Main Strip");
+    assert_eq!(back.led_count, 144);
+    assert_eq!(back.topology, LedTopology::Strip);
+    assert_eq!(back.color_format, ColorFormat::Rgb);
+}
+
+#[test]
+fn zone_info_matrix_topology() {
+    let zone = ZoneInfo {
+        name: "Panel".into(),
+        led_count: 256,
+        topology: LedTopology::Matrix { rows: 16, cols: 16 },
+        color_format: ColorFormat::Rgbw,
+    };
+    if let LedTopology::Matrix { rows, cols } = zone.topology {
+        assert_eq!(rows, 16);
+        assert_eq!(cols, 16);
+    } else {
+        panic!("expected Matrix topology");
+    }
+}
+
+// ── TOML serialization (dev-dependency) ───────────────────────────────────
+
+#[test]
+fn device_info_toml_round_trip() {
+    let info = sample_device_info();
+    let toml_str = toml::to_string_pretty(&info).expect("toml serialize");
+    let back: DeviceInfo = toml::from_str(&toml_str).expect("toml deserialize");
+    assert_eq!(back.name, info.name);
+    assert_eq!(back.total_led_count(), info.total_led_count());
+}
