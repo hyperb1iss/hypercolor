@@ -126,9 +126,10 @@ fn band_average(spectrum: &[f32], start: usize, end: usize) -> f32 {
 // ─── AudioSourceType ──────────────────────────────────────────────────
 
 /// Describes how the audio capture source is selected.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AudioSourceType {
     /// Auto-detect system audio output monitor (loopback).
+    #[default]
     SystemMonitor,
     /// A specific PulseAudio/PipeWire source or WASAPI device by name.
     Named(String),
@@ -136,12 +137,6 @@ pub enum AudioSourceType {
     Microphone,
     /// No audio input — effects receive silence.
     None,
-}
-
-impl Default for AudioSourceType {
-    fn default() -> Self {
-        Self::SystemMonitor
-    }
 }
 
 // ─── AudioPipelineConfig ──────────────────────────────────────────────

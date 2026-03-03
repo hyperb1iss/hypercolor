@@ -310,10 +310,11 @@ pub fn linear_to_srgb(c: f32) -> f32 {
 ///
 /// Different hardware speaks different pixel formats. The spatial sampler
 /// produces [`Rgb`], and backends convert to their native format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ColorFormat {
     /// Standard 8-bit RGB (3 bytes per LED).
+    #[default]
     Rgb,
     /// RGBW with a dedicated white channel (4 bytes per LED).
     Rgbw,
@@ -321,18 +322,12 @@ pub enum ColorFormat {
     RgbW16,
 }
 
-impl Default for ColorFormat {
-    fn default() -> Self {
-        Self::Rgb
-    }
-}
-
 // ── SamplingMethod ─────────────────────────────────────────────────────────
 
 /// Interpolation strategy for canvas sampling.
 ///
 /// Controls how sub-pixel LED positions are resolved from the canvas buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SamplingMethod {
     /// Snap to the nearest pixel. Fastest, but aliased at low LED density.
@@ -340,6 +335,7 @@ pub enum SamplingMethod {
 
     /// Weighted average of the 4 surrounding pixels.
     /// Default. Good balance of quality and speed.
+    #[default]
     Bilinear,
 
     /// Average all pixels within a rectangular area centered on the sample point.
@@ -349,12 +345,6 @@ pub enum SamplingMethod {
         /// A value of 5.0 samples an 11x11 pixel box.
         radius: f32,
     },
-}
-
-impl Default for SamplingMethod {
-    fn default() -> Self {
-        Self::Bilinear
-    }
 }
 
 // ── Canvas ─────────────────────────────────────────────────────────────────

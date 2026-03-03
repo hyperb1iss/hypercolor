@@ -48,11 +48,14 @@ impl From<Uuid> for EffectId {
 ///
 /// An effect can belong to multiple categories. Used for discovery
 /// and filtering in the effect browser UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumString, Display)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumString, Display, Default,
+)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum EffectCategory {
     /// Ambient lighting: calm, atmospheric visuals.
+    #[default]
     Ambient,
     /// Reactive effects that respond to system or device events.
     Reactive,
@@ -68,12 +71,6 @@ pub enum EffectCategory {
     Interactive,
     /// Generative art: procedural patterns, fractals, noise fields.
     Generative,
-}
-
-impl Default for EffectCategory {
-    fn default() -> Self {
-        Self::Ambient
-    }
 }
 
 // ── EffectSource ──────────────────────────────────────────────────────────────
@@ -117,10 +114,11 @@ impl EffectSource {
 ///
 /// Tracks the effect from initial discovery through rendering and teardown.
 /// Only one effect (or composition) can be `Running` at a time per render loop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectState {
     /// Source files discovered, metadata being parsed and validated.
+    #[default]
     Loading,
     /// Renderer being initialized: shader compiling (wgpu) or HTML loading (Servo).
     Initializing,
@@ -130,12 +128,6 @@ pub enum EffectState {
     Paused,
     /// Renderer being torn down, GPU/Servo resources being freed.
     Destroying,
-}
-
-impl Default for EffectState {
-    fn default() -> Self {
-        Self::Loading
-    }
 }
 
 // ── GradientStop ──────────────────────────────────────────────────────────────
