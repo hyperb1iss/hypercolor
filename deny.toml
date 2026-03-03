@@ -1,0 +1,32 @@
+[advisories]
+# vulnerability field removed in cargo-deny 0.18+ (all vulns are errors now)
+unmaintained = "workspace"
+yanked = "warn"
+
+[licenses]
+unused-allowed-license = "allow"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MPL-2.0",
+    "OpenSSL",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
