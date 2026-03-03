@@ -5,7 +5,7 @@
 //! - provide a tiny API to create a headless software rendering context
 //! - keep all Servo-specific types out of non-Servo builds
 
-use anyhow::{Context, Result};
+use anyhow::{Result, anyhow};
 use dpi::PhysicalSize;
 use servo::SoftwareRenderingContext;
 
@@ -21,7 +21,12 @@ pub fn bootstrap_software_rendering_context(
     width: u32,
     height: u32,
 ) -> Result<SoftwareRenderingContext> {
-    SoftwareRenderingContext::new(PhysicalSize::new(width, height)).with_context(|| {
-        format!("failed to create Servo SoftwareRenderingContext ({width}x{height})")
+    SoftwareRenderingContext::new(PhysicalSize::new(width, height)).map_err(|error| {
+        anyhow!(
+            "failed to create Servo SoftwareRenderingContext ({}x{}): {:?}",
+            width,
+            height,
+            error
+        )
     })
 }

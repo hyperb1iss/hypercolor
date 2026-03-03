@@ -21,7 +21,7 @@ pub struct ServoRenderer {
     html_source: Option<PathBuf>,
     controls: HashMap<String, ControlValue>,
     runtime: LightscriptRuntime,
-    rendering_context: Option<servo::SoftwareRenderingContext>,
+    initialized: bool,
     pending_scripts: Vec<String>,
     warned_placeholder_frame: bool,
 }
@@ -34,7 +34,7 @@ impl ServoRenderer {
             html_source: None,
             controls: HashMap::new(),
             runtime: LightscriptRuntime::new(320, 200),
-            rendering_context: None,
+            initialized: false,
             pending_scripts: Vec::new(),
             warned_placeholder_frame: false,
         }
@@ -78,7 +78,10 @@ impl EffectRenderer for ServoRenderer {
         self.controls.clear();
         self.pending_scripts.clear();
 
-        self.rendering_context = Some(bootstrap_software_rendering_context(320, 200)?);
+        // Validate that Servo's software context can be created for this host.
+        // We don't store it yet because `SoftwareRenderingContext` is not `Send`.
+        let _ctx = bootstrap_software_rendering_context(320, 200)?;
+        self.initialized = true;
         self.enqueue_bootstrap_scripts();
 
         debug!(
@@ -91,7 +94,7 @@ impl EffectRenderer for ServoRenderer {
     }
 
     fn tick(&mut self, input: &FrameInput) -> Result<Canvas> {
-        if self.rendering_context.is_none() {
+        if !self.initialized {
             bail!("ServoRenderer tick called before init");
         }
 
@@ -112,7 +115,7 @@ impl EffectRenderer for ServoRenderer {
     }
 
     fn destroy(&mut self) {
-        self.rendering_context = None;
+        self.initialized = false;
         self.pending_scripts.clear();
         self.controls.clear();
         self.html_source = None;
