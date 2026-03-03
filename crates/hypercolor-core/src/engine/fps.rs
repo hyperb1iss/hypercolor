@@ -109,11 +109,7 @@ impl FpsTier {
 
         for tier in Self::ALL {
             let fps = tier.fps();
-            let dist = if fps >= target {
-                fps - target
-            } else {
-                target - fps
-            };
+            let dist = fps.abs_diff(target);
             // `<=` so ties resolve toward higher tiers (iterated ascending)
             if dist <= best_dist {
                 best_dist = dist;

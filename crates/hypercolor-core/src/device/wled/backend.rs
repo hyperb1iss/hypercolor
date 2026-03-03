@@ -27,19 +27,14 @@ use super::e131::{
 // ── Protocol Selection ──────────────────────────────────────────────────
 
 /// Protocol transport for a WLED device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum WledProtocol {
     /// Distributed Display Protocol (preferred).
+    #[default]
     Ddp,
     /// E1.31 / Streaming ACN (fallback).
     E131,
-}
-
-impl Default for WledProtocol {
-    fn default() -> Self {
-        Self::Ddp
-    }
 }
 
 // ── Color Format ────────────────────────────────────────────────────────

@@ -76,7 +76,7 @@ pub trait DeviceBackend: Send + Sync {
     ///
     /// For USB HID: opens the HID device file, runs initialization sequence.
     /// For WLED: verifies reachability via HTTP `/json/info`, caches metadata.
-    /// For OpenRGB: registers as a client for the specified controller.
+    /// For `OpenRGB`: registers as a client for the specified controller.
     /// For Hue: authenticates with the bridge, establishes Entertainment stream.
     ///
     /// # Errors
@@ -89,7 +89,7 @@ pub trait DeviceBackend: Send + Sync {
     ///
     /// For USB HID: sends the shutdown color, activates hardware mode, closes
     /// the device file. For WLED: no action needed (stateless UDP). For
-    /// OpenRGB: releases the controller. For Hue: tears down Entertainment.
+    /// `OpenRGB`: releases the controller. For Hue: tears down Entertainment.
     ///
     /// # Errors
     ///

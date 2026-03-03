@@ -78,6 +78,11 @@ impl ConfigManager {
         self.config.load()
     }
 
+    /// Replace the live configuration snapshot without re-reading from disk.
+    pub fn update(&self, config: HypercolorConfig) {
+        self.config.store(Arc::new(config));
+    }
+
     /// Reloads configuration from the original file path.
     ///
     /// On success, atomically swaps the live config. On failure, the previous
@@ -92,6 +97,28 @@ impl ConfigManager {
         self.config.store(Arc::new(new_config));
         info!("configuration reloaded successfully");
         Ok(())
+    }
+
+    /// Persist the current live configuration to disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails or the file cannot be written.
+    pub fn save(&self) -> Result<()> {
+        let snapshot = self.get();
+        let toml = toml::to_string_pretty(&**snapshot).context("failed to serialize config")?;
+        if let Some(parent) = self.config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        std::fs::write(&self.config_path, toml)
+            .with_context(|| format!("failed to write {}", self.config_path.display()))
+    }
+
+    /// Path backing this manager's configuration file.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.config_path
     }
 
     /// Returns the platform-appropriate configuration directory.

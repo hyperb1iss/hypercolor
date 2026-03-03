@@ -152,8 +152,8 @@ impl SceneManager {
         self.priority_stack.push(to_id, priority);
 
         // Start transition if there's a from-scene.
-        if from_state.is_some() && spec.duration_ms > 0 {
-            let from_id = from_state.expect("checked above");
+        if let Some(from_id) = from_state {
+            if spec.duration_ms > 0 {
             self.active_transition = Some(TransitionState::new(
                 from_id,
                 to_id,
@@ -161,8 +161,11 @@ impl SceneManager {
                 from_assignments,
                 to_assignments,
             ));
+            } else {
+                // Instant activation — no transition.
+                self.active_transition = None;
+            }
         } else {
-            // Instant activation — no transition.
             self.active_transition = None;
         }
 

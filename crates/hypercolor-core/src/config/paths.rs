@@ -16,8 +16,10 @@ pub fn config_dir() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
         std::env::var("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| dirs::home_dir().expect("HOME must be set").join(".config"))
+            .map_or_else(
+                |_| dirs::home_dir().expect("HOME must be set").join(".config"),
+                PathBuf::from,
+            )
             .join(APP_DIR)
     }
 
@@ -37,12 +39,14 @@ pub fn data_dir() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
         std::env::var("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
+            .map_or_else(
+                |_| {
                 dirs::home_dir()
                     .expect("HOME must be set")
                     .join(".local/share")
-            })
+                },
+                PathBuf::from,
+            )
             .join(APP_DIR)
     }
 
@@ -62,8 +66,10 @@ pub fn cache_dir() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
         std::env::var("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| dirs::home_dir().expect("HOME must be set").join(".cache"))
+            .map_or_else(
+                |_| dirs::home_dir().expect("HOME must be set").join(".cache"),
+                PathBuf::from,
+            )
             .join(APP_DIR)
     }
 

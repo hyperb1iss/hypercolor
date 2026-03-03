@@ -49,7 +49,7 @@ use hypercolor_types::effect::{
 fn builtin_metadata() -> Vec<EffectMetadata> {
     vec![
         EffectMetadata {
-            id: EffectId::new(Uuid::now_v7()),
+            id: builtin_effect_id("solid_color"),
             name: "solid_color".into(),
             author: "hypercolor".into(),
             version: "0.1.0".into(),
@@ -62,7 +62,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             license: Some("Apache-2.0".into()),
         },
         EffectMetadata {
-            id: EffectId::new(Uuid::now_v7()),
+            id: builtin_effect_id("gradient"),
             name: "gradient".into(),
             author: "hypercolor".into(),
             version: "0.1.0".into(),
@@ -75,7 +75,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             license: Some("Apache-2.0".into()),
         },
         EffectMetadata {
-            id: EffectId::new(Uuid::now_v7()),
+            id: builtin_effect_id("rainbow"),
             name: "rainbow".into(),
             author: "hypercolor".into(),
             version: "0.1.0".into(),
@@ -88,7 +88,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             license: Some("Apache-2.0".into()),
         },
         EffectMetadata {
-            id: EffectId::new(Uuid::now_v7()),
+            id: builtin_effect_id("breathing"),
             name: "breathing".into(),
             author: "hypercolor".into(),
             version: "0.1.0".into(),
@@ -101,7 +101,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             license: Some("Apache-2.0".into()),
         },
         EffectMetadata {
-            id: EffectId::new(Uuid::now_v7()),
+            id: builtin_effect_id("audio_pulse"),
             name: "audio_pulse".into(),
             author: "hypercolor".into(),
             version: "0.1.0".into(),
@@ -119,7 +119,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             license: Some("Apache-2.0".into()),
         },
         EffectMetadata {
-            id: EffectId::new(Uuid::now_v7()),
+            id: builtin_effect_id("color_wave"),
             name: "color_wave".into(),
             author: "hypercolor".into(),
             version: "0.1.0".into(),
@@ -132,6 +132,25 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             license: Some("Apache-2.0".into()),
         },
     ]
+}
+
+/// Generate a deterministic ID for a built-in effect.
+///
+/// IDs must remain stable across daemon restarts so saved references
+/// (profiles/scenes/API clients) continue to resolve.
+fn builtin_effect_id(name: &str) -> EffectId {
+    let key = format!("hypercolor:builtin:{name}");
+    let mut hash: u128 = 0x6c62_69f0_7bb0_14d9_8d4f_1283_7ec6_3b8a;
+    for byte in key.bytes() {
+        hash ^= u128::from(byte);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+
+    let mut bytes = hash.to_be_bytes();
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    EffectId::new(Uuid::from_bytes(bytes))
 }
 
 /// Register all built-in effects with the given registry.

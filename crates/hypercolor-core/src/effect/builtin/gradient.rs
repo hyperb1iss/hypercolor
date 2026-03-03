@@ -97,7 +97,7 @@ impl EffectRenderer for GradientRenderer {
                     GradientDirection::Horizontal => x as f32 / w.max(1.0),
                     GradientDirection::Vertical => y as f32 / h.max(1.0),
                     GradientDirection::Diagonal => {
-                        (x as f32 / w.max(1.0) + y as f32 / h.max(1.0)) / 2.0
+                        f32::midpoint(x as f32 / w.max(1.0), y as f32 / h.max(1.0))
                     }
                     GradientDirection::Radial => {
                         let cx = x as f32 / w.max(1.0) - 0.5;
