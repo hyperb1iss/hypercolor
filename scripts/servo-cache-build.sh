@@ -14,12 +14,30 @@ mkdir -p "$CARGO_TARGET_DIR" "$MOZBUILD_STATE_PATH"
 
 if command -v ccache >/dev/null 2>&1; then
   export CCACHE_DIR="${CCACHE_DIR:-$CACHE_ROOT/ccache}"
-  mkdir -p "$CCACHE_DIR"
+  TOOLCHAIN_DIR="$CACHE_ROOT/toolchain"
+  mkdir -p "$CCACHE_DIR" "$TOOLCHAIN_DIR"
 
-  # mozjs_sys compiles a very large C++ codebase; route compilers through ccache.
-  export CC="${CC:-ccache cc}"
-  export CXX="${CXX:-ccache c++}"
-  export AR="${AR:-ccache ar}"
+  # mozjs_sys compiles a very large C++ codebase; route CC/CXX through ccache.
+  # Use wrapper executables instead of "ccache <tool>" strings because some
+  # configure steps expect these variables to be plain executable paths.
+  if [ ! -x "$TOOLCHAIN_DIR/cc" ]; then
+    cat >"$TOOLCHAIN_DIR/cc" <<'EOF'
+#!/usr/bin/env bash
+exec ccache "$(command -v cc)" "$@"
+EOF
+    chmod +x "$TOOLCHAIN_DIR/cc"
+  fi
+
+  if [ ! -x "$TOOLCHAIN_DIR/cxx" ]; then
+    cat >"$TOOLCHAIN_DIR/cxx" <<'EOF'
+#!/usr/bin/env bash
+exec ccache "$(command -v c++)" "$@"
+EOF
+    chmod +x "$TOOLCHAIN_DIR/cxx"
+  fi
+
+  export CC="${CC:-$TOOLCHAIN_DIR/cc}"
+  export CXX="${CXX:-$TOOLCHAIN_DIR/cxx}"
 
   echo "[servo-cache] ccache enabled"
   echo "[servo-cache] CCACHE_DIR=$CCACHE_DIR"

@@ -29,7 +29,7 @@ The wrapper configures:
 - `CARGO_TARGET_DIR=$HOME/.cache/hypercolor/target` (unless already set)
 - `MOZBUILD_STATE_PATH=$HOME/.cache/hypercolor/mozbuild` (unless already set)
 - `CARGO_INCREMENTAL=1` (unless already set)
-- `ccache` integration for `CC`/`CXX`/`AR` when `ccache` exists
+- `ccache` integration for `CC`/`CXX` when `ccache` exists
 
 ## Verify Cache Hits
 
