@@ -856,6 +856,16 @@ fn build_mock_response(device_index: u32, command: Command, payload: &[u8]) -> V
 /// Returns the port the server is listening on.
 #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
 async fn start_mock_server(controllers: Vec<(String, String, String, u16)>) -> u16 {
+    start_mock_server_with_notifications(controllers, false).await
+}
+
+/// Start a mock `OpenRGB` SDK server and optionally inject asynchronous
+/// `DeviceListUpdated` notifications before request responses.
+#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+async fn start_mock_server_with_notifications(
+    controllers: Vec<(String, String, String, u16)>,
+    send_device_list_updated: bool,
+) -> u16 {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -921,6 +931,11 @@ async fn start_mock_server(controllers: Vec<(String, String, String, u16)>) -> u
 
                     match Command::from_u32(header.command) {
                         Some(Command::RequestControllerCount) => {
+                            if send_device_list_updated {
+                                let notification =
+                                    build_mock_response(0, Command::DeviceListUpdated, &[]);
+                                let _ = stream.write_all(&notification).await;
+                            }
                             #[allow(clippy::cast_possible_truncation)]
                             let count = controllers.len() as u32;
                             let response = build_mock_response(
@@ -931,6 +946,11 @@ async fn start_mock_server(controllers: Vec<(String, String, String, u16)>) -> u
                             let _ = stream.write_all(&response).await;
                         }
                         Some(Command::RequestControllerData) => {
+                            if send_device_list_updated {
+                                let notification =
+                                    build_mock_response(0, Command::DeviceListUpdated, &[]);
+                                let _ = stream.write_all(&notification).await;
+                            }
                             let idx = header.device_index as usize;
                             if let Some((name, vendor, zone_name, led_count)) = controllers.get(idx)
                             {
@@ -1026,6 +1046,36 @@ async fn client_enumerates_controllers_from_mock() {
     let ctrl1 = client.controllers().get(&1).expect("controller 1");
     assert_eq!(ctrl1.name, "Corsair RGB");
     assert_eq!(ctrl1.zones[0].leds_count, 8);
+}
+
+#[tokio::test]
+async fn client_ignores_unsolicited_device_list_updates() {
+    let port = start_mock_server_with_notifications(
+        vec![(
+            "ASUS Aura".to_owned(),
+            "ASUS".to_owned(),
+            "Mainboard".to_owned(),
+            4,
+        )],
+        true,
+    )
+    .await;
+
+    let config = ClientConfig {
+        host: "127.0.0.1".to_owned(),
+        port,
+        ..ClientConfig::default()
+    };
+
+    let mut client = OpenRgbClient::new(config);
+    client.connect().await.expect("should connect");
+
+    let count = client
+        .enumerate_controllers()
+        .await
+        .expect("should enumerate despite async notifications");
+    assert_eq!(count, 1);
+    assert_eq!(client.controllers().len(), 1);
 }
 
 #[tokio::test]

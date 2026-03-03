@@ -215,11 +215,10 @@ impl OpenRgbClient {
         .await
         .context("failed to send protocol version request")?;
 
-        let (header, payload) = self
-            .recv_packet()
+        let (_header, payload) = self
+            .recv_expected_packet(Command::RequestProtocolVersion)
             .await
             .context("reading protocol version response")?;
-        proto::validate_response(&header, Command::RequestProtocolVersion)?;
         self.protocol_version = proto::parse_protocol_version(&payload)?;
 
         info!(
@@ -291,8 +290,9 @@ impl OpenRgbClient {
         self.send_packet_raw(&proto::build_request_controller_count())
             .await?;
 
-        let (header, payload) = self.recv_packet().await?;
-        proto::validate_response(&header, Command::RequestControllerCount)?;
+        let (_header, payload) = self
+            .recv_expected_packet(Command::RequestControllerCount)
+            .await?;
         proto::parse_controller_count(&payload)
     }
 
@@ -306,8 +306,9 @@ impl OpenRgbClient {
         ))
         .await?;
 
-        let (header, payload) = self.recv_packet().await?;
-        proto::validate_response(&header, Command::RequestControllerData)?;
+        let (_header, payload) = self
+            .recv_expected_packet(Command::RequestControllerData)
+            .await?;
         proto::parse_controller_data(&payload, self.protocol_version)
     }
 
@@ -433,5 +434,34 @@ impl OpenRgbClient {
         }
 
         Ok((header, payload))
+    }
+
+    /// Receive packets until we get the expected response command.
+    ///
+    /// `OpenRGB` may emit asynchronous device-list notifications (`100`)
+    /// between request/response packets. These are handled and skipped.
+    async fn recv_expected_packet(
+        &mut self,
+        expected_command: Command,
+    ) -> Result<(PacketHeader, Vec<u8>)> {
+        loop {
+            let (header, payload) = self.recv_packet().await?;
+            if matches!(
+                Command::from_u32(header.command),
+                Some(Command::DeviceListUpdated)
+            ) {
+                // Notification means controller cache may be stale; force refresh
+                // on next enumerate path and continue waiting for our response.
+                self.controllers.clear();
+                warn!(
+                    expected_command = expected_command.as_u32(),
+                    "Received DeviceListUpdated notification while awaiting response"
+                );
+                continue;
+            }
+
+            proto::validate_response(&header, expected_command)?;
+            return Ok((header, payload));
+        }
     }
 }
