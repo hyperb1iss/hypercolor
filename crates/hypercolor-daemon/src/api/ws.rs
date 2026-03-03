@@ -326,6 +326,13 @@ enum ServerMessage {
         timestamp: String,
         data: serde_json::Value,
     },
+    /// Backpressure warning for dropped binary channel payloads.
+    Backpressure {
+        dropped_frames: u32,
+        channel: String,
+        recommendation: String,
+        suggested_fps: u32,
+    },
     /// Protocol-level request error.
     Error {
         code: String,
@@ -333,12 +340,6 @@ enum ServerMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<serde_json::Value>,
     },
-}
-
-#[derive(Debug)]
-enum OutboundMessage {
-    Json(String),
-    Binary(Vec<u8>),
 }
 
 #[derive(Debug, Serialize)]
@@ -443,34 +444,54 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     let frame_rx = state.event_bus.frame_receiver();
     let spectrum_rx = state.event_bus.spectrum_receiver();
 
-    // Bounded relay channel for backpressure.
-    let (relay_tx, mut relay_rx) = tokio::sync::mpsc::channel::<OutboundMessage>(WS_BUFFER_SIZE);
+    // Split outbound traffic: JSON is lossless, binary is bounded/drop-on-pressure.
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(WS_BUFFER_SIZE);
 
     // Spawn event relay task — shares the subscription set via Arc<RwLock<_>>.
     let relay_subs = Arc::clone(&subscriptions);
-    let relay_handle = tokio::spawn(relay_events(event_rx, relay_tx.clone(), relay_subs));
+    let relay_handle = tokio::spawn(relay_events(event_rx, json_tx.clone(), relay_subs));
     let frame_subs = Arc::clone(&subscriptions);
-    let frame_relay_handle = tokio::spawn(relay_frames(frame_rx, relay_tx.clone(), frame_subs));
+    let frame_relay_handle = tokio::spawn(relay_frames(
+        frame_rx,
+        json_tx.clone(),
+        binary_tx.clone(),
+        frame_subs,
+    ));
     let spectrum_subs = Arc::clone(&subscriptions);
-    let spectrum_relay_handle = tokio::spawn(relay_spectrum(spectrum_rx, relay_tx, spectrum_subs));
+    let spectrum_relay_handle = tokio::spawn(relay_spectrum(
+        spectrum_rx,
+        json_tx,
+        binary_tx,
+        spectrum_subs,
+    ));
 
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
         tokio::select! {
-            // Outbound: relay events to the client.
-            relay_msg = relay_rx.recv() => {
-                match relay_msg {
-                    Some(msg) => {
-                        let send_result = match msg {
-                            OutboundMessage::Json(text) => socket.send(Message::Text(text.into())).await,
-                            OutboundMessage::Binary(bytes) => socket.send(Message::Binary(bytes.into())).await,
-                        };
+            biased;
 
-                        if send_result.is_err() {
+            // Outbound JSON: never dropped (unbounded queue).
+            json_msg = json_rx.recv() => {
+                match json_msg {
+                    Some(msg) => {
+                        if socket.send(Message::Text(msg.into())).await.is_err() {
                             break;
                         }
                     }
-                    None => break, // Relay channel closed.
+                    None => break,
+                }
+            }
+
+            // Outbound binary: bounded queue (drop under pressure in producer tasks).
+            binary_msg = binary_rx.recv() => {
+                match binary_msg {
+                    Some(bytes) => {
+                        if socket.send(Message::Binary(bytes.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
                 }
             }
 
@@ -501,7 +522,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 /// Drops events when the consumer is slow (backpressure).
 async fn relay_events(
     mut event_rx: broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
-    relay_tx: tokio::sync::mpsc::Sender<OutboundMessage>,
+    json_tx: tokio::sync::mpsc::UnboundedSender<String>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
     loop {
@@ -527,9 +548,7 @@ async fn relay_events(
                 };
 
                 // If the channel is full, drop the event (backpressure).
-                if relay_tx.try_send(OutboundMessage::Json(json)).is_err() {
-                    debug!("Dropping event for slow WebSocket consumer");
-                }
+                let _ = json_tx.send(json);
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("WebSocket consumer lagged by {n} events");
@@ -539,10 +558,16 @@ async fn relay_events(
     }
 }
 
+enum FrameRelayMessage {
+    Json(String),
+    Binary(Vec<u8>),
+}
+
 /// Relay frame watch updates to the WebSocket client.
 async fn relay_frames(
     mut frame_rx: watch::Receiver<hypercolor_types::event::FrameData>,
-    relay_tx: tokio::sync::mpsc::Sender<OutboundMessage>,
+    json_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
     let mut last_sent = Instant::now()
@@ -568,7 +593,7 @@ async fn relay_frames(
         }
 
         let outbound = match frame_config.format {
-            FrameFormat::Binary => OutboundMessage::Binary(encode_frame_binary(&frame)),
+            FrameFormat::Binary => FrameRelayMessage::Binary(encode_frame_binary(&frame)),
             FrameFormat::Json => {
                 let zones: Vec<serde_json::Value> = frame
                     .zones
@@ -589,12 +614,20 @@ async fn relay_frames(
                 let Ok(text) = serde_json::to_string(&json_frame) else {
                     continue;
                 };
-                OutboundMessage::Json(text)
+                FrameRelayMessage::Json(text)
             }
         };
 
-        if relay_tx.try_send(outbound).is_err() {
-            debug!("Dropping frame update for slow WebSocket consumer");
+        match outbound {
+            FrameRelayMessage::Json(text) => {
+                let _ = json_tx.send(text);
+            }
+            FrameRelayMessage::Binary(bytes) => {
+                if binary_tx.try_send(bytes).is_err() {
+                    enqueue_backpressure_notice(&json_tx, "frames", frame_config.fps);
+                    debug!("Dropping binary frame update for slow WebSocket consumer");
+                }
+            }
         }
     }
 }
@@ -602,7 +635,8 @@ async fn relay_frames(
 /// Relay spectrum watch updates to the WebSocket client.
 async fn relay_spectrum(
     mut spectrum_rx: watch::Receiver<hypercolor_types::event::SpectrumData>,
-    relay_tx: tokio::sync::mpsc::Sender<OutboundMessage>,
+    json_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
     let mut last_sent = Instant::now()
@@ -627,14 +661,12 @@ async fn relay_spectrum(
             continue;
         }
 
-        if relay_tx
-            .try_send(OutboundMessage::Binary(encode_spectrum_binary(
-                &spectrum,
-                spectrum_config.bins,
-            )))
+        if binary_tx
+            .try_send(encode_spectrum_binary(&spectrum, spectrum_config.bins))
             .is_err()
         {
-            debug!("Dropping spectrum update for slow WebSocket consumer");
+            enqueue_backpressure_notice(&json_tx, "spectrum", spectrum_config.fps);
+            debug!("Dropping binary spectrum update for slow WebSocket consumer");
         }
     }
 }
@@ -832,6 +864,24 @@ fn encode_spectrum_binary(
 
 fn sanitize_f32(value: f32) -> f32 {
     if value.is_finite() { value } else { 0.0 }
+}
+
+fn enqueue_backpressure_notice(
+    json_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+    channel: &str,
+    current_fps: u32,
+) {
+    let suggested_fps = current_fps.saturating_div(2).max(1);
+    let message = ServerMessage::Backpressure {
+        dropped_frames: 1,
+        channel: channel.to_owned(),
+        recommendation: "reduce_fps".to_owned(),
+        suggested_fps,
+    };
+
+    if let Ok(text) = serde_json::to_string(&message) {
+        let _ = json_tx.send(text);
+    }
 }
 
 fn sorted_channel_names(channels: &HashSet<WsChannel>) -> Vec<String> {
