@@ -178,12 +178,17 @@ impl DiscoveryOrchestrator {
         let mut reappeared_devices = Vec::new();
 
         for (_fp, discovered) in deduped {
-            let id = discovered.info.id;
-            let already_known = self.registry.contains(&id).await;
+            let previously_known = self
+                .registry
+                .find_by_fingerprint(&discovered.fingerprint)
+                .await;
 
-            self.registry.add(discovered.info).await;
+            let id = self
+                .registry
+                .add_with_fingerprint(discovered.info, discovered.fingerprint)
+                .await;
 
-            if already_known {
+            if previously_known.is_some() {
                 reappeared_devices.push(id);
             } else {
                 new_devices.push(id);

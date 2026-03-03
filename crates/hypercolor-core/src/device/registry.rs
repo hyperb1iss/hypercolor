@@ -46,6 +46,9 @@ struct RegistryInner {
 
     /// Deduplication index: fingerprint -> `DeviceId`.
     fingerprints: HashMap<DeviceFingerprint, DeviceId>,
+
+    /// Reverse index for cleanup: `DeviceId` -> fingerprint.
+    id_to_fingerprint: HashMap<DeviceId, DeviceFingerprint>,
 }
 
 impl DeviceRegistry {
@@ -63,12 +66,23 @@ impl DeviceRegistry {
     /// updated in place and the existing `DeviceId` is returned. Otherwise a
     /// new entry is created.
     pub async fn add(&self, info: DeviceInfo) -> DeviceId {
-        let fingerprint = info.id.as_uuid().to_string();
-        let fp = DeviceFingerprint(fingerprint);
+        let fallback_fingerprint = DeviceFingerprint(info.id.as_uuid().to_string());
+        self.add_with_fingerprint(info, fallback_fingerprint).await
+    }
+
+    /// Register a device using a stable scanner-provided fingerprint.
+    ///
+    /// This should be used by discovery paths so a rediscovered device keeps
+    /// the same logical identity even if a scanner emits a fresh `DeviceId`.
+    pub async fn add_with_fingerprint(
+        &self,
+        info: DeviceInfo,
+        fingerprint: DeviceFingerprint,
+    ) -> DeviceId {
         let mut inner = self.inner.write().await;
 
         // Check for existing device by fingerprint
-        if let Some(&existing_id) = inner.fingerprints.get(&fp) {
+        if let Some(&existing_id) = inner.fingerprints.get(&fingerprint) {
             if let Some(entry) = inner.devices.get_mut(&existing_id) {
                 debug!(
                     device_id = %existing_id,
@@ -76,8 +90,14 @@ impl DeviceRegistry {
                     "Updating existing device in registry"
                 );
                 entry.info = info;
+                inner
+                    .id_to_fingerprint
+                    .insert(existing_id, fingerprint.clone());
                 return existing_id;
             }
+
+            // Stale fingerprint index entry (ID no longer exists).
+            inner.fingerprints.remove(&fingerprint);
         }
 
         // New device
@@ -88,7 +108,8 @@ impl DeviceRegistry {
             state: DeviceState::Known,
         };
 
-        inner.fingerprints.insert(fp, id);
+        inner.fingerprints.insert(fingerprint.clone(), id);
+        inner.id_to_fingerprint.insert(id, fingerprint);
         inner.devices.insert(id, tracked);
 
         info!(device_id = %id, name = %name, "Device added to registry");
@@ -104,8 +125,12 @@ impl DeviceRegistry {
         let device = inner.devices.remove(id);
         if device.is_some() {
             // Clean up the fingerprint index
-            let fingerprint = DeviceFingerprint(id.as_uuid().to_string());
-            inner.fingerprints.remove(&fingerprint);
+            if let Some(fingerprint) = inner.id_to_fingerprint.remove(id) {
+                inner.fingerprints.remove(&fingerprint);
+            } else {
+                let fallback = DeviceFingerprint(id.as_uuid().to_string());
+                inner.fingerprints.remove(&fallback);
+            }
             info!(device_id = %id, "Device removed from registry");
         } else {
             warn!(device_id = %id, "Attempted to remove unknown device");
@@ -168,6 +193,12 @@ impl DeviceRegistry {
     pub async fn contains(&self, id: &DeviceId) -> bool {
         let inner = self.inner.read().await;
         inner.devices.contains_key(id)
+    }
+
+    /// Look up a device ID by stable fingerprint.
+    pub async fn find_by_fingerprint(&self, fingerprint: &DeviceFingerprint) -> Option<DeviceId> {
+        let inner = self.inner.read().await;
+        inner.fingerprints.get(fingerprint).copied()
     }
 
     /// List all devices in a specific state.

@@ -385,6 +385,30 @@ async fn registry_add_returns_existing_id() {
 }
 
 #[tokio::test]
+async fn registry_add_with_fingerprint_reuses_existing_device() {
+    let registry = DeviceRegistry::new();
+    let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
+
+    let first = mock_device_info("Desk Strip");
+    let first_id = registry
+        .add_with_fingerprint(first, fingerprint.clone())
+        .await;
+
+    let second = mock_device_info("Desk Strip Updated");
+    let second_id = registry.add_with_fingerprint(second, fingerprint).await;
+
+    assert_eq!(
+        first_id, second_id,
+        "same fingerprint should map to same logical device id"
+    );
+    let tracked = registry
+        .get(&first_id)
+        .await
+        .expect("device should still exist");
+    assert_eq!(tracked.info.name, "Desk Strip Updated");
+}
+
+#[tokio::test]
 async fn registry_remove() {
     let registry = DeviceRegistry::new();
     let device = mock_device_info("Temporary Device");
@@ -586,11 +610,13 @@ async fn orchestrator_handles_scanner_failure_gracefully() {
 #[tokio::test]
 async fn orchestrator_tracks_reappeared_devices() {
     let registry = DeviceRegistry::new();
+    let fingerprint = DeviceFingerprint("net:re:ap:pe:ar:ed".to_owned());
 
     // Pre-populate the registry with a known device
     let existing = mock_device_info("Known Device");
-    let existing_id = existing.id;
-    registry.add(existing.clone()).await;
+    let existing_id = registry
+        .add_with_fingerprint(existing.clone(), fingerprint.clone())
+        .await;
 
     let mut orchestrator = DiscoveryOrchestrator::new(registry);
 
@@ -599,7 +625,7 @@ async fn orchestrator_tracks_reappeared_devices() {
         connection_type: ConnectionType::Network,
         name: "Known Device".to_owned(),
         family: DeviceFamily::Wled,
-        fingerprint: DeviceFingerprint("net:re:ap:pe:ar:ed".to_owned()),
+        fingerprint,
         info: existing,
         metadata: HashMap::new(),
     };
