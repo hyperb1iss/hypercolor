@@ -65,6 +65,12 @@ impl ServoRenderer {
     }
 
     fn enqueue_frame_scripts(&mut self, input: &FrameInput) {
+        if let Some(script) = self
+            .runtime
+            .resize_script(input.canvas_width, input.canvas_height)
+        {
+            self.pending_scripts.push(script);
+        }
         let frame_scripts = self.runtime.frame_scripts(&input.audio, &self.controls);
         self.pending_scripts.push(frame_scripts.audio_update);
         self.pending_scripts.extend(frame_scripts.control_updates);

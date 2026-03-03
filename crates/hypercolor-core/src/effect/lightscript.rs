@@ -64,6 +64,31 @@ impl LightscriptRuntime {
         )
     }
 
+    /// Build JavaScript to update `window.engine` dimensions when canvas size
+    /// changes.
+    ///
+    /// Returns `None` when dimensions are unchanged.
+    #[must_use]
+    pub fn resize_script(&mut self, width: u32, height: u32) -> Option<String> {
+        if self.width == width && self.height == height {
+            return None;
+        }
+
+        self.width = width;
+        self.height = height;
+
+        Some(format!(
+            concat!(
+                "(function(){{\n",
+                "  if (typeof window.engine !== 'object' || window.engine === null) {{ window.engine = {{}}; }}\n",
+                "  window.engine.width = {};\n",
+                "  window.engine.height = {};\n",
+                "}})();",
+            ),
+            width, height
+        ))
+    }
+
     /// Build JavaScript for one frame's audio + changed control updates.
     #[must_use]
     pub fn frame_scripts(
@@ -237,5 +262,18 @@ mod tests {
         let script = LightscriptRuntime::audio_update_script(&audio);
         assert!(script.contains("window.engine.audio.level = 0"));
         assert!(script.contains("window.engine.audio.freq = new Float32Array([0.1,0.2,0.3])"));
+    }
+
+    #[test]
+    fn resize_script_emits_only_on_dimension_change() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        assert!(runtime.resize_script(320, 200).is_none());
+
+        let resize = runtime
+            .resize_script(640, 360)
+            .expect("resize should emit when dimensions change");
+        assert!(resize.contains("window.engine.width = 640"));
+        assert!(resize.contains("window.engine.height = 360"));
+        assert!(runtime.resize_script(640, 360).is_none());
     }
 }
