@@ -570,11 +570,11 @@ async fn relay_events(
                     continue;
                 }
 
-                let event_name = event_identifier(&timestamped.event);
+                let (event_name, event_data) = event_message_parts(&timestamped.event);
                 let msg = ServerMessage::Event {
                     event: event_name,
                     timestamp: timestamped.timestamp.clone(),
-                    data: serde_json::to_value(&timestamped.event).unwrap_or_default(),
+                    data: event_data,
                 };
                 let Ok(json) = serde_json::to_string(&msg) else {
                     continue;
@@ -934,18 +934,25 @@ fn unique_sorted_channel_names(channels: &[WsChannel]) -> Vec<String> {
     sorted_channel_names(&unique)
 }
 
-fn event_identifier(event: &hypercolor_types::event::HypercolorEvent) -> String {
+fn event_message_parts(
+    event: &hypercolor_types::event::HypercolorEvent,
+) -> (String, serde_json::Value) {
     let serialized = serde_json::to_value(event).ok();
     let event_type = serialized
         .as_ref()
         .and_then(|value| value.get("type"))
         .and_then(serde_json::Value::as_str);
 
-    if let Some(event_type) = event_type {
-        return to_snake_case(event_type);
-    }
+    let event_name = if let Some(event_type) = event_type {
+        to_snake_case(event_type)
+    } else {
+        format!("{:?}", event.category()).to_lowercase()
+    };
+    let event_data = serialized
+        .and_then(|value| value.get("data").cloned())
+        .unwrap_or_else(|| json!({}));
 
-    format!("{:?}", event.category()).to_lowercase()
+    (event_name, event_data)
 }
 
 fn to_snake_case(input: &str) -> String {
@@ -1020,9 +1027,10 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 mod tests {
     use super::{
         ChannelConfig, ChannelConfigPatch, WsChannel, encode_frame_binary, encode_spectrum_binary,
-        parse_channels, to_snake_case, unique_sorted_channel_names, validate_patch_supported,
+        event_message_parts, parse_channels, to_snake_case, unique_sorted_channel_names,
+        validate_patch_supported,
     };
-    use hypercolor_types::event::{FrameData, SpectrumData, ZoneColors};
+    use hypercolor_types::event::{FrameData, HypercolorEvent, SpectrumData, ZoneColors};
 
     #[test]
     fn parse_channels_accepts_supported_channel() {
@@ -1097,6 +1105,25 @@ mod tests {
     fn snake_case_conversion_handles_camel_case() {
         assert_eq!(to_snake_case("DeviceDiscovered"), "device_discovered");
         assert_eq!(to_snake_case("Paused"), "paused");
+    }
+
+    #[test]
+    fn event_message_parts_unwraps_payload() {
+        let event = HypercolorEvent::DeviceDiscoveryStarted {
+            backends: vec!["wled".to_owned()],
+        };
+
+        let (event_name, event_data) = event_message_parts(&event);
+        assert_eq!(event_name, "device_discovery_started");
+        assert_eq!(event_data["backends"], serde_json::json!(["wled"]));
+        assert!(event_data.get("type").is_none());
+    }
+
+    #[test]
+    fn event_message_parts_defaults_to_empty_object_for_unit_events() {
+        let (event_name, event_data) = event_message_parts(&HypercolorEvent::Resumed);
+        assert_eq!(event_name, "resumed");
+        assert_eq!(event_data, serde_json::json!({}));
     }
 
     #[test]

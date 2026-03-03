@@ -256,6 +256,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .nest("/api/v1", api)
+        // Compatibility alias for clients still using the legacy top-level WS path.
+        .route("/ws", axum::routing::get(ws::ws_handler))
         .route("/health", axum::routing::get(system::health_check))
         .layer(axum::middleware::from_fn_with_state(
             security_state,
