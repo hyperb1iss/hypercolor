@@ -193,16 +193,13 @@ fn is_html_file(path: &Path) -> bool {
 }
 
 fn derive_source_path(root: &Path, file: &Path) -> PathBuf {
-    let relative = file
-        .strip_prefix(root)
-        .map_or_else(|_| file.to_path_buf(), Path::to_path_buf);
-
-    if root.file_name().is_some_and(|name| name == "effects") {
-        return relative;
+    if is_bundled_effects_root(root) {
+        return file
+            .strip_prefix(root)
+            .map_or_else(|_| file.to_path_buf(), Path::to_path_buf);
     }
 
-    root.file_name()
-        .map_or(relative.clone(), |name| PathBuf::from(name).join(relative))
+    file.to_path_buf()
 }
 
 fn fallback_effect_name(file: &Path) -> String {
@@ -229,4 +226,8 @@ fn deterministic_html_effect_id(source_path: &Path) -> EffectId {
 
 fn normalize_path(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn is_bundled_effects_root(root: &Path) -> bool {
+    normalize_path(root) == normalize_path(&bundled_effects_root())
 }

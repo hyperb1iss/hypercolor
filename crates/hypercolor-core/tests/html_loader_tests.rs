@@ -1,7 +1,7 @@
 //! Tests for HTML effect discovery/loader integration.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use tempfile::TempDir;
 
@@ -67,7 +67,7 @@ fn register_html_effects_loads_effects_from_directory_tree() {
 
     match &aurora.metadata.source {
         EffectSource::Html { path } => {
-            assert_eq!(path, &PathBuf::from("community/aurora.html"));
+            assert_eq!(path, &root.join("community/aurora.html"));
         }
         source => panic!("expected html source, got {source:?}"),
     }
