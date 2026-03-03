@@ -1,17 +1,35 @@
 #![cfg(feature = "servo")]
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-use hypercolor_core::effect::EffectEngine;
+use hypercolor_core::effect::{EffectEngine, bundled_effects_root, parse_html_effect_metadata};
 use hypercolor_types::audio::AudioData;
+use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
 use tempfile::tempdir;
 use uuid::Uuid;
 
+const FRAME_DT_SECONDS: f32 = 1.0 / 60.0;
+const BUILTIN_EFFECTS: &[&str] = &[
+    "builtin/Rainbow.html",
+    "builtin/Solid Color.html",
+    "builtin/Side To Side.html",
+    "builtin/Neon Shift.html",
+    "builtin/Screen Ambience.html",
+];
+const COMMUNITY_SAMPLE_SIZE: usize = 8;
+const WEBGL_SAMPLE_SIZE: usize = 3;
+
 fn html_metadata(path: PathBuf) -> EffectMetadata {
+    let name = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map_or_else(|| "servo-smoke".to_owned(), ToOwned::to_owned);
+
     EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
-        name: "servo-smoke".to_owned(),
+        name,
         author: "hypercolor-tests".to_owned(),
         version: "0.1.0".to_owned(),
         description: "servo smoke test".to_owned(),
@@ -20,6 +38,89 @@ fn html_metadata(path: PathBuf) -> EffectMetadata {
         source: EffectSource::Html { path },
         license: None,
     }
+}
+
+fn render_frames(path: PathBuf, frame_count: usize) -> Vec<Canvas> {
+    let mut engine = EffectEngine::new();
+    engine
+        .activate_metadata(html_metadata(path.clone()))
+        .unwrap_or_else(|error| {
+            panic!(
+                "servo activation should succeed for {}: {error}",
+                path.display()
+            )
+        });
+
+    (0..frame_count)
+        .map(|_| {
+            engine
+                .tick(FRAME_DT_SECONDS, &AudioData::silence())
+                .expect("servo tick should produce a frame")
+        })
+        .collect()
+}
+
+fn assert_dimensions(canvas: &Canvas) {
+    assert_eq!(canvas.width(), 320);
+    assert_eq!(canvas.height(), 200);
+}
+
+fn frame_contains_red_pixel(canvas: &Canvas) -> bool {
+    canvas
+        .pixels()
+        .any(|[r, g, b, _]| r >= 200 && g <= 80 && b <= 80)
+}
+
+fn community_effect_paths() -> Vec<PathBuf> {
+    let community_root = bundled_effects_root().join("community");
+    let mut paths: Vec<PathBuf> = fs::read_dir(&community_root)
+        .unwrap_or_else(|error| {
+            panic!(
+                "failed to read community effects directory {}: {error}",
+                community_root.display()
+            )
+        })
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+        })
+        .collect();
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            path.strip_prefix(bundled_effects_root())
+                .map_or(path.clone(), Path::to_path_buf)
+        })
+        .collect()
+}
+
+fn sampled_paths(paths: &[PathBuf], count: usize) -> Vec<PathBuf> {
+    if paths.len() <= count {
+        return paths.to_vec();
+    }
+
+    let stride = (paths.len() / count).max(1);
+    paths.iter().step_by(stride).take(count).cloned().collect()
+}
+
+fn webgl_community_effect_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let root = bundled_effects_root();
+    paths
+        .iter()
+        .filter_map(|relative_path| {
+            let absolute_path = root.join(relative_path);
+            let html = fs::read_to_string(&absolute_path).ok()?;
+            let parsed = parse_html_effect_metadata(&html);
+            if parsed.uses_three_js {
+                Some(relative_path.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[test]
@@ -41,15 +142,73 @@ ctx.fillRect(0, 0, canvas.width, canvas.height);
 </html>"#;
     std::fs::write(&html_path, html).expect("html write should work");
 
-    let mut engine = EffectEngine::new();
-    engine
-        .activate_metadata(html_metadata(html_path))
-        .expect("servo activation should succeed");
+    let frames = render_frames(html_path, 5);
+    assert!(
+        frames
+            .iter()
+            .all(|canvas| canvas.width() == 320 && canvas.height() == 200)
+    );
+    assert!(
+        frames.iter().any(frame_contains_red_pixel),
+        "expected at least one frame to contain strong red output from smoke effect"
+    );
+}
 
-    let frame = engine
-        .tick(0.016, &AudioData::silence())
-        .expect("servo tick should produce a frame");
+#[test]
+#[ignore = "requires full Servo runtime and is expensive in CI/dev loops"]
+fn servo_renderer_smoke_renders_builtin_catalog_sample() {
+    for relative in BUILTIN_EFFECTS {
+        let frames = render_frames(PathBuf::from(relative), 3);
+        assert!(
+            frames
+                .iter()
+                .all(|canvas| canvas.width() == 320 && canvas.height() == 200)
+        );
+    }
+}
 
-    assert_eq!(frame.width(), 320);
-    assert_eq!(frame.height(), 200);
+#[test]
+#[ignore = "requires full Servo runtime and is expensive in CI/dev loops"]
+fn servo_renderer_smoke_renders_sampled_community_effects() {
+    let community_paths = community_effect_paths();
+    let sampled = sampled_paths(&community_paths, COMMUNITY_SAMPLE_SIZE);
+    assert_eq!(sampled.len(), COMMUNITY_SAMPLE_SIZE);
+
+    for relative in sampled {
+        let frames = render_frames(relative, 2);
+        assert!(
+            frames
+                .iter()
+                .all(|canvas| canvas.width() == 320 && canvas.height() == 200)
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires full Servo runtime and is expensive in CI/dev loops"]
+fn servo_renderer_smoke_renders_webgl_effects() {
+    let community_paths = community_effect_paths();
+    let webgl_paths = webgl_community_effect_paths(&community_paths);
+    assert!(
+        !webgl_paths.is_empty(),
+        "expected at least one community effect tagged as WebGL"
+    );
+    let sampled = sampled_paths(&webgl_paths, WEBGL_SAMPLE_SIZE);
+
+    for relative in sampled {
+        let frames = render_frames(relative, 2);
+        for frame in frames {
+            assert_dimensions(&frame);
+        }
+    }
+}
+
+#[test]
+fn webgl_catalog_selection_finds_entries() {
+    let community_paths = community_effect_paths();
+    let webgl_paths = webgl_community_effect_paths(&community_paths);
+    assert!(
+        !webgl_paths.is_empty(),
+        "community catalog should include at least one WebGL effect"
+    );
 }
