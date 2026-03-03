@@ -81,12 +81,18 @@ impl<T: Serialize> ApiResponse<T> {
 pub enum ErrorCode {
     /// 400 — Malformed request.
     BadRequest,
+    /// 401 — Missing or invalid credentials.
+    Unauthorized,
+    /// 403 — Credentials valid but insufficient permissions.
+    Forbidden,
     /// 404 — Resource does not exist.
     NotFound,
     /// 409 — State conflict.
     Conflict,
     /// 422 — Validation failure.
     ValidationError,
+    /// 429 — Request throttled by rate limiter.
+    RateLimited,
     /// 500 — Internal daemon error.
     InternalError,
 }
@@ -96,9 +102,12 @@ impl ErrorCode {
     const fn status(&self) -> StatusCode {
         match self {
             Self::BadRequest => StatusCode::BAD_REQUEST,
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict => StatusCode::CONFLICT,
             Self::ValidationError => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             Self::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -138,6 +147,24 @@ impl ApiError {
         Self::build(ErrorCode::BadRequest, message.into(), None)
     }
 
+    /// 401 Unauthorized.
+    pub fn unauthorized(message: impl Into<String>) -> Response {
+        Self::build(ErrorCode::Unauthorized, message.into(), None)
+    }
+
+    /// 403 Forbidden.
+    pub fn forbidden(message: impl Into<String>) -> Response {
+        Self::build(ErrorCode::Forbidden, message.into(), None)
+    }
+
+    /// 403 Forbidden with details.
+    pub fn forbidden_with_details(
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Response {
+        Self::build(ErrorCode::Forbidden, message.into(), Some(details))
+    }
+
     /// 409 Conflict.
     pub fn conflict(message: impl Into<String>) -> Response {
         Self::build(ErrorCode::Conflict, message.into(), None)
@@ -151,6 +178,19 @@ impl ApiError {
     /// 500 Internal Error.
     pub fn internal(message: impl Into<String>) -> Response {
         Self::build(ErrorCode::InternalError, message.into(), None)
+    }
+
+    /// 429 Rate Limited.
+    pub fn rate_limited(message: impl Into<String>) -> Response {
+        Self::build(ErrorCode::RateLimited, message.into(), None)
+    }
+
+    /// 429 Rate Limited with details.
+    pub fn rate_limited_with_details(
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Response {
+        Self::build(ErrorCode::RateLimited, message.into(), Some(details))
     }
 
     fn build(code: ErrorCode, message: String, details: Option<serde_json::Value>) -> Response {
@@ -186,10 +226,7 @@ fn iso8601_now() -> String {
 }
 
 /// Convert Unix epoch seconds to (year, month, day, hour, minute, second) in UTC.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::as_conversions
-)]
+#[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
 fn epoch_to_utc(epoch_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let secs_per_day: u64 = 86400;
     let days = epoch_secs / secs_per_day;

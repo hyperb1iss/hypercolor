@@ -4,14 +4,15 @@
 //! the shared [`AppState`] that every handler receives via Axum's
 //! [`State`](axum::extract::State) extractor.
 
+pub mod config;
 pub mod devices;
 pub mod diagnose;
 pub mod effects;
 pub mod envelope;
-pub mod config;
 pub mod layouts;
 pub mod profiles;
 pub mod scenes;
+pub mod security;
 pub mod system;
 pub mod ws;
 
@@ -159,6 +160,8 @@ impl Default for AppState {
 
 /// Build the complete Axum router with all API routes and middleware.
 pub fn build_router(state: Arc<AppState>) -> Router {
+    let security_state = security::SecurityState::from_env();
+
     let api = Router::new()
         // ── Devices ──────────────────────────────────────────────────
         .route("/devices", axum::routing::get(devices::list_devices))
@@ -248,6 +251,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .nest("/api/v1", api)
         .route("/health", axum::routing::get(system::health_check))
+        .layer(axum::middleware::from_fn_with_state(
+            security_state,
+            security::enforce_security,
+        ))
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

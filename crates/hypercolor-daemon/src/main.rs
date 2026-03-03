@@ -104,13 +104,16 @@ async fn main() -> Result<()> {
     let mut shutdown_rx = install_signal_handlers();
 
     // 7. Serve HTTP with graceful shutdown.
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.changed().await;
-            info!("Shutdown signal received, stopping API server");
-        })
-        .await
-        .context("API server error")?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let _ = shutdown_rx.changed().await;
+        info!("Shutdown signal received, stopping API server");
+    })
+    .await
+    .context("API server error")?;
 
     // 8. Graceful shutdown of daemon subsystems.
     daemon_state.shutdown().await?;
