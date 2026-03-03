@@ -124,6 +124,8 @@ Make these CLI commands actually work end-to-end:
 - Set up `rust-toolchain` compatibility
 - Verify `cargo build` with the servo feature on Windows MSVC
 - Test: `SoftwareRenderingContext::new(320, 200)` creates successfully
+- Use the cache workflow in `docs/development/SERVO_BUILD_CACHING.md` to avoid
+  repeated expensive native builds
 
 ```toml
 [dependencies]
