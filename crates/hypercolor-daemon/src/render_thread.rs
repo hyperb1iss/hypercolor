@@ -22,7 +22,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
-use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::BackendManager;
 use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::engine::{FrameStats, RenderLoop};
@@ -290,6 +290,7 @@ async fn execute_frame(
         state,
         zone_colors,
         &inputs.audio,
+        &canvas,
         frame_num_u32,
         elapsed_ms,
         FrameTiming {
@@ -376,6 +377,7 @@ fn publish_frame_updates(
     state: &RenderThreadState,
     zone_colors: Vec<hypercolor_core::types::event::ZoneColors>,
     audio: &AudioData,
+    canvas: &Canvas,
     frame_number: u32,
     elapsed_ms: u32,
     timing: FrameTiming,
@@ -387,6 +389,10 @@ fn publish_frame_updates(
         .event_bus
         .spectrum_sender()
         .send(spectrum_from_audio(audio, elapsed_ms));
+    let _ = state
+        .event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(canvas, frame_number, elapsed_ms));
     state.event_bus.publish(HypercolorEvent::FrameRendered {
         frame_number,
         timing,

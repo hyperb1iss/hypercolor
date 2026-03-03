@@ -1,6 +1,7 @@
 //! Comprehensive tests for the event bus.
 
-use hypercolor_core::bus::{EventFilter, HypercolorBus, TimestampedEvent};
+use hypercolor_core::bus::{CanvasFrame, EventFilter, HypercolorBus, TimestampedEvent};
+use hypercolor_core::types::canvas::{Canvas, Rgba};
 use hypercolor_core::types::event::{
     ChangeTrigger, DisconnectReason, EffectRef, EventCategory, EventPriority, FrameData,
     HypercolorEvent, Severity, SpectrumData, ZoneColors,
@@ -430,6 +431,37 @@ async fn spectrum_watch_skips_intermediate_values() {
 
     let latest = rx.borrow_and_update();
     assert_eq!(latest.timestamp_ms, 30, "should see latest spectrum");
+}
+
+#[tokio::test]
+async fn canvas_watch_latest_value_semantics() {
+    let bus = HypercolorBus::new();
+    let mut rx = bus.canvas_receiver();
+
+    {
+        let canvas = rx.borrow_and_update();
+        assert_eq!(canvas.frame_number, 0);
+        assert_eq!(canvas.width, 0);
+        assert_eq!(canvas.height, 0);
+        assert!(canvas.rgba_bytes().is_empty());
+    }
+
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(1, 2, 3, 255));
+    canvas.set_pixel(1, 0, Rgba::new(4, 5, 6, 255));
+    bus.canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(&canvas, 9, 123));
+
+    timeout(Duration::from_secs(1), rx.changed())
+        .await
+        .expect("t/o")
+        .expect("changed");
+
+    let latest = rx.borrow_and_update();
+    assert_eq!(latest.frame_number, 9);
+    assert_eq!(latest.width, 2);
+    assert_eq!(latest.height, 1);
+    assert_eq!(latest.rgba_bytes()[..8], [1, 2, 3, 255, 4, 5, 6, 255]);
 }
 
 // ── Lagged Receiver Handling ─────────────────────────────────────────────

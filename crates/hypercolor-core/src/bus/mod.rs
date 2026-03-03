@@ -18,6 +18,7 @@ use std::time::{Instant, SystemTime};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};
 
+use crate::types::canvas::Canvas;
 use crate::types::event::{FrameData, HypercolorEvent, SpectrumData};
 
 // ── Constants ────────────────────────────────────────────────────────────
@@ -47,6 +48,54 @@ pub struct TimestampedEvent {
     pub event: HypercolorEvent,
 }
 
+/// Raw render canvas payload for WebSocket preview streaming.
+///
+/// Always stores RGBA bytes regardless of downstream transport format.
+#[derive(Clone, Debug)]
+pub struct CanvasFrame {
+    /// Monotonically increasing frame counter.
+    pub frame_number: u32,
+    /// Millis since daemon start.
+    pub timestamp_ms: u32,
+    /// Canvas width in pixels.
+    pub width: u32,
+    /// Canvas height in pixels.
+    pub height: u32,
+    rgba: Vec<u8>,
+}
+
+impl CanvasFrame {
+    /// Creates an empty frame payload.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            frame_number: 0,
+            timestamp_ms: 0,
+            width: 0,
+            height: 0,
+            rgba: Vec::new(),
+        }
+    }
+
+    /// Snapshot a canvas for transport.
+    #[must_use]
+    pub fn from_canvas(canvas: &Canvas, frame_number: u32, timestamp_ms: u32) -> Self {
+        Self {
+            frame_number,
+            timestamp_ms,
+            width: canvas.width(),
+            height: canvas.height(),
+            rgba: canvas.as_rgba_bytes().to_vec(),
+        }
+    }
+
+    /// RGBA canvas bytes in row-major order.
+    #[must_use]
+    pub fn rgba_bytes(&self) -> &[u8] {
+        &self.rgba
+    }
+}
+
 // ── HypercolorBus ────────────────────────────────────────────────────────
 
 /// The central event bus. Owns all channels and provides typed
@@ -66,6 +115,9 @@ pub struct HypercolorBus {
     /// Latest audio spectrum analysis data.
     spectrum: watch::Sender<SpectrumData>,
 
+    /// Latest render canvas snapshot.
+    canvas: watch::Sender<CanvasFrame>,
+
     /// Monotonic clock base for `mono_ms` timestamps.
     start_instant: Instant,
 }
@@ -77,11 +129,13 @@ impl HypercolorBus {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (frame, _) = watch::channel(FrameData::empty());
         let (spectrum, _) = watch::channel(SpectrumData::empty());
+        let (canvas, _) = watch::channel(CanvasFrame::empty());
 
         Self {
             events,
             frame,
             spectrum,
+            canvas,
             start_instant: Instant::now(),
         }
     }
@@ -140,6 +194,18 @@ impl HypercolorBus {
     #[must_use]
     pub fn spectrum_receiver(&self) -> watch::Receiver<SpectrumData> {
         self.spectrum.subscribe()
+    }
+
+    /// Access the canvas watch sender (for render preview publication).
+    #[must_use]
+    pub fn canvas_sender(&self) -> &watch::Sender<CanvasFrame> {
+        &self.canvas
+    }
+
+    /// Subscribe to canvas updates (latest-value semantics).
+    #[must_use]
+    pub fn canvas_receiver(&self) -> watch::Receiver<CanvasFrame> {
+        self.canvas.subscribe()
     }
 
     /// Number of active broadcast subscribers.

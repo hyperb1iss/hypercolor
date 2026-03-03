@@ -7,6 +7,8 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::SystemTime;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
@@ -26,6 +28,26 @@ const WS_BUFFER_SIZE: usize = 64;
 const WS_PROTOCOL_VERSION: &str = "1.0";
 const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
+const WS_METRICS_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const WS_CANVAS_BYTES_PER_PIXEL_RGBA: u64 = 4;
+
+static WS_CLIENT_COUNT: AtomicUsize = AtomicUsize::new(0);
+static WS_TOTAL_BYTES_SENT: AtomicU64 = AtomicU64::new(0);
+
+struct WsClientGuard;
+
+impl WsClientGuard {
+    fn register() -> Self {
+        WS_CLIENT_COUNT.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for WsClientGuard {
+    fn drop(&mut self) {
+        WS_CLIENT_COUNT.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 // ── Subscription Types ───────────────────────────────────────────────────
 
@@ -39,7 +61,13 @@ enum WsChannel {
 }
 
 impl WsChannel {
-    const SUPPORTED: [Self; 3] = [Self::Frames, Self::Spectrum, Self::Events];
+    const SUPPORTED: [Self; 5] = [
+        Self::Frames,
+        Self::Spectrum,
+        Self::Events,
+        Self::Canvas,
+        Self::Metrics,
+    ];
 
     const fn as_str(self) -> &'static str {
         match self {
@@ -338,6 +366,11 @@ enum ServerMessage {
         timestamp: String,
         data: serde_json::Value,
     },
+    /// Periodic performance metrics snapshot.
+    Metrics {
+        timestamp: String,
+        data: MetricsPayload,
+    },
     /// Backpressure warning for dropped binary channel payloads.
     Backpressure {
         dropped_frames: u32,
@@ -386,6 +419,68 @@ struct HelloFps {
 struct NameRef {
     id: String,
     name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MetricsPayload {
+    fps: MetricsFps,
+    frame_time: MetricsFrameTime,
+    stages: MetricsStages,
+    memory: MetricsMemory,
+    devices: MetricsDevices,
+    websocket: MetricsWebsocket,
+}
+
+#[derive(Debug, Serialize)]
+struct MetricsFps {
+    target: u32,
+    actual: f64,
+    dropped: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "JSON keys mirror protocol field names from the WebSocket spec"
+)]
+struct MetricsFrameTime {
+    avg_ms: f64,
+    p95_ms: f64,
+    p99_ms: f64,
+    max_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "JSON keys mirror protocol field names from the WebSocket spec"
+)]
+struct MetricsStages {
+    input_sampling_ms: f64,
+    effect_rendering_ms: f64,
+    spatial_sampling_ms: f64,
+    device_output_ms: f64,
+    event_bus_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct MetricsMemory {
+    daemon_rss_mb: f64,
+    servo_rss_mb: f64,
+    canvas_buffer_kb: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct MetricsDevices {
+    connected: usize,
+    total_leds: usize,
+    output_errors: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct MetricsWebsocket {
+    client_count: usize,
+    bytes_sent_per_sec: f64,
 }
 
 #[derive(Debug)]
@@ -443,6 +538,8 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>
     reason = "Socket loop coordinates handshake, heartbeats, relay queues, and client messages"
 )]
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
+    let _client_guard = WsClientGuard::register();
+
     // Default subscriptions: events only.
     // Wrapped in Arc<RwLock<_>> so the relay task sees subscription changes.
     let subscriptions = Arc::new(RwLock::new(SubscriptionState::default()));
@@ -465,6 +562,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     let event_rx = state.event_bus.subscribe_all();
     let frame_rx = state.event_bus.frame_receiver();
     let spectrum_rx = state.event_bus.spectrum_receiver();
+    let canvas_rx = state.event_bus.canvas_receiver();
 
     // Split outbound traffic: JSON is lossless, binary is bounded/drop-on-pressure.
     let (json_tx, mut json_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -483,10 +581,20 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     let spectrum_subs = Arc::clone(&subscriptions);
     let spectrum_relay_handle = tokio::spawn(relay_spectrum(
         spectrum_rx,
-        json_tx,
-        binary_tx,
+        json_tx.clone(),
+        binary_tx.clone(),
         spectrum_subs,
     ));
+    let canvas_subs = Arc::clone(&subscriptions);
+    let canvas_relay_handle = tokio::spawn(relay_canvas(
+        canvas_rx,
+        json_tx.clone(),
+        binary_tx.clone(),
+        canvas_subs,
+    ));
+    let metrics_subs = Arc::clone(&subscriptions);
+    let metrics_relay_handle =
+        tokio::spawn(relay_metrics(Arc::clone(&state), json_tx, metrics_subs));
 
     let mut ping_interval = tokio::time::interval(WS_PING_INTERVAL);
     ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -502,9 +610,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
             json_msg = json_rx.recv() => {
                 match json_msg {
                     Some(msg) => {
+                        let sent_len = msg.len();
                         if socket.send(Message::Text(msg.into())).await.is_err() {
                             break;
                         }
+                        track_ws_bytes_sent(sent_len);
                     }
                     None => break,
                 }
@@ -514,9 +624,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
             binary_msg = binary_rx.recv() => {
                 match binary_msg {
                     Some(bytes) => {
+                        let sent_len = bytes.len();
                         if socket.send(Message::Binary(bytes.into())).await.is_err() {
                             break;
                         }
+                        track_ws_bytes_sent(sent_len);
                     }
                     None => break,
                 }
@@ -564,6 +676,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     relay_handle.abort();
     frame_relay_handle.abort();
     spectrum_relay_handle.abort();
+    canvas_relay_handle.abort();
+    metrics_relay_handle.abort();
     debug!("WebSocket client disconnected");
 }
 
@@ -641,11 +755,18 @@ async fn relay_frames(
             continue;
         }
 
+        let zones = filter_frame_zones(&frame.zones, &frame_config.zones);
         let outbound = match frame_config.format {
-            FrameFormat::Binary => FrameRelayMessage::Binary(encode_frame_binary(&frame)),
+            FrameFormat::Binary => {
+                let filtered_frame = hypercolor_types::event::FrameData {
+                    frame_number: frame.frame_number,
+                    timestamp_ms: frame.timestamp_ms,
+                    zones,
+                };
+                FrameRelayMessage::Binary(encode_frame_binary(&filtered_frame))
+            }
             FrameFormat::Json => {
-                let zones: Vec<serde_json::Value> = frame
-                    .zones
+                let zones: Vec<serde_json::Value> = zones
                     .iter()
                     .map(|zone| {
                         json!({
@@ -720,6 +841,96 @@ async fn relay_spectrum(
     }
 }
 
+/// Relay raw canvas updates to the WebSocket client.
+async fn relay_canvas(
+    mut canvas_rx: watch::Receiver<hypercolor_core::bus::CanvasFrame>,
+    json_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    subscriptions: Arc<RwLock<SubscriptionState>>,
+) {
+    let mut last_sent = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+
+    loop {
+        if canvas_rx.changed().await.is_err() {
+            break;
+        }
+
+        let canvas = canvas_rx.borrow().clone();
+        let canvas_config = {
+            let subs = subscriptions.read().await;
+            if !subs.channels.contains(&WsChannel::Canvas) {
+                continue;
+            }
+            subs.config.canvas.clone()
+        };
+
+        if !should_emit(&mut last_sent, canvas_config.fps) {
+            continue;
+        }
+
+        if binary_tx
+            .try_send(encode_canvas_binary(&canvas, canvas_config.format))
+            .is_err()
+        {
+            enqueue_backpressure_notice(&json_tx, "canvas", canvas_config.fps);
+            debug!("Dropping binary canvas update for slow WebSocket consumer");
+        }
+    }
+}
+
+/// Relay periodic metrics snapshots to the WebSocket client.
+async fn relay_metrics(
+    state: Arc<AppState>,
+    json_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    subscriptions: Arc<RwLock<SubscriptionState>>,
+) {
+    let mut last_total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
+
+    loop {
+        let interval_ms = {
+            let subs = subscriptions.read().await;
+            if subs.channels.contains(&WsChannel::Metrics) {
+                Some(subs.config.metrics.interval_ms)
+            } else {
+                None
+            }
+        };
+
+        let Some(interval_ms) = interval_ms else {
+            tokio::time::sleep(WS_METRICS_IDLE_POLL_INTERVAL).await;
+            continue;
+        };
+
+        tokio::time::sleep(Duration::from_millis(u64::from(interval_ms))).await;
+
+        let still_subscribed = {
+            let subs = subscriptions.read().await;
+            subs.channels.contains(&WsChannel::Metrics)
+        };
+        if !still_subscribed {
+            continue;
+        }
+
+        let total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
+        let delta_bytes = total_bytes.saturating_sub(last_total_bytes);
+        last_total_bytes = total_bytes;
+        let interval_secs = f64::from(interval_ms) / 1000.0;
+        let bytes_per_sec = if interval_secs > 0.0 {
+            let delta_u32 = u32::try_from(delta_bytes).unwrap_or(u32::MAX);
+            f64::from(delta_u32) / interval_secs
+        } else {
+            0.0
+        };
+
+        let message = build_metrics_message(&state, bytes_per_sec).await;
+        if let Ok(text) = serde_json::to_string(&message) {
+            let _ = json_tx.send(text);
+        }
+    }
+}
+
 /// Process a client subscription/unsubscription message.
 async fn handle_client_message(
     text: &str,
@@ -753,9 +964,7 @@ async fn handle_client_message(
             let mut subs = subscriptions.write().await;
 
             if let Some(config_patch) = config {
-                if let Err(error) = validate_patch_supported(&config_patch)
-                    .and_then(|()| subs.config.apply_patch(config_patch))
-                {
+                if let Err(error) = subs.config.apply_patch(config_patch) {
                     let _ = send_json(socket, &error.into_message()).await;
                     return;
                 }
@@ -978,14 +1187,20 @@ fn parse_channels(channels: &[String]) -> Result<Vec<WsChannel>, WsProtocolError
     Ok(parsed)
 }
 
-fn validate_patch_supported(patch: &ChannelConfigPatch) -> Result<(), WsProtocolError> {
-    if patch.canvas.is_some() {
-        return Err(WsProtocolError::unsupported_channel("canvas"));
+fn filter_frame_zones(
+    zones: &[hypercolor_types::event::ZoneColors],
+    selected: &[String],
+) -> Vec<hypercolor_types::event::ZoneColors> {
+    if selected.iter().any(|zone| zone == "all") {
+        return zones.to_vec();
     }
-    if patch.metrics.is_some() {
-        return Err(WsProtocolError::unsupported_channel("metrics"));
-    }
-    Ok(())
+
+    let selected_set: HashSet<&str> = selected.iter().map(String::as_str).collect();
+    zones
+        .iter()
+        .filter(|zone| selected_set.contains(zone.zone_id.as_str()))
+        .cloned()
+        .collect()
 }
 
 fn validate_range(
@@ -1010,6 +1225,11 @@ fn should_emit(last_sent: &mut Instant, fps: u32) -> bool {
     }
     *last_sent = now;
     true
+}
+
+fn track_ws_bytes_sent(sent_len: usize) {
+    let sent_u64 = u64::try_from(sent_len).unwrap_or(u64::MAX);
+    WS_TOTAL_BYTES_SENT.fetch_add(sent_u64, Ordering::Relaxed);
 }
 
 fn encode_frame_binary(frame: &hypercolor_types::event::FrameData) -> Vec<u8> {
@@ -1070,8 +1290,142 @@ fn encode_spectrum_binary(
     out
 }
 
+fn encode_canvas_binary(
+    canvas: &hypercolor_core::bus::CanvasFrame,
+    format: CanvasFormat,
+) -> Vec<u8> {
+    let width_u16 = u16::try_from(canvas.width).unwrap_or(u16::MAX);
+    let height_u16 = u16::try_from(canvas.height).unwrap_or(u16::MAX);
+    let width = usize::from(width_u16);
+    let height = usize::from(height_u16);
+    let px_count = width.saturating_mul(height);
+
+    let bpp = match format {
+        CanvasFormat::Rgb => 3_usize,
+        CanvasFormat::Rgba => 4_usize,
+    };
+    let mut out = Vec::with_capacity(14_usize.saturating_add(px_count.saturating_mul(bpp)));
+    out.push(0x03);
+    out.extend_from_slice(&canvas.frame_number.to_le_bytes());
+    out.extend_from_slice(&canvas.timestamp_ms.to_le_bytes());
+    out.extend_from_slice(&width_u16.to_le_bytes());
+    out.extend_from_slice(&height_u16.to_le_bytes());
+    out.push(match format {
+        CanvasFormat::Rgb => 0,
+        CanvasFormat::Rgba => 1,
+    });
+
+    let rgba = canvas.rgba_bytes();
+    match format {
+        CanvasFormat::Rgb => {
+            for pixel in rgba.chunks_exact(4).take(px_count) {
+                out.extend_from_slice(&pixel[..3]);
+            }
+        }
+        CanvasFormat::Rgba => {
+            let max_len = px_count.saturating_mul(4);
+            out.extend_from_slice(&rgba[..rgba.len().min(max_len)]);
+        }
+    }
+
+    out
+}
+
 fn sanitize_f32(value: f32) -> f32 {
     if value.is_finite() { value } else { 0.0 }
+}
+
+async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> ServerMessage {
+    let render_stats = state.render_loop.read().await.stats();
+    let target_fps = render_stats.tier.fps();
+    let avg_frame_secs = render_stats.avg_frame_time.as_secs_f64();
+    let actual_fps = if render_stats.avg_frame_time.is_zero() {
+        f64::from(target_fps)
+    } else {
+        (1.0 / avg_frame_secs).max(0.0)
+    };
+    let avg_ms = avg_frame_secs * 1000.0;
+
+    let devices = state.device_registry.list().await;
+    let total_leds = devices.iter().fold(0_usize, |acc, tracked| {
+        let led_count = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
+        acc.saturating_add(led_count)
+    });
+    let connected = devices.len();
+
+    let (canvas_width, canvas_height) = {
+        let spatial = state.spatial_engine.read().await;
+        let layout = spatial.layout();
+        (layout.canvas_width, layout.canvas_height)
+    };
+    let canvas_buffer_bytes = u64::from(canvas_width)
+        .saturating_mul(u64::from(canvas_height))
+        .saturating_mul(WS_CANVAS_BYTES_PER_PIXEL_RGBA);
+    let canvas_buffer_kb = u32::try_from(canvas_buffer_bytes / 1024).unwrap_or(u32::MAX);
+
+    let daemon_rss_mb = process_rss_mb().unwrap_or(0.0);
+    let client_count = WS_CLIENT_COUNT.load(Ordering::Relaxed);
+
+    ServerMessage::Metrics {
+        timestamp: format_iso8601_now(),
+        data: MetricsPayload {
+            fps: MetricsFps {
+                target: target_fps,
+                actual: round_1(actual_fps),
+                dropped: render_stats.consecutive_misses,
+            },
+            frame_time: MetricsFrameTime {
+                avg_ms: round_2(avg_ms),
+                p95_ms: round_2(avg_ms),
+                p99_ms: round_2(avg_ms),
+                max_ms: round_2(avg_ms),
+            },
+            stages: MetricsStages {
+                input_sampling_ms: 0.0,
+                effect_rendering_ms: 0.0,
+                spatial_sampling_ms: 0.0,
+                device_output_ms: 0.0,
+                event_bus_ms: 0.0,
+            },
+            memory: MetricsMemory {
+                daemon_rss_mb: round_1(daemon_rss_mb),
+                servo_rss_mb: 0.0,
+                canvas_buffer_kb,
+            },
+            devices: MetricsDevices {
+                connected,
+                total_leds,
+                output_errors: 0,
+            },
+            websocket: MetricsWebsocket {
+                client_count,
+                bytes_sent_per_sec: round_1(bytes_sent_per_sec),
+            },
+        },
+    }
+}
+
+fn round_1(value: f64) -> f64 {
+    (value * 10.0).round() / 10.0
+}
+
+fn round_2(value: f64) -> f64 {
+    (value * 100.0).round() / 100.0
+}
+
+fn process_rss_mb() -> Option<f64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+        let kb = line.split_whitespace().nth(1)?.parse::<f64>().ok()?;
+        Some(kb / 1024.0)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 fn enqueue_backpressure_notice(
@@ -1159,6 +1513,43 @@ fn to_snake_case(input: &str) -> String {
     out
 }
 
+fn format_iso8601_now() -> String {
+    let now = SystemTime::now();
+    let duration = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default();
+
+    let total_secs = duration.as_secs();
+    let millis = duration.subsec_millis();
+    let (year, month, day, hour, minute, second) = epoch_to_utc(total_secs);
+
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+}
+
+#[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+fn epoch_to_utc(epoch_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
+    let secs_per_day: u64 = 86400;
+    let days = epoch_secs / secs_per_day;
+    let day_secs = epoch_secs % secs_per_day;
+
+    let hour = (day_secs / 3600) as u32;
+    let minute = ((day_secs % 3600) / 60) as u32;
+    let second = (day_secs % 60) as u32;
+
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    (y as u32, m as u32, d as u32, hour, minute, second)
+}
+
 async fn build_hello_state(state: &AppState) -> HelloState {
     let render_snapshot = state.render_loop.read().await.stats();
     let target_fps = render_snapshot.tier.fps();
@@ -1211,12 +1602,14 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 mod tests {
     use super::{
         ChannelConfig, ChannelConfigPatch, ServerMessage, WsChannel, command_response_from_http,
-        dispatch_command, encode_frame_binary, encode_spectrum_binary, event_message_parts,
-        normalize_command_path, parse_channels, parse_command_method, to_snake_case,
-        unique_sorted_channel_names, validate_patch_supported, ws_capabilities,
+        dispatch_command, encode_canvas_binary, encode_frame_binary, encode_spectrum_binary,
+        event_message_parts, filter_frame_zones, normalize_command_path, parse_channels,
+        parse_command_method, to_snake_case, unique_sorted_channel_names, ws_capabilities,
     };
     use crate::api::AppState;
     use axum::response::IntoResponse;
+    use hypercolor_core::bus::CanvasFrame;
+    use hypercolor_types::canvas::{Canvas, Rgba};
     use hypercolor_types::event::{FrameData, HypercolorEvent, SpectrumData, ZoneColors};
     use std::sync::Arc;
 
@@ -1226,11 +1619,19 @@ mod tests {
             "events".to_owned(),
             "frames".to_owned(),
             "spectrum".to_owned(),
+            "canvas".to_owned(),
+            "metrics".to_owned(),
         ];
         let parsed = parse_channels(&channels).expect("events should parse");
         assert_eq!(
             parsed,
-            vec![WsChannel::Events, WsChannel::Frames, WsChannel::Spectrum]
+            vec![
+                WsChannel::Events,
+                WsChannel::Frames,
+                WsChannel::Spectrum,
+                WsChannel::Canvas,
+                WsChannel::Metrics
+            ]
         );
     }
 
@@ -1242,32 +1643,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_channels_rejects_unsupported_channel() {
-        let channels = vec!["canvas".to_owned()];
-        let error = parse_channels(&channels).expect_err("unsupported channel should fail");
-        assert_eq!(error.code, "unsupported_channel");
-    }
-
-    #[test]
-    fn validate_patch_rejects_unsupported_channel_config() {
+    fn channel_config_apply_patch_supports_all_channels() {
+        let mut config = ChannelConfig::default();
         let patch: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
+            "frames": {"fps": 30, "format": "binary"},
+            "spectrum": {"fps": 20, "bins": 32},
+            "canvas": {"fps": 10, "format": "rgba"},
             "metrics": {"interval_ms": 500}
         }))
         .expect("valid json patch");
 
-        let error = validate_patch_supported(&patch).expect_err("metrics config not supported");
-        assert_eq!(error.code, "unsupported_channel");
-    }
+        config
+            .apply_patch(patch)
+            .expect("full channel config patch should be accepted");
 
-    #[test]
-    fn validate_patch_accepts_frames_and_spectrum_config() {
-        let patch: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
-            "frames": {"fps": 30, "format": "binary"},
-            "spectrum": {"fps": 20, "bins": 32}
-        }))
-        .expect("valid json patch");
-
-        validate_patch_supported(&patch).expect("frames/spectrum config should be supported");
+        let json = serde_json::to_value(config).expect("config serializes");
+        assert_eq!(json["canvas"]["format"], "rgba");
+        assert_eq!(json["metrics"]["interval_ms"], 500);
     }
 
     #[test]
@@ -1320,6 +1712,8 @@ mod tests {
         assert!(capabilities.contains(&"events".to_owned()));
         assert!(capabilities.contains(&"frames".to_owned()));
         assert!(capabilities.contains(&"spectrum".to_owned()));
+        assert!(capabilities.contains(&"canvas".to_owned()));
+        assert!(capabilities.contains(&"metrics".to_owned()));
         assert!(capabilities.contains(&"commands".to_owned()));
     }
 
@@ -1507,5 +1901,49 @@ mod tests {
         assert_eq!(encoded[0], 0x02);
         assert_eq!(encoded[5], 16);
         assert_eq!(encoded[22], 1);
+    }
+
+    #[test]
+    fn filter_frame_zones_respects_named_subset() {
+        let zones = vec![
+            ZoneColors {
+                zone_id: "left".to_owned(),
+                colors: vec![[255, 0, 0]],
+            },
+            ZoneColors {
+                zone_id: "right".to_owned(),
+                colors: vec![[0, 0, 255]],
+            },
+        ];
+
+        let filtered = filter_frame_zones(&zones, &["right".to_owned()]);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].zone_id, "right");
+
+        let all = filter_frame_zones(&zones, &["all".to_owned()]);
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn canvas_binary_encoder_writes_spec_header_and_rgb_payload() {
+        let mut canvas = Canvas::new(2, 1);
+        canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+        canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 200));
+        let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
+
+        let encoded = encode_canvas_binary(&frame, super::CanvasFormat::Rgb);
+        assert_eq!(encoded[0], 0x03);
+        assert_eq!(
+            u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
+            7
+        );
+        assert_eq!(
+            u32::from_le_bytes([encoded[5], encoded[6], encoded[7], encoded[8]]),
+            99
+        );
+        assert_eq!(u16::from_le_bytes([encoded[9], encoded[10]]), 2);
+        assert_eq!(u16::from_le_bytes([encoded[11], encoded[12]]), 1);
+        assert_eq!(encoded[13], 0);
+        assert_eq!(&encoded[14..20], &[10, 20, 30, 40, 50, 60]);
     }
 }
