@@ -70,6 +70,14 @@ fn frame_contains_red_pixel(canvas: &Canvas) -> bool {
         .any(|[r, g, b, _]| r >= 200 && g <= 80 && b <= 80)
 }
 
+fn frame_has_spatial_variance(canvas: &Canvas) -> bool {
+    let top_left = canvas.get_pixel(0, 0);
+    let top_right = canvas.get_pixel(canvas.width() - 1, 0);
+    let bottom_left = canvas.get_pixel(0, canvas.height() - 1);
+    let bottom_right = canvas.get_pixel(canvas.width() - 1, canvas.height() - 1);
+    top_left != top_right || top_left != bottom_left || top_left != bottom_right
+}
+
 fn effect_paths_in(bucket: &str) -> Vec<PathBuf> {
     let root = bundled_effects_root().join(bucket);
     let mut paths: Vec<PathBuf> = fs::read_dir(&root)
@@ -156,6 +164,12 @@ ctx.fillRect(0, 0, canvas.width, canvas.height);
 #[test]
 #[ignore = "requires full Servo runtime and is expensive in CI/dev loops"]
 fn servo_renderer_smoke_renders_builtin_catalog_sample() {
+    let rainbow_frames = render_frames(PathBuf::from("builtin/Rainbow.html"), 3);
+    assert!(
+        rainbow_frames.iter().any(frame_has_spatial_variance),
+        "rainbow effect should produce spatially varying pixels"
+    );
+
     for relative in BUILTIN_EFFECTS {
         let frames = render_frames(PathBuf::from(relative), 3);
         assert!(
