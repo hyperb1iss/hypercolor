@@ -1,7 +1,7 @@
 //! Servo-backed HTML effect renderer (feature-gated).
 //!
 //! This is an integration scaffold that currently validates Servo context
-//! initialization and Lightscript injection sequencing. Full WebView paint/
+//! initialization and Lightscript injection sequencing. Full `WebView` paint/
 //! readback wiring is the next step.
 
 use std::collections::HashMap;
@@ -50,13 +50,16 @@ impl ServoRenderer {
         self.pending_scripts.extend(frame_scripts.control_updates);
     }
 
-    fn placeholder_canvas(&self, input: &FrameInput) -> Canvas {
+    fn placeholder_canvas(input: &FrameInput) -> Canvas {
         let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
 
-        #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-        let frame_mod = (input.frame_number % 255) as u8;
-        #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-        let audio_mod = (input.audio.rms_level.clamp(0.0, 1.0) * 255.0) as u8;
+        let frame_mod = u8::try_from(input.frame_number % u64::from(u8::MAX)).unwrap_or_default();
+        #[allow(
+            clippy::as_conversions,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
+        let audio_mod = (input.audio.rms_level.clamp(0.0, 1.0) * f32::from(u8::MAX)) as u8;
 
         let color = Rgba::new(frame_mod, audio_mod, frame_mod.saturating_add(32), 255);
         canvas.fill(color);
@@ -107,7 +110,7 @@ impl EffectRenderer for ServoRenderer {
             self.warned_placeholder_frame = true;
         }
 
-        Ok(self.placeholder_canvas(input))
+        Ok(Self::placeholder_canvas(input))
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {

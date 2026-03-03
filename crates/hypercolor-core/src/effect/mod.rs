@@ -15,6 +15,8 @@ mod registry;
 #[cfg(feature = "servo")]
 mod servo_bootstrap;
 #[cfg(feature = "servo")]
+mod servo_delegate;
+#[cfg(feature = "servo")]
 mod servo_renderer;
 mod traits;
 
@@ -30,6 +32,8 @@ pub use meta_parser::{
 pub use registry::{EffectEntry, EffectRegistry};
 #[cfg(feature = "servo")]
 pub use servo_bootstrap::bootstrap_software_rendering_context;
+#[cfg(feature = "servo")]
+pub use servo_delegate::{ConsoleMessage, HypercolorWebViewDelegate};
 #[cfg(feature = "servo")]
 pub use servo_renderer::ServoRenderer;
 pub use traits::{EffectRenderer, FrameInput};

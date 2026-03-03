@@ -22,11 +22,6 @@ pub fn bootstrap_software_rendering_context(
     height: u32,
 ) -> Result<SoftwareRenderingContext> {
     SoftwareRenderingContext::new(PhysicalSize::new(width, height)).map_err(|error| {
-        anyhow!(
-            "failed to create Servo SoftwareRenderingContext ({}x{}): {:?}",
-            width,
-            height,
-            error
-        )
+        anyhow!("failed to create Servo SoftwareRenderingContext ({width}x{height}): {error:?}")
     })
 }
