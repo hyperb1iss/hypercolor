@@ -25,3 +25,8 @@ clap = { workspace = true }
 clap_complete = { workspace = true }
 reqwest = { workspace = true }
 dirs = { workspace = true }
+
+[dev-dependencies]
+hypercolor-daemon = { path = "../hypercolor-daemon" }
+tempfile = { workspace = true }
+axum = { workspace = true }
