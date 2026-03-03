@@ -11,10 +11,12 @@ use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
+use axum::http::{Method, Request, header};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{RwLock, broadcast, watch};
+use tower::ServiceExt;
 use tracing::{debug, warn};
 
 use crate::api::AppState;
@@ -255,6 +257,14 @@ enum ClientMessage {
     },
     /// Unsubscribe from one or more channels.
     Unsubscribe { channels: Vec<String> },
+    /// REST-equivalent command execution over WS.
+    Command {
+        id: String,
+        method: String,
+        path: String,
+        #[serde(default)]
+        body: Option<serde_json::Value>,
+    },
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -341,6 +351,15 @@ enum ServerMessage {
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         details: Option<serde_json::Value>,
+    },
+    /// Command response envelope for WS command execution.
+    Response {
+        id: String,
+        status: u16,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<serde_json::Value>,
     },
 }
 
@@ -434,10 +453,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
         ServerMessage::Hello {
             version: WS_PROTOCOL_VERSION.to_owned(),
             state: build_hello_state(&state).await,
-            capabilities: WsChannel::SUPPORTED
-                .iter()
-                .map(|channel| channel.as_str().to_owned())
-                .collect(),
+            capabilities: ws_capabilities(),
             subscriptions: sorted_channel_names(&subs.channels),
         }
     };
@@ -524,7 +540,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        handle_client_message(&text, &subscriptions, &mut socket).await;
+                        handle_client_message(&text, &state, &subscriptions, &mut socket).await;
                     }
                     Some(Ok(Message::Pong(_))) => {
                         awaiting_pong = false;
@@ -707,6 +723,7 @@ async fn relay_spectrum(
 /// Process a client subscription/unsubscription message.
 async fn handle_client_message(
     text: &str,
+    state: &Arc<AppState>,
     subscriptions: &Arc<RwLock<SubscriptionState>>,
     socket: &mut WebSocket,
 ) {
@@ -777,7 +794,165 @@ async fn handle_client_message(
             };
             let _ = send_json(socket, &ack).await;
         }
+        ClientMessage::Command {
+            id,
+            method,
+            path,
+            body,
+        } => {
+            let response = dispatch_command(state, id, method, path, body).await;
+            let _ = send_json(socket, &response).await;
+        }
     }
+}
+
+async fn dispatch_command(
+    state: &Arc<AppState>,
+    id: String,
+    method_raw: String,
+    path_raw: String,
+    body: Option<serde_json::Value>,
+) -> ServerMessage {
+    let method = match parse_command_method(&method_raw) {
+        Ok(method) => method,
+        Err(error) => {
+            return ServerMessage::Response {
+                id,
+                status: 400,
+                data: None,
+                error: Some(protocol_error_json(error)),
+            };
+        }
+    };
+    let path = match normalize_command_path(&path_raw) {
+        Ok(path) => path,
+        Err(error) => {
+            return ServerMessage::Response {
+                id,
+                status: 400,
+                data: None,
+                error: Some(protocol_error_json(error)),
+            };
+        }
+    };
+
+    let body_bytes = match body {
+        Some(payload) => serde_json::to_vec(&payload).unwrap_or_default(),
+        None => Vec::new(),
+    };
+
+    let mut request_builder = Request::builder().method(method).uri(path);
+    if !body_bytes.is_empty() {
+        request_builder = request_builder.header(header::CONTENT_TYPE, "application/json");
+    }
+
+    let request = match request_builder.body(axum::body::Body::from(body_bytes)) {
+        Ok(request) => request,
+        Err(error) => {
+            return ServerMessage::Response {
+                id,
+                status: 400,
+                data: None,
+                error: Some(protocol_error_json(WsProtocolError::invalid_request(
+                    format!("Invalid command request: {error}"),
+                ))),
+            };
+        }
+    };
+
+    let response = crate::api::build_router(Arc::clone(state))
+        .oneshot(request)
+        .await
+        .unwrap_or_else(|never| match never {});
+
+    command_response_from_http(id, response).await
+}
+
+fn parse_command_method(method_raw: &str) -> Result<Method, WsProtocolError> {
+    let method = Method::from_bytes(method_raw.trim().as_bytes()).map_err(|_| {
+        WsProtocolError::invalid_request("command.method must be a valid HTTP verb")
+    })?;
+
+    if matches!(
+        method,
+        Method::GET | Method::POST | Method::PUT | Method::PATCH | Method::DELETE
+    ) {
+        Ok(method)
+    } else {
+        Err(WsProtocolError::invalid_request(
+            "command.method must be one of GET, POST, PUT, PATCH, DELETE",
+        ))
+    }
+}
+
+fn normalize_command_path(path_raw: &str) -> Result<String, WsProtocolError> {
+    let path = path_raw.trim();
+    if path.is_empty() {
+        return Err(WsProtocolError::invalid_request(
+            "command.path must not be empty",
+        ));
+    }
+    if !path.starts_with('/') {
+        return Err(WsProtocolError::invalid_request(
+            "command.path must start with '/'",
+        ));
+    }
+    if path.starts_with("/api/v1") {
+        return Ok(path.to_owned());
+    }
+    Ok(format!("/api/v1{path}"))
+}
+
+async fn command_response_from_http(id: String, response: Response) -> ServerMessage {
+    let status = response.status().as_u16();
+    let body = response.into_body();
+    let bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .unwrap_or_default();
+    let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+
+    if (200..300).contains(&status) {
+        let data = parsed
+            .map(|value| value.get("data").cloned().unwrap_or(value))
+            .or_else(|| Some(json!({})));
+        return ServerMessage::Response {
+            id,
+            status,
+            data,
+            error: None,
+        };
+    }
+
+    let error = parsed
+        .and_then(|value| value.get("error").cloned())
+        .or_else(|| {
+            Some(json!({
+                "code": "internal_error",
+                "message": format!("Command failed with status {status}"),
+            }))
+        });
+    ServerMessage::Response {
+        id,
+        status,
+        data: None,
+        error,
+    }
+}
+
+fn protocol_error_json(error: WsProtocolError) -> serde_json::Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "code".to_owned(),
+        serde_json::Value::String(error.code.to_owned()),
+    );
+    payload.insert(
+        "message".to_owned(),
+        serde_json::Value::String(error.message),
+    );
+    if let Some(details) = error.details {
+        payload.insert("details".to_owned(), details);
+    }
+    serde_json::Value::Object(payload)
 }
 
 fn parse_channels(channels: &[String]) -> Result<Vec<WsChannel>, WsProtocolError> {
@@ -934,6 +1109,15 @@ fn unique_sorted_channel_names(channels: &[WsChannel]) -> Vec<String> {
     sorted_channel_names(&unique)
 }
 
+fn ws_capabilities() -> Vec<String> {
+    let mut capabilities: Vec<String> = WsChannel::SUPPORTED
+        .iter()
+        .map(|channel| channel.as_str().to_owned())
+        .collect();
+    capabilities.push("commands".to_owned());
+    capabilities
+}
+
 fn event_message_parts(
     event: &hypercolor_types::event::HypercolorEvent,
 ) -> (String, serde_json::Value) {
@@ -1026,11 +1210,15 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 #[cfg(test)]
 mod tests {
     use super::{
-        ChannelConfig, ChannelConfigPatch, WsChannel, encode_frame_binary, encode_spectrum_binary,
-        event_message_parts, parse_channels, to_snake_case, unique_sorted_channel_names,
-        validate_patch_supported,
+        ChannelConfig, ChannelConfigPatch, ServerMessage, WsChannel, command_response_from_http,
+        dispatch_command, encode_frame_binary, encode_spectrum_binary, event_message_parts,
+        normalize_command_path, parse_channels, parse_command_method, to_snake_case,
+        unique_sorted_channel_names, validate_patch_supported, ws_capabilities,
     };
+    use crate::api::AppState;
+    use axum::response::IntoResponse;
     use hypercolor_types::event::{FrameData, HypercolorEvent, SpectrumData, ZoneColors};
+    use std::sync::Arc;
 
     #[test]
     fn parse_channels_accepts_supported_channel() {
@@ -1124,6 +1312,157 @@ mod tests {
         let (event_name, event_data) = event_message_parts(&HypercolorEvent::Resumed);
         assert_eq!(event_name, "resumed");
         assert_eq!(event_data, serde_json::json!({}));
+    }
+
+    #[test]
+    fn ws_capabilities_include_commands() {
+        let capabilities = ws_capabilities();
+        assert!(capabilities.contains(&"events".to_owned()));
+        assert!(capabilities.contains(&"frames".to_owned()));
+        assert!(capabilities.contains(&"spectrum".to_owned()));
+        assert!(capabilities.contains(&"commands".to_owned()));
+    }
+
+    #[test]
+    fn parse_command_method_rejects_invalid_values() {
+        let error = parse_command_method("BREW").expect_err("BREW should be rejected");
+        assert_eq!(error.code, "invalid_request");
+    }
+
+    #[test]
+    fn normalize_command_path_adds_api_prefix() {
+        assert_eq!(
+            normalize_command_path("/status").expect("path should normalize"),
+            "/api/v1/status"
+        );
+        assert_eq!(
+            normalize_command_path("/api/v1/status").expect("path should stay stable"),
+            "/api/v1/status"
+        );
+    }
+
+    #[test]
+    fn normalize_command_path_rejects_relative_paths() {
+        let error = normalize_command_path("status").expect_err("relative path must fail");
+        assert_eq!(error.code, "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn command_response_from_http_unwraps_data_envelope() {
+        let response = (
+            axum::http::StatusCode::OK,
+            axum::Json(serde_json::json!({
+                "data": {"ok": true}
+            })),
+        )
+            .into_response();
+        let message = command_response_from_http("cmd_test".to_owned(), response).await;
+        match message {
+            ServerMessage::Response {
+                id,
+                status,
+                data,
+                error,
+            } => {
+                assert_eq!(id, "cmd_test");
+                assert_eq!(status, 200);
+                assert_eq!(data, Some(serde_json::json!({"ok": true})));
+                assert!(error.is_none());
+            }
+            _ => panic!("expected response variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn command_response_from_http_unwraps_error_envelope() {
+        let response = (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({
+                "error": {"code": "not_found", "message": "missing resource"}
+            })),
+        )
+            .into_response();
+        let message = command_response_from_http("cmd_missing".to_owned(), response).await;
+        match message {
+            ServerMessage::Response {
+                id,
+                status,
+                data,
+                error,
+            } => {
+                assert_eq!(id, "cmd_missing");
+                assert_eq!(status, 404);
+                assert!(data.is_none());
+                assert_eq!(
+                    error,
+                    Some(serde_json::json!({
+                        "code": "not_found",
+                        "message": "missing resource"
+                    }))
+                );
+            }
+            _ => panic!("expected response variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_command_routes_to_status() {
+        let state = Arc::new(AppState::new());
+        let message = dispatch_command(
+            &state,
+            "cmd_status".to_owned(),
+            "GET".to_owned(),
+            "/status".to_owned(),
+            None,
+        )
+        .await;
+
+        match message {
+            ServerMessage::Response {
+                id,
+                status,
+                data,
+                error,
+            } => {
+                assert_eq!(id, "cmd_status");
+                assert_eq!(status, 200);
+                let payload = data.expect("status command should return payload");
+                assert!(payload.get("running").is_some());
+                assert!(error.is_none());
+            }
+            _ => panic!("expected command response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_command_rejects_invalid_method() {
+        let state = Arc::new(AppState::new());
+        let message = dispatch_command(
+            &state,
+            "cmd_bad_method".to_owned(),
+            "BREW".to_owned(),
+            "/status".to_owned(),
+            None,
+        )
+        .await;
+
+        match message {
+            ServerMessage::Response {
+                id,
+                status,
+                data,
+                error,
+            } => {
+                assert_eq!(id, "cmd_bad_method");
+                assert_eq!(status, 400);
+                assert!(data.is_none());
+                assert_eq!(
+                    error.and_then(|value| value.get("code").cloned()),
+                    Some(serde_json::json!("invalid_request"))
+                );
+            }
+            _ => panic!("expected command response"),
+        }
     }
 
     #[test]
