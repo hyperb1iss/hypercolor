@@ -7,13 +7,14 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{RwLock, broadcast, watch};
 use tracing::{debug, warn};
 
 use crate::api::AppState;
@@ -34,7 +35,7 @@ enum WsChannel {
 }
 
 impl WsChannel {
-    const SUPPORTED: [Self; 1] = [Self::Events];
+    const SUPPORTED: [Self; 3] = [Self::Frames, Self::Spectrum, Self::Events];
 
     const fn as_str(self) -> &'static str {
         match self {
@@ -334,6 +335,12 @@ enum ServerMessage {
     },
 }
 
+#[derive(Debug)]
+enum OutboundMessage {
+    Json(String),
+    Binary(Vec<u8>),
+}
+
 #[derive(Debug, Serialize)]
 struct HelloState {
     running: bool,
@@ -431,15 +438,21 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
         return;
     }
 
-    // Subscribe to the event bus.
+    // Subscribe to the event bus and watch channels.
     let event_rx = state.event_bus.subscribe_all();
+    let frame_rx = state.event_bus.frame_receiver();
+    let spectrum_rx = state.event_bus.spectrum_receiver();
 
     // Bounded relay channel for backpressure.
-    let (relay_tx, mut relay_rx) = tokio::sync::mpsc::channel::<String>(WS_BUFFER_SIZE);
+    let (relay_tx, mut relay_rx) = tokio::sync::mpsc::channel::<OutboundMessage>(WS_BUFFER_SIZE);
 
     // Spawn event relay task — shares the subscription set via Arc<RwLock<_>>.
     let relay_subs = Arc::clone(&subscriptions);
-    let relay_handle = tokio::spawn(relay_events(event_rx, relay_tx, relay_subs));
+    let relay_handle = tokio::spawn(relay_events(event_rx, relay_tx.clone(), relay_subs));
+    let frame_subs = Arc::clone(&subscriptions);
+    let frame_relay_handle = tokio::spawn(relay_frames(frame_rx, relay_tx.clone(), frame_subs));
+    let spectrum_subs = Arc::clone(&subscriptions);
+    let spectrum_relay_handle = tokio::spawn(relay_spectrum(spectrum_rx, relay_tx, spectrum_subs));
 
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
@@ -448,7 +461,12 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
             relay_msg = relay_rx.recv() => {
                 match relay_msg {
                     Some(msg) => {
-                        if socket.send(Message::Text(msg.into())).await.is_err() {
+                        let send_result = match msg {
+                            OutboundMessage::Json(text) => socket.send(Message::Text(text.into())).await,
+                            OutboundMessage::Binary(bytes) => socket.send(Message::Binary(bytes.into())).await,
+                        };
+
+                        if send_result.is_err() {
                             break;
                         }
                     }
@@ -474,6 +492,8 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     }
 
     relay_handle.abort();
+    frame_relay_handle.abort();
+    spectrum_relay_handle.abort();
     debug!("WebSocket client disconnected");
 }
 
@@ -481,7 +501,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 /// Drops events when the consumer is slow (backpressure).
 async fn relay_events(
     mut event_rx: broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
-    relay_tx: tokio::sync::mpsc::Sender<String>,
+    relay_tx: tokio::sync::mpsc::Sender<OutboundMessage>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
     loop {
@@ -507,7 +527,7 @@ async fn relay_events(
                 };
 
                 // If the channel is full, drop the event (backpressure).
-                if relay_tx.try_send(json).is_err() {
+                if relay_tx.try_send(OutboundMessage::Json(json)).is_err() {
                     debug!("Dropping event for slow WebSocket consumer");
                 }
             }
@@ -515,6 +535,106 @@ async fn relay_events(
                 warn!("WebSocket consumer lagged by {n} events");
             }
             Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
+/// Relay frame watch updates to the WebSocket client.
+async fn relay_frames(
+    mut frame_rx: watch::Receiver<hypercolor_types::event::FrameData>,
+    relay_tx: tokio::sync::mpsc::Sender<OutboundMessage>,
+    subscriptions: Arc<RwLock<SubscriptionState>>,
+) {
+    let mut last_sent = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+
+    loop {
+        if frame_rx.changed().await.is_err() {
+            break;
+        }
+
+        let frame = frame_rx.borrow().clone();
+        let frame_config = {
+            let subs = subscriptions.read().await;
+            if !subs.channels.contains(&WsChannel::Frames) {
+                continue;
+            }
+            subs.config.frames.clone()
+        };
+
+        if !should_emit(&mut last_sent, frame_config.fps) {
+            continue;
+        }
+
+        let outbound = match frame_config.format {
+            FrameFormat::Binary => OutboundMessage::Binary(encode_frame_binary(&frame)),
+            FrameFormat::Json => {
+                let zones: Vec<serde_json::Value> = frame
+                    .zones
+                    .iter()
+                    .map(|zone| {
+                        json!({
+                            "zone_id": zone.zone_id,
+                            "colors": zone.colors,
+                        })
+                    })
+                    .collect();
+                let json_frame = json!({
+                    "type": "frame",
+                    "frame_number": frame.frame_number,
+                    "timestamp_ms": frame.timestamp_ms,
+                    "zones": zones,
+                });
+                let Ok(text) = serde_json::to_string(&json_frame) else {
+                    continue;
+                };
+                OutboundMessage::Json(text)
+            }
+        };
+
+        if relay_tx.try_send(outbound).is_err() {
+            debug!("Dropping frame update for slow WebSocket consumer");
+        }
+    }
+}
+
+/// Relay spectrum watch updates to the WebSocket client.
+async fn relay_spectrum(
+    mut spectrum_rx: watch::Receiver<hypercolor_types::event::SpectrumData>,
+    relay_tx: tokio::sync::mpsc::Sender<OutboundMessage>,
+    subscriptions: Arc<RwLock<SubscriptionState>>,
+) {
+    let mut last_sent = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+
+    loop {
+        if spectrum_rx.changed().await.is_err() {
+            break;
+        }
+
+        let spectrum = spectrum_rx.borrow().clone();
+        let spectrum_config = {
+            let subs = subscriptions.read().await;
+            if !subs.channels.contains(&WsChannel::Spectrum) {
+                continue;
+            }
+            subs.config.spectrum.clone()
+        };
+
+        if !should_emit(&mut last_sent, spectrum_config.fps) {
+            continue;
+        }
+
+        if relay_tx
+            .try_send(OutboundMessage::Binary(encode_spectrum_binary(
+                &spectrum,
+                spectrum_config.bins,
+            )))
+            .is_err()
+        {
+            debug!("Dropping spectrum update for slow WebSocket consumer");
         }
     }
 }
@@ -619,12 +739,6 @@ fn parse_channels(channels: &[String]) -> Result<Vec<WsChannel>, WsProtocolError
 }
 
 fn validate_patch_supported(patch: &ChannelConfigPatch) -> Result<(), WsProtocolError> {
-    if patch.frames.is_some() {
-        return Err(WsProtocolError::unsupported_channel("frames"));
-    }
-    if patch.spectrum.is_some() {
-        return Err(WsProtocolError::unsupported_channel("spectrum"));
-    }
     if patch.canvas.is_some() {
         return Err(WsProtocolError::unsupported_channel("canvas"));
     }
@@ -645,6 +759,79 @@ fn validate_range(
         return Err(WsProtocolError::invalid_config(field, message));
     }
     Ok(())
+}
+
+fn should_emit(last_sent: &mut Instant, fps: u32) -> bool {
+    let clamped_fps = fps.max(1);
+    let interval = Duration::from_secs_f64(1.0 / f64::from(clamped_fps));
+    let now = Instant::now();
+    if now.duration_since(*last_sent) < interval {
+        return false;
+    }
+    *last_sent = now;
+    true
+}
+
+fn encode_frame_binary(frame: &hypercolor_types::event::FrameData) -> Vec<u8> {
+    let max_zone_count = usize::from(u8::MAX);
+    let included_zones = if frame.zones.len() > max_zone_count {
+        &frame.zones[..max_zone_count]
+    } else {
+        &frame.zones[..]
+    };
+
+    let mut out = Vec::new();
+    out.push(0x01);
+    out.extend_from_slice(&frame.frame_number.to_le_bytes());
+    out.extend_from_slice(&frame.timestamp_ms.to_le_bytes());
+    out.push(u8::try_from(included_zones.len()).unwrap_or(u8::MAX));
+
+    for zone in included_zones {
+        let zone_id_bytes = zone.zone_id.as_bytes();
+        let zone_id_len_u16 = u16::try_from(zone_id_bytes.len()).unwrap_or(u16::MAX);
+        let zone_id_len = usize::from(zone_id_len_u16);
+        out.extend_from_slice(&zone_id_len_u16.to_le_bytes());
+        out.extend_from_slice(&zone_id_bytes[..zone_id_len]);
+
+        let led_count_u16 = u16::try_from(zone.colors.len()).unwrap_or(u16::MAX);
+        out.extend_from_slice(&led_count_u16.to_le_bytes());
+        let led_count = usize::from(led_count_u16);
+        for color in zone.colors.iter().take(led_count) {
+            out.extend_from_slice(color);
+        }
+    }
+
+    out
+}
+
+fn encode_spectrum_binary(
+    spectrum: &hypercolor_types::event::SpectrumData,
+    requested_bins: u16,
+) -> Vec<u8> {
+    let downsampled = spectrum.downsample(usize::from(requested_bins));
+    let bin_count_u8 = u8::try_from(downsampled.len()).unwrap_or(u8::MAX);
+    let bin_count = usize::from(bin_count_u8);
+
+    let mut out = Vec::new();
+    out.push(0x02);
+    out.extend_from_slice(&spectrum.timestamp_ms.to_le_bytes());
+    out.push(bin_count_u8);
+    out.extend_from_slice(&sanitize_f32(spectrum.level).to_le_bytes());
+    out.extend_from_slice(&sanitize_f32(spectrum.bass).to_le_bytes());
+    out.extend_from_slice(&sanitize_f32(spectrum.mid).to_le_bytes());
+    out.extend_from_slice(&sanitize_f32(spectrum.treble).to_le_bytes());
+    out.push(u8::from(spectrum.beat));
+    out.extend_from_slice(&sanitize_f32(spectrum.beat_confidence).to_le_bytes());
+
+    for value in downsampled.iter().take(bin_count) {
+        out.extend_from_slice(&sanitize_f32(*value).to_le_bytes());
+    }
+
+    out
+}
+
+fn sanitize_f32(value: f32) -> f32 {
+    if value.is_finite() { value } else { 0.0 }
 }
 
 fn sorted_channel_names(channels: &HashSet<WsChannel>) -> Vec<String> {
@@ -749,15 +936,23 @@ async fn send_json(socket: &mut WebSocket, msg: &impl Serialize) -> Result<(), a
 #[cfg(test)]
 mod tests {
     use super::{
-        ChannelConfig, ChannelConfigPatch, WsChannel, parse_channels, to_snake_case,
-        unique_sorted_channel_names, validate_patch_supported,
+        ChannelConfig, ChannelConfigPatch, WsChannel, encode_frame_binary, encode_spectrum_binary,
+        parse_channels, to_snake_case, unique_sorted_channel_names, validate_patch_supported,
     };
+    use hypercolor_types::event::{FrameData, SpectrumData, ZoneColors};
 
     #[test]
     fn parse_channels_accepts_supported_channel() {
-        let channels = vec!["events".to_owned()];
+        let channels = vec![
+            "events".to_owned(),
+            "frames".to_owned(),
+            "spectrum".to_owned(),
+        ];
         let parsed = parse_channels(&channels).expect("events should parse");
-        assert_eq!(parsed, vec![WsChannel::Events]);
+        assert_eq!(
+            parsed,
+            vec![WsChannel::Events, WsChannel::Frames, WsChannel::Spectrum]
+        );
     }
 
     #[test]
@@ -769,7 +964,7 @@ mod tests {
 
     #[test]
     fn parse_channels_rejects_unsupported_channel() {
-        let channels = vec!["frames".to_owned()];
+        let channels = vec!["canvas".to_owned()];
         let error = parse_channels(&channels).expect_err("unsupported channel should fail");
         assert_eq!(error.code, "unsupported_channel");
     }
@@ -777,12 +972,23 @@ mod tests {
     #[test]
     fn validate_patch_rejects_unsupported_channel_config() {
         let patch: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
-            "frames": {"fps": 30}
+            "metrics": {"interval_ms": 500}
         }))
         .expect("valid json patch");
 
-        let error = validate_patch_supported(&patch).expect_err("frames config not supported");
+        let error = validate_patch_supported(&patch).expect_err("metrics config not supported");
         assert_eq!(error.code, "unsupported_channel");
+    }
+
+    #[test]
+    fn validate_patch_accepts_frames_and_spectrum_config() {
+        let patch: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
+            "frames": {"fps": 30, "format": "binary"},
+            "spectrum": {"fps": 20, "bins": 32}
+        }))
+        .expect("valid json patch");
+
+        validate_patch_supported(&patch).expect("frames/spectrum config should be supported");
     }
 
     #[test]
@@ -808,5 +1014,49 @@ mod tests {
     fn snake_case_conversion_handles_camel_case() {
         assert_eq!(to_snake_case("DeviceDiscovered"), "device_discovered");
         assert_eq!(to_snake_case("Paused"), "paused");
+    }
+
+    #[test]
+    fn frame_binary_encoder_writes_header_and_payload() {
+        let frame = FrameData {
+            frame_number: 42,
+            timestamp_ms: 1234,
+            zones: vec![ZoneColors {
+                zone_id: "zone_a".to_owned(),
+                colors: vec![[255, 0, 0], [0, 255, 0]],
+            }],
+        };
+
+        let encoded = encode_frame_binary(&frame);
+        assert_eq!(encoded[0], 0x01);
+        assert_eq!(
+            u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
+            42
+        );
+        assert_eq!(
+            u32::from_le_bytes([encoded[5], encoded[6], encoded[7], encoded[8]]),
+            1234
+        );
+        assert_eq!(encoded[9], 1);
+    }
+
+    #[test]
+    fn spectrum_binary_encoder_uses_requested_bin_count() {
+        let spectrum = SpectrumData {
+            timestamp_ms: 77,
+            level: 0.5,
+            bass: 0.4,
+            mid: 0.3,
+            treble: 0.2,
+            beat: true,
+            beat_confidence: 0.9,
+            bpm: None,
+            bins: vec![0.0; 64],
+        };
+
+        let encoded = encode_spectrum_binary(&spectrum, 16);
+        assert_eq!(encoded[0], 0x02);
+        assert_eq!(encoded[5], 16);
+        assert_eq!(encoded[22], 1);
     }
 }
