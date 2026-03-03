@@ -193,20 +193,31 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
       if (!res.ok) throw new Error(`effects list failed (${res.status})`);
       const body = await res.json();
       const items = body?.data?.items || [];
+      const runnable = items.filter((effect) => effect.runnable !== false);
+      const blocked = items.filter((effect) => effect.runnable === false);
+
       selectEl.innerHTML = "";
-      for (const effect of items) {
+      for (const effect of runnable) {
         const option = document.createElement("option");
-        option.value = effect.name;
-        option.textContent = effect.name;
+        option.value = effect.id;
+        option.dataset.name = effect.name;
+        option.textContent = `${effect.name} (${effect.source || "unknown"})`;
         selectEl.appendChild(option);
       }
-      if (items.length === 0) {
+      if (runnable.length === 0) {
         const option = document.createElement("option");
         option.value = "";
-        option.textContent = "no effects available";
+        option.textContent = "no runnable effects available";
         selectEl.appendChild(option);
       }
-      log(`loaded ${items.length} effect(s)`);
+      if (runnable.length > 0) {
+        selectEl.selectedIndex = 0;
+      }
+
+      log(`loaded ${items.length} effect(s), runnable: ${runnable.length}`);
+      if (blocked.length > 0) {
+        log(`${blocked.length} effect(s) unavailable in this daemon build (likely requires servo)`);
+      }
     }
 
     async function fetchActiveEffect() {
@@ -222,16 +233,25 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
     }
 
     async function applySelectedEffect() {
-      const name = selectEl.value;
-      if (!name) return;
-      const res = await fetch(`/api/v1/effects/${encodeURIComponent(name)}/apply`, {
+      const effectId = selectEl.value;
+      if (!effectId) return;
+      const selectedName = selectEl.selectedOptions[0]?.dataset?.name || effectId;
+
+      const res = await fetch(`/api/v1/effects/${encodeURIComponent(effectId)}/apply`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...apiHeaders() },
         body: JSON.stringify({ transition: { type: "crossfade", duration_ms: 250 } }),
       });
-      if (!res.ok) throw new Error(`apply failed (${res.status})`);
+      if (!res.ok) {
+        let details = "";
+        try {
+          const body = await res.json();
+          details = body?.error?.message ? `: ${body.error.message}` : "";
+        } catch (_) {}
+        throw new Error(`apply failed (${res.status})${details}`);
+      }
       await fetchActiveEffect();
-      log(`applied effect '${name}'`);
+      log(`applied effect '${selectedName}'`);
     }
 
     async function stopEffect() {

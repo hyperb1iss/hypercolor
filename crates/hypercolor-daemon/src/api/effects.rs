@@ -8,7 +8,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
 use hypercolor_core::effect::{EffectRegistry, create_renderer_for_metadata};
-use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
+use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata, EffectSource};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
@@ -41,6 +41,8 @@ pub struct EffectSummary {
     pub description: String,
     pub author: String,
     pub category: String,
+    pub source: String,
+    pub runnable: bool,
     pub tags: Vec<String>,
     pub version: String,
 }
@@ -67,6 +69,8 @@ pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
                 description: meta.description.clone(),
                 author: meta.author.clone(),
                 category: format!("{}", meta.category),
+                source: source_kind(&meta.source).to_owned(),
+                runnable: is_runnable_source(&meta.source),
                 tags: meta.tags.clone(),
                 version: meta.version.clone(),
             }
@@ -99,6 +103,8 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         description: meta.description,
         author: meta.author,
         category: format!("{}", meta.category),
+        source: source_kind(&meta.source).to_owned(),
+        runnable: is_runnable_source(&meta.source),
         tags: meta.tags,
         version: meta.version,
     })
@@ -250,4 +256,20 @@ fn parse_f32(value: f64) -> Option<f32> {
         return None;
     }
     value.to_string().parse::<f32>().ok()
+}
+
+fn source_kind(source: &EffectSource) -> &'static str {
+    match source {
+        EffectSource::Native { .. } => "native",
+        EffectSource::Html { .. } => "html",
+        EffectSource::Shader { .. } => "shader",
+    }
+}
+
+fn is_runnable_source(source: &EffectSource) -> bool {
+    match source {
+        EffectSource::Native { .. } => true,
+        EffectSource::Html { .. } => cfg!(feature = "servo"),
+        EffectSource::Shader { .. } => false,
+    }
 }
