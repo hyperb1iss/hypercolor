@@ -24,6 +24,18 @@ Override with any command:
 ./scripts/servo-cache-build.sh cargo clippy -p hypercolor-core --features servo --all-targets -- -D warnings
 ```
 
+Run the daemon with Servo-enabled HTML rendering:
+
+```bash
+./scripts/run-preview-servo.sh
+```
+
+This command wraps:
+
+```bash
+cargo run -p hypercolor-daemon --features servo -- --bind 127.0.0.1:9420
+```
+
 The wrapper configures:
 
 - `CARGO_TARGET_DIR=$HOME/.cache/hypercolor/target` (unless already set)

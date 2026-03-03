@@ -87,12 +87,43 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
       transform: translateY(-1px);
     }
 
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--muted);
+      user-select: none;
+    }
+
+    .toggle input {
+      min-height: 0;
+      width: 15px;
+      height: 15px;
+      padding: 0;
+      margin: 0;
+    }
+
     .meta {
       display: flex;
       flex-wrap: wrap;
       gap: 14px;
       font-size: 12px;
       color: var(--muted);
+    }
+
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .hint code {
+      padding: 1px 4px;
+      border-radius: 5px;
+      border: 1px solid #24465f;
+      background: #08131d;
+      color: var(--text);
     }
 
     .status-ok { color: var(--ok); }
@@ -143,6 +174,10 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
         <button id="applyBtn" type="button">Apply Effect</button>
         <button id="stopBtn" type="button">Stop</button>
         <input id="fpsInput" type="number" min="1" max="30" value="15" title="Canvas FPS" />
+        <label class="toggle" for="showUnavailable">
+          <input id="showUnavailable" type="checkbox" />
+          show unavailable
+        </label>
         <button id="reconnectBtn" type="button">Reconnect</button>
       </div>
       <div class="meta">
@@ -151,6 +186,7 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
         <span>Size: <strong id="canvasSize">-</strong></span>
         <span>Effect: <strong id="activeEffect">-</strong></span>
       </div>
+      <div id="rendererHint" class="hint"></div>
     </header>
     <section class="stage">
       <canvas id="previewCanvas" width="320" height="200"></canvas>
@@ -164,10 +200,14 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
     const canvasSizeEl = document.getElementById("canvasSize");
     const activeEffectEl = document.getElementById("activeEffect");
     const selectEl = document.getElementById("effectSelect");
+    const applyBtn = document.getElementById("applyBtn");
     const fpsEl = document.getElementById("fpsInput");
+    const showUnavailableEl = document.getElementById("showUnavailable");
+    const rendererHintEl = document.getElementById("rendererHint");
     const logEl = document.getElementById("log");
     const canvas = document.getElementById("previewCanvas");
     const ctx = canvas.getContext("2d");
+    const SERVO_RUN_HINT = "./scripts/run-preview-servo.sh";
 
     let ws = null;
     let frameCount = 0;
@@ -194,6 +234,12 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
       return runnable[0]?.id || "";
     }
 
+    function updateApplyButtonState() {
+      const selected = selectEl.selectedOptions[0];
+      const unavailable = selected?.disabled === true;
+      applyBtn.disabled = !selected || !selectEl.value || unavailable;
+    }
+
     function log(line) {
       const stamp = new Date().toISOString().split("T")[1].replace("Z", "");
       logEl.textContent = `[${stamp}] ${line}\n` + logEl.textContent;
@@ -210,36 +256,64 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
     }
 
     async function loadEffects() {
+      const previousSelection = selectEl.value;
       const res = await fetch("/api/v1/effects", { headers: apiHeaders() });
       if (!res.ok) throw new Error(`effects list failed (${res.status})`);
       const body = await res.json();
       const items = body?.data?.items || [];
       const runnable = items.filter((effect) => effect.runnable !== false);
       const blocked = items.filter((effect) => effect.runnable === false);
+      const blockedHtml = blocked.filter((effect) => effect.source === "html");
+      const visible = showUnavailableEl.checked ? items : runnable;
 
       selectEl.innerHTML = "";
-      for (const effect of runnable) {
+      for (const effect of visible) {
+        const unavailable = effect.runnable === false;
         const option = document.createElement("option");
         option.value = effect.id;
         option.dataset.name = effect.name;
-        option.textContent = `${toDisplayName(effect.name)} (${effect.source || "unknown"})`;
+        option.textContent = `${toDisplayName(effect.name)} (${effect.source || "unknown"})${unavailable ? " · unavailable" : ""}`;
+        option.disabled = unavailable;
         selectEl.appendChild(option);
       }
-      if (runnable.length === 0) {
+      if (visible.length === 0) {
         const option = document.createElement("option");
         option.value = "";
-        option.textContent = "no runnable effects available";
+        option.textContent = "no effects available";
         selectEl.appendChild(option);
       }
-      if (runnable.length > 0) {
+      if (selectEl.options.length > 0) {
+        const previousIndex = Array.from(selectEl.options).findIndex((option) => option.value === previousSelection && !option.disabled);
+        if (previousIndex >= 0) {
+          selectEl.selectedIndex = previousIndex;
+          updateApplyButtonState();
+        }
+      }
+      if (!selectEl.value && runnable.length > 0) {
         const preferredId = pickDefaultEffect(runnable);
-        const preferredIndex = runnable.findIndex((effect) => effect.id === preferredId);
-        selectEl.selectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
+        const preferredIndex = Array.from(selectEl.options)
+          .findIndex((option) => option.value === preferredId && !option.disabled);
+        if (preferredIndex >= 0) {
+          selectEl.selectedIndex = preferredIndex;
+        } else {
+          const firstRunnableIndex = Array.from(selectEl.options).findIndex((option) => !option.disabled);
+          selectEl.selectedIndex = firstRunnableIndex >= 0 ? firstRunnableIndex : 0;
+        }
+      }
+      updateApplyButtonState();
+
+      if (blockedHtml.length > 0) {
+        rendererHintEl.className = "hint status-warn";
+        rendererHintEl.innerHTML = `HTML effects unavailable in this daemon build (${blockedHtml.length}). Restart with <code>${SERVO_RUN_HINT}</code> to enable Servo rendering.`;
+      } else {
+        rendererHintEl.className = "hint status-ok";
+        rendererHintEl.textContent = "Servo HTML rendering is available in this daemon build.";
       }
 
       log(`loaded ${items.length} effect(s), runnable: ${runnable.length}`);
       if (blocked.length > 0) {
-        log(`${blocked.length} effect(s) unavailable in this daemon build (likely requires servo)`);
+        const hiddenWord = showUnavailableEl.checked ? "shown as unavailable" : "hidden";
+        log(`${blocked.length} effect(s) unavailable in this daemon build (${hiddenWord}; likely requires servo)`);
       }
     }
 
@@ -259,7 +333,11 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
     async function applySelectedEffect() {
       const effectId = selectEl.value;
       if (!effectId) return;
-      const selectedName = selectEl.selectedOptions[0]?.dataset?.name || effectId;
+      const selectedOption = selectEl.selectedOptions[0];
+      if (!selectedOption || selectedOption.disabled) {
+        throw new Error("selected effect is unavailable in this build (requires servo)");
+      }
+      const selectedName = selectedOption.dataset?.name || effectId;
 
       const res = await fetch(`/api/v1/effects/${encodeURIComponent(effectId)}/apply`, {
         method: "POST",
@@ -397,6 +475,10 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
     });
     document.getElementById("reconnectBtn").addEventListener("click", connectWs);
     fpsEl.addEventListener("change", connectWs);
+    showUnavailableEl.addEventListener("change", async () => {
+      try { await loadEffects(); } catch (err) { log(String(err)); }
+    });
+    selectEl.addEventListener("change", updateApplyButtonState);
 
     async function bootstrap() {
       try { await loadEffects(); } catch (err) { log(String(err)); }
