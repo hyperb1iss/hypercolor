@@ -41,9 +41,9 @@ pub fn data_dir() -> PathBuf {
         std::env::var("XDG_DATA_HOME")
             .map_or_else(
                 |_| {
-                dirs::home_dir()
-                    .expect("HOME must be set")
-                    .join(".local/share")
+                    dirs::home_dir()
+                        .expect("HOME must be set")
+                        .join(".local/share")
                 },
                 PathBuf::from,
             )

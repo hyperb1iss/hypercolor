@@ -117,7 +117,9 @@ fn print_status_table(data: &serde_json::Value, ctx: &OutputContext) {
     };
 
     println!();
-    ctx.info(&format!("Daemon     {status_dot} {daemon_status:<16} {version}"));
+    ctx.info(&format!(
+        "Daemon     {status_dot} {daemon_status:<16} {version}"
+    ));
     ctx.info(&format!("Uptime     {uptime}s"));
     ctx.info(&format!("Render     tier={fps_tier} frames={total_frames}"));
     ctx.info(&format!("Effect     {effect_name}"));

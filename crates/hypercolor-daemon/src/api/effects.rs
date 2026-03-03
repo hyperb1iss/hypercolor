@@ -136,7 +136,10 @@ pub async fn apply_effect(
     {
         let mut engine = state.effect_engine.lock().await;
         if let Err(e) = engine.activate(renderer, metadata.clone()) {
-            return ApiError::internal(format!("Failed to activate effect '{}': {e}", metadata.name));
+            return ApiError::internal(format!(
+                "Failed to activate effect '{}': {e}",
+                metadata.name
+            ));
         }
 
         for (name, value) in &controls {

@@ -8,10 +8,10 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
+use hypercolor_core::scene::SceneManager;
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, Scene, SceneId, ScenePriority, SceneScope, TransitionSpec,
 };
-use hypercolor_core::scene::SceneManager;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};

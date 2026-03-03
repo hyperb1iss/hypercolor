@@ -190,10 +190,7 @@ fn format_iso8601_now() -> String {
 /// Convert Unix epoch seconds to (year, month, day, hour, minute, second) in UTC.
 ///
 /// Handles leap years correctly. Not designed for dates before 1970.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::as_conversions
-)]
+#[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
 fn epoch_to_utc(epoch_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
     let secs_per_day: u64 = 86400;
     let days = epoch_secs / secs_per_day;

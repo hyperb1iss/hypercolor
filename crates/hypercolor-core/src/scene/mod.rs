@@ -154,13 +154,13 @@ impl SceneManager {
         // Start transition if there's a from-scene.
         if let Some(from_id) = from_state {
             if spec.duration_ms > 0 {
-            self.active_transition = Some(TransitionState::new(
-                from_id,
-                to_id,
-                spec,
-                from_assignments,
-                to_assignments,
-            ));
+                self.active_transition = Some(TransitionState::new(
+                    from_id,
+                    to_id,
+                    spec,
+                    from_assignments,
+                    to_assignments,
+                ));
             } else {
                 // Instant activation — no transition.
                 self.active_transition = None;
