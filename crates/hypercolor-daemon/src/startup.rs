@@ -8,14 +8,18 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use tokio::sync::{Mutex, RwLock};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::mock::MockDeviceBackend;
+use hypercolor_core::device::openrgb::{ClientConfig as OpenRgbClientConfig, OpenRgbBackend};
+use hypercolor_core::device::wled::WledBackend;
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{
@@ -34,6 +38,7 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::render_thread::{RenderThread, RenderThreadState};
+use crate::{discovery, discovery::DiscoveryBackend};
 
 // ── Config File Name ────────────────────────────────────────────────────────
 
@@ -84,8 +89,14 @@ pub struct DaemonState {
     /// Input orchestrator — audio and screen capture sampling sources.
     pub input_manager: Arc<Mutex<InputManager>>,
 
+    /// Global discovery scan lock shared across startup and API-triggered scans.
+    pub discovery_in_progress: Arc<AtomicBool>,
+
     /// Handle to the running render thread (if started).
     render_thread: Option<RenderThread>,
+
+    /// Periodic discovery worker task.
+    discovery_task: Option<tokio::task::JoinHandle<()>>,
 
     /// Wall-clock reference for daemon uptime reporting.
     pub start_time: Instant,
@@ -174,7 +185,19 @@ impl DaemonState {
         info!("Spatial engine created (empty default layout)");
 
         // ── Backend Manager ─────────────────────────────────────────────
-        let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
+        let mut backend_manager_inner = BackendManager::new();
+        backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
+        backend_manager_inner.register_backend(Box::new(OpenRgbBackend::new(
+            OpenRgbClientConfig {
+                host: config.discovery.openrgb_host.clone(),
+                port: config.discovery.openrgb_port,
+                ..OpenRgbClientConfig::default()
+            },
+        )));
+        if config.discovery.wled_scan {
+            backend_manager_inner.register_backend(Box::new(WledBackend::new(Vec::new())));
+        }
+        let backend_manager = Arc::new(Mutex::new(backend_manager_inner));
         info!("Backend manager created");
 
         // ── Input Manager ───────────────────────────────────────────────
@@ -198,7 +221,9 @@ impl DaemonState {
             spatial_engine,
             backend_manager,
             input_manager,
+            discovery_in_progress: Arc::new(AtomicBool::new(false)),
             render_thread: None,
+            discovery_task: None,
             start_time: Instant::now(),
         })
     }
@@ -267,6 +292,8 @@ impl DaemonState {
                 effect_count: u32::try_from(effect_count).unwrap_or(u32::MAX),
             });
 
+        self.spawn_discovery_worker(Arc::clone(&config));
+
         info!("Daemon is running");
         Ok(())
     }
@@ -302,6 +329,10 @@ impl DaemonState {
             }
         }
 
+        if let Some(handle) = self.discovery_task.take() {
+            handle.abort();
+        }
+
         // 3. Stop input sources.
         {
             let mut input_manager = self.input_manager.lock().await;
@@ -335,6 +366,83 @@ impl DaemonState {
 
         info!("Graceful shutdown complete");
         Ok(())
+    }
+
+    fn spawn_discovery_worker(&mut self, config: Arc<HypercolorConfig>) {
+        let device_registry = self.device_registry.clone();
+        let event_bus = Arc::clone(&self.event_bus);
+        let config_manager = Arc::clone(&self.config_manager);
+        let in_progress = Arc::clone(&self.discovery_in_progress);
+
+        let initial_backends = match discovery::resolve_backends(None, &config) {
+            Ok(backends) => backends,
+            Err(error) => {
+                warn!(error = %error, "Initial discovery backend resolution failed");
+                Vec::<DiscoveryBackend>::new()
+            }
+        };
+        let scan_interval =
+            std::time::Duration::from_secs(config.discovery.scan_interval_secs.max(1));
+
+        self.discovery_task = Some(tokio::spawn(async move {
+            if !initial_backends.is_empty()
+                && in_progress
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                discovery::execute_discovery_scan(
+                    device_registry.clone(),
+                    Arc::clone(&event_bus),
+                    Arc::clone(&config),
+                    initial_backends,
+                    discovery::default_timeout(),
+                    Arc::clone(&in_progress),
+                )
+                .await;
+            }
+
+            let mut ticker = tokio::time::interval(scan_interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await; // consume immediate tick
+
+            loop {
+                ticker.tick().await;
+
+                let latest_config = Arc::clone(&config_manager.get());
+                let backends = match discovery::resolve_backends(None, &latest_config) {
+                    Ok(backends) => backends,
+                    Err(error) => {
+                        warn!(
+                            error = %error,
+                            "Periodic discovery backend resolution failed; skipping interval"
+                        );
+                        continue;
+                    }
+                };
+
+                if backends.is_empty() {
+                    continue;
+                }
+
+                if in_progress
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    debug!("Skipping periodic discovery scan; scan already in progress");
+                    continue;
+                }
+
+                discovery::execute_discovery_scan(
+                    device_registry.clone(),
+                    Arc::clone(&event_bus),
+                    latest_config,
+                    backends,
+                    discovery::default_timeout(),
+                    Arc::clone(&in_progress),
+                )
+                .await;
+            }
+        }));
     }
 }
 

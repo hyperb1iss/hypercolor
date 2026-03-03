@@ -4,6 +4,7 @@
 //! `Request::builder()` — no TCP server needed.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use axum::body::Body;
 use http::{Request, StatusCode};
@@ -716,6 +717,51 @@ async fn discover_devices_without_body() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn discover_devices_rejects_unknown_backend() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/devices/discover")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"backends": ["mystery"], "timeout_ms": 5000}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "validation_error");
+}
+
+#[tokio::test]
+async fn discover_devices_returns_conflict_when_scan_active() {
+    let state = Arc::new(AppState::new());
+    state.discovery_in_progress.store(true, Ordering::Release);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/devices/discover")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "conflict");
 }
 
 // ── Device Identify ──────────────────────────────────────────────────────

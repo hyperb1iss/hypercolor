@@ -1,16 +1,19 @@
 //! Device endpoints — `/api/v1/devices/*`.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
+use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::discovery;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -147,26 +150,47 @@ pub async fn discover_devices(
     State(state): State<Arc<AppState>>,
     body: Option<Json<DiscoverRequest>>,
 ) -> Response {
-    let backends = body
-        .as_ref()
-        .and_then(|b| b.backends.clone())
-        .unwrap_or_else(|| vec!["wled".to_owned(), "openrgb".to_owned()]);
-    let timeout_ms = body.as_ref().and_then(|b| b.timeout_ms).unwrap_or(10_000);
+    let config = state.config_manager.as_ref().map_or_else(
+        || Arc::new(HypercolorConfig::default()),
+        |manager| Arc::clone(&manager.get()),
+    );
+    let requested_backends = body.as_ref().and_then(|request| request.backends.as_ref());
+    let resolved_backends =
+        match discovery::resolve_backends(requested_backends.map(Vec::as_slice), config.as_ref()) {
+            Ok(backends) => backends,
+            Err(error) => return ApiError::validation(error),
+        };
+    let timeout = discovery::normalize_timeout_ms(body.as_ref().and_then(|b| b.timeout_ms));
+
+    if state
+        .discovery_in_progress
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return ApiError::conflict("A discovery scan is already in progress");
+    }
 
     let scan_id = format!("scan_{}", uuid::Uuid::now_v7());
+    let backend_names = discovery::backend_names(&resolved_backends);
+    let state_for_task = Arc::clone(&state);
 
-    // Publish discovery started event.
-    state.event_bus.publish(
-        hypercolor_types::event::HypercolorEvent::DeviceDiscoveryStarted {
-            backends: backends.clone(),
-        },
-    );
+    tokio::spawn(async move {
+        discovery::execute_discovery_scan(
+            state_for_task.device_registry.clone(),
+            Arc::clone(&state_for_task.event_bus),
+            config,
+            resolved_backends,
+            timeout,
+            Arc::clone(&state_for_task.discovery_in_progress),
+        )
+        .await;
+    });
 
     ApiResponse::accepted(serde_json::json!({
         "scan_id": scan_id,
         "status": "scanning",
-        "backends": backends,
-        "timeout_ms": timeout_ms,
+        "backends": backend_names,
+        "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
     }))
 }
 

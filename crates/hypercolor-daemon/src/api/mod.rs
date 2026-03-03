@@ -18,6 +18,7 @@ pub mod ws;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use axum::Router;
@@ -78,6 +79,9 @@ pub struct AppState {
     /// Configuration manager for config API endpoints.
     pub config_manager: Option<Arc<ConfigManager>>,
 
+    /// Global discovery scan lock flag shared across startup/API entrypoints.
+    pub discovery_in_progress: Arc<AtomicBool>,
+
     /// In-memory profile store.
     pub profiles: RwLock<HashMap<String, profiles::Profile>>,
 
@@ -120,6 +124,7 @@ impl AppState {
             spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(default_layout))),
             backend_manager: Arc::new(Mutex::new(BackendManager::new())),
             config_manager: None,
+            discovery_in_progress: Arc::new(AtomicBool::new(false)),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
             start_time: Instant::now(),
@@ -143,6 +148,7 @@ impl AppState {
             spatial_engine: Arc::clone(&daemon.spatial_engine),
             backend_manager: Arc::clone(&daemon.backend_manager),
             config_manager: Some(Arc::clone(&daemon.config_manager)),
+            discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
             start_time: daemon.start_time,

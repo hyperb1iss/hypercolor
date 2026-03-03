@@ -4,6 +4,7 @@
 //! config loading, and graceful shutdown. Uses real subsystems (no mocks).
 
 use std::io::Write;
+use std::time::Duration;
 
 use hypercolor_daemon::startup::{DaemonState, default_config, load_config};
 use hypercolor_types::config::CURRENT_SCHEMA_VERSION;
@@ -118,8 +119,21 @@ async fn daemon_shutdown_publishes_events() {
 
     state.shutdown().await.expect("shutdown");
 
-    // Should receive DaemonShutdown event
-    let shutdown = rx.recv().await.expect("should receive shutdown event");
+    // Discovery workers may emit additional events during shutdown; keep
+    // receiving until the terminal DaemonShutdown event arrives.
+    let shutdown = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let event = rx.recv().await.expect("should receive event");
+            if matches!(
+                event.event,
+                hypercolor_types::event::HypercolorEvent::DaemonShutdown { .. }
+            ) {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for DaemonShutdown event");
     assert!(matches!(
         shutdown.event,
         hypercolor_types::event::HypercolorEvent::DaemonShutdown { .. }
