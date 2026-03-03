@@ -18,7 +18,9 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::builtin::register_builtin_effects;
-use hypercolor_core::effect::{EffectEngine, EffectRegistry};
+use hypercolor_core::effect::{
+    EffectEngine, EffectRegistry, default_effect_search_paths, register_html_effects,
+};
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
@@ -120,11 +122,22 @@ impl DaemonState {
         );
 
         // ── Effect Registry ─────────────────────────────────────────────
-        let mut effect_registry = EffectRegistry::default();
+        let effect_search_paths =
+            default_effect_search_paths(&config.effect_engine.extra_effect_dirs);
+        let mut effect_registry = EffectRegistry::new(effect_search_paths.clone());
         register_builtin_effects(&mut effect_registry);
         let builtin_count = effect_registry.len();
+        let html_report = register_html_effects(&mut effect_registry, &effect_search_paths);
         let effect_registry = Arc::new(RwLock::new(effect_registry));
-        info!(builtins = builtin_count, "Effect registry created");
+        info!(
+            builtins = builtin_count,
+            html_scanned = html_report.scanned_files,
+            html_loaded = html_report.loaded_effects,
+            html_replaced = html_report.replaced_effects,
+            html_skipped = html_report.skipped_files,
+            html_failed = html_report.failed_files(),
+            "Effect registry created"
+        );
 
         // ── Scene Manager ───────────────────────────────────────────────
         let scene_manager = Arc::new(RwLock::new(SceneManager::new()));
