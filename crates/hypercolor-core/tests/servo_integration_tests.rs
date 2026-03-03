@@ -18,8 +18,7 @@ const BUILTIN_EFFECTS: &[&str] = &[
     "builtin/Neon Shift.html",
     "builtin/Screen Ambience.html",
 ];
-const COMMUNITY_SAMPLE_SIZE: usize = 8;
-const WEBGL_SAMPLE_SIZE: usize = 3;
+const COMMUNITY_SAMPLE_SIZE: usize = 20;
 
 fn html_metadata(path: PathBuf) -> EffectMetadata {
     let name = path
@@ -71,13 +70,13 @@ fn frame_contains_red_pixel(canvas: &Canvas) -> bool {
         .any(|[r, g, b, _]| r >= 200 && g <= 80 && b <= 80)
 }
 
-fn community_effect_paths() -> Vec<PathBuf> {
-    let community_root = bundled_effects_root().join("community");
-    let mut paths: Vec<PathBuf> = fs::read_dir(&community_root)
+fn effect_paths_in(bucket: &str) -> Vec<PathBuf> {
+    let root = bundled_effects_root().join(bucket);
+    let mut paths: Vec<PathBuf> = fs::read_dir(&root)
         .unwrap_or_else(|error| {
             panic!(
-                "failed to read community effects directory {}: {error}",
-                community_root.display()
+                "failed to read effects directory {}: {error}",
+                root.display()
             )
         })
         .filter_map(Result::ok)
@@ -106,7 +105,7 @@ fn sampled_paths(paths: &[PathBuf], count: usize) -> Vec<PathBuf> {
     paths.iter().step_by(stride).take(count).cloned().collect()
 }
 
-fn webgl_community_effect_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
+fn webgl_effect_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
     let root = bundled_effects_root();
     paths
         .iter()
@@ -170,7 +169,7 @@ fn servo_renderer_smoke_renders_builtin_catalog_sample() {
 #[test]
 #[ignore = "requires full Servo runtime and is expensive in CI/dev loops"]
 fn servo_renderer_smoke_renders_sampled_community_effects() {
-    let community_paths = community_effect_paths();
+    let community_paths = effect_paths_in("community");
     let sampled = sampled_paths(&community_paths, COMMUNITY_SAMPLE_SIZE);
     assert_eq!(sampled.len(), COMMUNITY_SAMPLE_SIZE);
 
@@ -187,15 +186,13 @@ fn servo_renderer_smoke_renders_sampled_community_effects() {
 #[test]
 #[ignore = "requires full Servo runtime and is expensive in CI/dev loops"]
 fn servo_renderer_smoke_renders_webgl_effects() {
-    let community_paths = community_effect_paths();
-    let webgl_paths = webgl_community_effect_paths(&community_paths);
+    let custom_paths = effect_paths_in("custom");
+    let webgl_paths = webgl_effect_paths(&custom_paths);
     assert!(
         !webgl_paths.is_empty(),
-        "expected at least one community effect tagged as WebGL"
+        "expected at least one custom effect tagged as WebGL"
     );
-    let sampled = sampled_paths(&webgl_paths, WEBGL_SAMPLE_SIZE);
-
-    for relative in sampled {
+    for relative in webgl_paths {
         let frames = render_frames(relative, 2);
         for frame in frames {
             assert_dimensions(&frame);
@@ -205,10 +202,10 @@ fn servo_renderer_smoke_renders_webgl_effects() {
 
 #[test]
 fn webgl_catalog_selection_finds_entries() {
-    let community_paths = community_effect_paths();
-    let webgl_paths = webgl_community_effect_paths(&community_paths);
+    let custom_paths = effect_paths_in("custom");
+    let webgl_paths = webgl_effect_paths(&custom_paths);
     assert!(
         !webgl_paths.is_empty(),
-        "community catalog should include at least one WebGL effect"
+        "custom catalog should include at least one WebGL effect"
     );
 }
