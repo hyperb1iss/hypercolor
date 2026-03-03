@@ -36,17 +36,7 @@ impl DaemonClient {
         let response = self.http.get(&url).send().await.with_context(|| {
             format!("Failed to connect to daemon at {url}. Is the daemon running?")
         })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Daemon returned {status}: {body}");
-        }
-
-        response
-            .json()
-            .await
-            .context("Failed to parse daemon response as JSON")
+        parse_api_response(response).await
     }
 
     /// Send a POST request with a JSON body and parse the response.
@@ -66,17 +56,7 @@ impl DaemonClient {
             .with_context(|| {
                 format!("Failed to connect to daemon at {url}. Is the daemon running?")
             })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Daemon returned {status}: {body}");
-        }
-
-        response
-            .json()
-            .await
-            .context("Failed to parse daemon response as JSON")
+        parse_api_response(response).await
     }
 
     /// Send a PUT request with a JSON body and parse the response.
@@ -96,17 +76,7 @@ impl DaemonClient {
             .with_context(|| {
                 format!("Failed to connect to daemon at {url}. Is the daemon running?")
             })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Daemon returned {status}: {body}");
-        }
-
-        response
-            .json()
-            .await
-            .context("Failed to parse daemon response as JSON")
+        parse_api_response(response).await
     }
 
     /// Send a DELETE request and parse the response.
@@ -120,16 +90,21 @@ impl DaemonClient {
         let response = self.http.delete(&url).send().await.with_context(|| {
             format!("Failed to connect to daemon at {url}. Is the daemon running?")
         })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Daemon returned {status}: {body}");
-        }
-
-        response
-            .json()
-            .await
-            .context("Failed to parse daemon response as JSON")
+        parse_api_response(response).await
     }
+}
+
+async fn parse_api_response(response: reqwest::Response) -> Result<serde_json::Value> {
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!("Daemon returned {status}: {body}");
+    }
+
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .context("Failed to parse daemon response as JSON")?;
+
+    Ok(json.get("data").cloned().unwrap_or(json))
 }

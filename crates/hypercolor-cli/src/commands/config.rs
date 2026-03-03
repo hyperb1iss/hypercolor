@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 use crate::client::DaemonClient;
-use crate::output::{OutputContext, OutputFormat};
+use crate::output::{OutputContext, OutputFormat, urlencoded};
 
 /// Configuration management.
 #[derive(Debug, Args)]
@@ -96,7 +96,7 @@ async fn execute_get(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    let path = format!("/config/get?key={}", &args.key);
+    let path = format!("/config/get?key={}", urlencoded(&args.key));
     let response = client.get(&path).await?;
 
     match ctx.format {
@@ -146,7 +146,7 @@ async fn execute_reset(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    if args.key.is_none() && !args.yes && !ctx.quiet {
+    if args.key.is_none() && !args.yes {
         ctx.warning("Use --yes to confirm full config reset to defaults");
         return Ok(());
     }
@@ -190,10 +190,10 @@ fn config_file_path() -> String {
     }
 
     dirs::config_dir().map_or_else(
-        || "~/.config/hypercolor/config.toml".to_string(),
+        || "~/.config/hypercolor/hypercolor.toml".to_string(),
         |d| {
             d.join("hypercolor")
-                .join("config.toml")
+                .join("hypercolor.toml")
                 .to_string_lossy()
                 .into_owned()
         },

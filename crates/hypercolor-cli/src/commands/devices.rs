@@ -109,10 +109,10 @@ async fn execute_list(
     let mut query_parts = Vec::new();
 
     if let Some(status) = &args.status {
-        query_parts.push(format!("status={status}"));
+        query_parts.push(format!("status={}", urlencoded(status)));
     }
     if let Some(backend) = &args.backend {
-        query_parts.push(format!("backend={backend}"));
+        query_parts.push(format!("backend={}", urlencoded(backend)));
     }
     if !query_parts.is_empty() {
         path = format!("{path}?{}", query_parts.join("&"));
@@ -123,7 +123,7 @@ async fn execute_list(
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            if let Some(devices) = response.as_array() {
+            if let Some(devices) = response.get("items").and_then(serde_json::Value::as_array) {
                 for device in devices {
                     if let Some(name) = device.get("name").and_then(serde_json::Value::as_str) {
                         println!("{name}");
@@ -132,21 +132,22 @@ async fn execute_list(
             }
         }
         OutputFormat::Table => {
-            if let Some(devices) = response.as_array() {
-                let headers = ["Device", "Protocol", "LEDs", "Status", "Latency"];
+            if let Some(devices) = response.get("items").and_then(serde_json::Value::as_array) {
+                let headers = ["Device", "Backend", "LEDs", "Status", "Firmware"];
                 let rows: Vec<Vec<String>> = devices
                     .iter()
                     .map(|d| {
                         vec![
                             extract_str(d, "name"),
-                            extract_str(d, "protocol"),
-                            d.get("leds")
+                            extract_str(d, "backend"),
+                            d.get("total_leds")
                                 .and_then(serde_json::Value::as_u64)
                                 .map_or_else(|| "?".to_string(), |l| l.to_string()),
                             extract_str(d, "status"),
-                            d.get("latency_ms")
-                                .and_then(serde_json::Value::as_f64)
-                                .map_or_else(|| "?".to_string(), |l| format!("{l:.1}ms")),
+                            d.get("firmware_version")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("-")
+                                .to_string(),
                         ]
                     })
                     .collect();
@@ -155,7 +156,7 @@ async fn execute_list(
                 println!();
                 let total_leds: u64 = devices
                     .iter()
-                    .filter_map(|d| d.get("leds").and_then(serde_json::Value::as_u64))
+                    .filter_map(|d| d.get("total_leds").and_then(serde_json::Value::as_u64))
                     .sum();
                 ctx.info(&format!(
                     "{} devices \u{00b7} {} LEDs",
@@ -176,7 +177,7 @@ async fn execute_discover(
 ) -> Result<()> {
     let body = serde_json::json!({
         "backends": args.backend,
-        "timeout": args.timeout,
+        "timeout_ms": args.timeout.saturating_mul(1000),
     });
 
     ctx.info("Discovering devices...");
@@ -185,9 +186,15 @@ async fn execute_discover(
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            if let Some(found) = response.get("found").and_then(serde_json::Value::as_u64) {
-                ctx.success(&format!("{found} devices found"));
-            }
+            let scan_id = response
+                .get("scan_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("scan_unknown");
+            let status = response
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("queued");
+            ctx.success(&format!("Discovery {status}: {scan_id}"));
         }
     }
 
@@ -212,13 +219,13 @@ async fn execute_info(
             ctx.info(&extract_str(&response, "name"));
             println!();
             ctx.info(&format!(
-                "Protocol     {}",
-                extract_str(&response, "protocol")
+                "Backend      {}",
+                extract_str(&response, "backend")
             ));
             ctx.info(&format!(
                 "LED Count    {}",
                 response
-                    .get("led_count")
+                    .get("total_leds")
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0)
             ));
@@ -245,7 +252,7 @@ async fn execute_identify(
     ctx: &OutputContext,
 ) -> Result<()> {
     let path = format!("/devices/{}/identify", urlencoded(&args.device));
-    let body = serde_json::json!({ "duration": args.duration });
+    let body = serde_json::json!({ "duration_ms": args.duration.saturating_mul(1000) });
     let response = client.post(&path, &body).await?;
 
     match ctx.format {

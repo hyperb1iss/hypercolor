@@ -109,7 +109,7 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            if let Some(scenes) = response.as_array() {
+            if let Some(scenes) = response.get("items").and_then(serde_json::Value::as_array) {
                 for scene in scenes {
                     if let Some(name) = scene.get("name").and_then(serde_json::Value::as_str) {
                         println!("{name}");
@@ -118,15 +118,17 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
             }
         }
         OutputFormat::Table => {
-            if let Some(scenes) = response.as_array() {
-                let headers = ["Scene", "Profile", "Trigger", "Enabled"];
+            if let Some(scenes) = response.get("items").and_then(serde_json::Value::as_array) {
+                let headers = ["ID", "Scene", "Priority", "Enabled"];
                 let rows: Vec<Vec<String>> = scenes
                     .iter()
                     .map(|s| {
                         vec![
+                            extract_str(s, "id"),
                             extract_str(s, "name"),
-                            extract_str(s, "profile"),
-                            extract_str(s, "trigger"),
+                            s.get("priority")
+                                .and_then(serde_json::Value::as_u64)
+                                .map_or_else(|| "?".to_string(), |v| v.to_string()),
                             if s.get("enabled")
                                 .and_then(serde_json::Value::as_bool)
                                 .unwrap_or(false)
@@ -200,7 +202,7 @@ async fn execute_delete(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    if !args.yes && !ctx.quiet {
+    if !args.yes {
         ctx.warning(&format!(
             "Use --yes to confirm deletion of scene '{}'",
             args.name
@@ -238,14 +240,12 @@ async fn execute_info(
             println!();
             ctx.info(&format!("Scene: {}", extract_str(&response, "name")));
             println!();
-            ctx.info(&format!(
-                "Profile        {}",
-                extract_str(&response, "profile")
-            ));
-            ctx.info(&format!(
-                "Trigger        {}",
-                extract_str(&response, "trigger")
-            ));
+            ctx.info(&format!("ID             {}", extract_str(&response, "id")));
+            let priority = response
+                .get("priority")
+                .and_then(serde_json::Value::as_u64)
+                .map_or_else(|| "?".to_string(), |v| v.to_string());
+            ctx.info(&format!("Priority       {priority}"));
             ctx.info(&format!(
                 "Enabled        {}",
                 if response

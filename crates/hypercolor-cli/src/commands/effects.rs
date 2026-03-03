@@ -110,16 +110,16 @@ async fn execute_list(
     let mut query_parts = Vec::new();
 
     if let Some(engine) = &args.engine {
-        query_parts.push(format!("engine={engine}"));
+        query_parts.push(format!("engine={}", urlencoded(engine)));
     }
     if args.audio {
         query_parts.push("audio=true".to_string());
     }
     if let Some(search) = &args.search {
-        query_parts.push(format!("search={search}"));
+        query_parts.push(format!("search={}", urlencoded(search)));
     }
     if let Some(category) = &args.category {
-        query_parts.push(format!("category={category}"));
+        query_parts.push(format!("category={}", urlencoded(category)));
     }
     if !query_parts.is_empty() {
         path = format!("{path}?{}", query_parts.join("&"));
@@ -130,7 +130,7 @@ async fn execute_list(
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            if let Some(effects) = response.as_array() {
+            if let Some(effects) = response.get("items").and_then(serde_json::Value::as_array) {
                 for effect in effects {
                     if let Some(name) = effect.get("name").and_then(serde_json::Value::as_str) {
                         println!("{name}");
@@ -139,24 +139,16 @@ async fn execute_list(
             }
         }
         OutputFormat::Table => {
-            if let Some(effects) = response.as_array() {
-                let headers = ["Effect", "Engine", "Audio", "Category", "Author"];
+            if let Some(effects) = response.get("items").and_then(serde_json::Value::as_array) {
+                let headers = ["Effect", "Category", "Author", "Version"];
                 let rows: Vec<Vec<String>> = effects
                     .iter()
                     .map(|e| {
                         vec![
                             extract_str(e, "name"),
-                            extract_str(e, "engine"),
-                            if e.get("audio_reactive")
-                                .and_then(serde_json::Value::as_bool)
-                                .unwrap_or(false)
-                            {
-                                "yes".to_string()
-                            } else {
-                                "no".to_string()
-                            },
                             extract_str(e, "category"),
                             extract_str(e, "author"),
+                            extract_str(e, "version"),
                         ]
                     })
                     .collect();
@@ -245,10 +237,6 @@ async fn execute_info(
             println!();
             ctx.info(&extract_str(&response, "name"));
             println!();
-            ctx.info(&format!(
-                "Engine       {}",
-                extract_str(&response, "engine")
-            ));
             ctx.info(&format!(
                 "Author       {}",
                 extract_str(&response, "author")

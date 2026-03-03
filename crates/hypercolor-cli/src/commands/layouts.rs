@@ -61,7 +61,7 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            if let Some(layouts) = response.as_array() {
+            if let Some(layouts) = response.get("items").and_then(serde_json::Value::as_array) {
                 for layout in layouts {
                     if let Some(name) = layout.get("name").and_then(serde_json::Value::as_str) {
                         println!("{name}");
@@ -70,16 +70,23 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
             }
         }
         OutputFormat::Table => {
-            if let Some(layouts) = response.as_array() {
-                let headers = ["Layout", "Devices", "Zones"];
+            if let Some(layouts) = response.get("items").and_then(serde_json::Value::as_array) {
+                let headers = ["ID", "Layout", "Canvas", "Zones"];
                 let rows: Vec<Vec<String>> = layouts
                     .iter()
                     .map(|l| {
                         vec![
+                            extract_str(l, "id"),
                             extract_str(l, "name"),
-                            l.get("device_count")
-                                .and_then(serde_json::Value::as_u64)
-                                .map_or_else(|| "?".to_string(), |c| c.to_string()),
+                            format!(
+                                "{}x{}",
+                                l.get("canvas_width")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .unwrap_or(0),
+                                l.get("canvas_height")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .unwrap_or(0)
+                            ),
                             l.get("zone_count")
                                 .and_then(serde_json::Value::as_u64)
                                 .map_or_else(|| "?".to_string(), |c| c.to_string()),
@@ -114,21 +121,23 @@ async fn execute_show(
             println!();
             ctx.info(&format!("Layout: {}", extract_str(&response, "name")));
             println!();
-
-            if let Some(zones) = response.get("zones").and_then(serde_json::Value::as_array) {
-                let headers = ["Zone", "Position", "Size"];
-                let rows: Vec<Vec<String>> = zones
-                    .iter()
-                    .map(|z| {
-                        vec![
-                            extract_str(z, "name"),
-                            extract_str(z, "position"),
-                            extract_str(z, "size"),
-                        ]
-                    })
-                    .collect();
-                ctx.print_table(&headers, &rows);
-            }
+            ctx.info(&format!("ID         {}", extract_str(&response, "id")));
+            let width = response
+                .get("canvas_width")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let height = response
+                .get("canvas_height")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            ctx.info(&format!("Canvas     {width}x{height}"));
+            ctx.info(&format!(
+                "Zones      {}",
+                response
+                    .get("zone_count")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+            ));
             println!();
         }
     }

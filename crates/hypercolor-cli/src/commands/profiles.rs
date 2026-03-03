@@ -97,7 +97,7 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
     match ctx.format {
         OutputFormat::Json => ctx.print_json(&response)?,
         OutputFormat::Plain => {
-            if let Some(profiles) = response.as_array() {
+            if let Some(profiles) = response.get("items").and_then(serde_json::Value::as_array) {
                 for profile in profiles {
                     if let Some(name) = profile.get("name").and_then(serde_json::Value::as_str) {
                         println!("{name}");
@@ -106,23 +106,21 @@ async fn execute_list(client: &DaemonClient, ctx: &OutputContext) -> Result<()> 
             }
         }
         OutputFormat::Table => {
-            if let Some(profiles) = response.as_array() {
-                let headers = ["Profile", "Effect", "Active", "Last Applied"];
+            if let Some(profiles) = response.get("items").and_then(serde_json::Value::as_array) {
+                let headers = ["ID", "Name", "Brightness", "Description"];
                 let rows: Vec<Vec<String>> = profiles
                     .iter()
                     .map(|p| {
                         vec![
+                            extract_str(p, "id"),
                             extract_str(p, "name"),
-                            extract_str(p, "effect"),
-                            if p.get("active")
-                                .and_then(serde_json::Value::as_bool)
-                                .unwrap_or(false)
-                            {
-                                "yes".to_string()
-                            } else {
-                                String::new()
-                            },
-                            extract_str(p, "last_applied"),
+                            p.get("brightness")
+                                .and_then(serde_json::Value::as_u64)
+                                .map_or_else(|| "-".to_string(), |b| b.to_string()),
+                            p.get("description")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("-")
+                                .to_string(),
                         ]
                     })
                     .collect();
@@ -184,7 +182,7 @@ async fn execute_delete(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    if !args.yes && !ctx.quiet {
+    if !args.yes {
         ctx.warning(&format!(
             "Use --yes to confirm deletion of profile '{}'",
             args.name
@@ -222,20 +220,18 @@ async fn execute_info(
             println!();
             ctx.info(&format!("Profile: {}", extract_str(&response, "name")));
             println!();
-            ctx.info(&format!(
-                "Effect        {}",
-                extract_str(&response, "effect")
-            ));
+            ctx.info(&format!("ID            {}", extract_str(&response, "id")));
             if let Some(desc) = response
                 .get("description")
                 .and_then(serde_json::Value::as_str)
             {
                 ctx.info(&format!("Description   {desc}"));
             }
-            ctx.info(&format!(
-                "Last Applied  {}",
-                extract_str(&response, "last_applied")
-            ));
+            let brightness = response
+                .get("brightness")
+                .and_then(serde_json::Value::as_u64)
+                .map_or_else(|| "-".to_string(), |v| v.to_string());
+            ctx.info(&format!("Brightness    {brightness}"));
             println!();
         }
     }

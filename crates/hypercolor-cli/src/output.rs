@@ -3,6 +3,7 @@
 //! Supports three output modes: styled tables for humans, raw JSON for
 //! machine consumption, and plain text for piping.
 
+use std::fmt::Write as _;
 use std::io::Write;
 
 use clap::ValueEnum;
@@ -40,8 +41,16 @@ impl OutputContext {
         // --json flag overrides --format
         let format = if json { OutputFormat::Json } else { format };
 
-        // Color is enabled unless explicitly disabled or not a TTY
-        let color = !no_color && !is_no_color_env() && atty_stdout();
+        let color_mode = hypercolor_color_env();
+        let color = if no_color || is_no_color_env() {
+            false
+        } else {
+            match color_mode.as_deref() {
+                Some("always") => true,
+                Some("never") => false,
+                _ => atty_stdout(),
+            }
+        };
 
         Self {
             format,
@@ -166,7 +175,7 @@ pub fn extract_str(value: &serde_json::Value, key: &str) -> String {
 
 /// Simple percent-encoding for URL path segments.
 pub fn urlencoded(s: &str) -> String {
-    s.replace(' ', "%20")
+    percent_encode_component(s)
 }
 
 /// Check if the `NO_COLOR` environment variable is set.
@@ -174,7 +183,27 @@ fn is_no_color_env() -> bool {
     std::env::var_os("NO_COLOR").is_some()
 }
 
+/// Read optional color mode override from `HYPERCOLOR_COLOR`.
+fn hypercolor_color_env() -> Option<String> {
+    std::env::var("HYPERCOLOR_COLOR")
+        .ok()
+        .map(|v| v.trim().to_ascii_lowercase())
+}
+
 /// Check if stdout is a TTY. Returns `false` when piped.
 fn atty_stdout() -> bool {
     std::io::IsTerminal::is_terminal(&std::io::stdout())
+}
+
+fn percent_encode_component(input: &str) -> String {
+    let mut encoded = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
+        if unreserved {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
 }
