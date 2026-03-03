@@ -173,6 +173,27 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
     let frameCount = 0;
     let token = new URLSearchParams(window.location.search).get("token") || "";
 
+    function toDisplayName(name) {
+      if (!name) return "-";
+      if (name.includes("_")) {
+        return name
+          .split("_")
+          .filter(Boolean)
+          .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(" ");
+      }
+      return name;
+    }
+
+    function pickDefaultEffect(runnable) {
+      const preferred = ["color_wave", "rainbow", "gradient", "audio_pulse", "breathing", "solid_color"];
+      for (const name of preferred) {
+        const match = runnable.find((effect) => effect.name === name);
+        if (match) return match.id;
+      }
+      return runnable[0]?.id || "";
+    }
+
     function log(line) {
       const stamp = new Date().toISOString().split("T")[1].replace("Z", "");
       logEl.textContent = `[${stamp}] ${line}\n` + logEl.textContent;
@@ -201,7 +222,7 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
         const option = document.createElement("option");
         option.value = effect.id;
         option.dataset.name = effect.name;
-        option.textContent = `${effect.name} (${effect.source || "unknown"})`;
+        option.textContent = `${toDisplayName(effect.name)} (${effect.source || "unknown"})`;
         selectEl.appendChild(option);
       }
       if (runnable.length === 0) {
@@ -211,7 +232,9 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
         selectEl.appendChild(option);
       }
       if (runnable.length > 0) {
-        selectEl.selectedIndex = 0;
+        const preferredId = pickDefaultEffect(runnable);
+        const preferredIndex = runnable.findIndex((effect) => effect.id === preferredId);
+        selectEl.selectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
       }
 
       log(`loaded ${items.length} effect(s), runnable: ${runnable.length}`);
@@ -224,12 +247,13 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
       const res = await fetch("/api/v1/effects/active", { headers: apiHeaders() });
       if (res.status === 404) {
         activeEffectEl.textContent = "-";
-        return;
+        return "";
       }
       if (!res.ok) throw new Error(`active effect failed (${res.status})`);
       const body = await res.json();
       const name = body?.data?.name || "-";
-      activeEffectEl.textContent = name;
+      activeEffectEl.textContent = toDisplayName(name);
+      return name;
     }
 
     async function applySelectedEffect() {
@@ -251,7 +275,7 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
         throw new Error(`apply failed (${res.status})${details}`);
       }
       await fetchActiveEffect();
-      log(`applied effect '${selectedName}'`);
+      log(`applied effect '${toDisplayName(selectedName)}'`);
     }
 
     async function stopEffect() {
@@ -311,12 +335,13 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
       let msg;
       try { msg = JSON.parse(raw); } catch (_) { return; }
       if (msg.type === "hello") {
-        if (msg.state?.effect?.name) activeEffectEl.textContent = msg.state.effect.name;
+        if (msg.state?.effect?.name) activeEffectEl.textContent = toDisplayName(msg.state.effect.name);
         return;
       }
       if (msg.type === "event") {
         if (msg.event === "effect_started") {
-          activeEffectEl.textContent = msg.data?.effect?.name || activeEffectEl.textContent;
+          const started = msg.data?.effect?.name;
+          activeEffectEl.textContent = started ? toDisplayName(started) : activeEffectEl.textContent;
         } else if (msg.event === "effect_stopped") {
           activeEffectEl.textContent = "-";
         }
@@ -375,7 +400,12 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
 
     async function bootstrap() {
       try { await loadEffects(); } catch (err) { log(String(err)); }
-      try { await fetchActiveEffect(); } catch (err) { log(String(err)); }
+      try {
+        const active = await fetchActiveEffect();
+        if (!active && selectEl.value) {
+          await applySelectedEffect();
+        }
+      } catch (err) { log(String(err)); }
       connectWs();
     }
 
