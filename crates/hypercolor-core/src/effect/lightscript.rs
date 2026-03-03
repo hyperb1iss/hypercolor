@@ -106,7 +106,7 @@ impl LightscriptRuntime {
     }
 
     fn audio_update_script(audio: &AudioData) -> String {
-        let level_db = normalized_level_to_db(audio.rms_level);
+        let level_db = js_number(normalized_level_to_db(audio.rms_level));
         let beat_pulse = if audio.beat_detected {
             1.0_f32
         } else {
@@ -132,14 +132,14 @@ impl LightscriptRuntime {
                 "}})();",
             ),
             level_db,
-            audio.bass(),
-            audio.mid(),
-            audio.treble(),
-            audio.spectral_flux,
-            audio.bpm,
+            js_number(audio.bass()),
+            js_number(audio.mid()),
+            js_number(audio.treble()),
+            js_number(audio.spectral_flux),
+            js_number(audio.bpm),
             if audio.beat_detected { "true" } else { "false" },
-            beat_pulse,
-            audio.beat_confidence,
+            js_number(beat_pulse),
+            js_number(audio.beat_confidence),
             spectrum_values,
         )
     }
@@ -169,19 +169,20 @@ impl LightscriptRuntime {
 #[must_use]
 pub fn control_update_script(name: &str, value: &ControlValue) -> String {
     let key_literal = serde_json::to_string(name).unwrap_or_else(|_| "\"invalid\"".to_owned());
-    let callback = format!("on{name}Changed");
+    let callback_literal = serde_json::to_string(&format!("on{name}Changed"))
+        .unwrap_or_else(|_| "\"oninvalidChanged\"".to_owned());
 
     format!(
         concat!(
             "(function(){{\n",
+            "  const callback = {};\n",
             "  window[{}] = {};\n",
-            "  if (typeof window.{} === 'function') {{ window.{}(); }}\n",
+            "  if (typeof window[callback] === 'function') {{ window[callback](); }}\n",
             "}})();",
         ),
+        callback_literal,
         key_literal,
         value.to_js_literal(),
-        callback,
-        callback,
     )
 }
 
@@ -199,9 +200,18 @@ pub fn normalized_level_to_db(level: f32) -> f32 {
 fn join_f32_csv(values: &[f32]) -> String {
     values
         .iter()
-        .map(f32::to_string)
+        .copied()
+        .map(js_number)
         .collect::<Vec<String>>()
         .join(",")
+}
+
+fn js_number(value: f32) -> String {
+    if value.is_finite() {
+        value.to_string()
+    } else {
+        "0".to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -230,8 +240,16 @@ mod tests {
         let script = control_update_script("frontColor", &ControlValue::Text("#00ffcc".to_owned()));
 
         assert!(script.contains("window[\"frontColor\"]"));
-        assert!(script.contains("window.onfrontColorChanged"));
+        assert!(script.contains("const callback = \"onfrontColorChanged\""));
+        assert!(script.contains("window[callback]"));
         assert!(script.contains("\"#00ffcc\""));
+    }
+
+    #[test]
+    fn control_update_script_supports_non_identifier_keys() {
+        let script = control_update_script("my-control", &ControlValue::Float(1.0));
+        assert!(script.contains("window[\"my-control\"] = 1"));
+        assert!(script.contains("const callback = \"onmy-controlChanged\""));
     }
 
     #[test]
@@ -262,6 +280,20 @@ mod tests {
         let script = LightscriptRuntime::audio_update_script(&audio);
         assert!(script.contains("window.engine.audio.level = 0"));
         assert!(script.contains("window.engine.audio.freq = new Float32Array([0.1,0.2,0.3])"));
+    }
+
+    #[test]
+    fn audio_script_sanitizes_non_finite_values() {
+        let mut audio = AudioData::silence();
+        audio.rms_level = f32::NAN;
+        audio.spectrum = vec![f32::INFINITY, f32::NEG_INFINITY, f32::NAN];
+        audio.bpm = f32::INFINITY;
+        audio.spectral_flux = f32::NEG_INFINITY;
+
+        let script = LightscriptRuntime::audio_update_script(&audio);
+        assert!(!script.contains("inf"));
+        assert!(!script.contains("NaN"));
+        assert!(script.contains("window.engine.audio.freq = new Float32Array([0,0,0])"));
     }
 
     #[test]

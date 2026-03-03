@@ -25,12 +25,17 @@ use tracing::{debug, info, trace, warn};
 use super::bootstrap_software_rendering_context;
 use super::lightscript::LightscriptRuntime;
 use super::paths::resolve_html_source_path;
-use super::{EffectRenderer, FrameInput, HypercolorWebViewDelegate};
+use super::{
+    EffectRenderer, FrameInput, HtmlControlKind, HypercolorWebViewDelegate,
+    parse_html_effect_metadata,
+};
 
 const DEFAULT_WIDTH: u32 = 320;
 const DEFAULT_HEIGHT: u32 = 200;
 const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
+const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const RENDER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Feature-gated renderer for HTML effects.
 pub struct ServoRenderer {
@@ -112,8 +117,22 @@ impl EffectRenderer for ServoRenderer {
 
         self.deactivate_worker();
         self.controls.clear();
+        self.runtime = LightscriptRuntime::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
         self.pending_scripts.clear();
         self.warned_fallback_frame = false;
+
+        match load_default_controls(&resolved) {
+            Ok(default_controls) => {
+                self.controls = default_controls;
+            }
+            Err(error) => {
+                warn!(
+                    path = %resolved.display(),
+                    %error,
+                    "Failed to pre-seed HTML control defaults"
+                );
+            }
+        }
 
         let worker = ServoWorker::spawn(&resolved, DEFAULT_WIDTH, DEFAULT_HEIGHT)?;
         self.worker = Some(worker);
@@ -215,11 +234,22 @@ impl ServoWorker {
             })
             .context("failed to spawn Servo worker thread")?;
 
-        let readiness = ready_rx
-            .recv()
-            .context("failed to receive Servo worker readiness signal")?;
+        let readiness = match ready_rx.recv_timeout(WORKER_READY_TIMEOUT) {
+            Ok(readiness) => readiness,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                bail!(
+                    "timed out waiting for Servo worker readiness after {}ms",
+                    WORKER_READY_TIMEOUT.as_millis()
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("Servo worker exited before reporting readiness");
+            }
+        };
         if let Err(error) = readiness {
-            let _ = join_handle.join();
+            if join_handle.is_finished() {
+                let _ = join_handle.join();
+            }
             return Err(error);
         }
 
@@ -239,16 +269,27 @@ impl ServoWorker {
                 response_tx,
             })
             .context("failed to send render command to Servo worker")?;
-        response_rx
-            .recv()
-            .context("failed to receive render response from Servo worker")?
+        match response_rx.recv_timeout(RENDER_RESPONSE_TIMEOUT) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => bail!(
+                "timed out waiting for Servo frame response after {}ms",
+                RENDER_RESPONSE_TIMEOUT.as_millis()
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("Servo worker disconnected before sending frame response")
+            }
+        }
     }
 
     fn shutdown(&mut self) {
         let _ = self.command_tx.send(WorkerCommand::Shutdown);
         if let Some(handle) = self.join_handle.take() {
-            if let Err(error) = handle.join() {
-                warn!(?error, "Servo worker thread panicked");
+            if handle.is_finished() {
+                if let Err(error) = handle.join() {
+                    warn!(?error, "Servo worker thread panicked");
+                }
+            } else {
+                warn!("Servo worker did not shut down promptly; detaching join handle");
             }
         }
     }
@@ -430,4 +471,52 @@ fn file_url_for_path(path: &Path) -> Result<Url> {
             canonical_path.display()
         )
     })
+}
+
+fn load_default_controls(path: &Path) -> Result<HashMap<String, ControlValue>> {
+    let html = std::fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read HTML effect file while extracting defaults: {}",
+            path.display()
+        )
+    })?;
+    let parsed = parse_html_effect_metadata(&html);
+    let controls = parsed
+        .controls
+        .into_iter()
+        .filter_map(|control| {
+            default_control_value(&control.kind, control.default.as_deref(), &control.values)
+                .map(|value| (control.property, value))
+        })
+        .collect();
+    Ok(controls)
+}
+
+fn default_control_value(
+    kind: &HtmlControlKind,
+    default: Option<&str>,
+    values: &[String],
+) -> Option<ControlValue> {
+    match kind {
+        HtmlControlKind::Number | HtmlControlKind::Hue | HtmlControlKind::Area => default
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .map(ControlValue::Float),
+        HtmlControlKind::Boolean => {
+            default.map(|value| ControlValue::Boolean(parse_bool_default(value)))
+        }
+        HtmlControlKind::Combobox => default
+            .or_else(|| values.first().map(String::as_str))
+            .map(|value| ControlValue::Enum(value.to_owned())),
+        HtmlControlKind::Color
+        | HtmlControlKind::Sensor
+        | HtmlControlKind::Text
+        | HtmlControlKind::Other(_) => default.map(|value| ControlValue::Text(value.to_owned())),
+    }
+}
+
+fn parse_bool_default(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
