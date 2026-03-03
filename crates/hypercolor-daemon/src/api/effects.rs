@@ -7,8 +7,7 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
-use hypercolor_core::effect::EffectRegistry;
-use hypercolor_core::effect::builtin::create_builtin_renderer;
+use hypercolor_core::effect::{EffectRegistry, create_renderer_for_metadata};
 use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
 
 use crate::api::AppState;
@@ -119,11 +118,14 @@ pub async fn apply_effect(
         meta
     };
 
-    let Some(renderer) = create_builtin_renderer(&metadata.name) else {
-        return ApiError::bad_request(format!(
-            "Effect '{}' is registered but has no runnable built-in renderer",
-            metadata.name
-        ));
+    let renderer = match create_renderer_for_metadata(&metadata) {
+        Ok(renderer) => renderer,
+        Err(error) => {
+            return ApiError::bad_request(format!(
+                "Failed to prepare renderer for effect '{}': {error}",
+                metadata.name
+            ));
+        }
     };
 
     let controls = body

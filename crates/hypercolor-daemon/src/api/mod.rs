@@ -10,6 +10,7 @@ pub mod diagnose;
 pub mod effects;
 pub mod envelope;
 pub mod layouts;
+pub mod preview;
 pub mod profiles;
 pub mod scenes;
 pub mod security;
@@ -241,6 +242,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // ── System ───────────────────────────────────────────────────
         .route("/status", axum::routing::get(system::get_status))
         .route("/state", axum::routing::get(system::get_status))
+        // ── Preview ──────────────────────────────────────────────────
+        .route("/preview", axum::routing::get(preview::preview_page))
         // ── Config ───────────────────────────────────────────────────
         .route("/config", axum::routing::get(config::show_config))
         .route("/config/get", axum::routing::get(config::get_config_value))
@@ -258,6 +261,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .nest("/api/v1", api)
         // Compatibility alias for clients still using the legacy top-level WS path.
         .route("/ws", axum::routing::get(ws::ws_handler))
+        .route("/preview", axum::routing::get(preview::preview_page))
         .route("/health", axum::routing::get(system::health_check))
         .layer(axum::middleware::from_fn_with_state(
             security_state,

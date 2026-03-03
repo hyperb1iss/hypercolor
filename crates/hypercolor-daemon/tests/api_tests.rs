@@ -33,6 +33,14 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("failed to parse JSON body")
 }
 
+/// Extract UTF-8 text body from a response.
+async fn body_text(response: axum::response::Response) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("failed to read response body");
+    String::from_utf8(bytes.to_vec()).expect("failed to decode UTF-8 body")
+}
+
 // ── Health / Status ──────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -91,6 +99,38 @@ async fn status_returns_200_with_envelope() {
         request_id.starts_with("req_"),
         "request_id should start with req_"
     );
+}
+
+#[tokio::test]
+async fn preview_page_returns_html() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/preview")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let content_type = response
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        content_type.contains("text/html"),
+        "expected text/html content type, got {content_type}"
+    );
+
+    let body = body_text(response).await;
+    assert!(body.contains("Hypercolor Live Preview"));
+    assert!(body.contains("/api/v1/ws"));
 }
 
 // ── Devices ──────────────────────────────────────────────────────────────
