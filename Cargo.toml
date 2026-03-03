@@ -106,6 +106,7 @@ clap_complete = "4.5"
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"
+dpi = "0.1"
 
 # Testing
 tempfile = "3.14"

@@ -8,8 +8,12 @@
 pub mod builtin;
 mod engine;
 mod registry;
+#[cfg(feature = "servo")]
+mod servo_bootstrap;
 mod traits;
 
 pub use engine::EffectEngine;
 pub use registry::{EffectEntry, EffectRegistry};
+#[cfg(feature = "servo")]
+pub use servo_bootstrap::bootstrap_software_rendering_context;
 pub use traits::{EffectRenderer, FrameInput};

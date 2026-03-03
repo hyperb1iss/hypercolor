@@ -11,6 +11,10 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+servo = ["dep:servo", "dep:dpi"]
+
 [dependencies]
 hypercolor-types = { workspace = true }
 serde = { workspace = true }
@@ -29,6 +33,8 @@ mdns-sd = { workspace = true }
 reqwest = { workspace = true }
 realfft = { workspace = true }
 rustfft = { workspace = true }
+dpi = { workspace = true, optional = true }
+servo = { package = "libservo", git = "https://github.com/servo/servo", rev = "301f7da52e320764fd0063facb90de0ec8db8f25", default-features = false, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
