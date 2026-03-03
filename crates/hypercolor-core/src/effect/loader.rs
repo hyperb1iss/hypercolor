@@ -12,6 +12,7 @@ use uuid::Uuid;
 use hypercolor_types::effect::{EffectId, EffectMetadata, EffectSource, EffectState};
 
 use super::meta_parser::parse_html_effect_metadata;
+use super::paths::bundled_effects_root;
 use super::{EffectEntry, EffectRegistry};
 
 const HTML_EXTENSION: &str = "html";
@@ -44,7 +45,7 @@ impl HtmlDiscoveryReport {
 /// Returns the default effect search roots plus any extra config roots.
 #[must_use]
 pub fn default_effect_search_paths(extra_dirs: &[PathBuf]) -> Vec<PathBuf> {
-    let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../effects");
+    let bundled = bundled_effects_root();
 
     let mut deduped = Vec::new();
     let mut seen = HashSet::new();

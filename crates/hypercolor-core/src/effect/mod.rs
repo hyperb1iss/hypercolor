@@ -11,6 +11,7 @@ mod factory;
 mod lightscript;
 mod loader;
 mod meta_parser;
+mod paths;
 mod registry;
 #[cfg(feature = "servo")]
 mod servo_bootstrap;
@@ -29,6 +30,7 @@ pub use loader::{HtmlDiscoveryReport, default_effect_search_paths, register_html
 pub use meta_parser::{
     HtmlControlKind, HtmlControlMetadata, ParsedHtmlEffectMetadata, parse_html_effect_metadata,
 };
+pub use paths::{bundled_effects_root, resolve_html_source_path};
 pub use registry::{EffectEntry, EffectRegistry};
 #[cfg(feature = "servo")]
 pub use servo_bootstrap::bootstrap_software_rendering_context;

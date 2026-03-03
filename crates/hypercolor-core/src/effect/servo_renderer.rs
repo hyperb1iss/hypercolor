@@ -24,6 +24,7 @@ use tracing::{debug, info, trace, warn};
 
 use super::bootstrap_software_rendering_context;
 use super::lightscript::LightscriptRuntime;
+use super::paths::resolve_html_source_path;
 use super::{EffectRenderer, FrameInput, HypercolorWebViewDelegate};
 
 const DEFAULT_WIDTH: u32 = 320;
@@ -415,37 +416,6 @@ fn install_rustls_provider() {
     }
 }
 
-fn resolve_html_source_path(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        if path.exists() {
-            return Ok(path.to_path_buf());
-        }
-        bail!(
-            "absolute HTML effect path does not exist: {}",
-            path.display()
-        );
-    }
-
-    let bundled_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../effects");
-    let mut candidates = vec![bundled_root.join(path)];
-
-    if let Ok(current_dir) = std::env::current_dir() {
-        candidates.push(current_dir.join(path));
-    }
-    candidates.push(path.to_path_buf());
-
-    for candidate in candidates {
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
-    bail!(
-        "could not resolve HTML effect source '{}'; expected relative to bundled effects root or current directory",
-        path.display()
-    );
-}
-
 fn file_url_for_path(path: &Path) -> Result<Url> {
     let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     Url::from_file_path(&canonical_path).map_err(|()| {
@@ -454,34 +424,4 @@ fn file_url_for_path(path: &Path) -> Result<Url> {
             canonical_path.display()
         )
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    use tempfile::tempdir;
-
-    use super::resolve_html_source_path;
-
-    #[test]
-    fn resolve_html_source_path_accepts_existing_absolute() {
-        let dir = tempdir().expect("tempdir should create");
-        let html_path = dir.path().join("effect.html");
-        std::fs::write(&html_path, "<html><body>ok</body></html>").expect("write should work");
-
-        let resolved = resolve_html_source_path(&html_path).expect("absolute path should resolve");
-        assert_eq!(resolved, html_path);
-    }
-
-    #[test]
-    fn resolve_html_source_path_rejects_missing_file() {
-        let missing = Path::new("this/path/does/not/exist.html");
-        let error = resolve_html_source_path(missing).expect_err("missing path should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("could not resolve HTML effect source")
-        );
-    }
 }
