@@ -22,8 +22,14 @@ use hypercolor_core::effect::{
     EffectEngine, EffectRegistry, default_effect_search_paths, register_html_effects,
 };
 use hypercolor_core::engine::RenderLoop;
+use hypercolor_core::input::InputManager;
+use hypercolor_core::input::audio::AudioInput;
+use hypercolor_core::input::screen::{
+    CaptureConfig as ScreenCaptureConfig, MonitorSelect, ScreenCaptureInput,
+};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
@@ -74,6 +80,9 @@ pub struct DaemonState {
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
+
+    /// Input orchestrator — audio and screen capture sampling sources.
+    pub input_manager: Arc<Mutex<InputManager>>,
 
     /// Handle to the running render thread (if started).
     render_thread: Option<RenderThread>,
@@ -168,6 +177,14 @@ impl DaemonState {
         let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
         info!("Backend manager created");
 
+        // ── Input Manager ───────────────────────────────────────────────
+        let input_manager = Arc::new(Mutex::new(build_input_manager(config)));
+        info!(
+            audio_enabled = config.audio.enabled,
+            capture_enabled = config.capture.enabled,
+            "Input manager created"
+        );
+
         info!("All subsystems initialized");
 
         Ok(Self {
@@ -180,6 +197,7 @@ impl DaemonState {
             render_loop,
             spatial_engine,
             backend_manager,
+            input_manager,
             render_thread: None,
             start_time: Instant::now(),
         })
@@ -208,6 +226,14 @@ impl DaemonState {
             "Starting daemon subsystems"
         );
 
+        // Start configured input sources.
+        {
+            let mut input_manager = self.input_manager.lock().await;
+            input_manager
+                .start_all()
+                .context("failed to start input sources")?;
+        }
+
         // Start the render loop.
         {
             let mut loop_guard = self.render_loop.write().await;
@@ -221,6 +247,9 @@ impl DaemonState {
             backend_manager: Arc::clone(&self.backend_manager),
             event_bus: Arc::clone(&self.event_bus),
             render_loop: Arc::clone(&self.render_loop),
+            input_manager: Arc::clone(&self.input_manager),
+            canvas_width: config.daemon.canvas_width,
+            canvas_height: config.daemon.canvas_height,
         };
         self.render_thread = Some(RenderThread::spawn(rt_state));
 
@@ -273,25 +302,32 @@ impl DaemonState {
             }
         }
 
-        // 3. Deactivate effect engine.
+        // 3. Stop input sources.
+        {
+            let mut input_manager = self.input_manager.lock().await;
+            input_manager.stop_all();
+        }
+        info!("Input sources stopped");
+
+        // 4. Deactivate effect engine.
         {
             let mut engine_guard = self.effect_engine.lock().await;
             engine_guard.deactivate();
         }
         info!("Effect engine deactivated");
 
-        // 4. Scene manager — deactivate current scene.
+        // 5. Scene manager — deactivate current scene.
         {
             let mut scene_guard = self.scene_manager.write().await;
             scene_guard.deactivate_current();
         }
         info!("Scene manager cleaned up");
 
-        // 5. Log final device count.
+        // 6. Log final device count.
         let device_count = self.device_registry.len().await;
         info!(devices = device_count, "Device registry final state");
 
-        // 6. Publish shutdown event.
+        // 7. Publish shutdown event.
         self.event_bus
             .publish(hypercolor_types::event::HypercolorEvent::DaemonShutdown {
                 reason: "signal".to_string(),
@@ -300,6 +336,68 @@ impl DaemonState {
         info!("Graceful shutdown complete");
         Ok(())
     }
+}
+
+fn build_input_manager(config: &HypercolorConfig) -> InputManager {
+    let mut input_manager = InputManager::new();
+
+    if config.audio.enabled {
+        let audio_pipeline_config = AudioPipelineConfig {
+            source: audio_source_from_device(&config.audio.device),
+            fft_size: usize::try_from(config.audio.fft_size).unwrap_or(1024),
+            smoothing: config.audio.smoothing.clamp(0.0, 1.0),
+            gain: 1.0,
+            noise_floor: noise_gate_to_db(config.audio.noise_gate),
+            beat_sensitivity: config.audio.beat_sensitivity.max(0.01),
+        };
+        let audio_input = AudioInput::new(&audio_pipeline_config)
+            .with_name(format!("AudioInput({})", config.audio.device));
+        input_manager.add_source(Box::new(audio_input));
+    }
+
+    if config.capture.enabled {
+        let monitor = monitor_select_from_config(config.capture.monitor, &config.capture.source);
+        let capture_config = ScreenCaptureConfig {
+            monitor,
+            target_fps: config.capture.capture_fps.max(1),
+            ..ScreenCaptureConfig::default()
+        };
+        input_manager.add_source(Box::new(ScreenCaptureInput::new(capture_config)));
+    }
+
+    input_manager
+}
+
+fn audio_source_from_device(device: &str) -> AudioSourceType {
+    let normalized = device.trim();
+    if normalized.eq_ignore_ascii_case("none") {
+        AudioSourceType::None
+    } else if normalized.eq_ignore_ascii_case("auto") || normalized.eq_ignore_ascii_case("default")
+    {
+        AudioSourceType::SystemMonitor
+    } else if normalized.eq_ignore_ascii_case("mic")
+        || normalized.eq_ignore_ascii_case("microphone")
+    {
+        AudioSourceType::Microphone
+    } else {
+        AudioSourceType::Named(normalized.to_owned())
+    }
+}
+
+fn monitor_select_from_config(monitor_index: u32, source: &str) -> MonitorSelect {
+    let normalized = source.trim();
+    if normalized.eq_ignore_ascii_case("auto") || normalized.eq_ignore_ascii_case("primary") {
+        MonitorSelect::Primary
+    } else if let Some(name) = normalized.strip_prefix("name:") {
+        MonitorSelect::ByName(name.trim().to_owned())
+    } else {
+        MonitorSelect::ByIndex(monitor_index)
+    }
+}
+
+fn noise_gate_to_db(noise_gate: f32) -> f32 {
+    let linear = noise_gate.clamp(0.000_001, 1.0);
+    20.0 * linear.log10()
 }
 
 // ── Config Loading ──────────────────────────────────────────────────────────

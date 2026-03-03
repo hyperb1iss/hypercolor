@@ -13,9 +13,10 @@ use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig, MockEff
 use hypercolor_core::device::{BackendManager, DeviceBackend};
 use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::engine::RenderLoop;
+use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::DeviceId;
-use hypercolor_types::event::HypercolorEvent;
+use hypercolor_types::event::{HypercolorEvent, ZoneColors};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -63,6 +64,69 @@ fn strip_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
     }
 }
 
+fn point_zone(id: &str, device_id: &str, x: f32, y: f32) -> DeviceZone {
+    DeviceZone {
+        id: id.into(),
+        name: id.into(),
+        device_id: device_id.into(),
+        zone_name: None,
+        position: NormalizedPosition { x, y },
+        size: NormalizedPosition { x: 0.2, y: 0.2 },
+        rotation: 0.0,
+        scale: 1.0,
+        orientation: None,
+        topology: LedTopology::Point,
+        led_positions: Vec::new(),
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+    }
+}
+
+struct MockScreenSource {
+    running: bool,
+    zone_colors: Vec<ZoneColors>,
+}
+
+impl MockScreenSource {
+    fn new(zone_colors: Vec<ZoneColors>) -> Self {
+        Self {
+            running: false,
+            zone_colors,
+        }
+    }
+}
+
+impl InputSource for MockScreenSource {
+    fn name(&self) -> &str {
+        "mock_screen"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        if !self.running {
+            return Ok(InputData::None);
+        }
+
+        Ok(InputData::Screen(ScreenData {
+            zone_colors: self.zone_colors.clone(),
+        }))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
 fn make_render_state(
     effect_engine: EffectEngine,
     spatial_engine: SpatialEngine,
@@ -74,6 +138,9 @@ fn make_render_state(
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         event_bus: Arc::new(HypercolorBus::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
+        input_manager: Arc::new(Mutex::new(InputManager::new())),
+        canvas_width: 320,
+        canvas_height: 200,
     }
 }
 
@@ -237,6 +304,9 @@ async fn pipeline_renders_active_effect_to_devices() {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         event_bus: Arc::new(HypercolorBus::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
+        input_manager: Arc::new(Mutex::new(InputManager::new())),
+        canvas_width: 320,
+        canvas_height: 200,
     };
 
     // Start.
@@ -307,4 +377,67 @@ async fn pipeline_with_no_effect_produces_black_canvas() {
     // With no zones, frame data has empty zone list.
     let frame_data = frame_rx.borrow().clone();
     assert!(frame_data.zones.is_empty());
+}
+
+#[tokio::test]
+async fn pipeline_uses_screen_input_canvas_when_available() {
+    let layout = test_layout(vec![
+        point_zone("zone_left", "mock:left", 0.25, 0.5),
+        point_zone("zone_right", "mock:right", 0.75, 0.5),
+    ]);
+
+    let state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(layout),
+        BackendManager::new(),
+    );
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(MockScreenSource::new(vec![
+            ZoneColors {
+                zone_id: "screen:sector_0_0".to_owned(),
+                colors: vec![[255, 0, 0]],
+            },
+            ZoneColors {
+                zone_id: "screen:sector_0_1".to_owned(),
+                colors: vec![[0, 255, 0]],
+            },
+        ])));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+    let got_frame = tokio::time::timeout(Duration::from_secs(2), frame_rx.changed()).await;
+    assert!(got_frame.is_ok(), "expected frame data within 2 seconds");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let frame_data = frame_rx.borrow().clone();
+    let left_zone = frame_data
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_left")
+        .expect("left zone should be sampled");
+    let right_zone = frame_data
+        .zones
+        .iter()
+        .find(|zone| zone.zone_id == "zone_right")
+        .expect("right zone should be sampled");
+
+    assert_eq!(left_zone.colors.first().copied(), Some([255, 0, 0]));
+    assert_eq!(right_zone.colors.first().copied(), Some([0, 255, 0]));
 }
