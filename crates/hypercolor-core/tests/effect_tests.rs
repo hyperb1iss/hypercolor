@@ -96,6 +96,22 @@ fn sample_metadata() -> EffectMetadata {
     }
 }
 
+fn builtin_metadata(name: &str) -> EffectMetadata {
+    EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: name.to_owned(),
+        author: "hypercolor".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: "Built-in test effect".to_owned(),
+        category: EffectCategory::Ambient,
+        tags: vec!["builtin".to_owned()],
+        source: EffectSource::Native {
+            path: PathBuf::from(format!("builtin/{name}")),
+        },
+        license: Some("Apache-2.0".to_owned()),
+    }
+}
+
 fn sample_entry(name: &str, category: EffectCategory, tags: Vec<&str>) -> EffectEntry {
     EffectEntry {
         metadata: EffectMetadata {
@@ -373,6 +389,40 @@ fn engine_custom_canvas_size() {
     let canvas = engine.tick(0.016, &audio).expect("tick");
     assert_eq!(canvas.width(), 640);
     assert_eq!(canvas.height(), 400);
+}
+
+#[test]
+fn engine_activate_metadata_selects_builtin_renderer() {
+    let mut engine = EffectEngine::new();
+    engine
+        .activate_metadata(builtin_metadata("solid_color"))
+        .expect("built-in metadata activation should succeed");
+
+    assert!(engine.is_running());
+}
+
+#[cfg(not(feature = "servo"))]
+#[test]
+fn engine_activate_metadata_html_requires_servo_feature() {
+    let mut engine = EffectEngine::new();
+    let metadata = EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: "html-test".to_owned(),
+        author: "SignalRGB".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: "HTML effect".to_owned(),
+        category: EffectCategory::Ambient,
+        tags: vec!["html".to_owned()],
+        source: EffectSource::Html {
+            path: PathBuf::from("community/test.html"),
+        },
+        license: None,
+    };
+
+    let error = engine
+        .activate_metadata(metadata)
+        .expect_err("html activation should fail without servo feature");
+    assert!(error.to_string().contains("requires the `servo` feature"));
 }
 
 // ── EffectRegistry Tests ─────────────────────────────────────────────────────

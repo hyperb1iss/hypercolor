@@ -11,6 +11,7 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::effect::{ControlValue, EffectMetadata, EffectState};
 
+use super::factory::create_renderer_for_metadata;
 use super::traits::{EffectRenderer, FrameInput};
 
 // ── EffectEngine ─────────────────────────────────────────────────────────────
@@ -128,6 +129,18 @@ impl EffectEngine {
                 Err(e)
             }
         }
+    }
+
+    /// Activate an effect directly from metadata by selecting the correct
+    /// renderer implementation (native vs HTML).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no renderer can be created for the source, or if
+    /// the selected renderer fails during initialization.
+    pub fn activate_metadata(&mut self, metadata: EffectMetadata) -> anyhow::Result<()> {
+        let renderer = create_renderer_for_metadata(&metadata)?;
+        self.activate(renderer, metadata)
     }
 
     /// Deactivate the current effect and release its renderer.

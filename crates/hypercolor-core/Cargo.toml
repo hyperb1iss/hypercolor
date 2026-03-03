@@ -13,7 +13,7 @@ workspace = true
 
 [features]
 default = []
-servo = ["dep:servo", "dep:dpi"]
+servo = ["dep:servo", "dep:dpi", "dep:rustls"]
 
 [dependencies]
 hypercolor-types = { workspace = true }
@@ -35,6 +35,7 @@ realfft = { workspace = true }
 rustfft = { workspace = true }
 dpi = { workspace = true, optional = true }
 servo = { package = "libservo", git = "https://github.com/servo/servo", rev = "301f7da52e320764fd0063facb90de0ec8db8f25", default-features = false, optional = true }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
