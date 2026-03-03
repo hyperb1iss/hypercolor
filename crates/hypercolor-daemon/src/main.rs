@@ -26,6 +26,10 @@ struct DaemonArgs {
     /// Log level (trace, debug, info, warn, error).
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// Run the MCP server over stdio instead of serving the REST API.
+    #[arg(long, default_value_t = false)]
+    mcp_stdio: bool,
 }
 
 // ── Entry Point ─────────────────────────────────────────────────────────────
@@ -66,6 +70,25 @@ async fn main() -> Result<()> {
 
     // 4. Start subsystems (render loop, render thread, discovery).
     daemon_state.start().await?;
+
+    if args.mcp_stdio {
+        info!("MCP stdio mode enabled");
+        let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
+        let mut shutdown_rx = install_signal_handlers();
+
+        tokio::select! {
+            mcp_result = hypercolor_daemon::mcp::run_stdio_server_with_state(Arc::clone(&app_state)) => {
+                mcp_result.context("MCP stdio server error")?;
+            }
+            _ = shutdown_rx.changed() => {
+                info!("Shutdown signal received, stopping MCP server");
+            }
+        }
+
+        daemon_state.shutdown().await?;
+        info!("Hypercolor daemon exited cleanly");
+        return Ok(());
+    }
 
     // 5. Build the API server with shared daemon state.
     let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));

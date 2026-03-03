@@ -5,6 +5,8 @@
 
 use serde_json::{Value, json};
 
+use crate::api::AppState;
+
 /// Definition of a single MCP resource.
 #[derive(Debug, Clone)]
 pub struct ResourceDefinition {
@@ -71,6 +73,18 @@ pub fn read_resource(uri: &str) -> Option<Value> {
         "hypercolor://effects" => Some(read_effects()),
         "hypercolor://profiles" => Some(read_profiles()),
         "hypercolor://audio" => Some(read_audio()),
+        _ => None,
+    }
+}
+
+/// Read a resource by URI using live daemon state.
+pub async fn read_resource_with_state(uri: &str, state: &AppState) -> Option<Value> {
+    match uri {
+        "hypercolor://state" => Some(read_state_with_state(state).await),
+        "hypercolor://devices" => Some(read_devices_with_state(state).await),
+        "hypercolor://effects" => Some(read_effects_with_state(state).await),
+        "hypercolor://profiles" => Some(read_profiles_with_state(state).await),
+        "hypercolor://audio" => Some(read_audio_with_state(state)),
         _ => None,
     }
 }
@@ -161,5 +175,187 @@ fn read_audio() -> Value {
             "bpm_estimate": null
         },
         "spectrum_summary": null
+    })
+}
+
+async fn read_state_with_state(state: &AppState) -> Value {
+    let render_stats = {
+        let render_loop = state.render_loop.read().await;
+        render_loop.stats()
+    };
+    let avg_frame_secs = render_stats.avg_frame_time.as_secs_f32();
+    let actual_fps = if avg_frame_secs > 0.0 {
+        1.0 / avg_frame_secs
+    } else {
+        0.0
+    };
+
+    let active_effect = {
+        let engine = state.effect_engine.lock().await;
+        engine.active_metadata().map(|metadata| {
+            json!({
+                "id": metadata.id.to_string(),
+                "name": metadata.name
+            })
+        })
+    };
+    let devices = state.device_registry.list().await;
+    let connected = devices
+        .iter()
+        .filter(|device| device.state.is_renderable())
+        .count();
+    let total_leds: u64 = devices
+        .iter()
+        .map(|device| u64::from(device.info.total_led_count()))
+        .sum();
+
+    let (audio_status, screen_status) = if let Some(config_manager) = state.config_manager.as_ref()
+    {
+        let config = config_manager.get();
+        (
+            if config.audio.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            if config.capture.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+        )
+    } else {
+        ("unknown", "unknown")
+    };
+
+    json!({
+        "running": matches!(render_stats.state, hypercolor_core::engine::RenderLoopState::Running),
+        "paused": matches!(render_stats.state, hypercolor_core::engine::RenderLoopState::Paused),
+        "brightness": null,
+        "fps": {
+            "target": render_stats.tier.fps(),
+            "actual": actual_fps
+        },
+        "effect": active_effect,
+        "profile": null,
+        "devices": {
+            "connected": connected,
+            "total": devices.len(),
+            "total_leds": total_leds
+        },
+        "inputs": {
+            "audio": audio_status,
+            "screen": screen_status
+        },
+        "uptime_seconds": state.start_time.elapsed().as_secs(),
+        "version": env!("CARGO_PKG_VERSION")
+    })
+}
+
+async fn read_devices_with_state(state: &AppState) -> Value {
+    let devices = state.device_registry.list().await;
+    let connected = devices
+        .iter()
+        .filter(|device| device.state.is_renderable())
+        .count();
+    let total_leds: u64 = devices
+        .iter()
+        .map(|device| u64::from(device.info.total_led_count()))
+        .sum();
+
+    let payload = devices
+        .iter()
+        .map(|device| {
+            json!({
+                "id": device.info.id.to_string(),
+                "name": device.info.name,
+                "vendor": device.info.vendor,
+                "family": format!("{}", device.info.family),
+                "connection_type": format!("{:?}", device.info.connection_type),
+                "state": device.state.variant_name(),
+                "led_count": device.info.total_led_count(),
+                "zones": device.info.zones.len()
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "devices": payload,
+        "summary": {
+            "total": payload.len(),
+            "connected": connected,
+            "total_leds": total_leds
+        }
+    })
+}
+
+async fn read_effects_with_state(state: &AppState) -> Value {
+    let effects = {
+        let registry = state.effect_registry.read().await;
+        registry
+            .iter()
+            .map(|(_, entry)| {
+                json!({
+                    "id": entry.metadata.id.to_string(),
+                    "name": entry.metadata.name,
+                    "description": entry.metadata.description,
+                    "category": format!("{}", entry.metadata.category),
+                    "tags": entry.metadata.tags
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+
+    json!({
+        "effects": effects,
+        "total": effects.len()
+    })
+}
+
+async fn read_profiles_with_state(state: &AppState) -> Value {
+    let profiles = state.profiles.read().await;
+    let payload = profiles
+        .values()
+        .map(|profile| {
+            json!({
+                "id": profile.id,
+                "name": profile.name,
+                "description": profile.description,
+                "brightness": profile.brightness
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "profiles": payload,
+        "total": payload.len()
+    })
+}
+
+fn read_audio_with_state(state: &AppState) -> Value {
+    let spectrum = state.event_bus.spectrum_receiver().borrow().clone();
+    let enabled = state
+        .config_manager
+        .as_ref()
+        .is_some_and(|config_manager| config_manager.get().audio.enabled);
+
+    json!({
+        "enabled": enabled,
+        "source": null,
+        "sample_rate": null,
+        "levels": {
+            "overall": spectrum.level,
+            "bass": spectrum.bass,
+            "mid": spectrum.mid,
+            "treble": spectrum.treble
+        },
+        "beat": {
+            "detected": spectrum.beat,
+            "confidence": spectrum.beat_confidence,
+            "bpm_estimate": spectrum.bpm
+        },
+        "spectrum_summary": {
+            "bins": spectrum.bins.len()
+        }
     })
 }

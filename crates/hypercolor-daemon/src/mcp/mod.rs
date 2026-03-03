@@ -10,8 +10,12 @@ pub mod prompts;
 pub mod resources;
 pub mod tools;
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use crate::api::AppState;
 
 use self::prompts::build_prompt_definitions;
 use self::resources::build_resource_definitions;
@@ -87,17 +91,30 @@ pub struct McpServer {
     prompts: Vec<prompts::PromptDefinition>,
     /// Whether the client has completed the initialize handshake.
     initialized: bool,
+    /// Live daemon state (when running in integrated daemon mode).
+    state: Option<Arc<AppState>>,
 }
 
 impl McpServer {
     /// Create a new MCP server with all tools, resources, and prompts registered.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_optional_state(None)
+    }
+
+    /// Create an MCP server backed by live daemon state.
+    #[must_use]
+    pub fn with_state(state: Arc<AppState>) -> Self {
+        Self::with_optional_state(Some(state))
+    }
+
+    fn with_optional_state(state: Option<Arc<AppState>>) -> Self {
         Self {
             tools: build_tool_definitions(),
             resources: build_resource_definitions(),
             prompts: build_prompt_definitions(),
             initialized: false,
+            state,
         }
     }
 
@@ -171,6 +188,74 @@ impl McpServer {
         )
     }
 
+    /// Async variant of [`handle_message`](Self::handle_message) that can
+    /// execute stateful tools/resources requiring async locks.
+    pub async fn handle_message_async(&mut self, input: &str) -> Option<String> {
+        let request: JsonRpcRequest = match serde_json::from_str(input) {
+            Ok(req) => req,
+            Err(e) => {
+                let response = JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: Value::Null,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: PARSE_ERROR,
+                        message: format!("Parse error: {e}"),
+                        data: None,
+                    }),
+                };
+                return Some(
+                    serde_json::to_string(&response)
+                        .expect("JsonRpcResponse serialization should not fail"),
+                );
+            }
+        };
+
+        if request.jsonrpc != "2.0" {
+            let response = JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: request.id.unwrap_or(Value::Null),
+                result: None,
+                error: Some(JsonRpcError {
+                    code: INVALID_REQUEST,
+                    message: "Invalid JSON-RPC version (must be \"2.0\")".into(),
+                    data: None,
+                }),
+            };
+            return Some(
+                serde_json::to_string(&response)
+                    .expect("JsonRpcResponse serialization should not fail"),
+            );
+        }
+
+        let id = request.id.clone().unwrap_or(Value::Null);
+        let result = self
+            .route_method_async(&request.method, &request.params.unwrap_or(Value::Null))
+            .await;
+
+        request.id.as_ref()?;
+
+        let response = match result {
+            Ok(value) => JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id,
+                result: Some(value),
+                error: None,
+            },
+            Err(err) => JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id,
+                result: None,
+                error: Some(err),
+            },
+        };
+
+        Some(
+            serde_json::to_string(&response)
+                .expect("JsonRpcResponse serialization should not fail"),
+        )
+    }
+
     /// Route a method call to the appropriate handler.
     fn route_method(&mut self, method: &str, params: &Value) -> Result<Value, JsonRpcError> {
         match method {
@@ -194,6 +279,47 @@ impl McpServer {
             "resources/read" => {
                 self.require_initialized()?;
                 self.handle_resources_read(params)
+            }
+            "prompts/list" => {
+                self.require_initialized()?;
+                Ok(self.handle_prompts_list())
+            }
+            "prompts/get" => {
+                self.require_initialized()?;
+                self.handle_prompts_get(params)
+            }
+            "ping" => Ok(json!({})),
+            _ => Err(JsonRpcError {
+                code: METHOD_NOT_FOUND,
+                message: format!("Method not found: {method}"),
+                data: None,
+            }),
+        }
+    }
+
+    async fn route_method_async(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> Result<Value, JsonRpcError> {
+        match method {
+            "initialize" => self.handle_initialize(params),
+            "initialized" => Ok(Value::Null),
+            "tools/list" => {
+                self.require_initialized()?;
+                Ok(self.handle_tools_list())
+            }
+            "tools/call" => {
+                self.require_initialized()?;
+                self.handle_tools_call_async(params).await
+            }
+            "resources/list" => {
+                self.require_initialized()?;
+                Ok(self.handle_resources_list())
+            }
+            "resources/read" => {
+                self.require_initialized()?;
+                self.handle_resources_read_async(params).await
             }
             "prompts/list" => {
                 self.require_initialized()?;
@@ -315,6 +441,43 @@ impl McpServer {
         }
     }
 
+    async fn handle_tools_call_async(&self, params: &Value) -> Result<Value, JsonRpcError> {
+        let tool_name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| JsonRpcError {
+                code: INVALID_PARAMS,
+                message: "Missing 'name' parameter in tools/call".into(),
+                data: None,
+            })?;
+
+        let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+
+        let result = if let Some(state) = self.state.as_ref() {
+            tools::execute_tool_with_state(tool_name, &arguments, state).await
+        } else {
+            tools::execute_tool(tool_name, &arguments)
+        };
+
+        match result {
+            Ok(payload) => Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string_pretty(&payload)
+                        .unwrap_or_else(|_| payload.to_string())
+                }],
+                "isError": false
+            })),
+            Err(error) => Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!("Error: {error}")
+                }],
+                "isError": true
+            })),
+        }
+    }
+
     fn handle_resources_list(&self) -> Value {
         let resources: Vec<Value> = self
             .resources
@@ -357,6 +520,39 @@ impl McpServer {
                     "mimeType": "application/json",
                     "text": serde_json::to_string(&content)
                         .unwrap_or_else(|_| content.to_string())
+                }]
+            })),
+            None => Err(JsonRpcError {
+                code: INVALID_PARAMS,
+                message: format!("Resource not found: {uri}"),
+                data: None,
+            }),
+        }
+    }
+
+    async fn handle_resources_read_async(&self, params: &Value) -> Result<Value, JsonRpcError> {
+        let uri = params
+            .get("uri")
+            .and_then(Value::as_str)
+            .ok_or_else(|| JsonRpcError {
+                code: INVALID_PARAMS,
+                message: "Missing 'uri' parameter in resources/read".into(),
+                data: None,
+            })?;
+
+        let content = if let Some(state) = self.state.as_ref() {
+            resources::read_resource_with_state(uri, state).await
+        } else {
+            resources::read_resource(uri)
+        };
+
+        match content {
+            Some(payload) => Ok(json!({
+                "contents": [{
+                    "uri": uri,
+                    "mimeType": "application/json",
+                    "text": serde_json::to_string(&payload)
+                        .unwrap_or_else(|_| payload.to_string())
                 }]
             })),
             None => Err(JsonRpcError {
@@ -454,5 +650,39 @@ pub async fn run_stdio_server() -> anyhow::Result<()> {
     }
 
     tracing::info!("MCP stdio server shutting down");
+    Ok(())
+}
+
+/// Run the MCP stdio loop backed by live daemon state.
+///
+/// This variant enables non-stub tool/resource execution.
+pub async fn run_stdio_server_with_state(state: Arc<AppState>) -> anyhow::Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let mut server = McpServer::with_state(state);
+    let stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+    let reader = BufReader::new(stdin);
+    let mut lines = reader.lines();
+
+    tracing::info!("MCP stdio server (stateful) ready");
+
+    while let Some(line) = lines.next_line().await? {
+        let line = line.trim().to_owned();
+        if line.is_empty() {
+            continue;
+        }
+
+        tracing::debug!(input = %line, "MCP request");
+
+        if let Some(response) = server.handle_message_async(&line).await {
+            tracing::debug!(output = %response, "MCP response");
+            stdout.write_all(response.as_bytes()).await?;
+            stdout.write_all(b"\n").await?;
+            stdout.flush().await?;
+        }
+    }
+
+    tracing::info!("MCP stdio server (stateful) shutting down");
     Ok(())
 }
