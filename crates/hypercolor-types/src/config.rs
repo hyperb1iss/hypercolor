@@ -23,7 +23,7 @@ mod defaults {
         9420
     }
     pub fn target_fps() -> u32 {
-        60
+        30
     }
     pub fn canvas_width() -> u32 {
         320

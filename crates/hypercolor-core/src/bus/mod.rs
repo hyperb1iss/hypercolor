@@ -184,6 +184,12 @@ impl HypercolorBus {
         self.frame.subscribe()
     }
 
+    /// Number of active frame watch receivers.
+    #[must_use]
+    pub fn frame_receiver_count(&self) -> usize {
+        self.frame.receiver_count()
+    }
+
     /// Access the spectrum data watch sender (for the audio processor to publish).
     #[must_use]
     pub fn spectrum_sender(&self) -> &watch::Sender<SpectrumData> {
@@ -196,6 +202,12 @@ impl HypercolorBus {
         self.spectrum.subscribe()
     }
 
+    /// Number of active spectrum watch receivers.
+    #[must_use]
+    pub fn spectrum_receiver_count(&self) -> usize {
+        self.spectrum.receiver_count()
+    }
+
     /// Access the canvas watch sender (for render preview publication).
     #[must_use]
     pub fn canvas_sender(&self) -> &watch::Sender<CanvasFrame> {
@@ -206,6 +218,12 @@ impl HypercolorBus {
     #[must_use]
     pub fn canvas_receiver(&self) -> watch::Receiver<CanvasFrame> {
         self.canvas.subscribe()
+    }
+
+    /// Number of active canvas watch receivers.
+    #[must_use]
+    pub fn canvas_receiver_count(&self) -> usize {
+        self.canvas.receiver_count()
     }
 
     /// Number of active broadcast subscribers.

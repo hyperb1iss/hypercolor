@@ -73,6 +73,9 @@ pub struct RenderThreadState {
 
     /// Target render canvas height.
     pub canvas_height: u32,
+
+    /// Whether screen capture input is enabled in daemon configuration.
+    pub screen_capture_enabled: bool,
 }
 
 impl RenderThread {
@@ -152,6 +155,9 @@ struct FrameExecution {
     next_skip_decision: SkipDecision,
 }
 
+/// Sleep duration when the pipeline is fully idle.
+const IDLE_THROTTLE_SLEEP: Duration = Duration::from_millis(120);
+
 #[derive(Clone)]
 struct FrameInputs {
     audio: AudioData,
@@ -183,6 +189,7 @@ async fn run_pipeline(state: RenderThreadState) {
     let mut cached_canvas: Option<Canvas> = None;
     let mut skip_decision = SkipDecision::None;
     let mut last_tick = Instant::now();
+    let mut idle_black_pushed = false;
 
     loop {
         // ── Timing gate ─────────────────────────────────────────────
@@ -214,6 +221,7 @@ async fn run_pipeline(state: RenderThreadState) {
             &mut cached_inputs,
             &mut cached_canvas,
             &mut last_tick,
+            &mut idle_black_pushed,
         )
         .await;
         skip_decision = frame.next_skip_decision;
@@ -232,10 +240,16 @@ async fn execute_frame(
     cached_inputs: &mut FrameInputs,
     cached_canvas: &mut Option<Canvas>,
     last_tick: &mut Instant,
+    idle_black_pushed: &mut bool,
 ) -> FrameExecution {
     let frame_start = Instant::now();
     let delta_secs = last_tick.elapsed().as_secs_f32();
     *last_tick = frame_start;
+
+    let effect_running = current_effect_running(state).await;
+    if let Some(frame) = maybe_idle_throttle(state, effect_running, idle_black_pushed).await {
+        return frame;
+    }
 
     // ── Stage 1: Input sampling ─────────────────────────────────
     let input_start = Instant::now();
@@ -331,10 +345,66 @@ async fn execute_frame(
         }
     };
 
+    if !effect_running {
+        *idle_black_pushed = true;
+    }
+
     FrameExecution {
         headroom,
         next_skip_decision,
     }
+}
+
+async fn current_effect_running(state: &RenderThreadState) -> bool {
+    let engine = state.effect_engine.lock().await;
+    engine.is_running()
+}
+
+async fn maybe_idle_throttle(
+    state: &RenderThreadState,
+    effect_running: bool,
+    idle_black_pushed: &mut bool,
+) -> Option<FrameExecution> {
+    let can_idle_throttle = should_idle_throttle(
+        effect_running,
+        state.screen_capture_enabled,
+        state.event_bus.frame_receiver_count(),
+        state.event_bus.canvas_receiver_count(),
+        state.event_bus.spectrum_receiver_count(),
+    );
+
+    if effect_running {
+        *idle_black_pushed = false;
+        return None;
+    }
+
+    if can_idle_throttle && *idle_black_pushed {
+        {
+            let mut rl = state.render_loop.write().await;
+            let _ = rl.frame_complete();
+        }
+
+        return Some(FrameExecution {
+            headroom: IDLE_THROTTLE_SLEEP,
+            next_skip_decision: SkipDecision::None,
+        });
+    }
+
+    None
+}
+
+fn should_idle_throttle(
+    effect_running: bool,
+    screen_capture_enabled: bool,
+    frame_receivers: usize,
+    canvas_receivers: usize,
+    spectrum_receivers: usize,
+) -> bool {
+    if effect_running || screen_capture_enabled {
+        return false;
+    }
+
+    frame_receivers == 0 && canvas_receivers == 0 && spectrum_receivers == 0
 }
 
 /// Sample current input values for the frame.
@@ -525,7 +595,9 @@ mod tests {
     use hypercolor_core::types::canvas::Rgba;
     use hypercolor_core::types::event::ZoneColors;
 
-    use super::{SkipDecision, micros_u32, parse_sector_zone_id, screen_data_to_canvas};
+    use super::{
+        SkipDecision, micros_u32, parse_sector_zone_id, screen_data_to_canvas, should_idle_throttle,
+    };
 
     fn frame_stats(
         budget_exceeded: bool,
@@ -564,6 +636,28 @@ mod tests {
             SkipDecision::from_frame_stats(&stats),
             SkipDecision::ReuseCanvas
         );
+    }
+
+    #[test]
+    fn idle_throttle_enabled_only_when_fully_idle() {
+        assert!(should_idle_throttle(false, false, 0, 0, 0));
+    }
+
+    #[test]
+    fn idle_throttle_disabled_when_effect_running() {
+        assert!(!should_idle_throttle(true, false, 0, 0, 0));
+    }
+
+    #[test]
+    fn idle_throttle_disabled_when_capture_enabled() {
+        assert!(!should_idle_throttle(false, true, 0, 0, 0));
+    }
+
+    #[test]
+    fn idle_throttle_disabled_when_stream_has_subscribers() {
+        assert!(!should_idle_throttle(false, false, 1, 0, 0));
+        assert!(!should_idle_throttle(false, false, 0, 1, 0));
+        assert!(!should_idle_throttle(false, false, 0, 0, 1));
     }
 
     #[test]

@@ -120,6 +120,7 @@ fn tier_display_includes_fps_and_name() {
 fn controller_starts_at_specified_tier() {
     let ctrl = FpsController::new(FpsTier::Medium);
     assert_eq!(ctrl.tier(), FpsTier::Medium);
+    assert_eq!(ctrl.max_tier(), FpsTier::Full);
     assert_eq!(ctrl.target_fps(), 30);
     assert_eq!(ctrl.consecutive_misses(), 0);
     assert_eq!(ctrl.total_frames(), 0);
@@ -275,6 +276,26 @@ fn upshift_returns_none_at_maximum() {
     let mut ctrl = FpsController::new(FpsTier::Full);
     assert_eq!(ctrl.upshift(), None);
     assert_eq!(ctrl.tier(), FpsTier::Full);
+}
+
+#[test]
+fn set_max_tier_clamps_and_caps_upshift() {
+    let mut ctrl = FpsController::new(FpsTier::Full);
+    ctrl.set_max_tier(FpsTier::Medium);
+
+    // Existing tier is clamped to the new ceiling.
+    assert_eq!(ctrl.max_tier(), FpsTier::Medium);
+    assert_eq!(ctrl.tier(), FpsTier::Medium);
+
+    // Direct and manual transitions cannot exceed the ceiling.
+    assert_eq!(ctrl.upshift(), None);
+    ctrl.set_tier(FpsTier::Full);
+    assert_eq!(ctrl.tier(), FpsTier::Medium);
+
+    // Lower tiers can still move upward until they hit the ceiling.
+    ctrl.set_tier(FpsTier::Low);
+    assert_eq!(ctrl.upshift(), Some(FpsTier::Medium));
+    assert_eq!(ctrl.upshift(), None);
 }
 
 #[test]
@@ -448,12 +469,15 @@ fn render_loop_starts_in_created_state() {
 fn render_loop_new_resolves_fps_to_tier() {
     let rl = RenderLoop::new(60);
     assert_eq!(rl.fps_controller().tier(), FpsTier::Full);
+    assert_eq!(rl.fps_controller().max_tier(), FpsTier::Full);
 
     let rl = RenderLoop::new(30);
     assert_eq!(rl.fps_controller().tier(), FpsTier::Medium);
+    assert_eq!(rl.fps_controller().max_tier(), FpsTier::Medium);
 
     let rl = RenderLoop::new(10);
     assert_eq!(rl.fps_controller().tier(), FpsTier::Minimal);
+    assert_eq!(rl.fps_controller().max_tier(), FpsTier::Minimal);
 }
 
 #[test]
@@ -576,6 +600,15 @@ fn render_loop_set_tier_changes_fps() {
     rl.set_tier(FpsTier::Low);
     assert_eq!(rl.fps_controller().tier(), FpsTier::Low);
     assert_eq!(rl.fps_controller().target_fps(), 20);
+}
+
+#[test]
+fn render_loop_set_tier_respects_configured_ceiling() {
+    let mut rl = RenderLoop::new(30);
+    assert_eq!(rl.fps_controller().tier(), FpsTier::Medium);
+
+    rl.set_tier(FpsTier::Full);
+    assert_eq!(rl.fps_controller().tier(), FpsTier::Medium);
 }
 
 #[test]

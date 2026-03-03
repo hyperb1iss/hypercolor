@@ -155,6 +155,51 @@ async fn subscriber_count_tracks_drops() {
     assert_eq!(bus.subscriber_count(), 0);
 }
 
+#[tokio::test]
+async fn frame_receiver_count_tracks_drops() {
+    let bus = HypercolorBus::new();
+    let rx1 = bus.frame_receiver();
+    let rx2 = bus.frame_receiver();
+
+    assert_eq!(bus.frame_receiver_count(), 2);
+
+    drop(rx1);
+    assert_eq!(bus.frame_receiver_count(), 1);
+
+    drop(rx2);
+    assert_eq!(bus.frame_receiver_count(), 0);
+}
+
+#[tokio::test]
+async fn spectrum_receiver_count_tracks_drops() {
+    let bus = HypercolorBus::new();
+    let rx1 = bus.spectrum_receiver();
+    let rx2 = bus.spectrum_receiver();
+
+    assert_eq!(bus.spectrum_receiver_count(), 2);
+
+    drop(rx1);
+    assert_eq!(bus.spectrum_receiver_count(), 1);
+
+    drop(rx2);
+    assert_eq!(bus.spectrum_receiver_count(), 0);
+}
+
+#[tokio::test]
+async fn canvas_receiver_count_tracks_drops() {
+    let bus = HypercolorBus::new();
+    let rx1 = bus.canvas_receiver();
+    let rx2 = bus.canvas_receiver();
+
+    assert_eq!(bus.canvas_receiver_count(), 2);
+
+    drop(rx1);
+    assert_eq!(bus.canvas_receiver_count(), 1);
+
+    drop(rx2);
+    assert_eq!(bus.canvas_receiver_count(), 0);
+}
+
 // ── No Subscribers ───────────────────────────────────────────────────────
 
 #[tokio::test]

@@ -119,8 +119,10 @@ impl RenderLoop {
     pub fn new(fps: u32) -> Self {
         let tier = FpsTier::from_fps(fps);
         info!(target_fps = fps, resolved_tier = %tier, "Render loop created");
+        let mut fps_controller = FpsController::new(tier);
+        fps_controller.set_max_tier(tier);
         Self {
-            fps_controller: FpsController::new(tier),
+            fps_controller,
             running: Arc::new(AtomicBool::new(false)),
             state: RenderLoopState::Created,
             frame_number: 0,

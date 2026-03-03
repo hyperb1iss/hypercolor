@@ -20,7 +20,7 @@ fn load_minimal_toml() {
     assert_eq!(config.schema_version, 3);
     // Sections should fall back to their serde defaults
     assert_eq!(config.daemon.port, 9420);
-    assert_eq!(config.daemon.target_fps, 60);
+    assert_eq!(config.daemon.target_fps, 30);
     assert!(config.web.enabled);
     assert!(!config.features.wasm_plugins);
 }
@@ -99,7 +99,7 @@ fn new_with_missing_file_uses_defaults() {
 
     assert_eq!(config.schema_version, 3);
     assert_eq!(config.daemon.port, 9420);
-    assert_eq!(config.daemon.target_fps, 60);
+    assert_eq!(config.daemon.target_fps, 30);
     assert!(config.web.enabled);
 }
 

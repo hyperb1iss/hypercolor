@@ -13,7 +13,7 @@ fn daemon_defaults_match_spec() {
     assert_eq!(d.listen_address, "127.0.0.1");
     assert_eq!(d.port, 9420);
     assert!(d.unix_socket);
-    assert_eq!(d.target_fps, 60);
+    assert_eq!(d.target_fps, 30);
     assert_eq!(d.canvas_width, 320);
     assert_eq!(d.canvas_height, 200);
     assert_eq!(d.max_devices, 32);

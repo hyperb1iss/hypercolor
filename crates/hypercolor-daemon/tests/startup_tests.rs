@@ -28,7 +28,7 @@ async fn load_config_falls_back_to_defaults_when_no_file() {
     // location, load_config should succeed with defaults.
     let (config, _path) = load_config(None).await.expect("default config should load");
     assert_eq!(config.schema_version, 3);
-    assert_eq!(config.daemon.target_fps, 60);
+    assert_eq!(config.daemon.target_fps, 30);
     assert_eq!(config.daemon.port, 9420);
 }
 
@@ -74,7 +74,7 @@ fn parse_config_toml_minimal() {
     let config = parse_config_toml(MINIMAL_TOML).expect("minimal config should parse");
     assert_eq!(config.schema_version, 3);
     // All sections should have serde defaults.
-    assert_eq!(config.daemon.target_fps, 60);
+    assert_eq!(config.daemon.target_fps, 30);
     assert!(config.audio.enabled);
 }
 
@@ -118,7 +118,7 @@ fn parse_config_toml_rejects_invalid_toml() {
 fn default_config_has_sane_values() {
     let config = default_config();
     assert_eq!(config.schema_version, 3);
-    assert_eq!(config.daemon.target_fps, 60);
+    assert_eq!(config.daemon.target_fps, 30);
     assert_eq!(config.daemon.port, 9420);
     assert_eq!(config.daemon.listen_address, "127.0.0.1");
     assert_eq!(config.daemon.canvas_width, 320);

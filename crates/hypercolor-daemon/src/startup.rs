@@ -275,6 +275,7 @@ impl DaemonState {
             input_manager: Arc::clone(&self.input_manager),
             canvas_width: config.daemon.canvas_width,
             canvas_height: config.daemon.canvas_height,
+            screen_capture_enabled: config.capture.enabled,
         };
         self.render_thread = Some(RenderThread::spawn(rt_state));
 

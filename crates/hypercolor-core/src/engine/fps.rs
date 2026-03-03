@@ -216,6 +216,9 @@ pub struct FpsController {
     /// Current performance tier.
     tier: FpsTier,
 
+    /// Maximum tier automatic upshifts are allowed to reach.
+    max_tier: FpsTier,
+
     /// Tier transition configuration.
     config: TierTransitionConfig,
 
@@ -245,6 +248,7 @@ impl FpsController {
     pub fn new(tier: FpsTier) -> Self {
         Self {
             tier,
+            max_tier: FpsTier::Full,
             config: TierTransitionConfig::default(),
             frame_start: None,
             consecutive_misses: 0,
@@ -268,6 +272,21 @@ impl FpsController {
     #[must_use]
     pub fn tier(&self) -> FpsTier {
         self.tier
+    }
+
+    /// Maximum tier automatic upshifts may reach.
+    #[must_use]
+    pub fn max_tier(&self) -> FpsTier {
+        self.max_tier
+    }
+
+    /// Set the maximum allowed upshift tier.
+    pub fn set_max_tier(&mut self, max_tier: FpsTier) {
+        self.max_tier = max_tier;
+        if self.tier > self.max_tier {
+            self.tier = self.max_tier;
+        }
+        self.upshift_eligible_since = None;
     }
 
     /// Target frame interval for the current tier.
@@ -383,8 +402,8 @@ impl FpsController {
     ///
     /// Mutates internal state to track when headroom first became sufficient.
     pub fn should_upshift(&mut self) -> bool {
-        // Can't upshift past Full
-        if self.tier.upshift().is_none() {
+        // Can't upshift past the configured ceiling.
+        if self.tier >= self.max_tier || self.tier.upshift().is_none() {
             self.upshift_eligible_since = None;
             return false;
         }
@@ -428,8 +447,9 @@ impl FpsController {
 
     /// Force a transition to a specific tier.
     pub fn set_tier(&mut self, tier: FpsTier) {
-        if self.tier != tier {
-            self.tier = tier;
+        let clamped = tier.min(self.max_tier);
+        if self.tier != clamped {
+            self.tier = clamped;
             self.reset_transition_state();
         }
     }
@@ -445,6 +465,9 @@ impl FpsController {
     /// Upshift one tier. Returns the new tier, or `None` if already at maximum.
     pub fn upshift(&mut self) -> Option<FpsTier> {
         let new = self.tier.upshift()?;
+        if new > self.max_tier {
+            return None;
+        }
         self.tier = new;
         self.reset_transition_state();
         Some(new)
@@ -469,6 +492,7 @@ impl std::fmt::Debug for FpsController {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FpsController")
             .field("tier", &self.tier)
+            .field("max_tier", &self.max_tier)
             .field("config", &self.config)
             .field("frame_start", &self.frame_start)
             .field("consecutive_misses", &self.consecutive_misses)

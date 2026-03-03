@@ -141,6 +141,7 @@ fn make_render_state(
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         canvas_width: 320,
         canvas_height: 200,
+        screen_capture_enabled: false,
     }
 }
 
@@ -337,6 +338,7 @@ async fn pipeline_renders_active_effect_to_devices() {
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         canvas_width: 320,
         canvas_height: 200,
+        screen_capture_enabled: false,
     };
 
     // Start.
