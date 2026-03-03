@@ -57,9 +57,9 @@ async fn main() -> Result<()> {
     );
 
     // 3. Initialize all subsystems.
-    let daemon_state = DaemonState::initialize(&config, config_path)?;
+    let mut daemon_state = DaemonState::initialize(&config, config_path)?;
 
-    // 4. Start subsystems (render loop, discovery, etc.).
+    // 4. Start subsystems (render loop, render thread, discovery).
     daemon_state.start().await?;
 
     // 5. Build the API server with shared daemon state.

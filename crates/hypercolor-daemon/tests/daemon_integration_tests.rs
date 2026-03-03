@@ -55,7 +55,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
 async fn daemon_lifecycle_initialize_start_shutdown() {
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
 
     // Verify initial state — all subsystems created but not started
@@ -102,7 +102,7 @@ async fn daemon_lifecycle_initialize_start_shutdown() {
 async fn daemon_shutdown_publishes_events() {
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
 
     let mut rx = state.event_bus.subscribe_all();
@@ -130,7 +130,7 @@ async fn daemon_shutdown_publishes_events() {
 async fn daemon_double_shutdown_is_safe() {
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
 
     state.start().await.expect("start");

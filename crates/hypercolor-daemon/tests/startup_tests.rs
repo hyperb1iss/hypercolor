@@ -140,7 +140,7 @@ fn daemon_state_initializes_with_default_config() {
 async fn daemon_state_start_and_shutdown() {
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
 
     // Start all subsystems.
@@ -242,7 +242,7 @@ async fn signal_handler_channel_starts_false() {
 async fn shutdown_is_idempotent() {
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
 
     state.start().await.expect("start should succeed");
@@ -262,7 +262,7 @@ async fn shutdown_is_idempotent() {
 async fn event_bus_receives_startup_event() {
     let config = default_config();
     let temp = temp_config_file();
-    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
         .expect("initialization should succeed");
 
     // Subscribe before starting so we catch the DaemonStarted event.

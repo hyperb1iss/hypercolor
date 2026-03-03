@@ -1,9 +1,10 @@
 //! Daemon startup orchestration, state management, and graceful shutdown.
 //!
 //! [`DaemonState`] is the top-level container for all subsystems. It wires
-//! together configuration, the device registry, effect engine, scene manager,
-//! event bus, and render loop — then exposes [`start`](DaemonState::start) and
-//! [`shutdown`](DaemonState::shutdown) for lifecycle management.
+//! together configuration, the device registry, effect engine, spatial engine,
+//! backend manager, scene manager, event bus, and render loop — then exposes
+//! [`start`](DaemonState::start) and [`shutdown`](DaemonState::shutdown) for
+//! lifecycle management.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,11 +15,16 @@ use tracing::{info, warn};
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::device::DeviceRegistry;
-use hypercolor_core::effect::EffectEngine;
+use hypercolor_core::device::{BackendManager, DeviceRegistry};
+use hypercolor_core::effect::builtin::register_builtin_effects;
+use hypercolor_core::effect::{EffectEngine, EffectRegistry};
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
+use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+
+use crate::render_thread::{RenderThread, RenderThreadState};
 
 // ── Config File Name ────────────────────────────────────────────────────────
 
@@ -48,14 +54,26 @@ pub struct DaemonState {
     /// `Box<dyn EffectRenderer>` which is `Send` but not `Sync`.
     pub effect_engine: Arc<Mutex<EffectEngine>>,
 
+    /// Effect catalog — metadata, search, categories for all known effects.
+    pub effect_registry: Arc<RwLock<EffectRegistry>>,
+
     /// Scene manager — scene lifecycle, priority stack, transitions.
     pub scene_manager: Arc<RwLock<SceneManager>>,
 
     /// Event bus — broadcast events, frame data, spectrum data.
     pub event_bus: Arc<HypercolorBus>,
 
-    /// Render loop — frame timing and pipeline skeleton.
+    /// Render loop — frame timing and FPS tier management.
     pub render_loop: Arc<RwLock<RenderLoop>>,
+
+    /// Spatial sampling engine — maps canvas pixels to LED positions.
+    pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+
+    /// Device backend router — pushes colors to hardware.
+    pub backend_manager: Arc<Mutex<BackendManager>>,
+
+    /// Handle to the running render thread (if started).
+    render_thread: Option<RenderThread>,
 }
 
 impl DaemonState {
@@ -97,6 +115,13 @@ impl DaemonState {
             "Effect engine created"
         );
 
+        // ── Effect Registry ─────────────────────────────────────────────
+        let mut effect_registry = EffectRegistry::default();
+        register_builtin_effects(&mut effect_registry);
+        let builtin_count = effect_registry.len();
+        let effect_registry = Arc::new(RwLock::new(effect_registry));
+        info!(builtins = builtin_count, "Effect registry created");
+
         // ── Scene Manager ───────────────────────────────────────────────
         let scene_manager = Arc::new(RwLock::new(SceneManager::new()));
         info!("Scene manager created");
@@ -106,15 +131,39 @@ impl DaemonState {
         let render_loop = Arc::new(RwLock::new(render_loop));
         info!(target_fps = config.daemon.target_fps, "Render loop created");
 
+        // ── Spatial Engine ──────────────────────────────────────────────
+        let default_layout = SpatialLayout {
+            id: "default".into(),
+            name: "Default Layout".into(),
+            description: None,
+            canvas_width: config.daemon.canvas_width,
+            canvas_height: config.daemon.canvas_height,
+            zones: Vec::new(),
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        };
+        let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(default_layout)));
+        info!("Spatial engine created (empty default layout)");
+
+        // ── Backend Manager ─────────────────────────────────────────────
+        let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
+        info!("Backend manager created");
+
         info!("All subsystems initialized");
 
         Ok(Self {
             config_manager,
             device_registry,
             effect_engine,
+            effect_registry,
             scene_manager,
             event_bus,
             render_loop,
+            spatial_engine,
+            backend_manager,
+            render_thread: None,
         })
     }
 
@@ -125,14 +174,14 @@ impl DaemonState {
         Arc::clone(&self.config_manager.get())
     }
 
-    /// Start all subsystems — render loop, backend discovery, etc.
+    /// Start all subsystems — render loop, render thread, backend discovery.
     ///
     /// After this call the daemon is fully operational and processing frames.
     ///
     /// # Errors
     ///
     /// Returns an error if any subsystem fails to start.
-    pub async fn start(&self) -> Result<()> {
+    pub async fn start(&mut self) -> Result<()> {
         let config = self.config();
         info!(
             listen = %config.daemon.listen_address,
@@ -147,14 +196,28 @@ impl DaemonState {
             loop_guard.start();
         }
 
+        // Spawn the render thread.
+        let rt_state = RenderThreadState {
+            effect_engine: Arc::clone(&self.effect_engine),
+            spatial_engine: Arc::clone(&self.spatial_engine),
+            backend_manager: Arc::clone(&self.backend_manager),
+            event_bus: Arc::clone(&self.event_bus),
+            render_loop: Arc::clone(&self.render_loop),
+        };
+        self.render_thread = Some(RenderThread::spawn(rt_state));
+
         // Publish a startup event so subscribers know the daemon is alive.
         let device_count = self.device_registry.len().await;
+        let effect_count = {
+            let reg = self.effect_registry.read().await;
+            reg.len()
+        };
         self.event_bus
             .publish(hypercolor_types::event::HypercolorEvent::DaemonStarted {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 pid: std::process::id(),
                 device_count: u32::try_from(device_count).unwrap_or(u32::MAX),
-                effect_count: 0,
+                effect_count: u32::try_from(effect_count).unwrap_or(u32::MAX),
             });
 
         info!("Daemon is running");
@@ -165,44 +228,52 @@ impl DaemonState {
     ///
     /// Sequence:
     /// 1. Stop render loop (no more frames produced)
-    /// 2. Deactivate the effect engine (release renderer resources)
-    /// 3. Scene manager cleanup
-    /// 4. Log final state
+    /// 2. Wait for render thread to exit
+    /// 3. Deactivate the effect engine (release renderer resources)
+    /// 4. Scene manager cleanup
+    /// 5. Log final state
     ///
     /// # Errors
     ///
     /// Returns an error if any shutdown step fails critically. Non-critical
     /// failures are logged as warnings and do not prevent the rest of the
     /// sequence from completing.
-    pub async fn shutdown(&self) -> Result<()> {
+    pub async fn shutdown(&mut self) -> Result<()> {
         info!("Beginning graceful shutdown");
 
-        // 1. Stop render loop.
+        // 1. Stop render loop — next tick() will return false.
         {
             let mut loop_guard = self.render_loop.write().await;
             loop_guard.stop();
         }
         info!("Render loop stopped");
 
-        // 2. Deactivate effect engine.
+        // 2. Wait for render thread to exit.
+        if let Some(mut rt) = self.render_thread.take() {
+            if let Err(e) = rt.shutdown().await {
+                warn!(error = %e, "render thread shutdown error");
+            }
+        }
+
+        // 3. Deactivate effect engine.
         {
             let mut engine_guard = self.effect_engine.lock().await;
             engine_guard.deactivate();
         }
         info!("Effect engine deactivated");
 
-        // 3. Scene manager — deactivate current scene.
+        // 4. Scene manager — deactivate current scene.
         {
             let mut scene_guard = self.scene_manager.write().await;
             scene_guard.deactivate_current();
         }
         info!("Scene manager cleaned up");
 
-        // 4. Log final device count.
+        // 5. Log final device count.
         let device_count = self.device_registry.len().await;
         info!(devices = device_count, "Device registry final state");
 
-        // 5. Publish shutdown event.
+        // 6. Publish shutdown event.
         self.event_bus
             .publish(hypercolor_types::event::HypercolorEvent::DaemonShutdown {
                 reason: "signal".to_string(),

@@ -23,10 +23,11 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::device::DeviceRegistry;
+use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::{EffectEngine, EffectRegistry};
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
+use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::spatial::SpatialLayout;
 
 // ── AppState ─────────────────────────────────────────────────────────────
@@ -64,6 +65,12 @@ pub struct AppState {
     /// Render loop — frame timing and pipeline skeleton.
     pub render_loop: Arc<RwLock<RenderLoop>>,
 
+    /// Spatial sampling engine — maps canvas pixels to LED positions.
+    pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+
+    /// Device backend router — pushes colors to hardware.
+    pub backend_manager: Arc<Mutex<BackendManager>>,
+
     /// In-memory profile store.
     pub profiles: RwLock<HashMap<String, profiles::Profile>>,
 
@@ -81,6 +88,21 @@ impl AppState {
     /// [`from_daemon_state`](Self::from_daemon_state) to share subsystems
     /// with the daemon lifecycle.
     pub fn new() -> Self {
+        use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+
+        let default_layout = SpatialLayout {
+            id: "default".into(),
+            name: "Default Layout".into(),
+            description: None,
+            canvas_width: 320,
+            canvas_height: 200,
+            zones: Vec::new(),
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        };
+
         Self {
             device_registry: DeviceRegistry::new(),
             effect_registry: Arc::new(RwLock::new(EffectRegistry::default())),
@@ -88,6 +110,8 @@ impl AppState {
             scene_manager: Arc::new(RwLock::new(SceneManager::new())),
             event_bus: Arc::new(HypercolorBus::new()),
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
+            spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(default_layout))),
+            backend_manager: Arc::new(Mutex::new(BackendManager::new())),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
             start_time: Instant::now(),
@@ -103,11 +127,13 @@ impl AppState {
     pub fn from_daemon_state(daemon: &crate::startup::DaemonState) -> Self {
         Self {
             device_registry: daemon.device_registry.clone(),
-            effect_registry: Arc::new(RwLock::new(EffectRegistry::default())),
+            effect_registry: Arc::clone(&daemon.effect_registry),
             effect_engine: Arc::clone(&daemon.effect_engine),
             scene_manager: Arc::clone(&daemon.scene_manager),
             event_bus: Arc::clone(&daemon.event_bus),
             render_loop: Arc::clone(&daemon.render_loop),
+            spatial_engine: Arc::clone(&daemon.spatial_engine),
+            backend_manager: Arc::clone(&daemon.backend_manager),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
             start_time: Instant::now(),
