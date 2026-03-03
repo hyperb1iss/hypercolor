@@ -22,6 +22,8 @@ use crate::api::AppState;
 /// Maximum number of events that can be buffered per WebSocket client.
 const WS_BUFFER_SIZE: usize = 64;
 const WS_PROTOCOL_VERSION: &str = "1.0";
+const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
+const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ── Subscription Types ───────────────────────────────────────────────────
 
@@ -417,6 +419,10 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>
 }
 
 /// Process a single WebSocket connection.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Socket loop coordinates handshake, heartbeats, relay queues, and client messages"
+)]
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     // Default subscriptions: events only.
     // Wrapped in Arc<RwLock<_>> so the relay task sees subscription changes.
@@ -466,6 +472,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
         spectrum_subs,
     ));
 
+    let mut ping_interval = tokio::time::interval(WS_PING_INTERVAL);
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut awaiting_pong = false;
+    let mut ping_sent_at = Instant::now();
+
     // Main loop: multiplex between incoming client messages and outbound events.
     loop {
         tokio::select! {
@@ -495,11 +506,33 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                 }
             }
 
+            // Keepalive heartbeat.
+            _ = ping_interval.tick() => {
+                if awaiting_pong && ping_sent_at.elapsed() >= WS_PONG_TIMEOUT {
+                    warn!("WebSocket client timed out waiting for pong");
+                    break;
+                }
+
+                if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
+                awaiting_pong = true;
+                ping_sent_at = Instant::now();
+            }
+
             // Inbound: process client messages.
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         handle_client_message(&text, &subscriptions, &mut socket).await;
+                    }
+                    Some(Ok(Message::Pong(_))) => {
+                        awaiting_pong = false;
+                    }
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Err(e)) => {
