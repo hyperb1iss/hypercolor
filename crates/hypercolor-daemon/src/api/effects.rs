@@ -7,6 +7,10 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
+use hypercolor_core::effect::EffectRegistry;
+use hypercolor_core::effect::builtin::create_builtin_renderer;
+use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata};
+
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 
@@ -86,24 +90,18 @@ pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
 pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let registry = state.effect_registry.read().await;
 
-    let Ok(uuid) = id.parse::<uuid::Uuid>() else {
-        return ApiError::bad_request(format!("Invalid effect ID: {id}"));
-    };
-    let effect_id = hypercolor_types::effect::EffectId::new(uuid);
-
-    let Some(entry) = registry.get(&effect_id) else {
+    let Some(meta) = resolve_effect_metadata(&registry, &id) else {
         return ApiError::not_found(format!("Effect not found: {id}"));
     };
 
-    let meta = &entry.metadata;
     ApiResponse::ok(EffectSummary {
         id: meta.id.to_string(),
-        name: meta.name.clone(),
-        description: meta.description.clone(),
-        author: meta.author.clone(),
+        name: meta.name,
+        description: meta.description,
+        author: meta.author,
         category: format!("{}", meta.category),
-        tags: meta.tags.clone(),
-        version: meta.version.clone(),
+        tags: meta.tags,
+        version: meta.version,
     })
 }
 
@@ -113,18 +111,41 @@ pub async fn apply_effect(
     Path(id): Path<String>,
     body: Option<Json<ApplyEffectRequest>>,
 ) -> Response {
-    let registry = state.effect_registry.read().await;
-
-    let Ok(uuid) = id.parse::<uuid::Uuid>() else {
-        return ApiError::bad_request(format!("Invalid effect ID: {id}"));
-    };
-    let effect_id = hypercolor_types::effect::EffectId::new(uuid);
-
-    let Some(entry) = registry.get(&effect_id) else {
-        return ApiError::not_found(format!("Effect not found: {id}"));
+    let metadata = {
+        let registry = state.effect_registry.read().await;
+        let Some(meta) = resolve_effect_metadata(&registry, &id) else {
+            return ApiError::not_found(format!("Effect not found: {id}"));
+        };
+        meta
     };
 
-    let meta = &entry.metadata;
+    let Some(renderer) = create_builtin_renderer(&metadata.name) else {
+        return ApiError::bad_request(format!(
+            "Effect '{}' is registered but has no runnable built-in renderer",
+            metadata.name
+        ));
+    };
+
+    let controls = body
+        .as_ref()
+        .and_then(|b| b.controls.as_ref())
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    {
+        let mut engine = state.effect_engine.lock().await;
+        if let Err(e) = engine.activate(renderer, metadata.clone()) {
+            return ApiError::internal(format!("Failed to activate effect '{}': {e}", metadata.name));
+        }
+
+        for (name, value) in &controls {
+            if let Some(control_value) = json_to_control_value(value) {
+                engine.set_control(name, &control_value);
+            }
+        }
+    }
+
     let transition_type = body
         .as_ref()
         .and_then(|b| b.transition.as_ref())
@@ -138,10 +159,10 @@ pub async fn apply_effect(
 
     ApiResponse::ok(serde_json::json!({
         "effect": {
-            "id": meta.id.to_string(),
-            "name": meta.name,
+            "id": metadata.id.to_string(),
+            "name": metadata.name,
         },
-        "applied_controls": body.as_ref().and_then(|b| b.controls.clone()).unwrap_or(serde_json::json!({})),
+        "applied_controls": controls,
         "transition": {
             "type": transition_type,
             "duration_ms": duration_ms,
@@ -177,4 +198,51 @@ pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
     ApiResponse::ok(serde_json::json!({
         "stopped": true,
     }))
+}
+
+fn resolve_effect_metadata(registry: &EffectRegistry, id_or_name: &str) -> Option<EffectMetadata> {
+    if let Ok(uuid) = id_or_name.parse::<uuid::Uuid>() {
+        let effect_id = EffectId::new(uuid);
+        return registry.get(&effect_id).map(|entry| entry.metadata.clone());
+    }
+
+    registry
+        .iter()
+        .find(|(_, entry)| entry.metadata.name.eq_ignore_ascii_case(id_or_name))
+        .map(|(_, entry)| entry.metadata.clone())
+}
+
+fn json_to_control_value(value: &serde_json::Value) -> Option<ControlValue> {
+    if let Some(v) = value.as_i64() {
+        let int = i32::try_from(v).ok()?;
+        return Some(ControlValue::Integer(int));
+    }
+    if let Some(v) = value.as_f64() {
+        let float = parse_f32(v)?;
+        return Some(ControlValue::Float(float));
+    }
+    if let Some(v) = value.as_bool() {
+        return Some(ControlValue::Boolean(v));
+    }
+    if let Some(v) = value.as_str() {
+        return Some(ControlValue::Text(v.to_owned()));
+    }
+    if let Some(array) = value.as_array() {
+        if array.len() == 4 {
+            let mut color = [0.0f32; 4];
+            for (idx, component) in array.iter().enumerate() {
+                let parsed = component.as_f64()?;
+                color[idx] = parse_f32(parsed)?;
+            }
+            return Some(ControlValue::Color(color));
+        }
+    }
+    None
+}
+
+fn parse_f32(value: f64) -> Option<f32> {
+    if !value.is_finite() {
+        return None;
+    }
+    value.to_string().parse::<f32>().ok()
 }

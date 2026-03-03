@@ -7,6 +7,8 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
+use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceState};
+
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 
@@ -71,28 +73,7 @@ pub async fn list_devices(State(state): State<Arc<AppState>>) -> Response {
 
     let items: Vec<DeviceSummary> = devices
         .iter()
-        .map(|tracked| {
-            let info = &tracked.info;
-            DeviceSummary {
-                id: info.id.to_string(),
-                name: info.name.clone(),
-                backend: format!("{}", info.family),
-                status: tracked.state.variant_name().to_lowercase(),
-                firmware_version: info.firmware_version.clone(),
-                total_leds: info.total_led_count(),
-                zones: info
-                    .zones
-                    .iter()
-                    .enumerate()
-                    .map(|(i, z)| ZoneSummary {
-                        id: format!("zone_{i}"),
-                        name: z.name.clone(),
-                        led_count: z.led_count,
-                        topology: format!("{:?}", z.topology).to_lowercase(),
-                    })
-                    .collect(),
-            }
-        })
+        .map(|tracked| summarize_device(&tracked.info, &tracked.state))
         .collect();
 
     let total = items.len();
@@ -109,34 +90,15 @@ pub async fn list_devices(State(state): State<Arc<AppState>>) -> Response {
 
 /// `GET /api/v1/devices/:id` — Get a single device.
 pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let Ok(device_id) = id.parse() else {
-        return ApiError::bad_request(format!("Invalid device ID: {id}"));
+    let Some(device_id) = resolve_device_id(&state, &id).await else {
+        return ApiError::not_found(format!("Device not found: {id}"));
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
         return ApiError::not_found(format!("Device not found: {id}"));
     };
 
-    let info = &tracked.info;
-    ApiResponse::ok(DeviceSummary {
-        id: info.id.to_string(),
-        name: info.name.clone(),
-        backend: format!("{}", info.family),
-        status: tracked.state.variant_name().to_lowercase(),
-        firmware_version: info.firmware_version.clone(),
-        total_leds: info.total_led_count(),
-        zones: info
-            .zones
-            .iter()
-            .enumerate()
-            .map(|(i, z)| ZoneSummary {
-                id: format!("zone_{i}"),
-                name: z.name.clone(),
-                led_count: z.led_count,
-                topology: format!("{:?}", z.topology).to_lowercase(),
-            })
-            .collect(),
-    })
+    ApiResponse::ok(summarize_device(&tracked.info, &tracked.state))
 }
 
 /// `PUT /api/v1/devices/:id` — Update a device's metadata.
@@ -145,8 +107,8 @@ pub async fn update_device(
     Path(id): Path<String>,
     Json(body): Json<UpdateDeviceRequest>,
 ) -> Response {
-    let Ok(device_id) = id.parse() else {
-        return ApiError::bad_request(format!("Invalid device ID: {id}"));
+    let Some(device_id) = resolve_device_id(&state, &id).await else {
+        return ApiError::not_found(format!("Device not found: {id}"));
     };
 
     let Some(tracked) = state.device_registry.get(&device_id).await else {
@@ -159,31 +121,15 @@ pub async fn update_device(
     let name = body.name.unwrap_or_else(|| info.name.clone());
     let _ = body.enabled; // Acknowledged but not persisted yet.
 
-    ApiResponse::ok(DeviceSummary {
-        id: info.id.to_string(),
-        name,
-        backend: format!("{}", info.family),
-        status: tracked.state.variant_name().to_lowercase(),
-        firmware_version: info.firmware_version.clone(),
-        total_leds: info.total_led_count(),
-        zones: info
-            .zones
-            .iter()
-            .enumerate()
-            .map(|(i, z)| ZoneSummary {
-                id: format!("zone_{i}"),
-                name: z.name.clone(),
-                led_count: z.led_count,
-                topology: format!("{:?}", z.topology).to_lowercase(),
-            })
-            .collect(),
-    })
+    let mut summary = summarize_device(&tracked.info, &tracked.state);
+    summary.name = name;
+    ApiResponse::ok(summary)
 }
 
 /// `DELETE /api/v1/devices/:id` — Remove a device from tracking.
 pub async fn delete_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let Ok(device_id) = id.parse() else {
-        return ApiError::bad_request(format!("Invalid device ID: {id}"));
+    let Some(device_id) = resolve_device_id(&state, &id).await else {
+        return ApiError::not_found(format!("Device not found: {id}"));
     };
 
     if state.device_registry.remove(&device_id).await.is_none() {
@@ -230,8 +176,8 @@ pub async fn identify_device(
     Path(id): Path<String>,
     body: Option<Json<IdentifyRequest>>,
 ) -> Response {
-    let Ok(device_id) = id.parse() else {
-        return ApiError::bad_request(format!("Invalid device ID: {id}"));
+    let Some(device_id) = resolve_device_id(&state, &id).await else {
+        return ApiError::not_found(format!("Device not found: {id}"));
     };
 
     let Some(_tracked) = state.device_registry.get(&device_id).await else {
@@ -245,4 +191,38 @@ pub async fn identify_device(
         "identifying": true,
         "duration_ms": duration_ms,
     }))
+}
+
+fn summarize_device(info: &DeviceInfo, state: &DeviceState) -> DeviceSummary {
+    DeviceSummary {
+        id: info.id.to_string(),
+        name: info.name.clone(),
+        backend: format!("{}", info.family),
+        status: state.variant_name().to_lowercase(),
+        firmware_version: info.firmware_version.clone(),
+        total_leds: info.total_led_count(),
+        zones: info
+            .zones
+            .iter()
+            .enumerate()
+            .map(|(i, z)| ZoneSummary {
+                id: format!("zone_{i}"),
+                name: z.name.clone(),
+                led_count: z.led_count,
+                topology: format!("{:?}", z.topology).to_lowercase(),
+            })
+            .collect(),
+    }
+}
+
+async fn resolve_device_id(state: &AppState, id_or_name: &str) -> Option<DeviceId> {
+    if let Ok(id) = id_or_name.parse::<DeviceId>() {
+        return Some(id);
+    }
+
+    let devices = state.device_registry.list().await;
+    devices
+        .iter()
+        .find(|d| d.info.name.eq_ignore_ascii_case(id_or_name))
+        .map(|d| d.info.id)
 }

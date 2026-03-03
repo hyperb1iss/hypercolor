@@ -77,10 +77,11 @@ pub async fn list_layouts(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/layouts/:id` — Get a single layout with full zone data.
 pub async fn get_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let layouts = state.layouts.read().await;
-
-    let Some(layout) = layouts.get(&id) else {
+    let Some(key) = resolve_layout_key(&layouts, &id) else {
         return ApiError::not_found(format!("Layout not found: {id}"));
     };
+
+    let layout = layouts.get(&key).expect("resolved layout key must exist");
 
     ApiResponse::ok(LayoutSummary {
         id: layout.id.clone(),
@@ -131,10 +132,13 @@ pub async fn update_layout(
     Json(body): Json<UpdateLayoutRequest>,
 ) -> Response {
     let mut layouts = state.layouts.write().await;
-
-    let Some(existing) = layouts.get_mut(&id) else {
+    let Some(key) = resolve_layout_key(&layouts, &id) else {
         return ApiError::not_found(format!("Layout not found: {id}"));
     };
+
+    let existing = layouts
+        .get_mut(&key)
+        .expect("resolved layout key must exist");
 
     existing.name.clone_from(&body.name);
     if let Some(w) = body.canvas_width {
@@ -158,13 +162,28 @@ pub async fn update_layout(
 /// `DELETE /api/v1/layouts/:id` — Delete a layout.
 pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let mut layouts = state.layouts.write().await;
-
-    if layouts.remove(&id).is_none() {
+    let Some(key) = resolve_layout_key(&layouts, &id) else {
         return ApiError::not_found(format!("Layout not found: {id}"));
-    }
+    };
+
+    layouts.remove(&key);
 
     ApiResponse::ok(serde_json::json!({
-        "id": id,
+        "id": key,
         "deleted": true,
     }))
+}
+
+fn resolve_layout_key(
+    layouts: &std::collections::HashMap<String, hypercolor_types::spatial::SpatialLayout>,
+    id_or_name: &str,
+) -> Option<String> {
+    if layouts.contains_key(id_or_name) {
+        return Some(id_or_name.to_owned());
+    }
+
+    layouts
+        .iter()
+        .find(|(_, layout)| layout.name.eq_ignore_ascii_case(id_or_name))
+        .map(|(id, _)| id.clone())
 }

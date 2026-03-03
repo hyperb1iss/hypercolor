@@ -20,8 +20,8 @@ struct DaemonArgs {
     config: Option<PathBuf>,
 
     /// Address and port to bind the API server to.
-    #[arg(long, default_value = "127.0.0.1:9420")]
-    bind: String,
+    #[arg(long)]
+    bind: Option<String>,
 
     /// Log level (trace, debug, info, warn, error).
     #[arg(long, default_value = "info")]
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
-        bind = %args.bind,
+        bind = ?args.bind,
         "Hypercolor daemon starting"
     );
 
@@ -56,6 +56,11 @@ async fn main() -> Result<()> {
         "Configuration ready"
     );
 
+    let bind = args
+        .bind
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", config.daemon.listen_address, config.daemon.port));
+
     // 3. Initialize all subsystems.
     let mut daemon_state = DaemonState::initialize(&config, config_path)?;
 
@@ -66,11 +71,11 @@ async fn main() -> Result<()> {
     let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
     let router = api::build_router(app_state);
 
-    let listener = tokio::net::TcpListener::bind(&args.bind)
+    let listener = tokio::net::TcpListener::bind(&bind)
         .await
-        .with_context(|| format!("failed to bind API server to {}", args.bind))?;
+        .with_context(|| format!("failed to bind API server to {bind}"))?;
 
-    info!(bind = %args.bind, "API server listening");
+    info!(bind = %bind, "API server listening");
 
     // 6. Install signal handlers for graceful shutdown.
     let mut shutdown_rx = install_signal_handlers();

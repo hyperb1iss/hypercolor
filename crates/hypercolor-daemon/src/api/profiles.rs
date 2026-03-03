@@ -70,10 +70,11 @@ pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/profiles/:id` — Get a single profile.
 pub async fn get_profile(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let profiles = state.profiles.read().await;
-
-    let Some(profile) = profiles.get(&id) else {
+    let Some(key) = resolve_profile_key(&profiles, &id) else {
         return ApiError::not_found(format!("Profile not found: {id}"));
     };
+
+    let profile = profiles.get(&key).expect("resolved profile key must exist");
 
     ApiResponse::ok(profile.clone())
 }
@@ -105,19 +106,18 @@ pub async fn update_profile(
     Json(body): Json<UpdateProfileRequest>,
 ) -> Response {
     let mut profiles = state.profiles.write().await;
-
-    if !profiles.contains_key(&id) {
+    let Some(key) = resolve_profile_key(&profiles, &id) else {
         return ApiError::not_found(format!("Profile not found: {id}"));
-    }
+    };
 
     let profile = Profile {
-        id: id.clone(),
+        id: key.clone(),
         name: body.name,
         description: body.description,
         brightness: body.brightness,
     };
 
-    profiles.insert(id, profile.clone());
+    profiles.insert(key, profile.clone());
     ApiResponse::ok(profile)
 }
 
@@ -127,13 +127,14 @@ pub async fn delete_profile(
     Path(id): Path<String>,
 ) -> Response {
     let mut profiles = state.profiles.write().await;
-
-    if profiles.remove(&id).is_none() {
+    let Some(key) = resolve_profile_key(&profiles, &id) else {
         return ApiError::not_found(format!("Profile not found: {id}"));
-    }
+    };
+
+    profiles.remove(&key);
 
     ApiResponse::ok(serde_json::json!({
-        "id": id,
+        "id": key,
         "deleted": true,
     }))
 }
@@ -141,10 +142,11 @@ pub async fn delete_profile(
 /// `POST /api/v1/profiles/:id/apply` — Apply a profile.
 pub async fn apply_profile(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let profiles = state.profiles.read().await;
-
-    let Some(profile) = profiles.get(&id) else {
+    let Some(key) = resolve_profile_key(&profiles, &id) else {
         return ApiError::not_found(format!("Profile not found: {id}"));
     };
+
+    let profile = profiles.get(&key).expect("resolved profile key must exist");
 
     // In a full implementation, this would set the effect, controls,
     // layout, device states, and brightness from the profile.
@@ -164,4 +166,18 @@ pub async fn apply_profile(State(state): State<Arc<AppState>>, Path(id): Path<St
         },
         "applied": true,
     }))
+}
+
+fn resolve_profile_key(
+    profiles: &std::collections::HashMap<String, Profile>,
+    id_or_name: &str,
+) -> Option<String> {
+    if profiles.contains_key(id_or_name) {
+        return Some(id_or_name.to_owned());
+    }
+
+    profiles
+        .iter()
+        .find(|(_, profile)| profile.name.eq_ignore_ascii_case(id_or_name))
+        .map(|(id, _)| id.clone())
 }

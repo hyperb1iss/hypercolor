@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use hypercolor_types::scene::{
     ColorInterpolation, EasingFunction, Scene, SceneId, ScenePriority, SceneScope, TransitionSpec,
 };
+use hypercolor_core::scene::SceneManager;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
@@ -79,11 +80,9 @@ pub async fn list_scenes(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/scenes/:id` — Get a single scene.
 pub async fn get_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let manager = state.scene_manager.read().await;
-
-    let Ok(uuid) = id.parse::<uuid::Uuid>() else {
-        return ApiError::bad_request(format!("Invalid scene ID: {id}"));
+    let Some(scene_id) = resolve_scene_id(&manager, &id) else {
+        return ApiError::not_found(format!("Scene not found: {id}"));
     };
-    let scene_id = SceneId(uuid);
 
     let Some(scene) = manager.get(&scene_id) else {
         return ApiError::not_found(format!("Scene not found: {id}"));
@@ -143,11 +142,9 @@ pub async fn update_scene(
     Json(body): Json<UpdateSceneRequest>,
 ) -> Response {
     let mut manager = state.scene_manager.write().await;
-
-    let Ok(uuid) = id.parse::<uuid::Uuid>() else {
-        return ApiError::bad_request(format!("Invalid scene ID: {id}"));
+    let Some(scene_id) = resolve_scene_id(&manager, &id) else {
+        return ApiError::not_found(format!("Scene not found: {id}"));
     };
-    let scene_id = SceneId(uuid);
 
     let Some(existing) = manager.get(&scene_id).cloned() else {
         return ApiError::not_found(format!("Scene not found: {id}"));
@@ -183,11 +180,9 @@ pub async fn update_scene(
 /// `DELETE /api/v1/scenes/:id` — Delete a scene.
 pub async fn delete_scene(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let mut manager = state.scene_manager.write().await;
-
-    let Ok(uuid) = id.parse::<uuid::Uuid>() else {
-        return ApiError::bad_request(format!("Invalid scene ID: {id}"));
+    let Some(scene_id) = resolve_scene_id(&manager, &id) else {
+        return ApiError::not_found(format!("Scene not found: {id}"));
     };
-    let scene_id = SceneId(uuid);
 
     if let Err(e) = manager.delete(&scene_id) {
         return ApiError::not_found(format!("Scene not found: {e}"));
@@ -205,11 +200,9 @@ pub async fn activate_scene(
     Path(id): Path<String>,
 ) -> Response {
     let mut manager = state.scene_manager.write().await;
-
-    let Ok(uuid) = id.parse::<uuid::Uuid>() else {
-        return ApiError::bad_request(format!("Invalid scene ID: {id}"));
+    let Some(scene_id) = resolve_scene_id(&manager, &id) else {
+        return ApiError::not_found(format!("Scene not found: {id}"));
     };
-    let scene_id = SceneId(uuid);
 
     let scene_name = match manager.get(&scene_id) {
         Some(s) => s.name.clone(),
@@ -222,9 +215,21 @@ pub async fn activate_scene(
 
     ApiResponse::ok(serde_json::json!({
         "scene": {
-            "id": id,
+            "id": scene_id.to_string(),
             "name": scene_name,
         },
         "activated": true,
     }))
+}
+
+fn resolve_scene_id(manager: &SceneManager, id_or_name: &str) -> Option<SceneId> {
+    if let Ok(uuid) = id_or_name.parse::<uuid::Uuid>() {
+        return Some(SceneId(uuid));
+    }
+
+    manager
+        .list()
+        .iter()
+        .find(|scene| scene.name.eq_ignore_ascii_case(id_or_name))
+        .map(|scene| scene.id)
 }

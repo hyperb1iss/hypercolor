@@ -5,8 +5,10 @@
 //! [`State`](axum::extract::State) extractor.
 
 pub mod devices;
+pub mod diagnose;
 pub mod effects;
 pub mod envelope;
+pub mod config;
 pub mod layouts;
 pub mod profiles;
 pub mod scenes;
@@ -23,6 +25,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{BackendManager, DeviceRegistry};
 use hypercolor_core::effect::{EffectEngine, EffectRegistry};
 use hypercolor_core::engine::RenderLoop;
@@ -71,6 +74,9 @@ pub struct AppState {
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
 
+    /// Configuration manager for config API endpoints.
+    pub config_manager: Option<Arc<ConfigManager>>,
+
     /// In-memory profile store.
     pub profiles: RwLock<HashMap<String, profiles::Profile>>,
 
@@ -112,6 +118,7 @@ impl AppState {
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
             spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(default_layout))),
             backend_manager: Arc::new(Mutex::new(BackendManager::new())),
+            config_manager: None,
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
             start_time: Instant::now(),
@@ -134,9 +141,10 @@ impl AppState {
             render_loop: Arc::clone(&daemon.render_loop),
             spatial_engine: Arc::clone(&daemon.spatial_engine),
             backend_manager: Arc::clone(&daemon.backend_manager),
+            config_manager: Some(Arc::clone(&daemon.config_manager)),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
-            start_time: Instant::now(),
+            start_time: daemon.start_time,
         }
     }
 }
@@ -223,6 +231,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         // ── System ───────────────────────────────────────────────────
         .route("/status", axum::routing::get(system::get_status))
+        .route("/state", axum::routing::get(system::get_status))
+        // ── Config ───────────────────────────────────────────────────
+        .route("/config", axum::routing::get(config::show_config))
+        .route("/config/get", axum::routing::get(config::get_config_value))
+        .route("/config/set", axum::routing::post(config::set_config_value))
+        .route(
+            "/config/reset",
+            axum::routing::post(config::reset_config_value),
+        )
+        // ── Diagnostics ──────────────────────────────────────────────
+        .route("/diagnose", axum::routing::post(diagnose::run_diagnostics))
         // ── WebSocket ────────────────────────────────────────────────
         .route("/ws", axum::routing::get(ws::ws_handler));
 

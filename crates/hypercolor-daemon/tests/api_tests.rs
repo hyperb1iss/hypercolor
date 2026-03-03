@@ -140,7 +140,7 @@ async fn get_device_not_found() {
 }
 
 #[tokio::test]
-async fn get_device_invalid_id() {
+async fn get_device_by_unknown_name_returns_not_found() {
     let app = test_app();
 
     let response = app
@@ -153,10 +153,10 @@ async fn get_device_invalid_id() {
         .await
         .expect("failed to execute request");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let json = body_json(response).await;
-    assert_eq!(json["error"]["code"], "bad_request");
+    assert_eq!(json["error"]["code"], "not_found");
 }
 
 #[tokio::test]

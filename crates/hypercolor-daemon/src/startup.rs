@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use tokio::sync::{Mutex, RwLock};
@@ -74,6 +75,9 @@ pub struct DaemonState {
 
     /// Handle to the running render thread (if started).
     render_thread: Option<RenderThread>,
+
+    /// Wall-clock reference for daemon uptime reporting.
+    pub start_time: Instant,
 }
 
 impl DaemonState {
@@ -164,6 +168,7 @@ impl DaemonState {
             spatial_engine,
             backend_manager,
             render_thread: None,
+            start_time: Instant::now(),
         })
     }
 
