@@ -99,7 +99,7 @@ impl MockScreenSource {
 }
 
 impl InputSource for MockScreenSource {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "mock_screen"
     }
 

@@ -46,9 +46,8 @@ fn factory_creates_renderer_for_builtin_native() {
 
 #[test]
 fn factory_errors_for_unknown_native_renderer() {
-    let error = match create_renderer_for_metadata(&native_metadata("does-not-exist")) {
-        Ok(_) => panic!("unknown native renderer should error"),
-        Err(error) => error,
+    let Err(error) = create_renderer_for_metadata(&native_metadata("does-not-exist")) else {
+        panic!("unknown native renderer should error");
     };
 
     assert!(
@@ -61,9 +60,8 @@ fn factory_errors_for_unknown_native_renderer() {
 #[cfg(not(feature = "servo"))]
 #[test]
 fn factory_html_requires_servo_feature() {
-    let error = match create_renderer_for_metadata(&html_metadata()) {
-        Ok(_) => panic!("html should require servo"),
-        Err(error) => error,
+    let Err(error) = create_renderer_for_metadata(&html_metadata()) else {
+        panic!("html should require servo");
     };
 
     assert!(error.to_string().contains("requires the `servo` feature"));

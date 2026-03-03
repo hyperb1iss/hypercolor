@@ -50,7 +50,7 @@ fn register_html_effects_loads_effects_from_directory_tree() {
     );
 
     let mut registry = EffectRegistry::new(vec![root.clone()]);
-    let report = register_html_effects(&mut registry, &[root.clone()]);
+    let report = register_html_effects(&mut registry, std::slice::from_ref(&root));
 
     assert_eq!(report.scanned_files, 2);
     assert_eq!(report.loaded_effects, 2);
