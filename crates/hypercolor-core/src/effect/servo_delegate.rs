@@ -33,6 +33,7 @@ pub struct HypercolorWebViewDelegate {
     frame_ready: AtomicBool,
     frame_count: AtomicU64,
     page_loaded: AtomicBool,
+    last_url: Mutex<Option<String>>,
     console_messages: Mutex<VecDeque<ConsoleMessage>>,
 }
 
@@ -44,6 +45,7 @@ impl HypercolorWebViewDelegate {
             frame_ready: AtomicBool::new(false),
             frame_count: AtomicU64::new(0),
             page_loaded: AtomicBool::new(false),
+            last_url: Mutex::new(None),
             console_messages: Mutex::new(VecDeque::with_capacity(MAX_CONSOLE_MESSAGES)),
         }
     }
@@ -81,6 +83,12 @@ impl HypercolorWebViewDelegate {
         self.with_console_messages(|messages| messages.drain(..).collect())
     }
 
+    /// Returns the most recently observed URL.
+    #[must_use]
+    pub fn last_url(&self) -> Option<String> {
+        self.with_last_url(Clone::clone)
+    }
+
     fn on_new_frame_ready(&self) {
         let frame_number = self.frame_count.fetch_add(1, Ordering::AcqRel) + 1;
         self.frame_ready.store(true, Ordering::Release);
@@ -90,6 +98,13 @@ impl HypercolorWebViewDelegate {
     fn on_page_loaded(&self) {
         self.page_loaded.store(true, Ordering::Release);
         info!("Servo page load completed");
+    }
+
+    fn on_url_changed(&self, url: &str) {
+        self.with_last_url_mut(|last_url| {
+            *last_url = Some(url.to_owned());
+        });
+        debug!(url = url, "Servo URL changed");
     }
 
     fn on_console_message(&self, level: &ConsoleLogLevel, message: &str) {
@@ -124,9 +139,33 @@ impl HypercolorWebViewDelegate {
             }
         }
     }
+
+    fn with_last_url<T>(&self, f: impl FnOnce(&Option<String>) -> T) -> T {
+        match self.last_url.lock() {
+            Ok(guard) => f(&guard),
+            Err(poisoned) => {
+                let guard = poisoned.into_inner();
+                f(&guard)
+            }
+        }
+    }
+
+    fn with_last_url_mut<T>(&self, f: impl FnOnce(&mut Option<String>) -> T) -> T {
+        match self.last_url.lock() {
+            Ok(mut guard) => f(&mut guard),
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                f(&mut guard)
+            }
+        }
+    }
 }
 
 impl WebViewDelegate for HypercolorWebViewDelegate {
+    fn notify_url_changed(&self, _webview: WebView, url: reqwest::Url) {
+        self.on_url_changed(url.as_str());
+    }
+
     fn notify_new_frame_ready(&self, _webview: WebView) {
         self.on_new_frame_ready();
     }
@@ -206,5 +245,17 @@ mod tests {
         assert_eq!(drained[0].message, "m2");
         assert_eq!(drained[MAX_CONSOLE_MESSAGES - 1].message, "m129");
         assert!(delegate.drain_console_messages().is_empty());
+    }
+
+    #[test]
+    fn last_url_tracks_latest_value() {
+        let delegate = HypercolorWebViewDelegate::new();
+        assert_eq!(delegate.last_url(), None);
+
+        delegate.on_url_changed("file:///tmp/one.html");
+        assert_eq!(delegate.last_url().as_deref(), Some("file:///tmp/one.html"));
+
+        delegate.on_url_changed("file:///tmp/two.html");
+        assert_eq!(delegate.last_url().as_deref(), Some("file:///tmp/two.html"));
     }
 }
