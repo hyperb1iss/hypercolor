@@ -935,6 +935,200 @@ async fn library_playlist_activate_resolves_by_name() {
     assert_eq!(stop_response.status(), StatusCode::OK);
 }
 
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "test validates full playlist replacement lifecycle"
+)]
+async fn library_playlist_activate_replaces_previous_runtime() {
+    let state = Arc::new(AppState::new());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let first_create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/playlists")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"first_runtime",
+                        "items":[
+                            {
+                                "target":{"type":"effect","effect":"solid_color"},
+                                "duration_ms":10000
+                            }
+                        ]
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(first_create.status(), StatusCode::CREATED);
+    let first_json = body_json(first_create).await;
+    let first_id = first_json["data"]["id"]
+        .as_str()
+        .expect("first playlist id should be string")
+        .to_owned();
+
+    let second_create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/playlists")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"second_runtime",
+                        "items":[
+                            {
+                                "target":{"type":"effect","effect":"solid_color"},
+                                "duration_ms":10000
+                            }
+                        ]
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(second_create.status(), StatusCode::CREATED);
+    let second_json = body_json(second_create).await;
+    let second_id = second_json["data"]["id"]
+        .as_str()
+        .expect("second playlist id should be string")
+        .to_owned();
+
+    let first_activate = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/library/playlists/{first_id}/activate"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(first_activate.status(), StatusCode::OK);
+
+    let second_activate = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/library/playlists/{second_id}/activate"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(second_activate.status(), StatusCode::OK);
+
+    let active_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/library/playlists/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_response.status(), StatusCode::OK);
+    let active_json = body_json(active_response).await;
+    assert_eq!(active_json["data"]["playlist"]["id"], second_id);
+
+    let stop_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/playlists/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stop_response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn library_delete_active_playlist_stops_runtime() {
+    let state = Arc::new(AppState::new());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/playlists")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"delete_me",
+                        "items":[
+                            {
+                                "target":{"type":"effect","effect":"solid_color"},
+                                "duration_ms":10000
+                            }
+                        ]
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    let playlist_id = create_json["data"]["id"]
+        .as_str()
+        .expect("playlist id should be string")
+        .to_owned();
+
+    let activate_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/library/playlists/{playlist_id}/activate"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(activate_response.status(), StatusCode::OK);
+
+    let delete_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/library/playlists/{playlist_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    let active_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/library/playlists/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_response.status(), StatusCode::NOT_FOUND);
+}
+
 // ── Scenes ───────────────────────────────────────────────────────────────
 
 #[tokio::test]

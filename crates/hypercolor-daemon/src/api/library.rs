@@ -486,6 +486,20 @@ pub async fn update_playlist(
         return store_error_to_response(&error);
     }
 
+    let active = {
+        let mut runtime = state.playlist_runtime.lock().await;
+        let should_stop = runtime
+            .active
+            .as_ref()
+            .is_some_and(|active| active.playlist_id == playlist_id);
+        if should_stop {
+            runtime.active.take()
+        } else {
+            None
+        }
+    };
+    stop_runtime(active);
+
     ApiResponse::ok(playlist)
 }
 
@@ -497,6 +511,20 @@ pub async fn delete_playlist(
     let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
         return ApiError::not_found(format!("Playlist not found: {id}"));
     };
+
+    let active = {
+        let mut runtime = state.playlist_runtime.lock().await;
+        let should_stop = runtime
+            .active
+            .as_ref()
+            .is_some_and(|active| active.playlist_id == playlist_id);
+        if should_stop {
+            runtime.active.take()
+        } else {
+            None
+        }
+    };
+    stop_runtime(active);
 
     if !state.library_store.remove_playlist(playlist_id).await {
         return ApiError::not_found(format!("Playlist not found: {id}"));
