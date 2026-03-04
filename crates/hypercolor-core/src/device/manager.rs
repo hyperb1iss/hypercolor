@@ -40,6 +40,54 @@ pub struct BackendManagerDebugSnapshot {
     pub queues: Vec<OutputQueueDebugSnapshot>,
 }
 
+/// Snapshot of layout-to-backend routing state.
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendRoutingDebugSnapshot {
+    /// Registered backend IDs.
+    pub backend_ids: Vec<String>,
+
+    /// Number of layout-device mappings.
+    pub mapping_count: usize,
+
+    /// Number of active output queues.
+    pub queue_count: usize,
+
+    /// Detailed routing entries for each mapped layout device.
+    pub mappings: Vec<LayoutRoutingDebugEntry>,
+
+    /// Active queues with no corresponding layout mapping.
+    pub orphaned_queues: Vec<OrphanedQueueDebugEntry>,
+}
+
+/// One layout-device routing entry.
+#[derive(Debug, Clone, Serialize)]
+pub struct LayoutRoutingDebugEntry {
+    /// Layout-level device reference.
+    pub layout_device_id: String,
+
+    /// Target backend ID.
+    pub backend_id: String,
+
+    /// Target backend device ID.
+    pub device_id: String,
+
+    /// Whether the target backend is currently registered.
+    pub backend_registered: bool,
+
+    /// Whether a queue is active for this mapping.
+    pub queue_active: bool,
+}
+
+/// Queue entry that currently has no layout mapping.
+#[derive(Debug, Clone, Serialize)]
+pub struct OrphanedQueueDebugEntry {
+    /// Backend ID for the orphaned queue.
+    pub backend_id: String,
+
+    /// Device ID for the orphaned queue.
+    pub device_id: String,
+}
+
 /// Debug stats for a single output queue.
 #[derive(Debug, Clone, Serialize)]
 pub struct OutputQueueDebugSnapshot {
@@ -395,7 +443,11 @@ impl BackendManager {
             })?;
         }
 
-        self.map_device(layout_device_id.to_owned(), backend_id.to_owned(), device_id);
+        self.map_device(
+            layout_device_id.to_owned(),
+            backend_id.to_owned(),
+            device_id,
+        );
         Ok(())
     }
 
@@ -582,6 +634,58 @@ impl BackendManager {
             queue_count: queues.len(),
             mapped_device_count: self.device_map.len(),
             queues,
+        }
+    }
+
+    /// Build a routing-focused debug snapshot (layout IDs -> backend targets).
+    #[must_use]
+    pub fn routing_snapshot(&self) -> BackendRoutingDebugSnapshot {
+        let mut backend_ids = self.backends.keys().cloned().collect::<Vec<_>>();
+        backend_ids.sort_unstable();
+
+        let mapped_keys = self
+            .device_map
+            .values()
+            .map(|mapping| (mapping.backend_id.clone(), mapping.device_id))
+            .collect::<std::collections::HashSet<_>>();
+
+        let mut mappings = self
+            .device_map
+            .iter()
+            .map(|(layout_device_id, mapping)| {
+                let key = (mapping.backend_id.clone(), mapping.device_id);
+                LayoutRoutingDebugEntry {
+                    layout_device_id: layout_device_id.clone(),
+                    backend_id: mapping.backend_id.clone(),
+                    device_id: mapping.device_id.to_string(),
+                    backend_registered: self.backends.contains_key(&mapping.backend_id),
+                    queue_active: self.output_queues.contains_key(&key),
+                }
+            })
+            .collect::<Vec<_>>();
+        mappings.sort_by(|left, right| left.layout_device_id.cmp(&right.layout_device_id));
+
+        let mut orphaned_queues = self
+            .output_queues
+            .keys()
+            .filter(|key| !mapped_keys.contains(*key))
+            .map(|(backend_id, device_id)| OrphanedQueueDebugEntry {
+                backend_id: backend_id.clone(),
+                device_id: device_id.to_string(),
+            })
+            .collect::<Vec<_>>();
+        orphaned_queues.sort_by(|left, right| {
+            left.backend_id
+                .cmp(&right.backend_id)
+                .then(left.device_id.cmp(&right.device_id))
+        });
+
+        BackendRoutingDebugSnapshot {
+            backend_ids,
+            mapping_count: self.device_map.len(),
+            queue_count: self.output_queues.len(),
+            mappings,
+            orphaned_queues,
         }
     }
 }

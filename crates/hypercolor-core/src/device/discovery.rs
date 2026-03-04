@@ -4,8 +4,8 @@
 //! concurrently, deduplicates their results, diffs against the device
 //! registry, and reports what changed.
 
-use std::collections::HashMap;
-use std::time::Instant;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tracing::{info, warn};
@@ -85,11 +85,33 @@ pub struct DiscoveryReport {
     /// Previously known devices that reappeared.
     pub reappeared_devices: Vec<DeviceId>,
 
+    /// Previously known devices missing from this scan.
+    pub vanished_devices: Vec<DeviceId>,
+
+    /// Per-scanner timing and outcome diagnostics.
+    pub scanner_reports: Vec<ScannerScanReport>,
+
     /// Total devices in the registry after this scan.
     pub total_known: usize,
 
     /// How long the full scan took.
     pub scan_duration: std::time::Duration,
+}
+
+/// One scanner's outcome within a full discovery sweep.
+#[derive(Debug, Clone)]
+pub struct ScannerScanReport {
+    /// Scanner display name.
+    pub scanner: String,
+
+    /// Scan duration for this scanner.
+    pub duration: Duration,
+
+    /// Number of devices returned by this scanner.
+    pub discovered: usize,
+
+    /// Error message if this scanner failed.
+    pub error: Option<String>,
 }
 
 // ── DiscoveryOrchestrator ────────────────────────────────────────────────
@@ -142,8 +164,10 @@ impl DiscoveryOrchestrator {
     ///
     /// All scanners execute concurrently. Results are collected,
     /// deduplicated by fingerprint, and merged into the device registry.
+    #[expect(clippy::too_many_lines)]
     pub async fn full_scan(&mut self) -> DiscoveryReport {
         let scan_start = Instant::now();
+        let known_before = self.registry.fingerprint_snapshot().await;
 
         // Move scanners out so each can be scanned on its own task.
         // We restore every scanner instance after awaiting task completion.
@@ -152,25 +176,41 @@ impl DiscoveryOrchestrator {
         for mut scanner in scanners {
             scan_tasks.push(tokio::spawn(async move {
                 let scanner_name = scanner.name().to_owned();
+                let started = Instant::now();
                 let result = scanner.scan().await;
-                (scanner, scanner_name, result)
+                let elapsed = started.elapsed();
+                (scanner, scanner_name, elapsed, result)
             }));
         }
 
         let mut all_discovered: Vec<DiscoveredDevice> = Vec::new();
         let mut restored_scanners = Vec::with_capacity(scan_tasks.len());
+        let mut scanner_reports = Vec::with_capacity(scan_tasks.len());
 
         for task in scan_tasks {
             match task.await {
-                Ok((scanner, scanner_name, result)) => {
+                Ok((scanner, scanner_name, elapsed, result)) => {
                     restored_scanners.push(scanner);
                     match result {
                         Ok(devices) => {
+                            let discovered = devices.len();
                             info!(scanner = %scanner_name, count = devices.len(), "Scan complete");
+                            scanner_reports.push(ScannerScanReport {
+                                scanner: scanner_name,
+                                duration: elapsed,
+                                discovered,
+                                error: None,
+                            });
                             all_discovered.extend(devices);
                         }
                         Err(error) => {
                             warn!(scanner = %scanner_name, error = %error, "Scan failed");
+                            scanner_reports.push(ScannerScanReport {
+                                scanner: scanner_name,
+                                duration: elapsed,
+                                discovered: 0,
+                                error: Some(error.to_string()),
+                            });
                         }
                     }
                 }
@@ -179,23 +219,27 @@ impl DiscoveryOrchestrator {
                         error = %join_error,
                         "Scanner task failed before returning results"
                     );
+                    scanner_reports.push(ScannerScanReport {
+                        scanner: "unknown".to_owned(),
+                        duration: Duration::ZERO,
+                        discovered: 0,
+                        error: Some(format!("scanner task join failed: {join_error}")),
+                    });
                 }
             }
         }
         self.scanners = restored_scanners;
 
-        // Deduplicate by fingerprint (last-writer-wins for metadata richness)
-        let mut deduped: HashMap<DeviceFingerprint, DiscoveredDevice> =
-            HashMap::with_capacity(all_discovered.len());
-        for device in all_discovered {
-            deduped.insert(device.fingerprint.clone(), device);
-        }
+        // Deduplicate by fingerprint with metadata merging.
+        let deduped = Self::deduplicate_devices(all_discovered);
 
         // Merge into registry
         let mut new_devices = Vec::new();
         let mut reappeared_devices = Vec::new();
+        let mut seen_fingerprints = HashSet::with_capacity(deduped.len());
 
-        for (_fp, discovered) in deduped {
+        for (fingerprint, discovered) in deduped {
+            seen_fingerprints.insert(fingerprint.clone());
             let previously_known = self
                 .registry
                 .find_by_fingerprint(&discovered.fingerprint)
@@ -203,7 +247,7 @@ impl DiscoveryOrchestrator {
 
             let id = self
                 .registry
-                .add_with_fingerprint(discovered.info, discovered.fingerprint)
+                .add_with_fingerprint(discovered.info, fingerprint)
                 .await;
 
             if previously_known.is_some() {
@@ -213,12 +257,21 @@ impl DiscoveryOrchestrator {
             }
         }
 
+        let mut vanished_devices = known_before
+            .into_iter()
+            .filter_map(|(fingerprint, id)| {
+                (!seen_fingerprints.contains(&fingerprint)).then_some(id)
+            })
+            .collect::<Vec<_>>();
+        vanished_devices.sort_by_key(DeviceId::as_uuid);
+
         let total_known = self.registry.len().await;
         let scan_duration = scan_start.elapsed();
 
         info!(
             new = new_devices.len(),
             reappeared = reappeared_devices.len(),
+            vanished = vanished_devices.len(),
             total = total_known,
             duration_ms = scan_duration.as_millis(),
             "Discovery sweep complete"
@@ -227,6 +280,8 @@ impl DiscoveryOrchestrator {
         DiscoveryReport {
             new_devices,
             reappeared_devices,
+            vanished_devices,
+            scanner_reports,
             total_known,
             scan_duration,
         }
@@ -236,5 +291,73 @@ impl DiscoveryOrchestrator {
     #[must_use]
     pub fn registry(&self) -> &DeviceRegistry {
         &self.registry
+    }
+
+    fn deduplicate_devices(
+        devices: Vec<DiscoveredDevice>,
+    ) -> HashMap<DeviceFingerprint, DiscoveredDevice> {
+        let mut deduped: HashMap<DeviceFingerprint, DiscoveredDevice> =
+            HashMap::with_capacity(devices.len());
+
+        for device in devices {
+            let fingerprint = device.fingerprint.clone();
+            deduped
+                .entry(fingerprint)
+                .and_modify(|existing| Self::merge_discovered(existing, &device))
+                .or_insert(device);
+        }
+
+        deduped
+    }
+
+    fn merge_discovered(existing: &mut DiscoveredDevice, incoming: &DiscoveredDevice) {
+        for (key, value) in &incoming.metadata {
+            existing
+                .metadata
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+
+        if existing.name.is_empty() && !incoming.name.is_empty() {
+            existing.name.clone_from(&incoming.name);
+        }
+
+        if existing.info.name.is_empty() && !incoming.info.name.is_empty() {
+            existing.info.name.clone_from(&incoming.info.name);
+        }
+
+        if existing.info.vendor.is_empty() && !incoming.info.vendor.is_empty() {
+            existing.info.vendor.clone_from(&incoming.info.vendor);
+        }
+
+        if existing.info.firmware_version.is_none() && incoming.info.firmware_version.is_some() {
+            existing
+                .info
+                .firmware_version
+                .clone_from(&incoming.info.firmware_version);
+        }
+
+        if existing.info.zones.is_empty() && !incoming.info.zones.is_empty() {
+            existing.info.zones.clone_from(&incoming.info.zones);
+        }
+
+        if existing.info.capabilities.led_count == 0 && incoming.info.capabilities.led_count > 0 {
+            existing.info.capabilities = incoming.info.capabilities;
+        } else {
+            existing.info.capabilities.led_count = existing
+                .info
+                .capabilities
+                .led_count
+                .max(incoming.info.capabilities.led_count);
+            existing.info.capabilities.max_fps = existing
+                .info
+                .capabilities
+                .max_fps
+                .max(incoming.info.capabilities.max_fps);
+            existing.info.capabilities.supports_direct |=
+                incoming.info.capabilities.supports_direct;
+            existing.info.capabilities.supports_brightness |=
+                incoming.info.capabilities.supports_brightness;
+        }
     }
 }

@@ -217,6 +217,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(devices::debug_output_queues),
         )
         .route(
+            "/devices/debug/routing",
+            axum::routing::get(devices::debug_device_routing),
+        )
+        .route(
             "/devices/{id}",
             axum::routing::get(devices::get_device)
                 .put(devices::update_device)

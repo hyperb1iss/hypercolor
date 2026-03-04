@@ -27,6 +27,7 @@ pub struct UpdateDeviceRequest {
 pub struct DiscoverRequest {
     pub backends: Option<Vec<String>>,
     pub timeout_ms: Option<u64>,
+    pub wait: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -156,6 +157,12 @@ pub async fn debug_output_queues(State(state): State<Arc<AppState>>) -> Response
     ApiResponse::ok(manager.debug_snapshot())
 }
 
+/// `GET /api/v1/devices/debug/routing` — Inspect layout/backend routing diagnostics.
+pub async fn debug_device_routing(State(state): State<Arc<AppState>>) -> Response {
+    let manager = state.backend_manager.lock().await;
+    ApiResponse::ok(manager.routing_snapshot())
+}
+
 /// `GET /api/v1/devices/:id` — Get a single device.
 pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let device_id = match resolve_device_id_or_response(&state, &id).await {
@@ -240,6 +247,7 @@ pub async fn discover_devices(
             Err(error) => return ApiError::validation(error),
         };
     let timeout = discovery::normalize_timeout_ms(body.as_ref().and_then(|b| b.timeout_ms));
+    let wait_for_completion = body.as_ref().and_then(|b| b.wait).unwrap_or(false);
 
     if state
         .discovery_in_progress
@@ -251,11 +259,30 @@ pub async fn discover_devices(
 
     let scan_id = format!("scan_{}", uuid::Uuid::now_v7());
     let backend_names = discovery::backend_names(&resolved_backends);
-    let state_for_task = Arc::clone(&state);
+    if wait_for_completion {
+        let result = discovery::execute_discovery_scan(
+            state.device_registry.clone(),
+            Arc::clone(&state.backend_manager),
+            Arc::clone(&state.event_bus),
+            config,
+            resolved_backends,
+            timeout,
+            Arc::clone(&state.discovery_in_progress),
+        )
+        .await;
 
+        return ApiResponse::ok(serde_json::json!({
+            "scan_id": scan_id,
+            "status": "completed",
+            "result": result,
+        }));
+    }
+
+    let state_for_task = Arc::clone(&state);
     tokio::spawn(async move {
-        discovery::execute_discovery_scan(
+        let _ = discovery::execute_discovery_scan(
             state_for_task.device_registry.clone(),
+            Arc::clone(&state_for_task.backend_manager),
             Arc::clone(&state_for_task.event_bus),
             config,
             resolved_backends,

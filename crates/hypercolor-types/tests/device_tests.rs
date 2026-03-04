@@ -2,8 +2,8 @@
 
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
-    DeviceFingerprint, DeviceId, DeviceIdentifier, DeviceInfo, DeviceState, DeviceTopologyHint,
-    ZoneInfo,
+    DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo, DeviceState,
+    DeviceTopologyHint, ZoneInfo,
 };
 use uuid::Uuid;
 
@@ -330,6 +330,27 @@ fn device_error_display_messages() {
         err.to_string(),
         "protocol error for OpenRGB: unexpected packet type 0xFF"
     );
+
+    let err = DeviceError::Disconnected {
+        device: "USB Controller".into(),
+    };
+    assert_eq!(err.to_string(), "device disconnected: USB Controller");
+
+    let err = DeviceError::InvalidHandle {
+        handle_id: 42,
+        backend: "wled".into(),
+    };
+    assert_eq!(err.to_string(), "invalid handle 42 for backend wled");
+
+    let err = DeviceError::InvalidTransition {
+        device: "WLED".into(),
+        from: "Known".into(),
+        to: "Active".into(),
+    };
+    assert_eq!(
+        err.to_string(),
+        "invalid device transition for WLED: Known -> Active"
+    );
 }
 
 #[test]
@@ -369,6 +390,30 @@ fn device_error_is_recoverable() {
     assert!(
         !DeviceError::NotFound {
             device: String::new()
+        }
+        .is_recoverable()
+    );
+
+    assert!(
+        DeviceError::Disconnected {
+            device: String::new()
+        }
+        .is_recoverable()
+    );
+
+    assert!(
+        !DeviceError::InvalidHandle {
+            handle_id: 1,
+            backend: String::new()
+        }
+        .is_recoverable()
+    );
+
+    assert!(
+        !DeviceError::InvalidTransition {
+            device: String::new(),
+            from: String::new(),
+            to: String::new()
         }
         .is_recoverable()
     );
@@ -533,6 +578,61 @@ fn device_identifier_serde_round_trip() {
         let back: DeviceIdentifier = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, ident);
     }
+}
+
+// ── DeviceHandle ──────────────────────────────────────────────────────────
+
+#[test]
+fn device_handle_ids_are_unique_and_monotonic() {
+    let h1 = DeviceHandle::new(
+        DeviceIdentifier::Network {
+            mac_address: "AA:BB:CC:DD:EE:01".into(),
+            last_ip: None,
+            mdns_hostname: None,
+        },
+        "wled",
+    );
+    let h2 = DeviceHandle::new(
+        DeviceIdentifier::Network {
+            mac_address: "AA:BB:CC:DD:EE:02".into(),
+            last_ip: None,
+            mdns_hostname: None,
+        },
+        "wled",
+    );
+
+    assert!(
+        h2.id() > h1.id(),
+        "handle IDs should increase monotonically"
+    );
+}
+
+#[test]
+fn device_handle_accessors_and_display() {
+    let identifier = DeviceIdentifier::OpenRgb {
+        controller_name: "Keyboard".into(),
+        location: "USB".into(),
+    };
+    let handle = DeviceHandle::new(identifier.clone(), "openrgb");
+
+    assert_eq!(handle.device_id(), &identifier);
+    assert_eq!(handle.backend_id(), "openrgb");
+    assert!(handle.to_string().starts_with("openrgb#"));
+}
+
+#[test]
+fn device_handle_serde_round_trip() {
+    let handle = DeviceHandle::new(
+        DeviceIdentifier::HueBridge {
+            bridge_id: "bridge-123".into(),
+            light_id: "5".into(),
+        },
+        "hue",
+    );
+
+    let json = serde_json::to_string(&handle).expect("serialize");
+    let back: DeviceHandle = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, handle);
 }
 
 #[test]

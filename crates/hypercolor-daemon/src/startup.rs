@@ -371,6 +371,7 @@ impl DaemonState {
 
     fn spawn_discovery_worker(&mut self, config: Arc<HypercolorConfig>) {
         let device_registry = self.device_registry.clone();
+        let backend_manager = Arc::clone(&self.backend_manager);
         let event_bus = Arc::clone(&self.event_bus);
         let config_manager = Arc::clone(&self.config_manager);
         let in_progress = Arc::clone(&self.discovery_in_progress);
@@ -391,8 +392,9 @@ impl DaemonState {
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
             {
-                discovery::execute_discovery_scan(
+                let _ = discovery::execute_discovery_scan(
                     device_registry.clone(),
+                    Arc::clone(&backend_manager),
                     Arc::clone(&event_bus),
                     Arc::clone(&config),
                     initial_backends,
@@ -433,8 +435,9 @@ impl DaemonState {
                     continue;
                 }
 
-                discovery::execute_discovery_scan(
+                let _ = discovery::execute_discovery_scan(
                     device_registry.clone(),
+                    Arc::clone(&backend_manager),
                     Arc::clone(&event_bus),
                     latest_config,
                     backends,

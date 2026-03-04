@@ -84,12 +84,15 @@ impl DeviceRegistry {
         // Check for existing device by fingerprint
         if let Some(&existing_id) = inner.fingerprints.get(&fingerprint) {
             if let Some(entry) = inner.devices.get_mut(&existing_id) {
+                let mut updated_info = info;
+                // Keep the canonical registry ID stable across rediscovery.
+                updated_info.id = existing_id;
                 debug!(
                     device_id = %existing_id,
-                    name = %info.name,
+                    name = %updated_info.name,
                     "Updating existing device in registry"
                 );
-                entry.info = info;
+                entry.info = updated_info;
                 inner
                     .id_to_fingerprint
                     .insert(existing_id, fingerprint.clone());
@@ -101,10 +104,24 @@ impl DeviceRegistry {
         }
 
         // New device
-        let id = info.id;
-        let name = info.name.clone();
+        let mut tracked_info = info;
+        let mut id = tracked_info.id;
+
+        // Defend against accidental ID reuse from scanners/backends.
+        if inner.devices.contains_key(&id) {
+            warn!(
+                device_id = %id,
+                "Device ID collision detected during registry add; allocating new ID"
+            );
+            while inner.devices.contains_key(&id) {
+                id = DeviceId::new();
+            }
+        }
+        tracked_info.id = id;
+
+        let name = tracked_info.name.clone();
         let tracked = TrackedDevice {
-            info,
+            info: tracked_info,
             state: DeviceState::Known,
         };
 
@@ -234,6 +251,21 @@ impl DeviceRegistry {
     pub async fn find_by_fingerprint(&self, fingerprint: &DeviceFingerprint) -> Option<DeviceId> {
         let inner = self.inner.read().await;
         inner.fingerprints.get(fingerprint).copied()
+    }
+
+    /// Look up a stable fingerprint by device ID.
+    pub async fn fingerprint_for_id(&self, id: &DeviceId) -> Option<DeviceFingerprint> {
+        let inner = self.inner.read().await;
+        inner.id_to_fingerprint.get(id).cloned()
+    }
+
+    /// Snapshot of the fingerprint index (`fingerprint -> device_id`).
+    ///
+    /// Useful for diffing full-scan results (new/reappeared/vanished) without
+    /// exposing mutable internal state.
+    pub async fn fingerprint_snapshot(&self) -> HashMap<DeviceFingerprint, DeviceId> {
+        let inner = self.inner.read().await;
+        inner.fingerprints.clone()
     }
 
     /// List all devices in a specific state.

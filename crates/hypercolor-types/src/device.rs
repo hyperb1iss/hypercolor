@@ -7,6 +7,7 @@
 use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -374,6 +375,33 @@ pub enum DeviceError {
         /// Protocol-specific detail.
         detail: String,
     },
+
+    /// Device disconnected unexpectedly.
+    #[error("device disconnected: {device}")]
+    Disconnected {
+        /// Device display name or identifier.
+        device: String,
+    },
+
+    /// Connection handle is stale or unknown.
+    #[error("invalid handle {handle_id} for backend {backend}")]
+    InvalidHandle {
+        /// Monotonic handle ID.
+        handle_id: u64,
+        /// Backend identifier that reported the invalid handle.
+        backend: String,
+    },
+
+    /// Invalid lifecycle transition attempted by the state machine.
+    #[error("invalid device transition for {device}: {from} -> {to}")]
+    InvalidTransition {
+        /// Device display name or identifier.
+        device: String,
+        /// Current state name.
+        from: String,
+        /// Requested next state name.
+        to: String,
+    },
 }
 
 impl DeviceError {
@@ -387,6 +415,7 @@ impl DeviceError {
                 | Self::WriteError { .. }
                 | Self::Timeout { .. }
                 | Self::ProtocolError { .. }
+                | Self::Disconnected { .. }
         )
     }
 }
@@ -513,6 +542,58 @@ impl DeviceIdentifier {
 impl fmt::Display for DeviceIdentifier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.display_short())
+    }
+}
+
+// ── DeviceHandle ───────────────────────────────────────────────────────────
+
+/// Opaque handle to a connected device.
+///
+/// Handles are monotonically increasing within a daemon session and prevent
+/// stale connection reuse after reconnects.
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceHandle {
+    id: u64,
+    device_id: DeviceIdentifier,
+    backend_id: String,
+}
+
+/// Global handle ID counter for `DeviceHandle::new`.
+static NEXT_DEVICE_HANDLE_ID: AtomicU64 = AtomicU64::new(1);
+
+impl DeviceHandle {
+    /// Create a fresh handle for a connected device.
+    #[must_use]
+    pub fn new(device_id: DeviceIdentifier, backend_id: impl Into<String>) -> Self {
+        Self {
+            id: NEXT_DEVICE_HANDLE_ID.fetch_add(1, Ordering::Relaxed),
+            device_id,
+            backend_id: backend_id.into(),
+        }
+    }
+
+    /// Monotonic connection ID.
+    #[must_use]
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Device identifier associated with this connection.
+    #[must_use]
+    pub fn device_id(&self) -> &DeviceIdentifier {
+        &self.device_id
+    }
+
+    /// Backend identifier that issued the handle.
+    #[must_use]
+    pub fn backend_id(&self) -> &str {
+        &self.backend_id
+    }
+}
+
+impl fmt::Display for DeviceHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}#{}", self.backend_id, self.id)
     }
 }
 

@@ -440,6 +440,25 @@ async fn registry_add_with_fingerprint_reuses_existing_device() {
 }
 
 #[tokio::test]
+async fn registry_fingerprint_lookup_round_trips_device_id() {
+    let registry = DeviceRegistry::new();
+    let fingerprint = DeviceFingerprint("net:12:34:56:78:9a:bc".to_owned());
+    let info = mock_device_info("Roundtrip Device");
+
+    let id = registry
+        .add_with_fingerprint(info, fingerprint.clone())
+        .await;
+
+    assert_eq!(
+        registry
+            .fingerprint_for_id(&id)
+            .await
+            .expect("fingerprint should exist"),
+        fingerprint
+    );
+}
+
+#[tokio::test]
 async fn registry_remove() {
     let registry = DeviceRegistry::new();
     let device = mock_device_info("Temporary Device");
@@ -617,6 +636,30 @@ fn state_machine_enters_reconnecting_on_comm_error() {
 
     assert_eq!(*sm.state(), DeviceState::Reconnecting);
     assert!(sm.handle().is_none());
+    assert_eq!(
+        sm.reconnect_status()
+            .expect("reconnect status should exist")
+            .attempt,
+        0
+    );
+}
+
+#[test]
+fn state_machine_connect_failure_enters_reconnecting() {
+    let policy = ReconnectPolicy {
+        initial_delay: Duration::from_millis(25),
+        max_delay: Duration::from_secs(2),
+        backoff_factor: 2.0,
+        max_attempts: Some(4),
+        jitter: 0.0,
+    };
+    let mut sm = DeviceStateMachine::with_policy(sample_identifier(), policy);
+
+    let delay = sm
+        .on_connect_failed()
+        .expect("failed connect should transition to reconnecting");
+    assert_eq!(delay, Duration::from_millis(25));
+    assert_eq!(*sm.state(), DeviceState::Reconnecting);
     assert_eq!(
         sm.reconnect_status()
             .expect("reconnect status should exist")
@@ -805,6 +848,8 @@ async fn orchestrator_full_scan_empty() {
 
     let report = orchestrator.full_scan().await;
     assert_eq!(report.new_devices.len(), 0);
+    assert_eq!(report.reappeared_devices.len(), 0);
+    assert_eq!(report.vanished_devices.len(), 0);
     assert_eq!(report.total_known, 0);
 }
 
@@ -872,6 +917,13 @@ async fn orchestrator_handles_scanner_failure_gracefully() {
     // The healthy scanner's device should still be registered
     assert_eq!(report.new_devices.len(), 1);
     assert_eq!(report.total_known, 1);
+    assert_eq!(report.scanner_reports.len(), 2);
+    assert!(
+        report
+            .scanner_reports
+            .iter()
+            .any(|r| r.error.is_some() && r.scanner == "Broken Scanner")
+    );
 }
 
 #[tokio::test]
@@ -931,6 +983,78 @@ async fn orchestrator_tracks_reappeared_devices() {
     assert_eq!(report.reappeared_devices.len(), 1);
     assert_eq!(report.reappeared_devices[0], existing_id);
     assert_eq!(report.new_devices.len(), 0);
+    assert_eq!(report.vanished_devices.len(), 0);
+}
+
+#[tokio::test]
+async fn orchestrator_tracks_vanished_devices() {
+    let registry = DeviceRegistry::new();
+
+    let keep_fingerprint = DeviceFingerprint("net:keep:device".to_owned());
+    let vanished_fingerprint = DeviceFingerprint("net:gone:device".to_owned());
+
+    let keep = mock_device_info("Keep");
+    let vanished = mock_device_info("Gone");
+
+    let keep_id = registry
+        .add_with_fingerprint(keep.clone(), keep_fingerprint.clone())
+        .await;
+    let vanished_id = registry
+        .add_with_fingerprint(vanished, vanished_fingerprint)
+        .await;
+
+    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    orchestrator.add_scanner(Box::new(MockScanner::new(
+        "mDNS",
+        vec![DiscoveredDevice {
+            connection_type: ConnectionType::Network,
+            name: keep.name.clone(),
+            family: keep.family.clone(),
+            fingerprint: keep_fingerprint,
+            info: keep,
+            metadata: HashMap::new(),
+        }],
+    )));
+
+    let report = orchestrator.full_scan().await;
+    assert_eq!(report.reappeared_devices, vec![keep_id]);
+    assert_eq!(report.vanished_devices, vec![vanished_id]);
+}
+
+#[tokio::test]
+async fn orchestrator_reappeared_device_keeps_stable_id_when_scanner_emits_new_id() {
+    let registry = DeviceRegistry::new();
+    let fingerprint = DeviceFingerprint("net:stable:id".to_owned());
+
+    let existing = mock_device_info("Stable");
+    let existing_id = registry
+        .add_with_fingerprint(existing, fingerprint.clone())
+        .await;
+
+    let mut rediscovered = mock_device_info("Stable");
+    rediscovered.id = DeviceId::new(); // scanner emits a fresh ID
+
+    let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
+    orchestrator.add_scanner(Box::new(MockScanner::new(
+        "mDNS",
+        vec![DiscoveredDevice {
+            connection_type: ConnectionType::Network,
+            name: "Stable".to_owned(),
+            family: DeviceFamily::Wled,
+            fingerprint,
+            info: rediscovered,
+            metadata: HashMap::new(),
+        }],
+    )));
+
+    let report = orchestrator.full_scan().await;
+    assert_eq!(report.reappeared_devices, vec![existing_id]);
+
+    let tracked = registry
+        .get(&existing_id)
+        .await
+        .expect("stable registry entry should remain");
+    assert_eq!(tracked.info.id, existing_id);
 }
 
 #[tokio::test]

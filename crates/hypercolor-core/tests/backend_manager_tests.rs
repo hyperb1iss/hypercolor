@@ -161,12 +161,37 @@ fn register_replaces_existing_backend() {
 }
 
 #[test]
+fn routing_snapshot_marks_registered_backend() {
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(MockDeviceBackend::new()));
+
+    let device_id = DeviceId::new();
+    manager.map_device("mock:device_1", "mock", device_id);
+
+    let routing = manager.routing_snapshot();
+    assert_eq!(routing.backend_ids, vec!["mock".to_string()]);
+    assert_eq!(routing.mapping_count, 1);
+    assert!(routing.mappings[0].backend_registered);
+}
+
+#[test]
 fn debug_snapshot_is_empty_for_new_manager() {
     let manager = BackendManager::new();
     let snapshot = manager.debug_snapshot();
     assert_eq!(snapshot.queue_count, 0);
     assert_eq!(snapshot.mapped_device_count, 0);
     assert!(snapshot.queues.is_empty());
+}
+
+#[test]
+fn routing_snapshot_is_empty_for_new_manager() {
+    let manager = BackendManager::new();
+    let snapshot = manager.routing_snapshot();
+    assert_eq!(snapshot.backend_ids.len(), 0);
+    assert_eq!(snapshot.mapping_count, 0);
+    assert_eq!(snapshot.queue_count, 0);
+    assert!(snapshot.mappings.is_empty());
+    assert!(snapshot.orphaned_queues.is_empty());
 }
 
 // ── Device Mapping Tests ────────────────────────────────────────────────────
@@ -178,6 +203,13 @@ fn map_and_unmap_device() {
 
     manager.map_device("wled:strip_1", "wled", device_id);
     assert_eq!(manager.mapped_device_count(), 1);
+    let routing = manager.routing_snapshot();
+    assert_eq!(routing.mapping_count, 1);
+    assert_eq!(routing.mappings[0].layout_device_id, "wled:strip_1");
+    assert_eq!(routing.mappings[0].backend_id, "wled");
+    assert_eq!(routing.mappings[0].device_id, device_id.to_string());
+    assert!(!routing.mappings[0].backend_registered);
+    assert!(!routing.mappings[0].queue_active);
 
     assert!(manager.unmap_device("wled:strip_1"));
     assert_eq!(manager.mapped_device_count(), 0);
@@ -296,9 +328,7 @@ async fn disconnect_device_surfaces_backend_errors() {
         .await
         .expect_err("disconnect of non-connected device should fail");
     assert!(
-        error
-            .to_string()
-            .contains("failed to disconnect device"),
+        error.to_string().contains("failed to disconnect device"),
         "unexpected error: {error}"
     );
 }

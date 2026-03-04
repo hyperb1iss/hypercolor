@@ -266,6 +266,33 @@ async fn debug_output_queues_returns_empty_snapshot() {
 }
 
 #[tokio::test]
+async fn debug_device_routing_returns_empty_snapshot() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/devices/debug/routing")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["mapping_count"], 0);
+    assert_eq!(json["data"]["queue_count"], 0);
+    assert!(
+        json["data"]["backend_ids"]
+            .as_array()
+            .expect("backend_ids should be an array")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn get_device_not_found() {
     let app = test_app();
 
@@ -350,6 +377,38 @@ async fn discover_devices_returns_accepted() {
             .expect("scan_id should be a string")
             .starts_with("scan_")
     );
+}
+
+#[tokio::test]
+async fn discover_devices_wait_mode_returns_report() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/devices/discover")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"backends": ["openrgb"], "timeout_ms": 100, "wait": true}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["status"], "completed");
+    assert!(
+        json["data"]["scan_id"]
+            .as_str()
+            .expect("scan_id should be a string")
+            .starts_with("scan_")
+    );
+    assert!(json["data"]["result"]["duration_ms"].is_number());
+    assert!(json["data"]["result"]["scanners"].is_array());
 }
 
 // ── Effects ──────────────────────────────────────────────────────────────
