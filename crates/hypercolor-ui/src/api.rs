@@ -277,6 +277,135 @@ pub async fn fetch_layouts() -> Result<Vec<LayoutSummary>, String> {
     Ok(envelope.data.items)
 }
 
+// ── Preset Types ────────────────────────────────────────────────────────
+
+/// Preset summary from `GET /api/v1/library/presets`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PresetSummary {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub effect_id: String,
+    #[serde(default)]
+    pub controls: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub created_at_ms: u64,
+    #[serde(default)]
+    pub updated_at_ms: u64,
+}
+
+/// Paginated preset list response.
+#[derive(Debug, Deserialize)]
+pub struct PresetListResponse {
+    pub items: Vec<PresetSummary>,
+}
+
+/// Request body for creating a preset.
+#[derive(Debug, Serialize)]
+pub struct CreatePresetRequest {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub effect: String,
+    pub controls: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+}
+
+// ── Preset Fetch Functions ──────────────────────────────────────────────
+
+/// Fetch all saved presets.
+pub async fn fetch_presets() -> Result<Vec<PresetSummary>, String> {
+    let resp = Request::get("/api/v1/library/presets")
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<PresetListResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.items)
+}
+
+/// Create a new preset from current control values.
+pub async fn create_preset(req: &CreatePresetRequest) -> Result<PresetSummary, String> {
+    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::post("/api/v1/library/presets")
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 201 && resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<PresetSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Apply a saved preset by ID.
+pub async fn apply_preset(id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/library/presets/{id}/apply");
+    let resp = Request::post(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Update an existing preset (name, controls, etc.).
+pub async fn update_preset(id: &str, req: &CreatePresetRequest) -> Result<PresetSummary, String> {
+    let url = format!("/api/v1/library/presets/{id}");
+    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::put(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<PresetSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Delete a preset by ID.
+pub async fn delete_preset(id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/library/presets/{id}");
+    let resp = Request::delete(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
 /// Update effect control parameters.
 pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String> {
     let url = "/api/v1/effects/current/controls";

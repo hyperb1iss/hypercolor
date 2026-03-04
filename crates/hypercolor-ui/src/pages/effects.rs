@@ -8,6 +8,7 @@ use crate::app::{EffectsContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
+use crate::components::preset_panel::PresetToolbar;
 
 /// Category → accent RGB string for inline styles.
 fn category_accent_rgb(category: &str) -> &'static str {
@@ -233,6 +234,25 @@ pub fn EffectsPage() -> impl IntoView {
                                         }
                                     })}
 
+                                    // Preset toolbar — select, save, create, edit, delete
+                                    <PresetToolbar
+                                        effect_id=Signal::derive(move || fx.active_effect_id.get())
+                                        control_values=control_values
+                                        accent_rgb=accent_rgb
+                                        on_preset_applied=Callback::new(move |()| {
+                                            let set_name = fx.set_active_effect_name;
+                                            let set_controls = fx.set_active_controls;
+                                            let set_values = fx.set_active_control_values;
+                                            leptos::task::spawn_local(async move {
+                                                if let Ok(Some(active)) = api::fetch_active_effect().await {
+                                                    set_name.set(Some(active.name));
+                                                    set_controls.set(active.controls);
+                                                    set_values.set(active.control_values);
+                                                }
+                                            });
+                                        })
+                                    />
+
                                     // Live preview — no border, black bleeds to edge
                                     <div class="rounded-xl bg-black overflow-hidden shadow-[0_4px_24px_rgba(0,0,0,0.3)]">
 
@@ -266,6 +286,7 @@ pub fn EffectsPage() -> impl IntoView {
                                             on_change=on_control_change
                                         />
                                     </div>
+
                                 </aside>
                             }
                         })
