@@ -657,6 +657,45 @@ async fn library_preset_apply_activates_effect_with_controls() {
 }
 
 #[tokio::test]
+async fn library_preset_apply_resolves_by_name() {
+    let state = Arc::new(AppState::new());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"named_preset",
+                        "effect":"solid_color",
+                        "controls":{"speed":5}
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+
+    let apply_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets/named_preset/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn library_playlists_create_with_effect_and_preset_targets() {
     let state = Arc::new(AppState::new());
     insert_test_effect(&state, "solid_color").await;
@@ -838,6 +877,62 @@ async fn library_playlist_activate_and_stop_lifecycle() {
         .await
         .expect("failed to execute request");
     assert_eq!(active_playlist_response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn library_playlist_activate_resolves_by_name() {
+    let state = Arc::new(AppState::new());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/playlists")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"runtime_by_name",
+                        "items":[
+                            {
+                                "target":{"type":"effect","effect":"solid_color"},
+                                "duration_ms":10000
+                            }
+                        ]
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+
+    let activate_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/playlists/runtime_by_name/activate")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(activate_response.status(), StatusCode::OK);
+
+    let stop_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/playlists/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stop_response.status(), StatusCode::OK);
 }
 
 // ── Scenes ───────────────────────────────────────────────────────────────

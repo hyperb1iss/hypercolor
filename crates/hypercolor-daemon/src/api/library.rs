@@ -213,8 +213,8 @@ pub async fn list_presets(State(state): State<Arc<AppState>>) -> Response {
 
 /// `GET /api/v1/library/presets/:id` — fetch one preset.
 pub async fn get_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let Ok(preset_id) = id.parse::<PresetId>() else {
-        return ApiError::bad_request(format!("Invalid preset id: {id}"));
+    let Some(preset_id) = resolve_preset_id(&state, &id).await else {
+        return ApiError::not_found(format!("Preset not found: {id}"));
     };
 
     let Some(preset) = state.library_store.get_preset(preset_id).await else {
@@ -276,8 +276,8 @@ pub async fn update_preset(
     Path(id): Path<String>,
     Json(body): Json<SavePresetRequest>,
 ) -> Response {
-    let Ok(preset_id) = id.parse::<PresetId>() else {
-        return ApiError::bad_request(format!("Invalid preset id: {id}"));
+    let Some(preset_id) = resolve_preset_id(&state, &id).await else {
+        return ApiError::not_found(format!("Preset not found: {id}"));
     };
     if body.name.trim().is_empty() {
         return ApiError::validation("Preset name must not be empty");
@@ -325,8 +325,8 @@ pub async fn update_preset(
 
 /// `DELETE /api/v1/library/presets/:id` — remove a preset.
 pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let Ok(preset_id) = id.parse::<PresetId>() else {
-        return ApiError::bad_request(format!("Invalid preset id: {id}"));
+    let Some(preset_id) = resolve_preset_id(&state, &id).await else {
+        return ApiError::not_found(format!("Preset not found: {id}"));
     };
 
     if !state.library_store.remove_preset(preset_id).await {
@@ -341,8 +341,8 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
 
 /// `POST /api/v1/library/presets/:id/apply` — activate a preset immediately.
 pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let Ok(preset_id) = id.parse::<PresetId>() else {
-        return ApiError::bad_request(format!("Invalid preset id: {id}"));
+    let Some(preset_id) = resolve_preset_id(&state, &id).await else {
+        return ApiError::not_found(format!("Preset not found: {id}"));
     };
     let Some(preset) = state.library_store.get_preset(preset_id).await else {
         return ApiError::not_found(format!("Preset not found: {id}"));
@@ -409,8 +409,8 @@ pub async fn list_playlists(State(state): State<Arc<AppState>>) -> Response {
 
 /// `GET /api/v1/library/playlists/:id` — fetch one playlist.
 pub async fn get_playlist(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let Ok(playlist_id) = id.parse::<PlaylistId>() else {
-        return ApiError::bad_request(format!("Invalid playlist id: {id}"));
+    let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
+        return ApiError::not_found(format!("Playlist not found: {id}"));
     };
 
     let Some(playlist) = state.library_store.get_playlist(playlist_id).await else {
@@ -457,8 +457,8 @@ pub async fn update_playlist(
     Path(id): Path<String>,
     Json(body): Json<SavePlaylistRequest>,
 ) -> Response {
-    let Ok(playlist_id) = id.parse::<PlaylistId>() else {
-        return ApiError::bad_request(format!("Invalid playlist id: {id}"));
+    let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
+        return ApiError::not_found(format!("Playlist not found: {id}"));
     };
     if body.name.trim().is_empty() {
         return ApiError::validation("Playlist name must not be empty");
@@ -494,8 +494,8 @@ pub async fn delete_playlist(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let Ok(playlist_id) = id.parse::<PlaylistId>() else {
-        return ApiError::bad_request(format!("Invalid playlist id: {id}"));
+    let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
+        return ApiError::not_found(format!("Playlist not found: {id}"));
     };
 
     if !state.library_store.remove_playlist(playlist_id).await {
@@ -513,8 +513,8 @@ pub async fn activate_playlist(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Response {
-    let Ok(playlist_id) = id.parse::<PlaylistId>() else {
-        return ApiError::bad_request(format!("Invalid playlist id: {id}"));
+    let Some(playlist_id) = resolve_playlist_id(&state, &id).await else {
+        return ApiError::not_found(format!("Playlist not found: {id}"));
     };
     let Some(playlist) = state.library_store.get_playlist(playlist_id).await else {
         return ApiError::not_found(format!("Playlist not found: {id}"));
@@ -627,6 +627,34 @@ fn active_playlist_payload(active: &ActivePlaylistRuntime) -> ActivePlaylistResp
         item_count: active.item_count,
         started_at_ms: active.started_at_ms,
     }
+}
+
+async fn resolve_preset_id(state: &Arc<AppState>, id_or_name: &str) -> Option<PresetId> {
+    if let Ok(id) = id_or_name.parse::<PresetId>() {
+        return Some(id);
+    }
+
+    state
+        .library_store
+        .list_presets()
+        .await
+        .iter()
+        .find(|preset| preset.name.eq_ignore_ascii_case(id_or_name))
+        .map(|preset| preset.id)
+}
+
+async fn resolve_playlist_id(state: &Arc<AppState>, id_or_name: &str) -> Option<PlaylistId> {
+    if let Ok(id) = id_or_name.parse::<PlaylistId>() {
+        return Some(id);
+    }
+
+    state
+        .library_store
+        .list_playlists()
+        .await
+        .iter()
+        .find(|playlist| playlist.name.eq_ignore_ascii_case(id_or_name))
+        .map(|playlist| playlist.id)
 }
 
 fn stop_runtime(active: Option<ActivePlaylistRuntime>) {
@@ -877,9 +905,9 @@ async fn build_playlist_items(
                 }
             }
             PlaylistTargetRequest::Preset { preset_id } => {
-                let parsed = preset_id.parse::<PresetId>().map_err(|_| {
-                    format!("Playlist references invalid preset id: {preset_id}")
-                })?;
+                let Some(parsed) = resolve_preset_id(state, preset_id).await else {
+                    return Err(format!("Playlist references unknown preset: {preset_id}"));
+                };
                 if state.library_store.get_preset(parsed).await.is_none() {
                     return Err(format!("Playlist references unknown preset: {preset_id}"));
                 }
