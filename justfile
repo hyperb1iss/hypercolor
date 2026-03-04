@@ -81,7 +81,7 @@ doc-open: (doc "--open")
 
 # Run the daemon
 daemon *args='':
-    cargo run -p hypercolor-daemon -- {{ args }}
+    cargo run -p hypercolor-daemon --bin hypercolor -- {{ args }}
 
 # Run the CLI
 cli *args='':
@@ -89,15 +89,15 @@ cli *args='':
 
 # Run the daemon in release mode
 daemon-release *args='':
-    cargo run -p hypercolor-daemon --release -- {{ args }}
+    cargo run -p hypercolor-daemon --bin hypercolor --release -- {{ args }}
 
 # Run Servo daemon (dev profile) with cache wrapper
 daemon-servo *args='':
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --features servo -- --bind 127.0.0.1:9420 {{ args }}
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --features servo -- --bind 127.0.0.1:9420 {{ args }}
 
 # Run Servo daemon in release mode with cache wrapper
 daemon-servo-release *args='':
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --release --features servo -- --bind 127.0.0.1:9420 {{ args }}
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --release --features servo -- --bind 127.0.0.1:9420 {{ args }}
 
 # Build Servo daemon release artifacts once (faster repeat launches)
 build-servo-release:
