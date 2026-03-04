@@ -85,7 +85,7 @@ impl UsbBackend {
                         report_id = format_args!("0x{report_id:02X}"),
                         "using hidraw transport"
                     );
-                    return Ok(Box::new(transport));
+                    Ok(Box::new(transport))
                 }
 
                 #[cfg(not(target_os = "linux"))]
