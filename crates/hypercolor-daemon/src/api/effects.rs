@@ -60,7 +60,7 @@ pub struct ActiveEffectResponse {
 /// `GET /api/v1/effects` — List all registered effects.
 pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
     let registry = state.effect_registry.read().await;
-    let items: Vec<EffectSummary> = registry
+    let mut items: Vec<EffectSummary> = registry
         .iter()
         .map(|(_, entry)| {
             let meta = &entry.metadata;
@@ -77,6 +77,13 @@ pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
             }
         })
         .collect();
+    items.sort_by(|left, right| {
+        let left_norm = left.name.to_ascii_lowercase();
+        let right_norm = right.name.to_ascii_lowercase();
+        left_norm
+            .cmp(&right_norm)
+            .then_with(|| left.name.cmp(&right.name))
+    });
 
     let total = items.len();
     ApiResponse::ok(EffectListResponse {

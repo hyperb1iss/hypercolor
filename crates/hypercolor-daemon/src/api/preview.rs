@@ -173,7 +173,7 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
         <select id="effectSelect"></select>
         <button id="applyBtn" type="button">Apply Effect</button>
         <button id="stopBtn" type="button">Stop</button>
-        <input id="fpsInput" type="number" min="1" max="30" value="15" title="Canvas FPS" />
+        <input id="fpsInput" type="number" min="1" max="30" value="30" title="Canvas FPS" />
         <label class="toggle" for="showUnavailable">
           <input id="showUnavailable" type="checkbox" />
           show unavailable

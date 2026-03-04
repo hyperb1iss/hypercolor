@@ -5,12 +5,18 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::SystemTime;
 
 use axum::body::Body;
 use http::{Request, StatusCode};
 use tower::ServiceExt;
+use uuid::Uuid;
 
+use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_types::effect::{
+    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+};
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
 
@@ -133,6 +139,31 @@ async fn preview_page_returns_html() {
     assert!(body.contains("/api/v1/ws"));
     assert!(body.contains("show unavailable"));
     assert!(body.contains("run-preview-servo.sh"));
+    assert!(body.contains("value=\"30\""));
+}
+
+async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
+    let mut registry = state.effect_registry.write().await;
+    let metadata = EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: name.to_owned(),
+        author: "test".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: format!("{name} description"),
+        category: EffectCategory::Ambient,
+        tags: vec!["test".to_owned()],
+        source: EffectSource::Native {
+            path: format!("builtin/{name}").into(),
+        },
+        license: None,
+    };
+    let entry = EffectEntry {
+        metadata,
+        source_path: format!("/tmp/{name}.html").into(),
+        modified: SystemTime::now(),
+        state: EffectState::Loading,
+    };
+    let _ = registry.register(entry);
 }
 
 // ── Devices ──────────────────────────────────────────────────────────────
@@ -271,6 +302,36 @@ async fn list_effects_returns_empty_list() {
         .as_array()
         .expect("items should be an array");
     assert!(items.is_empty());
+}
+
+#[tokio::test]
+async fn list_effects_returns_items_sorted_by_name() {
+    let state = Arc::new(AppState::new());
+    insert_test_effect(&state, "zeta").await;
+    insert_test_effect(&state, "Alpha").await;
+    insert_test_effect(&state, "beta").await;
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let items = json["data"]["items"]
+        .as_array()
+        .expect("items should be an array");
+    let names: Vec<&str> = items
+        .iter()
+        .map(|item| item["name"].as_str().expect("name should be a string"))
+        .collect();
+    assert_eq!(names, vec!["Alpha", "beta", "zeta"]);
 }
 
 #[tokio::test]
