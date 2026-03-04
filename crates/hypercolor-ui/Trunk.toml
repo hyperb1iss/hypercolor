@@ -12,6 +12,12 @@ addresses = ["127.0.0.1"]
 port = 3000
 open = false
 
+# Compile Tailwind CSS before each build
+[[hooks]]
+stage = "pre_build"
+command = "npx"
+command_arguments = ["@tailwindcss/cli", "-i", "input.css", "-o", "tailwind-out.css", "--content", "./src/**/*.rs,./index.html"]
+
 [[proxy]]
 backend = "http://127.0.0.1:9420/api"
 

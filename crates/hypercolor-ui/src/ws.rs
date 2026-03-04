@@ -3,8 +3,8 @@
 //! Handles both JSON events and binary canvas frames (0x03 header).
 
 use leptos::prelude::*;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use web_sys::MessageEvent;
 
 // ── Connection State ────────────────────────────────────────────────────────
@@ -171,7 +171,9 @@ fn build_ws_url() -> String {
     let window = web_sys::window().expect("no window");
     let location = window.location();
     let protocol = location.protocol().unwrap_or_else(|_| "http:".to_string());
-    let host = location.host().unwrap_or_else(|_| "127.0.0.1:9420".to_string());
+    let host = location
+        .host()
+        .unwrap_or_else(|_| "127.0.0.1:9420".to_string());
 
     let ws_protocol = if protocol == "https:" { "wss:" } else { "ws:" };
     format!("{ws_protocol}//{host}/api/v1/ws")

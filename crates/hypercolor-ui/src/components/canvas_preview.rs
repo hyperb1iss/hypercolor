@@ -1,9 +1,9 @@
 //! Canvas preview — renders live RGBA frames from WebSocket binary data.
 
-use leptos::prelude::*;
 use leptos::html::Canvas;
-use wasm_bindgen::JsCast;
+use leptos::prelude::*;
 use wasm_bindgen::Clamped;
+use wasm_bindgen::JsCast;
 
 use crate::ws::CanvasFrame;
 
@@ -20,7 +20,9 @@ pub fn CanvasPreview(
     // Paint frames to canvas whenever new data arrives
     Effect::new(move |_| {
         let Some(frame) = frame.get() else { return };
-        let Some(canvas) = canvas_ref.get() else { return };
+        let Some(canvas) = canvas_ref.get() else {
+            return;
+        };
 
         canvas.set_width(frame.width);
         canvas.set_height(frame.height);
@@ -44,7 +46,9 @@ pub fn CanvasPreview(
         }
     });
 
-    let style = format!("max-width: {max_width}; width: 100%; aspect-ratio: 320 / 200; image-rendering: pixelated;");
+    let style = format!(
+        "max-width: {max_width}; width: 100%; aspect-ratio: 320 / 200; image-rendering: pixelated;"
+    );
 
     view! {
         <div class="relative">

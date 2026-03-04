@@ -8,11 +8,9 @@ use hypercolor_types::effect::{ControlDefinition, ControlValue};
 
 // ── API Response Types ──────────────────────────────────────────────────────
 
-/// Mirrors the daemon's envelope: `{ "status": "ok", "data": T }`.
+/// Mirrors the daemon's envelope: `{ "data": T, "meta": { ... } }`.
 #[derive(Debug, Deserialize)]
 pub struct ApiEnvelope<T> {
-    #[allow(dead_code)]
-    pub status: String,
     pub data: T,
 }
 
