@@ -7,9 +7,11 @@
 //! device for asynchronous transmission.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
+use anyhow::{Context, Result, bail};
+use serde::Serialize;
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, trace, warn};
@@ -23,6 +25,68 @@ use super::traits::DeviceBackend;
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type BackendDeviceKey = (String, DeviceId);
 
+// ── Debug Snapshot ──────────────────────────────────────────────────────────
+
+/// Snapshot of backend dispatch internals for reverse-engineering and tuning.
+#[derive(Debug, Clone, Serialize)]
+pub struct BackendManagerDebugSnapshot {
+    /// Number of active output queues.
+    pub queue_count: usize,
+
+    /// Number of mapped layout devices.
+    pub mapped_device_count: usize,
+
+    /// Per-queue diagnostics.
+    pub queues: Vec<OutputQueueDebugSnapshot>,
+}
+
+/// Debug stats for a single output queue.
+#[derive(Debug, Clone, Serialize)]
+pub struct OutputQueueDebugSnapshot {
+    /// Backend ID this queue targets.
+    pub backend_id: String,
+
+    /// Device ID this queue targets.
+    pub device_id: String,
+
+    /// Layout device IDs currently routed to this queue.
+    pub mapped_layout_ids: Vec<String>,
+
+    /// Configured target frame rate for this queue.
+    pub target_fps: u32,
+
+    /// Total frames accepted from the render loop.
+    pub frames_received: u64,
+
+    /// Total frames successfully written by the worker.
+    pub frames_sent: u64,
+
+    /// Frames dropped due to latest-frame replacement while I/O was busy.
+    pub frames_dropped: u64,
+
+    /// Average latency from enqueue to write completion.
+    pub avg_latency_ms: u64,
+
+    /// Last async write error observed by this queue worker.
+    pub last_error: Option<String>,
+
+    /// Milliseconds since last worker write attempt.
+    pub last_sent_ago_ms: Option<u64>,
+
+    /// Most recent frame sequence seen by this queue.
+    pub last_sequence: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OutputQueueMetrics {
+    frames_received: u64,
+    frames_sent: u64,
+    frames_dropped: u64,
+    total_latency: Duration,
+    last_error: Option<String>,
+    last_sent_at: Option<Instant>,
+}
+
 // ── OutputQueue ─────────────────────────────────────────────────────────────
 
 /// Frame payload queued for asynchronous backend writes.
@@ -32,6 +96,8 @@ struct FramePayload {
     colors: Vec<[u8; 3]>,
     /// Monotonic sequence for dropped-frame diagnostics.
     sequence: u64,
+    /// Timestamp when this payload was queued by the render loop.
+    produced_at: Instant,
 }
 
 /// Latest-frame queue for a single `(backend_id, device_id)` target.
@@ -41,6 +107,8 @@ struct FramePayload {
 struct OutputQueue {
     tx: watch::Sender<Option<Arc<FramePayload>>>,
     _io_task: JoinHandle<()>,
+    target_fps: u32,
+    metrics: Arc<StdMutex<OutputQueueMetrics>>,
     next_sequence: u64,
 }
 
@@ -53,6 +121,8 @@ impl OutputQueue {
         target_fps: u32,
     ) -> Self {
         let (tx, mut rx) = watch::channel(None::<Arc<FramePayload>>);
+        let metrics = Arc::new(StdMutex::new(OutputQueueMetrics::default()));
+        let metrics_for_task = Arc::clone(&metrics);
 
         let io_task = tokio::spawn(async move {
             let frame_interval = if target_fps == 0 {
@@ -74,10 +144,15 @@ impl OutputQueue {
                 };
 
                 if frame.sequence > last_sent_sequence + 1 {
+                    let dropped = frame.sequence - last_sent_sequence - 1;
+                    if let Ok(mut snapshot) = metrics_for_task.lock() {
+                        snapshot.frames_dropped = snapshot.frames_dropped.saturating_add(dropped);
+                    }
+
                     trace!(
                         backend_id = %backend_id,
                         device_id = %device_id,
-                        dropped = frame.sequence - last_sent_sequence - 1,
+                        dropped,
                         "dropping stale device frames"
                     );
                 }
@@ -87,6 +162,23 @@ impl OutputQueue {
                     let mut backend = backend.lock().await;
                     backend.write_colors(&device_id, &frame.colors).await
                 };
+                let send_completed = Instant::now();
+
+                if let Ok(mut snapshot) = metrics_for_task.lock() {
+                    snapshot.last_sent_at = Some(send_completed);
+
+                    match &result {
+                        Ok(()) => {
+                            snapshot.frames_sent = snapshot.frames_sent.saturating_add(1);
+                            snapshot.total_latency +=
+                                send_completed.saturating_duration_since(frame.produced_at);
+                            snapshot.last_error = None;
+                        }
+                        Err(error) => {
+                            snapshot.last_error = Some(error.to_string());
+                        }
+                    }
+                }
 
                 if let Err(error) = result {
                     warn!(
@@ -101,8 +193,8 @@ impl OutputQueue {
 
                 if let Some(interval) = frame_interval {
                     let elapsed = send_started.elapsed();
-                    if elapsed < interval {
-                        tokio::time::sleep(interval - elapsed).await;
+                    if let Some(remaining) = interval.checked_sub(elapsed) {
+                        tokio::time::sleep(remaining).await;
                     }
                 }
             }
@@ -111,18 +203,68 @@ impl OutputQueue {
         Self {
             tx,
             _io_task: io_task,
+            target_fps,
+            metrics,
             next_sequence: 0,
         }
     }
 
     /// Push the latest payload for this device.
     fn push(&mut self, colors: Vec<[u8; 3]>) {
+        if let Ok(mut snapshot) = self.metrics.lock() {
+            snapshot.frames_received = snapshot.frames_received.saturating_add(1);
+        }
+
         self.next_sequence = self.next_sequence.saturating_add(1);
 
         self.tx.send_replace(Some(Arc::new(FramePayload {
             colors,
             sequence: self.next_sequence,
+            produced_at: Instant::now(),
         })));
+    }
+
+    fn snapshot(
+        &self,
+        backend_id: &str,
+        device_id: DeviceId,
+        mapped_layout_ids: Vec<String>,
+    ) -> OutputQueueDebugSnapshot {
+        let metrics = self
+            .metrics
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        let avg_latency_ms = if metrics.frames_sent == 0 {
+            0
+        } else {
+            let divisor = u32::try_from(metrics.frames_sent).unwrap_or(u32::MAX);
+            let average = metrics
+                .total_latency
+                .checked_div(divisor)
+                .unwrap_or_default()
+                .as_millis();
+            u64::try_from(average).unwrap_or(u64::MAX)
+        };
+        let now = Instant::now();
+        let last_sent_ago_ms = metrics.last_sent_at.map(|last| {
+            let ms = now.saturating_duration_since(last).as_millis();
+            u64::try_from(ms).unwrap_or(u64::MAX)
+        });
+
+        OutputQueueDebugSnapshot {
+            backend_id: backend_id.to_owned(),
+            device_id: device_id.to_string(),
+            mapped_layout_ids,
+            target_fps: self.target_fps,
+            frames_received: metrics.frames_received,
+            frames_sent: metrics.frames_sent,
+            frames_dropped: metrics.frames_dropped,
+            avg_latency_ms,
+            last_error: metrics.last_error,
+            last_sent_ago_ms,
+            last_sequence: self.next_sequence,
+        }
     }
 }
 
@@ -227,6 +369,62 @@ impl BackendManager {
         );
     }
 
+    /// Connect a physical device and map it to a layout device identifier.
+    ///
+    /// This keeps connect + map as a single operation so discovery/lifecycle
+    /// code can avoid split-brain states.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend is missing or the backend connect call
+    /// fails.
+    pub async fn connect_device(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        layout_device_id: &str,
+    ) -> Result<()> {
+        let Some(backend) = self.backends.get(backend_id).cloned() else {
+            bail!("backend '{backend_id}' is not registered");
+        };
+
+        {
+            let mut backend = backend.lock().await;
+            backend.connect(&device_id).await.with_context(|| {
+                format!("failed to connect device {device_id} using backend '{backend_id}'")
+            })?;
+        }
+
+        self.map_device(layout_device_id.to_owned(), backend_id.to_owned(), device_id);
+        Ok(())
+    }
+
+    /// Disconnect a physical device and unmap its layout device identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend is missing or disconnect fails.
+    pub async fn disconnect_device(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        layout_device_id: &str,
+    ) -> Result<()> {
+        let Some(backend) = self.backends.get(backend_id).cloned() else {
+            bail!("backend '{backend_id}' is not registered");
+        };
+
+        {
+            let mut backend = backend.lock().await;
+            backend.disconnect(&device_id).await.with_context(|| {
+                format!("failed to disconnect device {device_id} using backend '{backend_id}'")
+            })?;
+        }
+
+        self.unmap_device(layout_device_id);
+        Ok(())
+    }
+
     /// Remove a device mapping.
     pub fn unmap_device(&mut self, layout_device_id: &str) -> bool {
         let Some(mapping) = self.device_map.remove(layout_device_id) else {
@@ -271,6 +469,7 @@ impl BackendManager {
     /// and enqueues one payload per device. Errors are
     /// collected but do not halt processing — every mapped device gets
     /// its data.
+    #[allow(clippy::unused_async)]
     pub async fn write_frame(
         &mut self,
         zone_colors: &[ZoneColors],
@@ -347,5 +546,42 @@ impl BackendManager {
         }
 
         self.output_queues.get_mut(&key)
+    }
+
+    /// Build a debug snapshot of queue and routing internals.
+    #[must_use]
+    pub fn debug_snapshot(&self) -> BackendManagerDebugSnapshot {
+        let mut layout_ids_by_key: HashMap<BackendDeviceKey, Vec<String>> = HashMap::new();
+        for (layout_device_id, mapping) in &self.device_map {
+            layout_ids_by_key
+                .entry((mapping.backend_id.clone(), mapping.device_id))
+                .or_default()
+                .push(layout_device_id.clone());
+        }
+
+        for ids in layout_ids_by_key.values_mut() {
+            ids.sort_unstable();
+        }
+
+        let mut queues = Vec::with_capacity(self.output_queues.len());
+        for ((backend_id, device_id), queue) in &self.output_queues {
+            let mapped_layout_ids = layout_ids_by_key
+                .get(&(backend_id.clone(), *device_id))
+                .cloned()
+                .unwrap_or_default();
+            queues.push(queue.snapshot(backend_id, *device_id, mapped_layout_ids));
+        }
+
+        queues.sort_by(|left, right| {
+            left.backend_id
+                .cmp(&right.backend_id)
+                .then(left.device_id.cmp(&right.device_id))
+        });
+
+        BackendManagerDebugSnapshot {
+            queue_count: queues.len(),
+            mapped_device_count: self.device_map.len(),
+            queues,
+        }
     }
 }

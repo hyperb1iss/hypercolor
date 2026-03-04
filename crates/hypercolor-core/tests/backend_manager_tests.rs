@@ -160,6 +160,15 @@ fn register_replaces_existing_backend() {
     assert_eq!(manager.backend_count(), 1);
 }
 
+#[test]
+fn debug_snapshot_is_empty_for_new_manager() {
+    let manager = BackendManager::new();
+    let snapshot = manager.debug_snapshot();
+    assert_eq!(snapshot.queue_count, 0);
+    assert_eq!(snapshot.mapped_device_count, 0);
+    assert!(snapshot.queues.is_empty());
+}
+
 // ── Device Mapping Tests ────────────────────────────────────────────────────
 
 #[test]
@@ -175,6 +184,123 @@ fn map_and_unmap_device() {
 
     // Second unmap returns false.
     assert!(!manager.unmap_device("wled:strip_1"));
+}
+
+#[tokio::test]
+async fn connect_device_connects_backend_and_maps_layout_device() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Connect Flow Device".into(),
+        led_count: 6,
+        topology: LedTopology::Strip {
+            count: 6,
+            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+
+    manager
+        .connect_device("mock", device_id, "mock:connect-flow")
+        .await
+        .expect("connect_device should connect and map");
+
+    assert_eq!(manager.mapped_device_count(), 1);
+
+    let layout = make_layout(vec![make_zone("zone_0", "mock:connect-flow", 6)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[12, 34, 56]; 6],
+    }];
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 6);
+    assert!(stats.errors.is_empty());
+}
+
+#[tokio::test]
+async fn connect_device_fails_for_unknown_backend() {
+    let mut manager = BackendManager::new();
+
+    let error = manager
+        .connect_device("missing-backend", DeviceId::new(), "missing:device")
+        .await
+        .expect_err("unknown backend should fail");
+    assert!(
+        error.to_string().contains("not registered"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn disconnect_device_disconnects_and_unmaps_layout_device() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Disconnect Flow Device".into(),
+        led_count: 5,
+        topology: LedTopology::Strip {
+            count: 5,
+            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+
+    manager
+        .connect_device("mock", device_id, "mock:disconnect-flow")
+        .await
+        .expect("connect should succeed");
+    assert_eq!(manager.mapped_device_count(), 1);
+
+    manager
+        .disconnect_device("mock", device_id, "mock:disconnect-flow")
+        .await
+        .expect("disconnect should succeed");
+    assert_eq!(manager.mapped_device_count(), 0);
+
+    let layout = make_layout(vec![make_zone("zone_0", "mock:disconnect-flow", 5)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[200, 200, 200]; 5],
+    }];
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 0);
+    assert!(stats.errors.is_empty());
+}
+
+#[tokio::test]
+async fn disconnect_device_surfaces_backend_errors() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Disconnect Error Device".into(),
+        led_count: 3,
+        topology: LedTopology::Strip {
+            count: 3,
+            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+
+    let backend = MockDeviceBackend::new().with_device(&mock_config);
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+
+    let error = manager
+        .disconnect_device("mock", device_id, "mock:error")
+        .await
+        .expect_err("disconnect of non-connected device should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("failed to disconnect device"),
+        "unexpected error: {error}"
+    );
 }
 
 // ── write_frame Tests ───────────────────────────────────────────────────────
@@ -294,6 +420,25 @@ async fn write_frame_backend_errors_are_not_reported_synchronously() {
     assert!(
         stats.errors.is_empty(),
         "queueing should succeed even if async write later fails"
+    );
+
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    let snapshot = manager.debug_snapshot();
+    assert_eq!(snapshot.queue_count, 1);
+
+    let queue = snapshot
+        .queues
+        .first()
+        .expect("expected one queue snapshot");
+    assert_eq!(queue.frames_received, 1);
+    assert_eq!(queue.frames_sent, 0);
+    assert!(
+        queue
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("mock write failure"),
+        "expected async queue error details for debugging"
     );
 }
 
@@ -422,6 +567,16 @@ async fn write_frame_returns_immediately_with_slow_backend() {
     tokio::time::sleep(Duration::from_millis(260)).await;
     assert_eq!(write_count.load(Ordering::Relaxed), 1);
     assert_eq!(writes.lock().await.len(), 1);
+
+    let snapshot = manager.debug_snapshot();
+    let queue = snapshot
+        .queues
+        .first()
+        .expect("expected one queue snapshot");
+    assert_eq!(queue.frames_received, 1);
+    assert_eq!(queue.frames_sent, 1);
+    assert_eq!(queue.frames_dropped, 0);
+    assert!(queue.avg_latency_ms > 0);
 }
 
 #[tokio::test]
@@ -482,4 +637,17 @@ async fn write_frame_drops_stale_intermediate_payloads() {
         !writes.iter().any(|frame| frame[0] == [0, 255, 0]),
         "intermediate frame should have been dropped"
     );
+
+    let snapshot = manager.debug_snapshot();
+    assert_eq!(snapshot.queue_count, 1);
+    let queue = snapshot
+        .queues
+        .first()
+        .expect("expected one queue snapshot");
+    assert_eq!(queue.frames_received, 3);
+    assert!(
+        queue.frames_dropped >= 1,
+        "debug snapshot should track dropped stale frames"
+    );
+    assert_eq!(queue.mapped_layout_ids, vec!["slow:strip".to_string()]);
 }
