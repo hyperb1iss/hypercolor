@@ -58,7 +58,7 @@ pub fn Shell(children: Children) -> impl IntoView {
                         <button
                             class="hidden md:flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-white/[0.02] border border-white/[0.05]
                                    text-xs text-zinc-600 hover:text-zinc-400 hover:border-white/[0.08] hover:bg-white/[0.04]
-                                   transition-all duration-200 cursor-pointer group"
+                                   btn-press cursor-pointer group"
                             on:click=move |_| set_palette_open.set(true)
                         >
                             <svg class="w-3.5 h-3.5 text-zinc-600 group-hover:text-zinc-400 transition-colors" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -181,17 +181,19 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                             let close_cb = on_close_apply;
                             view! {
                                 <div>
-                                    {items.into_iter().map(|effect| {
+                                    {items.into_iter().enumerate().map(|(i, effect)| {
                                         let id = effect.id.clone();
                                         let name = effect.name.clone();
                                         let desc = effect.description.clone();
                                         let category = effect.category.clone();
                                         let on_close = close_cb;
+                                        let delay = format!("animation-delay: {}ms", i * 30);
 
                                         view! {
                                             <button
                                                 class="w-full flex items-center gap-3 px-4 py-2.5 text-left
-                                                       hover:bg-electric-purple/[0.05] transition-colors group"
+                                                       hover:bg-electric-purple/[0.05] btn-press group animate-fade-in-up"
+                                                style=delay
                                                 on:click=move |_| {
                                                     let id = id.clone();
                                                     leptos::task::spawn_local(async move {
@@ -201,7 +203,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                 }
                                             >
                                                 <div class="flex-1 min-w-0">
-                                                    <div class="text-sm text-zinc-300 group-hover:text-fg truncate">{name}</div>
+                                                    <div class="text-sm text-zinc-300 group-hover:text-fg truncate transition-colors duration-150">{name}</div>
                                                     <div class="text-[10px] text-fg-dim truncate">{desc}</div>
                                                 </div>
                                                 <span class="text-[10px] text-fg-dim capitalize shrink-0 px-2 py-0.5 rounded-full bg-white/[0.03]">{category}</span>

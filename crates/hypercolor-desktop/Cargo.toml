@@ -1,0 +1,24 @@
+[package]
+name = "hypercolor-desktop"
+description = "Native desktop shell for the Hypercolor lighting engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hypercolor"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { version = "2", features = ["devtools"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

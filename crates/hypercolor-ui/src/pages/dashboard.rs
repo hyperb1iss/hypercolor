@@ -136,14 +136,17 @@ fn QuickSwitchGrid(effects: Vec<EffectSummary>) -> impl IntoView {
 
     view! {
         <div class="grid grid-cols-2 gap-1.5 max-h-[400px] overflow-y-auto pr-1">
-            {effects.into_iter().map(|effect| {
+            {effects.into_iter().enumerate().map(|(i, effect)| {
                 let id = effect.id.clone();
                 let name = effect.name.clone();
                 let category = effect.category.clone();
+                let delay = format!("animation-delay: {}ms", i * 25);
                 view! {
                     <button
                         class="text-left px-3 py-2 rounded-lg bg-white/[0.015] border border-white/[0.03]
-                               hover:bg-electric-purple/[0.04] hover:border-electric-purple/10 transition-all duration-200 group"
+                               hover:bg-electric-purple/[0.04] hover:border-electric-purple/10 card-hover btn-press group
+                               animate-fade-in-up"
+                        style=delay
                         on:click=move |_| {
                             let id = id.clone();
                             leptos::task::spawn_local(async move {

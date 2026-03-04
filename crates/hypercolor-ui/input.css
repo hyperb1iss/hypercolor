@@ -178,6 +178,44 @@ input[type="color"]::-webkit-color-swatch {
 
 /* ── Signature Animations ────────────────────────────────────────────────── */
 
+/* Entrances */
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+@keyframes slideInRight {
+    from { opacity: 0; transform: translateX(16px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideInLeft {
+    from { opacity: 0; transform: translateX(-16px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.94); }
+    to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes popIn {
+    0%   { opacity: 0; transform: scale(0.8); }
+    70%  { transform: scale(1.04); }
+    100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes slideDown {
+    from { opacity: 0; transform: translateY(-8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Continuous / ambient */
 @keyframes neonGlow {
     from { filter: drop-shadow(0 0 8px rgba(225, 53, 255, 0.3)); }
     to   { filter: drop-shadow(0 0 16px rgba(225, 53, 255, 0.5)); }
@@ -188,19 +226,14 @@ input[type="color"]::-webkit-color-swatch {
     50%      { opacity: 0.85; transform: scale(1.02); }
 }
 
-@keyframes fadeInUp {
-    from { opacity: 0; transform: translateY(8px); }
-    to   { opacity: 1; transform: translateY(0); }
+@keyframes breathe {
+    0%, 100% { box-shadow: 0 0 20px rgba(var(--glow-rgb, 225, 53, 255), 0.08); }
+    50%      { box-shadow: 0 0 30px rgba(var(--glow-rgb, 225, 53, 255), 0.16); }
 }
 
-@keyframes fadeIn {
-    from { opacity: 0; }
-    to   { opacity: 1; }
-}
-
-@keyframes slideInRight {
-    from { opacity: 0; transform: translateX(12px); }
-    to   { opacity: 1; transform: translateX(0); }
+@keyframes glowPulse {
+    0%, 100% { opacity: 0.5; }
+    50%      { opacity: 1; }
 }
 
 @keyframes shimmer {
@@ -213,13 +246,20 @@ input[type="color"]::-webkit-color-swatch {
     50%      { opacity: 1; }
 }
 
-@keyframes scaleIn {
-    from { opacity: 0; transform: scale(0.96); }
-    to   { opacity: 1; transform: scale(1); }
+@keyframes borderGlow {
+    0%, 100% { border-color: rgba(225, 53, 255, 0.2); }
+    50%      { border-color: rgba(225, 53, 255, 0.4); }
 }
 
+@keyframes dotPulse {
+    0%, 100% { transform: scale(1); opacity: 0.8; }
+    50%      { transform: scale(1.3); opacity: 1; }
+}
+
+/* ── Animation Utility Classes ──────────────────────────────────────────── */
+
 .animate-fade-in-up {
-    animation: fadeInUp 0.3s var(--ease-silk) both;
+    animation: fadeInUp 0.35s var(--ease-silk) both;
 }
 
 .animate-fade-in {
@@ -227,11 +267,31 @@ input[type="color"]::-webkit-color-swatch {
 }
 
 .animate-slide-in-right {
-    animation: slideInRight 0.3s var(--ease-silk) both;
+    animation: slideInRight 0.35s var(--ease-silk) both;
+}
+
+.animate-slide-in-left {
+    animation: slideInLeft 0.35s var(--ease-silk) both;
 }
 
 .animate-scale-in {
-    animation: scaleIn 0.2s var(--ease-silk) both;
+    animation: scaleIn 0.25s var(--ease-bounce) both;
+}
+
+.animate-pop-in {
+    animation: popIn 0.35s var(--ease-bounce) both;
+}
+
+.animate-slide-down {
+    animation: slideDown 0.3s var(--ease-silk) both;
+}
+
+.animate-breathe {
+    animation: breathe 3s ease-in-out infinite;
+}
+
+.animate-border-glow {
+    animation: borderGlow 2s ease-in-out infinite;
 }
 
 .animate-shimmer {
@@ -245,15 +305,120 @@ input[type="color"]::-webkit-color-swatch {
     animation: shimmer 3s infinite;
 }
 
-/* Stagger animation delays for card grids */
-.stagger-1 { animation-delay: 0.02s; }
-.stagger-2 { animation-delay: 0.04s; }
-.stagger-3 { animation-delay: 0.06s; }
-.stagger-4 { animation-delay: 0.08s; }
-.stagger-5 { animation-delay: 0.10s; }
-.stagger-6 { animation-delay: 0.12s; }
-.stagger-7 { animation-delay: 0.14s; }
-.stagger-8 { animation-delay: 0.16s; }
+/* ── Stagger Delays ─────────────────────────────────────────────────────── */
+/* Cards: fast stagger for grid entrance */
+.stagger-1  { animation-delay: 0.03s; }
+.stagger-2  { animation-delay: 0.06s; }
+.stagger-3  { animation-delay: 0.09s; }
+.stagger-4  { animation-delay: 0.12s; }
+.stagger-5  { animation-delay: 0.15s; }
+.stagger-6  { animation-delay: 0.18s; }
+.stagger-7  { animation-delay: 0.21s; }
+.stagger-8  { animation-delay: 0.24s; }
+.stagger-9  { animation-delay: 0.27s; }
+.stagger-10 { animation-delay: 0.30s; }
+.stagger-11 { animation-delay: 0.33s; }
+.stagger-12 { animation-delay: 0.36s; }
+
+/* ── Interactive Micro-Interactions ──────────────────────────────────────── */
+
+/* Card hover lift — smooth raise with shadow bloom */
+.card-hover {
+    transition: transform 0.25s var(--ease-bounce),
+                box-shadow 0.25s var(--ease-silk),
+                border-color 0.2s ease;
+}
+
+.card-hover:hover:not(:disabled) {
+    transform: translateY(-2px);
+}
+
+.card-hover:active:not(:disabled) {
+    transform: translateY(0) scale(0.985);
+    transition-duration: 0.1s;
+}
+
+/* Button press feedback */
+.btn-press {
+    transition: transform 0.15s var(--ease-bounce),
+                box-shadow 0.15s ease,
+                background-color 0.15s ease,
+                color 0.15s ease,
+                opacity 0.15s ease;
+}
+
+.btn-press:active:not(:disabled) {
+    transform: scale(0.92);
+}
+
+/* Chip hover — pop + glow */
+.chip-interactive {
+    transition: transform 0.2s var(--ease-bounce),
+                box-shadow 0.2s ease,
+                background-color 0.2s ease,
+                color 0.2s ease,
+                border-color 0.2s ease,
+                filter 0.2s ease;
+}
+
+.chip-interactive:hover {
+    transform: scale(1.06);
+    filter: brightness(1.2);
+}
+
+.chip-interactive:active {
+    transform: scale(0.96);
+    transition-duration: 0.08s;
+}
+
+/* Nav item hover slide — subtle rightward nudge */
+.nav-item-hover {
+    transition: transform 0.2s var(--ease-silk),
+                background-color 0.15s ease,
+                color 0.15s ease;
+}
+
+.nav-item-hover:hover {
+    transform: translateX(2px);
+}
+
+/* Player button — hover glow + scale */
+.player-btn {
+    transition: transform 0.2s var(--ease-bounce),
+                color 0.15s ease,
+                background-color 0.15s ease,
+                box-shadow 0.2s ease;
+}
+
+.player-btn:hover {
+    transform: scale(1.15);
+}
+
+.player-btn:active {
+    transform: scale(0.9);
+    transition-duration: 0.08s;
+}
+
+/* Toggle switch spring */
+.toggle-track {
+    transition: background-color 0.3s var(--ease-silk),
+                box-shadow 0.3s var(--ease-silk);
+}
+
+.toggle-thumb {
+    transition: transform 0.3s var(--ease-bounce),
+                background-color 0.2s ease;
+}
+
+/* Focus ring pulse on search */
+.search-glow:focus {
+    animation: borderGlow 2s ease-in-out infinite;
+}
+
+/* Glow dot — status indicator breathing */
+.dot-alive {
+    animation: dotPulse 2s ease-in-out infinite;
+}
 
 /* ── Glass effect ────────────────────────────────────────────────────────── */
 
@@ -312,9 +477,25 @@ button:hover:not(:disabled) > .relative {
     .animate-fade-in-up,
     .animate-fade-in,
     .animate-slide-in-right,
+    .animate-slide-in-left,
     .animate-scale-in,
+    .animate-pop-in,
+    .animate-slide-down,
+    .animate-breathe,
+    .animate-border-glow,
+    .animate-shimmer,
+    .dot-alive,
     .card-glow {
         animation: none !important;
+    }
+
+    .card-hover,
+    .btn-press,
+    .chip-interactive,
+    .nav-item-hover,
+    .player-btn,
+    .toggle-track,
+    .toggle-thumb {
         transition: none !important;
     }
 }

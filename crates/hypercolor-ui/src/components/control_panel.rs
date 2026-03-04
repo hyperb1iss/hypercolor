@@ -57,7 +57,7 @@ pub fn ControlPanel(
                 } else {
                     groups.into_iter().map(|(group, items)| {
                         view! {
-                            <div class="space-y-3">
+                            <div class="space-y-3 animate-fade-in-up">
                                 <div class="flex items-center gap-2">
                                     <div class="h-px flex-1 bg-white/[0.04]" />
                                     <h4 class="text-[9px] font-mono uppercase tracking-[0.2em] text-fg-dim/60 shrink-0">
@@ -66,8 +66,13 @@ pub fn ControlPanel(
                                     <div class="h-px flex-1 bg-white/[0.04]" />
                                 </div>
                                 <div class="space-y-1">
-                                    {items.into_iter().map(|(def, value, rgb)| {
-                                        view! { <ControlWidget def=def initial_value=value accent_rgb=rgb on_change=on_change /> }
+                                    {items.into_iter().enumerate().map(|(i, (def, value, rgb))| {
+                                        let delay = format!("animation-delay: {}ms", i * 40);
+                                        view! {
+                                            <div class="animate-fade-in-up" style=delay>
+                                                <ControlWidget def=def initial_value=value accent_rgb=rgb on_change=on_change />
+                                            </div>
+                                        }
                                     }).collect_view()}
                                 </div>
                             </div>
@@ -164,7 +169,7 @@ fn ControlWidget(
                      title=tooltip.unwrap_or_default()>
                     <label class="text-xs text-fg-muted font-medium">{name.clone()}</label>
                     <button
-                        class="relative w-10 h-[22px] rounded-full transition-all duration-200"
+                        class="relative w-10 h-[22px] rounded-full toggle-track"
                         style=move || if checked.get() { on_style.clone() } else { "background: rgba(255,255,255,0.08)".to_string() }
                         on:click=move |_| {
                             let new_val = !checked.get();
@@ -173,7 +178,7 @@ fn ControlWidget(
                         }
                     >
                         <div
-                            class="absolute top-[3px] w-4 h-4 rounded-full shadow-sm transition-all duration-200"
+                            class="absolute top-[3px] w-4 h-4 rounded-full shadow-sm toggle-thumb"
                             class=("translate-x-[22px] bg-white", move || checked.get())
                             class=("translate-x-[3px] bg-fg-dim", move || !checked.get())
                         />
@@ -210,9 +215,9 @@ fn ControlWidget(
                             // Compact circular swatch with hidden native picker
                             <div class="relative">
                                 <div
-                                    class="w-7 h-7 rounded-full cursor-pointer transition-all duration-200
+                                    class="w-7 h-7 rounded-full cursor-pointer btn-press
                                            border-2 border-white/[0.08] hover:border-white/[0.2]
-                                           hover:scale-110"
+                                           hover:scale-110 hover:shadow-lg"
                                     style=move || format!(
                                         "background: {}; box-shadow: 0 0 10px {}40",
                                         color.get(), color.get()

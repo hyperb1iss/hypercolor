@@ -139,7 +139,7 @@ pub fn Sidebar() -> impl IntoView {
                         <A
                             href=item.path
                             attr:class=move || {
-                                let base = "flex items-center h-10 px-3 rounded-lg transition-all duration-150 group relative";
+                                let base = "flex items-center h-10 px-3 rounded-lg nav-item-hover group relative";
                                 if is_active.get() {
                                     format!("{base} bg-electric-purple/[0.08] text-zinc-100")
                                 } else {
@@ -190,12 +190,12 @@ pub fn Sidebar() -> impl IntoView {
 
                 Some(view! {
                     <div
-                        class="mx-2 mb-2 rounded-xl border p-3 space-y-3 transition-all duration-300 animate-fade-in"
+                        class="mx-2 mb-2 rounded-xl border p-3 space-y-3 animate-pop-in"
                         style=bg_style
                     >
                         // Effect name + category dot
                         <div class="flex items-center gap-2 min-w-0">
-                            <div class="w-2 h-2 rounded-full animate-pulse shrink-0" style=dot_style />
+                            <div class="w-2 h-2 rounded-full dot-alive shrink-0" style=dot_style />
                             <div class="min-w-0 flex-1">
                                 <div class="text-xs font-medium text-fg truncate">{name}</div>
                                 <div class="text-[10px] text-fg-dim capitalize">{cat}</div>
@@ -203,10 +203,10 @@ pub fn Sidebar() -> impl IntoView {
                         </div>
 
                         // Player controls — compact row
-                        <div class="flex items-center justify-center gap-0.5">
+                        <div class="flex items-center justify-center gap-1">
                             // Previous
                             <button
-                                class="p-1.5 rounded-md text-fg-dim hover:text-fg hover:bg-white/[0.06] transition-all duration-150"
+                                class="p-1.5 rounded-lg text-fg-dim hover:text-fg hover:bg-white/[0.08] player-btn"
                                 title="Previous effect"
                                 on:click=move |_| navigate_effect(-1)
                             >
@@ -216,7 +216,7 @@ pub fn Sidebar() -> impl IntoView {
                             </button>
                             // Stop
                             <button
-                                class="p-1.5 rounded-md text-error-red/50 hover:text-error-red hover:bg-error-red/[0.06] transition-all duration-150"
+                                class="p-1.5 rounded-lg text-error-red/40 hover:text-error-red hover:bg-error-red/[0.08] player-btn"
                                 title="Stop effect"
                                 on:click=move |_| fx.stop_effect()
                             >
@@ -226,7 +226,7 @@ pub fn Sidebar() -> impl IntoView {
                             </button>
                             // Next
                             <button
-                                class="p-1.5 rounded-md text-fg-dim hover:text-fg hover:bg-white/[0.06] transition-all duration-150"
+                                class="p-1.5 rounded-lg text-fg-dim hover:text-fg hover:bg-white/[0.08] player-btn"
                                 title="Next effect"
                                 on:click=move |_| navigate_effect(1)
                             >
@@ -236,7 +236,7 @@ pub fn Sidebar() -> impl IntoView {
                             </button>
                             // Shuffle
                             <button
-                                class="p-1.5 rounded-md text-fg-dim hover:text-fg hover:bg-white/[0.06] transition-all duration-150"
+                                class="p-1.5 rounded-lg text-fg-dim hover:text-fg hover:bg-white/[0.08] player-btn"
                                 title="Random effect"
                                 on:click=move |_| random_effect()
                             >
@@ -257,7 +257,7 @@ pub fn Sidebar() -> impl IntoView {
             <div class="px-2 py-3 border-t border-white/[0.04]">
                 <button
                     class="flex items-center justify-center w-full h-8 rounded-lg text-zinc-600 hover:text-zinc-400
-                           hover:bg-white/[0.03] transition-all duration-150"
+                           hover:bg-white/[0.03] btn-press"
                     on:click=move |_| set_collapsed.update(|v| *v = !*v)
                     title=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }
                 >

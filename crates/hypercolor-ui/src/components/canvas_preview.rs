@@ -51,15 +51,16 @@ pub fn CanvasPreview(
     );
 
     view! {
-        <div class="relative">
+        <div class="relative bg-black animate-scale-in">
             <canvas
                 node_ref=canvas_ref
-                class="w-full h-auto rounded-lg bg-black"
+                class="w-full h-auto block bg-black"
                 style=style
             />
             {if show_fps {
                 Some(view! {
-                    <div class="absolute top-2 right-2 bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-mono text-zinc-400">
+                    <div class="absolute top-2 right-2 bg-black/70 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-mono text-zinc-400
+                                transition-all duration-300 animate-fade-in">
                         {move || format!("{:.0} fps", fps.get())}
                     </div>
                 })

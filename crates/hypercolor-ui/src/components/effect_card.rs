@@ -25,6 +25,8 @@ pub fn EffectCard(
     effect: EffectSummary,
     #[prop(into)] is_active: Signal<bool>,
     #[prop(into)] on_apply: Callback<String>,
+    /// Index for stagger animation (clamped to 12).
+    #[prop(default = 0)] index: usize,
 ) -> impl IntoView {
     let name = effect.name.clone();
     let description = effect.description.clone();
@@ -50,22 +52,24 @@ pub fn EffectCard(
     );
 
     let click_id = effect.id.clone();
+    let stagger = (index.min(12) + 1).to_string();
 
     view! {
         <button
             class=move || {
                 let base = "relative rounded-2xl border text-left w-full group overflow-hidden \
-                            transition-all duration-200 ease-out animate-fade-in-up";
+                            card-hover animate-fade-in-up";
                 let state = if is_active.get() {
-                    "border-electric-purple/30 bg-layer-2 shadow-[0_0_30px_rgba(225,53,255,0.1)]"
+                    "border-electric-purple/30 bg-layer-2 animate-breathe"
                 } else if !runnable {
                     "border-white/[0.03] bg-layer-2/40 opacity-30 cursor-not-allowed"
                 } else {
                     "border-white/[0.05] bg-layer-2/80 hover:border-white/10"
                 };
-                format!("{base} {state}")
+                format!("{base} {state} stagger-{}", stagger)
             }
             style:--hover-glow=hover_glow.clone()
+            style:--glow-rgb=accent_rgb.clone()
             disabled=!runnable
             on:click=move |_| {
                 if runnable {

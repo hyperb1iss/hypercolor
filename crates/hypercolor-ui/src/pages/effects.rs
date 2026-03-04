@@ -125,7 +125,8 @@ pub fn EffectsPage() -> impl IntoView {
                         placeholder="Search effects..."
                         class="w-full bg-layer-2/60 border border-white/[0.04] rounded-lg pl-9 pr-10 py-2 text-sm text-fg
                                placeholder-fg-dim focus:outline-none focus:border-electric-purple/20
-                               focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1)] transition-all duration-200"
+                               focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1),0_0_20px_rgba(225,53,255,0.06)]
+                               transition-all duration-300"
                         prop:value=move || search.get()
                         on:input=move |ev| {
                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -155,8 +156,7 @@ pub fn EffectsPage() -> impl IntoView {
                         );
                         view! {
                             <button
-                                class="px-2.5 py-1 rounded-full text-xs font-medium transition-all duration-200 capitalize border
-                                       hover:brightness-125 hover:scale-[1.02]"
+                                class="px-2.5 py-1 rounded-full text-xs font-medium capitalize border chip-interactive"
                                 style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
                                 on:click=move |_| set_category_filter.set(cat_clone.clone())
                             >
@@ -190,7 +190,7 @@ pub fn EffectsPage() -> impl IntoView {
                                     };
                                     view! {
                                         <div class=grid_class>
-                                            {effects.into_iter().map(|effect| {
+                                            {effects.into_iter().enumerate().map(|(i, effect)| {
                                                 let effect_id = effect.id.clone();
                                                 let is_active = Signal::derive(move || {
                                                     fx.active_effect_id.get().as_deref() == Some(&effect_id)
@@ -200,6 +200,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                         effect=effect
                                                         is_active=is_active
                                                         on_apply=on_apply
+                                                        index=i
                                                     />
                                                 }
                                             }).collect_view()}
@@ -215,11 +216,10 @@ pub fn EffectsPage() -> impl IntoView {
                         fx.active_effect_id.get().map(|_| {
                             let rgb = accent_rgb.get();
                             let dot_style = format!("background: rgb({}); box-shadow: 0 0 8px rgba({}, 0.6)", rgb, rgb);
-                            let preview_border = format!("border-color: rgba({}, 0.1)", rgb);
                             let controls_accent = format!("border-top: 2px solid rgba({}, 0.15)", rgb);
                             view! {
                                 <aside
-                                    class="w-[420px] shrink-0 sticky top-0 self-start space-y-3 animate-slide-in-right scrollbar-none"
+                                    class="w-[420px] shrink-0 sticky top-0 self-start space-y-3 animate-slide-in-right scrollbar-none will-change-transform"
                                     style="max-height: calc(100vh - 10rem); overflow-y: auto"
                                 >
                                     // Active effect name with category-colored dot
@@ -227,18 +227,15 @@ pub fn EffectsPage() -> impl IntoView {
                                         let dot_s = dot_style.clone();
                                         view! {
                                             <div class="flex items-center gap-2.5 px-1">
-                                                <div class="w-2.5 h-2.5 rounded-full animate-pulse shrink-0" style=dot_s />
+                                                <div class="w-2.5 h-2.5 rounded-full dot-alive shrink-0" style=dot_s />
                                                 <span class="text-base font-medium text-fg">{name}</span>
                                             </div>
                                         }
                                     })}
 
-                                    // Live preview with category-tinted border
-                                    <div
-                                        class="rounded-xl bg-layer-1 border overflow-hidden
-                                               shadow-[0_4px_24px_rgba(0,0,0,0.3)]"
-                                        style=preview_border.clone()
-                                    >
+                                    // Live preview — no border, black bleeds to edge
+                                    <div class="rounded-xl bg-black overflow-hidden shadow-[0_4px_24px_rgba(0,0,0,0.3)]">
+
                                         <CanvasPreview
                                             frame=canvas_frame
                                             fps=ws_fps
