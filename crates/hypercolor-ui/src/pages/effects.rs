@@ -243,14 +243,17 @@ pub fn EffectsPage() -> impl IntoView {
                                             let set_name = fx.set_active_effect_name;
                                             let set_controls = fx.set_active_controls;
                                             let set_values = fx.set_active_control_values;
+                                            let set_preset = fx.set_active_preset_id;
                                             leptos::task::spawn_local(async move {
                                                 if let Ok(Some(active)) = api::fetch_active_effect().await {
                                                     set_name.set(Some(active.name));
                                                     set_controls.set(active.controls);
                                                     set_values.set(active.control_values);
+                                                    set_preset.set(active.active_preset_id);
                                                 }
                                             });
                                         })
+                                        active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
                                     />
 
                                     // Live preview — no border, black bleeds to edge

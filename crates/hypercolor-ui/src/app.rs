@@ -36,6 +36,8 @@ pub struct EffectsContext {
     pub set_active_controls: WriteSignal<Vec<ControlDefinition>>,
     pub active_control_values: ReadSignal<HashMap<String, ControlValue>>,
     pub set_active_control_values: WriteSignal<HashMap<String, ControlValue>>,
+    pub active_preset_id: ReadSignal<Option<String>>,
+    pub set_active_preset_id: WriteSignal<Option<String>>,
 }
 
 impl EffectsContext {
@@ -60,10 +62,12 @@ impl EffectsContext {
         self.set_active_effect_category.set(category);
         self.set_active_controls.set(Vec::new());
         self.set_active_control_values.set(HashMap::new());
+        self.set_active_preset_id.set(None);
 
         let set_name = self.set_active_effect_name;
         let set_controls = self.set_active_controls;
         let set_values = self.set_active_control_values;
+        let set_preset = self.set_active_preset_id;
 
         leptos::task::spawn_local(async move {
             let _ = api::apply_effect(&id).await;
@@ -71,6 +75,7 @@ impl EffectsContext {
                 set_name.set(Some(active.name));
                 set_controls.set(active.controls);
                 set_values.set(active.control_values);
+                set_preset.set(active.active_preset_id);
             }
         });
     }
@@ -82,6 +87,7 @@ impl EffectsContext {
         self.set_active_controls.set(Vec::new());
         self.set_active_control_values.set(HashMap::new());
         self.set_active_effect_category.set(String::new());
+        self.set_active_preset_id.set(None);
         leptos::task::spawn_local(async move {
             let _ = api::stop_effect().await;
         });
@@ -110,6 +116,7 @@ pub fn App() -> impl IntoView {
     let (active_effect_category, set_active_effect_category) = signal(String::new());
     let (active_controls, set_active_controls) = signal(Vec::<ControlDefinition>::new());
     let (active_control_values, set_active_control_values) = signal(HashMap::<String, ControlValue>::new());
+    let (active_preset_id, set_active_preset_id) = signal(None::<String>);
 
     let effects_ctx = EffectsContext {
         effects_resource,
@@ -123,6 +130,8 @@ pub fn App() -> impl IntoView {
         set_active_controls,
         active_control_values,
         set_active_control_values,
+        active_preset_id,
+        set_active_preset_id,
     };
     provide_context(effects_ctx);
 
@@ -134,6 +143,7 @@ pub fn App() -> impl IntoView {
             set_active_effect_name.set(Some(active.name));
             set_active_controls.set(active.controls);
             set_active_control_values.set(active.control_values);
+            set_active_preset_id.set(active.active_preset_id);
             if let Some(Ok(effects)) = effects_resource.get() {
                 if let Some(e) = effects.iter().find(|e| e.id == active_id) {
                     set_active_effect_category.set(e.category.clone());
@@ -145,6 +155,7 @@ pub fn App() -> impl IntoView {
             set_active_controls.set(Vec::new());
             set_active_control_values.set(HashMap::new());
             set_active_effect_category.set(String::new());
+            set_active_preset_id.set(None);
         }
     });
 

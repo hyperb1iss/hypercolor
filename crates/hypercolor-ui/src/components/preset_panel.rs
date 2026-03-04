@@ -25,18 +25,30 @@ pub fn PresetToolbar(
     /// Callback fired after a preset is applied (so parent can refresh controls).
     #[prop(into)]
     on_preset_applied: Callback<()>,
+    /// The active preset ID from the engine (restored on effect switch).
+    #[prop(into, optional)]
+    active_preset_id_signal: Option<Signal<Option<String>>>,
 ) -> impl IntoView {
     let (presets, set_presets) = signal(Vec::<api::PresetSummary>::new());
     let (selected_id, set_selected_id) = signal(Option::<String>::None);
     let (mode, set_mode) = signal(ToolbarMode::Idle);
 
-    // Fetch presets whenever effect_id changes
+    // Fetch presets whenever effect_id changes, and restore active preset selection
     Effect::new(move |_| {
         let _eid = effect_id.get();
         set_selected_id.set(None);
+        let restore_id = active_preset_id_signal.map(|s| s.get()).unwrap_or_default();
         leptos::task::spawn_local(async move {
             match api::fetch_presets().await {
-                Ok(all) => set_presets.set(all),
+                Ok(all) => {
+                    // Restore the preset selection if the engine reports one
+                    if let Some(ref preset_id) = restore_id {
+                        if all.iter().any(|p| p.id == *preset_id) {
+                            set_selected_id.set(Some(preset_id.clone()));
+                        }
+                    }
+                    set_presets.set(all);
+                }
                 Err(_) => set_presets.set(Vec::new()),
             }
         });
@@ -68,7 +80,7 @@ pub fn PresetToolbar(
         });
     };
 
-    // Select preset from dropdown → apply it
+    // Select preset from dropdown → apply it (or reset to defaults for "No preset")
     let on_select = move |ev: web_sys::Event| {
         let target = ev
             .target()
@@ -76,7 +88,14 @@ pub fn PresetToolbar(
         let Some(el) = target else { return };
         let val = el.value();
         if val.is_empty() {
+            // "No preset" selected — reset controls to defaults
             set_selected_id.set(None);
+            let on_applied = on_preset_applied;
+            leptos::task::spawn_local(async move {
+                if api::reset_controls().await.is_ok() {
+                    on_applied.run(());
+                }
+            });
             return;
         }
         set_selected_id.set(Some(val.clone()));

@@ -634,6 +634,7 @@ impl BackendManager {
             .map(|z| (z.id.as_str(), z.device_id.as_str()))
             .collect();
 
+        #[allow(clippy::items_after_statements)]
         #[derive(Default)]
         struct AccumulatedColors {
             values: Vec<[u8; 3]>,

@@ -289,6 +289,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/effects/current/controls",
             axum::routing::patch(effects::update_current_controls),
         )
+        .route(
+            "/effects/current/reset",
+            axum::routing::post(effects::reset_controls),
+        )
         .route("/effects/stop", axum::routing::post(effects::stop_effect))
         .route("/effects/{id}", axum::routing::get(effects::get_effect))
         .route(

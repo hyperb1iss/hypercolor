@@ -340,6 +340,11 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
 }
 
 /// `POST /api/v1/library/presets/:id/apply` — activate a preset immediately.
+///
+/// When the preset targets the same effect that is already running, controls
+/// are updated in-place (reset to defaults, then apply preset values) without
+/// tearing down and re-creating the renderer. This avoids animation restarts
+/// and visual glitches.
 pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let Some(preset_id) = resolve_preset_id(&state, &id).await else {
         return ApiError::not_found(format!("Preset not found: {id}"));
@@ -359,20 +364,57 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
         entry.metadata.clone()
     };
 
-    let activation = match activate_effect_with_controls(&state, &metadata, &preset.controls).await
-    {
-        Ok(activation) => activation,
-        Err(ActivateEffectError::Renderer(error)) => {
-            return ApiError::bad_request(format!(
-                "Failed to prepare renderer for preset '{}': {error}",
+    // Check if the same effect is already running — if so, skip full re-activation
+    let same_effect = {
+        let engine = state.effect_engine.lock().await;
+        engine
+            .active_metadata()
+            .is_some_and(|active| active.id == metadata.id)
+    };
+
+    let activation = if same_effect {
+        // Hot-swap: reset to defaults, apply preset controls, set preset ID
+        let mut engine = state.effect_engine.lock().await;
+        if let Err(e) = engine.reset_to_defaults() {
+            return ApiError::internal(format!(
+                "Failed to reset controls for preset '{}': {e}",
                 preset.name
             ));
         }
-        Err(ActivateEffectError::Activation(error)) => {
-            return ApiError::internal(format!(
-                "Failed to activate effect '{}' from preset '{}': {error}",
-                metadata.name, preset.name
-            ));
+
+        let mut applied: HashMap<String, ControlValue> = HashMap::new();
+        let mut rejected: Vec<String> = Vec::new();
+        for (name, value) in &preset.controls {
+            match engine.set_control_checked(name, value) {
+                Ok(normalized) => {
+                    applied.insert(name.clone(), normalized);
+                }
+                Err(error) => rejected.push(format!("{name} ({error})")),
+            }
+        }
+        engine.set_active_preset_id(preset.id.to_string());
+
+        ActivationResult { applied, rejected }
+    } else {
+        // Different effect — full activation path
+        match activate_effect_with_controls(&state, &metadata, &preset.controls).await {
+            Ok(activation) => {
+                let mut engine = state.effect_engine.lock().await;
+                engine.set_active_preset_id(preset.id.to_string());
+                activation
+            }
+            Err(ActivateEffectError::Renderer(error)) => {
+                return ApiError::bad_request(format!(
+                    "Failed to prepare renderer for preset '{}': {error}",
+                    preset.name
+                ));
+            }
+            Err(ActivateEffectError::Activation(error)) => {
+                return ApiError::internal(format!(
+                    "Failed to activate effect '{}' from preset '{}': {error}",
+                    metadata.name, preset.name
+                ));
+            }
         }
     };
 

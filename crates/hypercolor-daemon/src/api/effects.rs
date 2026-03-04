@@ -61,6 +61,7 @@ pub struct ActiveEffectResponse {
     pub state: String,
     pub controls: Vec<ControlDefinition>,
     pub control_values: HashMap<String, ControlValue>,
+    pub active_preset_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -420,6 +421,7 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
         state: format!("{:?}", engine.state()).to_lowercase(),
         controls: meta.controls.clone(),
         control_values: engine.active_controls().clone(),
+        active_preset_id: engine.active_preset_id().map(String::from),
     })
 }
 
@@ -492,6 +494,30 @@ pub async fn update_current_controls(
         "effect": effect_name,
         "applied": applied,
         "rejected": rejected,
+    }))
+}
+
+/// `POST /api/v1/effects/current/reset` — Reset all controls on the active
+/// effect back to their metadata-defined defaults.
+pub async fn reset_controls(State(state): State<Arc<AppState>>) -> Response {
+    let mut engine = state.effect_engine.lock().await;
+
+    let Some(meta) = engine.active_metadata().cloned() else {
+        return ApiError::not_found("No effect is currently active");
+    };
+
+    if let Err(e) = engine.reset_to_defaults() {
+        return ApiError::internal(format!("Failed to reset controls: {e}"));
+    }
+
+    info!(effect = %meta.name, "Controls reset to defaults");
+
+    ApiResponse::ok(serde_json::json!({
+        "effect": {
+            "id": meta.id.to_string(),
+            "name": meta.name,
+        },
+        "reset": true,
     }))
 }
 

@@ -44,6 +44,8 @@ pub struct ActiveEffectResponse {
     pub controls: Vec<ControlDefinition>,
     #[serde(default)]
     pub control_values: HashMap<String, ControlValue>,
+    #[serde(default)]
+    pub active_preset_id: Option<String>,
 }
 
 /// Detailed effect payload from `GET /api/v1/effects/:id`.
@@ -396,6 +398,19 @@ pub async fn update_preset(id: &str, req: &CreatePresetRequest) -> Result<Preset
 pub async fn delete_preset(id: &str) -> Result<(), String> {
     let url = format!("/api/v1/library/presets/{id}");
     let resp = Request::delete(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Reset all controls on the active effect to their defaults.
+pub async fn reset_controls() -> Result<(), String> {
+    let resp = Request::post("/api/v1/effects/current/reset")
         .send()
         .await
         .map_err(|e| format!("Network error: {e}"))?;

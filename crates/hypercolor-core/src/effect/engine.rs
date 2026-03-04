@@ -48,6 +48,10 @@ pub struct EffectEngine {
 
     /// Canvas height for frame production.
     canvas_height: u32,
+
+    /// The currently applied preset ID, if any.
+    /// Cleared when controls are tweaked manually or the effect is re-activated.
+    active_preset_id: Option<String>,
 }
 
 impl EffectEngine {
@@ -63,6 +67,7 @@ impl EffectEngine {
             frame_number: 0,
             canvas_width: DEFAULT_CANVAS_WIDTH,
             canvas_height: DEFAULT_CANVAS_HEIGHT,
+            active_preset_id: None,
         }
     }
 
@@ -131,6 +136,7 @@ impl EffectEngine {
                 self.metadata = Some(metadata);
                 self.elapsed_secs = 0.0;
                 self.frame_number = 0;
+                self.active_preset_id = None;
                 self.state = EffectState::Running;
                 debug!("Effect initialized and running");
                 Ok(())
@@ -171,6 +177,7 @@ impl EffectEngine {
         self.controls.clear();
         self.elapsed_secs = 0.0;
         self.frame_number = 0;
+        self.active_preset_id = None;
         self.state = EffectState::Loading;
     }
 
@@ -204,6 +211,7 @@ impl EffectEngine {
         if let Some(ref mut renderer) = self.renderer {
             renderer.set_control(name, value);
         }
+        self.active_preset_id = None;
     }
 
     /// Validate and update a control value against the active effect schema.
@@ -228,6 +236,7 @@ impl EffectEngine {
             (name.to_owned(), value.clone())
         };
         self.set_control(&target_name, &normalized);
+        // Note: active_preset_id already cleared by set_control above
         Ok(normalized)
     }
 
@@ -235,6 +244,46 @@ impl EffectEngine {
     #[must_use]
     pub fn active_controls(&self) -> &HashMap<String, ControlValue> {
         &self.controls
+    }
+
+    /// Returns the currently applied preset ID, or `None` if no preset is active
+    /// (either no preset was applied, or controls have been tweaked since).
+    #[must_use]
+    pub fn active_preset_id(&self) -> Option<&str> {
+        self.active_preset_id.as_deref()
+    }
+
+    /// Set the active preset ID (called after preset controls are successfully applied).
+    pub fn set_active_preset_id(&mut self, id: String) {
+        self.active_preset_id = Some(id);
+    }
+
+    /// Reset all controls to their metadata-defined defaults.
+    ///
+    /// Keeps the renderer alive — animation state (elapsed time, frame counter)
+    /// is preserved. Clears the active preset ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no effect is currently active.
+    pub fn reset_to_defaults(&mut self) -> anyhow::Result<()> {
+        let Some(ref metadata) = self.metadata else {
+            return Err(anyhow::anyhow!("No active effect to reset"));
+        };
+
+        for control in &metadata.controls {
+            self.controls.insert(
+                control.control_id().to_owned(),
+                control.default_value.clone(),
+            );
+            if let Some(ref mut renderer) = self.renderer {
+                renderer.set_control(control.control_id(), &control.default_value);
+            }
+        }
+
+        self.active_preset_id = None;
+        debug!("Controls reset to defaults");
+        Ok(())
     }
 
     /// Produce a single frame.
