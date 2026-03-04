@@ -38,8 +38,8 @@ pub use proto::{
 pub use scanner::{OpenRgbScanner, ScannerConfig};
 
 use crate::types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-    DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceIdentifier,
+    DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 
 // ── Shared Mapping ────────────────────────────────────────────────────────
@@ -77,11 +77,16 @@ fn map_zone(zone: &proto::ZoneData) -> ZoneInfo {
 /// Shared between the backend and scanner to avoid duplicating the
 /// controller-to-device mapping logic.
 fn build_device_info(controller: &proto::ControllerData) -> DeviceInfo {
+    let identifier = DeviceIdentifier::OpenRgb {
+        controller_name: controller.name.clone(),
+        location: controller.location.clone(),
+    };
+    let device_id = identifier.fingerprint().stable_device_id();
     let zones: Vec<ZoneInfo> = controller.zones.iter().map(map_zone).collect();
     let total_leds: u32 = zones.iter().map(|z| z.led_count).sum();
 
     DeviceInfo {
-        id: DeviceId::new(),
+        id: device_id,
         name: controller.name.clone(),
         vendor: controller.vendor.clone(),
         family: DeviceFamily::OpenRgb,

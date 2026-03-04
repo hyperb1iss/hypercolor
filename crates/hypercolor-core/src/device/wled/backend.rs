@@ -6,17 +6,18 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 use tracing::{debug, info};
 
+use crate::device::discovery::TransportScanner;
 use crate::device::traits::{BackendInfo, DeviceBackend};
 use crate::types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-    DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
+    DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 
 use super::ddp::{DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DDP_PORT, DdpSequence, build_ddp_frame};
@@ -345,6 +346,22 @@ fn build_device_info(device_id: DeviceId, wled_info: &WledDeviceInfo, _ip: IpAdd
     }
 }
 
+fn wled_fingerprint(
+    ip: IpAddr,
+    hostname: Option<&str>,
+    wled_info: &WledDeviceInfo,
+) -> DeviceFingerprint {
+    if !wled_info.mac.is_empty() {
+        return DeviceFingerprint(format!("net:{}", wled_info.mac.to_ascii_lowercase()));
+    }
+
+    if let Some(hostname) = hostname {
+        return DeviceFingerprint(format!("net:wled:{}", hostname.to_ascii_lowercase()));
+    }
+
+    DeviceFingerprint(format!("net:wled:{ip}"))
+}
+
 // ── WledBackend ─────────────────────────────────────────────────────────
 
 /// WLED device backend implementing [`DeviceBackend`].
@@ -354,6 +371,9 @@ fn build_device_info(device_id: DeviceId, wled_info: &WledDeviceInfo, _ip: IpAdd
 pub struct WledBackend {
     /// Known device IPs for HTTP-based discovery (no mDNS required).
     known_ips: Vec<IpAddr>,
+
+    /// Whether to run an mDNS fallback scan when no known IPs are configured.
+    mdns_fallback: bool,
 
     /// Connected devices, keyed by `DeviceId`.
     devices: HashMap<DeviceId, WledDevice>,
@@ -379,8 +399,15 @@ impl WledBackend {
     /// which uses mDNS.
     #[must_use]
     pub fn new(known_ips: Vec<IpAddr>) -> Self {
+        Self::with_mdns_fallback(known_ips, false)
+    }
+
+    /// Create a backend with explicit mDNS fallback behavior.
+    #[must_use]
+    pub fn with_mdns_fallback(known_ips: Vec<IpAddr>, mdns_fallback: bool) -> Self {
         Self {
             known_ips,
+            mdns_fallback,
             devices: HashMap::new(),
             device_ips: HashMap::new(),
             device_infos: HashMap::new(),
@@ -412,11 +439,45 @@ impl DeviceBackend for WledBackend {
 
     async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
         let mut discovered = Vec::new();
+        let mut candidates: HashMap<IpAddr, Option<String>> = self
+            .known_ips
+            .iter()
+            .copied()
+            .map(|ip| (ip, None))
+            .collect();
 
-        for &ip in &self.known_ips.clone() {
+        if candidates.is_empty() && self.mdns_fallback {
+            let mut scanner = super::scanner::WledScanner::with_timeout(Duration::from_secs(2));
+            match scanner.scan().await {
+                Ok(scanner_devices) => {
+                    for device in scanner_devices {
+                        let Some(ip_raw) = device.metadata.get("ip") else {
+                            continue;
+                        };
+                        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
+                            continue;
+                        };
+                        let hostname = device
+                            .metadata
+                            .get("hostname")
+                            .map(|value| value.trim_end_matches('.').to_ascii_lowercase());
+                        candidates.entry(ip).or_insert(hostname);
+                    }
+                }
+                Err(error) => {
+                    debug!(error = %error, "WLED backend mDNS fallback scan failed");
+                }
+            }
+        }
+
+        self.device_ips.clear();
+        self.device_infos.clear();
+
+        for (ip, hostname) in candidates {
             match Self::probe_ip(ip).await {
                 Ok(wled_info) => {
-                    let device_id = DeviceId::new();
+                    let fingerprint = wled_fingerprint(ip, hostname.as_deref(), &wled_info);
+                    let device_id = fingerprint.stable_device_id();
 
                     info!(
                         ip = %ip,

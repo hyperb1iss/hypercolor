@@ -438,9 +438,27 @@ impl BackendManager {
 
         {
             let mut backend = backend.lock().await;
-            backend.connect(&device_id).await.with_context(|| {
-                format!("failed to connect device {device_id} using backend '{backend_id}'")
-            })?;
+            if let Err(initial_error) = backend.connect(&device_id).await {
+                let initial_message = initial_error.to_string();
+                debug!(
+                    backend_id = %backend_id,
+                    %device_id,
+                    error = %initial_message,
+                    "initial connect failed; refreshing backend discovery state and retrying"
+                );
+
+                backend.discover().await.with_context(|| {
+                    format!(
+                        "backend '{backend_id}' discovery refresh failed after initial connect failure for device {device_id}: {initial_message}"
+                    )
+                })?;
+
+                backend.connect(&device_id).await.with_context(|| {
+                    format!(
+                        "failed to connect device {device_id} using backend '{backend_id}' after discovery refresh (initial error: {initial_message})"
+                    )
+                })?;
+            }
         }
 
         self.map_device(

@@ -208,7 +208,8 @@ impl DaemonState {
             },
         )));
         if config.discovery.wled_scan {
-            backend_manager_inner.register_backend(Box::new(WledBackend::new(Vec::new())));
+            backend_manager_inner
+                .register_backend(Box::new(WledBackend::with_mdns_fallback(Vec::new(), true)));
         }
         backend_manager_inner.register_backend(Box::new(UsbBackend::new()));
         let backend_manager = Arc::new(Mutex::new(backend_manager_inner));

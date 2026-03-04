@@ -681,6 +681,21 @@ fn device_fingerprint_display() {
     assert_eq!(fp.to_string(), "net:aa:bb:cc:dd:ee:ff");
 }
 
+#[test]
+fn device_fingerprint_stable_device_id_is_deterministic() {
+    let fp = DeviceFingerprint("usb:1532:0276:7-3.2".into());
+    let first = fp.stable_device_id();
+    let second = fp.stable_device_id();
+    assert_eq!(first, second);
+}
+
+#[test]
+fn device_fingerprint_stable_device_id_differs_for_distinct_fingerprints() {
+    let left = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".into()).stable_device_id();
+    let right = DeviceFingerprint("net:11:22:33:44:55:66".into()).stable_device_id();
+    assert_ne!(left, right);
+}
+
 // ── ZoneInfo ──────────────────────────────────────────────────────────────
 
 #[test]

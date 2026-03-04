@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 use crate::device::discovery::{DiscoveredDevice, TransportScanner};
 use crate::types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-    DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 
 /// mDNS service type for WLED devices.
@@ -79,8 +79,8 @@ impl WledScanner {
         } else {
             format!("net:{mac}")
         };
-
-        let device_id = DeviceId::new();
+        let fingerprint = DeviceFingerprint(fingerprint_key);
+        let device_id = fingerprint.stable_device_id();
 
         let device_info = DeviceInfo {
             id: device_id,
@@ -115,7 +115,7 @@ impl WledScanner {
             connection_type: ConnectionType::Network,
             name,
             family: DeviceFamily::Wled,
-            fingerprint: DeviceFingerprint(fingerprint_key),
+            fingerprint,
             info: device_info,
             metadata,
         }

@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase};
 use hypercolor_hal::protocol::{Protocol, ProtocolZone};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId,
-    DeviceIdentifier, DeviceInfo, DeviceTopologyHint,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceIdentifier,
+    DeviceInfo, DeviceTopologyHint,
 };
 
 use super::discovery::{DiscoveredDevice, TransportScanner};
@@ -26,6 +26,7 @@ impl UsbScanner {
         usb: &nusb::DeviceInfo,
         descriptor: &'static DeviceDescriptor,
         protocol: Option<&dyn Protocol>,
+        device_id: hypercolor_types::device::DeviceId,
     ) -> DeviceInfo {
         let (zones, capabilities) = if let Some(protocol) = protocol {
             let zones = protocol
@@ -58,7 +59,7 @@ impl UsbScanner {
         );
 
         DeviceInfo {
-            id: DeviceId::new(),
+            id: device_id,
             name: descriptor.name.to_owned(),
             vendor,
             family: descriptor.family.clone(),
@@ -98,13 +99,19 @@ impl TransportScanner for UsbScanner {
 
             let protocol = (descriptor.protocol.build)();
             let path = usb_path(&usb);
-            let info = Self::build_device_info(&usb, descriptor, Some(protocol.as_ref()));
             let identifier = DeviceIdentifier::UsbHid {
                 vendor_id,
                 product_id,
                 serial: usb.serial_number().map(ToOwned::to_owned),
                 usb_path: (!path.is_empty()).then_some(path.clone()),
             };
+            let fingerprint = identifier.fingerprint();
+            let info = Self::build_device_info(
+                &usb,
+                descriptor,
+                Some(protocol.as_ref()),
+                fingerprint.stable_device_id(),
+            );
 
             let mut metadata = HashMap::new();
             metadata.insert("vendor_id".to_owned(), format!("0x{vendor_id:04X}"));
@@ -120,7 +127,7 @@ impl TransportScanner for UsbScanner {
                 connection_type: ConnectionType::Usb,
                 name: descriptor.name.to_owned(),
                 family: descriptor.family.clone(),
-                fingerprint: identifier.fingerprint(),
+                fingerprint,
                 info,
                 metadata,
             });

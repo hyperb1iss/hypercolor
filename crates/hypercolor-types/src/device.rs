@@ -645,6 +645,42 @@ impl fmt::Display for DeviceHandle {
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceFingerprint(pub String);
 
+impl DeviceFingerprint {
+    /// Derive a deterministic [`DeviceId`] from this fingerprint.
+    ///
+    /// This keeps scanner and backend-side discovery aligned on a stable ID
+    /// without requiring shared runtime state.
+    #[must_use]
+    pub fn stable_device_id(&self) -> DeviceId {
+        // Deterministic 128-bit hash encoded as UUIDv8 (custom payload).
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
+        const FNV_OFFSET_A: u64 = 0xCBF2_9CE4_8422_2325;
+        const FNV_OFFSET_B: u64 = 0x8422_2325_CBF2_9CE4;
+
+        let mut hash_a = FNV_OFFSET_A;
+        let mut hash_b = FNV_OFFSET_B;
+        for byte in self.0.as_bytes() {
+            let value = u64::from(*byte);
+
+            hash_a ^= value;
+            hash_a = hash_a.wrapping_mul(FNV_PRIME);
+
+            hash_b ^= value.rotate_left(1);
+            hash_b = hash_b.wrapping_mul(FNV_PRIME);
+        }
+
+        let mut bytes = [0_u8; 16];
+        bytes[..8].copy_from_slice(&hash_a.to_be_bytes());
+        bytes[8..].copy_from_slice(&hash_b.to_be_bytes());
+
+        // RFC 9562: set UUIDv8 marker and RFC4122 variant bits.
+        bytes[6] = (bytes[6] & 0x0F) | 0x80;
+        bytes[8] = (bytes[8] & 0x3F) | 0x80;
+
+        DeviceId::from_uuid(Uuid::from_bytes(bytes))
+    }
+}
+
 impl fmt::Display for DeviceFingerprint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
