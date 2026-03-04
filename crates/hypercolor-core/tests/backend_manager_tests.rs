@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
-use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend};
+use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, SegmentRange};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily,
 };
@@ -513,6 +513,70 @@ async fn write_frame_groups_multiple_zones_per_device() {
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 8); // 4 + 4 grouped into one write.
     assert!(stats.errors.is_empty());
+}
+
+#[tokio::test]
+async fn write_frame_places_colors_into_configured_segments() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(10),
+        writes.clone(),
+        write_count,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device_with_segment(
+        "mock:left-segment",
+        "slow",
+        device_id,
+        Some(SegmentRange::new(0, 2)),
+    );
+    manager.map_device_with_segment(
+        "mock:right-segment",
+        "slow",
+        device_id,
+        Some(SegmentRange::new(4, 2)),
+    );
+
+    let layout = make_layout(vec![
+        make_zone("zone_left", "mock:left-segment", 2),
+        make_zone("zone_right", "mock:right-segment", 2),
+    ]);
+    let zone_colors = vec![
+        ZoneColors {
+            zone_id: "zone_left".into(),
+            colors: vec![[255, 0, 0], [255, 0, 0]],
+        },
+        ZoneColors {
+            zone_id: "zone_right".into(),
+            colors: vec![[0, 0, 255], [0, 0, 255]],
+        },
+    ];
+
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 6);
+    assert!(stats.errors.is_empty());
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let writes = writes.lock().await;
+    let frame = writes.first().expect("one frame should be written");
+    assert_eq!(
+        frame.as_slice(),
+        &[
+            [255, 0, 0],
+            [255, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0],
+            [0, 0, 255],
+            [0, 0, 255],
+        ]
+    );
 }
 
 #[tokio::test]

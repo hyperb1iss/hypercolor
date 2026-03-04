@@ -44,6 +44,8 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
+use crate::effect_layouts;
+use crate::logical_devices::LogicalDevice;
 use crate::render_thread::{RenderThread, RenderThreadState};
 use crate::{discovery, discovery::DiscoveryBackend};
 
@@ -101,6 +103,18 @@ pub struct DaemonState {
 
     /// Input orchestrator — audio and screen capture sampling sources.
     pub input_manager: Arc<Mutex<InputManager>>,
+
+    /// Logical device segmentation store.
+    pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
+
+    /// Persistent JSON file for user-defined logical segment devices.
+    pub logical_devices_path: PathBuf,
+
+    /// Persisted effect -> layout association map.
+    pub effect_layout_links: Arc<RwLock<HashMap<String, String>>>,
+
+    /// Persistent JSON file for effect -> layout associations.
+    pub effect_layout_links_path: PathBuf,
 
     /// Global discovery scan lock shared across startup and API-triggered scans.
     pub discovery_in_progress: Arc<AtomicBool>,
@@ -228,6 +242,39 @@ impl DaemonState {
             "Input manager created"
         );
 
+        // ── Logical Device Store ─────────────────────────────────────
+        let logical_devices_path = ConfigManager::data_dir().join("logical-devices.json");
+        let persisted_segments = match crate::logical_devices::load_segments(&logical_devices_path)
+        {
+            Ok(entries) => entries,
+            Err(error) => {
+                warn!(
+                    path = %logical_devices_path.display(),
+                    %error,
+                    "Failed to load persisted logical devices; starting with empty store"
+                );
+                HashMap::new()
+            }
+        };
+        let logical_devices = Arc::new(RwLock::new(persisted_segments));
+        info!(path = %logical_devices_path.display(), "Logical device store ready");
+
+        // ── Effect/Layout Association Store ──────────────────────────
+        let effect_layout_links_path = ConfigManager::data_dir().join("effect-layouts.json");
+        let persisted_links = match effect_layouts::load(&effect_layout_links_path) {
+            Ok(entries) => entries,
+            Err(error) => {
+                warn!(
+                    path = %effect_layout_links_path.display(),
+                    %error,
+                    "Failed to load effect/layout associations; starting with empty store"
+                );
+                HashMap::new()
+            }
+        };
+        let effect_layout_links = Arc::new(RwLock::new(persisted_links));
+        info!(path = %effect_layout_links_path.display(), "Effect/layout association store ready");
+
         info!("All subsystems initialized");
 
         Ok(Self {
@@ -243,6 +290,10 @@ impl DaemonState {
             lifecycle_manager,
             reconnect_tasks,
             input_manager,
+            logical_devices,
+            logical_devices_path,
+            effect_layout_links,
+            effect_layout_links_path,
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             render_thread: None,
             discovery_task: None,
@@ -409,6 +460,7 @@ impl DaemonState {
             reconnect_tasks: Arc::clone(&self.reconnect_tasks),
             event_bus: Arc::clone(&self.event_bus),
             config_manager: Arc::clone(&self.config_manager),
+            logical_devices: Arc::clone(&self.logical_devices),
             in_progress: Arc::clone(&self.discovery_in_progress),
         };
 
@@ -512,6 +564,7 @@ struct DiscoveryWorkerContext {
     reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
     event_bus: Arc<HypercolorBus>,
     config_manager: Arc<ConfigManager>,
+    logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
     in_progress: Arc<AtomicBool>,
 }
 
@@ -523,6 +576,7 @@ impl DiscoveryWorkerContext {
             lifecycle_manager: Arc::clone(&self.lifecycle_manager),
             reconnect_tasks: Arc::clone(&self.reconnect_tasks),
             event_bus: Arc::clone(&self.event_bus),
+            logical_devices: Arc::clone(&self.logical_devices),
             in_progress: Arc::clone(&self.in_progress),
         }
     }

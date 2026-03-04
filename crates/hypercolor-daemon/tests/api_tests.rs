@@ -1775,6 +1775,213 @@ async fn layout_create_validates_input() {
     );
 }
 
+// ── Effect Layout Associations ──────────────────────────────────────────
+
+fn test_state_with_temp_effect_layout_store() -> (Arc<AppState>, tempfile::TempDir) {
+    let mut state = AppState::new();
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    state.effect_layout_links_path = dir.path().join("effect-layouts.json");
+    (Arc::new(state), dir)
+}
+
+#[tokio::test]
+async fn effect_layout_association_crud_persists_to_disk() {
+    let (state, _tmp) = test_state_with_temp_effect_layout_store();
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_layout_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/layouts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Effect Bound Layout","canvas_width":640,"canvas_height":360}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_layout_response.status(), StatusCode::CREATED);
+    let create_layout_json = body_json(create_layout_response).await;
+    let layout_id = create_layout_json["data"]["id"]
+        .as_str()
+        .expect("layout id should be string")
+        .to_owned();
+
+    let link_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/effects/solid_color/layout")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"layout_id":"{layout_id}"}}"#)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(link_response.status(), StatusCode::OK);
+    let link_json = body_json(link_response).await;
+    assert_eq!(link_json["data"]["linked"], true);
+    assert_eq!(link_json["data"]["layout"]["id"], layout_id);
+    let effect_id = link_json["data"]["effect"]["id"]
+        .as_str()
+        .expect("effect id should be string")
+        .to_owned();
+
+    let get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/solid_color/layout")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let get_json = body_json(get_response).await;
+    assert_eq!(get_json["data"]["layout_id"], layout_id);
+    assert_eq!(get_json["data"]["resolved"], true);
+
+    let persisted_raw = std::fs::read_to_string(&state.effect_layout_links_path)
+        .expect("effect layout persistence file should exist");
+    let persisted: serde_json::Value =
+        serde_json::from_str(&persisted_raw).expect("effect layout map should be valid JSON");
+    assert_eq!(persisted[&effect_id], layout_id);
+
+    let delete_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/effects/solid_color/layout")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+    let delete_json = body_json(delete_response).await;
+    assert_eq!(delete_json["data"]["deleted"], true);
+
+    let get_after_delete_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/solid_color/layout")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_after_delete_response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn applying_effect_auto_applies_associated_layout() {
+    let state = Arc::new(AppState::new());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_a_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/layouts")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Layout A"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_a_response.status(), StatusCode::CREATED);
+    let create_a_json = body_json(create_a_response).await;
+    let layout_a_id = create_a_json["data"]["id"]
+        .as_str()
+        .expect("layout A id should be string")
+        .to_owned();
+
+    let create_b_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/layouts")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Layout B"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_b_response.status(), StatusCode::CREATED);
+    let create_b_json = body_json(create_b_response).await;
+    let layout_b_id = create_b_json["data"]["id"]
+        .as_str()
+        .expect("layout B id should be string")
+        .to_owned();
+
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/effects/solid_color/layout")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"layout_id":"{layout_b_id}"}}"#)))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    let _ = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/layouts/{layout_a_id}/apply"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    let apply_effect_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_effect_response.status(), StatusCode::OK);
+    let apply_effect_json = body_json(apply_effect_response).await;
+    assert_eq!(apply_effect_json["data"]["layout"]["applied"], true);
+    assert_eq!(
+        apply_effect_json["data"]["layout"]["associated_layout_id"],
+        layout_b_id
+    );
+
+    let active_layout_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/layouts/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_layout_response.status(), StatusCode::OK);
+    let active_layout_json = body_json(active_layout_response).await;
+    assert_eq!(active_layout_json["data"]["id"], layout_b_id);
+}
+
 // ── Error Envelope Format ────────────────────────────────────────────────
 
 #[tokio::test]
@@ -2160,4 +2367,127 @@ async fn delete_device_by_name_returns_canonical_id() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["id"], device_id.to_string());
+}
+
+fn test_state_with_temp_logical_store() -> (Arc<AppState>, tempfile::TempDir) {
+    let mut state = AppState::new();
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    state.logical_devices_path = dir.path().join("logical-devices.json");
+    (Arc::new(state), dir)
+}
+
+#[tokio::test]
+async fn logical_devices_crud_persists_user_segments() {
+    let (state, _tmp) = test_state_with_temp_logical_store();
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Desk Left","led_start":0,"led_count":20}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    assert_eq!(create_json["data"]["kind"], "segment");
+    assert_eq!(
+        create_json["data"]["physical_device_id"],
+        device_id.to_string()
+    );
+    let logical_id = create_json["data"]["id"]
+        .as_str()
+        .expect("logical id should be string")
+        .to_owned();
+
+    let list_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_json = body_json(list_response).await;
+    assert_eq!(list_json["data"]["pagination"]["total"], 2);
+    let default_entry = list_json["data"]["items"]
+        .as_array()
+        .expect("items should be array")
+        .iter()
+        .find(|item| item["kind"] == "default")
+        .expect("default logical entry should exist");
+    assert_eq!(default_entry["enabled"], false);
+
+    let persisted_raw = std::fs::read_to_string(&state.logical_devices_path)
+        .expect("logical device persistence file should exist");
+    assert!(
+        persisted_raw.contains(&logical_id),
+        "persistence file should include the created logical segment"
+    );
+
+    let delete_response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/logical-devices/{logical_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn logical_devices_reject_overlapping_segments() {
+    let (state, _tmp) = test_state_with_temp_logical_store();
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let first_create = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Desk Left","led_start":0,"led_count":20}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(first_create.status(), StatusCode::CREATED);
+
+    let overlapping_create = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Desk Mid","led_start":10,"led_count":20}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(
+        overlapping_create.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let json = body_json(overlapping_create).await;
+    assert_eq!(json["error"]["code"], "validation_error");
 }

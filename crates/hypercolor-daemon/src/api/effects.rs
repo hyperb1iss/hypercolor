@@ -13,10 +13,12 @@ use hypercolor_core::effect::{EffectRegistry, create_renderer_for_metadata};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectId, EffectMetadata, EffectSource,
 };
+use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
 use crate::api::control_values::json_to_control_value;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::effect_layouts;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -66,6 +68,11 @@ pub struct UpdateCurrentControlsRequest {
     pub controls: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SetEffectLayoutRequest {
+    pub layout_id: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct EffectDetailResponse {
     pub id: String,
@@ -80,6 +87,29 @@ pub struct EffectDetailResponse {
     pub audio_reactive: bool,
     pub controls: Vec<ControlDefinition>,
     pub active_control_values: Option<HashMap<String, ControlValue>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LayoutLinkSummary {
+    pub id: String,
+    pub name: String,
+    pub canvas_width: u32,
+    pub canvas_height: u32,
+    pub zone_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EffectLayoutApplyResult {
+    pub associated_layout_id: String,
+    pub resolved: bool,
+    pub applied: bool,
+    pub layout: Option<LayoutLinkSummary>,
+}
+
+#[derive(Debug)]
+enum ResolveLayoutLinkError {
+    NotFound(String),
+    AmbiguousName(String),
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -157,6 +187,133 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     })
 }
 
+/// `GET /api/v1/effects/:id/layout` — Get the layout associated with an effect.
+pub async fn get_effect_layout(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let effect = {
+        let registry = state.effect_registry.read().await;
+        let Some(meta) = resolve_effect_metadata(&registry, &id) else {
+            return ApiError::not_found(format!("Effect not found: {id}"));
+        };
+        meta
+    };
+    let effect_id = effect.id.to_string();
+
+    let Some(layout_id) = ({
+        let links = state.effect_layout_links.read().await;
+        links.get(&effect_id).cloned()
+    }) else {
+        return ApiError::not_found(format!("No layout associated with effect: {id}"));
+    };
+
+    let layout = {
+        let layouts = state.layouts.read().await;
+        layouts.get(&layout_id).cloned()
+    };
+
+    let summary = layout.as_ref().map(layout_link_summary);
+    ApiResponse::ok(serde_json::json!({
+        "effect": {
+            "id": effect_id,
+            "name": effect.name,
+        },
+        "layout_id": layout_id,
+        "resolved": summary.is_some(),
+        "layout": summary,
+    }))
+}
+
+/// `PUT /api/v1/effects/:id/layout` — Associate an effect with a layout.
+pub async fn set_effect_layout(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<SetEffectLayoutRequest>,
+) -> Response {
+    let effect = {
+        let registry = state.effect_registry.read().await;
+        let Some(meta) = resolve_effect_metadata(&registry, &id) else {
+            return ApiError::not_found(format!("Effect not found: {id}"));
+        };
+        meta
+    };
+
+    let requested_layout = body.layout_id.trim();
+    if requested_layout.is_empty() {
+        return ApiError::validation("layout_id must not be empty");
+    }
+
+    let layout = {
+        let layouts = state.layouts.read().await;
+        match resolve_layout_for_link(&layouts, requested_layout) {
+            Ok(layout) => layout,
+            Err(ResolveLayoutLinkError::NotFound(layout_id)) => {
+                return ApiError::not_found(format!("Layout not found: {layout_id}"));
+            }
+            Err(ResolveLayoutLinkError::AmbiguousName(name)) => {
+                return ApiError::conflict(format!("Layout name is ambiguous: {name}"));
+            }
+        }
+    };
+
+    let effect_id = effect.id.to_string();
+    let snapshot = {
+        let mut links = state.effect_layout_links.write().await;
+        links.insert(effect_id.clone(), layout.id.clone());
+        links.clone()
+    };
+    if let Err(error) = save_effect_layout_links(&state, &snapshot) {
+        return ApiError::internal(error);
+    }
+
+    ApiResponse::ok(serde_json::json!({
+        "effect": {
+            "id": effect_id,
+            "name": effect.name,
+        },
+        "layout": layout_link_summary(&layout),
+        "linked": true,
+    }))
+}
+
+/// `DELETE /api/v1/effects/:id/layout` — Remove an effect -> layout association.
+pub async fn delete_effect_layout(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let effect = {
+        let registry = state.effect_registry.read().await;
+        let Some(meta) = resolve_effect_metadata(&registry, &id) else {
+            return ApiError::not_found(format!("Effect not found: {id}"));
+        };
+        meta
+    };
+    let effect_id = effect.id.to_string();
+
+    let (removed_layout_id, snapshot) = {
+        let mut links = state.effect_layout_links.write().await;
+        let removed = links.remove(&effect_id);
+        let snapshot = removed.as_ref().map(|_| links.clone());
+        (removed, snapshot)
+    };
+
+    if let Some(store_snapshot) = snapshot.as_ref()
+        && let Err(error) = save_effect_layout_links(&state, store_snapshot)
+    {
+        return ApiError::internal(error);
+    }
+
+    ApiResponse::ok(serde_json::json!({
+        "effect": {
+            "id": effect_id,
+            "name": effect.name,
+        },
+        "layout_id": removed_layout_id,
+        "deleted": removed_layout_id.is_some(),
+    }))
+}
+
 /// `POST /api/v1/effects/:id/apply` — Start rendering an effect.
 pub async fn apply_effect(
     State(state): State<Arc<AppState>>,
@@ -232,6 +389,7 @@ pub async fn apply_effect(
         controls.len(),
         &dropped_controls,
     );
+    let applied_layout = apply_associated_layout(&state, &metadata.id.to_string()).await;
     let (transition_type, duration_ms) = extract_transition_request(body.as_ref());
 
     ApiResponse::ok(serde_json::json!({
@@ -240,6 +398,7 @@ pub async fn apply_effect(
             "name": metadata.name,
         },
         "applied_controls": controls,
+        "layout": applied_layout,
         "transition": {
             "type": transition_type,
             "duration_ms": duration_ms,
@@ -412,4 +571,87 @@ fn is_runnable_source(source: &EffectSource) -> bool {
         EffectSource::Html { .. } => cfg!(feature = "servo"),
         EffectSource::Shader { .. } => false,
     }
+}
+
+fn layout_link_summary(layout: &SpatialLayout) -> LayoutLinkSummary {
+    LayoutLinkSummary {
+        id: layout.id.clone(),
+        name: layout.name.clone(),
+        canvas_width: layout.canvas_width,
+        canvas_height: layout.canvas_height,
+        zone_count: layout.zones.len(),
+    }
+}
+
+fn resolve_layout_for_link(
+    layouts: &HashMap<String, SpatialLayout>,
+    id_or_name: &str,
+) -> Result<SpatialLayout, ResolveLayoutLinkError> {
+    if let Some(layout) = layouts.get(id_or_name) {
+        return Ok(layout.clone());
+    }
+
+    let matches: Vec<SpatialLayout> = layouts
+        .values()
+        .filter(|layout| layout.name.eq_ignore_ascii_case(id_or_name))
+        .cloned()
+        .collect();
+    if matches.is_empty() {
+        return Err(ResolveLayoutLinkError::NotFound(id_or_name.to_owned()));
+    }
+    if matches.len() > 1 {
+        return Err(ResolveLayoutLinkError::AmbiguousName(id_or_name.to_owned()));
+    }
+
+    Ok(matches
+        .into_iter()
+        .next()
+        .expect("matches len checked above"))
+}
+
+fn save_effect_layout_links(
+    state: &AppState,
+    snapshot: &HashMap<String, String>,
+) -> Result<(), String> {
+    effect_layouts::save(&state.effect_layout_links_path, snapshot)
+        .map_err(|error| format!("{} ({})", error, state.effect_layout_links_path.display()))
+}
+
+async fn apply_associated_layout(
+    state: &Arc<AppState>,
+    effect_id: &str,
+) -> Option<EffectLayoutApplyResult> {
+    let associated_layout_id = {
+        let links = state.effect_layout_links.read().await;
+        links.get(effect_id).cloned()
+    }?;
+
+    let layout = {
+        let layouts = state.layouts.read().await;
+        layouts.get(&associated_layout_id).cloned()
+    };
+
+    if let Some(layout) = layout {
+        {
+            let mut spatial = state.spatial_engine.write().await;
+            spatial.update_layout(layout.clone());
+        }
+        return Some(EffectLayoutApplyResult {
+            associated_layout_id,
+            resolved: true,
+            applied: true,
+            layout: Some(layout_link_summary(&layout)),
+        });
+    }
+
+    warn!(
+        effect_id,
+        associated_layout_id, "Effect has associated layout that no longer exists in layout store"
+    );
+    Some(EffectLayoutApplyResult {
+        associated_layout_id,
+        resolved: false,
+        applied: false,
+        layout: None,
+    })
 }

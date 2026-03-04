@@ -17,9 +17,11 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{DeviceFamily, DeviceId};
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
 use serde::Serialize;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+
+use crate::logical_devices::{self, LogicalDevice};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
 const MIN_DISCOVERY_TIMEOUT_MS: u64 = 100;
@@ -89,6 +91,9 @@ pub struct DiscoveryRuntime {
 
     /// Event bus for discovery/lifecycle events.
     pub event_bus: Arc<HypercolorBus>,
+
+    /// Logical device segmentation store.
+    pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
 
     /// Shared "scan in progress" lock flag.
     pub in_progress: Arc<AtomicBool>,
@@ -325,6 +330,13 @@ pub async fn execute_discovery_scan(
             let mut lifecycle = runtime.lifecycle_manager.lock().await;
             lifecycle.on_discovered(*id, &tracked.info, &backend, fingerprint.as_ref())
         };
+        ensure_default_logical_for_device(
+            &runtime,
+            *id,
+            &tracked.info.name,
+            tracked.info.total_led_count(),
+        )
+        .await;
         execute_lifecycle_actions(runtime.clone(), actions).await;
         sync_registry_state(&runtime, *id).await;
 
@@ -354,6 +366,13 @@ pub async fn execute_discovery_scan(
             let mut lifecycle = runtime.lifecycle_manager.lock().await;
             lifecycle.on_discovered(*id, &tracked.info, &backend, fingerprint.as_ref())
         };
+        ensure_default_logical_for_device(
+            &runtime,
+            *id,
+            &tracked.info.name,
+            tracked.info.total_led_count(),
+        )
+        .await;
         execute_lifecycle_actions(runtime.clone(), actions).await;
         sync_registry_state(&runtime, *id).await;
 
@@ -458,10 +477,10 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
                         .await
                 };
 
-                let follow_up = match result {
+                let (follow_up, connected) = match result {
                     Ok(()) => {
                         let mut lifecycle = runtime.lifecycle_manager.lock().await;
-                        lifecycle.on_connected(device_id)
+                        (lifecycle.on_connected(device_id), true)
                     }
                     Err(error) => {
                         let device_label = device_log_label(&runtime, device_id).await;
@@ -475,12 +494,21 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
                             "lifecycle connect action failed"
                         );
                         let mut lifecycle = runtime.lifecycle_manager.lock().await;
-                        lifecycle.on_connect_failed(device_id)
+                        (lifecycle.on_connect_failed(device_id), false)
                     }
                 };
 
                 match follow_up {
                     Ok(next_actions) => {
+                        if connected {
+                            sync_logical_mappings_for_device(
+                                &runtime,
+                                device_id,
+                                &backend_id,
+                                &layout_device_id,
+                            )
+                            .await;
+                        }
                         pending.extend(next_actions);
                         sync_registry_state(&runtime, device_id).await;
                     }
@@ -611,6 +639,13 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
             let mut lifecycle = runtime_for_task.lifecycle_manager.lock().await;
             lifecycle.on_reconnect_failed(device_id)
         } else {
+            sync_logical_mappings_for_device(
+                &runtime_for_task,
+                device_id,
+                &backend_id,
+                &layout_device_id,
+            )
+            .await;
             let mut lifecycle = runtime_for_task.lifecycle_manager.lock().await;
             lifecycle.on_connected(device_id)
         };
@@ -658,6 +693,81 @@ async fn sync_registry_state(runtime: &DiscoveryRuntime, device_id: DeviceId) {
     };
     if let Some(state) = state {
         let _ = runtime.device_registry.set_state(&device_id, state).await;
+    }
+}
+
+async fn ensure_default_logical_for_device(
+    runtime: &DiscoveryRuntime,
+    device_id: DeviceId,
+    device_name: &str,
+    led_count: u32,
+) {
+    let physical_layout_id = {
+        let lifecycle = runtime.lifecycle_manager.lock().await;
+        lifecycle
+            .layout_device_id_for(device_id)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("device:{device_id}"))
+    };
+
+    let mut logical_store = runtime.logical_devices.write().await;
+    logical_devices::ensure_default_logical_device(
+        &mut logical_store,
+        device_id,
+        &physical_layout_id,
+        device_name,
+        led_count,
+    );
+}
+
+async fn sync_logical_mappings_for_device(
+    runtime: &DiscoveryRuntime,
+    device_id: DeviceId,
+    backend_id: &str,
+    fallback_layout_id: &str,
+) {
+    let Some(tracked) = runtime.device_registry.get(&device_id).await else {
+        return;
+    };
+
+    let total_leds = tracked.info.total_led_count();
+    ensure_default_logical_for_device(runtime, device_id, &tracked.info.name, total_leds).await;
+
+    let logical_entries = {
+        let logical_store = runtime.logical_devices.read().await;
+        logical_devices::list_for_physical(&logical_store, device_id)
+            .into_iter()
+            .filter(|entry| entry.enabled)
+            .collect::<Vec<_>>()
+    };
+
+    let mut manager = runtime.backend_manager.lock().await;
+    let _ = manager.remove_device_mappings_for_physical(backend_id, device_id);
+
+    let fallback = hypercolor_core::device::SegmentRange::new(
+        0,
+        usize::try_from(total_leds).unwrap_or_default(),
+    );
+
+    if logical_entries.is_empty() {
+        manager.map_device_with_segment(
+            fallback_layout_id.to_owned(),
+            backend_id.to_owned(),
+            device_id,
+            Some(fallback),
+        );
+        return;
+    }
+
+    for logical in logical_entries {
+        let start = usize::try_from(logical.led_start).unwrap_or_default();
+        let length = usize::try_from(logical.led_count).unwrap_or_default();
+        manager.map_device_with_segment(
+            logical.id,
+            backend_id.to_owned(),
+            device_id,
+            Some(hypercolor_core::device::SegmentRange::new(start, length)),
+        );
     }
 }
 

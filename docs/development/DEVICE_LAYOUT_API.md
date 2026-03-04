@@ -147,6 +147,12 @@ All fields are optional.
 - Calls `spatial_engine.update_layout(...)`.
 - Returns `{ layout, applied: true }`.
 
+Layout authoring note:
+
+- Each `SpatialLayout.zones[].device_id` should reference a logical device ID
+  from `/logical-devices` (or `/devices/{id}/logical-devices`), not a raw
+  physical controller identifier.
+
 ### Delete behavior
 
 `DELETE /layouts/{id_or_name}`
@@ -160,3 +166,101 @@ Same as devices:
 
 - UUID or case-insensitive name accepted.
 - Ambiguous name -> `409 conflict`.
+
+## Logical Devices (User-Defined Segments)
+
+Logical devices are user-authored virtual units mapped onto a physical device
+LED range. Layout zones should target these logical IDs.
+
+### Endpoint map
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/logical-devices` | List all logical devices |
+| `GET` | `/logical-devices/{id}` | Fetch one logical device |
+| `PUT` | `/logical-devices/{id}` | Update logical device fields |
+| `DELETE` | `/logical-devices/{id}` | Delete a user-defined segment |
+| `GET` | `/devices/{id_or_name}/logical-devices` | List logical devices for one physical device |
+| `POST` | `/devices/{id_or_name}/logical-devices` | Create a new logical segment on a physical device |
+
+### Create payload
+
+`POST /devices/{id_or_name}/logical-devices`
+
+```json
+{
+  "name": "Desk Left",
+  "led_start": 0,
+  "led_count": 120,
+  "enabled": true
+}
+```
+
+Validation:
+
+- `name` must not be empty after trim.
+- `led_count` must be greater than `0`.
+- `led_start + led_count` must fit within physical LED count.
+- Enabled segment ranges for a physical device cannot overlap.
+
+Behavior:
+
+- A default full-range logical device exists per physical device.
+- When one or more enabled segment logical devices exist, the default logical
+  device is auto-disabled.
+- Only user-defined segment logical devices are persisted.
+
+### Update payload
+
+`PUT /logical-devices/{id}`
+
+```json
+{
+  "name": "Desk Left Updated",
+  "led_start": 10,
+  "led_count": 100,
+  "enabled": true
+}
+```
+
+All fields are optional. Default logical devices cannot change
+`led_start`/`led_count`.
+
+## Effect -> Layout Associations
+
+Bind effects to saved layouts so activating an effect can also activate a
+specific spatial layout.
+
+### Endpoint map
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/effects/{id_or_name}/layout` | Get the associated layout for an effect |
+| `PUT` | `/effects/{id_or_name}/layout` | Associate an effect with a layout |
+| `DELETE` | `/effects/{id_or_name}/layout` | Remove an effect/layout association |
+
+### Set payload
+
+`PUT /effects/{id_or_name}/layout`
+
+```json
+{
+  "layout_id": "layout_1234-or-layout-name"
+}
+```
+
+Notes:
+
+- `layout_id` accepts either canonical layout ID or case-insensitive layout
+  name.
+- Ambiguous layout names return `409 conflict`.
+- Associations are user-defined and persisted to `effect-layouts.json`.
+
+### Apply behavior
+
+`POST /effects/{id_or_name}/apply`
+
+- If the effect has an associated layout and that layout still exists, the
+  API applies it automatically via `spatial_engine.update_layout(...)`.
+- The effect apply response includes a `layout` object indicating whether the
+  association resolved and was applied.

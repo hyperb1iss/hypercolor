@@ -25,6 +25,29 @@ use super::traits::DeviceBackend;
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type BackendDeviceKey = (String, DeviceId);
 
+/// Contiguous LED range on a physical device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegmentRange {
+    /// Inclusive start LED index.
+    pub start: usize,
+    /// Number of LEDs in this range.
+    pub length: usize,
+}
+
+impl SegmentRange {
+    /// Create a new range.
+    #[must_use]
+    pub const fn new(start: usize, length: usize) -> Self {
+        Self { start, length }
+    }
+
+    /// Exclusive end LED index.
+    #[must_use]
+    pub const fn end(self) -> usize {
+        self.start.saturating_add(self.length)
+    }
+}
+
 // ── Debug Snapshot ──────────────────────────────────────────────────────────
 
 /// Snapshot of backend dispatch internals for reverse-engineering and tuning.
@@ -344,6 +367,7 @@ pub struct BackendManager {
 struct DeviceMapping {
     backend_id: String,
     device_id: DeviceId,
+    segment: Option<SegmentRange>,
 }
 
 // ── FrameWriteStats ─────────────────────────────────────────────────────────
@@ -400,12 +424,28 @@ impl BackendManager {
         backend_id: impl Into<String>,
         device_id: DeviceId,
     ) {
+        self.map_device_with_segment(layout_device_id, backend_id, device_id, None);
+    }
+
+    /// Map a spatial layout `device_id` with an explicit physical LED range.
+    ///
+    /// When `segment` is `Some`, zone colors targeting this mapping are
+    /// written into that slice of the physical output buffer.
+    pub fn map_device_with_segment(
+        &mut self,
+        layout_device_id: impl Into<String>,
+        backend_id: impl Into<String>,
+        device_id: DeviceId,
+        segment: Option<SegmentRange>,
+    ) {
         let layout_id = layout_device_id.into();
         let backend = backend_id.into();
         debug!(
             layout_device_id = %layout_id,
             backend_id = %backend,
             %device_id,
+            segment_start = segment.map(|s| s.start),
+            segment_length = segment.map(|s| s.length),
             "mapped device"
         );
         self.device_map.insert(
@@ -413,6 +453,7 @@ impl BackendManager {
             DeviceMapping {
                 backend_id: backend,
                 device_id,
+                segment,
             },
         );
     }
@@ -493,7 +534,7 @@ impl BackendManager {
         &mut self,
         backend_id: &str,
         device_id: DeviceId,
-        layout_device_id: &str,
+        _layout_device_id: &str,
     ) -> Result<()> {
         let Some(backend) = self.backends.get(backend_id).cloned() else {
             bail!("backend '{backend_id}' is not registered");
@@ -506,7 +547,7 @@ impl BackendManager {
             })?;
         }
 
-        self.unmap_device(layout_device_id);
+        let _ = self.remove_device_mappings_for_physical(backend_id, device_id);
         Ok(())
     }
 
@@ -527,6 +568,30 @@ impl BackendManager {
         }
 
         true
+    }
+
+    /// Remove all mappings for a physical target and drop its queue.
+    pub fn remove_device_mappings_for_physical(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+    ) -> usize {
+        let before = self.device_map.len();
+        self.device_map.retain(|_, mapping| {
+            !(mapping.backend_id == backend_id && mapping.device_id == device_id)
+        });
+        let removed = before.saturating_sub(self.device_map.len());
+
+        if !self
+            .device_map
+            .values()
+            .any(|mapping| mapping.backend_id == backend_id && mapping.device_id == device_id)
+        {
+            self.output_queues
+                .remove(&(backend_id.to_owned(), device_id));
+        }
+
+        removed
     }
 
     /// List registered backend IDs.
@@ -569,9 +634,15 @@ impl BackendManager {
             .map(|z| (z.id.as_str(), z.device_id.as_str()))
             .collect();
 
+        #[derive(Default)]
+        struct AccumulatedColors {
+            values: Vec<[u8; 3]>,
+            has_segmented_write: bool,
+        }
+
         // Group colors by (backend_id, device_id). Owned keys to avoid
         // borrow conflicts with `self.backends` during the write phase.
-        let mut device_colors: HashMap<(String, DeviceId), Vec<[u8; 3]>> = HashMap::new();
+        let mut device_colors: HashMap<(String, DeviceId), AccumulatedColors> = HashMap::new();
 
         for zc in zone_colors {
             let Some(layout_device_id) = zone_to_device.get(zc.zone_id.as_str()) else {
@@ -584,10 +655,40 @@ impl BackendManager {
                 continue;
             };
 
-            device_colors
-                .entry((mapping.backend_id.clone(), mapping.device_id))
-                .or_default()
-                .extend_from_slice(&zc.colors);
+            let key = (mapping.backend_id.clone(), mapping.device_id);
+            let entry = device_colors.entry(key).or_default();
+
+            if let Some(segment) = mapping.segment {
+                entry.has_segmented_write = true;
+                let required_len = segment.end();
+                if entry.values.len() < required_len {
+                    entry.values.resize(required_len, [0, 0, 0]);
+                }
+
+                let copy_len = segment.length.min(zc.colors.len());
+                if copy_len > 0 {
+                    let start = segment.start;
+                    let end = start.saturating_add(copy_len);
+                    entry.values[start..end].copy_from_slice(&zc.colors[..copy_len]);
+                }
+
+                if copy_len != segment.length {
+                    warn!(
+                        zone_id = %zc.zone_id,
+                        expected = segment.length,
+                        received = zc.colors.len(),
+                        "zone color count does not match mapped segment length"
+                    );
+                }
+            } else {
+                if entry.has_segmented_write {
+                    warn!(
+                        zone_id = %zc.zone_id,
+                        "mixed segmented and non-segmented mappings for the same physical device"
+                    );
+                }
+                entry.values.extend_from_slice(&zc.colors);
+            }
         }
 
         // Dispatch to output queues.
@@ -607,8 +708,8 @@ impl BackendManager {
             };
 
             stats.devices_written += 1;
-            stats.total_leds += colors.len();
-            queue.push(colors);
+            stats.total_leds += colors.values.len();
+            queue.push(colors.values);
         }
 
         stats

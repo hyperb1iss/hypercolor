@@ -20,7 +20,7 @@ pub mod system;
 pub mod ws;
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
@@ -45,6 +45,7 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
+use crate::logical_devices::LogicalDevice;
 use crate::playlist_runtime::PlaylistRuntimeState;
 
 // ── AppState ─────────────────────────────────────────────────────────────
@@ -106,6 +107,18 @@ pub struct AppState {
     /// In-memory layout store.
     pub layouts: RwLock<HashMap<String, SpatialLayout>>,
 
+    /// Logical device segmentation store (physical device -> logical ranges).
+    pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
+
+    /// Persistent path for user-defined logical segment devices.
+    pub logical_devices_path: PathBuf,
+
+    /// Persisted effect -> layout associations.
+    pub effect_layout_links: Arc<RwLock<HashMap<String, String>>>,
+
+    /// Persistent path for effect -> layout associations.
+    pub effect_layout_links_path: PathBuf,
+
     /// Saved effect library storage (favorites, presets, playlists).
     pub library_store: Arc<dyn LibraryStore>,
 
@@ -153,6 +166,10 @@ impl AppState {
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
+            logical_devices: Arc::new(RwLock::new(HashMap::new())),
+            logical_devices_path: ConfigManager::data_dir().join("logical-devices.json"),
+            effect_layout_links: Arc::new(RwLock::new(HashMap::new())),
+            effect_layout_links_path: ConfigManager::data_dir().join("effect-layouts.json"),
             library_store: Arc::new(InMemoryLibraryStore::new()),
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: Instant::now(),
@@ -195,6 +212,10 @@ impl AppState {
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
+            logical_devices: Arc::clone(&daemon.logical_devices),
+            logical_devices_path: daemon.logical_devices_path.clone(),
+            effect_layout_links: Arc::clone(&daemon.effect_layout_links),
+            effect_layout_links_path: daemon.effect_layout_links_path.clone(),
             library_store,
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: daemon.start_time,
@@ -240,8 +261,23 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                 .delete(devices::delete_device),
         )
         .route(
+            "/devices/{id}/logical-devices",
+            axum::routing::get(devices::list_device_logical_devices)
+                .post(devices::create_logical_device),
+        )
+        .route(
             "/devices/{id}/identify",
             axum::routing::post(devices::identify_device),
+        )
+        .route(
+            "/logical-devices",
+            axum::routing::get(devices::list_logical_devices),
+        )
+        .route(
+            "/logical-devices/{id}",
+            axum::routing::get(devices::get_logical_device)
+                .put(devices::update_logical_device)
+                .delete(devices::delete_logical_device),
         )
         // ── Effects ──────────────────────────────────────────────────
         .route("/effects", axum::routing::get(effects::list_effects))
@@ -255,6 +291,12 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         )
         .route("/effects/stop", axum::routing::post(effects::stop_effect))
         .route("/effects/{id}", axum::routing::get(effects::get_effect))
+        .route(
+            "/effects/{id}/layout",
+            axum::routing::get(effects::get_effect_layout)
+                .put(effects::set_effect_layout)
+                .delete(effects::delete_effect_layout),
+        )
         .route(
             "/effects/{id}/apply",
             axum::routing::post(effects::apply_effect),
