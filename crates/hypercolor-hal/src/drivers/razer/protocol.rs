@@ -3,9 +3,7 @@
 use std::cmp::min;
 use std::time::Duration;
 
-use hypercolor_types::device::{
-    DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint,
-};
+use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
 use tracing::warn;
 
 use crate::protocol::{
@@ -14,8 +12,8 @@ use crate::protocol::{
 
 use super::crc::{RAZER_REPORT_LEN, razer_crc};
 use super::types::{
-    EFFECT_CUSTOM_FRAME, LED_ID_BACKLIGHT, LED_ID_LOGO, LED_ID_SCROLL_WHEEL, LED_ID_ZERO,
-    NOSTORE, RazerMatrixType, RazerProtocolVersion,
+    EFFECT_CUSTOM_FRAME, LED_ID_BACKLIGHT, LED_ID_LOGO, LED_ID_SCROLL_WHEEL, LED_ID_ZERO, NOSTORE,
+    RazerMatrixType, RazerProtocolVersion,
 };
 
 const STATUS_OFFSET: usize = 0;
@@ -192,7 +190,10 @@ impl RazerProtocol {
     fn encode_linear(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
         let mut commands = Vec::new();
 
-        let led_count = min(colors.len(), Self::frame_chunk_capacity(RazerMatrixType::Linear));
+        let led_count = min(
+            colors.len(),
+            Self::frame_chunk_capacity(RazerMatrixType::Linear),
+        );
         if led_count == 0 {
             return commands;
         }
@@ -210,7 +211,8 @@ impl RazerProtocol {
             args.push(0x00);
         }
 
-        if let Some(packet) = self.build_packet(0x03, 0x0C, &args, false, Duration::from_millis(1)) {
+        if let Some(packet) = self.build_packet(0x03, 0x0C, &args, false, Duration::from_millis(1))
+        {
             commands.push(packet);
         }
 
@@ -248,14 +250,14 @@ impl RazerProtocol {
                 let start_col = u8::try_from(chunk_start).unwrap_or(0);
                 let stop_col = u8::try_from(chunk_end - 1).unwrap_or(0);
 
-                let (command_class, command_id) = if matches!(self.version, RazerProtocolVersion::Legacy)
-                {
-                    args.extend_from_slice(&[0xFF, row_u8, start_col, stop_col]);
-                    (0x03, 0x0B)
-                } else {
-                    args.extend_from_slice(&[0x00, 0x00, row_u8, start_col, stop_col]);
-                    (0x0F, 0x03)
-                };
+                let (command_class, command_id) =
+                    if matches!(self.version, RazerProtocolVersion::Legacy) {
+                        args.extend_from_slice(&[0xFF, row_u8, start_col, stop_col]);
+                        (0x03, 0x0B)
+                    } else {
+                        args.extend_from_slice(&[0x00, 0x00, row_u8, start_col, stop_col]);
+                        (0x0F, 0x03)
+                    };
 
                 for color in &row_colors[chunk_start..chunk_end] {
                     args.extend_from_slice(color);
@@ -284,7 +286,6 @@ impl RazerProtocol {
         match byte {
             0x01 => ResponseStatus::Busy,
             0x02 => ResponseStatus::Ok,
-            0x03 => ResponseStatus::Failed,
             0x04 => ResponseStatus::Timeout,
             0x05 => ResponseStatus::Unsupported,
             _ => ResponseStatus::Failed,

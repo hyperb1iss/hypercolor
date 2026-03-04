@@ -1,0 +1,319 @@
+//! USB backend that bridges HAL protocols to the core `DeviceBackend` trait.
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use anyhow::{Context, Result, anyhow, bail};
+use hypercolor_hal::database::{DeviceDescriptor, TransportType};
+use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
+use hypercolor_hal::transport::control::UsbControlTransport;
+use hypercolor_hal::transport::hid::UsbHidTransport;
+use hypercolor_hal::transport::vendor::UsbVendorTransport;
+use hypercolor_hal::transport::{Transport, TransportError};
+use hypercolor_types::device::DeviceId;
+use tracing::warn;
+
+use super::discovery::TransportScanner;
+use super::traits::{BackendInfo, DeviceBackend};
+use super::usb_scanner::UsbScanner;
+
+const RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_000);
+const RETRY_BACKOFF: Duration = Duration::from_millis(100);
+const MAX_RETRIES: u8 = 3;
+
+#[derive(Clone)]
+struct PendingUsbDevice {
+    vendor_id: u16,
+    product_id: u16,
+    serial: Option<String>,
+    usb_path: Option<String>,
+    descriptor: &'static DeviceDescriptor,
+}
+
+struct UsbDevice {
+    protocol: Box<dyn Protocol>,
+    transport: Box<dyn Transport>,
+}
+
+/// Core USB backend for HAL-managed device families.
+#[derive(Default)]
+pub struct UsbBackend {
+    pending: HashMap<DeviceId, PendingUsbDevice>,
+    connected: HashMap<DeviceId, UsbDevice>,
+}
+
+impl UsbBackend {
+    /// Create an empty USB backend.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    async fn build_transport(
+        pending: &PendingUsbDevice,
+        usb: &nusb::DeviceInfo,
+    ) -> Result<Box<dyn Transport>> {
+        match pending.descriptor.transport {
+            TransportType::UsbControl {
+                interface,
+                report_id,
+            } => {
+                let device = usb.open().await.context("failed to open USB device")?;
+                let transport = UsbControlTransport::new(device, interface, report_id)
+                    .await
+                    .context("failed to claim USB interface for control transport")?;
+                Ok(Box::new(transport))
+            }
+            TransportType::UsbHid { interface } => Ok(Box::new(UsbHidTransport::new(interface))),
+            TransportType::UsbVendor => Ok(Box::new(UsbVendorTransport::new())),
+        }
+    }
+
+    async fn run_commands(
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        commands: Vec<ProtocolCommand>,
+    ) -> Result<()> {
+        for command in commands {
+            let mut attempt = 0_u8;
+
+            loop {
+                if command.expects_response {
+                    let response = transport
+                        .send_receive(&command.data, RESPONSE_TIMEOUT)
+                        .await
+                        .map_err(map_transport_error)?;
+
+                    match protocol.parse_response(&response) {
+                        Ok(parsed) => {
+                            if matches!(
+                                parsed.status,
+                                ResponseStatus::Busy | ResponseStatus::Timeout
+                            ) && attempt < MAX_RETRIES
+                            {
+                                attempt = attempt.saturating_add(1);
+                                tokio::time::sleep(RETRY_BACKOFF).await;
+                                continue;
+                            }
+
+                            if parsed.status == ResponseStatus::Unsupported {
+                                warn!(
+                                    protocol = protocol.name(),
+                                    "command not supported by device; continuing"
+                                );
+                            }
+                        }
+                        Err(ProtocolError::DeviceError {
+                            status: ResponseStatus::Busy | ResponseStatus::Timeout,
+                        }) if attempt < MAX_RETRIES => {
+                            attempt = attempt.saturating_add(1);
+                            tokio::time::sleep(RETRY_BACKOFF).await;
+                            continue;
+                        }
+                        Err(error) => {
+                            return Err(anyhow!("protocol response parse failed: {error}"));
+                        }
+                    }
+                } else {
+                    transport
+                        .send(&command.data)
+                        .await
+                        .map_err(map_transport_error)?;
+                }
+
+                break;
+            }
+
+            if !command.post_delay.is_zero() {
+                tokio::time::sleep(command.post_delay).await;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for UsbBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "usb".to_owned(),
+            name: "USB HID (HAL)".to_owned(),
+            description: "Native USB devices via HAL protocol + transport".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<hypercolor_types::device::DeviceInfo>> {
+        let mut scanner = UsbScanner::new();
+        let discovered = scanner.scan().await?;
+
+        self.pending.clear();
+
+        let mut info = Vec::with_capacity(discovered.len());
+        for discovered_device in discovered {
+            if let Some(pending) = pending_from_discovered(&discovered_device) {
+                self.pending.insert(discovered_device.info.id, pending);
+            }
+            info.push(discovered_device.info);
+        }
+
+        Ok(info)
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        let pending = self.pending.get(id).cloned().with_context(|| {
+            format!("device {id} has no pending USB descriptor; run discover()")
+        })?;
+
+        let mut devices = nusb::list_devices()
+            .await
+            .context("failed to enumerate USB devices for connect")?;
+        let usb = devices
+            .find(|candidate| matches_usb_device(candidate, &pending))
+            .with_context(|| {
+                format!(
+                    "USB device {:04X}:{:04X} is no longer present",
+                    pending.vendor_id, pending.product_id
+                )
+            })?;
+
+        let protocol = (pending.descriptor.protocol.build)();
+        let transport = Self::build_transport(&pending, &usb).await?;
+
+        Self::run_commands(
+            protocol.as_ref(),
+            transport.as_ref(),
+            protocol.init_sequence(),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "failed to run init sequence for {}",
+                pending.descriptor.name
+            )
+        })?;
+
+        self.connected.insert(
+            *id,
+            UsbDevice {
+                protocol,
+                transport,
+            },
+        );
+
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        let Some(device) = self.connected.remove(id) else {
+            self.pending.remove(id);
+            return Ok(());
+        };
+
+        let shutdown = device.protocol.shutdown_sequence();
+        if !shutdown.is_empty()
+            && let Err(error) = Self::run_commands(
+                device.protocol.as_ref(),
+                device.transport.as_ref(),
+                shutdown,
+            )
+            .await
+        {
+            warn!(device_id = %id, error = %error, "USB shutdown sequence failed");
+        }
+
+        device
+            .transport
+            .close()
+            .await
+            .map_err(map_transport_error)
+            .context("failed to close USB transport")?;
+
+        self.pending.remove(id);
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        let Some(device) = self.connected.get(id) else {
+            bail!("device {id} is not connected");
+        };
+
+        let commands = device.protocol.encode_frame(colors);
+        Self::run_commands(
+            device.protocol.as_ref(),
+            device.transport.as_ref(),
+            commands,
+        )
+        .await
+        .with_context(|| format!("USB frame write failed for device {id}"))
+    }
+}
+
+fn pending_from_discovered(
+    discovered: &super::discovery::DiscoveredDevice,
+) -> Option<PendingUsbDevice> {
+    let vendor_id = parse_u16_hex(discovered.metadata.get("vendor_id")?)?;
+    let product_id = parse_u16_hex(discovered.metadata.get("product_id")?)?;
+    let descriptor = hypercolor_hal::database::ProtocolDatabase::lookup(vendor_id, product_id)?;
+
+    Some(PendingUsbDevice {
+        vendor_id,
+        product_id,
+        serial: discovered.metadata.get("serial").cloned(),
+        usb_path: discovered.metadata.get("usb_path").cloned(),
+        descriptor,
+    })
+}
+
+fn parse_u16_hex(raw: &str) -> Option<u16> {
+    let trimmed = raw.trim_start_matches("0x").trim_start_matches("0X");
+    u16::from_str_radix(trimmed, 16).ok()
+}
+
+fn matches_usb_device(device: &nusb::DeviceInfo, pending: &PendingUsbDevice) -> bool {
+    if device.vendor_id() != pending.vendor_id || device.product_id() != pending.product_id {
+        return false;
+    }
+
+    if let Some(serial) = &pending.serial
+        && device.serial_number() != Some(serial.as_str())
+    {
+        return false;
+    }
+
+    if let Some(path) = &pending.usb_path
+        && usb_path(device) != *path
+    {
+        return false;
+    }
+
+    true
+}
+
+fn usb_path(usb: &nusb::DeviceInfo) -> String {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    {
+        let ports = usb
+            .port_chain()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(".");
+
+        if ports.is_empty() {
+            usb.bus_id().to_owned()
+        } else {
+            format!("{}-{ports}", usb.bus_id())
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = usb;
+        String::new()
+    }
+}
+
+fn map_transport_error(error: TransportError) -> anyhow::Error {
+    anyhow!(error)
+}

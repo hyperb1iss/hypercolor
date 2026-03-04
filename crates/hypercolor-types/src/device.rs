@@ -242,7 +242,7 @@ pub enum DeviceFamily {
     /// Native Lian Li USB hub devices.
     LianLi,
 
-    /// Native PrismRGB / Nollie USB controllers.
+    /// Native `PrismRGB` / `Nollie` USB controllers.
     PrismRgb,
 
     /// Unknown or user-defined device family.

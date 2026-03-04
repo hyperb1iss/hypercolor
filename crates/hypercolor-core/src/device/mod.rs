@@ -12,6 +12,9 @@ pub mod openrgb;
 mod registry;
 mod state_machine;
 mod traits;
+pub mod usb_backend;
+pub mod usb_hotplug;
+pub mod usb_scanner;
 pub mod wled;
 
 pub use discovery::{
@@ -25,3 +28,6 @@ pub use state_machine::{
     StateTransitionRecord,
 };
 pub use traits::{BackendInfo, DeviceBackend, DevicePlugin};
+pub use usb_backend::UsbBackend;
+pub use usb_hotplug::{UsbHotplugEvent, UsbHotplugMonitor};
+pub use usb_scanner::UsbScanner;

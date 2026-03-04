@@ -3,12 +3,11 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
-use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase, ProtocolParams};
-use hypercolor_hal::drivers::razer::RazerProtocol;
+use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase};
 use hypercolor_hal::protocol::{Protocol, ProtocolZone};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceIdentifier,
-    DeviceId, DeviceInfo, DeviceTopologyHint,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId,
+    DeviceIdentifier, DeviceInfo, DeviceTopologyHint,
 };
 
 use super::discovery::{DiscoveredDevice, TransportScanner};
@@ -23,30 +22,11 @@ impl UsbScanner {
         Self
     }
 
-    fn build_protocol(params: &ProtocolParams) -> Option<Box<dyn Protocol>> {
-        match params {
-            ProtocolParams::Razer(razer) => Some(Box::new(RazerProtocol::new(
-                razer.version,
-                razer.matrix_type,
-                razer.matrix_size,
-                razer.led_id,
-            ))),
-            _ => None,
-        }
-    }
-
     fn build_device_info(
         usb: &nusb::DeviceInfo,
         descriptor: &'static DeviceDescriptor,
         protocol: Option<&dyn Protocol>,
     ) -> DeviceInfo {
-        let identifier = DeviceIdentifier::UsbHid {
-            vendor_id: descriptor.vendor_id,
-            product_id: descriptor.product_id,
-            serial: usb.serial_number().map(ToOwned::to_owned),
-            usb_path: usb_path(usb),
-        };
-
         let (zones, capabilities) = if let Some(protocol) = protocol {
             let zones = protocol
                 .zones()
@@ -72,10 +52,10 @@ impl UsbScanner {
             )
         };
 
-        let vendor = usb
-            .manufacturer_string()
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| vendor_name_for_family(&descriptor.family).to_owned());
+        let vendor = usb.manufacturer_string().map_or_else(
+            || vendor_name_for_family(&descriptor.family).to_owned(),
+            ToOwned::to_owned,
+        );
 
         DeviceInfo {
             id: DeviceId::new(),
@@ -84,7 +64,7 @@ impl UsbScanner {
             family: descriptor.family.clone(),
             connection_type: ConnectionType::Usb,
             zones,
-            firmware_version: usb.device_version().map(hex_version),
+            firmware_version: Some(hex_version(usb.device_version())),
             capabilities,
         }
     }
@@ -98,12 +78,14 @@ impl Default for UsbScanner {
 
 #[async_trait::async_trait]
 impl TransportScanner for UsbScanner {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "USB HAL"
     }
 
     async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
-        let devices = nusb::list_devices().await.context("failed to enumerate USB devices")?;
+        let devices = nusb::list_devices()
+            .await
+            .context("failed to enumerate USB devices")?;
 
         let mut discovered = Vec::new();
         for usb in devices {
@@ -114,13 +96,14 @@ impl TransportScanner for UsbScanner {
                 continue;
             };
 
-            let protocol = Self::build_protocol(&descriptor.params);
-            let info = Self::build_device_info(&usb, descriptor, protocol.as_deref());
+            let protocol = (descriptor.protocol.build)();
+            let path = usb_path(&usb);
+            let info = Self::build_device_info(&usb, descriptor, Some(protocol.as_ref()));
             let identifier = DeviceIdentifier::UsbHid {
                 vendor_id,
                 product_id,
                 serial: usb.serial_number().map(ToOwned::to_owned),
-                usb_path: usb_path(&usb),
+                usb_path: (!path.is_empty()).then_some(path.clone()),
             };
 
             let mut metadata = HashMap::new();
@@ -129,7 +112,7 @@ impl TransportScanner for UsbScanner {
             if let Some(serial) = usb.serial_number() {
                 metadata.insert("serial".to_owned(), serial.to_owned());
             }
-            if let Some(path) = usb_path(&usb) {
+            if !path.is_empty() {
                 metadata.insert("usb_path".to_owned(), path);
             }
 
@@ -170,26 +153,29 @@ fn vendor_name_for_family(family: &DeviceFamily) -> &'static str {
 }
 
 fn hex_version(version: u16) -> String {
-    format!("{:#06X}", version)
+    format!("{version:#06X}")
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn usb_path(usb: &nusb::DeviceInfo) -> Option<String> {
-    let ports = usb
-        .port_chain()
-        .iter()
-        .map(u8::to_string)
-        .collect::<Vec<_>>()
-        .join(".");
+fn usb_path(usb: &nusb::DeviceInfo) -> String {
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    {
+        let ports = usb
+            .port_chain()
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(".");
 
-    if ports.is_empty() {
-        Some(usb.bus_id().to_owned())
-    } else {
-        Some(format!("{}-{ports}", usb.bus_id()))
+        if ports.is_empty() {
+            usb.bus_id().to_owned()
+        } else {
+            format!("{}-{ports}", usb.bus_id())
+        }
     }
-}
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn usb_path(_usb: &nusb::DeviceInfo) -> Option<String> {
-    None
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = usb;
+        String::new()
+    }
 }

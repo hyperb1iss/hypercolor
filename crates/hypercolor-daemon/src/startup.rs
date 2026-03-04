@@ -23,7 +23,7 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::openrgb::{ClientConfig as OpenRgbClientConfig, OpenRgbBackend};
 use hypercolor_core::device::wled::WledBackend;
-use hypercolor_core::device::{BackendManager, DeviceLifecycleManager, DeviceRegistry};
+use hypercolor_core::device::{BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbBackend};
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{
     EffectEngine, EffectRegistry, default_effect_search_paths, register_html_effects,
@@ -207,6 +207,7 @@ impl DaemonState {
         if config.discovery.wled_scan {
             backend_manager_inner.register_backend(Box::new(WledBackend::new(Vec::new())));
         }
+        backend_manager_inner.register_backend(Box::new(UsbBackend::new()));
         let backend_manager = Arc::new(Mutex::new(backend_manager_inner));
         info!("Backend manager created");
 

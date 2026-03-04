@@ -32,6 +32,7 @@ dirs = { workspace = true }
 notify = { workspace = true }
 mdns-sd = { workspace = true }
 reqwest = { workspace = true }
+nusb = { workspace = true }
 realfft = { workspace = true }
 rustfft = { workspace = true }
 dpi = { workspace = true, optional = true }

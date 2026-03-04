@@ -11,7 +11,7 @@ use hypercolor_core::device::openrgb::{OpenRgbScanner, ScannerConfig as OpenRgbS
 use hypercolor_core::device::wled::WledScanner;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, DiscoveryOrchestrator, LifecycleAction,
-    ScannerScanReport,
+    ScannerScanReport, UsbScanner,
 };
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{DeviceFamily, DeviceId};
@@ -99,6 +99,7 @@ pub struct DiscoveryRuntime {
 pub enum DiscoveryBackend {
     Wled,
     OpenRgb,
+    Usb,
 }
 
 impl DiscoveryBackend {
@@ -108,6 +109,7 @@ impl DiscoveryBackend {
         match self {
             Self::Wled => "wled",
             Self::OpenRgb => "openrgb",
+            Self::Usb => "usb",
         }
     }
 
@@ -115,6 +117,7 @@ impl DiscoveryBackend {
         match raw {
             "wled" => Some(Self::Wled),
             "openrgb" => Some(Self::OpenRgb),
+            "usb" => Some(Self::Usb),
             _ => None,
         }
     }
@@ -152,14 +155,14 @@ pub fn resolve_backends(
     let explicit_request = requested.is_some_and(|raw| !raw.is_empty()) && !includes_all;
     let mut candidates: Vec<String> = match requested {
         Some(raw) if !raw.is_empty() => raw.to_vec(),
-        _ => vec!["wled".to_owned(), "openrgb".to_owned()],
+        _ => vec!["wled".to_owned(), "openrgb".to_owned(), "usb".to_owned()],
     };
 
     if candidates
         .iter()
         .any(|item| item.trim().eq_ignore_ascii_case("all"))
     {
-        candidates = vec!["wled".to_owned(), "openrgb".to_owned()];
+        candidates = vec!["wled".to_owned(), "openrgb".to_owned(), "usb".to_owned()];
     }
 
     let mut out = Vec::new();
@@ -168,7 +171,9 @@ pub fn resolve_backends(
     for candidate in candidates {
         let normalized = candidate.trim().to_ascii_lowercase();
         let backend = DiscoveryBackend::parse(&normalized).ok_or_else(|| {
-            format!("Unknown discovery backend '{candidate}'. Supported backends: wled, openrgb")
+            format!(
+                "Unknown discovery backend '{candidate}'. Supported backends: wled, openrgb, usb"
+            )
         })?;
 
         if !seen.insert(backend) {
@@ -196,7 +201,7 @@ pub fn resolve_backends(
                     continue;
                 }
             }
-            DiscoveryBackend::OpenRgb => {}
+            DiscoveryBackend::OpenRgb | DiscoveryBackend::Usb => {}
         }
 
         out.push(backend);
@@ -270,6 +275,9 @@ pub async fn execute_discovery_scan(
                     port: config.discovery.openrgb_port,
                     probe_timeout,
                 })));
+            }
+            DiscoveryBackend::Usb => {
+                orchestrator.add_scanner(Box::new(UsbScanner::new()));
             }
         }
     }
@@ -629,6 +637,8 @@ fn backend_id_for_family(family: &DeviceFamily) -> String {
         DeviceFamily::OpenRgb => "openrgb".to_owned(),
         DeviceFamily::Wled => "wled".to_owned(),
         DeviceFamily::Hue => "hue".to_owned(),
+        DeviceFamily::Razer | DeviceFamily::LianLi | DeviceFamily::PrismRgb => "usb".to_owned(),
+        DeviceFamily::Corsair => "corsair-bridge".to_owned(),
         DeviceFamily::Custom(name) => name.to_ascii_lowercase(),
     }
 }
@@ -695,7 +705,11 @@ mod tests {
         let resolved = resolve_backends(None, &cfg).expect("default backends should resolve");
         assert_eq!(
             resolved,
-            vec![DiscoveryBackend::Wled, DiscoveryBackend::OpenRgb]
+            vec![
+                DiscoveryBackend::Wled,
+                DiscoveryBackend::OpenRgb,
+                DiscoveryBackend::Usb
+            ]
         );
     }
 
