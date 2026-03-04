@@ -75,7 +75,9 @@ impl RazerProtocol {
     }
 
     fn mode_command(&self, mode: u8, post_delay: Duration) -> Option<ProtocolCommand> {
-        self.build_packet(0x00, 0x04, &[mode, 0x00], true, post_delay)
+        // Many Razer devices accept this mode switch as a fire-and-forget
+        // feature report and do not return a stable response payload.
+        self.build_packet(0x00, 0x04, &[mode, 0x00], false, post_delay)
     }
 
     fn zone_name(&self) -> &'static str {
