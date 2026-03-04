@@ -364,6 +364,11 @@ impl ServoWorkerRuntime {
         // Avoid one-second timer clamping in embedder-throttled mode.
         let preferences = Preferences {
             js_timers_minimum_duration: JS_TIMER_MIN_DURATION_MS,
+            // Workshop effects are Three.js/WebGL + OffscreenCanvas heavy.
+            // Servo defaults these off, which makes WebGL context creation fail
+            // during effect initialization.
+            dom_webgl2_enabled: true,
+            dom_offscreen_canvas_enabled: true,
             ..Preferences::default()
         };
 

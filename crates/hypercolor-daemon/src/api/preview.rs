@@ -234,6 +234,22 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
       return runnable[0]?.id || "";
     }
 
+    function sortEffects(effects) {
+      return [...effects].sort((left, right) => {
+        const leftDisplay = toDisplayName(left?.name || "");
+        const rightDisplay = toDisplayName(right?.name || "");
+        const byDisplay = leftDisplay.localeCompare(rightDisplay, undefined, {
+          sensitivity: "base",
+          numeric: true,
+        });
+        if (byDisplay !== 0) return byDisplay;
+        return (left?.name || "").localeCompare(right?.name || "", undefined, {
+          sensitivity: "base",
+          numeric: true,
+        });
+      });
+    }
+
     function updateApplyButtonState() {
       const selected = selectEl.selectedOptions[0];
       const unavailable = selected?.disabled === true;
@@ -260,7 +276,7 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
       const res = await fetch("/api/v1/effects", { headers: apiHeaders() });
       if (!res.ok) throw new Error(`effects list failed (${res.status})`);
       const body = await res.json();
-      const items = body?.data?.items || [];
+      const items = sortEffects(body?.data?.items || []);
       const runnable = items.filter((effect) => effect.runnable !== false);
       const blocked = items.filter((effect) => effect.runnable === false);
       const blockedHtml = blocked.filter((effect) => effect.source === "html");
