@@ -133,10 +133,23 @@ impl DeviceBackend for OpenRgbBackend {
     }
 
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        let mapped_ids = self
+            .device_map
+            .keys()
+            .take(4)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
         let mapping = self
             .device_map
             .get(id)
-            .context("device not found in OpenRGB backend")?
+            .with_context(|| {
+                format!(
+                    "device {id} not found in OpenRGB backend map (mapped_count={}, sample_ids=[{}])",
+                    self.device_map.len(),
+                    mapped_ids
+                )
+            })?
             .clone();
 
         // Switch the controller to Direct/Custom mode

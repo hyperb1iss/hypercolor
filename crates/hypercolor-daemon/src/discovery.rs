@@ -469,7 +469,9 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
                             device = %device_label,
                             device_id = %device_id,
                             backend_id = %backend_id,
+                            layout_device_id = %layout_device_id,
                             error = %error,
+                            error_chain = %format_error_chain(&error),
                             "lifecycle connect action failed"
                         );
                         let mut lifecycle = runtime.lifecycle_manager.lock().await;
@@ -551,6 +553,11 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
 }
 
 fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: Duration) {
+    debug!(
+        device_id = %device_id,
+        delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+        "scheduled reconnect attempt"
+    );
     let runtime_for_task = runtime.clone();
     let task = tokio::spawn(async move {
         tokio::time::sleep(delay).await;
@@ -576,6 +583,13 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
             return;
         };
 
+        debug!(
+            device_id = %device_id,
+            backend_id = %backend_id,
+            layout_device_id = %layout_device_id,
+            "starting reconnect attempt"
+        );
+
         let connect_result = {
             let mut manager = runtime_for_task.backend_manager.lock().await;
             manager
@@ -589,7 +603,9 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
                 device = %device_label,
                 device_id = %device_id,
                 backend_id = %backend_id,
+                layout_device_id = %layout_device_id,
                 error = %error,
+                error_chain = %format_error_chain(&error),
                 "reconnect attempt failed"
             );
             let mut lifecycle = runtime_for_task.lifecycle_manager.lock().await;
@@ -650,6 +666,14 @@ async fn device_log_label(runtime: &DiscoveryRuntime, device_id: DeviceId) -> St
         || device_id.to_string(),
         |tracked| format!("{} ({device_id})", tracked.info.name),
     )
+}
+
+fn format_error_chain(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" | caused_by: ")
 }
 
 fn backend_id_for_family(family: &DeviceFamily) -> String {

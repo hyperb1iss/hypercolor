@@ -453,11 +453,26 @@ impl BackendManager {
                     )
                 })?;
 
-                backend.connect(&device_id).await.with_context(|| {
-                    format!(
-                        "failed to connect device {device_id} using backend '{backend_id}' after discovery refresh (initial error: {initial_message})"
-                    )
-                })?;
+                if let Err(retry_error) = backend.connect(&device_id).await {
+                    let retry_message = retry_error.to_string();
+                    debug!(
+                        backend_id = %backend_id,
+                        %device_id,
+                        error = %retry_message,
+                        "connect still failing after discovery refresh"
+                    );
+                    return Err(retry_error).with_context(|| {
+                        format!(
+                            "failed to connect device {device_id} using backend '{backend_id}' after discovery refresh (initial error: {initial_message})"
+                        )
+                    });
+                }
+
+                debug!(
+                    backend_id = %backend_id,
+                    %device_id,
+                    "connect succeeded after discovery refresh"
+                );
             }
         }
 

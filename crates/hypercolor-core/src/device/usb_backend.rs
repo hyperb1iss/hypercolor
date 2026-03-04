@@ -11,7 +11,7 @@ use hypercolor_hal::transport::hid::UsbHidTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::DeviceId;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::discovery::TransportScanner;
 use super::traits::{BackendInfo, DeviceBackend};
@@ -58,10 +58,19 @@ impl UsbBackend {
                 interface,
                 report_id,
             } => {
-                let device = usb.open().await.context("failed to open USB device")?;
+                let device = usb.open().await.with_context(|| {
+                    format!(
+                        "failed to open USB device {:04X}:{:04X}",
+                        pending.vendor_id, pending.product_id
+                    )
+                })?;
                 let transport = UsbControlTransport::new(device, interface, report_id)
                     .await
-                    .context("failed to claim USB interface for control transport")?;
+                    .with_context(|| {
+                        format!(
+                            "failed to claim USB interface {interface} for control transport (report_id=0x{report_id:02X}); interface may be busy (kernel or another userspace driver)"
+                        )
+                    })?;
                 Ok(Box::new(transport))
             }
             TransportType::UsbHid { interface } => Ok(Box::new(UsbHidTransport::new(interface))),
@@ -161,9 +170,29 @@ impl DeviceBackend for UsbBackend {
     }
 
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        let pending_ids = self
+            .pending
+            .keys()
+            .take(4)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
         let pending = self.pending.get(id).cloned().with_context(|| {
-            format!("device {id} has no pending USB descriptor; run discover()")
+            format!(
+                "device {id} has no pending USB descriptor; run discover() (pending_cache_size={}, sample_ids=[{}])",
+                self.pending.len(),
+                pending_ids
+            )
         })?;
+        debug!(
+            device_id = %id,
+            vendor_id = format_args!("{:04X}", pending.vendor_id),
+            product_id = format_args!("{:04X}", pending.product_id),
+            usb_path = pending.usb_path.as_deref().unwrap_or("<unknown>"),
+            serial = pending.serial.as_deref().unwrap_or("<none>"),
+            descriptor = pending.descriptor.name,
+            "attempting USB connect"
+        );
 
         let mut devices = nusb::list_devices()
             .await
@@ -172,8 +201,11 @@ impl DeviceBackend for UsbBackend {
             .find(|candidate| matches_usb_device(candidate, &pending))
             .with_context(|| {
                 format!(
-                    "USB device {:04X}:{:04X} is no longer present",
-                    pending.vendor_id, pending.product_id
+                    "USB device {:04X}:{:04X} is no longer present (serial={}, usb_path={})",
+                    pending.vendor_id,
+                    pending.product_id,
+                    pending.serial.as_deref().unwrap_or("<none>"),
+                    pending.usb_path.as_deref().unwrap_or("<unknown>")
                 )
             })?;
 

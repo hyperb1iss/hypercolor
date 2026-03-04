@@ -502,17 +502,35 @@ impl DeviceBackend for WledBackend {
     }
 
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
-        let ip = self
+        let known_ip_ids = self
             .device_ips
-            .get(id)
-            .copied()
-            .context("Device IP not found — was discover() called?")?;
+            .keys()
+            .take(4)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let Some(ip) = self.device_ips.get(id).copied() else {
+            bail!(
+                "WLED device IP not found for {id}; cache_size={}, sample_ids=[{}]. discover() likely returned different IDs",
+                self.device_ips.len(),
+                known_ip_ids
+            );
+        };
 
-        let wled_info = self
+        let known_info_ids = self
             .device_infos
-            .get(id)
-            .cloned()
-            .context("Device info not found — was discover() called?")?;
+            .keys()
+            .take(4)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let Some(wled_info) = self.device_infos.get(id).cloned() else {
+            bail!(
+                "WLED device info not found for {id}; cache_size={}, sample_ids=[{}]. discover() likely returned different IDs",
+                self.device_infos.len(),
+                known_info_ids
+            );
+        };
 
         // Bind a UDP socket for this device
         let socket = UdpSocket::bind("0.0.0.0:0")
