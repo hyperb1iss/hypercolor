@@ -13,6 +13,8 @@ use crate::types::device::{
 
 use super::state_machine::{DeviceStateMachine, ReconnectPolicy};
 
+const DEFAULT_MAX_RECONNECT_ATTEMPTS: u32 = 6;
+
 /// Action emitted by [`DeviceLifecycleManager`] for runtime execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LifecycleAction {
@@ -68,10 +70,14 @@ pub struct DeviceLifecycleManager {
 
 impl Default for DeviceLifecycleManager {
     fn default() -> Self {
+        let reconnect_policy = ReconnectPolicy {
+            max_attempts: Some(DEFAULT_MAX_RECONNECT_ATTEMPTS),
+            ..ReconnectPolicy::default()
+        };
         Self {
             devices: HashMap::new(),
             reconnect_scheduled: HashSet::new(),
-            reconnect_policy: ReconnectPolicy::default(),
+            reconnect_policy,
         }
     }
 }
@@ -618,6 +624,33 @@ mod tests {
         );
 
         assert_eq!(lifecycle.state(info.id), Some(DeviceState::Known));
+    }
+
+    #[test]
+    fn default_policy_eventually_exhausts_reconnects() {
+        let mut lifecycle = DeviceLifecycleManager::new();
+        let info = device_info("Default Policy Device", DeviceFamily::Wled);
+        lifecycle.on_discovered(info.id, &info, "wled", None);
+
+        lifecycle
+            .on_connect_failed(info.id)
+            .expect("connect failure should transition to reconnecting");
+        assert_eq!(lifecycle.state(info.id), Some(DeviceState::Reconnecting));
+
+        for _ in 0..32 {
+            lifecycle
+                .on_reconnect_failed(info.id)
+                .expect("reconnect failure update should succeed");
+            if lifecycle.state(info.id) == Some(DeviceState::Known) {
+                break;
+            }
+        }
+
+        assert_eq!(
+            lifecycle.state(info.id),
+            Some(DeviceState::Known),
+            "default reconnect policy should stop retrying after bounded attempts"
+        );
     }
 
     #[test]

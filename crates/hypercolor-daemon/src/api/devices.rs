@@ -268,13 +268,8 @@ pub async fn discover_devices(
             event_bus: Arc::clone(&state.event_bus),
             in_progress: Arc::clone(&state.discovery_in_progress),
         };
-        let result = discovery::execute_discovery_scan(
-            runtime,
-            config,
-            resolved_backends,
-            timeout,
-        )
-        .await;
+        let result =
+            discovery::execute_discovery_scan(runtime, config, resolved_backends, timeout).await;
 
         return ApiResponse::ok(serde_json::json!({
             "scan_id": scan_id,
@@ -293,13 +288,8 @@ pub async fn discover_devices(
             event_bus: Arc::clone(&state_for_task.event_bus),
             in_progress: Arc::clone(&state_for_task.discovery_in_progress),
         };
-        let _ = discovery::execute_discovery_scan(
-            runtime,
-            config,
-            resolved_backends,
-            timeout,
-        )
-        .await;
+        let _ =
+            discovery::execute_discovery_scan(runtime, config, resolved_backends, timeout).await;
     });
 
     ApiResponse::accepted(serde_json::json!({

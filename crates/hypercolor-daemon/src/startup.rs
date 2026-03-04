@@ -6,11 +6,11 @@
 //! [`start`](DaemonState::start) and [`shutdown`](DaemonState::shutdown) for
 //! lifecycle management.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::collections::HashMap;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, Result};

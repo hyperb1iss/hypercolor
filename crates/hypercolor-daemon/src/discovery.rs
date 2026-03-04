@@ -10,8 +10,8 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::openrgb::{OpenRgbScanner, ScannerConfig as OpenRgbScannerConfig};
 use hypercolor_core::device::wled::WledScanner;
 use hypercolor_core::device::{
-    BackendManager, DeviceLifecycleManager, DeviceRegistry, DiscoveryOrchestrator,
-    LifecycleAction, ScannerScanReport,
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, DiscoveryOrchestrator, LifecycleAction,
+    ScannerScanReport,
 };
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{DeviceFamily, DeviceId};
@@ -233,16 +233,16 @@ pub async fn execute_discovery_scan(
     runtime
         .event_bus
         .publish(HypercolorEvent::DeviceDiscoveryStarted {
-        backends: backend_names.clone(),
-    });
+            backends: backend_names.clone(),
+        });
 
     if backends.is_empty() {
         runtime
             .event_bus
             .publish(HypercolorEvent::DeviceDiscoveryCompleted {
-            found: Vec::new(),
-            duration_ms: 0,
-        });
+                found: Vec::new(),
+                duration_ms: 0,
+            });
         return DiscoveryScanResult {
             backends: backend_names,
             timeout_ms,
@@ -278,9 +278,9 @@ pub async fn execute_discovery_scan(
         runtime
             .event_bus
             .publish(HypercolorEvent::DeviceDiscoveryCompleted {
-            found: Vec::new(),
-            duration_ms: 0,
-        });
+                found: Vec::new(),
+                duration_ms: 0,
+            });
         return DiscoveryScanResult {
             backends: backend_names,
             timeout_ms,
@@ -320,13 +320,15 @@ pub async fn execute_discovery_scan(
         sync_registry_state(&runtime, *id).await;
 
         let device_ref = device_ref_for_tracked(&tracked.info.family, &tracked.info);
-        runtime.event_bus.publish(HypercolorEvent::DeviceDiscovered {
-            device_id: device_ref.id.clone(),
-            name: device_ref.name.clone(),
-            backend: device_ref.backend.clone(),
-            led_count: device_ref.led_count,
-            address: None,
-        });
+        runtime
+            .event_bus
+            .publish(HypercolorEvent::DeviceDiscovered {
+                device_id: device_ref.id.clone(),
+                name: device_ref.name.clone(),
+                backend: device_ref.backend.clone(),
+                led_count: device_ref.led_count,
+                address: None,
+            });
 
         found.push(device_ref.clone());
         new_devices.push(device_ref);
@@ -347,13 +349,15 @@ pub async fn execute_discovery_scan(
         sync_registry_state(&runtime, *id).await;
 
         let device_ref = device_ref_for_tracked(&tracked.info.family, &tracked.info);
-        runtime.event_bus.publish(HypercolorEvent::DeviceDiscovered {
-            device_id: device_ref.id.clone(),
-            name: device_ref.name.clone(),
-            backend: device_ref.backend.clone(),
-            led_count: device_ref.led_count,
-            address: None,
-        });
+        runtime
+            .event_bus
+            .publish(HypercolorEvent::DeviceDiscovered {
+                device_id: device_ref.id.clone(),
+                name: device_ref.name.clone(),
+                backend: device_ref.backend.clone(),
+                led_count: device_ref.led_count,
+                address: None,
+            });
 
         found.push(device_ref.clone());
         reappeared_devices.push(device_ref);
@@ -382,11 +386,13 @@ pub async fn execute_discovery_scan(
         execute_lifecycle_actions(runtime.clone(), actions).await;
         sync_registry_state(&runtime, id).await;
 
-        runtime.event_bus.publish(HypercolorEvent::DeviceDisconnected {
-            device_id: id.to_string(),
-            reason: DisconnectReason::Timeout,
-            will_retry: true,
-        });
+        runtime
+            .event_bus
+            .publish(HypercolorEvent::DeviceDisconnected {
+                device_id: id.to_string(),
+                reason: DisconnectReason::Timeout,
+                will_retry: true,
+            });
         vanished_devices.push(id.to_string());
     }
 
@@ -394,9 +400,9 @@ pub async fn execute_discovery_scan(
     runtime
         .event_bus
         .publish(HypercolorEvent::DeviceDiscoveryCompleted {
-        found: found.clone(),
-        duration_ms,
-    });
+            found: found.clone(),
+            duration_ms,
+        });
 
     debug!(
         new_devices = found.len(),
@@ -475,7 +481,9 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
             } => {
                 let layout_device_id = {
                     let lifecycle = runtime.lifecycle_manager.lock().await;
-                    lifecycle.layout_device_id_for(device_id).map(ToOwned::to_owned)
+                    lifecycle
+                        .layout_device_id_for(device_id)
+                        .map(ToOwned::to_owned)
                 };
 
                 let Some(layout_device_id) = layout_device_id else {

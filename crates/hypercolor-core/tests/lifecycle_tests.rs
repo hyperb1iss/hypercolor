@@ -55,7 +55,10 @@ impl DeviceBackend for RecordingBackend {
     }
 
     async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
-        Ok(vec![device_info(self.expected_device_id, "Lifecycle Device")])
+        Ok(vec![device_info(
+            self.expected_device_id,
+            "Lifecycle Device",
+        )])
     }
 
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
@@ -169,7 +172,9 @@ async fn apply_lifecycle_actions(
                     .connect_device(&backend_id, device_id, &layout_device_id)
                     .await;
                 let follow_up = if connect_result.is_ok() {
-                    lifecycle.on_connected(device_id).expect("connect transition")
+                    lifecycle
+                        .on_connected(device_id)
+                        .expect("connect transition")
                 } else if lifecycle.state(device_id) == Some(DeviceState::Reconnecting) {
                     lifecycle
                         .on_reconnect_failed(device_id)
@@ -309,5 +314,8 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         "expected writes before and after reconnect, got {}",
         writes.len()
     );
-    assert_eq!(writes.last().expect("expected last frame"), &vec![[220, 120, 20]; 4]);
+    assert_eq!(
+        writes.last().expect("expected last frame"),
+        &vec![[220, 120, 20]; 4]
+    );
 }
