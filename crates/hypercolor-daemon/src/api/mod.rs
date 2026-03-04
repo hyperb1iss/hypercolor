@@ -273,9 +273,8 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     // Serve the web UI with SPA fallback when a UI directory is configured.
     if let Some(ui_path) = ui_dir {
         let index = ui_path.join("index.html");
-        router = router.fallback_service(
-            ServeDir::new(ui_path).not_found_service(ServeFile::new(index)),
-        );
+        router = router
+            .fallback_service(ServeDir::new(ui_path).not_found_service(ServeFile::new(index)));
     }
 
     router
