@@ -40,7 +40,7 @@ impl DaemonHarness {
             .context("failed to initialize daemon state")?;
 
         let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
-        let router = api::build_router(app_state);
+        let router = api::build_router(app_state, None);
         let bind = format!("{}:{}", config.daemon.listen_address, config.daemon.port);
         let listener = tokio::net::TcpListener::bind(&bind)
             .await

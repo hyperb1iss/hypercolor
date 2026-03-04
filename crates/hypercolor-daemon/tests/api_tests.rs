@@ -23,12 +23,12 @@ use hypercolor_types::effect::{
 /// Build a test router with fresh state.
 fn test_app() -> axum::Router {
     let state = Arc::new(AppState::new());
-    api::build_router(state)
+    api::build_router(state, None)
 }
 
 /// Build a test router with shared state (for multi-step tests).
 fn test_app_with_state(state: Arc<AppState>) -> axum::Router {
-    api::build_router(state)
+    api::build_router(state, None)
 }
 
 /// Extract the JSON body from a response.

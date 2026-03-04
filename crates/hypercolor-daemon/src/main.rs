@@ -27,6 +27,10 @@ struct DaemonArgs {
     #[arg(long, default_value = "info")]
     log_level: String,
 
+    /// Serve the web UI from this directory (static files with SPA fallback).
+    #[arg(long)]
+    ui_dir: Option<PathBuf>,
+
     /// Run the MCP server over stdio instead of serving the REST API.
     #[arg(long, default_value_t = false)]
     mcp_stdio: bool,
@@ -92,7 +96,7 @@ async fn main() -> Result<()> {
 
     // 5. Build the API server with shared daemon state.
     let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
-    let router = api::build_router(app_state);
+    let router = api::build_router(app_state, args.ui_dir.as_deref());
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await

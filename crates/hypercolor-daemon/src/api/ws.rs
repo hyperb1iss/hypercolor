@@ -1069,7 +1069,7 @@ async fn dispatch_command(
         }
     };
 
-    let response = crate::api::build_router(Arc::clone(state))
+    let response = crate::api::build_router(Arc::clone(state), None)
         .oneshot(request)
         .await
         .unwrap_or_else(|never| match never {});

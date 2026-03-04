@@ -18,6 +18,7 @@ pub mod system;
 pub mod ws;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
@@ -25,6 +26,7 @@ use std::time::Instant;
 use axum::Router;
 use tokio::sync::{Mutex, RwLock};
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use hypercolor_core::bus::HypercolorBus;
@@ -166,7 +168,11 @@ impl Default for AppState {
 // ── Router ───────────────────────────────────────────────────────────────
 
 /// Build the complete Axum router with all API routes and middleware.
-pub fn build_router(state: Arc<AppState>) -> Router {
+///
+/// When `ui_dir` is provided, static files are served at `/` with SPA
+/// fallback (all non-API, non-asset paths return `index.html`).
+#[expect(clippy::too_many_lines)]
+pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     let security_state = security::SecurityState::from_env();
 
     let api = Router::new()
@@ -257,12 +263,22 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // ── WebSocket ────────────────────────────────────────────────
         .route("/ws", axum::routing::get(ws::ws_handler));
 
-    Router::new()
+    let mut router = Router::new()
         .nest("/api/v1", api)
         // Compatibility alias for clients still using the legacy top-level WS path.
         .route("/ws", axum::routing::get(ws::ws_handler))
         .route("/preview", axum::routing::get(preview::preview_page))
-        .route("/health", axum::routing::get(system::health_check))
+        .route("/health", axum::routing::get(system::health_check));
+
+    // Serve the web UI with SPA fallback when a UI directory is configured.
+    if let Some(ui_path) = ui_dir {
+        let index = ui_path.join("index.html");
+        router = router.fallback_service(
+            ServeDir::new(ui_path).not_found_service(ServeFile::new(index)),
+        );
+    }
+
+    router
         .layer(axum::middleware::from_fn_with_state(
             security_state,
             security::enforce_security,

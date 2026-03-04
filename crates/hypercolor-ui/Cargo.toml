@@ -1,0 +1,54 @@
+[package]
+name = "hypercolor-ui"
+description = "Leptos CSR web frontend for the Hypercolor lighting engine"
+version = "0.1.0"
+edition = "2024"
+authors = ["Stefanie Jane <stef@hyperbliss.tech>"]
+license = "Apache-2.0"
+repository = "https://github.com/hyperb1iss/hypercolor"
+rust-version = "1.85"
+
+# ── Leptos CSR ───────────────────────────────────────────────────────────
+
+[dependencies]
+leptos = { version = "0.8", features = ["csr"] }
+leptos_router = "0.8"
+leptos_meta = "0.8"
+leptos-use = "0.18"
+
+# WebSocket codec support for leptos-use
+codee = { version = "0.4", features = ["json_serde"] }
+
+# HTTP client (browser fetch API)
+gloo-net = { version = "0.6", features = ["http"] }
+
+# Browser APIs
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "Window",
+    "Document",
+    "KeyboardEvent",
+    "MessageEvent",
+    "BinaryType",
+    "WebSocket",
+]
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Shared types — single source of truth for API contracts
+hypercolor-types = { path = "../hypercolor-types" }
+
+# WASM debugging
+console_error_panic_hook = "0.1"
+log = "0.4"
+console_log = "1"

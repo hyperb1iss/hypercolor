@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/*"]
+exclude = ["crates/hypercolor-ui"]
 resolver = "3"
 
 [workspace.package]
@@ -97,7 +98,7 @@ xcap = "0.7"
 # HTTP / API
 axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "cargo"] }

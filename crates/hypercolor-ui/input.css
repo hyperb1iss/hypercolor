@@ -1,0 +1,148 @@
+@import "tailwindcss";
+
+/* ── SilkCircuit Design Tokens ───────────────────────────────────────────── */
+
+@theme {
+    /* Surface layers — deep dark graduated */
+    --color-layer-0: #0a0a0f;
+    --color-layer-1: #12121a;
+    --color-layer-2: #1a1a26;
+    --color-layer-3: #22222f;
+    --color-layer-4: #2a2a3d;
+
+    /* SilkCircuit accent palette */
+    --color-electric-purple: #e135ff;
+    --color-neon-cyan: #80ffea;
+    --color-coral: #ff6ac1;
+    --color-electric-yellow: #f1fa8c;
+    --color-success-green: #50fa7b;
+    --color-error-red: #ff6363;
+
+    /* Typography */
+    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;
+}
+
+/* ── Base Resets ─────────────────────────────────────────────────────────── */
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+}
+
+*::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 3px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+/* ── Slider Track Styling ────────────────────────────────────────────────── */
+
+input[type="range"] {
+    -webkit-appearance: none;
+    background: transparent;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 2px;
+}
+
+input[type="range"]::-moz-range-track {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 2px;
+    border: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #e135ff;
+    margin-top: -4px;
+    cursor: pointer;
+    box-shadow: 0 0 8px rgba(225, 53, 255, 0.4);
+    transition: box-shadow 0.15s ease;
+}
+
+input[type="range"]::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #e135ff;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 0 8px rgba(225, 53, 255, 0.4);
+}
+
+input[type="range"]:hover::-webkit-slider-thumb {
+    box-shadow: 0 0 12px rgba(225, 53, 255, 0.6);
+}
+
+input[type="range"]:hover::-moz-range-thumb {
+    box-shadow: 0 0 12px rgba(225, 53, 255, 0.6);
+}
+
+/* ── Color Picker ────────────────────────────────────────────────────────── */
+
+input[type="color"] {
+    -webkit-appearance: none;
+    border: none;
+    padding: 0;
+}
+
+input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 2px;
+}
+
+input[type="color"]::-webkit-color-swatch {
+    border: none;
+    border-radius: 4px;
+}
+
+/* ── Selection ───────────────────────────────────────────────────────────── */
+
+::selection {
+    background: rgba(225, 53, 255, 0.25);
+    color: white;
+}
+
+/* ── Focus rings ─────────────────────────────────────────────────────────── */
+
+:focus-visible {
+    outline: 1px solid rgba(225, 53, 255, 0.4);
+    outline-offset: 2px;
+}
+
+/* ── Animations ──────────────────────────────────────────────────────────── */
+
+@keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+
+.animate-shimmer {
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(255, 255, 255, 0.03) 50%,
+        transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2s infinite;
+}

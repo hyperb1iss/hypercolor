@@ -107,6 +107,20 @@ build-servo-release:
 run-servo-release-bin *args='':
     ~/.cache/hypercolor/target/release/hypercolor --bind 127.0.0.1:9420 {{ args }}
 
+# ─── UI ──────────────────────────────────────────────────
+
+# Start the UI dev server (Trunk + hot reload)
+ui-dev:
+    cd crates/hypercolor-ui && trunk serve --open
+
+# Build the UI for production
+ui-build:
+    cd crates/hypercolor-ui && trunk build --release
+
+# Build UI and copy dist for daemon embedding
+ui-dist: ui-build
+    @echo '✅ UI built at crates/hypercolor-ui/dist/'
+
 # ─── Housekeeping ─────────────────────────────────────────
 
 # Clean build artifacts
