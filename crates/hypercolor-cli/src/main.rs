@@ -64,6 +64,8 @@ pub enum Commands {
     Scenes(commands::scenes::ScenesArgs),
     /// Profile management (save, apply, delete).
     Profiles(commands::profiles::ProfilesArgs),
+    /// Saved effect library (favorites, presets, playlists).
+    Library(commands::library::LibraryArgs),
     /// Spatial layout management.
     Layouts(commands::layouts::LayoutsArgs),
     /// Configuration management.
@@ -92,6 +94,7 @@ async fn main() -> Result<()> {
         Commands::Effects(args) => commands::effects::execute(args, &client, &ctx).await,
         Commands::Scenes(args) => commands::scenes::execute(args, &client, &ctx).await,
         Commands::Profiles(args) => commands::profiles::execute(args, &client, &ctx).await,
+        Commands::Library(args) => commands::library::execute(args, &client, &ctx).await,
         Commands::Layouts(args) => commands::layouts::execute(args, &client, &ctx).await,
         Commands::Config(args) => commands::config::execute(args, &client, &ctx).await,
         Commands::Diagnose(args) => commands::diagnose::execute(args, &client, &ctx).await,

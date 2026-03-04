@@ -206,6 +206,73 @@ fn build_cmd() -> clap::Command {
                 ),
         )
         .subcommand(
+            Command::new("library")
+                .about("Saved effect library")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("favorites")
+                        .about("Favorite effects")
+                        .subcommand_required(true)
+                        .subcommand(Command::new("list").about("List favorites"))
+                        .subcommand(
+                            Command::new("add")
+                                .about("Add favorite")
+                                .arg(Arg::new("effect").required(true)),
+                        )
+                        .subcommand(
+                            Command::new("remove")
+                                .about("Remove favorite")
+                                .arg(Arg::new("effect").required(true)),
+                        ),
+                )
+                .subcommand(
+                    Command::new("presets")
+                        .about("Saved presets")
+                        .subcommand_required(true)
+                        .subcommand(Command::new("list").about("List presets"))
+                        .subcommand(
+                            Command::new("info")
+                                .about("Preset info")
+                                .arg(Arg::new("preset").required(true)),
+                        )
+                        .subcommand(
+                            Command::new("apply")
+                                .about("Apply preset")
+                                .arg(Arg::new("preset").required(true)),
+                        )
+                        .subcommand(
+                            Command::new("delete")
+                                .about("Delete preset")
+                                .arg(Arg::new("preset").required(true))
+                                .arg(Arg::new("yes").long("yes").action(ArgAction::SetTrue)),
+                        ),
+                )
+                .subcommand(
+                    Command::new("playlists")
+                        .about("Saved playlists")
+                        .subcommand_required(true)
+                        .subcommand(Command::new("list").about("List playlists"))
+                        .subcommand(
+                            Command::new("info")
+                                .about("Playlist info")
+                                .arg(Arg::new("playlist").required(true)),
+                        )
+                        .subcommand(
+                            Command::new("activate")
+                                .about("Activate playlist")
+                                .arg(Arg::new("playlist").required(true)),
+                        )
+                        .subcommand(Command::new("active").about("Show active playlist"))
+                        .subcommand(Command::new("stop").about("Stop active playlist"))
+                        .subcommand(
+                            Command::new("delete")
+                                .about("Delete playlist")
+                                .arg(Arg::new("playlist").required(true))
+                                .arg(Arg::new("yes").long("yes").action(ArgAction::SetTrue)),
+                        ),
+                ),
+        )
+        .subcommand(
             Command::new("layouts")
                 .about("Spatial layout management")
                 .subcommand_required(true)
@@ -554,6 +621,51 @@ fn parse_profiles_info() {
 }
 
 #[test]
+fn parse_library_favorites_add() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from(["hyper", "library", "favorites", "add", "solid_color"])
+        .expect("library favorites add should parse");
+    let (_, library) = matches.subcommand().expect("should have library");
+    let (_, favorites) = library.subcommand().expect("should have favorites");
+    let (_, add) = favorites.subcommand().expect("should have add");
+    assert_eq!(
+        add.get_one::<String>("effect").map(String::as_str),
+        Some("solid_color")
+    );
+}
+
+#[test]
+fn parse_library_presets_apply() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from(["hyper", "library", "presets", "apply", "night_mode"])
+        .expect("library presets apply should parse");
+    let (_, library) = matches.subcommand().expect("should have library");
+    let (_, presets) = library.subcommand().expect("should have presets");
+    let (_, apply) = presets.subcommand().expect("should have apply");
+    assert_eq!(
+        apply.get_one::<String>("preset").map(String::as_str),
+        Some("night_mode")
+    );
+}
+
+#[test]
+fn parse_library_playlists_activate() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from(["hyper", "library", "playlists", "activate", "runtime_loop"])
+        .expect("library playlists activate should parse");
+    let (_, library) = matches.subcommand().expect("should have library");
+    let (_, playlists) = library.subcommand().expect("should have playlists");
+    let (_, activate) = playlists.subcommand().expect("should have activate");
+    assert_eq!(
+        activate.get_one::<String>("playlist").map(String::as_str),
+        Some("runtime_loop")
+    );
+}
+
+#[test]
 fn parse_layouts_list() {
     let cmd = build_cmd();
     cmd.try_get_matches_from(["hyper", "layouts", "list"])
@@ -824,6 +936,10 @@ fn help_text_generates_without_error() {
     assert!(
         help_str.contains("effects"),
         "help should list the effects subcommand"
+    );
+    assert!(
+        help_str.contains("library"),
+        "help should list the library subcommand"
     );
 }
 
