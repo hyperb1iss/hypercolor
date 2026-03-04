@@ -11,12 +11,13 @@ use anyhow::{Result, bail};
 use tokio::sync::Mutex;
 
 use hypercolor_core::device::{
-    BackendInfo, DeviceBackend, DevicePlugin, DeviceRegistry, DiscoveredDevice,
-    DiscoveryOrchestrator, TransportScanner,
+    BackendInfo, DeviceBackend, DevicePlugin, DeviceRegistry, DeviceStateMachine, DiscoveredDevice,
+    DiscoveryOrchestrator, ReconnectPolicy, TransportScanner,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-    DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
+    DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo, DeviceState,
+    DeviceTopologyHint, ZoneInfo,
 };
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
@@ -557,6 +558,242 @@ async fn registry_is_thread_safe() {
     h2.await.expect("task 2 should complete");
 
     assert_eq!(registry.len().await, 20);
+}
+
+// ── DeviceStateMachine tests ─────────────────────────────────────────────
+
+fn sample_identifier() -> DeviceIdentifier {
+    DeviceIdentifier::Network {
+        mac_address: "AA:BB:CC:DD:EE:FF".to_owned(),
+        last_ip: None,
+        mdns_hostname: Some("wled-test".to_owned()),
+    }
+}
+
+#[test]
+fn state_machine_transitions_connected_to_active() {
+    let identifier = sample_identifier();
+    let mut sm = DeviceStateMachine::new(identifier.clone());
+
+    let handle = DeviceHandle::new(identifier, "mock");
+    sm.on_connected(handle)
+        .expect("connect transition should work");
+    assert_eq!(*sm.state(), DeviceState::Connected);
+    assert!(sm.handle().is_some());
+
+    sm.on_frame_success()
+        .expect("first frame transition should work");
+    assert_eq!(*sm.state(), DeviceState::Active);
+
+    let debug = sm.debug_snapshot();
+    assert_eq!(debug.state, "Active");
+    assert_eq!(debug.transition_count, 2);
+}
+
+#[test]
+fn state_machine_rejects_invalid_transition() {
+    let mut sm = DeviceStateMachine::new(sample_identifier());
+    let err = sm
+        .on_frame_success()
+        .expect_err("Known -> Active should be invalid");
+    assert!(
+        matches!(err, DeviceError::InvalidTransition { .. }),
+        "expected invalid transition error"
+    );
+}
+
+#[test]
+fn state_machine_enters_reconnecting_on_comm_error() {
+    let identifier = sample_identifier();
+    let mut sm = DeviceStateMachine::new(identifier.clone());
+
+    sm.on_connected(DeviceHandle::new(identifier, "mock"))
+        .expect("connect should work");
+    sm.on_frame_success()
+        .expect("first frame should transition to active");
+    assert_eq!(*sm.state(), DeviceState::Active);
+
+    sm.on_comm_error().expect("comm error should transition");
+
+    assert_eq!(*sm.state(), DeviceState::Reconnecting);
+    assert!(sm.handle().is_none());
+    assert_eq!(
+        sm.reconnect_status()
+            .expect("reconnect status should exist")
+            .attempt,
+        0
+    );
+}
+
+#[test]
+fn state_machine_reconnect_exhaustion_returns_known() {
+    let identifier = sample_identifier();
+    let policy = ReconnectPolicy {
+        initial_delay: Duration::from_millis(10),
+        max_delay: Duration::from_millis(100),
+        backoff_factor: 2.0,
+        max_attempts: Some(1),
+        jitter: 0.0,
+    };
+    let mut sm = DeviceStateMachine::with_policy(identifier.clone(), policy);
+
+    sm.on_connected(DeviceHandle::new(identifier, "mock"))
+        .expect("connect should work");
+    sm.on_comm_error().expect("comm error should transition");
+
+    let next = sm.on_reconnect_failed();
+    assert!(next.is_none(), "max attempts should exhaust immediately");
+    assert_eq!(*sm.state(), DeviceState::Known);
+    assert!(sm.reconnect_status().is_none());
+}
+
+#[test]
+fn state_machine_backoff_progresses_with_jitter_and_cap() {
+    let identifier = sample_identifier();
+    let policy = ReconnectPolicy {
+        initial_delay: Duration::from_millis(100),
+        max_delay: Duration::from_millis(500),
+        backoff_factor: 2.0,
+        max_attempts: Some(8),
+        jitter: 0.1,
+    };
+    let mut sm = DeviceStateMachine::with_policy(identifier.clone(), policy);
+
+    sm.on_connected(DeviceHandle::new(identifier, "mock"))
+        .expect("connect should work");
+    sm.on_comm_error().expect("comm error should transition");
+
+    let status = sm
+        .reconnect_status()
+        .expect("reconnect status should exist after comm error");
+    assert_eq!(status.attempt, 0);
+    assert_eq!(status.next_retry, Duration::from_millis(100));
+
+    // Deterministic jitter alternates -, +, -, + with the current algorithm.
+    let d1 = sm
+        .on_reconnect_failed()
+        .expect("attempt one should schedule retry");
+    let d2 = sm
+        .on_reconnect_failed()
+        .expect("attempt two should schedule retry");
+    let d3 = sm
+        .on_reconnect_failed()
+        .expect("attempt three should schedule retry");
+
+    assert_eq!(d1, Duration::from_millis(180));
+    assert_eq!(d2, Duration::from_millis(396));
+    assert_eq!(d3, Duration::from_millis(450));
+    assert_eq!(*sm.state(), DeviceState::Reconnecting);
+}
+
+#[test]
+fn state_machine_user_disable_and_enable() {
+    let mut sm = DeviceStateMachine::new(sample_identifier());
+
+    sm.on_user_disable();
+    assert_eq!(*sm.state(), DeviceState::Disabled);
+
+    sm.on_user_enable();
+    assert_eq!(*sm.state(), DeviceState::Known);
+}
+
+#[test]
+fn state_machine_hot_unplug_clears_handle() {
+    let identifier = sample_identifier();
+    let mut sm = DeviceStateMachine::new(identifier.clone());
+    sm.on_connected(DeviceHandle::new(identifier, "mock"))
+        .expect("connect should work");
+    assert!(sm.handle().is_some());
+
+    sm.on_hot_unplug();
+    assert_eq!(*sm.state(), DeviceState::Known);
+    assert!(sm.handle().is_none());
+}
+
+#[test]
+fn state_machine_hot_unplug_from_any_state_returns_known() {
+    let id = sample_identifier();
+
+    let mut known = DeviceStateMachine::new(id.clone());
+    known.on_hot_unplug();
+    assert_eq!(*known.state(), DeviceState::Known);
+
+    let mut connected = DeviceStateMachine::new(id.clone());
+    connected
+        .on_connected(DeviceHandle::new(id.clone(), "mock"))
+        .expect("connect should work");
+    connected.on_hot_unplug();
+    assert_eq!(*connected.state(), DeviceState::Known);
+    assert!(connected.handle().is_none());
+
+    let mut active = DeviceStateMachine::new(id.clone());
+    active
+        .on_connected(DeviceHandle::new(id.clone(), "mock"))
+        .expect("connect should work");
+    active
+        .on_frame_success()
+        .expect("first frame should transition to active");
+    active.on_hot_unplug();
+    assert_eq!(*active.state(), DeviceState::Known);
+    assert!(active.handle().is_none());
+
+    let mut reconnecting = DeviceStateMachine::new(id.clone());
+    reconnecting
+        .on_connected(DeviceHandle::new(id.clone(), "mock"))
+        .expect("connect should work");
+    reconnecting
+        .on_comm_error()
+        .expect("comm error should transition to reconnecting");
+    reconnecting.on_hot_unplug();
+    assert_eq!(*reconnecting.state(), DeviceState::Known);
+    assert!(reconnecting.handle().is_none());
+
+    let mut disabled = DeviceStateMachine::new(id);
+    disabled.on_user_disable();
+    disabled.on_hot_unplug();
+    assert_eq!(*disabled.state(), DeviceState::Known);
+}
+
+#[test]
+fn state_machine_invalid_transitions_return_device_error() {
+    let id = sample_identifier();
+
+    let mut known = DeviceStateMachine::new(id.clone());
+    assert!(matches!(
+        known.on_frame_success(),
+        Err(DeviceError::InvalidTransition { .. })
+    ));
+
+    let mut active = DeviceStateMachine::new(id.clone());
+    active
+        .on_connected(DeviceHandle::new(id.clone(), "mock"))
+        .expect("connect should work");
+    active
+        .on_frame_success()
+        .expect("first frame should transition to active");
+    assert!(matches!(
+        active.on_connected(DeviceHandle::new(id.clone(), "mock")),
+        Err(DeviceError::InvalidTransition { .. })
+    ));
+
+    let mut reconnecting = DeviceStateMachine::new(id.clone());
+    reconnecting
+        .on_connected(DeviceHandle::new(id.clone(), "mock"))
+        .expect("connect should work");
+    reconnecting
+        .on_comm_error()
+        .expect("comm error should transition");
+    assert!(matches!(
+        reconnecting.on_frame_success(),
+        Err(DeviceError::InvalidTransition { .. })
+    ));
+
+    let mut disabled = DeviceStateMachine::new(id);
+    disabled.on_user_disable();
+    assert!(matches!(
+        disabled.on_connected(DeviceHandle::new(sample_identifier(), "mock")),
+        Err(DeviceError::InvalidTransition { .. })
+    ));
 }
 
 // ── DiscoveryOrchestrator tests ──────────────────────────────────────────
