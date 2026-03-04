@@ -1,5 +1,8 @@
 use hypercolor_hal::database::ProtocolDatabase;
-use hypercolor_hal::drivers::razer::{PID_BASILISK_V3, PID_HUNTSMAN_V2, RAZER_VENDOR_ID};
+use hypercolor_hal::drivers::razer::{
+    PID_BASILISK_V3, PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, RAZER_VENDOR_ID,
+};
+use hypercolor_hal::registry::TransportType;
 use hypercolor_types::device::DeviceFamily;
 
 #[test]
@@ -26,10 +29,33 @@ fn lookup_returns_basilisk_descriptor() {
 }
 
 #[test]
+fn lookup_returns_blade_15_late_2021_advanced_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BLADE_15_LATE_2021_ADVANCED)
+        .expect("Blade descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Blade 15 (Late 2021 Advanced)");
+    assert_eq!(descriptor.family, DeviceFamily::Razer);
+    assert_eq!(descriptor.protocol.id, "razer/blade-15-late-2021-advanced");
+
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbControl {
+            interface: 2,
+            report_id: 0x00
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Razer Extended");
+    assert_eq!(protocol.total_leds(), 96);
+}
+
+#[test]
 fn known_vid_pid_contains_razer_entries() {
     let pairs = ProtocolDatabase::known_vid_pids();
     assert!(pairs.contains(&(RAZER_VENDOR_ID, PID_HUNTSMAN_V2)));
     assert!(pairs.contains(&(RAZER_VENDOR_ID, PID_BASILISK_V3)));
+    assert!(pairs.contains(&(RAZER_VENDOR_ID, PID_BLADE_15_LATE_2021_ADVANCED)));
 }
 
 #[test]
@@ -46,5 +72,5 @@ fn by_vendor_returns_only_razer_entries() {
 #[test]
 fn count_matches_static_descriptor_count() {
     assert_eq!(ProtocolDatabase::count(), ProtocolDatabase::all().len());
-    assert!(ProtocolDatabase::count() >= 3);
+    assert!(ProtocolDatabase::count() >= 4);
 }
