@@ -12,7 +12,11 @@ const DEFAULT_DAEMON_URL: &str = "http://127.0.0.1:9420";
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter("hypercolor_desktop=debug,tauri=info")
+        .with_env_filter(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| {
+                "hypercolor_desktop=debug,tauri=info,wry=warn".to_string()
+            }),
+        )
         .init();
 
     let daemon_url =
@@ -26,13 +30,25 @@ fn main() -> anyhow::Result<()> {
                 .parse()
                 .expect("HYPERCOLOR_URL must be a valid URL");
 
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+            tracing::info!(%url, "creating webview window");
+
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
                 .title("Hypercolor")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(800.0, 500.0)
                 .build()?;
 
+            // Open devtools in debug builds
+            #[cfg(debug_assertions)]
+            window.open_devtools();
+
+            tracing::info!("window created");
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                tracing::info!(label = %window.label(), "window destroyed");
+            }
         })
         .run(tauri::generate_context!())
         .map_err(|e| anyhow::anyhow!("tauri runtime error: {e}"))?;

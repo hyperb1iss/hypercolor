@@ -3,17 +3,7 @@
   "version": "0.1.0",
   "identifier": "tech.hyperbliss.hypercolor",
   "app": {
-    "windows": [
-      {
-        "title": "Hypercolor",
-        "width": 1200,
-        "height": 800,
-        "minWidth": 800,
-        "minHeight": 500,
-        "resizable": true,
-        "decorations": true
-      }
-    ],
+    "windows": [],
     "security": {}
   },
   "bundle": {
