@@ -16,10 +16,14 @@ pub fn StatusBar() -> impl IntoView {
             <div class="flex items-center gap-1.5">
                 <div
                     class="w-[5px] h-[5px] rounded-full transition-colors duration-300"
-                    class=("bg-success-green shadow-[0_0_6px_rgba(80,250,123,0.5)] dot-alive", move || ws.connection_state.get() == ConnectionState::Connected)
-                    class=("bg-error-red shadow-[0_0_6px_rgba(255,99,99,0.5)]", move || ws.connection_state.get() == ConnectionState::Error)
-                    class=("bg-electric-yellow animate-pulse", move || ws.connection_state.get() == ConnectionState::Connecting)
-                    class=("bg-zinc-600", move || ws.connection_state.get() == ConnectionState::Disconnected)
+                    style=move || {
+                        match ws.connection_state.get() {
+                            ConnectionState::Connected => "background: rgb(80, 250, 123); box-shadow: 0 0 6px rgba(80, 250, 123, 0.5); animation: dot-alive 2s ease-in-out infinite",
+                            ConnectionState::Error => "background: rgb(255, 99, 99); box-shadow: 0 0 6px rgba(255, 99, 99, 0.5)",
+                            ConnectionState::Connecting => "background: rgb(241, 250, 140); animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+                            ConnectionState::Disconnected => "background: rgb(82, 82, 91)",
+                        }
+                    }
                 />
                 <span class="text-fg-dim">{move || ws.connection_state.get().to_string()}</span>
             </div>

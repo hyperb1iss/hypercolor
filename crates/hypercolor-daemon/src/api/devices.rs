@@ -414,6 +414,15 @@ pub async fn identify_device(
 
     let manager = Arc::clone(&state.backend_manager);
     let backend_id = backend_id_for_family(&tracked.info.family);
+    tracing::info!(
+        device_id = %device_id,
+        device = %tracked.info.name,
+        backend = %backend_id,
+        led_count,
+        duration_ms,
+        color = ?identify_rgb,
+        "Identify flash started"
+    );
     tokio::spawn(run_identify_flash(
         manager,
         backend_id,
@@ -1076,6 +1085,12 @@ async fn run_identify_flash(
             "identify clear write failed"
         );
     }
+
+    tracing::info!(
+        device_id = %device_id,
+        backend = %backend_id,
+        "Identify flash completed"
+    );
 }
 
 fn parse_hex_color(raw: &str) -> Option<String> {
