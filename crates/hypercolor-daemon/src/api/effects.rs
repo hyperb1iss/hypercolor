@@ -15,6 +15,7 @@ use hypercolor_types::effect::{
 };
 
 use crate::api::AppState;
+use crate::api::control_values::json_to_control_value;
 use crate::api::envelope::{ApiError, ApiResponse};
 
 // ── Request / Response Types ─────────────────────────────────────────────
@@ -335,7 +336,10 @@ pub async fn update_current_controls(
     }))
 }
 
-fn resolve_effect_metadata(registry: &EffectRegistry, id_or_name: &str) -> Option<EffectMetadata> {
+pub(super) fn resolve_effect_metadata(
+    registry: &EffectRegistry,
+    id_or_name: &str,
+) -> Option<EffectMetadata> {
     if let Ok(uuid) = id_or_name.parse::<uuid::Uuid>() {
         let effect_id = EffectId::new(uuid);
         return registry.get(&effect_id).map(|entry| entry.metadata.clone());
@@ -392,41 +396,6 @@ fn log_effect_apply_completion(
             "Ignored unsupported control value payloads"
         );
     }
-}
-
-fn json_to_control_value(value: &serde_json::Value) -> Option<ControlValue> {
-    if let Some(v) = value.as_i64() {
-        let int = i32::try_from(v).ok()?;
-        return Some(ControlValue::Integer(int));
-    }
-    if let Some(v) = value.as_f64() {
-        let float = parse_f32(v)?;
-        return Some(ControlValue::Float(float));
-    }
-    if let Some(v) = value.as_bool() {
-        return Some(ControlValue::Boolean(v));
-    }
-    if let Some(v) = value.as_str() {
-        return Some(ControlValue::Text(v.to_owned()));
-    }
-    if let Some(array) = value.as_array() {
-        if array.len() == 4 {
-            let mut color = [0.0f32; 4];
-            for (idx, component) in array.iter().enumerate() {
-                let parsed = component.as_f64()?;
-                color[idx] = parse_f32(parsed)?;
-            }
-            return Some(ControlValue::Color(color));
-        }
-    }
-    None
-}
-
-fn parse_f32(value: f64) -> Option<f32> {
-    if !value.is_finite() {
-        return None;
-    }
-    value.to_string().parse::<f32>().ok()
 }
 
 fn source_kind(source: &EffectSource) -> &'static str {

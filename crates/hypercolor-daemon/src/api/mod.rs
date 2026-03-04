@@ -5,11 +5,13 @@
 //! [`State`](axum::extract::State) extractor.
 
 pub mod config;
+pub mod control_values;
 pub mod devices;
 pub mod diagnose;
 pub mod effects;
 pub mod envelope;
 pub mod layouts;
+pub mod library;
 pub mod preview;
 pub mod profiles;
 pub mod scenes;
@@ -37,6 +39,8 @@ use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::spatial::SpatialLayout;
+
+use crate::library::{InMemoryLibraryStore, LibraryStore};
 
 // ── AppState ─────────────────────────────────────────────────────────────
 
@@ -91,6 +95,9 @@ pub struct AppState {
     /// In-memory layout store.
     pub layouts: RwLock<HashMap<String, SpatialLayout>>,
 
+    /// Saved effect library storage (favorites, presets, playlists).
+    pub library_store: Arc<dyn LibraryStore>,
+
     /// Daemon start time for uptime calculation.
     pub start_time: Instant,
 }
@@ -130,6 +137,7 @@ impl AppState {
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
+            library_store: Arc::new(InMemoryLibraryStore::new()),
             start_time: Instant::now(),
         }
     }
@@ -154,6 +162,7 @@ impl AppState {
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
+            library_store: Arc::new(InMemoryLibraryStore::new()),
             start_time: daemon.start_time,
         }
     }
@@ -248,6 +257,35 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(layouts::get_layout)
                 .put(layouts::update_layout)
                 .delete(layouts::delete_layout),
+        )
+        // ── Library ──────────────────────────────────────────────────
+        .route(
+            "/library/favorites",
+            axum::routing::get(library::list_favorites).post(library::add_favorite),
+        )
+        .route(
+            "/library/favorites/{effect}",
+            axum::routing::delete(library::remove_favorite),
+        )
+        .route(
+            "/library/presets",
+            axum::routing::get(library::list_presets).post(library::create_preset),
+        )
+        .route(
+            "/library/presets/{id}",
+            axum::routing::get(library::get_preset)
+                .put(library::update_preset)
+                .delete(library::delete_preset),
+        )
+        .route(
+            "/library/playlists",
+            axum::routing::get(library::list_playlists).post(library::create_playlist),
+        )
+        .route(
+            "/library/playlists/{id}",
+            axum::routing::get(library::get_playlist)
+                .put(library::update_playlist)
+                .delete(library::delete_playlist),
         )
         // ── System ───────────────────────────────────────────────────
         .route("/status", axum::routing::get(system::get_status))

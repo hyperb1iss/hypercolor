@@ -478,6 +478,201 @@ async fn update_current_controls_updates_active_effect() {
     assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 7.5);
 }
 
+// ── Library ──────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn library_favorites_crud_lifecycle() {
+    let state = Arc::new(AppState::new());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let add_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/favorites")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"effect":"solid_color"}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(add_response.status(), StatusCode::OK);
+    let add_json = body_json(add_response).await;
+    assert_eq!(add_json["data"]["created"], true);
+
+    let list_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/library/favorites")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_json = body_json(list_response).await;
+    assert_eq!(list_json["data"]["pagination"]["total"], 1);
+
+    let delete_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/library/favorites/solid_color")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    let list_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/library/favorites")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_json = body_json(list_response).await;
+    assert_eq!(list_json["data"]["pagination"]["total"], 0);
+}
+
+#[tokio::test]
+async fn library_presets_create_and_get() {
+    let state = Arc::new(AppState::new());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"Warm Sweep",
+                        "effect":"solid_color",
+                        "controls":{"speed":7.25},
+                        "tags":[" cozy ","test"]
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    assert_eq!(create_json["data"]["name"], "Warm Sweep");
+    assert_eq!(create_json["data"]["controls"]["speed"]["float"], 7.5);
+    assert_eq!(create_json["data"]["tags"][0], "cozy");
+    let preset_id = create_json["data"]["id"]
+        .as_str()
+        .expect("preset id should be string")
+        .to_owned();
+
+    let get_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/library/presets/{preset_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let get_json = body_json(get_response).await;
+    assert_eq!(get_json["data"]["id"], preset_id);
+    assert_eq!(get_json["data"]["controls"]["speed"]["float"], 7.5);
+}
+
+#[tokio::test]
+async fn library_playlists_create_with_effect_and_preset_targets() {
+    let state = Arc::new(AppState::new());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let preset_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"Preset A",
+                        "effect":"solid_color",
+                        "controls":{"speed":5}
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(preset_response.status(), StatusCode::CREATED);
+    let preset_json = body_json(preset_response).await;
+    let preset_id = preset_json["data"]["id"]
+        .as_str()
+        .expect("preset id should be string")
+        .to_owned();
+
+    let playlist_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/playlists")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{
+                        "name":"Night Rotation",
+                        "loop_enabled":true,
+                        "items":[
+                            {{
+                                "target":{{"type":"effect","effect":"solid_color"}},
+                                "duration_ms":2000
+                            }},
+                            {{
+                                "target":{{"type":"preset","preset_id":"{preset_id}"}},
+                                "duration_ms":3000
+                            }}
+                        ]
+                    }}"#
+                )))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(playlist_response.status(), StatusCode::CREATED);
+    let playlist_json = body_json(playlist_response).await;
+    assert_eq!(playlist_json["data"]["items"].as_array().map_or(0, Vec::len), 2);
+    let playlist_id = playlist_json["data"]["id"]
+        .as_str()
+        .expect("playlist id should be string")
+        .to_owned();
+
+    let get_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/library/playlists/{playlist_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let get_json = body_json(get_response).await;
+    assert_eq!(get_json["data"]["items"].as_array().map_or(0, Vec::len), 2);
+}
+
 // ── Scenes ───────────────────────────────────────────────────────────────
 
 #[tokio::test]
