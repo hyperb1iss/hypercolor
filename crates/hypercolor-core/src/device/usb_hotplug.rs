@@ -1,6 +1,14 @@
 //! USB hotplug event channel.
 
-use hypercolor_hal::database::DeviceDescriptor;
+use std::collections::HashMap;
+use std::future::poll_fn;
+use std::pin::Pin;
+
+use anyhow::{Context, Result};
+use futures_core::Stream;
+use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase};
+use nusb::hotplug::HotplugEvent;
+use tracing::{debug, warn};
 
 /// USB hotplug event emitted by the monitor.
 #[derive(Debug, Clone)]
@@ -24,9 +32,29 @@ pub enum UsbHotplugEvent {
     },
 }
 
+/// Background hotplug watcher task.
+///
+/// Dropping this handle aborts the watcher.
+pub struct UsbHotplugTask {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl UsbHotplugTask {
+    /// Abort the watcher task immediately.
+    pub fn abort(&self) {
+        self.handle.abort();
+    }
+}
+
+impl Drop for UsbHotplugTask {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 /// USB hotplug monitor wrapper.
 ///
-/// The nusb-backed watcher integration is added in a follow-up milestone.
+/// Uses `nusb::watch_devices()` and emits HAL-filtered arrival/removal events.
 pub struct UsbHotplugMonitor {
     event_tx: tokio::sync::broadcast::Sender<UsbHotplugEvent>,
 }
@@ -43,6 +71,20 @@ impl UsbHotplugMonitor {
     #[must_use]
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<UsbHotplugEvent> {
         self.event_tx.subscribe()
+    }
+
+    /// Start background USB hotplug monitoring.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the platform hotplug watcher cannot be created.
+    pub fn start(&self) -> Result<UsbHotplugTask> {
+        let watch = nusb::watch_devices().context("failed to start USB hotplug watcher")?;
+        let event_tx = self.event_tx.clone();
+        let handle = tokio::spawn(async move {
+            run_hotplug_loop(event_tx, watch).await;
+        });
+        Ok(UsbHotplugTask { handle })
     }
 
     /// Emit an arrival event.
@@ -66,4 +108,67 @@ impl UsbHotplugMonitor {
             product_id,
         });
     }
+}
+
+async fn run_hotplug_loop(
+    event_tx: tokio::sync::broadcast::Sender<UsbHotplugEvent>,
+    mut watch: nusb::hotplug::HotplugWatch,
+) {
+    let mut known_devices = enumerate_known_devices().await;
+
+    while let Some(event) = next_hotplug_event(&mut watch).await {
+        match event {
+            HotplugEvent::Connected(device) => {
+                let vendor_id = device.vendor_id();
+                let product_id = device.product_id();
+
+                known_devices.insert(device.id(), (vendor_id, product_id));
+
+                if let Some(descriptor) = ProtocolDatabase::lookup(vendor_id, product_id) {
+                    let _ = event_tx.send(UsbHotplugEvent::Arrived {
+                        vendor_id,
+                        product_id,
+                        descriptor,
+                    });
+                }
+            }
+            HotplugEvent::Disconnected(device_id) => {
+                let Some((vendor_id, product_id)) = known_devices.remove(&device_id) else {
+                    continue;
+                };
+
+                if ProtocolDatabase::lookup(vendor_id, product_id).is_some() {
+                    let _ = event_tx.send(UsbHotplugEvent::Removed {
+                        vendor_id,
+                        product_id,
+                    });
+                }
+            }
+        }
+    }
+
+    debug!("USB hotplug watcher exited");
+}
+
+async fn enumerate_known_devices() -> HashMap<nusb::DeviceId, (u16, u16)> {
+    let mut known_devices = HashMap::new();
+    match nusb::list_devices().await {
+        Ok(devices) => {
+            for device in devices {
+                let vendor_id = device.vendor_id();
+                let product_id = device.product_id();
+                if ProtocolDatabase::lookup(vendor_id, product_id).is_some() {
+                    known_devices.insert(device.id(), (vendor_id, product_id));
+                }
+            }
+        }
+        Err(error) => {
+            warn!(error = %error, "failed to enumerate USB devices for hotplug baseline");
+        }
+    }
+    known_devices
+}
+
+async fn next_hotplug_event(watch: &mut nusb::hotplug::HotplugWatch) -> Option<HotplugEvent> {
+    poll_fn(|cx| Pin::new(&mut *watch).poll_next(cx)).await
 }

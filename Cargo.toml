@@ -61,6 +61,7 @@ anyhow = "1.0"
 # Async runtime
 tokio = { version = "1.44", features = ["full"] }
 async-trait = "0.1"
+futures-core = "0.3"
 
 # Observability
 tracing = "0.1"

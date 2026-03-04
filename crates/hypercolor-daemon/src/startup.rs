@@ -23,7 +23,10 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::openrgb::{ClientConfig as OpenRgbClientConfig, OpenRgbBackend};
 use hypercolor_core::device::wled::WledBackend;
-use hypercolor_core::device::{BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbBackend};
+use hypercolor_core::device::{
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbBackend, UsbHotplugEvent,
+    UsbHotplugMonitor,
+};
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{
     EffectEngine, EffectRegistry, default_effect_search_paths, register_html_effects,
@@ -398,13 +401,15 @@ impl DaemonState {
     }
 
     fn spawn_discovery_worker(&mut self, config: Arc<HypercolorConfig>) {
-        let device_registry = self.device_registry.clone();
-        let backend_manager = Arc::clone(&self.backend_manager);
-        let lifecycle_manager = Arc::clone(&self.lifecycle_manager);
-        let reconnect_tasks = Arc::clone(&self.reconnect_tasks);
-        let event_bus = Arc::clone(&self.event_bus);
-        let config_manager = Arc::clone(&self.config_manager);
-        let in_progress = Arc::clone(&self.discovery_in_progress);
+        let worker = DiscoveryWorkerContext {
+            device_registry: self.device_registry.clone(),
+            backend_manager: Arc::clone(&self.backend_manager),
+            lifecycle_manager: Arc::clone(&self.lifecycle_manager),
+            reconnect_tasks: Arc::clone(&self.reconnect_tasks),
+            event_bus: Arc::clone(&self.event_bus),
+            config_manager: Arc::clone(&self.config_manager),
+            in_progress: Arc::clone(&self.discovery_in_progress),
+        };
 
         let initial_backends = match discovery::resolve_backends(None, &config) {
             Ok(backends) => backends,
@@ -417,76 +422,166 @@ impl DaemonState {
             std::time::Duration::from_secs(config.discovery.scan_interval_secs.max(1));
 
         self.discovery_task = Some(tokio::spawn(async move {
-            if !initial_backends.is_empty()
-                && in_progress
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-            {
-                let runtime = discovery::DiscoveryRuntime {
-                    device_registry: device_registry.clone(),
-                    backend_manager: Arc::clone(&backend_manager),
-                    lifecycle_manager: Arc::clone(&lifecycle_manager),
-                    reconnect_tasks: Arc::clone(&reconnect_tasks),
-                    event_bus: Arc::clone(&event_bus),
-                    in_progress: Arc::clone(&in_progress),
-                };
-                let _ = discovery::execute_discovery_scan(
-                    runtime,
+            let hotplug_monitor = UsbHotplugMonitor::new(256);
+            let mut hotplug_rx = hotplug_monitor.subscribe();
+            let mut hotplug_task = match hotplug_monitor.start() {
+                Ok(task) => {
+                    info!("USB hotplug watcher started");
+                    Some(task)
+                }
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        "USB hotplug watcher failed to start; falling back to periodic scans"
+                    );
+                    None
+                }
+            };
+
+            worker
+                .run_scan_if_idle(
                     Arc::clone(&config),
                     initial_backends,
-                    discovery::default_timeout(),
+                    "Skipping initial discovery scan; scan already in progress",
                 )
                 .await;
-            }
 
             let mut ticker = tokio::time::interval(scan_interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             ticker.tick().await; // consume immediate tick
 
             loop {
-                ticker.tick().await;
+                let run_periodic_scan = if hotplug_task.is_some() {
+                    tokio::select! {
+                        _ = ticker.tick() => true,
+                        event = hotplug_rx.recv() => {
+                            let run_usb_scan = match event {
+                                Ok(UsbHotplugEvent::Arrived { vendor_id, product_id, descriptor }) => {
+                                    info!(
+                                        vendor_id,
+                                        product_id,
+                                        device = descriptor.name,
+                                        "USB hotplug arrival detected"
+                                    );
+                                    true
+                                }
+                                Ok(UsbHotplugEvent::Removed { vendor_id, product_id }) => {
+                                    info!(vendor_id, product_id, "USB hotplug removal detected");
+                                    true
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                    warn!(skipped, "USB hotplug receiver lagged");
+                                    false
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                    warn!("USB hotplug event channel closed; disabling hotplug-triggered scans");
+                                    if let Some(task) = hotplug_task.take() {
+                                        task.abort();
+                                    }
+                                    false
+                                }
+                            };
 
-                let latest_config = Arc::clone(&config_manager.get());
-                let backends = match discovery::resolve_backends(None, &latest_config) {
-                    Ok(backends) => backends,
-                    Err(error) => {
-                        warn!(
-                            error = %error,
-                            "Periodic discovery backend resolution failed; skipping interval"
-                        );
-                        continue;
+                            if run_usb_scan {
+                                worker.run_usb_hotplug_scan().await;
+                            }
+                            false
+                        }
                     }
+                } else {
+                    ticker.tick().await;
+                    true
                 };
 
-                if backends.is_empty() {
+                if !run_periodic_scan {
                     continue;
                 }
 
-                if in_progress
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_err()
-                {
-                    debug!("Skipping periodic discovery scan; scan already in progress");
-                    continue;
-                }
-
-                let runtime = discovery::DiscoveryRuntime {
-                    device_registry: device_registry.clone(),
-                    backend_manager: Arc::clone(&backend_manager),
-                    lifecycle_manager: Arc::clone(&lifecycle_manager),
-                    reconnect_tasks: Arc::clone(&reconnect_tasks),
-                    event_bus: Arc::clone(&event_bus),
-                    in_progress: Arc::clone(&in_progress),
-                };
-                let _ = discovery::execute_discovery_scan(
-                    runtime,
-                    latest_config,
-                    backends,
-                    discovery::default_timeout(),
-                )
-                .await;
+                worker.run_periodic_scan().await;
             }
         }));
+    }
+}
+
+#[derive(Clone)]
+struct DiscoveryWorkerContext {
+    device_registry: DeviceRegistry,
+    backend_manager: Arc<Mutex<BackendManager>>,
+    lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
+    reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
+    event_bus: Arc<HypercolorBus>,
+    config_manager: Arc<ConfigManager>,
+    in_progress: Arc<AtomicBool>,
+}
+
+impl DiscoveryWorkerContext {
+    fn runtime(&self) -> discovery::DiscoveryRuntime {
+        discovery::DiscoveryRuntime {
+            device_registry: self.device_registry.clone(),
+            backend_manager: Arc::clone(&self.backend_manager),
+            lifecycle_manager: Arc::clone(&self.lifecycle_manager),
+            reconnect_tasks: Arc::clone(&self.reconnect_tasks),
+            event_bus: Arc::clone(&self.event_bus),
+            in_progress: Arc::clone(&self.in_progress),
+        }
+    }
+
+    async fn run_scan_if_idle(
+        &self,
+        config: Arc<HypercolorConfig>,
+        backends: Vec<DiscoveryBackend>,
+        busy_log: &'static str,
+    ) {
+        if backends.is_empty() {
+            return;
+        }
+
+        if self
+            .in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            debug!("{busy_log}");
+            return;
+        }
+
+        let _ = discovery::execute_discovery_scan(
+            self.runtime(),
+            config,
+            backends,
+            discovery::default_timeout(),
+        )
+        .await;
+    }
+
+    async fn run_periodic_scan(&self) {
+        let latest_config = Arc::clone(&self.config_manager.get());
+        let backends = match discovery::resolve_backends(None, &latest_config) {
+            Ok(backends) => backends,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "Periodic discovery backend resolution failed; skipping interval"
+                );
+                return;
+            }
+        };
+
+        self.run_scan_if_idle(
+            latest_config,
+            backends,
+            "Skipping periodic discovery scan; scan already in progress",
+        )
+        .await;
+    }
+
+    async fn run_usb_hotplug_scan(&self) {
+        self.run_scan_if_idle(
+            Arc::clone(&self.config_manager.get()),
+            vec![DiscoveryBackend::Usb],
+            "Skipping USB hotplug scan; discovery already in progress",
+        )
+        .await;
     }
 }
 
