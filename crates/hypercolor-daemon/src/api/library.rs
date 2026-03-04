@@ -8,6 +8,7 @@ use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 
+use hypercolor_core::effect::create_renderer_for_metadata;
 use hypercolor_types::effect::ControlValue;
 use hypercolor_types::library::{
     EffectPlaylist, EffectPreset, PlaylistId, PlaylistItem, PlaylistItemId, PlaylistItemTarget,
@@ -320,6 +321,71 @@ pub async fn delete_preset(State(state): State<Arc<AppState>>, Path(id): Path<St
     ApiResponse::ok(serde_json::json!({
         "id": preset_id.to_string(),
         "deleted": true,
+    }))
+}
+
+/// `POST /api/v1/library/presets/:id/apply` — activate a preset immediately.
+pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let Ok(preset_id) = id.parse::<PresetId>() else {
+        return ApiError::bad_request(format!("Invalid preset id: {id}"));
+    };
+    let Some(preset) = state.library_store.get_preset(preset_id).await else {
+        return ApiError::not_found(format!("Preset not found: {id}"));
+    };
+
+    let metadata = {
+        let registry = state.effect_registry.read().await;
+        let Some(entry) = registry.get(&preset.effect_id) else {
+            return ApiError::not_found(format!(
+                "Preset references missing effect: {}",
+                preset.effect_id
+            ));
+        };
+        entry.metadata.clone()
+    };
+
+    let renderer = match create_renderer_for_metadata(&metadata) {
+        Ok(renderer) => renderer,
+        Err(error) => {
+            return ApiError::bad_request(format!(
+                "Failed to prepare renderer for preset '{}': {error}",
+                preset.name
+            ));
+        }
+    };
+
+    let mut applied: HashMap<String, ControlValue> = HashMap::new();
+    let mut rejected: Vec<String> = Vec::new();
+    {
+        let mut engine = state.effect_engine.lock().await;
+        if let Err(error) = engine.activate(renderer, metadata.clone()) {
+            return ApiError::internal(format!(
+                "Failed to activate effect '{}' from preset '{}': {error}",
+                metadata.name, preset.name
+            ));
+        }
+
+        for (name, value) in &preset.controls {
+            match engine.set_control_checked(name, value) {
+                Ok(normalized) => {
+                    applied.insert(name.clone(), normalized);
+                }
+                Err(error) => rejected.push(format!("{name} ({error})")),
+            }
+        }
+    }
+
+    ApiResponse::ok(serde_json::json!({
+        "preset": {
+            "id": preset.id.to_string(),
+            "name": preset.name,
+        },
+        "effect": {
+            "id": metadata.id.to_string(),
+            "name": metadata.name,
+        },
+        "applied_controls": applied,
+        "rejected_controls": rejected,
     }))
 }
 

@@ -594,6 +594,69 @@ async fn library_presets_create_and_get() {
 }
 
 #[tokio::test]
+async fn library_preset_apply_activates_effect_with_controls() {
+    let state = Arc::new(AppState::new());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/library/presets")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "name":"Apply Me",
+                        "effect":"solid_color",
+                        "controls":{"speed":7.25}
+                    }"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    let preset_id = create_json["data"]["id"]
+        .as_str()
+        .expect("preset id should be string")
+        .to_owned();
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/library/presets/{preset_id}/apply"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+    let apply_json = body_json(apply_response).await;
+    assert_eq!(apply_json["data"]["preset"]["id"], preset_id);
+    assert_eq!(apply_json["data"]["effect"]["name"], "solid_color");
+    assert_eq!(apply_json["data"]["applied_controls"]["speed"]["float"], 7.5);
+
+    let active_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_response.status(), StatusCode::OK);
+    let active_json = body_json(active_response).await;
+    assert_eq!(active_json["data"]["name"], "solid_color");
+    assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 7.5);
+}
+
+#[tokio::test]
 async fn library_playlists_create_with_effect_and_preset_targets() {
     let state = Arc::new(AppState::new());
     insert_test_effect(&state, "solid_color").await;

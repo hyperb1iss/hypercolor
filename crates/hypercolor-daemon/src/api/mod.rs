@@ -278,6 +278,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                 .delete(library::delete_preset),
         )
         .route(
+            "/library/presets/{id}/apply",
+            axum::routing::post(library::apply_preset),
+        )
+        .route(
             "/library/playlists",
             axum::routing::get(library::list_playlists).post(library::create_playlist),
         )
