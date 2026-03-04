@@ -256,12 +256,19 @@ Stops only the playlist scheduler runtime. The last activated effect remains act
 
 ## Storage Status (Current)
 
-Library persistence currently uses an in-memory store:
+When the daemon builds `AppState` from live startup state, library data is
+persisted to:
 
-- Data is process-local.
-- Data is lost on daemon restart.
+- Linux default: `~/.local/share/hypercolor/library.json` (or `$XDG_DATA_HOME/hypercolor/library.json`)
 
-This is intentionally abstracted behind `LibraryStore` so a durable backend (for example Turso/libsql) can be added without changing the API contract.
+Behavior:
+
+- Snapshot is written after each library mutation.
+- On load failure (missing/corrupt file), daemon logs a warning and falls back
+  to in-memory storage for that run.
+
+The API contract stays stable because storage is abstracted behind
+`LibraryStore`, enabling future Turso/libsql migration without endpoint changes.
 
 ## Minimal cURL Flows
 

@@ -30,6 +30,7 @@ use tokio::sync::{Mutex, RwLock};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
+use tracing::warn;
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
@@ -40,7 +41,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::spatial::SpatialLayout;
 
-use crate::library::{InMemoryLibraryStore, LibraryStore};
+use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
 use crate::playlist_runtime::PlaylistRuntimeState;
 
 // ── AppState ─────────────────────────────────────────────────────────────
@@ -154,6 +155,20 @@ impl AppState {
     /// shared by `Arc::clone` — the API operates on the exact same live
     /// instances as the daemon's render pipeline.
     pub fn from_daemon_state(daemon: &crate::startup::DaemonState) -> Self {
+        let library_path = ConfigManager::data_dir().join("library.json");
+        let library_store: Arc<dyn LibraryStore> =
+            match JsonLibraryStore::open(library_path.clone()) {
+                Ok(store) => Arc::new(store),
+                Err(error) => {
+                    warn!(
+                        path = %library_path.display(),
+                        %error,
+                        "Failed to load persisted library store; falling back to in-memory store"
+                    );
+                    Arc::new(InMemoryLibraryStore::new())
+                }
+            };
+
         Self {
             device_registry: daemon.device_registry.clone(),
             effect_registry: Arc::clone(&daemon.effect_registry),
@@ -167,7 +182,7 @@ impl AppState {
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
-            library_store: Arc::new(InMemoryLibraryStore::new()),
+            library_store,
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: daemon.start_time,
         }
