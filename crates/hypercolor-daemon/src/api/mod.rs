@@ -213,6 +213,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(devices::discover_devices),
         )
         .route(
+            "/devices/debug/queues",
+            axum::routing::get(devices::debug_output_queues),
+        )
+        .route(
             "/devices/{id}",
             axum::routing::get(devices::get_device)
                 .put(devices::update_device)
@@ -273,11 +277,16 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/layouts",
             axum::routing::get(layouts::list_layouts).post(layouts::create_layout),
         )
+        .route("/layouts/active", axum::routing::get(layouts::get_active_layout))
         .route(
             "/layouts/{id}",
             axum::routing::get(layouts::get_layout)
                 .put(layouts::update_layout)
                 .delete(layouts::delete_layout),
+        )
+        .route(
+            "/layouts/{id}/apply",
+            axum::routing::post(layouts::apply_layout),
         )
         // ── Library ──────────────────────────────────────────────────
         .route(

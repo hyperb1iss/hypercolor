@@ -7,8 +7,9 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::Response;
+use hypercolor_types::spatial::SpatialLayout;
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
@@ -29,29 +30,56 @@ pub struct LayoutSummary {
     pub canvas_width: u32,
     pub canvas_height: u32,
     pub zone_count: usize,
+    pub is_active: bool,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateLayoutRequest {
     pub name: String,
+    pub description: Option<String>,
     pub canvas_width: Option<u32>,
     pub canvas_height: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateLayoutRequest {
-    pub name: String,
+    pub name: Option<String>,
+    pub description: Option<String>,
     pub canvas_width: Option<u32>,
     pub canvas_height: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct LayoutListQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+    pub active: Option<bool>,
+}
+
+#[derive(Debug)]
+enum ResolveLayoutError {
+    AmbiguousName(String),
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/layouts` — List all spatial layouts.
-pub async fn list_layouts(State(state): State<Arc<AppState>>) -> Response {
-    let layouts = state.layouts.read().await;
+pub async fn list_layouts(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<LayoutListQuery>,
+) -> Response {
+    let limit = query.limit.unwrap_or(50);
+    if limit == 0 || limit > 200 {
+        return ApiError::validation("limit must be between 1 and 200");
+    }
+    let offset = query.offset.unwrap_or(0);
 
-    let items: Vec<LayoutSummary> = layouts
+    let active_layout_id = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().id.clone()
+    };
+    let layouts = state.layouts.read().await;
+    let mut items: Vec<LayoutSummary> = layouts
         .values()
         .map(|layout| LayoutSummary {
             id: layout.id.clone(),
@@ -59,17 +87,25 @@ pub async fn list_layouts(State(state): State<Arc<AppState>>) -> Response {
             canvas_width: layout.canvas_width,
             canvas_height: layout.canvas_height,
             zone_count: layout.zones.len(),
+            is_active: layout.id == active_layout_id,
         })
         .collect();
+    items.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+
+    if query.active.unwrap_or(false) {
+        items.retain(|layout| layout.is_active);
+    }
 
     let total = items.len();
+    let paged_items: Vec<LayoutSummary> = items.into_iter().skip(offset).take(limit).collect();
+    let has_more = offset.saturating_add(limit) < total;
     ApiResponse::ok(LayoutListResponse {
-        items,
+        items: paged_items,
         pagination: super::devices::Pagination {
-            offset: 0,
-            limit: 50,
+            offset,
+            limit,
             total,
-            has_more: false,
+            has_more,
         },
     })
 }
@@ -77,19 +113,25 @@ pub async fn list_layouts(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/layouts/:id` — Get a single layout with full zone data.
 pub async fn get_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let layouts = state.layouts.read().await;
-    let Some(key) = resolve_layout_key(&layouts, &id) else {
-        return ApiError::not_found(format!("Layout not found: {id}"));
+    let key = match resolve_layout_key(&layouts, &id) {
+        Ok(Some(key)) => key,
+        Ok(None) => return ApiError::not_found(format!("Layout not found: {id}")),
+        Err(ResolveLayoutError::AmbiguousName(name)) => {
+            return ApiError::conflict(format!("Layout name is ambiguous: {name}"));
+        }
     };
 
     let layout = layouts.get(&key).expect("resolved layout key must exist");
+    ApiResponse::ok(layout)
+}
 
-    ApiResponse::ok(LayoutSummary {
-        id: layout.id.clone(),
-        name: layout.name.clone(),
-        canvas_width: layout.canvas_width,
-        canvas_height: layout.canvas_height,
-        zone_count: layout.zones.len(),
-    })
+/// `GET /api/v1/layouts/active` — Get currently active layout.
+pub async fn get_active_layout(State(state): State<Arc<AppState>>) -> Response {
+    let active = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().clone()
+    };
+    ApiResponse::ok(active)
 }
 
 /// `POST /api/v1/layouts` — Create a new layout.
@@ -97,15 +139,31 @@ pub async fn create_layout(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateLayoutRequest>,
 ) -> Response {
+    let normalized_name = match normalize_layout_name(&body.name) {
+        Ok(name) => name,
+        Err(error) => return ApiError::validation(error),
+    };
+    let canvas_width = body.canvas_width.unwrap_or(320);
+    let canvas_height = body.canvas_height.unwrap_or(200);
+    if let Err(error) = validate_canvas_dimensions(canvas_width, canvas_height) {
+        return ApiError::validation(error);
+    }
+
     let mut layouts = state.layouts.write().await;
+    if layouts
+        .values()
+        .any(|layout| layout.name.eq_ignore_ascii_case(&normalized_name))
+    {
+        return ApiError::conflict(format!("Layout already exists: {normalized_name}"));
+    }
 
     let id = format!("layout_{}", uuid::Uuid::now_v7());
-    let layout = hypercolor_types::spatial::SpatialLayout {
+    let layout = SpatialLayout {
         id: id.clone(),
-        name: body.name.clone(),
-        description: None,
-        canvas_width: body.canvas_width.unwrap_or(320),
-        canvas_height: body.canvas_height.unwrap_or(200),
+        name: normalized_name,
+        description: body.description,
+        canvas_width,
+        canvas_height,
         zones: Vec::new(),
         default_sampling_mode: hypercolor_types::spatial::SamplingMode::Bilinear,
         default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
@@ -119,6 +177,7 @@ pub async fn create_layout(
         canvas_width: layout.canvas_width,
         canvas_height: layout.canvas_height,
         zone_count: 0,
+        is_active: false,
     };
 
     layouts.insert(id, layout);
@@ -132,39 +191,99 @@ pub async fn update_layout(
     Json(body): Json<UpdateLayoutRequest>,
 ) -> Response {
     let mut layouts = state.layouts.write().await;
-    let Some(key) = resolve_layout_key(&layouts, &id) else {
-        return ApiError::not_found(format!("Layout not found: {id}"));
+    let key = match resolve_layout_key(&layouts, &id) {
+        Ok(Some(key)) => key,
+        Ok(None) => return ApiError::not_found(format!("Layout not found: {id}")),
+        Err(ResolveLayoutError::AmbiguousName(name)) => {
+            return ApiError::conflict(format!("Layout name is ambiguous: {name}"));
+        }
     };
 
     let existing = layouts
         .get_mut(&key)
         .expect("resolved layout key must exist");
 
-    existing.name.clone_from(&body.name);
+    if let Some(name) = body.name {
+        let normalized_name = match normalize_layout_name(&name) {
+            Ok(name) => name,
+            Err(error) => return ApiError::validation(error),
+        };
+        existing.name = normalized_name;
+    }
+    existing.description = body.description;
+
     if let Some(w) = body.canvas_width {
         existing.canvas_width = w;
     }
     if let Some(h) = body.canvas_height {
         existing.canvas_height = h;
     }
+    if let Err(error) = validate_canvas_dimensions(existing.canvas_width, existing.canvas_height) {
+        return ApiError::validation(error);
+    }
 
+    let active_layout_id = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().id.clone()
+    };
     let summary = LayoutSummary {
         id: existing.id.clone(),
         name: existing.name.clone(),
         canvas_width: existing.canvas_width,
         canvas_height: existing.canvas_height,
         zone_count: existing.zones.len(),
+        is_active: existing.id == active_layout_id,
     };
 
     ApiResponse::ok(summary)
 }
 
+/// `POST /api/v1/layouts/:id/apply` — Apply a saved layout to the spatial engine.
+pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let layout = {
+        let layouts = state.layouts.read().await;
+        let key = match resolve_layout_key(&layouts, &id) {
+            Ok(Some(key)) => key,
+            Ok(None) => return ApiError::not_found(format!("Layout not found: {id}")),
+            Err(ResolveLayoutError::AmbiguousName(name)) => {
+                return ApiError::conflict(format!("Layout name is ambiguous: {name}"));
+            }
+        };
+        layouts
+            .get(&key)
+            .expect("resolved layout key must exist")
+            .clone()
+    };
+
+    {
+        let mut spatial = state.spatial_engine.write().await;
+        spatial.update_layout(layout.clone());
+    }
+
+    ApiResponse::ok(serde_json::json!({
+        "layout": layout,
+        "applied": true,
+    }))
+}
+
 /// `DELETE /api/v1/layouts/:id` — Delete a layout.
 pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let mut layouts = state.layouts.write().await;
-    let Some(key) = resolve_layout_key(&layouts, &id) else {
-        return ApiError::not_found(format!("Layout not found: {id}"));
+    let active_layout_id = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().id.clone()
     };
+    let mut layouts = state.layouts.write().await;
+    let key = match resolve_layout_key(&layouts, &id) {
+        Ok(Some(key)) => key,
+        Ok(None) => return ApiError::not_found(format!("Layout not found: {id}")),
+        Err(ResolveLayoutError::AmbiguousName(name)) => {
+            return ApiError::conflict(format!("Layout name is ambiguous: {name}"));
+        }
+    };
+
+    if key == active_layout_id {
+        return ApiError::conflict("Cannot delete the active layout");
+    }
 
     layouts.remove(&key);
 
@@ -175,15 +294,37 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
 }
 
 fn resolve_layout_key(
-    layouts: &std::collections::HashMap<String, hypercolor_types::spatial::SpatialLayout>,
+    layouts: &std::collections::HashMap<String, SpatialLayout>,
     id_or_name: &str,
-) -> Option<String> {
+) -> Result<Option<String>, ResolveLayoutError> {
     if layouts.contains_key(id_or_name) {
-        return Some(id_or_name.to_owned());
+        return Ok(Some(id_or_name.to_owned()));
     }
 
-    layouts
+    let matches: Vec<String> = layouts
         .iter()
-        .find(|(_, layout)| layout.name.eq_ignore_ascii_case(id_or_name))
+        .filter(|(_, layout)| layout.name.eq_ignore_ascii_case(id_or_name))
         .map(|(id, _)| id.clone())
+        .collect();
+
+    if matches.len() > 1 {
+        return Err(ResolveLayoutError::AmbiguousName(id_or_name.to_owned()));
+    }
+
+    Ok(matches.first().cloned())
+}
+
+fn normalize_layout_name(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("Layout name must not be empty".to_owned());
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn validate_canvas_dimensions(width: u32, height: u32) -> Result<(), String> {
+    if width == 0 || height == 0 {
+        return Err("canvas_width and canvas_height must be greater than 0".to_owned());
+    }
+    Ok(())
 }

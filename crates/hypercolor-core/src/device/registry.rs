@@ -177,6 +177,41 @@ impl DeviceRegistry {
         }
     }
 
+    /// Update user-facing mutable settings for a tracked device.
+    ///
+    /// Supported updates:
+    /// - `name`: display name override
+    /// - `enabled`: maps to lifecycle state (`false` => `Disabled`,
+    ///   `true` transitions `Disabled` back to `Known`)
+    ///
+    /// Returns the updated device snapshot, or `None` if the device ID is
+    /// unknown.
+    pub async fn update_user_settings(
+        &self,
+        id: &DeviceId,
+        name: Option<String>,
+        enabled: Option<bool>,
+    ) -> Option<TrackedDevice> {
+        let mut inner = self.inner.write().await;
+        let entry = inner.devices.get_mut(id)?;
+
+        if let Some(name) = name {
+            entry.info.name = name;
+        }
+
+        if let Some(enabled) = enabled {
+            if enabled {
+                if entry.state == DeviceState::Disabled {
+                    entry.state = DeviceState::Known;
+                }
+            } else {
+                entry.state = DeviceState::Disabled;
+            }
+        }
+
+        Some(entry.clone())
+    }
+
     /// Number of devices currently tracked.
     pub async fn len(&self) -> usize {
         let inner = self.inner.read().await;

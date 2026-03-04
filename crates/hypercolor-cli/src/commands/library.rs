@@ -66,6 +66,8 @@ pub struct PresetsArgs {
 /// Presets subcommands.
 #[derive(Debug, Subcommand)]
 pub enum PresetsCommand {
+    /// Create a preset.
+    Create(PresetCreateArgs),
     /// List saved presets.
     List,
     /// Show one preset.
@@ -100,6 +102,25 @@ pub struct PresetDeleteArgs {
     pub yes: bool,
 }
 
+/// Arguments for `library presets create`.
+#[derive(Debug, Args)]
+pub struct PresetCreateArgs {
+    /// Preset name.
+    pub name: String,
+    /// Effect ID or name.
+    #[arg(long)]
+    pub effect: String,
+    /// Optional description.
+    #[arg(long)]
+    pub description: Option<String>,
+    /// Repeatable control assignment (`key=value`).
+    #[arg(long, short = 'c', value_parser = parse_key_value)]
+    pub control: Vec<(String, String)>,
+    /// Repeatable tag.
+    #[arg(long, short = 't')]
+    pub tag: Vec<String>,
+}
+
 /// Playlists command group.
 #[derive(Debug, Args)]
 pub struct PlaylistsArgs {
@@ -110,6 +131,8 @@ pub struct PlaylistsArgs {
 /// Playlists subcommands.
 #[derive(Debug, Subcommand)]
 pub enum PlaylistsCommand {
+    /// Create a playlist.
+    Create(PlaylistCreateArgs),
     /// List saved playlists.
     List,
     /// Show one playlist.
@@ -146,6 +169,44 @@ pub struct PlaylistDeleteArgs {
     /// Skip confirmation prompt.
     #[arg(long)]
     pub yes: bool,
+}
+
+/// Parsed playlist item target kind.
+#[derive(Debug, Clone, Copy)]
+enum PlaylistItemKind {
+    Effect,
+    Preset,
+}
+
+/// Parsed CLI playlist item.
+#[derive(Debug, Clone)]
+pub struct PlaylistItemSpec {
+    kind: PlaylistItemKind,
+    target: String,
+    duration_ms: Option<u64>,
+    transition_ms: Option<u64>,
+}
+
+/// Arguments for `library playlists create`.
+#[derive(Debug, Args)]
+pub struct PlaylistCreateArgs {
+    /// Playlist name.
+    pub name: String,
+    /// Optional description.
+    #[arg(long)]
+    pub description: Option<String>,
+    /// Disable looping (default loop behavior is enabled).
+    #[arg(long)]
+    pub no_loop: bool,
+    /// Repeatable item spec.
+    ///
+    /// Format:
+    /// - `effect:<effect>`
+    /// - `preset:<preset>`
+    /// - optional `:duration_ms`
+    /// - optional `:duration_ms:transition_ms`
+    #[arg(long, short = 'i', value_parser = parse_playlist_item_spec)]
+    pub item: Vec<PlaylistItemSpec>,
 }
 
 /// Execute `library` commands.
@@ -297,6 +358,9 @@ async fn execute_presets(
                 }
             }
         }
+        PresetsCommand::Create(create_args) => {
+            execute_create_preset(create_args, client, ctx).await?;
+        }
         PresetsCommand::Info(info_args) => {
             let path = format!("/library/presets/{}", urlencoded(&info_args.preset));
             let response = client.get(&path).await?;
@@ -389,6 +453,9 @@ async fn execute_playlists(
     ctx: &OutputContext,
 ) -> Result<()> {
     match &args.command {
+        PlaylistsCommand::Create(create_args) => {
+            execute_create_playlist(create_args, client, ctx).await?;
+        }
         PlaylistsCommand::List => {
             let response = client.get("/library/playlists").await?;
             match ctx.format {
@@ -555,4 +622,155 @@ async fn execute_playlists(
     }
 
     Ok(())
+}
+
+async fn execute_create_preset(
+    args: &PresetCreateArgs,
+    client: &DaemonClient,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let mut controls = serde_json::Map::new();
+    for (key, value) in &args.control {
+        controls.insert(key.clone(), parse_control_literal(value));
+    }
+
+    let body = serde_json::json!({
+        "name": args.name,
+        "description": args.description,
+        "effect": args.effect,
+        "controls": controls,
+        "tags": args.tag,
+    });
+    let response = client.post("/library/presets", &body).await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain | OutputFormat::Table => {
+            let id = extract_str(&response, "id");
+            ctx.success(&format!("Preset created: {} ({id})", args.name));
+        }
+    }
+
+    Ok(())
+}
+
+async fn execute_create_playlist(
+    args: &PlaylistCreateArgs,
+    client: &DaemonClient,
+    ctx: &OutputContext,
+) -> Result<()> {
+    let items: Vec<serde_json::Value> = args
+        .item
+        .iter()
+        .map(|item| {
+            let target = match item.kind {
+                PlaylistItemKind::Effect => serde_json::json!({
+                    "type": "effect",
+                    "effect": item.target,
+                }),
+                PlaylistItemKind::Preset => serde_json::json!({
+                    "type": "preset",
+                    "preset_id": item.target,
+                }),
+            };
+            serde_json::json!({
+                "target": target,
+                "duration_ms": item.duration_ms,
+                "transition_ms": item.transition_ms,
+            })
+        })
+        .collect();
+
+    let body = serde_json::json!({
+        "name": args.name,
+        "description": args.description,
+        "loop_enabled": !args.no_loop,
+        "items": items,
+    });
+    let response = client.post("/library/playlists", &body).await?;
+
+    match ctx.format {
+        OutputFormat::Json => ctx.print_json(&response)?,
+        OutputFormat::Plain | OutputFormat::Table => {
+            let id = extract_str(&response, "id");
+            ctx.success(&format!("Playlist created: {} ({id})", args.name));
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_key_value(s: &str) -> Result<(String, String), String> {
+    let pos = s
+        .find('=')
+        .ok_or_else(|| format!("invalid KEY=VALUE: no '=' found in '{s}'"))?;
+    Ok((s[..pos].to_owned(), s[pos + 1..].to_owned()))
+}
+
+fn parse_control_literal(raw: &str) -> serde_json::Value {
+    if raw.eq_ignore_ascii_case("true") {
+        return serde_json::Value::Bool(true);
+    }
+    if raw.eq_ignore_ascii_case("false") {
+        return serde_json::Value::Bool(false);
+    }
+    if let Ok(value) = raw.parse::<i64>() {
+        return serde_json::json!(value);
+    }
+    if let Ok(value) = raw.parse::<f64>() {
+        return serde_json::json!(value);
+    }
+    if raw.starts_with('[')
+        && raw.ends_with(']')
+        && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw)
+    {
+        return parsed;
+    }
+    serde_json::Value::String(raw.to_owned())
+}
+
+fn parse_playlist_item_spec(raw: &str) -> Result<PlaylistItemSpec, String> {
+    let (kind, rest) = if let Some(rest) = raw.strip_prefix("effect:") {
+        (PlaylistItemKind::Effect, rest)
+    } else if let Some(rest) = raw.strip_prefix("preset:") {
+        (PlaylistItemKind::Preset, rest)
+    } else {
+        return Err(format!(
+            "invalid item '{raw}': expected prefix 'effect:' or 'preset:'"
+        ));
+    };
+
+    if rest.trim().is_empty() {
+        return Err(format!("invalid item '{raw}': missing target"));
+    }
+
+    let mut target = rest.to_owned();
+    let mut duration_ms = None;
+    let mut transition_ms = None;
+
+    if let Some((head, tail)) = target.rsplit_once(':')
+        && let Ok(parsed_tail) = tail.parse::<u64>()
+    {
+        target = head.to_owned();
+        if let Some((head2, tail2)) = target.rsplit_once(':')
+            && let Ok(parsed_tail2) = tail2.parse::<u64>()
+        {
+            duration_ms = Some(parsed_tail2);
+            transition_ms = Some(parsed_tail);
+            target = head2.to_owned();
+        } else {
+            duration_ms = Some(parsed_tail);
+        }
+    }
+
+    if target.trim().is_empty() {
+        return Err(format!("invalid item '{raw}': target must not be empty"));
+    }
+
+    Ok(PlaylistItemSpec {
+        kind,
+        target,
+        duration_ms,
+        transition_ms,
+    })
 }

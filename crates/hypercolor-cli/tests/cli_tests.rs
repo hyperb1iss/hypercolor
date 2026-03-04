@@ -229,6 +229,25 @@ fn build_cmd() -> clap::Command {
                     Command::new("presets")
                         .about("Saved presets")
                         .subcommand_required(true)
+                        .subcommand(
+                            Command::new("create")
+                                .about("Create preset")
+                                .arg(Arg::new("name").required(true))
+                                .arg(Arg::new("effect").long("effect").required(true))
+                                .arg(Arg::new("description").long("description"))
+                                .arg(
+                                    Arg::new("control")
+                                        .long("control")
+                                        .short('c')
+                                        .action(ArgAction::Append),
+                                )
+                                .arg(
+                                    Arg::new("tag")
+                                        .long("tag")
+                                        .short('t')
+                                        .action(ArgAction::Append),
+                                ),
+                        )
                         .subcommand(Command::new("list").about("List presets"))
                         .subcommand(
                             Command::new("info")
@@ -251,6 +270,23 @@ fn build_cmd() -> clap::Command {
                     Command::new("playlists")
                         .about("Saved playlists")
                         .subcommand_required(true)
+                        .subcommand(
+                            Command::new("create")
+                                .about("Create playlist")
+                                .arg(Arg::new("name").required(true))
+                                .arg(Arg::new("description").long("description"))
+                                .arg(
+                                    Arg::new("no-loop")
+                                        .long("no-loop")
+                                        .action(ArgAction::SetTrue),
+                                )
+                                .arg(
+                                    Arg::new("item")
+                                        .long("item")
+                                        .short('i')
+                                        .action(ArgAction::Append),
+                                ),
+                        )
                         .subcommand(Command::new("list").about("List playlists"))
                         .subcommand(
                             Command::new("info")
@@ -651,6 +687,37 @@ fn parse_library_presets_apply() {
 }
 
 #[test]
+fn parse_library_presets_create() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from([
+            "hyper",
+            "library",
+            "presets",
+            "create",
+            "Warm Sweep",
+            "--effect",
+            "solid_color",
+            "-c",
+            "speed=7.5",
+            "-t",
+            "cozy",
+        ])
+        .expect("library presets create should parse");
+    let (_, library) = matches.subcommand().expect("should have library");
+    let (_, presets) = library.subcommand().expect("should have presets");
+    let (_, create) = presets.subcommand().expect("should have create");
+    assert_eq!(
+        create.get_one::<String>("name").map(String::as_str),
+        Some("Warm Sweep")
+    );
+    assert_eq!(
+        create.get_one::<String>("effect").map(String::as_str),
+        Some("solid_color")
+    );
+}
+
+#[test]
 fn parse_library_playlists_activate() {
     let cmd = build_cmd();
     let matches = cmd
@@ -662,6 +729,31 @@ fn parse_library_playlists_activate() {
     assert_eq!(
         activate.get_one::<String>("playlist").map(String::as_str),
         Some("runtime_loop")
+    );
+}
+
+#[test]
+fn parse_library_playlists_create() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from([
+            "hyper",
+            "library",
+            "playlists",
+            "create",
+            "Night Rotation",
+            "--item",
+            "effect:solid_color:2000",
+            "--item",
+            "preset:Warm Sweep:3000:250",
+        ])
+        .expect("library playlists create should parse");
+    let (_, library) = matches.subcommand().expect("should have library");
+    let (_, playlists) = library.subcommand().expect("should have playlists");
+    let (_, create) = playlists.subcommand().expect("should have create");
+    assert_eq!(
+        create.get_one::<String>("name").map(String::as_str),
+        Some("Night Rotation")
     );
 }
 
