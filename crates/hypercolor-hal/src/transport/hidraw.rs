@@ -15,6 +15,14 @@ use crate::transport::{Transport, TransportError};
 
 const DEFAULT_MAX_PACKET_LEN: usize = 90;
 
+#[derive(Clone)]
+struct HidrawCandidate {
+    path: String,
+    interface_number: i32,
+    serial: Option<String>,
+    usb_path: Option<String>,
+}
+
 /// HIDRAW transport backed by `hidapi` on Linux.
 pub struct UsbHidRawTransport {
     device_path: String,
@@ -44,36 +52,61 @@ impl UsbHidRawTransport {
         let mut candidates = api
             .device_list()
             .filter(|device| device.vendor_id() == vendor_id && device.product_id() == product_id)
+            .map(|device| HidrawCandidate {
+                path: device.path().to_string_lossy().into_owned(),
+                interface_number: device.interface_number(),
+                serial: device.serial_number().map(ToOwned::to_owned),
+                usb_path: hidraw_usb_path(device.path()),
+            })
             .collect::<Vec<_>>();
 
+        let original_candidates = candidates.clone();
         let requested_interface = i32::from(interface_number);
-        candidates.retain(|candidate| candidate.interface_number() == requested_interface);
+        candidates.retain(|candidate| candidate.interface_number == requested_interface);
 
         if let Some(serial) = serial {
-            candidates.retain(|candidate| candidate.serial_number().is_some_and(|s| s == serial));
+            candidates.retain(|candidate| candidate.serial.as_deref() == Some(serial));
         }
 
         if let Some(usb_path) = usb_path {
             candidates.retain(|candidate| {
-                hidraw_usb_path(candidate.path())
-                    .is_some_and(|candidate_path| candidate_path == usb_path)
+                candidate
+                    .usb_path
+                    .as_deref()
+                    .is_some_and(|candidate_path| usb_paths_match(candidate_path, usb_path))
             });
         }
 
         let Some(chosen) = candidates.into_iter().next() else {
+            let sample_candidates = original_candidates
+                .iter()
+                .take(6)
+                .map(|candidate| {
+                    format!(
+                        "{}(if={}, serial={}, usb_path={})",
+                        candidate.path,
+                        candidate.interface_number,
+                        candidate.serial.as_deref().unwrap_or("<none>"),
+                        candidate.usb_path.as_deref().unwrap_or("<unknown>")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
             return Err(TransportError::NotFound {
                 detail: format!(
-                    "hidraw node not found for {:04X}:{:04X} interface {} (serial={}, usb_path={})",
+                    "hidraw node not found for {:04X}:{:04X} interface {} (serial={}, usb_path={}); candidates=[{}]",
                     vendor_id,
                     product_id,
                     interface_number,
                     serial.unwrap_or("<none>"),
-                    usb_path.unwrap_or("<unknown>")
+                    usb_path.unwrap_or("<unknown>"),
+                    sample_candidates
                 ),
             });
         };
 
-        let device_path = chosen.path().to_string_lossy().into_owned();
+        let device_path = chosen.path;
         let c_path = c_string_for_path(&device_path)?;
         let _ = api
             .open_path(&c_path)
@@ -209,4 +242,38 @@ fn hidraw_usb_path(path: &CStr) -> Option<String> {
     }
 
     None
+}
+
+fn usb_paths_match(candidate: &str, requested: &str) -> bool {
+    if candidate == requested {
+        return true;
+    }
+
+    match (normalize_usb_path(candidate), normalize_usb_path(requested)) {
+        (Some(candidate), Some(requested)) => candidate == requested,
+        _ => false,
+    }
+}
+
+fn normalize_usb_path(path: &str) -> Option<String> {
+    let (bus, ports) = path.split_once('-')?;
+    let bus = bus.parse::<u16>().ok()?;
+    Some(format!("{bus}-{ports}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::usb_paths_match;
+
+    #[test]
+    fn usb_paths_match_handles_padded_bus_numbers() {
+        assert!(usb_paths_match("3-7", "003-7"));
+        assert!(usb_paths_match("003-7", "3-7"));
+        assert!(usb_paths_match("03-7.2", "3-7.2"));
+    }
+
+    #[test]
+    fn usb_paths_match_rejects_different_ports() {
+        assert!(!usb_paths_match("3-7", "3-8"));
+    }
 }

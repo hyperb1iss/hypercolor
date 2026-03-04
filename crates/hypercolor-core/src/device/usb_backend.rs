@@ -57,43 +57,47 @@ impl UsbBackend {
         usb: &nusb::DeviceInfo,
     ) -> Result<Box<dyn Transport>> {
         match pending.descriptor.transport {
-            TransportType::UsbControl {
+            TransportType::UsbHidRaw {
                 interface,
                 report_id,
             } => {
                 #[cfg(target_os = "linux")]
                 {
-                    match UsbHidRawTransport::open(
+                    let transport = UsbHidRawTransport::open(
                         pending.vendor_id,
                         pending.product_id,
                         interface,
                         report_id,
                         pending.serial.as_deref(),
                         pending.usb_path.as_deref(),
-                    ) {
-                        Ok(transport) => {
-                            debug!(
-                                vendor_id = format_args!("{:04X}", pending.vendor_id),
-                                product_id = format_args!("{:04X}", pending.product_id),
-                                interface,
-                                report_id = format_args!("0x{report_id:02X}"),
-                                "using hidraw transport for USB control device"
-                            );
-                            return Ok(Box::new(transport));
-                        }
-                        Err(error) => {
-                            warn!(
-                                vendor_id = format_args!("{:04X}", pending.vendor_id),
-                                product_id = format_args!("{:04X}", pending.product_id),
-                                interface,
-                                report_id = format_args!("0x{report_id:02X}"),
-                                error = %error,
-                                "hidraw transport unavailable; falling back to USB interface claim"
-                            );
-                        }
-                    }
+                    )
+                    .with_context(|| {
+                        format!(
+                            "failed to open hidraw transport for {:04X}:{:04X} interface {} (report_id=0x{report_id:02X})",
+                            pending.vendor_id, pending.product_id, interface
+                        )
+                    })?;
+
+                    debug!(
+                        vendor_id = format_args!("{:04X}", pending.vendor_id),
+                        product_id = format_args!("{:04X}", pending.product_id),
+                        interface,
+                        report_id = format_args!("0x{report_id:02X}"),
+                        "using hidraw transport"
+                    );
+                    return Ok(Box::new(transport));
                 }
 
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = usb;
+                    bail!("hidraw transport is only supported on Linux");
+                }
+            }
+            TransportType::UsbControl {
+                interface,
+                report_id,
+            } => {
                 let device = usb.open().await.with_context(|| {
                     format!(
                         "failed to open USB device {:04X}:{:04X}",

@@ -39,7 +39,7 @@ fn lookup_returns_blade_15_late_2021_advanced_descriptor() {
 
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbControl {
+        TransportType::UsbHidRaw {
             interface: 2,
             report_id: 0x00
         }

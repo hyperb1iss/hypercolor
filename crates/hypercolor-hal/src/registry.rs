@@ -63,6 +63,16 @@ pub enum TransportType {
         report_id: u8,
     },
 
+    /// HID feature reports over Linux `/dev/hidraw*` nodes.
+    ///
+    /// This keeps `usbhid` attached and avoids claiming the USB interface.
+    UsbHidRaw {
+        /// HID interface number.
+        interface: u8,
+        /// HID report ID.
+        report_id: u8,
+    },
+
     /// HID interrupt endpoint transport.
     UsbHid {
         /// Interface number to claim.

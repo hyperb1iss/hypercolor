@@ -76,7 +76,7 @@ macro_rules! razer_descriptor {
             product_id: $pid,
             name: $name,
             family: DeviceFamily::Razer,
-            transport: TransportType::UsbControl {
+            transport: TransportType::UsbHidRaw {
                 interface: $interface,
                 report_id: 0x00,
             },
