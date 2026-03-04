@@ -41,6 +41,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::library::{InMemoryLibraryStore, LibraryStore};
+use crate::playlist_runtime::PlaylistRuntimeState;
 
 // ── AppState ─────────────────────────────────────────────────────────────
 
@@ -98,6 +99,9 @@ pub struct AppState {
     /// Saved effect library storage (favorites, presets, playlists).
     pub library_store: Arc<dyn LibraryStore>,
 
+    /// Active playlist runner state (single background worker at a time).
+    pub playlist_runtime: Arc<Mutex<PlaylistRuntimeState>>,
+
     /// Daemon start time for uptime calculation.
     pub start_time: Instant,
 }
@@ -138,6 +142,7 @@ impl AppState {
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
             library_store: Arc::new(InMemoryLibraryStore::new()),
+            playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: Instant::now(),
         }
     }
@@ -163,6 +168,7 @@ impl AppState {
             profiles: RwLock::new(HashMap::new()),
             layouts: RwLock::new(HashMap::new()),
             library_store: Arc::new(InMemoryLibraryStore::new()),
+            playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: daemon.start_time,
         }
     }
@@ -286,10 +292,22 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(library::list_playlists).post(library::create_playlist),
         )
         .route(
+            "/library/playlists/active",
+            axum::routing::get(library::get_active_playlist),
+        )
+        .route(
+            "/library/playlists/stop",
+            axum::routing::post(library::stop_playlist),
+        )
+        .route(
             "/library/playlists/{id}",
             axum::routing::get(library::get_playlist)
                 .put(library::update_playlist)
                 .delete(library::delete_playlist),
+        )
+        .route(
+            "/library/playlists/{id}/activate",
+            axum::routing::post(library::activate_playlist),
         )
         // ── System ───────────────────────────────────────────────────
         .route("/status", axum::routing::get(system::get_status))
