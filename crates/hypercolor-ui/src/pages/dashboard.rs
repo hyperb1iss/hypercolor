@@ -13,25 +13,24 @@ pub fn DashboardPage() -> impl IntoView {
     let status_resource = LocalResource::new(api::fetch_status);
     let effects_resource = LocalResource::new(api::fetch_effects);
 
-    // Use shared WS context
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
     let ws_fps = Signal::derive(move || ws.fps.get());
 
     view! {
-        <div class="space-y-8 max-w-5xl">
-            // Hero section
+        <div class="space-y-6 max-w-5xl animate-fade-in">
+            // Hero
             <div>
-                <h1 class="text-xl font-medium text-zinc-100 mb-1">"Dashboard"</h1>
-                <p class="text-sm text-zinc-500">"Hypercolor lighting engine overview"</p>
+                <h1 class="text-lg font-medium text-fg mb-0.5">"Dashboard"</h1>
+                <p class="text-[13px] text-fg-muted">"Hypercolor lighting engine overview"</p>
             </div>
 
-            // Status cards row
+            // Status cards
             <Suspense fallback=move || view! { <StatusSkeleton /> }>
                 {move || status_resource.get().map(|result| {
                     match result {
                         Ok(status) => view! { <StatusCards status=status /> }.into_any(),
                         Err(e) => view! {
-                            <div class="text-sm text-error-red bg-error-red/5 border border-error-red/20 rounded-lg px-4 py-3">
+                            <div class="text-sm text-error-red bg-error-red/[0.05] border border-error-red/10 rounded-lg px-4 py-3">
                                 "Failed to connect: " {e}
                             </div>
                         }.into_any(),
@@ -39,19 +38,22 @@ pub fn DashboardPage() -> impl IntoView {
                 })}
             </Suspense>
 
-            // Main content — preview + quick switch
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            // Main: preview + quick switch
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
                 // Live preview
-                <div class="rounded-xl bg-layer-2 border border-white/5 overflow-hidden">
-                    <div class="px-4 py-3 border-b border-white/5 flex items-center justify-between">
-                        <h2 class="text-sm font-medium text-zinc-300">"Live Preview"</h2>
+                <div class="rounded-xl bg-layer-2/60 border border-white/[0.04] overflow-hidden">
+                    <div class="px-4 py-3 border-b border-white/[0.04] flex items-center justify-between">
+                        <h2 class="text-[13px] font-medium text-zinc-300">"Live Preview"</h2>
                         {move || ws.active_effect.get().map(|name| {
                             view! {
-                                <span class="text-xs text-zinc-500 font-mono">{name}</span>
+                                <div class="flex items-center gap-1.5">
+                                    <div class="w-1.5 h-1.5 rounded-full bg-electric-purple animate-pulse" />
+                                    <span class="text-[11px] text-fg-muted font-mono">{name}</span>
+                                </div>
                             }
                         })}
                     </div>
-                    <div class="p-4">
+                    <div class="p-3">
                         <CanvasPreview
                             frame=canvas_frame
                             fps=ws_fps
@@ -61,25 +63,25 @@ pub fn DashboardPage() -> impl IntoView {
                 </div>
 
                 // Quick switch
-                <div class="rounded-xl bg-layer-2 border border-white/5">
-                    <div class="px-4 py-3 border-b border-white/5">
-                        <h2 class="text-sm font-medium text-zinc-300">"Quick Switch"</h2>
+                <div class="rounded-xl bg-layer-2/60 border border-white/[0.04]">
+                    <div class="px-4 py-3 border-b border-white/[0.04]">
+                        <h2 class="text-[13px] font-medium text-zinc-300">"Quick Switch"</h2>
                     </div>
-                    <div class="p-4">
+                    <div class="p-3">
                         <Suspense fallback=move || view! {
-                            <div class="text-xs text-zinc-600">"Loading effects..."</div>
+                            <div class="text-xs text-fg-dim py-4 text-center">"Loading effects..."</div>
                         }>
                             {move || effects_resource.get().map(|result| {
                                 match result {
                                     Ok(effects) => {
                                         let runnable: Vec<_> = effects.into_iter()
                                             .filter(|e| e.runnable)
-                                            .take(16)
+                                            .take(20)
                                             .collect();
                                         view! { <QuickSwitchGrid effects=runnable /> }.into_any()
                                     }
                                     Err(_) => view! {
-                                        <p class="text-xs text-zinc-600">"Could not load effects"</p>
+                                        <p class="text-xs text-fg-dim">"Could not load effects"</p>
                                     }.into_any(),
                                 }
                             })}
@@ -95,31 +97,24 @@ pub fn DashboardPage() -> impl IntoView {
 #[component]
 fn StatusCards(status: SystemStatus) -> impl IntoView {
     let cards = vec![
-        (
-            "Status",
-            if status.running {
-                "Running".to_string()
-            } else {
-                "Stopped".to_string()
-            },
-            status.running,
-        ),
-        ("Uptime", format_uptime(status.uptime_seconds), true),
-        (
-            "Devices",
-            status.device_count.to_string(),
-            status.device_count > 0,
-        ),
-        ("Effects", status.effect_count.to_string(), true),
+        ("Status", if status.running { "Running" } else { "Stopped" }.to_string(), status.running, "electric-purple"),
+        ("Uptime", format_uptime(status.uptime_seconds), true, "neon-cyan"),
+        ("Devices", status.device_count.to_string(), status.device_count > 0, "coral"),
+        ("Effects", status.effect_count.to_string(), true, "success-green"),
     ];
 
     view! {
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {cards.into_iter().map(|(label, value, healthy)| {
+            {cards.into_iter().enumerate().map(|(i, (label, value, healthy, _accent))| {
+                let delay_class = format!("stagger-{}", i + 1);
                 view! {
-                    <div class="rounded-xl bg-layer-2 border border-white/5 px-4 py-3">
-                        <div class="text-[10px] font-mono uppercase tracking-widest text-zinc-600 mb-1">{label}</div>
-                        <div class="text-lg font-medium tabular-nums" class=("text-zinc-100", healthy) class=("text-zinc-500", !healthy)>
+                    <div class=format!("rounded-xl bg-layer-2/60 border border-white/[0.04] px-4 py-3 animate-fade-in-up {delay_class}")>
+                        <div class="text-[9px] font-mono uppercase tracking-[0.15em] text-fg-dim mb-1.5">{label}</div>
+                        <div
+                            class="text-lg font-medium tabular-nums"
+                            class=("text-fg", healthy)
+                            class=("text-fg-muted", !healthy)
+                        >
                             {value}
                         </div>
                     </div>
@@ -129,26 +124,26 @@ fn StatusCards(status: SystemStatus) -> impl IntoView {
     }
 }
 
-/// Quick-switch effect grid — compact one-click apply buttons.
+/// Quick-switch effect grid.
 #[component]
 fn QuickSwitchGrid(effects: Vec<EffectSummary>) -> impl IntoView {
     if effects.is_empty() {
         return view! {
-            <p class="text-xs text-zinc-600 py-4 text-center">"No runnable effects found"</p>
+            <p class="text-xs text-fg-dim py-4 text-center">"No runnable effects found"</p>
         }
         .into_any();
     }
 
     view! {
-        <div class="grid grid-cols-2 gap-1.5 max-h-[360px] overflow-y-auto">
+        <div class="grid grid-cols-2 gap-1.5 max-h-[400px] overflow-y-auto pr-1">
             {effects.into_iter().map(|effect| {
                 let id = effect.id.clone();
                 let name = effect.name.clone();
                 let category = effect.category.clone();
                 view! {
                     <button
-                        class="text-left px-3 py-2 rounded-lg bg-white/[0.02] border border-white/5
-                               hover:bg-white/[0.05] hover:border-white/10 transition-all duration-150 group"
+                        class="text-left px-3 py-2 rounded-lg bg-white/[0.015] border border-white/[0.03]
+                               hover:bg-electric-purple/[0.04] hover:border-electric-purple/10 transition-all duration-200 group"
                         on:click=move |_| {
                             let id = id.clone();
                             leptos::task::spawn_local(async move {
@@ -156,8 +151,8 @@ fn QuickSwitchGrid(effects: Vec<EffectSummary>) -> impl IntoView {
                             });
                         }
                     >
-                        <div class="text-xs text-zinc-300 truncate group-hover:text-zinc-100 transition-colors">{name}</div>
-                        <div class="text-[10px] text-zinc-600 capitalize">{category}</div>
+                        <div class="text-[12px] text-zinc-300 truncate group-hover:text-fg transition-colors">{name}</div>
+                        <div class="text-[10px] text-fg-dim capitalize">{category}</div>
                     </button>
                 }
             }).collect_view()}
@@ -172,9 +167,9 @@ fn StatusSkeleton() -> impl IntoView {
     view! {
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
             {(0..4).map(|_| view! {
-                <div class="rounded-xl bg-layer-2 border border-white/5 px-4 py-3 animate-pulse">
-                    <div class="h-3 w-12 bg-white/5 rounded mb-2" />
-                    <div class="h-6 w-16 bg-white/5 rounded" />
+                <div class="rounded-xl bg-layer-2/40 border border-white/[0.03] px-4 py-3 animate-pulse">
+                    <div class="h-2.5 w-12 bg-white/[0.04] rounded mb-2" />
+                    <div class="h-5 w-16 bg-white/[0.04] rounded" />
                 </div>
             }).collect_view()}
         </div>

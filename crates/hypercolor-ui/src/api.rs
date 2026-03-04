@@ -76,6 +76,55 @@ pub struct SystemStatus {
     pub active_effect: Option<String>,
 }
 
+// ── Device Types ────────────────────────────────────────────────────────────
+
+/// Device zone summary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ZoneSummary {
+    pub id: String,
+    pub name: String,
+    pub led_count: usize,
+    pub topology: String,
+}
+
+/// Device summary from `GET /api/v1/devices`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeviceSummary {
+    pub id: String,
+    pub name: String,
+    pub backend: String,
+    pub status: String,
+    #[serde(default)]
+    pub firmware_version: Option<String>,
+    pub total_leds: usize,
+    #[serde(default)]
+    pub zones: Vec<ZoneSummary>,
+}
+
+/// Paginated device list response.
+#[derive(Debug, Deserialize)]
+pub struct DeviceListResponse {
+    pub items: Vec<DeviceSummary>,
+}
+
+// ── Layout Types ────────────────────────────────────────────────────────────
+
+/// Layout summary from `GET /api/v1/layouts`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LayoutSummary {
+    pub id: String,
+    pub name: String,
+    pub canvas_width: u32,
+    pub canvas_height: u32,
+    pub zone_count: usize,
+}
+
+/// Paginated layout list response.
+#[derive(Debug, Deserialize)]
+pub struct LayoutListResponse {
+    pub items: Vec<LayoutSummary>,
+}
+
 // ── Fetch Functions ─────────────────────────────────────────────────────────
 
 /// Fetch all registered effects.
@@ -175,6 +224,57 @@ pub async fn fetch_status() -> Result<SystemStatus, String> {
         resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
 
     Ok(envelope.data)
+}
+
+// ── Device Fetch Functions ──────────────────────────────────────────────────
+
+/// Fetch all tracked devices.
+pub async fn fetch_devices() -> Result<Vec<DeviceSummary>, String> {
+    let resp = Request::get("/api/v1/devices")
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<DeviceListResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.items)
+}
+
+/// Trigger device discovery scan.
+pub async fn discover_devices() -> Result<(), String> {
+    let resp = Request::post("/api/v1/devices/discover")
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 && resp.status() != 202 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+// ── Layout Fetch Functions ─────────────────────────────────────────────────
+
+/// Fetch all spatial layouts.
+pub async fn fetch_layouts() -> Result<Vec<LayoutSummary>, String> {
+    let resp = Request::get("/api/v1/layouts")
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<LayoutListResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.items)
 }
 
 /// Update effect control parameters.

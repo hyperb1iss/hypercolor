@@ -1,44 +1,80 @@
 //! Auto-generated control panel — renders widgets from ControlDefinition metadata.
+//! Each control resolves its initial value from live `control_values` (if present),
+//! falling back to the definition's `default_value`.
 
 use leptos::prelude::*;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
+
+/// Resolve the effective value for a control: live value > default.
+fn effective_value(
+    def: &ControlDefinition,
+    live_values: &HashMap<String, ControlValue>,
+) -> ControlValue {
+    live_values
+        .get(def.control_id())
+        .cloned()
+        .unwrap_or_else(|| def.default_value.clone())
+}
 
 /// Auto-generated control panel for the active effect.
 #[component]
 pub fn ControlPanel(
     #[prop(into)] controls: Signal<Vec<ControlDefinition>>,
+    #[prop(into)] control_values: Signal<HashMap<String, ControlValue>>,
+    #[prop(into)] accent_rgb: Signal<String>,
     #[prop(into)] on_change: Callback<(String, serde_json::Value)>,
 ) -> impl IntoView {
-    // Group controls by their group field
     let grouped = Memo::new(move |_| {
         let defs = controls.get();
-        let mut groups: BTreeMap<String, Vec<ControlDefinition>> = BTreeMap::new();
+        let values = control_values.get();
+        let rgb = accent_rgb.get();
+        let mut groups: BTreeMap<String, Vec<(ControlDefinition, ControlValue, String)>> =
+            BTreeMap::new();
         for def in defs {
+            let value = effective_value(&def, &values);
             let group = def.group.clone().unwrap_or_else(|| "General".to_string());
-            groups.entry(group).or_default().push(def);
+            groups
+                .entry(group)
+                .or_default()
+                .push((def, value, rgb.clone()));
         }
         groups
     });
 
     view! {
-        <div class="space-y-4">
-            {move || grouped.get().into_iter().map(|(group, defs)| {
-                view! {
-                    <div class="space-y-3">
-                        <h4 class="text-[10px] font-mono uppercase tracking-widest text-zinc-600 px-1">
-                            {group}
-                        </h4>
-                        <div class="space-y-2">
-                            {defs.into_iter().map(|def| {
-                                view! { <ControlWidget def=def on_change=on_change /> }
-                            }).collect_view()}
+        <div class="space-y-5">
+            {move || {
+                let groups = grouped.get();
+                if groups.is_empty() {
+                    view! {
+                        <div class="text-center py-6">
+                            <div class="text-fg-dim/50 text-xs">"No controls available"</div>
                         </div>
-                    </div>
+                    }.into_any()
+                } else {
+                    groups.into_iter().map(|(group, items)| {
+                        view! {
+                            <div class="space-y-3">
+                                <div class="flex items-center gap-2">
+                                    <div class="h-px flex-1 bg-white/[0.04]" />
+                                    <h4 class="text-[9px] font-mono uppercase tracking-[0.2em] text-fg-dim/60 shrink-0">
+                                        {group}
+                                    </h4>
+                                    <div class="h-px flex-1 bg-white/[0.04]" />
+                                </div>
+                                <div class="space-y-1">
+                                    {items.into_iter().map(|(def, value, rgb)| {
+                                        view! { <ControlWidget def=def initial_value=value accent_rgb=rgb on_change=on_change /> }
+                                    }).collect_view()}
+                                </div>
+                            </div>
+                        }
+                    }).collect_view().into_any()
                 }
-            }).collect_view()}
+            }}
         </div>
     }
 }
@@ -47,6 +83,8 @@ pub fn ControlPanel(
 #[component]
 fn ControlWidget(
     def: ControlDefinition,
+    initial_value: ControlValue,
+    accent_rgb: String,
     on_change: Callback<(String, serde_json::Value)>,
 ) -> impl IntoView {
     let name = def.name.clone();
@@ -55,55 +93,79 @@ fn ControlWidget(
 
     match def.control_type {
         ControlType::Slider => {
-            let initial = def.default_value.as_f32().unwrap_or(0.5);
+            let initial = initial_value.as_f32().unwrap_or(0.5);
             let min = def.min.unwrap_or(0.0);
             let max = def.max.unwrap_or(1.0);
             let step = def.step.unwrap_or(0.01);
             let (value, set_value) = signal(initial);
             let control_name = control_id.clone();
 
+            // Accent-colored value badge
+            let badge_style = format!(
+                "color: rgba({}, 0.9); background: rgba({}, 0.08)",
+                accent_rgb, accent_rgb
+            );
+
+            // Smart value formatting
+            let fmt_value = move || {
+                let v = value.get();
+                if (v - v.round()).abs() < 0.001 {
+                    format!("{}", v as i32)
+                } else {
+                    format!("{:.2}", v)
+                }
+            };
+
             view! {
-                <div class="flex items-center gap-3 px-1" title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{name.clone()}</label>
-                    <input
-                        type="range"
-                        class="flex-1 h-1 accent-electric-purple bg-white/5 rounded-full appearance-none cursor-pointer
-                               [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3
-                               [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-electric-purple
-                               [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:shadow-[0_0_6px_rgba(225,53,255,0.4)]"
-                        min=min
-                        max=max
-                        step=step
-                        prop:value=move || value.get()
-                        on:input=move |ev| {
-                            use wasm_bindgen::JsCast;
-                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                            if let Some(el) = target {
-                                if let Ok(v) = el.value().parse::<f32>() {
-                                    set_value.set(v);
-                                    on_change.run((control_name.clone(), json!(v)));
+                <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-white/[0.02] transition-colors duration-150"
+                     title=tooltip.unwrap_or_default()>
+                    <div class="flex items-center justify-between mb-2">
+                        <label class="text-[11px] text-fg-muted font-medium">{name.clone()}</label>
+                        <span class="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded"
+                              style=badge_style>
+                            {fmt_value}
+                        </span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <input
+                            type="range"
+                            class="flex-1 cursor-pointer"
+                            min=min
+                            max=max
+                            step=step
+                            prop:value=move || value.get()
+                            on:input=move |ev| {
+                                use wasm_bindgen::JsCast;
+                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                if let Some(el) = target {
+                                    if let Ok(v) = el.value().parse::<f32>() {
+                                        set_value.set(v);
+                                        on_change.run((control_name.clone(), json!(v)));
+                                    }
                                 }
                             }
-                        }
-                    />
-                    <span class="text-[10px] font-mono text-zinc-500 w-10 text-right tabular-nums">
-                        {move || format!("{:.2}", value.get())}
-                    </span>
+                        />
+                    </div>
                 </div>
             }.into_any()
         }
         ControlType::Toggle => {
-            let initial = matches!(def.default_value, ControlValue::Boolean(true));
+            let initial = matches!(initial_value, ControlValue::Boolean(true));
             let (checked, set_checked) = signal(initial);
             let control_name = control_id.clone();
+            let on_style = format!(
+                "background: rgba({}, 0.8); box-shadow: 0 0 12px rgba({}, 0.3)",
+                accent_rgb, accent_rgb
+            );
 
             view! {
-                <div class="flex items-center justify-between px-1" title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-zinc-400">{name.clone()}</label>
+                <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-white/[0.02] transition-colors duration-150
+                            flex items-center justify-between"
+                     title=tooltip.unwrap_or_default()>
+                    <label class="text-[11px] text-fg-muted font-medium">{name.clone()}</label>
                     <button
-                        class="relative w-9 h-5 rounded-full transition-colors duration-200"
-                        class=("bg-electric-purple", move || checked.get())
-                        class=("bg-white/10", move || !checked.get())
+                        class="relative w-10 h-[22px] rounded-full transition-all duration-200"
+                        style=move || if checked.get() { on_style.clone() } else { "background: rgba(255,255,255,0.08)".to_string() }
                         on:click=move |_| {
                             let new_val = !checked.get();
                             set_checked.set(new_val);
@@ -111,16 +173,16 @@ fn ControlWidget(
                         }
                     >
                         <div
-                            class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-200"
-                            class=("translate-x-[18px]", move || checked.get())
-                            class=("translate-x-0.5", move || !checked.get())
+                            class="absolute top-[3px] w-4 h-4 rounded-full shadow-sm transition-all duration-200"
+                            class=("translate-x-[22px] bg-white", move || checked.get())
+                            class=("translate-x-[3px] bg-fg-dim", move || !checked.get())
                         />
                     </button>
                 </div>
             }.into_any()
         }
         ControlType::ColorPicker => {
-            let initial = match &def.default_value {
+            let initial = match &initial_value {
                 ControlValue::Color([r, g, b, _]) => {
                     format!(
                         "#{:02x}{:02x}{:02x}",
@@ -135,29 +197,40 @@ fn ControlWidget(
             let control_name = control_id.clone();
 
             view! {
-                <div class="flex items-center gap-3 px-1" title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{name.clone()}</label>
-                    <input
-                        type="color"
-                        class="w-8 h-8 rounded border border-white/10 bg-transparent cursor-pointer"
-                        prop:value=move || color.get()
-                        on:input=move |ev| {
-                            use wasm_bindgen::JsCast;
-                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                            if let Some(el) = target {
-                                let hex = el.value();
-                                set_color.set(hex.clone());
-                                on_change.run((control_name.clone(), json!(hex)));
+                <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-white/[0.02] transition-colors duration-150"
+                     title=tooltip.unwrap_or_default()>
+                    <div class="flex items-center justify-between">
+                        <label class="text-[11px] text-fg-muted font-medium">{name.clone()}</label>
+                        <span class="text-[10px] font-mono text-fg-dim/60">{move || color.get()}</span>
+                    </div>
+                    <div class="mt-2 flex items-center gap-3">
+                        // Color swatch preview (shows actual color)
+                        <div
+                            class="w-10 h-10 rounded-lg border border-white/[0.08] shadow-inner"
+                            style=move || format!("background: {}; box-shadow: inset 0 1px 2px rgba(0,0,0,0.3), 0 0 12px {}40", color.get(), color.get())
+                        />
+                        <input
+                            type="color"
+                            class="flex-1 h-10 rounded-lg border border-white/[0.08] bg-transparent cursor-pointer
+                                   hover:border-white/[0.15] transition-colors duration-150"
+                            prop:value=move || color.get()
+                            on:input=move |ev| {
+                                use wasm_bindgen::JsCast;
+                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                if let Some(el) = target {
+                                    let hex = el.value();
+                                    set_color.set(hex.clone());
+                                    on_change.run((control_name.clone(), json!(hex)));
+                                }
                             }
-                        }
-                    />
-                    <span class="text-[10px] font-mono text-zinc-500">{move || color.get()}</span>
+                        />
+                    </div>
                 </div>
             }.into_any()
         }
         ControlType::Dropdown => {
             let labels = def.labels.clone();
-            let initial = match &def.default_value {
+            let initial = match &initial_value {
                 ControlValue::Enum(s) => s.clone(),
                 _ => labels.first().cloned().unwrap_or_default(),
             };
@@ -165,11 +238,14 @@ fn ControlWidget(
             let control_name = control_id.clone();
 
             view! {
-                <div class="flex items-center gap-3 px-1" title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{name.clone()}</label>
+                <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-white/[0.02] transition-colors duration-150"
+                     title=tooltip.unwrap_or_default()>
+                    <label class="text-[11px] text-fg-muted font-medium mb-1.5 block">{name.clone()}</label>
                     <select
-                        class="flex-1 bg-layer-3 border border-white/5 rounded-md px-2 py-1 text-xs text-zinc-200
-                               focus:outline-none focus:border-electric-purple/40 cursor-pointer"
+                        class="w-full bg-layer-3 border border-white/[0.06] rounded-lg px-3 py-1.5 text-xs text-fg
+                               focus:outline-none focus:border-electric-purple/30
+                               focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1)]
+                               cursor-pointer transition-all duration-150"
                         on:change=move |ev| {
                             use wasm_bindgen::JsCast;
                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
@@ -195,7 +271,7 @@ fn ControlWidget(
             }.into_any()
         }
         ControlType::TextInput => {
-            let initial = match &def.default_value {
+            let initial = match &initial_value {
                 ControlValue::Text(s) => s.clone(),
                 _ => String::new(),
             };
@@ -203,12 +279,15 @@ fn ControlWidget(
             let control_name = control_id.clone();
 
             view! {
-                <div class="flex items-center gap-3 px-1" title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{name.clone()}</label>
+                <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-white/[0.02] transition-colors duration-150"
+                     title=tooltip.unwrap_or_default()>
+                    <label class="text-[11px] text-fg-muted font-medium mb-1.5 block">{name.clone()}</label>
                     <input
                         type="text"
-                        class="flex-1 bg-layer-3 border border-white/5 rounded-md px-2 py-1 text-xs text-zinc-200
-                               focus:outline-none focus:border-electric-purple/40 placeholder-zinc-600"
+                        class="w-full bg-layer-3 border border-white/[0.06] rounded-lg px-3 py-1.5 text-xs text-fg
+                               focus:outline-none focus:border-electric-purple/30
+                               focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1)]
+                               placeholder-fg-dim/40 transition-all duration-150"
                         prop:value=move || text.get()
                         on:change=move |ev| {
                             use wasm_bindgen::JsCast;
@@ -224,11 +303,11 @@ fn ControlWidget(
             }.into_any()
         }
         ControlType::GradientEditor => {
-            // V1 placeholder — gradient editor is complex, defer to later
             view! {
-                <div class="flex items-center gap-3 px-1 opacity-50">
-                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{name.clone()}</label>
-                    <span class="text-[10px] text-zinc-600 italic">"Gradient editor coming soon"</span>
+                <div class="rounded-lg px-3 py-2.5 opacity-40">
+                    <label class="text-[11px] text-fg-muted font-medium mb-1 block">{name.clone()}</label>
+                    <div class="h-6 rounded-md bg-gradient-to-r from-electric-purple via-neon-cyan to-coral opacity-30" />
+                    <span class="text-[9px] text-fg-dim/40 mt-1 block">"Gradient editor coming soon"</span>
                 </div>
             }.into_any()
         }

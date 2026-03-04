@@ -1,38 +1,84 @@
 @import "tailwindcss";
 
 /* ── SilkCircuit Design Tokens ───────────────────────────────────────────── */
+/* Canonical Neon variant — "Electric meets elegant" */
 
 @theme {
-    /* Surface layers — deep dark graduated */
-    --color-layer-0: #0a0a0f;
-    --color-layer-1: #12121a;
-    --color-layer-2: #1a1a26;
+    /* Surface layers — deep violet graduated */
+    --color-layer-0: #12101a;
+    --color-layer-1: #16131f;
+    --color-layer-2: #1a162a;
     --color-layer-3: #22222f;
     --color-layer-4: #2a2a3d;
 
-    /* SilkCircuit accent palette */
+    /* SilkCircuit accent palette (Neon variant) */
     --color-electric-purple: #e135ff;
     --color-neon-cyan: #80ffea;
     --color-coral: #ff6ac1;
     --color-electric-yellow: #f1fa8c;
     --color-success-green: #50fa7b;
     --color-error-red: #ff6363;
+    --color-info-blue: #82AAFF;
+    --color-pink-soft: #ff99ff;
+
+    /* Foregrounds */
+    --color-fg: #f8f8f2;
+    --color-fg-muted: #8b85a0;
+    --color-fg-dim: #6272a4;
 
     /* Typography */
     --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;
+
+    /* Spacing scale */
+    --spacing-xs: 4px;
+    --spacing-sm: 8px;
+    --spacing-md: 16px;
+    --spacing-lg: 24px;
+    --spacing-xl: 32px;
+
+    /* Motion */
+    --ease-silk: cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --ease-out: cubic-bezier(0, 0, 0.2, 1);
 }
 
 /* ── Base Resets ─────────────────────────────────────────────────────────── */
 
+html {
+    color-scheme: dark;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+    background: #12101a;
+    color: #f8f8f2;
+    letter-spacing: -0.01em;
+    line-height: 1.5;
+}
+
+/* Headlines — tighter tracking per SilkCircuit spec */
+h1, h2, h3 {
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+}
+
+/* Monospace elements — consistent sizing */
+kbd, code, .font-mono {
+    font-feature-settings: 'liga' 0;
+}
+
 * {
     scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+    scrollbar-color: rgba(225, 53, 255, 0.12) transparent;
 }
 
 *::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
 }
 
 *::-webkit-scrollbar-track {
@@ -40,12 +86,12 @@
 }
 
 *::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(225, 53, 255, 0.15);
     border-radius: 3px;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.15);
+    background: rgba(225, 53, 255, 0.3);
 }
 
 /* ── Slider Track Styling ────────────────────────────────────────────────── */
@@ -56,46 +102,47 @@ input[type="range"] {
 }
 
 input[type="range"]::-webkit-slider-runnable-track {
-    height: 4px;
-    background: rgba(255, 255, 255, 0.05);
+    height: 3px;
+    background: rgba(255, 255, 255, 0.06);
     border-radius: 2px;
 }
 
 input[type="range"]::-moz-range-track {
-    height: 4px;
-    background: rgba(255, 255, 255, 0.05);
+    height: 3px;
+    background: rgba(255, 255, 255, 0.06);
     border-radius: 2px;
     border: none;
 }
 
 input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
-    width: 12px;
-    height: 12px;
+    width: 14px;
+    height: 14px;
     border-radius: 50%;
     background: #e135ff;
-    margin-top: -4px;
+    margin-top: -5.5px;
     cursor: pointer;
-    box-shadow: 0 0 8px rgba(225, 53, 255, 0.4);
-    transition: box-shadow 0.15s ease;
+    box-shadow: 0 0 10px rgba(225, 53, 255, 0.5), 0 0 3px rgba(225, 53, 255, 0.8);
+    transition: box-shadow 0.2s ease, transform 0.15s ease;
 }
 
 input[type="range"]::-moz-range-thumb {
-    width: 12px;
-    height: 12px;
+    width: 14px;
+    height: 14px;
     border-radius: 50%;
     background: #e135ff;
     cursor: pointer;
     border: none;
-    box-shadow: 0 0 8px rgba(225, 53, 255, 0.4);
+    box-shadow: 0 0 10px rgba(225, 53, 255, 0.5), 0 0 3px rgba(225, 53, 255, 0.8);
 }
 
 input[type="range"]:hover::-webkit-slider-thumb {
-    box-shadow: 0 0 12px rgba(225, 53, 255, 0.6);
+    box-shadow: 0 0 16px rgba(225, 53, 255, 0.7), 0 0 4px rgba(225, 53, 255, 1);
+    transform: scale(1.15);
 }
 
 input[type="range"]:hover::-moz-range-thumb {
-    box-shadow: 0 0 12px rgba(225, 53, 255, 0.6);
+    box-shadow: 0 0 16px rgba(225, 53, 255, 0.7), 0 0 4px rgba(225, 53, 255, 1);
 }
 
 /* ── Color Picker ────────────────────────────────────────────────────────── */
@@ -122,27 +169,141 @@ input[type="color"]::-webkit-color-swatch {
     color: white;
 }
 
-/* ── Focus rings ─────────────────────────────────────────────────────────── */
+/* ── Focus rings — SilkCircuit cyan glow ─────────────────────────────────── */
 
 :focus-visible {
-    outline: 1px solid rgba(225, 53, 255, 0.4);
-    outline-offset: 2px;
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(128, 255, 234, 0.3), 0 0 8px rgba(128, 255, 234, 0.15);
 }
 
-/* ── Animations ──────────────────────────────────────────────────────────── */
+/* ── Signature Animations ────────────────────────────────────────────────── */
+
+@keyframes neonGlow {
+    from { filter: drop-shadow(0 0 8px rgba(225, 53, 255, 0.3)); }
+    to   { filter: drop-shadow(0 0 16px rgba(225, 53, 255, 0.5)); }
+}
+
+@keyframes electricPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.85; transform: scale(1.02); }
+}
+
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+@keyframes slideInRight {
+    from { opacity: 0; transform: translateX(12px); }
+    to   { opacity: 1; transform: translateX(0); }
+}
 
 @keyframes shimmer {
     0% { background-position: -200% 0; }
     100% { background-position: 200% 0; }
 }
 
+@keyframes subtlePulse {
+    0%, 100% { opacity: 0.6; }
+    50%      { opacity: 1; }
+}
+
+@keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.96); }
+    to   { opacity: 1; transform: scale(1); }
+}
+
+.animate-fade-in-up {
+    animation: fadeInUp 0.3s var(--ease-silk) both;
+}
+
+.animate-fade-in {
+    animation: fadeIn 0.25s var(--ease-silk) both;
+}
+
+.animate-slide-in-right {
+    animation: slideInRight 0.3s var(--ease-silk) both;
+}
+
+.animate-scale-in {
+    animation: scaleIn 0.2s var(--ease-silk) both;
+}
+
 .animate-shimmer {
     background: linear-gradient(
         90deg,
         transparent 0%,
-        rgba(255, 255, 255, 0.03) 50%,
+        rgba(225, 53, 255, 0.03) 50%,
         transparent 100%
     );
     background-size: 200% 100%;
-    animation: shimmer 2s infinite;
+    animation: shimmer 3s infinite;
+}
+
+/* Stagger animation delays for card grids */
+.stagger-1 { animation-delay: 0.02s; }
+.stagger-2 { animation-delay: 0.04s; }
+.stagger-3 { animation-delay: 0.06s; }
+.stagger-4 { animation-delay: 0.08s; }
+.stagger-5 { animation-delay: 0.10s; }
+.stagger-6 { animation-delay: 0.12s; }
+.stagger-7 { animation-delay: 0.14s; }
+.stagger-8 { animation-delay: 0.16s; }
+
+/* ── Glass effect ────────────────────────────────────────────────────────── */
+
+.glass {
+    background: rgba(22, 19, 31, 0.8);
+    backdrop-filter: blur(16px) saturate(1.2);
+    -webkit-backdrop-filter: blur(16px) saturate(1.2);
+}
+
+.glass-subtle {
+    background: rgba(22, 19, 31, 0.6);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+/* ── Card hover glow ─────────────────────────────────────────────────────── */
+
+/* Cards use --hover-glow CSS var set per-category for accent-colored glow */
+button[style*="--hover-glow"]:hover:not(:disabled) {
+    box-shadow: var(--hover-glow);
+}
+
+/* Subtle inner light on hover for all cards */
+button:hover:not(:disabled) > .relative {
+    filter: brightness(1.02);
+}
+
+/* ── Noise texture overlay ───────────────────────────────────────────────── */
+
+.noise-overlay::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    opacity: 0.015;
+    pointer-events: none;
+    z-index: 9999;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 256px 256px;
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+    .animate-fade-in-up,
+    .animate-fade-in,
+    .animate-slide-in-right,
+    .animate-scale-in,
+    .card-glow {
+        animation: none !important;
+        transition: none !important;
+    }
 }

@@ -1,25 +1,25 @@
-//! Effect card — thumbnail card for the effect browser grid.
+//! Effect card — cinematic card with category accent, hover glow, and active state.
 
 use leptos::prelude::*;
 
 use crate::api::EffectSummary;
 
-/// Category → accent color class mapping.
-fn category_color(category: &str) -> &'static str {
+/// Category → (badge classes, accent hex for gradients).
+fn category_style(category: &str) -> (&'static str, &'static str) {
     match category {
-        "ambient" => "bg-neon-cyan/15 text-neon-cyan border-neon-cyan/30",
-        "audio" => "bg-coral/15 text-coral border-coral/30",
-        "gaming" => "bg-electric-purple/15 text-electric-purple border-electric-purple/30",
-        "reactive" => "bg-electric-yellow/15 text-electric-yellow border-electric-yellow/30",
-        "generative" => "bg-success-green/15 text-success-green border-success-green/30",
-        "interactive" => "bg-coral/15 text-coral border-coral/30",
-        "productivity" => "bg-neon-cyan/15 text-neon-cyan border-neon-cyan/30",
-        "utility" => "bg-zinc-500/15 text-zinc-400 border-zinc-500/30",
-        _ => "bg-zinc-500/15 text-zinc-400 border-zinc-500/30",
+        "ambient" => ("bg-neon-cyan/10 text-neon-cyan", "128, 255, 234"),
+        "audio" => ("bg-coral/10 text-coral", "255, 106, 193"),
+        "gaming" => ("bg-electric-purple/10 text-electric-purple", "225, 53, 255"),
+        "reactive" => ("bg-electric-yellow/10 text-electric-yellow", "241, 250, 140"),
+        "generative" => ("bg-success-green/10 text-success-green", "80, 250, 123"),
+        "interactive" => ("bg-info-blue/10 text-info-blue", "130, 170, 255"),
+        "productivity" => ("bg-pink-soft/10 text-pink-soft", "255, 153, 255"),
+        "utility" => ("bg-fg-muted/10 text-fg-muted", "139, 133, 160"),
+        _ => ("bg-white/5 text-zinc-400", "139, 133, 160"),
     }
 }
 
-/// A single effect card in the browse grid.
+/// Cinematic effect card for the browse grid.
 #[component]
 pub fn EffectCard(
     effect: EffectSummary,
@@ -32,55 +32,90 @@ pub fn EffectCard(
     let category = effect.category.clone();
     let tags = effect.tags.clone();
     let runnable = effect.runnable;
-    let category_class = category_color(&category).to_string();
+
+    let (badge_class, accent_rgb) = category_style(&category);
+    let badge_class = badge_class.to_string();
+    let accent_rgb = accent_rgb.to_string();
+
+    // Category-colored top accent gradient
+    let accent_gradient = format!(
+        "background: linear-gradient(180deg, rgba({}, 0.06) 0%, transparent 40%)",
+        accent_rgb
+    );
+
+    // Hover glow shadow
+    let hover_glow = format!(
+        "0 8px 32px rgba({}, 0.08), 0 0 1px rgba({}, 0.2)",
+        accent_rgb, accent_rgb
+    );
 
     let click_id = effect.id.clone();
 
     view! {
         <button
-            class="group relative flex flex-col text-left rounded-xl border transition-all duration-200 p-4 w-full outline-none focus-visible:ring-1 focus-visible:ring-electric-purple/50"
-            class=("border-electric-purple/60 bg-electric-purple/5 shadow-[0_0_20px_rgba(225,53,255,0.08)]", move || is_active.get())
-            class=("border-white/5 bg-layer-2 hover:bg-layer-3 hover:border-white/10", move || !is_active.get())
-            class=("opacity-40 cursor-not-allowed", !runnable)
+            class=move || {
+                let base = "relative rounded-2xl border text-left w-full group overflow-hidden \
+                            transition-all duration-200 ease-out animate-fade-in-up";
+                let state = if is_active.get() {
+                    "border-electric-purple/30 bg-layer-2 shadow-[0_0_30px_rgba(225,53,255,0.1)]"
+                } else if !runnable {
+                    "border-white/[0.03] bg-layer-2/40 opacity-30 cursor-not-allowed"
+                } else {
+                    "border-white/[0.05] bg-layer-2/80 hover:border-white/10"
+                };
+                format!("{base} {state}")
+            }
+            style:--hover-glow=hover_glow.clone()
             disabled=!runnable
-            on:click=move |_| on_apply.run(click_id.clone())
+            on:click=move |_| {
+                if runnable {
+                    on_apply.run(click_id.clone());
+                }
+            }
         >
-            // Header: name + category badge
-            <div class="flex items-start justify-between gap-2 mb-2">
-                <h3 class="text-sm font-medium text-zinc-100 leading-tight line-clamp-1 group-hover:text-white transition-colors">
-                    {name.clone()}
-                </h3>
-                <span class={format!("shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full border {category_class}")}>
-                    {category.clone()}
-                </span>
-            </div>
+            // Category accent gradient overlay
+            <div class="absolute inset-0 pointer-events-none rounded-2xl" style=accent_gradient />
 
-            // Description
-            <p class="text-xs text-zinc-500 leading-relaxed line-clamp-2 mb-3 min-h-[2.5rem]">
-                {description}
-            </p>
+            // Active electric glow
+            {move || is_active.get().then(|| view! {
+                <div
+                    class="absolute inset-0 rounded-2xl pointer-events-none"
+                    style="background: radial-gradient(ellipse at 50% -20%, rgba(225, 53, 255, 0.15) 0%, transparent 65%); \
+                           box-shadow: inset 0 1px 0 rgba(225, 53, 255, 0.2)"
+                />
+                <div class="absolute top-0 left-1/2 -translate-x-1/2 w-16 h-[2px] rounded-full bg-electric-purple/60 blur-[2px]" />
+            })}
 
-            // Footer: author + tags
-            <div class="flex items-center justify-between mt-auto">
-                <span class="text-[10px] text-zinc-600 font-mono">{author}</span>
-                <div class="flex gap-1">
-                    {tags.into_iter().take(2).map(|tag| {
-                        view! {
-                            <span class="text-[9px] text-zinc-600 bg-white/[0.03] px-1.5 py-0.5 rounded">
-                                {tag}
-                            </span>
-                        }
-                    }).collect_view()}
+            <div class="relative px-4 py-4 space-y-2.5">
+                // Header: name + category badge
+                <div class="flex items-start justify-between gap-3">
+                    <h3 class="text-sm font-medium text-zinc-200 group-hover:text-fg line-clamp-1 transition-colors duration-200 leading-snug">
+                        {name}
+                    </h3>
+                    <span class=format!("shrink-0 text-[9px] font-mono tracking-wide px-2 py-0.5 rounded-full capitalize {badge_class}")>
+                        {category.clone()}
+                    </span>
+                </div>
+
+                // Description (two lines for richness)
+                <p class="text-xs text-fg-muted/80 line-clamp-2 leading-relaxed min-h-[2.25rem]">
+                    {description}
+                </p>
+
+                // Footer: author + tags
+                <div class="flex items-center justify-between gap-2 pt-1 border-t border-white/[0.03]">
+                    <span class="text-[10px] font-mono text-fg-dim truncate">{author}</span>
+                    <div class="flex gap-1.5 overflow-hidden">
+                        {tags.into_iter().take(2).map(|tag| {
+                            view! {
+                                <span class="text-[9px] font-mono text-fg-dim/70 bg-white/[0.03] px-1.5 py-0.5 rounded whitespace-nowrap">
+                                    {tag}
+                                </span>
+                            }
+                        }).collect_view()}
+                    </div>
                 </div>
             </div>
-
-            // Active glow indicator
-            <div
-                class="absolute inset-0 rounded-xl pointer-events-none transition-opacity duration-300"
-                class=("opacity-100", move || is_active.get())
-                class=("opacity-0", move || !is_active.get())
-                style="background: radial-gradient(ellipse at top, rgba(225,53,255,0.04) 0%, transparent 70%)"
-            />
         </button>
     }
 }

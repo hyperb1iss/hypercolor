@@ -19,27 +19,23 @@ pub fn Shell(children: Children) -> impl IntoView {
         let key = ev.key();
         let ctrl_or_meta = ev.ctrl_key() || ev.meta_key();
 
-        // Ctrl+K — command palette
         if ctrl_or_meta && key == "k" {
             ev.prevent_default();
             set_palette_open.update(|v| *v = !*v);
             return;
         }
 
-        // Escape — close palette
         if key == "Escape" && palette_open.get() {
             set_palette_open.set(false);
             return;
         }
 
-        // Ctrl+1 — Dashboard
         if ctrl_or_meta && key == "1" {
             ev.prevent_default();
             navigate("/", Default::default());
             return;
         }
 
-        // Ctrl+2 — Effects
         if ctrl_or_meta && key == "2" {
             ev.prevent_default();
             navigate("/effects", Default::default());
@@ -48,23 +44,29 @@ pub fn Shell(children: Children) -> impl IntoView {
 
     view! {
         <div
-            class="flex h-screen bg-layer-0 text-zinc-100 overflow-hidden"
+            class="flex h-screen bg-layer-0 text-fg overflow-hidden noise-overlay"
             on:keydown=keydown_handler
             tabindex="-1"
         >
             <Sidebar />
             <div class="flex flex-col flex-1 min-w-0">
-                <header class="h-12 flex items-center justify-between px-4 border-b border-white/5 bg-layer-1">
-                    <div class="flex items-center gap-3">
-                        <span class="text-sm text-zinc-400 font-mono tracking-wide">"HYPERCOLOR"</span>
-                        // Quick command palette hint
+                // Header
+                <header class="h-14 flex items-center justify-between px-6 border-b border-white/[0.04] bg-layer-1/80 glass-subtle">
+                    <div class="flex items-center gap-4">
+                        <span class="text-[11px] text-fg-muted font-mono tracking-[0.2em] uppercase">"Hypercolor"</span>
+                        // Command palette trigger
                         <button
-                            class="hidden md:flex items-center gap-2 px-3 py-1 rounded-md bg-white/[0.03] border border-white/5
-                                   text-xs text-zinc-600 hover:text-zinc-400 hover:border-white/10 transition-colors cursor-pointer"
+                            class="hidden md:flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-white/[0.02] border border-white/[0.05]
+                                   text-xs text-zinc-600 hover:text-zinc-400 hover:border-white/[0.08] hover:bg-white/[0.04]
+                                   transition-all duration-200 cursor-pointer group"
                             on:click=move |_| set_palette_open.set(true)
                         >
-                            <span>"Search effects..."</span>
-                            <kbd class="text-[10px] font-mono bg-white/[0.05] px-1 rounded">"⌘K"</kbd>
+                            <svg class="w-3.5 h-3.5 text-zinc-600 group-hover:text-zinc-400 transition-colors" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="11" cy="11" r="8"/>
+                                <path d="m21 21-4.3-4.3"/>
+                            </svg>
+                            <span class="text-zinc-600">"Search effects..."</span>
+                            <kbd class="text-[9px] font-mono text-zinc-700 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.04]">"⌘K"</kbd>
                         </button>
                     </div>
                     <StatusBar />
@@ -88,17 +90,14 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
     let (query, set_query) = signal(String::new());
     let input_ref = NodeRef::<leptos::html::Input>::new();
 
-    // Auto-focus the input
     Effect::new(move |_| {
         if let Some(input) = input_ref.get() {
             let _ = input.focus();
         }
     });
 
-    // Fetch effects for search
     let effects_resource = LocalResource::new(api::fetch_effects);
 
-    // Filter effects by query
     let filtered = Memo::new(move |_| {
         let Some(Ok(effects)) = effects_resource.get() else {
             return Vec::new();
@@ -130,20 +129,20 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
     let on_close_apply = on_close;
 
     view! {
-        <div class="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]">
+        <div class="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] animate-fade-in">
             // Backdrop
             <div
-                class="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                class="absolute inset-0 bg-black/70 backdrop-blur-md"
                 on:click=move |_| on_close_bg.run(())
             />
 
-            // Palette
-            <div class="relative w-full max-w-lg mx-4 rounded-xl bg-layer-2/95 backdrop-blur-xl border border-white/10
-                        shadow-[0_25px_60px_rgba(0,0,0,0.5),0_0_40px_rgba(225,53,255,0.05)]
-                        overflow-hidden animate-in">
+            // Palette panel
+            <div class="relative w-full max-w-lg mx-4 rounded-xl glass border border-white/[0.08]
+                        shadow-[0_25px_60px_rgba(0,0,0,0.6),0_0_60px_rgba(225,53,255,0.06)]
+                        overflow-hidden animate-scale-in">
                 // Search input
-                <div class="flex items-center gap-3 px-4 py-3 border-b border-white/5">
-                    <svg class="w-4 h-4 text-zinc-500 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <div class="flex items-center gap-3 px-4 py-3.5 border-b border-white/[0.05]">
+                    <svg class="w-4 h-4 text-electric-purple/60 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <circle cx="11" cy="11" r="8"/>
                         <path d="m21 21-4.3-4.3"/>
                     </svg>
@@ -151,7 +150,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                         node_ref=input_ref
                         type="text"
                         placeholder="Search effects..."
-                        class="flex-1 bg-transparent text-sm text-zinc-100 placeholder-zinc-600 outline-none"
+                        class="flex-1 bg-transparent text-sm text-fg placeholder-fg-dim outline-none"
                         prop:value=move || query.get()
                         on:input=move |ev| {
                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -165,16 +164,16 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                             }
                         }
                     />
-                    <kbd class="text-[10px] font-mono text-zinc-600 bg-white/[0.05] px-1.5 py-0.5 rounded">"ESC"</kbd>
+                    <kbd class="text-[9px] font-mono text-zinc-600 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.04]">"ESC"</kbd>
                 </div>
 
                 // Results
-                <div class="max-h-[300px] overflow-y-auto py-1">
+                <div class="max-h-[320px] overflow-y-auto py-1">
                     {move || {
                         let items = filtered.get();
                         if items.is_empty() {
                             view! {
-                                <div class="px-4 py-8 text-center text-xs text-zinc-600">
+                                <div class="px-4 py-10 text-center text-xs text-fg-dim">
                                     "No matching effects"
                                 </div>
                             }.into_any()
@@ -192,7 +191,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                         view! {
                                             <button
                                                 class="w-full flex items-center gap-3 px-4 py-2.5 text-left
-                                                       hover:bg-white/[0.05] transition-colors group"
+                                                       hover:bg-electric-purple/[0.05] transition-colors group"
                                                 on:click=move |_| {
                                                     let id = id.clone();
                                                     leptos::task::spawn_local(async move {
@@ -202,12 +201,10 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                 }
                                             >
                                                 <div class="flex-1 min-w-0">
-                                                    <div class="text-sm text-zinc-200 group-hover:text-white truncate">
-                                                        {name}
-                                                    </div>
-                                                    <div class="text-[10px] text-zinc-600 truncate">{desc}</div>
+                                                    <div class="text-sm text-zinc-300 group-hover:text-fg truncate">{name}</div>
+                                                    <div class="text-[10px] text-fg-dim truncate">{desc}</div>
                                                 </div>
-                                                <span class="text-[10px] text-zinc-600 capitalize shrink-0">{category}</span>
+                                                <span class="text-[10px] text-fg-dim capitalize shrink-0 px-2 py-0.5 rounded-full bg-white/[0.03]">{category}</span>
                                             </button>
                                         }
                                     }).collect_view()}
