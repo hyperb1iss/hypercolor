@@ -91,6 +91,22 @@ cli *args='':
 daemon-release *args='':
     cargo run -p hypercolor-daemon --release -- {{ args }}
 
+# Run Servo daemon (dev profile) with cache wrapper
+daemon-servo *args='':
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --features servo -- --bind 127.0.0.1:9420 {{ args }}
+
+# Run Servo daemon in release mode with cache wrapper
+daemon-servo-release *args='':
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --release --features servo -- --bind 127.0.0.1:9420 {{ args }}
+
+# Build Servo daemon release artifacts once (faster repeat launches)
+build-servo-release:
+    ./scripts/servo-cache-build.sh cargo build -p hypercolor-daemon --release --features servo
+
+# Run prebuilt Servo daemon release binary from cache target dir
+run-servo-release-bin *args='':
+    ~/.cache/hypercolor/target/release/hypercolor --bind 127.0.0.1:9420 {{ args }}
+
 # ─── Housekeeping ─────────────────────────────────────────
 
 # Clean build artifacts
