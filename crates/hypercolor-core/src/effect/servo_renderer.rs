@@ -19,7 +19,7 @@ use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
 use reqwest::Url;
 use servo::{
-    DeviceIntPoint, DeviceIntRect, JSValue, JavaScriptEvaluationError, LoadStatus,
+    DeviceIntPoint, DeviceIntRect, JSValue, JavaScriptEvaluationError, LoadStatus, Preferences,
     RenderingContext, Servo, ServoBuilder, WebView, WebViewBuilder,
 };
 use tracing::{debug, info, trace, warn};
@@ -39,6 +39,7 @@ const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const RENDER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 const RECENT_CONSOLE_SAMPLE_SIZE: usize = 6;
+const JS_TIMER_MIN_DURATION_MS: i64 = 4;
 
 static SERVO_WORKER: OnceLock<Mutex<Option<Arc<ServoWorker>>>> = OnceLock::new();
 
@@ -360,7 +361,13 @@ impl ServoWorkerRuntime {
             anyhow!("failed to make Servo rendering context current: {error:?}")
         })?;
 
-        let servo = ServoBuilder::default().build();
+        // Avoid one-second timer clamping in embedder-throttled mode.
+        let preferences = Preferences {
+            js_timers_minimum_duration: JS_TIMER_MIN_DURATION_MS,
+            ..Preferences::default()
+        };
+
+        let servo = ServoBuilder::default().preferences(preferences).build();
         let delegate = Rc::new(HypercolorWebViewDelegate::new());
         let url = Url::parse("about:blank").context("failed to parse about:blank URL")?;
 
@@ -405,7 +412,6 @@ impl ServoWorkerRuntime {
     fn load_effect(&mut self, html_path: &Path) -> Result<()> {
         let url = file_url_for_path(html_path)?;
         self.delegate.take_page_loaded();
-        self.webview.set_throttled(true);
         debug!(url = %url, "Loading Servo effect page");
         self.webview.load(url.clone());
         self.wait_for_load_completion(LOAD_TIMEOUT, Some(url.as_str()))?;
@@ -424,7 +430,7 @@ impl ServoWorkerRuntime {
     }
 
     fn render_frame(&mut self, scripts: &[String], width: u32, height: u32) -> Result<Canvas> {
-        let result = (|| {
+        (|| {
             self.resize_if_needed(width, height);
 
             for script in scripts {
@@ -434,7 +440,6 @@ impl ServoWorkerRuntime {
 
             // Let timers/RAF advance for one daemon-driven frame after scripts
             // have injected controls/audio for this tick.
-            self.webview.set_throttled(false);
             self.servo.spin_event_loop();
             let frame_ready = self.delegate.take_frame_ready();
             if frame_ready {
@@ -457,15 +462,14 @@ impl ServoWorkerRuntime {
                 .read_to_image(rect)
                 .ok_or_else(|| anyhow!("Servo returned no pixels for readback rectangle"))?;
 
-            Ok(Canvas::from_rgba(
-                image.as_raw(),
-                image.width(),
-                image.height(),
+            let image_width = image.width();
+            let image_height = image.height();
+            Ok(Canvas::from_vec(
+                image.into_raw(),
+                image_width,
+                image_height,
             ))
-        })();
-
-        self.webview.set_throttled(true);
-        result
+        })()
     }
 
     fn resize_if_needed(&self, width: u32, height: u32) {
