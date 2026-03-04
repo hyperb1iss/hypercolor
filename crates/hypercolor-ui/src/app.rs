@@ -6,10 +6,30 @@ use leptos_router::path;
 use crate::components::shell::Shell;
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::effects::EffectsPage;
+use crate::ws::{CanvasFrame, ConnectionState, WsManager};
+
+/// Global WebSocket state provided via Leptos context.
+#[derive(Clone, Copy)]
+pub struct WsContext {
+    pub canvas_frame: ReadSignal<Option<CanvasFrame>>,
+    pub connection_state: ReadSignal<ConnectionState>,
+    pub fps: ReadSignal<f32>,
+    pub active_effect: ReadSignal<Option<String>>,
+}
 
 #[component]
 pub fn App() -> impl IntoView {
     provide_meta_context();
+
+    // Global WebSocket connection — shared across all pages via context
+    let ws = WsManager::new();
+    let ws_ctx = WsContext {
+        canvas_frame: ws.canvas_frame,
+        connection_state: ws.connection_state,
+        fps: ws.fps,
+        active_effect: ws.active_effect,
+    };
+    provide_context(ws_ctx);
 
     view! {
         <Meta charset="UTF-8" />

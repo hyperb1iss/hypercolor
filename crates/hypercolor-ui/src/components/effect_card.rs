@@ -26,16 +26,15 @@ pub fn EffectCard(
     #[prop(into)] is_active: Signal<bool>,
     #[prop(into)] on_apply: Callback<String>,
 ) -> impl IntoView {
-    let id = effect.id.clone();
     let name = effect.name.clone();
     let description = effect.description.clone();
     let author = effect.author.clone();
     let category = effect.category.clone();
     let tags = effect.tags.clone();
     let runnable = effect.runnable;
-    let category_class = category_color(&category);
+    let category_class = category_color(&category).to_string();
 
-    let click_id = id.clone();
+    let click_id = effect.id.clone();
 
     view! {
         <button
@@ -44,29 +43,28 @@ pub fn EffectCard(
             class=("border-white/5 bg-layer-2 hover:bg-layer-3 hover:border-white/10", move || !is_active.get())
             class=("opacity-40 cursor-not-allowed", !runnable)
             disabled=!runnable
-            on:click=move |_| on_apply.call(click_id.clone())
+            on:click=move |_| on_apply.run(click_id.clone())
         >
             // Header: name + category badge
             <div class="flex items-start justify-between gap-2 mb-2">
                 <h3 class="text-sm font-medium text-zinc-100 leading-tight line-clamp-1 group-hover:text-white transition-colors">
-                    {&name}
+                    {name.clone()}
                 </h3>
                 <span class={format!("shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full border {category_class}")}>
-                    {&category}
+                    {category.clone()}
                 </span>
             </div>
 
             // Description
             <p class="text-xs text-zinc-500 leading-relaxed line-clamp-2 mb-3 min-h-[2.5rem]">
-                {&description}
+                {description}
             </p>
 
             // Footer: author + tags
             <div class="flex items-center justify-between mt-auto">
-                <span class="text-[10px] text-zinc-600 font-mono">{&author}</span>
+                <span class="text-[10px] text-zinc-600 font-mono">{author}</span>
                 <div class="flex gap-1">
-                    {tags.iter().take(2).map(|tag| {
-                        let tag = tag.clone();
+                    {tags.into_iter().take(2).map(|tag| {
                         view! {
                             <span class="text-[9px] text-zinc-600 bg-white/[0.03] px-1.5 py-0.5 rounded">
                                 {tag}

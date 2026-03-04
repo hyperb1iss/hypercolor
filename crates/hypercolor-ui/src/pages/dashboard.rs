@@ -3,19 +3,19 @@
 use leptos::prelude::*;
 
 use crate::api::{self, EffectSummary, SystemStatus};
+use crate::app::WsContext;
 use crate::components::canvas_preview::CanvasPreview;
-use crate::ws::WsManager;
 
 /// Dashboard landing page.
 #[component]
 pub fn DashboardPage() -> impl IntoView {
-    let status_resource = Resource::new(|| (), |_| api::fetch_status());
-    let effects_resource = Resource::new(|| (), |_| api::fetch_effects());
+    let ws = expect_context::<WsContext>();
+    let status_resource = LocalResource::new(|| api::fetch_status());
+    let effects_resource = LocalResource::new(|| api::fetch_effects());
 
-    // WebSocket for mini preview
-    let ws = StoredValue::new(WsManager::new());
-    let canvas_frame = Signal::derive(move || ws.with_value(|w| w.canvas_frame.get()));
-    let ws_fps = Signal::derive(move || ws.with_value(|w| w.fps.get()));
+    // Use shared WS context
+    let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
+    let ws_fps = Signal::derive(move || ws.fps.get());
 
     view! {
         <div class="space-y-8 max-w-5xl">
@@ -43,8 +43,13 @@ pub fn DashboardPage() -> impl IntoView {
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 // Live preview
                 <div class="rounded-xl bg-layer-2 border border-white/5 overflow-hidden">
-                    <div class="px-4 py-3 border-b border-white/5">
+                    <div class="px-4 py-3 border-b border-white/5 flex items-center justify-between">
                         <h2 class="text-sm font-medium text-zinc-300">"Live Preview"</h2>
+                        {move || ws.active_effect.get().map(|name| {
+                            view! {
+                                <span class="text-xs text-zinc-500 font-mono">{name}</span>
+                            }
+                        })}
                     </div>
                     <div class="p-4">
                         <CanvasPreview
@@ -69,7 +74,7 @@ pub fn DashboardPage() -> impl IntoView {
                                     Ok(effects) => {
                                         let runnable: Vec<_> = effects.into_iter()
                                             .filter(|e| e.runnable)
-                                            .take(12)
+                                            .take(16)
                                             .collect();
                                         view! { <QuickSwitchGrid effects=runnable /> }.into_any()
                                     }
@@ -90,16 +95,15 @@ pub fn DashboardPage() -> impl IntoView {
 #[component]
 fn StatusCards(status: SystemStatus) -> impl IntoView {
     let cards = vec![
-        ("Status", if status.running { "Running" } else { "Stopped" }, status.running),
-        ("Uptime", &format_uptime(status.uptime_seconds), true),
-        ("Devices", &status.device_count.to_string(), status.device_count > 0),
-        ("Effects", &status.effect_count.to_string(), true),
+        ("Status", if status.running { "Running".to_string() } else { "Stopped".to_string() }, status.running),
+        ("Uptime", format_uptime(status.uptime_seconds), true),
+        ("Devices", status.device_count.to_string(), status.device_count > 0),
+        ("Effects", status.effect_count.to_string(), true),
     ];
 
     view! {
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
             {cards.into_iter().map(|(label, value, healthy)| {
-                let value = value.to_string();
                 view! {
                     <div class="rounded-xl bg-layer-2 border border-white/5 px-4 py-3">
                         <div class="text-[10px] font-mono uppercase tracking-widest text-zinc-600 mb-1">{label}</div>
@@ -124,7 +128,7 @@ fn QuickSwitchGrid(effects: Vec<EffectSummary>) -> impl IntoView {
     }
 
     view! {
-        <div class="grid grid-cols-2 gap-1.5">
+        <div class="grid grid-cols-2 gap-1.5 max-h-[360px] overflow-y-auto">
             {effects.into_iter().map(|effect| {
                 let id = effect.id.clone();
                 let name = effect.name.clone();
@@ -141,7 +145,7 @@ fn QuickSwitchGrid(effects: Vec<EffectSummary>) -> impl IntoView {
                         }
                     >
                         <div class="text-xs text-zinc-300 truncate group-hover:text-zinc-100 transition-colors">{name}</div>
-                        <div class="text-[10px] text-zinc-600">{category}</div>
+                        <div class="text-[10px] text-zinc-600 capitalize">{category}</div>
                     </button>
                 }
             }).collect_view()}

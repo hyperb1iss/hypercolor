@@ -64,7 +64,7 @@ fn ControlWidget(
 
             view! {
                 <div class="flex items-center gap-3 px-1" title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{&name}</label>
+                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{name.clone()}</label>
                     <input
                         type="range"
                         class="flex-1 h-1 accent-electric-purple bg-white/5 rounded-full appearance-none cursor-pointer
@@ -76,13 +76,12 @@ fn ControlWidget(
                         step=step
                         prop:value=move || value.get()
                         on:input=move |ev| {
-                            use leptos::ev::EventTarget;
                             use wasm_bindgen::JsCast;
                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
                             if let Some(el) = target {
                                 if let Ok(v) = el.value().parse::<f32>() {
                                     set_value.set(v);
-                                    on_change.call((control_name.clone(), json!(v)));
+                                    on_change.run((control_name.clone(), json!(v)));
                                 }
                             }
                         }
@@ -100,7 +99,7 @@ fn ControlWidget(
 
             view! {
                 <div class="flex items-center justify-between px-1" title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-zinc-400">{&name}</label>
+                    <label class="text-xs text-zinc-400">{name.clone()}</label>
                     <button
                         class="relative w-9 h-5 rounded-full transition-colors duration-200"
                         class=("bg-electric-purple", move || checked.get())
@@ -108,7 +107,7 @@ fn ControlWidget(
                         on:click=move |_| {
                             let new_val = !checked.get();
                             set_checked.set(new_val);
-                            on_change.call((control_name.clone(), json!(new_val)));
+                            on_change.run((control_name.clone(), json!(new_val)));
                         }
                     >
                         <div
@@ -132,7 +131,7 @@ fn ControlWidget(
 
             view! {
                 <div class="flex items-center gap-3 px-1" title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{&name}</label>
+                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{name.clone()}</label>
                     <input
                         type="color"
                         class="w-8 h-8 rounded border border-white/10 bg-transparent cursor-pointer"
@@ -143,7 +142,7 @@ fn ControlWidget(
                             if let Some(el) = target {
                                 let hex = el.value();
                                 set_color.set(hex.clone());
-                                on_change.call((control_name.clone(), json!(hex)));
+                                on_change.run((control_name.clone(), json!(hex)));
                             }
                         }
                     />
@@ -162,7 +161,7 @@ fn ControlWidget(
 
             view! {
                 <div class="flex items-center gap-3 px-1" title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{&name}</label>
+                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{name.clone()}</label>
                     <select
                         class="flex-1 bg-layer-3 border border-white/5 rounded-md px-2 py-1 text-xs text-zinc-200
                                focus:outline-none focus:border-electric-purple/40 cursor-pointer"
@@ -172,7 +171,7 @@ fn ControlWidget(
                             if let Some(el) = target {
                                 let val = el.value();
                                 set_selected.set(val.clone());
-                                on_change.call((control_name.clone(), json!(val)));
+                                on_change.run((control_name.clone(), json!(val)));
                             }
                         }
                     >
@@ -183,7 +182,7 @@ fn ControlWidget(
                                 move || selected.get() == label
                             };
                             view! {
-                                <option value=label.clone() selected=is_selected>{label}</option>
+                                <option value=label.clone() selected=is_selected>{label.clone()}</option>
                             }
                         }).collect_view()}
                     </select>
@@ -200,7 +199,7 @@ fn ControlWidget(
 
             view! {
                 <div class="flex items-center gap-3 px-1" title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{&name}</label>
+                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{name.clone()}</label>
                     <input
                         type="text"
                         class="flex-1 bg-layer-3 border border-white/5 rounded-md px-2 py-1 text-xs text-zinc-200
@@ -212,7 +211,7 @@ fn ControlWidget(
                             if let Some(el) = target {
                                 let val = el.value();
                                 set_text.set(val.clone());
-                                on_change.call((control_name.clone(), json!(val)));
+                                on_change.run((control_name.clone(), json!(val)));
                             }
                         }
                     />
@@ -223,7 +222,7 @@ fn ControlWidget(
             // V1 placeholder — gradient editor is complex, defer to later
             view! {
                 <div class="flex items-center gap-3 px-1 opacity-50">
-                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{&name}</label>
+                    <label class="text-xs text-zinc-400 w-24 shrink-0 truncate">{name.clone()}</label>
                     <span class="text-[10px] text-zinc-600 italic">"Gradient editor coming soon"</span>
                 </div>
             }.into_any()

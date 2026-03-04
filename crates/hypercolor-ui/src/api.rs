@@ -1,7 +1,7 @@
 //! REST API client — thin wrappers around the daemon's HTTP endpoints.
 
 use gloo_net::http::Request;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 // ── API Response Types ──────────────────────────────────────────────────────
 
@@ -14,7 +14,7 @@ pub struct ApiEnvelope<T> {
 }
 
 /// Effect list item from `GET /api/v1/effects`.
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EffectSummary {
     pub id: String,
     pub name: String,

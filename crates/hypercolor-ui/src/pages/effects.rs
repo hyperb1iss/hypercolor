@@ -1,12 +1,13 @@
 //! Effects browse page — grid of effect cards with filtering and detail view.
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast;
 
-use crate::api::{self, EffectSummary};
+use crate::api;
+use crate::app::WsContext;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
-use crate::ws::{CanvasFrame, WsManager};
 
 use hypercolor_types::effect::ControlDefinition;
 
@@ -26,15 +27,16 @@ const CATEGORIES: &[&str] = &[
 /// Effects browse page with grid, search, category filtering, and live preview.
 #[component]
 pub fn EffectsPage() -> impl IntoView {
+    let ws = expect_context::<WsContext>();
     let (search, set_search) = signal(String::new());
     let (category_filter, set_category_filter) = signal("all".to_string());
     let (active_effect_id, set_active_effect_id) = signal(None::<String>);
 
     // Fetch effects list
-    let effects_resource = Resource::new(|| (), |_| api::fetch_effects());
+    let effects_resource = LocalResource::new(|| api::fetch_effects());
 
     // Fetch initial active effect
-    let active_resource = Resource::new(|| (), |_| api::fetch_active_effect());
+    let active_resource = LocalResource::new(|| api::fetch_active_effect());
 
     // Initialize active effect from API
     Effect::new(move |_| {
@@ -43,12 +45,11 @@ pub fn EffectsPage() -> impl IntoView {
         }
     });
 
-    // WebSocket for live preview
-    let ws = StoredValue::new(WsManager::new());
-    let canvas_frame = Signal::derive(move || ws.with_value(|w| w.canvas_frame.get()));
-    let ws_fps = Signal::derive(move || ws.with_value(|w| w.fps.get()));
+    // Canvas signals from shared WS context
+    let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
+    let ws_fps = Signal::derive(move || ws.fps.get());
 
-    // Placeholder controls (will be populated from effect metadata in V2)
+    // Placeholder controls (populated from effect metadata later)
     let controls = Signal::derive(move || Vec::<ControlDefinition>::new());
 
     // Filter effects
@@ -121,7 +122,6 @@ pub fn EffectsPage() -> impl IntoView {
                                focus:shadow-[0_0_0_1px_rgba(225,53,255,0.15)]"
                         prop:value=move || search.get()
                         on:input=move |ev| {
-                            use wasm_bindgen::JsCast;
                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
                             if let Some(el) = target {
                                 set_search.set(el.value());
@@ -140,13 +140,13 @@ pub fn EffectsPage() -> impl IntoView {
                         let cat_clone = cat.clone();
                         let is_active = {
                             let cat = cat.clone();
-                            move || category_filter.get() == cat
+                            Memo::new(move |_| category_filter.get() == cat)
                         };
                         view! {
                             <button
-                                class="px-3 py-1 rounded-full text-xs transition-all duration-150"
-                                class=("bg-electric-purple/20 text-electric-purple border border-electric-purple/30", is_active)
-                                class=("bg-white/[0.03] text-zinc-500 border border-white/5 hover:text-zinc-300 hover:bg-white/[0.06]", move || !is_active())
+                                class="px-3 py-1 rounded-full text-xs transition-all duration-150 capitalize"
+                                class=("bg-electric-purple/20 text-electric-purple border border-electric-purple/30", move || is_active.get())
+                                class=("bg-white/[0.03] text-zinc-500 border border-white/5 hover:text-zinc-300 hover:bg-white/[0.06]", move || !is_active.get())
                                 on:click=move |_| set_category_filter.set(cat_clone.clone())
                             >
                                 {cat.clone()}
