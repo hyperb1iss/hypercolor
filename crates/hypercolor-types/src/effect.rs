@@ -255,8 +255,18 @@ impl ControlValue {
             Self::Float(v) => v.to_string(),
             Self::Integer(v) => v.to_string(),
             Self::Boolean(v) => if *v { "true" } else { "false" }.to_string(),
-            Self::Color([r, g, b, a]) => {
-                format!("[{r}, {g}, {b}, {a}]")
+            Self::Color([r, g, b, _a]) => {
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    clippy::as_conversions
+                )]
+                let (ri, gi, bi) = (
+                    (r * 255.0).round() as u8,
+                    (g * 255.0).round() as u8,
+                    (b * 255.0).round() as u8,
+                );
+                format!("\"#{ri:02x}{gi:02x}{bi:02x}\"")
             }
             Self::Gradient(stops) => {
                 let entries: Vec<String> = stops

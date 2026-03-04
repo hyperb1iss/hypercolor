@@ -380,7 +380,26 @@ fn control_value_js_literal_boolean() {
 #[test]
 fn control_value_js_literal_color() {
     let val = ControlValue::Color([1.0, 0.5, 0.0, 1.0]);
-    assert_eq!(val.to_js_literal(), "[1, 0.5, 0, 1]");
+    assert_eq!(val.to_js_literal(), "\"#ff8000\"");
+}
+
+#[test]
+fn control_value_js_literal_color_hex_roundtrip() {
+    // #001e01 → Color([0.0, 30/255, 1/255, 1.0]) → "#001e01"
+    let val = ControlValue::Color([0.0_f32, 30.0 / 255.0, 1.0 / 255.0, 1.0]);
+    assert_eq!(val.to_js_literal(), "\"#001e01\"");
+}
+
+#[test]
+fn control_value_js_literal_color_black_white() {
+    assert_eq!(
+        ControlValue::Color([0.0, 0.0, 0.0, 1.0]).to_js_literal(),
+        "\"#000000\""
+    );
+    assert_eq!(
+        ControlValue::Color([1.0, 1.0, 1.0, 1.0]).to_js_literal(),
+        "\"#ffffff\""
+    );
 }
 
 #[test]
