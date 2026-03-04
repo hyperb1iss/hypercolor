@@ -94,20 +94,34 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // 5. Build the API server with shared daemon state.
+    // 5. Resolve UI directory — explicit flag or auto-discover from workspace.
+    let ui_dir = args.ui_dir.or_else(|| {
+        let candidate = PathBuf::from("crates/hypercolor-ui/dist");
+        if candidate.join("index.html").exists() {
+            info!(path = %candidate.display(), "Auto-discovered web UI");
+            Some(candidate)
+        } else {
+            None
+        }
+    });
+
+    // 6. Build the API server with shared daemon state.
     let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
-    let router = api::build_router(app_state, args.ui_dir.as_deref());
+    let router = api::build_router(app_state, ui_dir.as_deref());
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .with_context(|| format!("failed to bind API server to {bind}"))?;
 
+    if ui_dir.is_some() {
+        info!(url = %format!("http://{bind}/"), "Web UI available");
+    }
     info!(bind = %bind, "API server listening");
 
-    // 6. Install signal handlers for graceful shutdown.
+    // 7. Install signal handlers for graceful shutdown.
     let mut shutdown_rx = install_signal_handlers();
 
-    // 7. Serve HTTP with graceful shutdown.
+    // 8. Serve HTTP with graceful shutdown.
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -119,7 +133,7 @@ async fn main() -> Result<()> {
     .await
     .context("API server error")?;
 
-    // 8. Graceful shutdown of daemon subsystems.
+    // 9. Graceful shutdown of daemon subsystems.
     daemon_state.shutdown().await?;
 
     info!("Hypercolor daemon exited cleanly");
