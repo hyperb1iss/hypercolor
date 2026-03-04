@@ -83,6 +83,17 @@ impl HypercolorWebViewDelegate {
         self.with_console_messages(|messages| messages.drain(..).collect())
     }
 
+    /// Return up to `limit` most recent console messages without draining.
+    pub fn recent_console_messages(&self, limit: usize) -> Vec<ConsoleMessage> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        self.with_console_messages(|messages| {
+            let start = messages.len().saturating_sub(limit);
+            messages.iter().skip(start).cloned().collect()
+        })
+    }
+
     /// Returns the most recently observed URL.
     #[must_use]
     pub fn last_url(&self) -> Option<String> {
@@ -121,7 +132,7 @@ impl HypercolorWebViewDelegate {
 
         match level {
             ConsoleLogLevel::Log | ConsoleLogLevel::Info => {
-                info!(message = message, "Servo console");
+                trace!(message = message, "Servo console");
             }
             ConsoleLogLevel::Debug => debug!(message = message, "Servo console"),
             ConsoleLogLevel::Warn => warn!(message = message, "Servo console"),
@@ -257,5 +268,32 @@ mod tests {
 
         delegate.on_url_changed("file:///tmp/two.html");
         assert_eq!(delegate.last_url().as_deref(), Some("file:///tmp/two.html"));
+    }
+
+    #[test]
+    fn recent_console_messages_returns_tail_without_draining() {
+        let delegate = HypercolorWebViewDelegate::new();
+        delegate.on_console_message(&ConsoleLogLevel::Info, "first");
+        delegate.on_console_message(&ConsoleLogLevel::Warn, "second");
+        delegate.on_console_message(&ConsoleLogLevel::Error, "third");
+
+        let recent = delegate.recent_console_messages(2);
+        assert_eq!(
+            recent,
+            vec![
+                ConsoleMessage {
+                    level: "warn".to_owned(),
+                    message: "second".to_owned()
+                },
+                ConsoleMessage {
+                    level: "error".to_owned(),
+                    message: "third".to_owned()
+                }
+            ]
+        );
+
+        let drained = delegate.drain_console_messages();
+        assert_eq!(drained.len(), 3);
+        assert!(delegate.drain_console_messages().is_empty());
     }
 }

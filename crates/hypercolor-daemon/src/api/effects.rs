@@ -6,6 +6,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
+use tracing::{info, warn};
 
 use hypercolor_core::effect::{EffectRegistry, create_renderer_for_metadata};
 use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata, EffectSource};
@@ -124,9 +125,23 @@ pub async fn apply_effect(
         meta
     };
 
+    info!(
+        requested = %id,
+        effect_id = %metadata.id,
+        effect = %metadata.name,
+        source = source_kind(&metadata.source),
+        "Applying effect via API"
+    );
+
     let renderer = match create_renderer_for_metadata(&metadata) {
         Ok(renderer) => renderer,
         Err(error) => {
+            warn!(
+                effect_id = %metadata.id,
+                effect = %metadata.name,
+                %error,
+                "Failed to prepare effect renderer"
+            );
             return ApiError::bad_request(format!(
                 "Failed to prepare renderer for effect '{}': {error}",
                 metadata.name
@@ -134,16 +149,20 @@ pub async fn apply_effect(
         }
     };
 
-    let controls = body
-        .as_ref()
-        .and_then(|b| b.controls.as_ref())
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .unwrap_or_default();
+    let controls = extract_request_controls(body.as_ref());
+    let mut dropped_controls = Vec::new();
+    let previous_effect: Option<String>;
 
     {
         let mut engine = state.effect_engine.lock().await;
+        previous_effect = engine.active_metadata().map(|meta| meta.name.clone());
         if let Err(e) = engine.activate(renderer, metadata.clone()) {
+            warn!(
+                effect_id = %metadata.id,
+                effect = %metadata.name,
+                %e,
+                "Effect activation failed"
+            );
             return ApiError::internal(format!(
                 "Failed to activate effect '{}': {e}",
                 metadata.name
@@ -153,20 +172,19 @@ pub async fn apply_effect(
         for (name, value) in &controls {
             if let Some(control_value) = json_to_control_value(value) {
                 engine.set_control(name, &control_value);
+            } else {
+                dropped_controls.push(name.clone());
             }
         }
     }
 
-    let transition_type = body
-        .as_ref()
-        .and_then(|b| b.transition.as_ref())
-        .and_then(|t| t.transition_type.clone())
-        .unwrap_or_else(|| "crossfade".to_owned());
-    let duration_ms = body
-        .as_ref()
-        .and_then(|b| b.transition.as_ref())
-        .and_then(|t| t.duration_ms)
-        .unwrap_or(300);
+    log_effect_apply_completion(
+        previous_effect.as_deref(),
+        &metadata.name,
+        controls.len(),
+        &dropped_controls,
+    );
+    let (transition_type, duration_ms) = extract_transition_request(body.as_ref());
 
     ApiResponse::ok(serde_json::json!({
         "effect": {
@@ -221,6 +239,53 @@ fn resolve_effect_metadata(registry: &EffectRegistry, id_or_name: &str) -> Optio
         .iter()
         .find(|(_, entry)| entry.metadata.name.eq_ignore_ascii_case(id_or_name))
         .map(|(_, entry)| entry.metadata.clone())
+}
+
+fn extract_request_controls(
+    body: Option<&Json<ApplyEffectRequest>>,
+) -> serde_json::Map<String, serde_json::Value> {
+    body.and_then(|payload| payload.controls.as_ref())
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn extract_transition_request(body: Option<&Json<ApplyEffectRequest>>) -> (String, u64) {
+    let transition_type = body
+        .and_then(|payload| payload.transition.as_ref())
+        .and_then(|transition| transition.transition_type.clone())
+        .unwrap_or_else(|| "crossfade".to_owned());
+    let duration_ms = body
+        .and_then(|payload| payload.transition.as_ref())
+        .and_then(|transition| transition.duration_ms)
+        .unwrap_or(300);
+    (transition_type, duration_ms)
+}
+
+fn log_effect_apply_completion(
+    previous_effect: Option<&str>,
+    effect_name: &str,
+    control_count: usize,
+    dropped_controls: &[String],
+) {
+    if let Some(previous) = previous_effect {
+        info!(
+            from_effect = %previous,
+            to_effect = %effect_name,
+            control_count,
+            "Effect switch completed"
+        );
+    } else {
+        info!(effect = %effect_name, control_count, "Effect activation completed");
+    }
+
+    if !dropped_controls.is_empty() {
+        warn!(
+            effect = %effect_name,
+            dropped_controls = ?dropped_controls,
+            "Ignored unsupported control value payloads"
+        );
+    }
 }
 
 fn json_to_control_value(value: &serde_json::Value) -> Option<ControlValue> {

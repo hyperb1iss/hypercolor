@@ -27,7 +27,7 @@ use super::bootstrap_software_rendering_context;
 use super::lightscript::LightscriptRuntime;
 use super::paths::resolve_html_source_path;
 use super::{
-    EffectRenderer, FrameInput, HtmlControlKind, HypercolorWebViewDelegate,
+    ConsoleMessage, EffectRenderer, FrameInput, HtmlControlKind, HypercolorWebViewDelegate,
     parse_html_effect_metadata,
 };
 
@@ -37,6 +37,21 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const RENDER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
+const NO_FRAME_STREAK_THRESHOLD: u32 = 3;
+const NO_FRAME_STREAK_LOG_INTERVAL: u32 = 120;
+const RECENT_CONSOLE_SAMPLE_SIZE: usize = 6;
+const ANIMATION_KICK_SCRIPT: &str = r"
+(function(){
+  const candidates = ['loop', 'update', 'render', 'animate', 'tick', 'draw', 'frame', 'main'];
+  for (const name of candidates) {
+    const fn = globalThis[name];
+    if (typeof fn === 'function') {
+      try { globalThis.requestAnimationFrame(fn); } catch (_err) {}
+      break;
+    }
+  }
+})();
+";
 
 static SERVO_WORKER: OnceLock<Mutex<Option<Arc<ServoWorker>>>> = OnceLock::new();
 
@@ -126,6 +141,12 @@ impl EffectRenderer for ServoRenderer {
 
         match load_default_controls(&resolved) {
             Ok(default_controls) => {
+                debug!(
+                    effect = %metadata.name,
+                    control_count = default_controls.len(),
+                    controls = ?default_controls.keys().collect::<Vec<_>>(),
+                    "Loaded HTML default controls"
+                );
                 self.controls = default_controls;
             }
             Err(error) => {
@@ -307,6 +328,9 @@ struct ServoWorkerRuntime {
     webview: WebView,
     rendering_context: Rc<dyn RenderingContext>,
     delegate: Rc<HypercolorWebViewDelegate>,
+    pending_unthrottle: bool,
+    no_frame_streak: u32,
+    animation_kick_attempted: bool,
 }
 
 impl ServoWorkerRuntime {
@@ -333,6 +357,9 @@ impl ServoWorkerRuntime {
             webview,
             rendering_context,
             delegate,
+            pending_unthrottle: false,
+            no_frame_streak: 0,
+            animation_kick_attempted: false,
         };
         runtime.wait_for_load_completion(LOAD_TIMEOUT, None)?;
         Ok(runtime)
@@ -364,8 +391,24 @@ impl ServoWorkerRuntime {
     fn load_effect(&mut self, html_path: &Path) -> Result<()> {
         let url = file_url_for_path(html_path)?;
         self.delegate.take_page_loaded();
+        self.webview.set_throttled(true);
+        debug!(url = %url, "Loading Servo effect page");
         self.webview.load(url.clone());
         self.wait_for_load_completion(LOAD_TIMEOUT, Some(url.as_str()))?;
+        let recent_console = summarize_console_messages(
+            self.delegate
+                .recent_console_messages(RECENT_CONSOLE_SAMPLE_SIZE),
+        );
+        if !recent_console.is_empty() {
+            debug!(
+                url = %url,
+                recent_console = ?recent_console,
+                "Recent console output while loading Servo effect page"
+            );
+        }
+        self.pending_unthrottle = true;
+        self.no_frame_streak = 0;
+        self.animation_kick_attempted = false;
         Ok(())
     }
 
@@ -377,9 +420,39 @@ impl ServoWorkerRuntime {
                 .with_context(|| format!("failed to evaluate script: {script}"))?;
         }
 
+        if self.pending_unthrottle {
+            self.webview.set_throttled(false);
+            self.pending_unthrottle = false;
+        }
+
         self.servo.spin_event_loop();
-        if self.delegate.take_frame_ready() {
+        let frame_ready = self.delegate.take_frame_ready();
+        if frame_ready {
+            self.no_frame_streak = 0;
             trace!("Servo delegate signaled new frame");
+        } else {
+            self.no_frame_streak = self.no_frame_streak.saturating_add(1);
+            if self.animation_kick_attempted
+                && self.no_frame_streak >= NO_FRAME_STREAK_LOG_INTERVAL
+                && self.no_frame_streak % NO_FRAME_STREAK_LOG_INTERVAL == 0
+            {
+                self.log_frame_stall("Servo effect is still not reporting new frames");
+            }
+        }
+
+        if !self.animation_kick_attempted && self.no_frame_streak >= NO_FRAME_STREAK_THRESHOLD {
+            self.log_frame_stall("Servo effect has not reported frames; attempting animation kick");
+            if let Err(error) = self.evaluate_script(ANIMATION_KICK_SCRIPT) {
+                warn!(%error, "Failed to evaluate animation kick script");
+            }
+            self.animation_kick_attempted = true;
+            self.servo.spin_event_loop();
+            if self.delegate.take_frame_ready() {
+                self.no_frame_streak = 0;
+                info!("Animation kick restored Servo frame delivery");
+            } else {
+                self.log_frame_stall("Animation kick did not restore frame delivery");
+            }
         }
         self.webview.paint();
 
@@ -467,6 +540,35 @@ impl ServoWorkerRuntime {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+
+    fn log_frame_stall(&self, message: &'static str) {
+        let recent_console = summarize_console_messages(
+            self.delegate
+                .recent_console_messages(RECENT_CONSOLE_SAMPLE_SIZE),
+        );
+        let current_url = self.delegate.last_url();
+        if recent_console.is_empty() {
+            warn!(
+                streak = self.no_frame_streak,
+                url = ?current_url,
+                "{message}"
+            );
+        } else {
+            warn!(
+                streak = self.no_frame_streak,
+                url = ?current_url,
+                recent_console = ?recent_console,
+                "{message}"
+            );
+        }
+    }
+}
+
+fn summarize_console_messages(messages: Vec<ConsoleMessage>) -> Vec<String> {
+    messages
+        .into_iter()
+        .map(|entry| format!("{}: {}", entry.level, entry.message))
+        .collect()
 }
 
 fn acquire_servo_worker(width: u32, height: u32) -> Result<Arc<ServoWorker>> {
