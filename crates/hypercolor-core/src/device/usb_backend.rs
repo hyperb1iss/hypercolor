@@ -13,6 +13,9 @@ use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::DeviceId;
 use tracing::{debug, warn};
 
+#[cfg(target_os = "linux")]
+use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
+
 use super::discovery::TransportScanner;
 use super::traits::{BackendInfo, DeviceBackend};
 use super::usb_scanner::UsbScanner;
@@ -58,6 +61,39 @@ impl UsbBackend {
                 interface,
                 report_id,
             } => {
+                #[cfg(target_os = "linux")]
+                {
+                    match UsbHidRawTransport::open(
+                        pending.vendor_id,
+                        pending.product_id,
+                        interface,
+                        report_id,
+                        pending.serial.as_deref(),
+                        pending.usb_path.as_deref(),
+                    ) {
+                        Ok(transport) => {
+                            debug!(
+                                vendor_id = format_args!("{:04X}", pending.vendor_id),
+                                product_id = format_args!("{:04X}", pending.product_id),
+                                interface,
+                                report_id = format_args!("0x{report_id:02X}"),
+                                "using hidraw transport for USB control device"
+                            );
+                            return Ok(Box::new(transport));
+                        }
+                        Err(error) => {
+                            warn!(
+                                vendor_id = format_args!("{:04X}", pending.vendor_id),
+                                product_id = format_args!("{:04X}", pending.product_id),
+                                interface,
+                                report_id = format_args!("0x{report_id:02X}"),
+                                error = %error,
+                                "hidraw transport unavailable; falling back to USB interface claim"
+                            );
+                        }
+                    }
+                }
+
                 let device = usb.open().await.with_context(|| {
                     format!(
                         "failed to open USB device {:04X}:{:04X}",

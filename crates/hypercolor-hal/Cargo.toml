@@ -19,5 +19,8 @@ tracing = { workspace = true }
 nusb = { workspace = true }
 tokio = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
+
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -6,6 +6,8 @@ use async_trait::async_trait;
 
 pub mod control;
 pub mod hid;
+#[cfg(target_os = "linux")]
+pub mod hidraw;
 pub mod vendor;
 
 /// Async byte-level I/O transport.
