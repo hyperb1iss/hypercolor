@@ -9,9 +9,12 @@ use std::time::SystemTime;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
-use hypercolor_types::effect::{EffectId, EffectMetadata, EffectSource, EffectState};
+use hypercolor_types::effect::{
+    ControlDefinition, ControlKind, ControlType, ControlValue, EffectId, EffectMetadata,
+    EffectSource, EffectState,
+};
 
-use super::meta_parser::parse_html_effect_metadata;
+use super::meta_parser::{HtmlControlKind, HtmlControlMetadata, parse_html_effect_metadata};
 use super::paths::bundled_effects_root;
 use super::{EffectEntry, EffectRegistry};
 
@@ -127,6 +130,12 @@ pub fn register_html_effects(
                 description: parsed.description,
                 category: parsed.category,
                 tags: parsed.tags,
+                controls: parsed
+                    .controls
+                    .iter()
+                    .filter_map(control_definition_from_html)
+                    .collect(),
+                audio_reactive: parsed.audio_reactive,
                 source: EffectSource::Html {
                     path: source_path.clone(),
                 },
@@ -230,4 +239,128 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 fn is_bundled_effects_root(root: &Path) -> bool {
     normalize_path(root) == normalize_path(&bundled_effects_root())
+}
+
+fn control_definition_from_html(raw: &HtmlControlMetadata) -> Option<ControlDefinition> {
+    let id = raw.property.trim().to_owned();
+    if id.is_empty() {
+        return None;
+    }
+
+    let name = decode_html_entities(raw.label.trim());
+    let labels: Vec<String> = raw
+        .values
+        .iter()
+        .map(|value| decode_html_entities(value.trim()))
+        .filter(|value| !value.is_empty())
+        .collect();
+
+    let (kind, control_type, default_value) = match raw.kind {
+        HtmlControlKind::Number => (
+            ControlKind::Number,
+            ControlType::Slider,
+            numeric_default(raw.default.as_deref()),
+        ),
+        HtmlControlKind::Boolean => (
+            ControlKind::Boolean,
+            ControlType::Toggle,
+            ControlValue::Boolean(bool_default(raw.default.as_deref())),
+        ),
+        HtmlControlKind::Color => (
+            ControlKind::Color,
+            ControlType::ColorPicker,
+            text_default(raw.default.as_deref(), "#ffffff"),
+        ),
+        HtmlControlKind::Combobox => (
+            ControlKind::Combobox,
+            ControlType::Dropdown,
+            enum_default(raw.default.as_deref(), labels.first()),
+        ),
+        HtmlControlKind::Sensor => (
+            ControlKind::Sensor,
+            ControlType::TextInput,
+            text_default(raw.default.as_deref(), ""),
+        ),
+        HtmlControlKind::Hue => (
+            ControlKind::Hue,
+            ControlType::Slider,
+            numeric_default(raw.default.as_deref()),
+        ),
+        HtmlControlKind::Area => (
+            ControlKind::Area,
+            ControlType::Slider,
+            numeric_default(raw.default.as_deref()),
+        ),
+        HtmlControlKind::Text => (
+            ControlKind::Text,
+            ControlType::TextInput,
+            text_default(raw.default.as_deref(), ""),
+        ),
+        HtmlControlKind::Other(ref raw_kind) => (
+            ControlKind::Other(raw_kind.clone()),
+            ControlType::TextInput,
+            text_default(raw.default.as_deref(), ""),
+        ),
+    };
+
+    Some(ControlDefinition {
+        id,
+        name: if name.is_empty() {
+            raw.property.clone()
+        } else {
+            name
+        },
+        kind,
+        control_type,
+        default_value,
+        min: raw.min,
+        max: raw.max,
+        step: raw.step,
+        labels,
+        group: None,
+        tooltip: raw
+            .tooltip
+            .as_ref()
+            .map(|tooltip| decode_html_entities(tooltip)),
+    })
+}
+
+fn numeric_default(raw: Option<&str>) -> ControlValue {
+    let parsed = raw
+        .map(str::trim)
+        .and_then(|value| value.parse::<f32>().ok())
+        .unwrap_or(0.0);
+    ControlValue::Float(parsed)
+}
+
+fn bool_default(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(str::trim)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn enum_default(raw: Option<&str>, first_option: Option<&String>) -> ControlValue {
+    let fallback = first_option.map(String::as_str).unwrap_or_default();
+    let selected = raw.map(str::trim).filter(|value| !value.is_empty());
+    let decoded = decode_html_entities(selected.unwrap_or(fallback));
+    ControlValue::Enum(decoded)
+}
+
+fn text_default(raw: Option<&str>, fallback: &str) -> ControlValue {
+    let selected = raw.map(str::trim).filter(|value| !value.is_empty());
+    let decoded = decode_html_entities(selected.unwrap_or(fallback));
+    ControlValue::Text(decoded)
+}
+
+fn decode_html_entities(input: &str) -> String {
+    input
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
 }

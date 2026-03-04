@@ -711,6 +711,8 @@ fn test_effects() -> Vec<hypercolor_types::effect::EffectMetadata> {
                 "aurora".into(),
                 "northern-lights".into(),
             ],
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("aurora.wgsl"),
             },
@@ -724,6 +726,8 @@ fn test_effects() -> Vec<hypercolor_types::effect::EffectMetadata> {
             description: "Realistic fire simulation with flickering warmth".into(),
             category: EffectCategory::Ambient,
             tags: vec!["fire".into(), "warm".into(), "flickering".into()],
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("fire.wgsl"),
             },
@@ -742,6 +746,8 @@ fn test_effects() -> Vec<hypercolor_types::effect::EffectMetadata> {
                 "pulse".into(),
                 "reactive".into(),
             ],
+            controls: Vec::new(),
+            audio_reactive: true,
             source: EffectSource::Native {
                 path: PathBuf::from("beat_pulse.wgsl"),
             },
@@ -760,6 +766,8 @@ fn test_effects() -> Vec<hypercolor_types::effect::EffectMetadata> {
                 "wave".into(),
                 "colorful".into(),
             ],
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("rainbow.wgsl"),
             },

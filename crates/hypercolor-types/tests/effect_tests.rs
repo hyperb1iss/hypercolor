@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use hypercolor_types::effect::{
-    ControlDefinition, ControlType, ControlValue, EffectCategory, EffectId, EffectMetadata,
-    EffectSource, EffectState, GradientStop,
+    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
+    EffectMetadata, EffectSource, EffectState, GradientStop,
 };
 use uuid::Uuid;
 
@@ -446,7 +446,9 @@ fn control_value_serde_round_trip() {
 
 fn sample_slider_control() -> ControlDefinition {
     ControlDefinition {
+        id: "speed".into(),
         name: "Speed".into(),
+        kind: ControlKind::Number,
         control_type: ControlType::Slider,
         default_value: ControlValue::Float(5.0),
         min: Some(1.0),
@@ -460,7 +462,9 @@ fn sample_slider_control() -> ControlDefinition {
 
 fn sample_dropdown_control() -> ControlDefinition {
     ControlDefinition {
+        id: "palette".into(),
         name: "Palette".into(),
+        kind: ControlKind::Combobox,
         control_type: ControlType::Dropdown,
         default_value: ControlValue::Enum("Aurora".into()),
         min: None,
@@ -475,7 +479,9 @@ fn sample_dropdown_control() -> ControlDefinition {
 #[test]
 fn control_definition_slider() {
     let ctrl = sample_slider_control();
+    assert_eq!(ctrl.id, "speed");
     assert_eq!(ctrl.name, "Speed");
+    assert_eq!(ctrl.kind, ControlKind::Number);
     assert_eq!(ctrl.control_type, ControlType::Slider);
     assert_eq!(ctrl.min, Some(1.0));
     assert_eq!(ctrl.max, Some(20.0));
@@ -487,7 +493,9 @@ fn control_definition_slider() {
 #[test]
 fn control_definition_dropdown() {
     let ctrl = sample_dropdown_control();
+    assert_eq!(ctrl.id, "palette");
     assert_eq!(ctrl.name, "Palette");
+    assert_eq!(ctrl.kind, ControlKind::Combobox);
     assert_eq!(ctrl.control_type, ControlType::Dropdown);
     assert_eq!(ctrl.labels.len(), 3);
     assert!(ctrl.labels.contains(&"Aurora".into()));
@@ -498,7 +506,9 @@ fn control_definition_serde_round_trip() {
     let ctrl = sample_slider_control();
     let json = serde_json::to_string_pretty(&ctrl).expect("serialize");
     let back: ControlDefinition = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.id, ctrl.id);
     assert_eq!(back.name, ctrl.name);
+    assert_eq!(back.kind, ctrl.kind);
     assert_eq!(back.control_type, ctrl.control_type);
     assert_eq!(back.min, ctrl.min);
     assert_eq!(back.max, ctrl.max);
@@ -517,6 +527,8 @@ fn sample_metadata() -> EffectMetadata {
         description: "Northern lights simulation with audio-reactive wave intensity".into(),
         category: EffectCategory::Ambient,
         tags: vec!["ambient".into(), "audio-reactive".into(), "nature".into()],
+        controls: vec![sample_slider_control(), sample_dropdown_control()],
+        audio_reactive: true,
         source: EffectSource::Native {
             path: PathBuf::from("native/aurora.wgsl"),
         },
@@ -532,6 +544,8 @@ fn effect_metadata_construction() {
     assert_eq!(meta.version, "1.0.0");
     assert_eq!(meta.category, EffectCategory::Ambient);
     assert_eq!(meta.tags.len(), 3);
+    assert_eq!(meta.controls.len(), 2);
+    assert!(meta.audio_reactive);
     assert_eq!(meta.license, Some("Apache-2.0".into()));
 }
 
@@ -543,6 +557,7 @@ fn effect_metadata_default_version() {
         "author": "test",
         "description": "A test effect",
         "category": "utility",
+        "controls": [],
         "source": { "native": { "path": "test.wgsl" } }
     }"#;
     let meta: EffectMetadata = serde_json::from_str(json).expect("deserialize");
@@ -560,6 +575,8 @@ fn effect_metadata_serde_json_round_trip() {
     assert_eq!(back.description, meta.description);
     assert_eq!(back.category, meta.category);
     assert_eq!(back.tags, meta.tags);
+    assert_eq!(back.controls, meta.controls);
+    assert_eq!(back.audio_reactive, meta.audio_reactive);
     assert_eq!(back.license, meta.license);
 }
 

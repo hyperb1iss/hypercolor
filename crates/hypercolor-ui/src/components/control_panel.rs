@@ -33,7 +33,6 @@ pub fn ControlPanel(
                         </h4>
                         <div class="space-y-2">
                             {defs.into_iter().map(|def| {
-                                let on_change = on_change.clone();
                                 view! { <ControlWidget def=def on_change=on_change /> }
                             }).collect_view()}
                         </div>
@@ -51,6 +50,7 @@ fn ControlWidget(
     on_change: Callback<(String, serde_json::Value)>,
 ) -> impl IntoView {
     let name = def.name.clone();
+    let control_id = def.control_id().to_owned();
     let tooltip = def.tooltip.clone();
 
     match def.control_type {
@@ -60,7 +60,7 @@ fn ControlWidget(
             let max = def.max.unwrap_or(1.0);
             let step = def.step.unwrap_or(0.01);
             let (value, set_value) = signal(initial);
-            let control_name = name.clone();
+            let control_name = control_id.clone();
 
             view! {
                 <div class="flex items-center gap-3 px-1" title=tooltip.unwrap_or_default()>
@@ -95,7 +95,7 @@ fn ControlWidget(
         ControlType::Toggle => {
             let initial = matches!(def.default_value, ControlValue::Boolean(true));
             let (checked, set_checked) = signal(initial);
-            let control_name = name.clone();
+            let control_name = control_id.clone();
 
             view! {
                 <div class="flex items-center justify-between px-1" title=tooltip.unwrap_or_default()>
@@ -122,12 +122,17 @@ fn ControlWidget(
         ControlType::ColorPicker => {
             let initial = match &def.default_value {
                 ControlValue::Color([r, g, b, _]) => {
-                    format!("#{:02x}{:02x}{:02x}", (*r * 255.0) as u8, (*g * 255.0) as u8, (*b * 255.0) as u8)
+                    format!(
+                        "#{:02x}{:02x}{:02x}",
+                        (*r * 255.0) as u8,
+                        (*g * 255.0) as u8,
+                        (*b * 255.0) as u8
+                    )
                 }
                 _ => "#e135ff".to_string(),
             };
             let (color, set_color) = signal(initial);
-            let control_name = name.clone();
+            let control_name = control_id.clone();
 
             view! {
                 <div class="flex items-center gap-3 px-1" title=tooltip.unwrap_or_default()>
@@ -157,7 +162,7 @@ fn ControlWidget(
                 _ => labels.first().cloned().unwrap_or_default(),
             };
             let (selected, set_selected) = signal(initial);
-            let control_name = name.clone();
+            let control_name = control_id.clone();
 
             view! {
                 <div class="flex items-center gap-3 px-1" title=tooltip.unwrap_or_default()>
@@ -195,7 +200,7 @@ fn ControlWidget(
                 _ => String::new(),
             };
             let (text, set_text) = signal(initial);
-            let control_name = name.clone();
+            let control_name = control_id.clone();
 
             view! {
                 <div class="flex items-center gap-3 px-1" title=tooltip.unwrap_or_default()>

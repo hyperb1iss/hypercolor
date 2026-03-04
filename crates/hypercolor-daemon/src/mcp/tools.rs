@@ -957,10 +957,11 @@ async fn handle_list_effects_with_state(
                         .iter()
                         .any(|tag| tag.to_lowercase().contains(&query.to_lowercase()))
             });
-            let is_audio_reactive = metadata
-                .tags
-                .iter()
-                .any(|tag| tag.eq_ignore_ascii_case("audio-reactive"))
+            let is_audio_reactive = metadata.audio_reactive
+                || metadata
+                    .tags
+                    .iter()
+                    .any(|tag| tag.eq_ignore_ascii_case("audio-reactive"))
                 || matches!(
                     metadata.category,
                     hypercolor_types::effect::EffectCategory::Audio
@@ -982,10 +983,11 @@ async fn handle_list_effects_with_state(
     let effects = filtered[start..end]
         .iter()
         .map(|metadata| {
-            let audio_reactive = metadata
-                .tags
-                .iter()
-                .any(|tag| tag.eq_ignore_ascii_case("audio-reactive"))
+            let audio_reactive = metadata.audio_reactive
+                || metadata
+                    .tags
+                    .iter()
+                    .any(|tag| tag.eq_ignore_ascii_case("audio-reactive"))
                 || matches!(
                     metadata.category,
                     hypercolor_types::effect::EffectCategory::Audio
@@ -997,7 +999,17 @@ async fn handle_list_effects_with_state(
                 "category": format!("{}", metadata.category),
                 "audio_reactive": audio_reactive,
                 "tags": metadata.tags,
-                "controls": []
+                "controls": metadata.controls.iter().map(|control| json!({
+                    "id": control.control_id(),
+                    "name": control.name,
+                    "kind": control.kind,
+                    "default": control.default_value,
+                    "min": control.min,
+                    "max": control.max,
+                    "step": control.step,
+                    "options": control.labels,
+                    "tooltip": control.tooltip,
+                })).collect::<Vec<_>>()
             })
         })
         .collect::<Vec<_>>();

@@ -10,7 +10,8 @@ use hypercolor_core::effect::{
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::effect::{
-    ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
+    EffectMetadata, EffectSource, EffectState,
 };
 use uuid::Uuid;
 
@@ -89,11 +90,46 @@ fn sample_metadata() -> EffectMetadata {
         description: "A test effect for unit testing".into(),
         category: EffectCategory::Ambient,
         tags: vec!["test".into(), "ambient".into()],
+        controls: Vec::new(),
+        audio_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("native/test-aurora.wgsl"),
         },
         license: Some("Apache-2.0".into()),
     }
+}
+
+fn sample_controlled_metadata() -> EffectMetadata {
+    let mut metadata = sample_metadata();
+    metadata.controls = vec![
+        ControlDefinition {
+            id: "speed".to_owned(),
+            name: "Speed".to_owned(),
+            kind: ControlKind::Number,
+            control_type: ControlType::Slider,
+            default_value: ControlValue::Float(5.0),
+            min: Some(0.0),
+            max: Some(10.0),
+            step: Some(1.0),
+            labels: Vec::new(),
+            group: Some("General".to_owned()),
+            tooltip: None,
+        },
+        ControlDefinition {
+            id: "mode".to_owned(),
+            name: "Mode".to_owned(),
+            kind: ControlKind::Combobox,
+            control_type: ControlType::Dropdown,
+            default_value: ControlValue::Enum("normal".to_owned()),
+            min: None,
+            max: None,
+            step: None,
+            labels: vec!["normal".to_owned(), "sparkle".to_owned()],
+            group: Some("General".to_owned()),
+            tooltip: None,
+        },
+    ];
+    metadata
 }
 
 fn builtin_metadata(name: &str) -> EffectMetadata {
@@ -105,6 +141,8 @@ fn builtin_metadata(name: &str) -> EffectMetadata {
         description: "Built-in test effect".to_owned(),
         category: EffectCategory::Ambient,
         tags: vec!["builtin".to_owned()],
+        controls: Vec::new(),
+        audio_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from(format!("builtin/{name}")),
         },
@@ -122,6 +160,8 @@ fn sample_entry(name: &str, category: EffectCategory, tags: Vec<&str>) -> Effect
             description: format!("Test effect: {name}"),
             category,
             tags: tags.into_iter().map(String::from).collect(),
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from(format!("native/{name}.wgsl")),
             },
@@ -379,6 +419,48 @@ fn engine_set_control_when_idle_stores_value() {
 }
 
 #[test]
+fn engine_activate_seeds_default_controls_from_metadata() {
+    let mut engine = EffectEngine::new();
+    engine
+        .activate(Box::new(MockRenderer::new()), sample_controlled_metadata())
+        .expect("activate");
+
+    let controls = engine.active_controls();
+    assert_eq!(controls.get("speed"), Some(&ControlValue::Float(5.0)));
+    assert_eq!(
+        controls.get("mode"),
+        Some(&ControlValue::Enum("normal".to_owned()))
+    );
+}
+
+#[test]
+fn engine_set_control_checked_validates_against_schema() {
+    let mut engine = EffectEngine::new();
+    engine
+        .activate(Box::new(MockRenderer::new()), sample_controlled_metadata())
+        .expect("activate");
+
+    let normalized = engine
+        .set_control_checked("speed", &ControlValue::Float(99.4))
+        .expect("speed should clamp/quantize");
+    assert_eq!(normalized, ControlValue::Float(10.0));
+    assert_eq!(
+        engine.active_controls().get("speed"),
+        Some(&ControlValue::Float(10.0))
+    );
+
+    let error = engine
+        .set_control_checked("mode", &ControlValue::Text("invalid".to_owned()))
+        .expect_err("mode should reject unknown option");
+    assert!(
+        error
+            .to_string()
+            .contains("invalid option 'invalid'"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn engine_custom_canvas_size() {
     let mut engine = EffectEngine::new().with_canvas_size(640, 400);
     engine
@@ -413,6 +495,8 @@ fn engine_activate_metadata_html_requires_servo_feature() {
         description: "HTML effect".to_owned(),
         category: EffectCategory::Ambient,
         tags: vec!["html".to_owned()],
+        controls: Vec::new(),
+        audio_reactive: false,
         source: EffectSource::Html {
             path: PathBuf::from("community/test.html"),
         },
@@ -469,6 +553,8 @@ fn registry_register_replaces_existing() {
             description: "Version 1".into(),
             category: EffectCategory::Ambient,
             tags: vec![],
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("native/aurora.wgsl"),
             },
@@ -488,6 +574,8 @@ fn registry_register_replaces_existing() {
             description: "Version 2".into(),
             category: EffectCategory::Ambient,
             tags: vec![],
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("native/aurora.wgsl"),
             },

@@ -2,6 +2,9 @@
 
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+use hypercolor_types::effect::{ControlDefinition, ControlValue};
 
 // ── API Response Types ──────────────────────────────────────────────────────
 
@@ -39,6 +42,29 @@ pub struct ActiveEffectResponse {
     pub id: String,
     pub name: String,
     pub state: String,
+    #[serde(default)]
+    pub controls: Vec<ControlDefinition>,
+    #[serde(default)]
+    pub control_values: HashMap<String, ControlValue>,
+}
+
+/// Detailed effect payload from `GET /api/v1/effects/:id`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct EffectDetailResponse {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub category: String,
+    pub source: String,
+    pub runnable: bool,
+    pub tags: Vec<String>,
+    pub version: String,
+    pub audio_reactive: bool,
+    #[serde(default)]
+    pub controls: Vec<ControlDefinition>,
+    #[serde(default)]
+    pub active_control_values: Option<HashMap<String, ControlValue>>,
 }
 
 /// System status from `GET /api/v1/status`.
@@ -65,10 +91,8 @@ pub async fn fetch_effects() -> Result<Vec<EffectSummary>, String> {
         return Err(format!("HTTP {}", resp.status()));
     }
 
-    let envelope: ApiEnvelope<EffectListResponse> = resp
-        .json()
-        .await
-        .map_err(|e| format!("Parse error: {e}"))?;
+    let envelope: ApiEnvelope<EffectListResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
 
     Ok(envelope.data.items)
 }
@@ -87,12 +111,28 @@ pub async fn fetch_active_effect() -> Result<Option<ActiveEffectResponse>, Strin
         return Err(format!("HTTP {}", resp.status()));
     }
 
-    let envelope: ApiEnvelope<ActiveEffectResponse> = resp
-        .json()
-        .await
-        .map_err(|e| format!("Parse error: {e}"))?;
+    let envelope: ApiEnvelope<ActiveEffectResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
 
     Ok(Some(envelope.data))
+}
+
+/// Fetch detailed metadata for one effect.
+pub async fn fetch_effect_detail(id: &str) -> Result<EffectDetailResponse, String> {
+    let url = format!("/api/v1/effects/{id}");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<EffectDetailResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
 }
 
 /// Apply an effect by ID or name.
@@ -133,23 +173,18 @@ pub async fn fetch_status() -> Result<SystemStatus, String> {
         return Err(format!("HTTP {}", resp.status()));
     }
 
-    let envelope: ApiEnvelope<SystemStatus> = resp
-        .json()
-        .await
-        .map_err(|e| format!("Parse error: {e}"))?;
+    let envelope: ApiEnvelope<SystemStatus> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
 
     Ok(envelope.data)
 }
 
 /// Update effect control parameters.
-pub async fn update_controls(
-    effect_id: &str,
-    controls: &serde_json::Value,
-) -> Result<(), String> {
-    let url = format!("/api/v1/effects/{effect_id}/apply");
+pub async fn update_controls(controls: &serde_json::Value) -> Result<(), String> {
+    let url = "/api/v1/effects/current/controls";
     let body = serde_json::json!({ "controls": controls });
 
-    let resp = Request::post(&url)
+    let resp = Request::patch(url)
         .header("Content-Type", "application/json")
         .body(serde_json::to_string(&body).map_err(|e| format!("Serialize error: {e}"))?)
         .map_err(|e| format!("Request error: {e}"))?

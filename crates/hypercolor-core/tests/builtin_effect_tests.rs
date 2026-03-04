@@ -31,6 +31,8 @@ fn make_metadata(name: &str) -> EffectMetadata {
         description: "test effect".into(),
         category: EffectCategory::Ambient,
         tags: vec![],
+        controls: Vec::new(),
+        audio_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from(format!("builtin/{name}")),
         },

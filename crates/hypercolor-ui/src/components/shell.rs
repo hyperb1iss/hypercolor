@@ -96,7 +96,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
     });
 
     // Fetch effects for search
-    let effects_resource = LocalResource::new(|| api::fetch_effects());
+    let effects_resource = LocalResource::new(api::fetch_effects);
 
     // Filter effects by query
     let filtered = Memo::new(move |_| {
@@ -106,7 +106,11 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
 
         let q = query.get().to_lowercase();
         if q.is_empty() {
-            return effects.into_iter().filter(|e| e.runnable).take(10).collect();
+            return effects
+                .into_iter()
+                .filter(|e| e.runnable)
+                .take(10)
+                .collect();
         }
 
         effects
@@ -122,8 +126,8 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
             .collect::<Vec<_>>()
     });
 
-    let on_close_bg = on_close.clone();
-    let on_close_apply = on_close.clone();
+    let on_close_bg = on_close;
+    let on_close_apply = on_close;
 
     view! {
         <div class="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]">
@@ -175,7 +179,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                 </div>
                             }.into_any()
                         } else {
-                            let on_close = on_close_apply.clone();
+                            let close_cb = on_close_apply;
                             view! {
                                 <div>
                                     {items.into_iter().map(|effect| {
@@ -183,7 +187,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                         let name = effect.name.clone();
                                         let desc = effect.description.clone();
                                         let category = effect.category.clone();
-                                        let on_close = on_close.clone();
+                                        let on_close = close_cb;
 
                                         view! {
                                             <button

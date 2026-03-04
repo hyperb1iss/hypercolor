@@ -15,7 +15,8 @@ use uuid::Uuid;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_types::effect::{
-    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
+    EffectMetadata, EffectSource, EffectState,
 };
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
@@ -152,6 +153,20 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
         description: format!("{name} description"),
         category: EffectCategory::Ambient,
         tags: vec!["test".to_owned()],
+        controls: vec![ControlDefinition {
+            id: "speed".to_owned(),
+            name: "Speed".to_owned(),
+            kind: ControlKind::Number,
+            control_type: ControlType::Slider,
+            default_value: ControlValue::Float(5.0),
+            min: Some(0.0),
+            max: Some(100.0),
+            step: Some(0.5),
+            labels: Vec::new(),
+            group: Some("General".to_owned()),
+            tooltip: Some("Animation speed".to_owned()),
+        }],
+        audio_reactive: false,
         source: EffectSource::Native {
             path: format!("builtin/{name}").into(),
         },
@@ -335,6 +350,32 @@ async fn list_effects_returns_items_sorted_by_name() {
 }
 
 #[tokio::test]
+async fn get_effect_returns_controls() {
+    let state = Arc::new(AppState::new());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/solid_color")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let controls = json["data"]["controls"]
+        .as_array()
+        .expect("controls should be an array");
+    assert_eq!(controls.len(), 1);
+    assert_eq!(controls[0]["id"], "speed");
+    assert_eq!(controls[0]["kind"], "number");
+}
+
+#[tokio::test]
 async fn get_active_effect_returns_not_found_when_none() {
     let app = test_app();
 
@@ -367,6 +408,74 @@ async fn stop_effect_returns_not_found_when_none() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn update_current_controls_requires_active_effect() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/effects/current/controls")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":7.5}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn update_current_controls_updates_active_effect() {
+    let state = Arc::new(AppState::new());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let update_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/v1/effects/current/controls")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":7.25}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(update_response.status(), StatusCode::OK);
+    let update_json = body_json(update_response).await;
+    assert_eq!(update_json["data"]["applied"]["speed"]["float"], 7.5);
+
+    let active_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_response.status(), StatusCode::OK);
+    let active_json = body_json(active_response).await;
+    assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 7.5);
 }
 
 // ── Scenes ───────────────────────────────────────────────────────────────

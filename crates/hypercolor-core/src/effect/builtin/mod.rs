@@ -56,6 +56,8 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             description: "Fills the canvas with a single solid color".into(),
             category: EffectCategory::Ambient,
             tags: vec!["solid".into(), "color".into(), "basic".into()],
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/solid_color"),
             },
@@ -69,6 +71,8 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             description: "Animated two-color gradient with configurable direction".into(),
             category: EffectCategory::Ambient,
             tags: vec!["gradient".into(), "ambient".into(), "smooth".into()],
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/gradient"),
             },
@@ -82,6 +86,8 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             description: "Cycling rainbow pattern using perceptual hue rotation".into(),
             category: EffectCategory::Ambient,
             tags: vec!["rainbow".into(), "hue".into(), "colorful".into()],
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/rainbow"),
             },
@@ -95,6 +101,8 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             description: "Smooth sinusoidal brightness pulsation".into(),
             category: EffectCategory::Ambient,
             tags: vec!["breathing".into(), "pulse".into(), "calm".into()],
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/breathing"),
             },
@@ -113,6 +121,8 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
                 "beat".into(),
                 "pulse".into(),
             ],
+            controls: Vec::new(),
+            audio_reactive: true,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/audio_pulse"),
             },
@@ -126,6 +136,8 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             description: "Traveling sinusoidal wave of color across the canvas".into(),
             category: EffectCategory::Ambient,
             tags: vec!["wave".into(), "animation".into(), "pattern".into()],
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/color_wave"),
             },

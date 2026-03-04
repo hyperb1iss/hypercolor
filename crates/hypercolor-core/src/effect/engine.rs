@@ -9,7 +9,7 @@ use tracing::{debug, error, info, warn};
 
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
-use hypercolor_types::effect::{ControlValue, EffectMetadata, EffectState};
+use hypercolor_types::effect::{ControlValidationError, ControlValue, EffectMetadata, EffectState};
 
 use super::factory::create_renderer_for_metadata;
 use super::traits::{EffectRenderer, FrameInput};
@@ -114,9 +114,21 @@ impl EffectEngine {
 
         match renderer.init(&metadata) {
             Ok(()) => {
+                self.controls = metadata
+                    .controls
+                    .iter()
+                    .map(|control| {
+                        (
+                            control.control_id().to_owned(),
+                            control.default_value.clone(),
+                        )
+                    })
+                    .collect();
+                for (name, value) in &self.controls {
+                    renderer.set_control(name, value);
+                }
                 self.renderer = Some(renderer);
                 self.metadata = Some(metadata);
-                self.controls.clear();
                 self.elapsed_secs = 0.0;
                 self.frame_number = 0;
                 self.state = EffectState::Running;
@@ -192,6 +204,37 @@ impl EffectEngine {
         if let Some(ref mut renderer) = self.renderer {
             renderer.set_control(name, value);
         }
+    }
+
+    /// Validate and update a control value against the active effect schema.
+    ///
+    /// If no active metadata/control definition exists, the value is forwarded
+    /// as-is for backward compatibility.
+    pub fn set_control_checked(
+        &mut self,
+        name: &str,
+        value: &ControlValue,
+    ) -> Result<ControlValue, ControlValidationError> {
+        let (target_name, normalized) = if let Some(definition) = self
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.control_by_id(name))
+        {
+            (
+                definition.control_id().to_owned(),
+                definition.validate_value(value)?,
+            )
+        } else {
+            (name.to_owned(), value.clone())
+        };
+        self.set_control(&target_name, &normalized);
+        Ok(normalized)
+    }
+
+    /// Snapshot of active control values.
+    #[must_use]
+    pub fn active_controls(&self) -> &HashMap<String, ControlValue> {
+        &self.controls
     }
 
     /// Produce a single frame.

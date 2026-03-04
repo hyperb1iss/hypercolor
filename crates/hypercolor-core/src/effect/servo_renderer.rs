@@ -27,10 +27,7 @@ use tracing::{debug, info, trace, warn};
 use super::bootstrap_software_rendering_context;
 use super::lightscript::LightscriptRuntime;
 use super::paths::resolve_html_source_path;
-use super::{
-    ConsoleMessage, EffectRenderer, FrameInput, HtmlControlKind, HypercolorWebViewDelegate,
-    parse_html_effect_metadata,
-};
+use super::{ConsoleMessage, EffectRenderer, FrameInput, HypercolorWebViewDelegate};
 
 const DEFAULT_WIDTH: u32 = 320;
 const DEFAULT_HEIGHT: u32 = 200;
@@ -150,24 +147,23 @@ impl EffectRenderer for ServoRenderer {
         self.pending_scripts.clear();
         self.warned_fallback_frame = false;
         self.include_audio_updates = effect_is_audio_reactive(metadata);
-
-        match load_default_controls(&resolved) {
-            Ok(default_controls) => {
-                debug!(
-                    effect = %metadata.name,
-                    control_count = default_controls.len(),
-                    controls = ?default_controls.keys().collect::<Vec<_>>(),
-                    "Loaded HTML default controls"
-                );
-                self.controls = default_controls;
-            }
-            Err(error) => {
-                warn!(
-                    path = %resolved.display(),
-                    %error,
-                    "Failed to pre-seed HTML control defaults"
-                );
-            }
+        self.controls = metadata
+            .controls
+            .iter()
+            .map(|control| {
+                (
+                    control.control_id().to_owned(),
+                    control.default_value.clone(),
+                )
+            })
+            .collect();
+        if !self.controls.is_empty() {
+            debug!(
+                effect = %metadata.name,
+                control_count = self.controls.len(),
+                controls = ?self.controls.keys().collect::<Vec<_>>(),
+                "Loaded HTML default controls from metadata"
+            );
         }
 
         let (runtime_source, runtime_html_path) =
@@ -881,6 +877,10 @@ fn inject_runtime_head_block(html: &str, block: &str) -> String {
 }
 
 fn effect_is_audio_reactive(metadata: &EffectMetadata) -> bool {
+    if metadata.audio_reactive {
+        return true;
+    }
+
     if matches!(metadata.category, EffectCategory::Audio) {
         return true;
     }
@@ -889,54 +889,6 @@ fn effect_is_audio_reactive(metadata: &EffectMetadata) -> bool {
         .tags
         .iter()
         .any(|tag| tag.eq_ignore_ascii_case("audio") || tag.eq_ignore_ascii_case("audio-reactive"))
-}
-
-fn load_default_controls(path: &Path) -> Result<HashMap<String, ControlValue>> {
-    let html = std::fs::read_to_string(path).with_context(|| {
-        format!(
-            "failed to read HTML effect file while extracting defaults: {}",
-            path.display()
-        )
-    })?;
-    let parsed = parse_html_effect_metadata(&html);
-    let controls = parsed
-        .controls
-        .into_iter()
-        .filter_map(|control| {
-            default_control_value(&control.kind, control.default.as_deref(), &control.values)
-                .map(|value| (control.property, value))
-        })
-        .collect();
-    Ok(controls)
-}
-
-fn default_control_value(
-    kind: &HtmlControlKind,
-    default: Option<&str>,
-    values: &[String],
-) -> Option<ControlValue> {
-    match kind {
-        HtmlControlKind::Number | HtmlControlKind::Hue | HtmlControlKind::Area => default
-            .and_then(|value| value.trim().parse::<f32>().ok())
-            .map(ControlValue::Float),
-        HtmlControlKind::Boolean => {
-            default.map(|value| ControlValue::Boolean(parse_bool_default(value)))
-        }
-        HtmlControlKind::Combobox => default
-            .or_else(|| values.first().map(String::as_str))
-            .map(|value| ControlValue::Enum(value.to_owned())),
-        HtmlControlKind::Color
-        | HtmlControlKind::Sensor
-        | HtmlControlKind::Text
-        | HtmlControlKind::Other(_) => default.map(|value| ControlValue::Text(value.to_owned())),
-    }
-}
-
-fn parse_bool_default(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
 }
 
 #[cfg(test)]

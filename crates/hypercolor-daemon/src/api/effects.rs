@@ -1,5 +1,6 @@
 //! Effect endpoints — `/api/v1/effects/*`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Json;
@@ -9,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use hypercolor_core::effect::{EffectRegistry, create_renderer_for_metadata};
-use hypercolor_types::effect::{ControlValue, EffectId, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{
+    ControlDefinition, ControlValue, EffectId, EffectMetadata, EffectSource,
+};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
@@ -53,6 +56,29 @@ pub struct ActiveEffectResponse {
     pub id: String,
     pub name: String,
     pub state: String,
+    pub controls: Vec<ControlDefinition>,
+    pub control_values: HashMap<String, ControlValue>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateCurrentControlsRequest {
+    pub controls: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EffectDetailResponse {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub author: String,
+    pub category: String,
+    pub source: String,
+    pub runnable: bool,
+    pub tags: Vec<String>,
+    pub version: String,
+    pub audio_reactive: bool,
+    pub controls: Vec<ControlDefinition>,
+    pub active_control_values: Option<HashMap<String, ControlValue>>,
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────
@@ -104,8 +130,17 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     let Some(meta) = resolve_effect_metadata(&registry, &id) else {
         return ApiError::not_found(format!("Effect not found: {id}"));
     };
+    drop(registry);
 
-    ApiResponse::ok(EffectSummary {
+    let active_control_values = {
+        let engine = state.effect_engine.lock().await;
+        engine
+            .active_metadata()
+            .filter(|active| active.id == meta.id)
+            .map(|_| engine.active_controls().clone())
+    };
+
+    ApiResponse::ok(EffectDetailResponse {
         id: meta.id.to_string(),
         name: meta.name,
         description: meta.description,
@@ -115,6 +150,9 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         runnable: is_runnable_source(&meta.source),
         tags: meta.tags,
         version: meta.version,
+        audio_reactive: meta.audio_reactive,
+        controls: meta.controls,
+        active_control_values,
     })
 }
 
@@ -178,7 +216,9 @@ pub async fn apply_effect(
 
         for (name, value) in &controls {
             if let Some(control_value) = json_to_control_value(value) {
-                engine.set_control(name, &control_value);
+                if let Err(error) = engine.set_control_checked(name, &control_value) {
+                    dropped_controls.push(format!("{name} ({error})"));
+                }
             } else {
                 dropped_controls.push(name.clone());
             }
@@ -218,6 +258,8 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
         id: meta.id.to_string(),
         name: meta.name.clone(),
         state: format!("{:?}", engine.state()).to_lowercase(),
+        controls: meta.controls.clone(),
+        control_values: engine.active_controls().clone(),
     })
 }
 
@@ -233,6 +275,63 @@ pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
 
     ApiResponse::ok(serde_json::json!({
         "stopped": true,
+    }))
+}
+
+/// `PATCH /api/v1/effects/current/controls` — Update controls on active effect
+/// without reloading/reinitializing the effect renderer.
+pub async fn update_current_controls(
+    State(state): State<Arc<AppState>>,
+    body: Option<Json<UpdateCurrentControlsRequest>>,
+) -> Response {
+    let controls = body
+        .as_ref()
+        .and_then(|payload| payload.controls.as_ref())
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    if controls.is_empty() {
+        return ApiError::bad_request("controls payload must include at least one key");
+    }
+
+    let mut rejected: Vec<String> = Vec::new();
+    let mut applied: HashMap<String, ControlValue> = HashMap::new();
+    let effect_name: String;
+    {
+        let mut engine = state.effect_engine.lock().await;
+        let Some(active_meta) = engine.active_metadata() else {
+            return ApiError::not_found("No effect is currently active");
+        };
+        effect_name = active_meta.name.clone();
+
+        for (name, value) in &controls {
+            let Some(control_value) = json_to_control_value(value) else {
+                rejected.push(format!("{name} (unsupported JSON shape)"));
+                continue;
+            };
+
+            match engine.set_control_checked(name, &control_value) {
+                Ok(normalized) => {
+                    applied.insert(name.clone(), normalized);
+                }
+                Err(error) => rejected.push(format!("{name} ({error})")),
+            }
+        }
+    }
+
+    if !rejected.is_empty() {
+        warn!(
+            effect = %effect_name,
+            rejected_controls = ?rejected,
+            "Rejected one or more control updates"
+        );
+    }
+
+    ApiResponse::ok(serde_json::json!({
+        "effect": effect_name,
+        "applied": applied,
+        "rejected": rejected,
     }))
 }
 

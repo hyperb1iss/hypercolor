@@ -10,8 +10,8 @@ use crate::components::canvas_preview::CanvasPreview;
 #[component]
 pub fn DashboardPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
-    let status_resource = LocalResource::new(|| api::fetch_status());
-    let effects_resource = LocalResource::new(|| api::fetch_effects());
+    let status_resource = LocalResource::new(api::fetch_status);
+    let effects_resource = LocalResource::new(api::fetch_effects);
 
     // Use shared WS context
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
@@ -95,9 +95,21 @@ pub fn DashboardPage() -> impl IntoView {
 #[component]
 fn StatusCards(status: SystemStatus) -> impl IntoView {
     let cards = vec![
-        ("Status", if status.running { "Running".to_string() } else { "Stopped".to_string() }, status.running),
+        (
+            "Status",
+            if status.running {
+                "Running".to_string()
+            } else {
+                "Stopped".to_string()
+            },
+            status.running,
+        ),
         ("Uptime", format_uptime(status.uptime_seconds), true),
-        ("Devices", status.device_count.to_string(), status.device_count > 0),
+        (
+            "Devices",
+            status.device_count.to_string(),
+            status.device_count > 0,
+        ),
         ("Effects", status.effect_count.to_string(), true),
     ];
 

@@ -166,6 +166,36 @@ pub enum ControlType {
     TextInput,
 }
 
+// ── ControlKind ───────────────────────────────────────────────────────────────
+
+/// Semantic control kind declared by an effect source.
+///
+/// This keeps LightScript/SignalRGB metadata semantics intact even when
+/// multiple kinds map to the same UI widget type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlKind {
+    /// Generic numeric value.
+    #[default]
+    Number,
+    /// Boolean on/off value.
+    Boolean,
+    /// Hex or structured color value.
+    Color,
+    /// Named option from a fixed set.
+    Combobox,
+    /// Sensor selector value (for example CPU/GPU metrics).
+    Sensor,
+    /// Hue wheel numeric value.
+    Hue,
+    /// Area/region scalar value.
+    Area,
+    /// Free-form text value.
+    Text,
+    /// Unknown/unmapped kind from source metadata.
+    Other(String),
+}
+
 // ── ControlValue ──────────────────────────────────────────────────────────────
 
 /// Runtime value of a control parameter.
@@ -247,6 +277,37 @@ impl ControlValue {
     }
 }
 
+/// Validation errors for a control update payload.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ControlValidationError {
+    #[error("control '{control}': expected numeric value, got {got}")]
+    ExpectedNumeric { control: String, got: &'static str },
+    #[error("control '{control}': expected boolean value, got {got}")]
+    ExpectedBoolean { control: String, got: &'static str },
+    #[error("control '{control}': expected color/text value, got {got}")]
+    ExpectedColorLike { control: String, got: &'static str },
+    #[error("control '{control}': expected text value, got {got}")]
+    ExpectedText { control: String, got: &'static str },
+    #[error("control '{control}': invalid option '{value}', valid options: {valid:?}")]
+    InvalidOption {
+        control: String,
+        value: String,
+        valid: Vec<String>,
+    },
+}
+
+fn control_value_kind(value: &ControlValue) -> &'static str {
+    match value {
+        ControlValue::Float(_) => "float",
+        ControlValue::Integer(_) => "integer",
+        ControlValue::Boolean(_) => "boolean",
+        ControlValue::Color(_) => "color",
+        ControlValue::Gradient(_) => "gradient",
+        ControlValue::Enum(_) => "enum",
+        ControlValue::Text(_) => "text",
+    }
+}
+
 // ── ControlDefinition ─────────────────────────────────────────────────────────
 
 /// A single user-facing parameter declared by an effect.
@@ -255,8 +316,14 @@ impl ControlValue {
 /// injects current values into the active renderer every frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ControlDefinition {
+    /// Stable control identifier used in API payloads and renderer globals.
+    #[serde(default)]
+    pub id: String,
     /// Human-readable label shown in the control panel.
     pub name: String,
+    /// Semantic kind from source metadata (LightScript/SignalRGB).
+    #[serde(default)]
+    pub kind: ControlKind,
     /// Widget kind and constraints.
     pub control_type: ControlType,
     /// Initial value. Must be compatible with `control_type`.
@@ -279,6 +346,99 @@ pub struct ControlDefinition {
     /// Help text shown on hover/focus.
     #[serde(default)]
     pub tooltip: Option<String>,
+}
+
+impl ControlDefinition {
+    /// Returns a stable control id.
+    ///
+    /// For backward compatibility with older metadata payloads, falls back
+    /// to `name` when `id` is unset.
+    #[must_use]
+    pub fn control_id(&self) -> &str {
+        if self.id.is_empty() {
+            &self.name
+        } else {
+            &self.id
+        }
+    }
+
+    /// Validate and normalize a control value against this definition.
+    pub fn validate_value(
+        &self,
+        value: &ControlValue,
+    ) -> Result<ControlValue, ControlValidationError> {
+        let control = self.control_id().to_owned();
+        match self.kind {
+            ControlKind::Number | ControlKind::Hue | ControlKind::Area => {
+                let Some(mut normalized) = value.as_f32() else {
+                    return Err(ControlValidationError::ExpectedNumeric {
+                        control,
+                        got: control_value_kind(value),
+                    });
+                };
+                if let Some(min) = self.min {
+                    normalized = normalized.max(min);
+                }
+                if let Some(max) = self.max {
+                    normalized = normalized.min(max);
+                }
+                if let Some(step) = self.step.filter(|step| *step > 0.0) {
+                    normalized = (normalized / step).round() * step;
+                }
+                Ok(ControlValue::Float(normalized))
+            }
+            ControlKind::Boolean => match value {
+                ControlValue::Boolean(flag) => Ok(ControlValue::Boolean(*flag)),
+                _ => Err(ControlValidationError::ExpectedBoolean {
+                    control,
+                    got: control_value_kind(value),
+                }),
+            },
+            ControlKind::Combobox => {
+                let candidate = match value {
+                    ControlValue::Enum(option) | ControlValue::Text(option) => option.clone(),
+                    _ => {
+                        return Err(ControlValidationError::ExpectedText {
+                            control,
+                            got: control_value_kind(value),
+                        });
+                    }
+                };
+
+                if self.labels.is_empty()
+                    || self
+                        .labels
+                        .iter()
+                        .any(|option| option.eq_ignore_ascii_case(&candidate))
+                {
+                    Ok(ControlValue::Enum(candidate))
+                } else {
+                    Err(ControlValidationError::InvalidOption {
+                        control,
+                        value: candidate,
+                        valid: self.labels.clone(),
+                    })
+                }
+            }
+            ControlKind::Color => match value {
+                ControlValue::Color(color) => Ok(ControlValue::Color(*color)),
+                ControlValue::Text(hex) => Ok(ControlValue::Text(hex.clone())),
+                _ => Err(ControlValidationError::ExpectedColorLike {
+                    control,
+                    got: control_value_kind(value),
+                }),
+            },
+            ControlKind::Sensor | ControlKind::Text | ControlKind::Other(_) => match value {
+                ControlValue::Text(text) | ControlValue::Enum(text) => {
+                    Ok(ControlValue::Text(text.clone()))
+                }
+                _ => Err(ControlValidationError::ExpectedText {
+                    control,
+                    got: control_value_kind(value),
+                }),
+            },
+        }
+    }
 }
 
 // ── EffectMetadata ────────────────────────────────────────────────────────────
@@ -307,11 +467,27 @@ pub struct EffectMetadata {
     /// Discovery and taxonomy tags. Free-form, lowercase, hyphenated.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// User-facing controls declared by this effect.
+    #[serde(default)]
+    pub controls: Vec<ControlDefinition>,
+    /// Indicates whether the effect expects audio payload injection.
+    #[serde(default)]
+    pub audio_reactive: bool,
     /// How this effect is rendered. Determines the renderer path.
     pub source: EffectSource,
     /// SPDX license identifier (e.g. `"MIT"`, `"Apache-2.0"`).
     #[serde(default)]
     pub license: Option<String>,
+}
+
+impl EffectMetadata {
+    /// Look up a control definition by id (case-insensitive).
+    #[must_use]
+    pub fn control_by_id(&self, id: &str) -> Option<&ControlDefinition> {
+        self.controls
+            .iter()
+            .find(|control| control.control_id().eq_ignore_ascii_case(id))
+    }
 }
 
 fn default_version() -> String {

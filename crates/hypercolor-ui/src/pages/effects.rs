@@ -31,17 +31,22 @@ pub fn EffectsPage() -> impl IntoView {
     let (search, set_search) = signal(String::new());
     let (category_filter, set_category_filter) = signal("all".to_string());
     let (active_effect_id, set_active_effect_id) = signal(None::<String>);
+    let (active_controls, set_active_controls) = signal(Vec::<ControlDefinition>::new());
 
     // Fetch effects list
-    let effects_resource = LocalResource::new(|| api::fetch_effects());
+    let effects_resource = LocalResource::new(api::fetch_effects);
 
     // Fetch initial active effect
-    let active_resource = LocalResource::new(|| api::fetch_active_effect());
+    let active_resource = LocalResource::new(api::fetch_active_effect);
 
     // Initialize active effect from API
     Effect::new(move |_| {
         if let Some(Ok(Some(active))) = active_resource.get() {
             set_active_effect_id.set(Some(active.id));
+            set_active_controls.set(active.controls);
+        } else if let Some(Ok(None)) = active_resource.get() {
+            set_active_effect_id.set(None);
+            set_active_controls.set(Vec::new());
         }
     });
 
@@ -49,8 +54,7 @@ pub fn EffectsPage() -> impl IntoView {
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
     let ws_fps = Signal::derive(move || ws.fps.get());
 
-    // Placeholder controls (populated from effect metadata later)
-    let controls = Signal::derive(move || Vec::<ControlDefinition>::new());
+    let controls = Signal::derive(move || active_controls.get());
 
     // Filter effects
     let filtered_effects = Memo::new(move |_| {
@@ -86,17 +90,21 @@ pub fn EffectsPage() -> impl IntoView {
     // Apply effect handler
     let on_apply = Callback::new(move |id: String| {
         set_active_effect_id.set(Some(id.clone()));
+        set_active_controls.set(Vec::new());
         leptos::task::spawn_local(async move {
             let _ = api::apply_effect(&id).await;
+            if let Ok(detail) = api::fetch_effect_detail(&id).await {
+                set_active_controls.set(detail.controls);
+            }
         });
     });
 
     // Control change handler
     let on_control_change = Callback::new(move |(name, value): (String, serde_json::Value)| {
-        if let Some(effect_id) = active_effect_id.get() {
+        if active_effect_id.get().is_some() {
             let controls_json = serde_json::json!({ name: value });
             leptos::task::spawn_local(async move {
-                let _ = api::update_controls(&effect_id, &controls_json).await;
+                let _ = api::update_controls(&controls_json).await;
             });
         }
     });
@@ -224,6 +232,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                border border-error-red/20 hover:bg-error-red/20 transition-colors"
                                         on:click=move |_| {
                                             set_active_effect_id.set(None);
+                                            set_active_controls.set(Vec::new());
                                             leptos::task::spawn_local(async move {
                                                 let _ = api::stop_effect().await;
                                             });

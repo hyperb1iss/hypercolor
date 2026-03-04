@@ -15,6 +15,8 @@ fn native_metadata(name: &str) -> EffectMetadata {
         description: "native test effect".to_owned(),
         category: EffectCategory::Ambient,
         tags: vec!["native".to_owned()],
+        controls: Vec::new(),
+        audio_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from(format!("builtin/{name}")),
         },
@@ -31,6 +33,8 @@ fn html_metadata() -> EffectMetadata {
         description: "html test effect".to_owned(),
         category: EffectCategory::Ambient,
         tags: vec!["html".to_owned()],
+        controls: Vec::new(),
+        audio_reactive: false,
         source: EffectSource::Html {
             path: PathBuf::from("community/aurora.html"),
         },
