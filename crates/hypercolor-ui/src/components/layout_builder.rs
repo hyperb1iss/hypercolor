@@ -21,6 +21,48 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (is_dirty, set_is_dirty) = signal(false);
     let (creating, set_creating) = signal(false);
     let (new_layout_name, set_new_layout_name) = signal(String::new());
+    let (initialized, set_initialized) = signal(false);
+
+    // Auto-select the active layout (or first available, or create a default) on mount
+    Effect::new(move |_| {
+        if initialized.get() {
+            return;
+        }
+        // Wait for layouts resource to load
+        let Some(Ok(layouts)) = ctx.layouts_resource.get() else {
+            return;
+        };
+        set_initialized.set(true);
+
+        if layouts.is_empty() {
+            // No layouts exist — create a default one
+            let layouts_resource = ctx.layouts_resource;
+            let set_id = set_selected_layout_id;
+            leptos::task::spawn_local(async move {
+                let req = api::CreateLayoutRequest {
+                    name: "Default Layout".to_string(),
+                    description: None,
+                    canvas_width: None,
+                    canvas_height: None,
+                };
+                if let Ok(summary) = api::create_layout(&req).await {
+                    layouts_resource.refetch();
+                    set_id.set(Some(summary.id));
+                }
+            });
+        } else {
+            // Try to load the active layout first, otherwise pick the first one
+            let set_id = set_selected_layout_id;
+            let first_id = layouts[0].id.clone();
+            leptos::task::spawn_local(async move {
+                if let Ok(active) = api::fetch_active_layout().await {
+                    set_id.set(Some(active.id));
+                } else {
+                    set_id.set(Some(first_id));
+                }
+            });
+        }
+    });
 
     // Load layout when selection changes
     Effect::new(move |_| {
