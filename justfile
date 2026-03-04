@@ -81,7 +81,7 @@ doc-open: (doc "--open")
 
 # Run the daemon
 daemon *args='':
-    cargo run -p hypercolor-daemon --bin hypercolor -- {{ args }}
+    cargo run -p hypercolor-daemon --bin hypercolor -- --log-level debug {{ args }}
 
 # Run the CLI
 cli *args='':
@@ -93,7 +93,7 @@ daemon-release *args='':
 
 # Run Servo daemon (dev profile) with cache wrapper
 daemon-servo *args='':
-    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --features servo -- --bind 127.0.0.1:9420 {{ args }}
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }}
 
 # Run Servo daemon in release mode with cache wrapper
 daemon-servo-release *args='':
