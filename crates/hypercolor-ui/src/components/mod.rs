@@ -1,6 +1,12 @@
 pub mod canvas_preview;
 pub mod control_panel;
+pub mod device_card;
+pub mod device_detail;
 pub mod effect_card;
+pub mod layout_builder;
+pub mod layout_canvas;
+pub mod layout_palette;
+pub mod layout_zone_properties;
 pub mod preset_panel;
 pub mod shell;
 pub mod sidebar;

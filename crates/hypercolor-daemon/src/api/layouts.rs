@@ -9,7 +9,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
@@ -47,6 +47,7 @@ pub struct UpdateLayoutRequest {
     pub description: Option<String>,
     pub canvas_width: Option<u32>,
     pub canvas_height: Option<u32>,
+    pub zones: Option<Vec<DeviceZone>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -220,6 +221,10 @@ pub async fn update_layout(
     }
     if let Err(error) = validate_canvas_dimensions(existing.canvas_width, existing.canvas_height) {
         return ApiError::validation(error);
+    }
+
+    if let Some(zones) = body.zones {
+        existing.zones = zones;
     }
 
     let active_layout_id = {

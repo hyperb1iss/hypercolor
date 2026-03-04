@@ -1,0 +1,372 @@
+//! Devices page — device management grid with detail sidebar + layout builder tab.
+
+use leptos::prelude::*;
+use wasm_bindgen::JsCast;
+
+use crate::app::DevicesContext;
+use crate::components::device_card::DeviceCard;
+use crate::components::device_detail::DeviceDetail;
+use crate::components::layout_builder::LayoutBuilder;
+
+/// Status filter options.
+const STATUSES: &[&str] = &["all", "active", "connected", "known", "disabled"];
+
+/// Backend filter options.
+const BACKENDS: &[&str] = &["all", "razer", "wled", "openrgb", "corsair", "hue"];
+
+/// Status → accent RGB for filter chips.
+fn status_accent_rgb(status: &str) -> &'static str {
+    match status {
+        "active" => "80, 250, 123",
+        "connected" => "130, 170, 255",
+        "known" => "139, 133, 160",
+        "disabled" => "255, 99, 99",
+        _ => "225, 53, 255",
+    }
+}
+
+/// Backend → accent RGB for filter chips.
+fn backend_chip_rgb(backend: &str) -> &'static str {
+    match backend {
+        "razer" => "225, 53, 255",
+        "wled" => "128, 255, 234",
+        "openrgb" => "80, 250, 123",
+        "corsair" => "255, 153, 255",
+        "hue" => "255, 183, 77",
+        _ => "225, 53, 255",
+    }
+}
+
+/// Devices page with tabbed layout (Devices + Layout).
+#[component]
+pub fn DevicesPage() -> impl IntoView {
+    let ctx = expect_context::<DevicesContext>();
+
+    let (active_tab, set_active_tab) = signal("devices".to_string());
+    let (search, set_search) = signal(String::new());
+    let (status_filter, set_status_filter) = signal("all".to_string());
+    let (backend_filter, set_backend_filter) = signal("all".to_string());
+    let (selected_device, set_selected_device) = signal(None::<String>);
+
+    // Filter devices (case-insensitive matching)
+    let filtered_devices = Memo::new(move |_| {
+        let Some(Ok(devices)) = ctx.devices_resource.get() else {
+            return Vec::new();
+        };
+
+        let search_term = search.get().to_lowercase();
+        let status = status_filter.get();
+        let backend = backend_filter.get();
+
+        devices
+            .into_iter()
+            .filter(|d| {
+                if status != "all" && d.status.to_lowercase() != status {
+                    return false;
+                }
+                if backend != "all" && d.backend.to_lowercase() != backend {
+                    return false;
+                }
+                if !search_term.is_empty() {
+                    let matches_name = d.name.to_lowercase().contains(&search_term);
+                    let matches_backend = d.backend.to_lowercase().contains(&search_term);
+                    return matches_name || matches_backend;
+                }
+                true
+            })
+            .collect::<Vec<_>>()
+    });
+
+    let device_count = Memo::new(move |_| filtered_devices.get().len());
+
+    let on_select_device = Callback::new(move |id: String| {
+        let current = selected_device.get();
+        if current.as_deref() == Some(&id) {
+            set_selected_device.set(None);
+        } else {
+            set_selected_device.set(Some(id));
+        }
+    });
+
+    view! {
+        <div class="flex flex-col h-full -m-6 animate-fade-in">
+            // Tab bar
+            <div class="shrink-0 px-6 pt-6 pb-0 bg-layer-0 z-10">
+                <div class="flex items-center gap-1 border-b border-white/[0.04]">
+                    {["devices", "layout"].into_iter().map(|tab| {
+                        let tab_str = tab.to_string();
+                        let tab_click = tab.to_string();
+                        let is_active = {
+                            let tab = tab.to_string();
+                            Memo::new(move |_| active_tab.get() == tab)
+                        };
+                        let icon = if tab == "devices" { icon_grid().into_any() } else { icon_layout().into_any() };
+                        view! {
+                            <button
+                                class="px-4 py-2.5 text-sm font-medium transition-colors relative capitalize flex items-center gap-2"
+                                class:text-fg=move || is_active.get()
+                                class:text-fg-dim=move || !is_active.get()
+                                on:click=move |_| set_active_tab.set(tab_click.clone())
+                            >
+                                {icon}
+                                {tab_str}
+                                <div
+                                    class="absolute bottom-0 left-0 right-0 h-[2px] bg-electric-purple rounded-t-full transition-opacity"
+                                    class:opacity-100=move || is_active.get()
+                                    class:opacity-0=move || !is_active.get()
+                                />
+                            </button>
+                        }
+                    }).collect_view()}
+                </div>
+            </div>
+
+            // Tab content
+            {move || {
+                if active_tab.get() == "layout" {
+                    view! { <LayoutBuilder /> }.into_any()
+                } else {
+                    view! {
+                        // Devices tab header
+                        <div class="shrink-0 px-6 pt-4 pb-4 space-y-3 bg-layer-0 z-10">
+                            // Title row with scan button
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-baseline gap-3">
+                                    <h1 class="text-lg font-medium text-fg">"Devices"</h1>
+                                    <span class="text-[11px] font-mono text-fg-dim tabular-nums">
+                                        {move || device_count.get()} " devices"
+                                    </span>
+                                </div>
+                                <button
+                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all btn-press"
+                                    style="background: rgba(128, 255, 234, 0.08); border: 1px solid rgba(128, 255, 234, 0.15); color: rgb(128, 255, 234)"
+                                    on:click=move |_| {
+                                        let devices_resource = ctx.devices_resource;
+                                        leptos::task::spawn_local(async move {
+                                            let _ = crate::api::discover_devices().await;
+                                            devices_resource.refetch();
+                                        });
+                                    }
+                                >
+                                    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M21 12a9 9 0 11-6.22-8.56"/>
+                                        <path d="M21 3v6h-6"/>
+                                    </svg>
+                                    "Scan"
+                                </button>
+                            </div>
+
+                            // Search bar
+                            <div class="relative">
+                                <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-dim pointer-events-none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="11" cy="11" r="8"/>
+                                    <path d="m21 21-4.3-4.3"/>
+                                </svg>
+                                <input
+                                    type="text"
+                                    placeholder="Search devices..."
+                                    class="w-full bg-layer-2/60 border border-white/[0.04] rounded-lg pl-9 pr-10 py-2 text-sm text-fg
+                                           placeholder-fg-dim focus:outline-none focus:border-electric-purple/20
+                                           focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1),0_0_20px_rgba(225,53,255,0.06)]
+                                           transition-all duration-300"
+                                    prop:value=move || search.get()
+                                    on:input=move |ev| {
+                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                        if let Some(el) = target { set_search.set(el.value()); }
+                                    }
+                                />
+                                <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-dim bg-white/[0.03] px-1.5 py-0.5 rounded border border-white/[0.03]">"/"</kbd>
+                            </div>
+
+                            // Combined filter row — status + separator + backends
+                            <div class="flex items-center gap-1.5 flex-wrap">
+                                {STATUSES.iter().map(|s| {
+                                    let s = s.to_string();
+                                    let s_clone = s.clone();
+                                    let rgb = if s == "all" { "225, 53, 255" } else { status_accent_rgb(&s) }.to_string();
+                                    let is_active = {
+                                        let s = s.clone();
+                                        Memo::new(move |_| status_filter.get() == s)
+                                    };
+                                    let active_style = format!(
+                                        "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 12px rgba({rgb}, 0.15)"
+                                    );
+                                    let inactive_style = format!(
+                                        "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: rgba({rgb}, 0.02)"
+                                    );
+                                    view! {
+                                        <button
+                                            class="px-2.5 py-1 rounded-full text-[11px] font-medium capitalize border transition-all"
+                                            style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
+                                            on:click=move |_| set_status_filter.set(s_clone.clone())
+                                        >
+                                            {s.clone()}
+                                        </button>
+                                    }
+                                }).collect_view()}
+
+                                // Subtle separator
+                                <div class="w-px h-4 bg-white/[0.06] mx-1" />
+
+                                {BACKENDS.iter().skip(1).map(|b| {
+                                    let b = b.to_string();
+                                    let b_clone = b.clone();
+                                    let rgb = backend_chip_rgb(&b).to_string();
+                                    let is_active = {
+                                        let b = b.clone();
+                                        Memo::new(move |_| backend_filter.get() == b)
+                                    };
+                                    let active_style = format!(
+                                        "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 12px rgba({rgb}, 0.15)"
+                                    );
+                                    let inactive_style = format!(
+                                        "color: rgba({rgb}, 0.4); border-color: rgba({rgb}, 0.06); background: transparent"
+                                    );
+                                    view! {
+                                        <button
+                                            class="px-2.5 py-1 rounded-full text-[11px] font-medium capitalize border transition-all"
+                                            style=move || {
+                                                if is_active.get() {
+                                                    active_style.clone()
+                                                } else {
+                                                    inactive_style.clone()
+                                                }
+                                            }
+                                            on:click=move |_| {
+                                                let current = backend_filter.get();
+                                                if current == b_clone {
+                                                    set_backend_filter.set("all".to_string());
+                                                } else {
+                                                    set_backend_filter.set(b_clone.clone());
+                                                }
+                                            }
+                                        >
+                                            {b.clone()}
+                                        </button>
+                                    }
+                                }).collect_view()}
+                            </div>
+                        </div>
+
+                        // Scrollable grid + detail sidebar
+                        <div class="flex-1 overflow-y-auto px-6 pb-6">
+                            <div class="flex gap-5 items-start">
+                                // Device grid
+                                <div class="flex-1 min-w-0">
+                                    <Suspense fallback=move || view! { <DevicesLoadingSkeleton /> }>
+                                        {move || {
+                                            let devices = filtered_devices.get();
+                                            if devices.is_empty() {
+                                                view! {
+                                                    <div class="flex flex-col items-center justify-center py-24 space-y-3">
+                                                        <svg class="w-12 h-12 text-fg-dim/20" viewBox="0 0 24 24" fill="none"
+                                                             stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                                                            <rect x="4" y="4" width="16" height="16" rx="2"/>
+                                                            <rect x="9" y="9" width="6" height="6" rx="1"/>
+                                                            <line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/>
+                                                            <line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/>
+                                                        </svg>
+                                                        <div class="text-fg-dim text-sm">"No devices found"</div>
+                                                        <div class="text-fg-dim/40 text-xs">"Try a different search or filter"</div>
+                                                    </div>
+                                                }.into_any()
+                                            } else {
+                                                let has_selected = selected_device.get().is_some();
+                                                let grid_class = if has_selected {
+                                                    "grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3"
+                                                } else {
+                                                    "grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4"
+                                                };
+                                                view! {
+                                                    <div class=grid_class>
+                                                        {devices.into_iter().enumerate().map(|(i, dev)| {
+                                                            let dev_id = dev.id.clone();
+                                                            let is_selected = Signal::derive(move || {
+                                                                selected_device.get().as_deref() == Some(&dev_id)
+                                                            });
+                                                            view! {
+                                                                <DeviceCard
+                                                                    device=dev
+                                                                    is_selected=is_selected
+                                                                    on_select=on_select_device
+                                                                    index=i
+                                                                />
+                                                            }
+                                                        }).collect_view()}
+                                                    </div>
+                                                }.into_any()
+                                            }
+                                        }}
+                                    </Suspense>
+                                </div>
+
+                                // Detail sidebar
+                                {move || selected_device.get().map(|id| {
+                                    let device_id = Signal::derive(move || id.clone());
+                                    view! {
+                                        <DeviceDetail device_id=device_id />
+                                    }
+                                })}
+                            </div>
+                        </div>
+                    }.into_any()
+                }
+            }}
+        </div>
+    }
+}
+
+/// Loading skeleton for the devices grid.
+#[component]
+fn DevicesLoadingSkeleton() -> impl IntoView {
+    view! {
+        <div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
+            {(0..6).map(|i| {
+                let stagger = format!("animation-delay: {}ms", i * 80);
+                view! {
+                    <div class="rounded-2xl border border-white/[0.03] bg-layer-2/40 px-4 py-4 animate-pulse space-y-3" style=stagger>
+                        <div class="flex justify-between items-start">
+                            <div class="flex items-center gap-2.5">
+                                <div class="w-5 h-5 bg-white/[0.04] rounded" />
+                                <div class="h-4 w-32 bg-white/[0.04] rounded" />
+                            </div>
+                            <div class="h-4 w-14 bg-white/[0.04] rounded-full" />
+                        </div>
+                        <div class="flex gap-4">
+                            <div class="h-3 w-16 bg-white/[0.02] rounded" />
+                            <div class="h-3 w-16 bg-white/[0.02] rounded" />
+                        </div>
+                        <div class="flex items-center gap-2 pt-2 border-t border-white/[0.02]">
+                            <div class="w-1.5 h-1.5 bg-white/[0.04] rounded-full" />
+                            <div class="h-2.5 w-16 bg-white/[0.02] rounded" />
+                        </div>
+                    </div>
+                }
+            }).collect_view()}
+        </div>
+    }
+}
+
+/// Grid icon for Devices tab.
+fn icon_grid() -> impl IntoView {
+    view! {
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+            <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+        </svg>
+    }
+}
+
+/// Layout icon for Layout tab.
+fn icon_layout() -> impl IntoView {
+    view! {
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+            <line x1="3" y1="9" x2="21" y2="9"/>
+            <line x1="9" y1="21" x2="9" y2="9"/>
+        </svg>
+    }
+}

@@ -52,9 +52,8 @@ pub fn EffectsPage() -> impl IntoView {
     let ws_fps = Signal::derive(move || ws.fps.get());
     let controls = Signal::derive(move || fx.active_controls.get());
     let control_values = Signal::derive(move || fx.active_control_values.get());
-    let accent_rgb = Signal::derive(move || {
-        category_accent_rgb(&fx.active_effect_category.get()).to_string()
-    });
+    let accent_rgb =
+        Signal::derive(move || category_accent_rgb(&fx.active_effect_category.get()).to_string());
 
     let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
 

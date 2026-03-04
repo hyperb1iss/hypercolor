@@ -10,6 +10,7 @@ use hypercolor_types::effect::{ControlDefinition, ControlValue};
 use crate::api;
 use crate::components::shell::Shell;
 use crate::pages::dashboard::DashboardPage;
+use crate::pages::devices::DevicesPage;
 use crate::pages::effects::EffectsPage;
 use crate::ws::{CanvasFrame, ConnectionState, WsManager};
 
@@ -38,6 +39,13 @@ pub struct EffectsContext {
     pub set_active_control_values: WriteSignal<HashMap<String, ControlValue>>,
     pub active_preset_id: ReadSignal<Option<String>>,
     pub set_active_preset_id: WriteSignal<Option<String>>,
+}
+
+/// Shared device + layout state — accessible from devices page and layout builder.
+#[derive(Clone, Copy)]
+pub struct DevicesContext {
+    pub devices_resource: LocalResource<Result<Vec<api::DeviceSummary>, String>>,
+    pub layouts_resource: LocalResource<Result<Vec<api::LayoutSummary>, String>>,
 }
 
 impl EffectsContext {
@@ -115,7 +123,8 @@ pub fn App() -> impl IntoView {
     let (active_effect_name, set_active_effect_name) = signal(None::<String>);
     let (active_effect_category, set_active_effect_category) = signal(String::new());
     let (active_controls, set_active_controls) = signal(Vec::<ControlDefinition>::new());
-    let (active_control_values, set_active_control_values) = signal(HashMap::<String, ControlValue>::new());
+    let (active_control_values, set_active_control_values) =
+        signal(HashMap::<String, ControlValue>::new());
     let (active_preset_id, set_active_preset_id) = signal(None::<String>);
 
     let effects_ctx = EffectsContext {
@@ -134,6 +143,14 @@ pub fn App() -> impl IntoView {
         set_active_preset_id,
     };
     provide_context(effects_ctx);
+
+    // Global devices + layouts state
+    let devices_resource = LocalResource::new(api::fetch_devices);
+    let layouts_resource = LocalResource::new(api::fetch_layouts);
+    provide_context(DevicesContext {
+        devices_resource,
+        layouts_resource,
+    });
 
     // Initialize active effect from API on load
     Effect::new(move |_| {
@@ -170,6 +187,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/") view=DashboardPage />
                     <Route path=path!("/effects") view=EffectsPage />
                     <Route path=path!("/effects/:id") view=EffectsPage />
+                    <Route path=path!("/devices") view=DevicesPage />
                 </Routes>
             </Shell>
         </Router>

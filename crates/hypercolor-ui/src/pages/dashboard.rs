@@ -97,10 +97,30 @@ pub fn DashboardPage() -> impl IntoView {
 #[component]
 fn StatusCards(status: SystemStatus) -> impl IntoView {
     let cards = vec![
-        ("Status", if status.running { "Running" } else { "Stopped" }.to_string(), status.running, "electric-purple"),
-        ("Uptime", format_uptime(status.uptime_seconds), true, "neon-cyan"),
-        ("Devices", status.device_count.to_string(), status.device_count > 0, "coral"),
-        ("Effects", status.effect_count.to_string(), true, "success-green"),
+        (
+            "Status",
+            if status.running { "Running" } else { "Stopped" }.to_string(),
+            status.running,
+            "electric-purple",
+        ),
+        (
+            "Uptime",
+            format_uptime(status.uptime_seconds),
+            true,
+            "neon-cyan",
+        ),
+        (
+            "Devices",
+            status.device_count.to_string(),
+            status.device_count > 0,
+            "coral",
+        ),
+        (
+            "Effects",
+            status.effect_count.to_string(),
+            true,
+            "success-green",
+        ),
     ];
 
     view! {

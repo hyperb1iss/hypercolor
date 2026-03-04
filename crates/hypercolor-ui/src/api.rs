@@ -87,6 +87,19 @@ pub struct ZoneSummary {
     pub name: String,
     pub led_count: usize,
     pub topology: String,
+    #[serde(default)]
+    pub topology_hint: Option<ZoneTopologySummary>,
+}
+
+/// Structured topology hint from `GET /api/v1/devices`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ZoneTopologySummary {
+    Strip,
+    Matrix { rows: u32, cols: u32 },
+    Ring { count: u32 },
+    Point,
+    Custom,
 }
 
 /// Device summary from `GET /api/v1/devices`.
@@ -109,6 +122,62 @@ pub struct DeviceListResponse {
     pub items: Vec<DeviceSummary>,
 }
 
+// ── Logical Device Types ────────────────────────────────────────────────────
+
+/// Logical device summary from device segmentation APIs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LogicalDeviceSummary {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub enabled: bool,
+    pub led_start: u32,
+    pub led_count: u32,
+    pub led_end: u32,
+    pub physical_device_id: String,
+    pub physical_device_name: String,
+    pub backend: String,
+    pub physical_status: String,
+}
+
+/// Paginated logical device list response.
+#[derive(Debug, Deserialize)]
+pub struct LogicalDeviceListResponse {
+    pub items: Vec<LogicalDeviceSummary>,
+}
+
+/// Request body for creating a logical device segment.
+#[derive(Debug, Serialize)]
+pub struct CreateLogicalDeviceRequest {
+    pub name: String,
+    pub led_start: u32,
+    pub led_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+/// Request body for updating a logical device segment.
+#[derive(Debug, Serialize)]
+pub struct UpdateLogicalDeviceRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub led_start: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub led_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+/// Request body for updating a device.
+#[derive(Debug, Serialize)]
+pub struct UpdateDeviceRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
 // ── Layout Types ────────────────────────────────────────────────────────────
 
 /// Layout summary from `GET /api/v1/layouts`.
@@ -125,6 +194,33 @@ pub struct LayoutSummary {
 #[derive(Debug, Deserialize)]
 pub struct LayoutListResponse {
     pub items: Vec<LayoutSummary>,
+}
+
+/// Request body for creating a layout.
+#[derive(Debug, Serialize)]
+pub struct CreateLayoutRequest {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canvas_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canvas_height: Option<u32>,
+}
+
+/// Request body for updating a layout.
+#[derive(Debug, Serialize)]
+pub struct UpdateLayoutApiRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canvas_width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canvas_height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zones: Option<Vec<hypercolor_types::spatial::DeviceZone>>,
 }
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────
@@ -277,6 +373,260 @@ pub async fn fetch_layouts() -> Result<Vec<LayoutSummary>, String> {
         resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
 
     Ok(envelope.data.items)
+}
+
+/// Fetch a single device by ID.
+pub async fn fetch_device(id: &str) -> Result<DeviceSummary, String> {
+    let url = format!("/api/v1/devices/{id}");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<DeviceSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Update a device (name, enabled).
+pub async fn update_device(id: &str, req: &UpdateDeviceRequest) -> Result<DeviceSummary, String> {
+    let url = format!("/api/v1/devices/{id}");
+    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::put(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<DeviceSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Identify a device by flashing its LEDs.
+pub async fn identify_device(id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/devices/{id}/identify");
+    let resp = Request::post(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+// ── Logical Device Fetch Functions ────────────────────────────────────────
+
+/// Fetch logical devices for a physical device.
+pub async fn fetch_logical_devices(device_id: &str) -> Result<Vec<LogicalDeviceSummary>, String> {
+    let url = format!("/api/v1/devices/{device_id}/logical-devices");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<LogicalDeviceListResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.items)
+}
+
+/// Create a logical device segment on a physical device.
+pub async fn create_logical_device(
+    device_id: &str,
+    req: &CreateLogicalDeviceRequest,
+) -> Result<LogicalDeviceSummary, String> {
+    let url = format!("/api/v1/devices/{device_id}/logical-devices");
+    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::post(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 && resp.status() != 201 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<LogicalDeviceSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Update a logical device segment.
+pub async fn update_logical_device(
+    id: &str,
+    req: &UpdateLogicalDeviceRequest,
+) -> Result<LogicalDeviceSummary, String> {
+    let url = format!("/api/v1/logical-devices/{id}");
+    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::put(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<LogicalDeviceSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Delete a logical device segment.
+pub async fn delete_logical_device(id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/logical-devices/{id}");
+    let resp = Request::delete(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+// ── Layout Detail + Mutation Functions ────────────────────────────────────
+
+/// Fetch a single layout with full zone data.
+pub async fn fetch_layout(id: &str) -> Result<hypercolor_types::spatial::SpatialLayout, String> {
+    let url = format!("/api/v1/layouts/{id}");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<hypercolor_types::spatial::SpatialLayout> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Fetch the currently active layout.
+pub async fn fetch_active_layout() -> Result<hypercolor_types::spatial::SpatialLayout, String> {
+    let resp = Request::get("/api/v1/layouts/active")
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<hypercolor_types::spatial::SpatialLayout> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Create a new layout.
+pub async fn create_layout(req: &CreateLayoutRequest) -> Result<LayoutSummary, String> {
+    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::post("/api/v1/layouts")
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 && resp.status() != 201 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<LayoutSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Update a layout (metadata + optionally zones).
+pub async fn update_layout(
+    id: &str,
+    req: &UpdateLayoutApiRequest,
+) -> Result<LayoutSummary, String> {
+    let url = format!("/api/v1/layouts/{id}");
+    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::put(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<LayoutSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Apply a layout to the spatial engine.
+pub async fn apply_layout(id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/layouts/{id}/apply");
+    let resp = Request::post(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Delete a layout.
+pub async fn delete_layout(id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/layouts/{id}");
+    let resp = Request::delete(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
 }
 
 // ── Preset Types ────────────────────────────────────────────────────────
