@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use tokio::sync::Mutex;
@@ -181,6 +182,35 @@ impl TransportScanner for MockScanner {
         if self.should_fail {
             bail!("mock scanner '{name}' failed", name = self.name);
         }
+        Ok(self.devices.clone())
+    }
+}
+
+/// Scanner that sleeps before returning devices, used for parallelism tests.
+struct DelayedScanner {
+    name: String,
+    delay: Duration,
+    devices: Vec<DiscoveredDevice>,
+}
+
+impl DelayedScanner {
+    fn new(name: &str, delay: Duration, devices: Vec<DiscoveredDevice>) -> Self {
+        Self {
+            name: name.to_owned(),
+            delay,
+            devices,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl TransportScanner for DelayedScanner {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+        tokio::time::sleep(self.delay).await;
         Ok(self.devices.clone())
     }
 }
@@ -605,6 +635,34 @@ async fn orchestrator_handles_scanner_failure_gracefully() {
     // The healthy scanner's device should still be registered
     assert_eq!(report.new_devices.len(), 1);
     assert_eq!(report.total_known, 1);
+}
+
+#[tokio::test]
+async fn orchestrator_scans_transports_in_parallel() {
+    let registry = DeviceRegistry::new();
+    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+
+    let delay = Duration::from_millis(220);
+    orchestrator.add_scanner(Box::new(DelayedScanner::new(
+        "Scanner A",
+        delay,
+        vec![mock_discovered("A", "net:parallel:a")],
+    )));
+    orchestrator.add_scanner(Box::new(DelayedScanner::new(
+        "Scanner B",
+        delay,
+        vec![mock_discovered("B", "net:parallel:b")],
+    )));
+
+    let started = Instant::now();
+    let report = orchestrator.full_scan().await;
+    let elapsed = started.elapsed();
+
+    assert_eq!(report.total_known, 2);
+    assert!(
+        elapsed < Duration::from_millis(400),
+        "expected parallel scan completion, elapsed={elapsed:?}"
+    );
 }
 
 #[tokio::test]

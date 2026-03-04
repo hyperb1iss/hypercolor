@@ -145,26 +145,44 @@ impl DiscoveryOrchestrator {
     pub async fn full_scan(&mut self) -> DiscoveryReport {
         let scan_start = Instant::now();
 
-        // Collect results from all scanners. We iterate mutably one at a
-        // time because each scanner holds `&mut self`. For true parallelism
-        // across independent transports, scanners would need interior
-        // mutability — a future optimization.
+        // Move scanners out so each can be scanned on its own task.
+        // We restore every scanner instance after awaiting task completion.
+        let scanners = std::mem::take(&mut self.scanners);
+        let mut scan_tasks = Vec::with_capacity(scanners.len());
+        for mut scanner in scanners {
+            scan_tasks.push(tokio::spawn(async move {
+                let scanner_name = scanner.name().to_owned();
+                let result = scanner.scan().await;
+                (scanner, scanner_name, result)
+            }));
+        }
+
         let mut all_discovered: Vec<DiscoveredDevice> = Vec::new();
-        for scanner in &mut self.scanners {
-            match scanner.scan().await {
-                Ok(devices) => {
-                    info!(
-                        scanner = scanner.name(),
-                        count = devices.len(),
-                        "Scan complete"
-                    );
-                    all_discovered.extend(devices);
+        let mut restored_scanners = Vec::with_capacity(scan_tasks.len());
+
+        for task in scan_tasks {
+            match task.await {
+                Ok((scanner, scanner_name, result)) => {
+                    restored_scanners.push(scanner);
+                    match result {
+                        Ok(devices) => {
+                            info!(scanner = %scanner_name, count = devices.len(), "Scan complete");
+                            all_discovered.extend(devices);
+                        }
+                        Err(error) => {
+                            warn!(scanner = %scanner_name, error = %error, "Scan failed");
+                        }
+                    }
                 }
-                Err(e) => {
-                    warn!(scanner = scanner.name(), error = %e, "Scan failed");
+                Err(join_error) => {
+                    warn!(
+                        error = %join_error,
+                        "Scanner task failed before returning results"
+                    );
                 }
             }
         }
+        self.scanners = restored_scanners;
 
         // Deduplicate by fingerprint (last-writer-wins for metadata richness)
         let mut deduped: HashMap<DeviceFingerprint, DiscoveredDevice> =

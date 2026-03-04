@@ -1,12 +1,94 @@
 //! Tests for the `BackendManager` — device routing and frame dispatch.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+use anyhow::{Result, bail};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
-use hypercolor_core::device::{BackendManager, DeviceBackend};
-use hypercolor_types::device::DeviceId;
+use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend};
+use hypercolor_types::device::{
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily,
+};
+use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
 };
+use tokio::sync::Mutex;
+
+// ── Slow Test Backend ────────────────────────────────────────────────────────
+
+struct SlowRecordingBackend {
+    expected_device_id: DeviceId,
+    delay: Duration,
+    writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
+    write_count: Arc<AtomicUsize>,
+}
+
+impl SlowRecordingBackend {
+    fn new(
+        expected_device_id: DeviceId,
+        delay: Duration,
+        writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
+        write_count: Arc<AtomicUsize>,
+    ) -> Self {
+        Self {
+            expected_device_id,
+            delay,
+            writes,
+            write_count,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for SlowRecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "slow".to_owned(),
+            name: "Slow Recording Backend".to_owned(),
+            description: "Sleeps during writes to test non-blocking dispatch".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(vec![DeviceInfo {
+            id: self.expected_device_id,
+            name: "Slow Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::Custom("Test".to_owned()),
+            connection_type: ConnectionType::Network,
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 10,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities::default(),
+        }])
+    }
+
+    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        tokio::time::sleep(self.delay).await;
+        self.write_count.fetch_add(1, Ordering::Relaxed);
+        self.writes.lock().await.push(colors.to_vec());
+        Ok(())
+    }
+}
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -180,7 +262,7 @@ async fn write_frame_missing_backend_reports_error() {
 }
 
 #[tokio::test]
-async fn write_frame_backend_error_is_collected() {
+async fn write_frame_backend_errors_are_not_reported_synchronously() {
     let device_id = DeviceId::new();
     let mock_config = MockDeviceConfig {
         name: "Failing Strip".into(),
@@ -208,8 +290,11 @@ async fn write_frame_backend_error_is_collected() {
     }];
 
     let stats = manager.write_frame(&zone_colors, &layout).await;
-    assert_eq!(stats.devices_written, 0);
-    assert_eq!(stats.errors.len(), 1);
+    assert_eq!(stats.devices_written, 1);
+    assert!(
+        stats.errors.is_empty(),
+        "queueing should succeed even if async write later fails"
+    );
 }
 
 #[tokio::test]
@@ -294,4 +379,107 @@ async fn write_frame_unknown_zone_id_warns_but_continues() {
     assert_eq!(stats.devices_written, 1);
     assert_eq!(stats.total_leds, 5);
     assert!(stats.errors.is_empty());
+}
+
+#[tokio::test]
+async fn write_frame_returns_immediately_with_slow_backend() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(160),
+        writes.clone(),
+        write_count.clone(),
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("slow:strip", "slow", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 10)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[10, 20, 30]; 10],
+    }];
+
+    let started = Instant::now();
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    let elapsed = started.elapsed();
+
+    assert_eq!(stats.devices_written, 1);
+    assert!(
+        elapsed < Duration::from_millis(110),
+        "write_frame should enqueue quickly, elapsed={elapsed:?}"
+    );
+    assert_eq!(
+        write_count.load(Ordering::Relaxed),
+        0,
+        "async writer should still be running"
+    );
+
+    tokio::time::sleep(Duration::from_millis(260)).await;
+    assert_eq!(write_count.load(Ordering::Relaxed), 1);
+    assert_eq!(writes.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn write_frame_drops_stale_intermediate_payloads() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(140),
+        writes.clone(),
+        write_count,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("slow:strip", "slow", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:strip", 4)]);
+
+    let first = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[255, 0, 0]; 4],
+    }];
+    let second = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[0, 255, 0]; 4],
+    }];
+    let third = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[0, 0, 255]; 4],
+    }];
+
+    manager.write_frame(&first, &layout).await;
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    manager.write_frame(&second, &layout).await;
+    manager.write_frame(&third, &layout).await;
+
+    tokio::time::sleep(Duration::from_millis(420)).await;
+
+    let writes = writes.lock().await.clone();
+    assert!(
+        !writes.is_empty(),
+        "slow backend should receive at least one payload"
+    );
+    assert!(
+        writes.len() <= 2,
+        "stale intermediate payloads should be dropped"
+    );
+    let last_frame = writes.last().expect("expected at least one write");
+    assert_eq!(
+        last_frame[0],
+        [0, 0, 255],
+        "latest payload should win after overlap"
+    );
+    assert!(
+        !writes.iter().any(|frame| frame[0] == [0, 255, 0]),
+        "intermediate frame should have been dropped"
+    );
 }
