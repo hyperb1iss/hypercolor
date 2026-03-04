@@ -177,7 +177,9 @@ pub fn control_update_script(name: &str, value: &ControlValue) -> String {
             "(function(){{\n",
             "  const callback = {};\n",
             "  window[{}] = {};\n",
-            "  if (typeof window[callback] === 'function') {{ window[callback](); }}\n",
+            "  if (typeof window[callback] === 'function') {{\n",
+            "    try {{ window[callback](); }} catch (_err) {{}}\n",
+            "  }}\n",
             "}})();",
         ),
         callback_literal,
@@ -242,6 +244,7 @@ mod tests {
         assert!(script.contains("window[\"frontColor\"]"));
         assert!(script.contains("const callback = \"onfrontColorChanged\""));
         assert!(script.contains("window[callback]"));
+        assert!(script.contains("try { window[callback](); } catch (_err) {}"));
         assert!(script.contains("\"#00ffcc\""));
     }
 

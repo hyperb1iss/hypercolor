@@ -8,7 +8,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
-use std::thread::{self, JoinHandle};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -37,6 +38,8 @@ const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const RENDER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 
+static SERVO_WORKER: OnceLock<Mutex<Option<Arc<ServoWorker>>>> = OnceLock::new();
+
 /// Feature-gated renderer for HTML effects.
 pub struct ServoRenderer {
     html_source: Option<PathBuf>,
@@ -45,7 +48,7 @@ pub struct ServoRenderer {
     runtime: LightscriptRuntime,
     initialized: bool,
     pending_scripts: Vec<String>,
-    worker: Option<ServoWorker>,
+    worker: Option<Arc<ServoWorker>>,
     warned_fallback_frame: bool,
 }
 
@@ -115,7 +118,7 @@ impl EffectRenderer for ServoRenderer {
             )
         })?;
 
-        self.deactivate_worker();
+        self.worker = None;
         self.controls.clear();
         self.runtime = LightscriptRuntime::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
         self.pending_scripts.clear();
@@ -134,7 +137,8 @@ impl EffectRenderer for ServoRenderer {
             }
         }
 
-        let worker = ServoWorker::spawn(&resolved, DEFAULT_WIDTH, DEFAULT_HEIGHT)?;
+        let worker = acquire_servo_worker(DEFAULT_WIDTH, DEFAULT_HEIGHT)?;
+        worker.load_effect(&resolved)?;
         self.worker = Some(worker);
         self.html_source = Some(path.clone());
         self.html_resolved_path = Some(resolved.clone());
@@ -181,21 +185,13 @@ impl EffectRenderer for ServoRenderer {
     }
 
     fn destroy(&mut self) {
-        self.deactivate_worker();
+        self.worker = None;
         self.pending_scripts.clear();
         self.controls.clear();
         self.html_source = None;
         self.html_resolved_path = None;
         self.initialized = false;
         self.warned_fallback_frame = false;
-    }
-}
-
-impl ServoRenderer {
-    fn deactivate_worker(&mut self) {
-        if let Some(mut worker) = self.worker.take() {
-            worker.shutdown();
-        }
     }
 }
 
@@ -208,19 +204,17 @@ impl Default for ServoRenderer {
 /// Worker wrapper that owns the Servo runtime thread.
 struct ServoWorker {
     command_tx: Sender<WorkerCommand>,
-    join_handle: Option<JoinHandle<()>>,
 }
 
 impl ServoWorker {
-    fn spawn(html_path: &Path, width: u32, height: u32) -> Result<Self> {
+    fn spawn(width: u32, height: u32) -> Result<Self> {
         let (command_tx, command_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let html_path = html_path.to_path_buf();
 
-        let join_handle = thread::Builder::new()
+        thread::Builder::new()
             .name("hypercolor-servo-worker".to_owned())
             .spawn(move || {
-                let runtime = match ServoWorkerRuntime::new(&html_path, width, height) {
+                let runtime = match ServoWorkerRuntime::new(width, height) {
                     Ok(runtime) => {
                         let _ = ready_tx.send(Ok(()));
                         runtime
@@ -246,17 +240,30 @@ impl ServoWorker {
                 bail!("Servo worker exited before reporting readiness");
             }
         };
-        if let Err(error) = readiness {
-            if join_handle.is_finished() {
-                let _ = join_handle.join();
-            }
-            return Err(error);
-        }
+        readiness?;
 
-        Ok(Self {
-            command_tx,
-            join_handle: Some(join_handle),
-        })
+        Ok(Self { command_tx })
+    }
+
+    fn load_effect(&self, html_path: &Path) -> Result<()> {
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        self.command_tx
+            .send(WorkerCommand::Load {
+                html_path: html_path.to_path_buf(),
+                response_tx,
+            })
+            .context("failed to send load command to Servo worker")?;
+
+        match response_rx.recv_timeout(WORKER_READY_TIMEOUT) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => bail!(
+                "timed out waiting for Servo page load after {}ms",
+                WORKER_READY_TIMEOUT.as_millis()
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("Servo worker disconnected before confirming page load")
+            }
+        }
     }
 
     fn render_frame(&self, scripts: Vec<String>, width: u32, height: u32) -> Result<Canvas> {
@@ -280,35 +287,19 @@ impl ServoWorker {
             }
         }
     }
-
-    fn shutdown(&mut self) {
-        let _ = self.command_tx.send(WorkerCommand::Shutdown);
-        if let Some(handle) = self.join_handle.take() {
-            if handle.is_finished() {
-                if let Err(error) = handle.join() {
-                    warn!(?error, "Servo worker thread panicked");
-                }
-            } else {
-                warn!("Servo worker did not shut down promptly; detaching join handle");
-            }
-        }
-    }
-}
-
-impl Drop for ServoWorker {
-    fn drop(&mut self) {
-        self.shutdown();
-    }
 }
 
 enum WorkerCommand {
+    Load {
+        html_path: PathBuf,
+        response_tx: SyncSender<Result<()>>,
+    },
     Render {
         scripts: Vec<String>,
         width: u32,
         height: u32,
         response_tx: SyncSender<Result<Canvas>>,
     },
-    Shutdown,
 }
 
 struct ServoWorkerRuntime {
@@ -319,7 +310,7 @@ struct ServoWorkerRuntime {
 }
 
 impl ServoWorkerRuntime {
-    fn new(html_path: &Path, width: u32, height: u32) -> Result<Self> {
+    fn new(width: u32, height: u32) -> Result<Self> {
         install_rustls_provider();
 
         let rendering_context: Rc<dyn RenderingContext> =
@@ -330,7 +321,7 @@ impl ServoWorkerRuntime {
 
         let servo = ServoBuilder::default().build();
         let delegate = Rc::new(HypercolorWebViewDelegate::new());
-        let url = file_url_for_path(html_path)?;
+        let url = Url::parse("about:blank").context("failed to parse about:blank URL")?;
 
         let webview = WebViewBuilder::new(&servo, Rc::clone(&rendering_context))
             .delegate(delegate.clone())
@@ -343,13 +334,20 @@ impl ServoWorkerRuntime {
             rendering_context,
             delegate,
         };
-        runtime.wait_for_load_completion(LOAD_TIMEOUT)?;
+        runtime.wait_for_load_completion(LOAD_TIMEOUT, None)?;
         Ok(runtime)
     }
 
     fn run(mut self, command_rx: Receiver<WorkerCommand>) {
         for command in command_rx {
             match command {
+                WorkerCommand::Load {
+                    html_path,
+                    response_tx,
+                } => {
+                    let result = self.load_effect(&html_path);
+                    let _ = response_tx.send(result);
+                }
                 WorkerCommand::Render {
                     scripts,
                     width,
@@ -359,9 +357,16 @@ impl ServoWorkerRuntime {
                     let result = self.render_frame(&scripts, width, height);
                     let _ = response_tx.send(result);
                 }
-                WorkerCommand::Shutdown => break,
             }
         }
+    }
+
+    fn load_effect(&mut self, html_path: &Path) -> Result<()> {
+        let url = file_url_for_path(html_path)?;
+        self.delegate.take_page_loaded();
+        self.webview.load(url.clone());
+        self.wait_for_load_completion(LOAD_TIMEOUT, Some(url.as_str()))?;
+        Ok(())
     }
 
     fn render_frame(&mut self, scripts: &[String], width: u32, height: u32) -> Result<Canvas> {
@@ -437,14 +442,21 @@ impl ServoWorkerRuntime {
             .map_err(|error| anyhow!("javascript evaluation failed: {error:?}"))
     }
 
-    fn wait_for_load_completion(&self, timeout: Duration) -> Result<()> {
+    fn wait_for_load_completion(
+        &self,
+        timeout: Duration,
+        expected_url: Option<&str>,
+    ) -> Result<()> {
         let deadline = Instant::now() + timeout;
 
         loop {
             self.servo.spin_event_loop();
-            if self.delegate.take_page_loaded()
-                || matches!(self.webview.load_status(), LoadStatus::Complete)
-            {
+            let status_complete = matches!(self.webview.load_status(), LoadStatus::Complete);
+            let loaded = self.delegate.is_page_loaded() || status_complete;
+            let url_matches =
+                expected_url.is_none_or(|url| self.delegate.last_url().as_deref() == Some(url));
+            if loaded && url_matches {
+                self.delegate.take_page_loaded();
                 debug!("Servo page load completed");
                 return Ok(());
             }
@@ -455,6 +467,22 @@ impl ServoWorkerRuntime {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
+}
+
+fn acquire_servo_worker(width: u32, height: u32) -> Result<Arc<ServoWorker>> {
+    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(None));
+    let mut guard = match slot.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    if let Some(worker) = guard.as_ref() {
+        return Ok(Arc::clone(worker));
+    }
+
+    let worker = Arc::new(ServoWorker::spawn(width, height)?);
+    *guard = Some(Arc::clone(&worker));
+    Ok(worker)
 }
 
 fn install_rustls_provider() {

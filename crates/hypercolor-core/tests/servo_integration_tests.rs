@@ -39,10 +39,10 @@ fn html_metadata(path: PathBuf) -> EffectMetadata {
     }
 }
 
-fn render_frames(path: PathBuf, frame_count: usize) -> Vec<Canvas> {
+fn render_frames(path: &Path, frame_count: usize) -> Vec<Canvas> {
     let mut engine = EffectEngine::new();
     engine
-        .activate_metadata(html_metadata(path.clone()))
+        .activate_metadata(html_metadata(path.to_path_buf()))
         .unwrap_or_else(|error| {
             panic!(
                 "servo activation should succeed for {}: {error}",
@@ -149,7 +149,7 @@ ctx.fillRect(0, 0, canvas.width, canvas.height);
 </html>"#;
     std::fs::write(&html_path, html).expect("html write should work");
 
-    let frames = render_frames(html_path, 5);
+    let frames = render_frames(&html_path, 5);
     assert!(
         frames
             .iter()
@@ -164,14 +164,14 @@ ctx.fillRect(0, 0, canvas.width, canvas.height);
 #[test]
 #[ignore = "requires full Servo runtime and is expensive in CI/dev loops"]
 fn servo_renderer_smoke_renders_builtin_catalog_sample() {
-    let rainbow_frames = render_frames(PathBuf::from("builtin/Rainbow.html"), 3);
+    let rainbow_frames = render_frames(Path::new("builtin/Rainbow.html"), 3);
     assert!(
         rainbow_frames.iter().any(frame_has_spatial_variance),
         "rainbow effect should produce spatially varying pixels"
     );
 
     for relative in BUILTIN_EFFECTS {
-        let frames = render_frames(PathBuf::from(relative), 3);
+        let frames = render_frames(Path::new(relative), 3);
         assert!(
             frames
                 .iter()
@@ -188,7 +188,7 @@ fn servo_renderer_smoke_renders_sampled_community_effects() {
     assert_eq!(sampled.len(), COMMUNITY_SAMPLE_SIZE);
 
     for relative in sampled {
-        let frames = render_frames(relative, 2);
+        let frames = render_frames(&relative, 2);
         assert!(
             frames
                 .iter()
@@ -207,7 +207,7 @@ fn servo_renderer_smoke_renders_webgl_effects() {
         "expected at least one custom effect tagged as WebGL"
     );
     for relative in webgl_paths {
-        let frames = render_frames(relative, 2);
+        let frames = render_frames(&relative, 2);
         for frame in frames {
             assert_dimensions(&frame);
         }
