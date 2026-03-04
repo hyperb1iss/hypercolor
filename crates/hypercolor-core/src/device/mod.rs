@@ -5,14 +5,23 @@
 //! LED color data to devices over any transport (USB HID, UDP, TCP, HTTP).
 
 mod discovery;
+mod lifecycle;
 pub mod manager;
 pub mod mock;
 pub mod openrgb;
 mod registry;
+mod state_machine;
 mod traits;
 pub mod wled;
 
-pub use discovery::{DiscoveredDevice, DiscoveryOrchestrator, DiscoveryReport, TransportScanner};
+pub use discovery::{
+    DiscoveredDevice, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport, TransportScanner,
+};
+pub use lifecycle::{DeviceLifecycleManager, LifecycleAction};
 pub use manager::BackendManager;
 pub use registry::DeviceRegistry;
+pub use state_machine::{
+    DeviceStateMachine, DeviceStateMachineDebugSnapshot, ReconnectPolicy, ReconnectStatus,
+    StateTransitionRecord,
+};
 pub use traits::{BackendInfo, DeviceBackend, DevicePlugin};
