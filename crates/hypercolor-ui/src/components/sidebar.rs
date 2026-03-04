@@ -1,14 +1,31 @@
-//! Fixed navigation sidebar — open by default, manually collapsible.
+//! Fixed navigation sidebar — nav + now-playing section with player controls.
 
 use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::use_location;
+
+use crate::app::EffectsContext;
 
 /// Sidebar collapsed state, shared via context so the shell can react.
 #[derive(Clone, Copy)]
 pub struct SidebarState {
     pub collapsed: ReadSignal<bool>,
     pub set_collapsed: WriteSignal<bool>,
+}
+
+/// Category → accent RGB string for inline styles.
+fn category_accent_rgb(category: &str) -> &'static str {
+    match category {
+        "ambient" => "128, 255, 234",
+        "audio" => "255, 106, 193",
+        "gaming" => "225, 53, 255",
+        "reactive" => "241, 250, 140",
+        "generative" => "80, 250, 123",
+        "interactive" => "130, 170, 255",
+        "productivity" => "255, 153, 255",
+        "utility" => "139, 133, 160",
+        _ => "225, 53, 255",
+    }
 }
 
 /// Navigation sidebar with manual toggle.
@@ -21,6 +38,9 @@ pub fn Sidebar() -> impl IntoView {
     });
 
     let location = use_location();
+    let fx = expect_context::<EffectsContext>();
+
+    let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
 
     let nav_items = vec![
         NavItem {
@@ -34,6 +54,50 @@ pub fn Sidebar() -> impl IntoView {
             icon: icon_effects(),
         },
     ];
+
+    // Navigate effects list (for prev/next)
+    let navigate_effect = move |direction: i32| {
+        let list = fx
+            .effects_resource
+            .get()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+        if list.is_empty() {
+            return;
+        }
+        let current = fx.active_effect_id.get();
+        let idx = current
+            .as_ref()
+            .and_then(|id| list.iter().position(|e| &e.id == id))
+            .unwrap_or(0);
+        let next_idx = ((idx as i32 + direction).rem_euclid(list.len() as i32)) as usize;
+        fx.apply_effect(list[next_idx].id.clone());
+    };
+
+    // Random effect
+    let random_effect = move || {
+        let list = fx
+            .effects_resource
+            .get()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+        if list.is_empty() {
+            return;
+        }
+        let current = fx.active_effect_id.get();
+        let rand = js_sys::Math::random();
+        let mut idx = (rand * list.len() as f64) as usize;
+        if list.len() > 1 {
+            if let Some(ref cur) = current {
+                if list.get(idx).is_some_and(|e| &e.id == cur) {
+                    idx = (idx + 1) % list.len();
+                }
+            }
+        }
+        if let Some(effect) = list.get(idx) {
+            fx.apply_effect(effect.id.clone());
+        }
+    };
 
     view! {
         <nav
@@ -107,6 +171,87 @@ pub fn Sidebar() -> impl IntoView {
                     }
                 }).collect_view()}
             </div>
+
+            // Now Playing section — shows when an effect is active and sidebar is expanded
+            {move || {
+                if !has_active.get() || collapsed.get() {
+                    return None;
+                }
+                let name = fx.active_effect_name.get().unwrap_or_default();
+                let cat = fx.active_effect_category.get();
+                let rgb = category_accent_rgb(&cat).to_string();
+                let bg_style = format!(
+                    "background: linear-gradient(135deg, rgba({rgb}, 0.08) 0%, rgba({rgb}, 0.02) 100%); \
+                     border-color: rgba({rgb}, 0.1)"
+                );
+                let dot_style = format!(
+                    "background: rgb({rgb}); box-shadow: 0 0 6px rgba({rgb}, 0.6)"
+                );
+
+                Some(view! {
+                    <div
+                        class="mx-2 mb-2 rounded-xl border p-3 space-y-3 transition-all duration-300 animate-fade-in"
+                        style=bg_style
+                    >
+                        // Effect name + category dot
+                        <div class="flex items-center gap-2 min-w-0">
+                            <div class="w-2 h-2 rounded-full animate-pulse shrink-0" style=dot_style />
+                            <div class="min-w-0 flex-1">
+                                <div class="text-xs font-medium text-fg truncate">{name}</div>
+                                <div class="text-[10px] text-fg-dim capitalize">{cat}</div>
+                            </div>
+                        </div>
+
+                        // Player controls — compact row
+                        <div class="flex items-center justify-center gap-0.5">
+                            // Previous
+                            <button
+                                class="p-1.5 rounded-md text-fg-dim hover:text-fg hover:bg-white/[0.06] transition-all duration-150"
+                                title="Previous effect"
+                                on:click=move |_| navigate_effect(-1)
+                            >
+                                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/>
+                                </svg>
+                            </button>
+                            // Stop
+                            <button
+                                class="p-1.5 rounded-md text-error-red/50 hover:text-error-red hover:bg-error-red/[0.06] transition-all duration-150"
+                                title="Stop effect"
+                                on:click=move |_| fx.stop_effect()
+                            >
+                                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                                    <rect x="6" y="6" width="12" height="12" rx="1"/>
+                                </svg>
+                            </button>
+                            // Next
+                            <button
+                                class="p-1.5 rounded-md text-fg-dim hover:text-fg hover:bg-white/[0.06] transition-all duration-150"
+                                title="Next effect"
+                                on:click=move |_| navigate_effect(1)
+                            >
+                                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+                                </svg>
+                            </button>
+                            // Shuffle
+                            <button
+                                class="p-1.5 rounded-md text-fg-dim hover:text-fg hover:bg-white/[0.06] transition-all duration-150"
+                                title="Random effect"
+                                on:click=move |_| random_effect()
+                            >
+                                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="16 3 21 3 21 8"/>
+                                    <line x1="4" y1="20" x2="21" y2="3"/>
+                                    <polyline points="21 16 21 21 16 21"/>
+                                    <line x1="15" y1="15" x2="21" y2="21"/>
+                                    <line x1="4" y1="4" x2="9" y2="9"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                })
+            }}
 
             // Collapse toggle at bottom
             <div class="px-2 py-3 border-t border-white/[0.04]">

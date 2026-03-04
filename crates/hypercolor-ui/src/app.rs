@@ -1,8 +1,13 @@
+use std::collections::HashMap;
+
 use leptos::prelude::*;
 use leptos_meta::*;
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::path;
 
+use hypercolor_types::effect::{ControlDefinition, ControlValue};
+
+use crate::api;
 use crate::components::shell::Shell;
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::effects::EffectsPage;
@@ -17,11 +22,77 @@ pub struct WsContext {
     pub active_effect: ReadSignal<Option<String>>,
 }
 
+/// Shared active-effect state — accessible from sidebar, effects page, etc.
+#[derive(Clone, Copy)]
+pub struct EffectsContext {
+    pub effects_resource: LocalResource<Result<Vec<api::EffectSummary>, String>>,
+    pub active_effect_id: ReadSignal<Option<String>>,
+    pub set_active_effect_id: WriteSignal<Option<String>>,
+    pub active_effect_name: ReadSignal<Option<String>>,
+    pub set_active_effect_name: WriteSignal<Option<String>>,
+    pub active_effect_category: ReadSignal<String>,
+    pub set_active_effect_category: WriteSignal<String>,
+    pub active_controls: ReadSignal<Vec<ControlDefinition>>,
+    pub set_active_controls: WriteSignal<Vec<ControlDefinition>>,
+    pub active_control_values: ReadSignal<HashMap<String, ControlValue>>,
+    pub set_active_control_values: WriteSignal<HashMap<String, ControlValue>>,
+}
+
+impl EffectsContext {
+    /// Apply an effect by ID — sets local state + calls API.
+    pub fn apply_effect(&self, id: String) {
+        // Skip if already the active effect
+        if self.active_effect_id.get().as_deref() == Some(&id) {
+            return;
+        }
+        let category = self
+            .effects_resource
+            .get()
+            .and_then(|r| r.ok())
+            .and_then(|effects| {
+                effects
+                    .iter()
+                    .find(|e| e.id == id)
+                    .map(|e| e.category.clone())
+            })
+            .unwrap_or_default();
+        self.set_active_effect_id.set(Some(id.clone()));
+        self.set_active_effect_category.set(category);
+        self.set_active_controls.set(Vec::new());
+        self.set_active_control_values.set(HashMap::new());
+
+        let set_name = self.set_active_effect_name;
+        let set_controls = self.set_active_controls;
+        let set_values = self.set_active_control_values;
+
+        leptos::task::spawn_local(async move {
+            let _ = api::apply_effect(&id).await;
+            if let Ok(Some(active)) = api::fetch_active_effect().await {
+                set_name.set(Some(active.name));
+                set_controls.set(active.controls);
+                set_values.set(active.control_values);
+            }
+        });
+    }
+
+    /// Stop the active effect.
+    pub fn stop_effect(&self) {
+        self.set_active_effect_id.set(None);
+        self.set_active_effect_name.set(None);
+        self.set_active_controls.set(Vec::new());
+        self.set_active_control_values.set(HashMap::new());
+        self.set_active_effect_category.set(String::new());
+        leptos::task::spawn_local(async move {
+            let _ = api::stop_effect().await;
+        });
+    }
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     provide_meta_context();
 
-    // Global WebSocket connection — shared across all pages via context
+    // Global WebSocket connection
     let ws = WsManager::new();
     let ws_ctx = WsContext {
         canvas_frame: ws.canvas_frame,
@@ -30,6 +101,52 @@ pub fn App() -> impl IntoView {
         active_effect: ws.active_effect,
     };
     provide_context(ws_ctx);
+
+    // Global effects state — shared between sidebar player + effects page
+    let effects_resource = LocalResource::new(api::fetch_effects);
+    let active_resource = LocalResource::new(api::fetch_active_effect);
+    let (active_effect_id, set_active_effect_id) = signal(None::<String>);
+    let (active_effect_name, set_active_effect_name) = signal(None::<String>);
+    let (active_effect_category, set_active_effect_category) = signal(String::new());
+    let (active_controls, set_active_controls) = signal(Vec::<ControlDefinition>::new());
+    let (active_control_values, set_active_control_values) = signal(HashMap::<String, ControlValue>::new());
+
+    let effects_ctx = EffectsContext {
+        effects_resource,
+        active_effect_id,
+        set_active_effect_id,
+        active_effect_name,
+        set_active_effect_name,
+        active_effect_category,
+        set_active_effect_category,
+        active_controls,
+        set_active_controls,
+        active_control_values,
+        set_active_control_values,
+    };
+    provide_context(effects_ctx);
+
+    // Initialize active effect from API on load
+    Effect::new(move |_| {
+        if let Some(Ok(Some(active))) = active_resource.get() {
+            let active_id = active.id.clone();
+            set_active_effect_id.set(Some(active.id));
+            set_active_effect_name.set(Some(active.name));
+            set_active_controls.set(active.controls);
+            set_active_control_values.set(active.control_values);
+            if let Some(Ok(effects)) = effects_resource.get() {
+                if let Some(e) = effects.iter().find(|e| e.id == active_id) {
+                    set_active_effect_category.set(e.category.clone());
+                }
+            }
+        } else if let Some(Ok(None)) = active_resource.get() {
+            set_active_effect_id.set(None);
+            set_active_effect_name.set(None);
+            set_active_controls.set(Vec::new());
+            set_active_control_values.set(HashMap::new());
+            set_active_effect_category.set(String::new());
+        }
+    });
 
     view! {
         <Meta charset="UTF-8" />

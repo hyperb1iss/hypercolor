@@ -269,7 +269,7 @@ fn control_definition_from_html(raw: &HtmlControlMetadata) -> Option<ControlDefi
         HtmlControlKind::Color => (
             ControlKind::Color,
             ControlType::ColorPicker,
-            text_default(raw.default.as_deref(), "#ffffff"),
+            color_default(raw.default.as_deref()),
         ),
         HtmlControlKind::Combobox => (
             ControlKind::Combobox,
@@ -348,6 +348,31 @@ fn enum_default(raw: Option<&str>, first_option: Option<&String>) -> ControlValu
     let selected = raw.map(str::trim).filter(|value| !value.is_empty());
     let decoded = decode_html_entities(selected.unwrap_or(fallback));
     ControlValue::Enum(decoded)
+}
+
+fn color_default(raw: Option<&str>) -> ControlValue {
+    let hex = raw
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("#ffffff");
+    parse_hex_color(hex).unwrap_or(ControlValue::Color([1.0, 1.0, 1.0, 1.0]))
+}
+
+fn parse_hex_color(hex: &str) -> Option<ControlValue> {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() == 6 {
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        Some(ControlValue::Color([
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            1.0,
+        ]))
+    } else {
+        None
+    }
 }
 
 fn text_default(raw: Option<&str>, fallback: &str) -> ControlValue {

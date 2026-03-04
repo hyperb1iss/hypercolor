@@ -4,12 +4,10 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::api;
-use crate::app::WsContext;
+use crate::app::{EffectsContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
-
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
 
 /// Category → accent RGB string for inline styles.
 fn category_accent_rgb(category: &str) -> &'static str {
@@ -43,54 +41,24 @@ const CATEGORIES: &[&str] = &[
 #[component]
 pub fn EffectsPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
+    let fx = expect_context::<EffectsContext>();
+
     let (search, set_search) = signal(String::new());
     let (category_filter, set_category_filter) = signal("all".to_string());
-    let (active_effect_id, set_active_effect_id) = signal(None::<String>);
-    let (active_controls, set_active_controls) = signal(Vec::<ControlDefinition>::new());
-    let (active_control_values, set_active_control_values) =
-        signal(std::collections::HashMap::<String, ControlValue>::new());
-    let (active_effect_name, set_active_effect_name) = signal(None::<String>);
-    let (active_effect_category, set_active_effect_category) = signal(String::new());
-
-    let effects_resource = LocalResource::new(api::fetch_effects);
-    let active_resource = LocalResource::new(api::fetch_active_effect);
-
-    // Initialize from API — load both definitions and live values
-    Effect::new(move |_| {
-        if let Some(Ok(Some(active))) = active_resource.get() {
-            let active_id = active.id.clone();
-            set_active_effect_id.set(Some(active.id));
-            set_active_effect_name.set(Some(active.name));
-            set_active_controls.set(active.controls);
-            set_active_control_values.set(active.control_values);
-            // Look up category from effects list
-            if let Some(Ok(effects)) = effects_resource.get() {
-                if let Some(e) = effects.iter().find(|e| e.id == active_id) {
-                    set_active_effect_category.set(e.category.clone());
-                }
-            }
-        } else if let Some(Ok(None)) = active_resource.get() {
-            set_active_effect_id.set(None);
-            set_active_effect_name.set(None);
-            set_active_controls.set(Vec::new());
-            set_active_control_values.set(std::collections::HashMap::new());
-            set_active_effect_category.set(String::new());
-        }
-    });
 
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
     let ws_fps = Signal::derive(move || ws.fps.get());
-    let controls = Signal::derive(move || active_controls.get());
-    let control_values = Signal::derive(move || active_control_values.get());
+    let controls = Signal::derive(move || fx.active_controls.get());
+    let control_values = Signal::derive(move || fx.active_control_values.get());
     let accent_rgb = Signal::derive(move || {
-        category_accent_rgb(&active_effect_category.get()).to_string()
+        category_accent_rgb(&fx.active_effect_category.get()).to_string()
     });
 
-    let has_active = Memo::new(move |_| active_effect_id.get().is_some());
+    let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
 
     // Filter effects
     let filtered_effects = Memo::new(move |_| {
-        let Some(Ok(effects)) = effects_resource.get() else {
+        let Some(Ok(effects)) = fx.effects_resource.get() else {
             return Vec::new();
         };
 
@@ -119,31 +87,14 @@ pub fn EffectsPage() -> impl IntoView {
 
     let effect_count = Memo::new(move |_| filtered_effects.get().len());
 
-    // Apply effect handler — apply then fetch active to get live values
+    // Apply effect handler — delegates to shared context
     let on_apply = Callback::new(move |id: String| {
-        // Look up category from the effects list before spawning
-        let category = effects_resource
-            .get()
-            .and_then(|r| r.ok())
-            .and_then(|effects| effects.iter().find(|e| e.id == id).map(|e| e.category.clone()))
-            .unwrap_or_default();
-        set_active_effect_id.set(Some(id.clone()));
-        set_active_effect_category.set(category);
-        set_active_controls.set(Vec::new());
-        set_active_control_values.set(std::collections::HashMap::new());
-        leptos::task::spawn_local(async move {
-            let _ = api::apply_effect(&id).await;
-            if let Ok(Some(active)) = api::fetch_active_effect().await {
-                set_active_effect_name.set(Some(active.name));
-                set_active_controls.set(active.controls);
-                set_active_control_values.set(active.control_values);
-            }
-        });
+        fx.apply_effect(id);
     });
 
     // Control change handler
     let on_control_change = Callback::new(move |(name, value): (String, serde_json::Value)| {
-        if active_effect_id.get().is_some() {
+        if fx.active_effect_id.get().is_some() {
             let controls_json = serde_json::json!({ name: value });
             leptos::task::spawn_local(async move {
                 let _ = api::update_controls(&controls_json).await;
@@ -186,20 +137,27 @@ pub fn EffectsPage() -> impl IntoView {
                     <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-dim bg-white/[0.03] px-1.5 py-0.5 rounded border border-white/[0.03]">"/"</kbd>
                 </div>
 
-                // Category filter bar
+                // Category filter bar — each chip tinted with its category color
                 <div class="flex gap-1.5 flex-wrap">
                     {CATEGORIES.iter().map(|cat| {
                         let cat = cat.to_string();
                         let cat_clone = cat.clone();
+                        let rgb = if cat == "all" { "225, 53, 255" } else { category_accent_rgb(&cat) }.to_string();
                         let is_active = {
                             let cat = cat.clone();
                             Memo::new(move |_| category_filter.get() == cat)
                         };
+                        let active_style = format!(
+                            "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 12px rgba({rgb}, 0.2), inset 0 0 8px rgba({rgb}, 0.05)"
+                        );
+                        let inactive_style = format!(
+                            "color: rgba({rgb}, 0.6); border-color: rgba({rgb}, 0.1); background: rgba({rgb}, 0.03)"
+                        );
                         view! {
                             <button
-                                class="px-2.5 py-1 rounded-full text-[11px] font-medium transition-all duration-150 capitalize border"
-                                class=("bg-electric-purple/[0.12] text-electric-purple border-electric-purple/20", move || is_active.get())
-                                class=("bg-transparent text-fg-muted border-white/[0.04] hover:text-zinc-300 hover:border-white/[0.08]", move || !is_active.get())
+                                class="px-2.5 py-1 rounded-full text-xs font-medium transition-all duration-200 capitalize border
+                                       hover:brightness-125 hover:scale-[1.02]"
+                                style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
                                 on:click=move |_| set_category_filter.set(cat_clone.clone())
                             >
                                 {cat.clone()}
@@ -235,7 +193,7 @@ pub fn EffectsPage() -> impl IntoView {
                                             {effects.into_iter().map(|effect| {
                                                 let effect_id = effect.id.clone();
                                                 let is_active = Signal::derive(move || {
-                                                    active_effect_id.get().as_deref() == Some(&effect_id)
+                                                    fx.active_effect_id.get().as_deref() == Some(&effect_id)
                                                 });
                                                 view! {
                                                     <EffectCard
@@ -254,21 +212,23 @@ pub fn EffectsPage() -> impl IntoView {
 
                     // Detail panel — sticky, scrolls with cards until bottom pins
                     {move || {
-                        active_effect_id.get().map(|_| {
+                        fx.active_effect_id.get().map(|_| {
                             let rgb = accent_rgb.get();
                             let dot_style = format!("background: rgb({}); box-shadow: 0 0 8px rgba({}, 0.6)", rgb, rgb);
                             let preview_border = format!("border-color: rgba({}, 0.1)", rgb);
                             let controls_accent = format!("border-top: 2px solid rgba({}, 0.15)", rgb);
                             view! {
-                                <aside class="w-[420px] shrink-0 sticky top-0 self-start
-                                              space-y-3 animate-slide-in-right">
+                                <aside
+                                    class="w-[420px] shrink-0 sticky top-0 self-start space-y-3 animate-slide-in-right scrollbar-none"
+                                    style="max-height: calc(100vh - 10rem); overflow-y: auto"
+                                >
                                     // Active effect name with category-colored dot
-                                    {move || active_effect_name.get().map(|name| {
+                                    {move || fx.active_effect_name.get().map(|name| {
                                         let dot_s = dot_style.clone();
                                         view! {
                                             <div class="flex items-center gap-2.5 px-1">
-                                                <div class="w-2 h-2 rounded-full animate-pulse shrink-0" style=dot_s />
-                                                <span class="text-sm font-medium text-fg">{name}</span>
+                                                <div class="w-2.5 h-2.5 rounded-full animate-pulse shrink-0" style=dot_s />
+                                                <span class="text-base font-medium text-fg">{name}</span>
                                             </div>
                                         }
                                     })}
@@ -293,12 +253,12 @@ pub fn EffectsPage() -> impl IntoView {
                                         style=controls_accent.clone()
                                     >
                                         <div class="flex items-center gap-2 mb-4">
-                                            <svg class="w-3.5 h-3.5 text-fg-dim" viewBox="0 0 24 24" fill="none"
+                                            <svg class="w-4 h-4 text-fg-dim" viewBox="0 0 24 24" fill="none"
                                                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                                 <circle cx="12" cy="12" r="3" />
                                                 <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
                                             </svg>
-                                            <h3 class="text-[10px] font-mono uppercase tracking-[0.15em] text-fg-dim">
+                                            <h3 class="text-xs font-mono uppercase tracking-[0.12em] text-fg-dim">
                                                 "Controls"
                                             </h3>
                                         </div>
@@ -309,26 +269,6 @@ pub fn EffectsPage() -> impl IntoView {
                                             on_change=on_control_change
                                         />
                                     </div>
-
-                                    // Stop button
-                                    <button
-                                        class="w-full px-3 py-2.5 rounded-lg text-xs font-medium
-                                               bg-error-red/[0.06] text-error-red/80 border border-error-red/10
-                                               hover:bg-error-red/[0.12] hover:text-error-red hover:border-error-red/20
-                                               transition-all duration-200"
-                                        on:click=move |_| {
-                                            set_active_effect_id.set(None);
-                                            set_active_effect_name.set(None);
-                                            set_active_controls.set(Vec::new());
-                                            set_active_control_values.set(std::collections::HashMap::new());
-                                            set_active_effect_category.set(String::new());
-                                            leptos::task::spawn_local(async move {
-                                                let _ = api::stop_effect().await;
-                                            });
-                                        }
-                                    >
-                                        "Stop Effect"
-                                    </button>
                                 </aside>
                             }
                         })

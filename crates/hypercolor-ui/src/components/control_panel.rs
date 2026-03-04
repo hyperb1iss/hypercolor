@@ -120,7 +120,7 @@ fn ControlWidget(
                 <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-white/[0.02] transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
                     <div class="flex items-center justify-between mb-2">
-                        <label class="text-[11px] text-fg-muted font-medium">{name.clone()}</label>
+                        <label class="text-xs text-fg-muted font-medium">{name.clone()}</label>
                         <span class="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded"
                               style=badge_style>
                             {fmt_value}
@@ -162,7 +162,7 @@ fn ControlWidget(
                 <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-white/[0.02] transition-colors duration-150
                             flex items-center justify-between"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-[11px] text-fg-muted font-medium">{name.clone()}</label>
+                    <label class="text-xs text-fg-muted font-medium">{name.clone()}</label>
                     <button
                         class="relative w-10 h-[22px] rounded-full transition-all duration-200"
                         style=move || if checked.get() { on_style.clone() } else { "background: rgba(255,255,255,0.08)".to_string() }
@@ -182,6 +182,7 @@ fn ControlWidget(
             }.into_any()
         }
         ControlType::ColorPicker => {
+            // Handle both Color([f32;4]) and Text("#hex") variants
             let initial = match &initial_value {
                 ControlValue::Color([r, g, b, _]) => {
                     format!(
@@ -191,7 +192,10 @@ fn ControlWidget(
                         (*b * 255.0) as u8
                     )
                 }
-                _ => "#e135ff".to_string(),
+                ControlValue::Text(hex) if hex.starts_with('#') && hex.len() >= 7 => {
+                    hex[..7].to_string()
+                }
+                _ => "#ffffff".to_string(),
             };
             let (color, set_color) = signal(initial);
             let control_name = control_id.clone();
@@ -200,30 +204,36 @@ fn ControlWidget(
                 <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-white/[0.02] transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
                     <div class="flex items-center justify-between">
-                        <label class="text-[11px] text-fg-muted font-medium">{name.clone()}</label>
-                        <span class="text-[10px] font-mono text-fg-dim/60">{move || color.get()}</span>
-                    </div>
-                    <div class="mt-2 flex items-center gap-3">
-                        // Color swatch preview (shows actual color)
-                        <div
-                            class="w-10 h-10 rounded-lg border border-white/[0.08] shadow-inner"
-                            style=move || format!("background: {}; box-shadow: inset 0 1px 2px rgba(0,0,0,0.3), 0 0 12px {}40", color.get(), color.get())
-                        />
-                        <input
-                            type="color"
-                            class="flex-1 h-10 rounded-lg border border-white/[0.08] bg-transparent cursor-pointer
-                                   hover:border-white/[0.15] transition-colors duration-150"
-                            prop:value=move || color.get()
-                            on:input=move |ev| {
-                                use wasm_bindgen::JsCast;
-                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                if let Some(el) = target {
-                                    let hex = el.value();
-                                    set_color.set(hex.clone());
-                                    on_change.run((control_name.clone(), json!(hex)));
-                                }
-                            }
-                        />
+                        <label class="text-xs text-fg-muted font-medium">{name.clone()}</label>
+                        <div class="flex items-center gap-2">
+                            <span class="text-[10px] font-mono text-fg-dim/60 uppercase">{move || color.get()}</span>
+                            // Compact circular swatch with hidden native picker
+                            <div class="relative">
+                                <div
+                                    class="w-7 h-7 rounded-full cursor-pointer transition-all duration-200
+                                           border-2 border-white/[0.08] hover:border-white/[0.2]
+                                           hover:scale-110"
+                                    style=move || format!(
+                                        "background: {}; box-shadow: 0 0 10px {}40",
+                                        color.get(), color.get()
+                                    )
+                                />
+                                <input
+                                    type="color"
+                                    class="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                                    prop:value=move || color.get()
+                                    on:input=move |ev| {
+                                        use wasm_bindgen::JsCast;
+                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                        if let Some(el) = target {
+                                            let hex = el.value();
+                                            set_color.set(hex.clone());
+                                            on_change.run((control_name.clone(), json!(hex)));
+                                        }
+                                    }
+                                />
+                            </div>
+                        </div>
                     </div>
                 </div>
             }.into_any()
@@ -240,7 +250,7 @@ fn ControlWidget(
             view! {
                 <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-white/[0.02] transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-[11px] text-fg-muted font-medium mb-1.5 block">{name.clone()}</label>
+                    <label class="text-xs text-fg-muted font-medium mb-1.5 block">{name.clone()}</label>
                     <select
                         class="w-full bg-layer-3 border border-white/[0.06] rounded-lg px-3 py-1.5 text-xs text-fg
                                focus:outline-none focus:border-electric-purple/30
@@ -281,7 +291,7 @@ fn ControlWidget(
             view! {
                 <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-white/[0.02] transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-[11px] text-fg-muted font-medium mb-1.5 block">{name.clone()}</label>
+                    <label class="text-xs text-fg-muted font-medium mb-1.5 block">{name.clone()}</label>
                     <input
                         type="text"
                         class="w-full bg-layer-3 border border-white/[0.06] rounded-lg px-3 py-1.5 text-xs text-fg
@@ -305,7 +315,7 @@ fn ControlWidget(
         ControlType::GradientEditor => {
             view! {
                 <div class="rounded-lg px-3 py-2.5 opacity-40">
-                    <label class="text-[11px] text-fg-muted font-medium mb-1 block">{name.clone()}</label>
+                    <label class="text-xs text-fg-muted font-medium mb-1 block">{name.clone()}</label>
                     <div class="h-6 rounded-md bg-gradient-to-r from-electric-purple via-neon-cyan to-coral opacity-30" />
                     <span class="text-[9px] text-fg-dim/40 mt-1 block">"Gradient editor coming soon"</span>
                 </div>

@@ -295,6 +295,17 @@ button:hover:not(:disabled) > .relative {
     background-size: 256px 256px;
 }
 
+/* ── Hidden scrollbar utility ────────────────────────────────────────────── */
+
+.scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+    display: none;
+}
+
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
