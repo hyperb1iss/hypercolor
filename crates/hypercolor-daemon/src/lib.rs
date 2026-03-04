@@ -7,4 +7,5 @@ pub mod logical_devices;
 pub mod mcp;
 pub mod playlist_runtime;
 pub mod render_thread;
+pub mod runtime_state;
 pub mod startup;

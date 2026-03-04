@@ -47,6 +47,7 @@ use hypercolor_types::spatial::SpatialLayout;
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
 use crate::playlist_runtime::PlaylistRuntimeState;
+use crate::runtime_state;
 
 // ── AppState ─────────────────────────────────────────────────────────────
 
@@ -119,6 +120,9 @@ pub struct AppState {
     /// Persistent path for effect -> layout associations.
     pub effect_layout_links_path: PathBuf,
 
+    /// Persisted path for startup runtime-session restoration.
+    pub runtime_state_path: PathBuf,
+
     /// Saved effect library storage (favorites, presets, playlists).
     pub library_store: Arc<dyn LibraryStore>,
 
@@ -170,6 +174,7 @@ impl AppState {
             logical_devices_path: ConfigManager::data_dir().join("logical-devices.json"),
             effect_layout_links: Arc::new(RwLock::new(HashMap::new())),
             effect_layout_links_path: ConfigManager::data_dir().join("effect-layouts.json"),
+            runtime_state_path: ConfigManager::data_dir().join("runtime-state.json"),
             library_store: Arc::new(InMemoryLibraryStore::new()),
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: Instant::now(),
@@ -216,6 +221,7 @@ impl AppState {
             logical_devices_path: daemon.logical_devices_path.clone(),
             effect_layout_links: Arc::clone(&daemon.effect_layout_links),
             effect_layout_links_path: daemon.effect_layout_links_path.clone(),
+            runtime_state_path: daemon.runtime_state_path.clone(),
             library_store,
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: daemon.start_time,
@@ -226,6 +232,22 @@ impl AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Persist the current runtime session snapshot (active effect/preset/controls).
+pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
+    let snapshot = {
+        let engine = state.effect_engine.lock().await;
+        runtime_state::snapshot_from_engine(&engine)
+    };
+
+    if let Err(error) = runtime_state::save(&state.runtime_state_path, &snapshot) {
+        warn!(
+            path = %state.runtime_state_path.display(),
+            %error,
+            "Failed to persist runtime session snapshot"
+        );
     }
 }
 

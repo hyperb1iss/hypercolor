@@ -29,7 +29,8 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{
-    EffectEngine, EffectRegistry, default_effect_search_paths, register_html_effects,
+    EffectEngine, EffectRegistry, create_renderer_for_metadata, default_effect_search_paths,
+    register_html_effects,
 };
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::InputManager;
@@ -42,11 +43,13 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceId;
+use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::effect_layouts;
 use crate::logical_devices::LogicalDevice;
 use crate::render_thread::{RenderThread, RenderThreadState};
+use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::{discovery, discovery::DiscoveryBackend};
 
 // ── Config File Name ────────────────────────────────────────────────────────
@@ -115,6 +118,9 @@ pub struct DaemonState {
 
     /// Persistent JSON file for effect -> layout associations.
     pub effect_layout_links_path: PathBuf,
+
+    /// Persistent JSON file for startup runtime session state.
+    pub runtime_state_path: PathBuf,
 
     /// Global discovery scan lock shared across startup and API-triggered scans.
     pub discovery_in_progress: Arc<AtomicBool>,
@@ -275,6 +281,13 @@ impl DaemonState {
         let effect_layout_links = Arc::new(RwLock::new(persisted_links));
         info!(path = %effect_layout_links_path.display(), "Effect/layout association store ready");
 
+        // ── Runtime Session Store ───────────────────────────────────
+        let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
+        info!(
+            path = %runtime_state_path.display(),
+            "Runtime session store ready"
+        );
+
         info!("All subsystems initialized");
 
         Ok(Self {
@@ -294,6 +307,7 @@ impl DaemonState {
             logical_devices_path,
             effect_layout_links,
             effect_layout_links_path,
+            runtime_state_path,
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             render_thread: None,
             discovery_task: None,
@@ -331,6 +345,10 @@ impl DaemonState {
                 .start_all()
                 .context("failed to start input sources")?;
         }
+
+        // Restore persisted runtime session (last active effect/preset/controls)
+        // before the render loop begins producing frames.
+        self.restore_runtime_session_if_configured(&config).await;
 
         // Start the render loop.
         {
@@ -449,6 +467,92 @@ impl DaemonState {
             });
 
         info!("Graceful shutdown complete");
+        Ok(())
+    }
+
+    async fn restore_runtime_session_if_configured(&self, config: &HypercolorConfig) {
+        let profile_mode = config.daemon.start_profile.trim();
+        if !profile_mode.eq_ignore_ascii_case("last") {
+            return;
+        }
+
+        let snapshot = match runtime_state::load(&self.runtime_state_path) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                warn!(
+                    path = %self.runtime_state_path.display(),
+                    %error,
+                    "Failed to load runtime session snapshot"
+                );
+                return;
+            }
+        };
+        let Some(snapshot) = snapshot else {
+            debug!(
+                path = %self.runtime_state_path.display(),
+                "No runtime session snapshot found to restore"
+            );
+            return;
+        };
+
+        if let Err(error) = self.apply_runtime_session_snapshot(snapshot).await {
+            warn!(%error, "Failed to restore runtime session snapshot");
+        }
+    }
+
+    async fn apply_runtime_session_snapshot(
+        &self,
+        snapshot: RuntimeSessionSnapshot,
+    ) -> anyhow::Result<()> {
+        let Some(active_effect_id) = snapshot.active_effect_id.as_deref() else {
+            return Ok(());
+        };
+
+        let metadata = {
+            let registry = self.effect_registry.read().await;
+            resolve_effect_metadata_for_restore(&registry, active_effect_id)
+        };
+        let Some(metadata) = metadata else {
+            anyhow::bail!("saved effect is no longer available: {active_effect_id}");
+        };
+
+        let renderer = create_renderer_for_metadata(&metadata)
+            .with_context(|| format!("failed to create renderer for '{}'", metadata.name))?;
+
+        let mut rejected_controls: Vec<String> = Vec::new();
+        {
+            let mut engine = self.effect_engine.lock().await;
+            engine
+                .activate(renderer, metadata.clone())
+                .with_context(|| format!("failed to activate '{}'", metadata.name))?;
+
+            for (name, value) in &snapshot.control_values {
+                if let Err(error) = engine.set_control_checked(name, value) {
+                    rejected_controls.push(format!("{name} ({error})"));
+                }
+            }
+
+            if let Some(preset_id) = snapshot.active_preset_id {
+                engine.set_active_preset_id(preset_id);
+            }
+        }
+
+        if !rejected_controls.is_empty() {
+            warn!(
+                effect_id = %metadata.id,
+                effect = %metadata.name,
+                rejected_controls = ?rejected_controls,
+                "Some persisted control values were rejected during restore"
+            );
+        }
+
+        info!(
+            effect_id = %metadata.id,
+            effect = %metadata.name,
+            controls = snapshot.control_values.len(),
+            "Restored runtime session snapshot"
+        );
+
         Ok(())
     }
 
@@ -700,6 +804,22 @@ fn monitor_select_from_config(monitor_index: u32, source: &str) -> MonitorSelect
 fn noise_gate_to_db(noise_gate: f32) -> f32 {
     let linear = noise_gate.clamp(0.000_001, 1.0);
     20.0 * linear.log10()
+}
+
+fn resolve_effect_metadata_for_restore(
+    registry: &EffectRegistry,
+    id_or_name: &str,
+) -> Option<EffectMetadata> {
+    if let Ok(uuid) = id_or_name.parse::<uuid::Uuid>() {
+        return registry
+            .get(&EffectId::new(uuid))
+            .map(|entry| entry.metadata.clone());
+    }
+
+    registry
+        .iter()
+        .find(|(_, entry)| entry.metadata.name.eq_ignore_ascii_case(id_or_name))
+        .map(|(_, entry)| entry.metadata.clone())
 }
 
 // ── Config Loading ──────────────────────────────────────────────────────────

@@ -3,15 +3,18 @@
 //! Tests the full daemon lifecycle: initialization, subsystem wiring,
 //! config loading, and graceful shutdown. Uses real subsystems (no mocks).
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::time::Duration;
 
+use hypercolor_daemon::runtime_state::{self, RuntimeSessionSnapshot};
 use hypercolor_daemon::startup::{DaemonState, default_config, load_config};
 use hypercolor_types::config::CURRENT_SCHEMA_VERSION;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
     DeviceTopologyHint, ZoneInfo,
 };
+use hypercolor_types::effect::EffectSource;
 use tempfile::NamedTempFile;
 
 /// Minimal TOML that parses into a valid `HypercolorConfig`.
@@ -153,6 +156,45 @@ async fn daemon_double_shutdown_is_safe() {
         .shutdown()
         .await
         .expect("second shutdown should also succeed");
+}
+
+#[tokio::test]
+async fn daemon_start_restores_last_runtime_session() {
+    let config = default_config();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("initialization should succeed");
+
+    let effect_id = {
+        let registry = state.effect_registry.read().await;
+        let (_, entry) = registry
+            .iter()
+            .find(|(_, entry)| matches!(entry.metadata.source, EffectSource::Native { .. }))
+            .expect("expected at least one native effect in registry");
+        entry.metadata.id.to_string()
+    };
+    let snapshot = RuntimeSessionSnapshot {
+        active_effect_id: Some(effect_id.clone()),
+        active_preset_id: Some("startup-preset".to_owned()),
+        control_values: HashMap::new(),
+    };
+    runtime_state::save(&state.runtime_state_path, &snapshot).expect("persist runtime snapshot");
+
+    state
+        .start()
+        .await
+        .expect("start should restore runtime state");
+
+    {
+        let engine = state.effect_engine.lock().await;
+        let active = engine
+            .active_metadata()
+            .expect("effect should be restored on startup");
+        assert_eq!(active.id.to_string(), effect_id);
+        assert_eq!(engine.active_preset_id(), Some("startup-preset"));
+    }
+
+    state.shutdown().await.expect("shutdown should succeed");
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

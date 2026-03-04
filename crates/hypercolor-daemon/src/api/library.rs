@@ -417,6 +417,7 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
             }
         }
     };
+    super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "preset": {
@@ -898,6 +899,8 @@ async fn activate_effect_with_controls(
             Err(error) => rejected.push(format!("{name} ({error})")),
         }
     }
+    drop(engine);
+    super::persist_runtime_session(state).await;
 
     Ok(ActivationResult { applied, rejected })
 }

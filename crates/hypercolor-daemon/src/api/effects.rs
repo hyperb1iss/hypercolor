@@ -392,6 +392,7 @@ pub async fn apply_effect(
     );
     let applied_layout = apply_associated_layout(&state, &metadata.id.to_string()).await;
     let (transition_type, duration_ms) = extract_transition_request(body.as_ref());
+    super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "effect": {
@@ -434,6 +435,8 @@ pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
     }
 
     engine.deactivate();
+    drop(engine);
+    super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "stopped": true,
@@ -489,6 +492,7 @@ pub async fn update_current_controls(
             "Rejected one or more control updates"
         );
     }
+    super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "effect": effect_name,
@@ -509,6 +513,8 @@ pub async fn reset_controls(State(state): State<Arc<AppState>>) -> Response {
     if let Err(e) = engine.reset_to_defaults() {
         return ApiError::internal(format!("Failed to reset controls: {e}"));
     }
+    drop(engine);
+    super::persist_runtime_session(&state).await;
 
     info!(effect = %meta.name, "Controls reset to defaults");
 
