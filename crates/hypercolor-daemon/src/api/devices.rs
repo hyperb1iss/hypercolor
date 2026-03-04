@@ -3,15 +3,19 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
-use hypercolor_core::device::SegmentRange;
+use hypercolor_core::device::{BackendManager, SegmentRange};
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::device::{DeviceFamily, DeviceId, DeviceInfo, DeviceState};
+use hypercolor_types::device::{
+    DeviceFamily, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint,
+};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
@@ -62,6 +66,17 @@ pub struct ZoneSummary {
     pub name: String,
     pub led_count: u32,
     pub topology: String,
+    pub topology_hint: ZoneTopologySummary,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ZoneTopologySummary {
+    Strip,
+    Matrix { rows: u32, cols: u32 },
+    Ring { count: u32 },
+    Point,
+    Custom,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,6 +119,9 @@ pub struct UpdateLogicalDeviceRequest {
     pub led_count: Option<u32>,
     pub enabled: Option<bool>,
 }
+
+const IDENTIFY_FLASH_INTERVAL_MS: u64 = 250;
+const DEFAULT_IDENTIFY_COLOR_RGB: [u8; 3] = [255, 255, 255];
 
 #[derive(Debug, Serialize)]
 pub struct LogicalDeviceListResponse {
@@ -361,9 +379,15 @@ pub async fn identify_device(
         Err(response) => return response,
     };
 
-    let Some(_tracked) = state.device_registry.get(&device_id).await else {
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
         return ApiError::not_found(format!("Device not found: {id}"));
     };
+    if !tracked.state.is_renderable() {
+        return ApiError::conflict(format!(
+            "Device is not connected: {} (state={})",
+            tracked.info.name, tracked.state
+        ));
+    }
 
     let duration_ms = body.as_ref().and_then(|b| b.duration_ms).unwrap_or(3000);
     if duration_ms == 0 || duration_ms > 120_000 {
@@ -376,6 +400,28 @@ pub async fn identify_device(
         },
         None => None,
     };
+    let identify_rgb = color
+        .as_deref()
+        .and_then(parse_hex_rgb)
+        .unwrap_or(DEFAULT_IDENTIFY_COLOR_RGB);
+    let led_count = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
+    if led_count == 0 {
+        return ApiError::conflict(format!(
+            "Device has no LEDs to identify: {}",
+            tracked.info.name
+        ));
+    }
+
+    let manager = Arc::clone(&state.backend_manager);
+    let backend_id = backend_id_for_family(&tracked.info.family);
+    tokio::spawn(run_identify_flash(
+        manager,
+        backend_id,
+        device_id,
+        led_count,
+        Duration::from_millis(duration_ms),
+        identify_rgb,
+    ));
 
     ApiResponse::ok(serde_json::json!({
         "device_id": device_id.to_string(),
@@ -889,8 +935,22 @@ fn summarize_device(info: &DeviceInfo, state: &DeviceState) -> DeviceSummary {
                 name: z.name.clone(),
                 led_count: z.led_count,
                 topology: format!("{:?}", z.topology).to_lowercase(),
+                topology_hint: summarize_zone_topology(&z.topology),
             })
             .collect(),
+    }
+}
+
+fn summarize_zone_topology(topology: &DeviceTopologyHint) -> ZoneTopologySummary {
+    match topology {
+        DeviceTopologyHint::Strip => ZoneTopologySummary::Strip,
+        DeviceTopologyHint::Matrix { rows, cols } => ZoneTopologySummary::Matrix {
+            rows: *rows,
+            cols: *cols,
+        },
+        DeviceTopologyHint::Ring { count } => ZoneTopologySummary::Ring { count: *count },
+        DeviceTopologyHint::Point => ZoneTopologySummary::Point,
+        DeviceTopologyHint::Custom => ZoneTopologySummary::Custom,
     }
 }
 
@@ -958,6 +1018,66 @@ fn parse_status_filter(raw: Option<&str>) -> Result<Option<String>, String> {
     }
 }
 
+async fn run_identify_flash(
+    manager: Arc<tokio::sync::Mutex<BackendManager>>,
+    backend_id: String,
+    device_id: DeviceId,
+    led_count: usize,
+    duration: Duration,
+    color: [u8; 3],
+) {
+    if led_count == 0 {
+        return;
+    }
+
+    let on_frame = vec![color; led_count];
+    let off_frame = vec![[0, 0, 0]; led_count];
+    let started_at = Instant::now();
+    let mut show_on = true;
+
+    loop {
+        let frame = if show_on { &on_frame } else { &off_frame };
+        let result = {
+            let mut manager = manager.lock().await;
+            manager
+                .write_device_colors(&backend_id, device_id, frame)
+                .await
+        };
+
+        if let Err(error) = result {
+            warn!(
+                backend_id = %backend_id,
+                device_id = %device_id,
+                error = %error,
+                "identify write failed"
+            );
+            return;
+        }
+
+        if started_at.elapsed() >= duration {
+            break;
+        }
+
+        show_on = !show_on;
+        tokio::time::sleep(Duration::from_millis(IDENTIFY_FLASH_INTERVAL_MS)).await;
+    }
+
+    let clear_result = {
+        let mut manager = manager.lock().await;
+        manager
+            .write_device_colors(&backend_id, device_id, &off_frame)
+            .await
+    };
+    if let Err(error) = clear_result {
+        warn!(
+            backend_id = %backend_id,
+            device_id = %device_id,
+            error = %error,
+            "identify clear write failed"
+        );
+    }
+}
+
 fn parse_hex_color(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     let color = trimmed.strip_prefix('#').unwrap_or(trimmed);
@@ -965,4 +1085,16 @@ fn parse_hex_color(raw: &str) -> Option<String> {
         return None;
     }
     Some(format!("#{}", color.to_ascii_uppercase()))
+}
+
+fn parse_hex_rgb(raw: &str) -> Option<[u8; 3]> {
+    let color = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
+    if color.len() != 6 {
+        return None;
+    }
+
+    let red = u8::from_str_radix(&color[0..2], 16).ok()?;
+    let green = u8::from_str_radix(&color[2..4], 16).ok()?;
+    let blue = u8::from_str_radix(&color[4..6], 16).ok()?;
+    Some([red, green, blue])
 }

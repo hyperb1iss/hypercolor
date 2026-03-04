@@ -551,6 +551,36 @@ impl BackendManager {
         Ok(())
     }
 
+    /// Write one immediate color payload to a specific physical device.
+    ///
+    /// This bypasses spatial routing and output queues, and is intended for
+    /// short, direct control operations like identify/flash actions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend is missing or the backend write fails.
+    pub async fn write_device_colors(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        colors: &[[u8; 3]],
+    ) -> Result<()> {
+        let Some(backend) = self.backends.get(backend_id).cloned() else {
+            bail!("backend '{backend_id}' is not registered");
+        };
+
+        let mut backend = backend.lock().await;
+        backend
+            .write_colors(&device_id, colors)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to write {} colors to device {device_id} using backend '{backend_id}'",
+                    colors.len()
+                )
+            })
+    }
+
     /// Remove a device mapping.
     pub fn unmap_device(&mut self, layout_device_id: &str) -> bool {
         let Some(mapping) = self.device_map.remove(layout_device_id) else {

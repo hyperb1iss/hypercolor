@@ -238,6 +238,52 @@ async fn list_devices_returns_empty_list() {
 }
 
 #[tokio::test]
+async fn list_devices_includes_structured_zone_topology_hints() {
+    let state = Arc::new(AppState::new());
+    let id = DeviceId::new();
+    let info = DeviceInfo {
+        id,
+        name: "Matrix Panel".to_owned(),
+        vendor: "test-vendor".to_owned(),
+        family: DeviceFamily::OpenRgb,
+        connection_type: ConnectionType::Network,
+        zones: vec![ZoneInfo {
+            name: "Panel".to_owned(),
+            led_count: 96,
+            topology: DeviceTopologyHint::Matrix { rows: 6, cols: 16 },
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: Some("0.1.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 96,
+            supports_direct: true,
+            supports_brightness: true,
+            max_fps: 60,
+        },
+    };
+    let _ = state.device_registry.add(info).await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/devices")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    let zone = &json["data"]["items"][0]["zones"][0];
+    assert_eq!(zone["name"], "Panel");
+    assert_eq!(zone["topology_hint"]["type"], "matrix");
+    assert_eq!(zone["topology_hint"]["rows"], 6);
+    assert_eq!(zone["topology_hint"]["cols"], 16);
+}
+
+#[tokio::test]
 async fn debug_output_queues_returns_empty_snapshot() {
     let app = test_app();
 
@@ -2274,6 +2320,10 @@ async fn list_devices_rejects_invalid_limit() {
 async fn identify_device_validates_and_returns_canonical_id() {
     let state = Arc::new(AppState::new());
     let device_id = insert_test_device(&state, "Keyboard").await;
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
     let app = test_app_with_state(Arc::clone(&state));
 
     let invalid_color_response = app
@@ -2325,6 +2375,28 @@ async fn identify_device_validates_and_returns_canonical_id() {
     let valid_json = body_json(valid_response).await;
     assert_eq!(valid_json["data"]["device_id"], device_id.to_string());
     assert_eq!(valid_json["data"]["color"], "#FF00AA");
+}
+
+#[tokio::test]
+async fn identify_device_requires_connected_state() {
+    let state = Arc::new(AppState::new());
+    let _device_id = insert_test_device(&state, "Known Strip").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/devices/Known%20Strip/identify")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "conflict");
 }
 
 #[tokio::test]

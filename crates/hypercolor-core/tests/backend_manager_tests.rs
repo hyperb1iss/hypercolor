@@ -333,6 +333,45 @@ async fn disconnect_device_surfaces_backend_errors() {
     );
 }
 
+#[tokio::test]
+async fn write_device_colors_writes_immediately_to_connected_device() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Direct Write Device".into(),
+        led_count: 4,
+        topology: LedTopology::Strip {
+            count: 4,
+            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+
+    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+
+    manager
+        .write_device_colors("mock", device_id, &[[1, 2, 3]; 4])
+        .await
+        .expect("direct write should succeed");
+}
+
+#[tokio::test]
+async fn write_device_colors_fails_for_unknown_backend() {
+    let mut manager = BackendManager::new();
+    let error = manager
+        .write_device_colors("missing", DeviceId::new(), &[[0, 0, 0]; 1])
+        .await
+        .expect_err("missing backend should fail");
+
+    assert!(
+        error.to_string().contains("not registered"),
+        "unexpected error: {error}"
+    );
+}
+
 // ── write_frame Tests ───────────────────────────────────────────────────────
 
 #[tokio::test]
