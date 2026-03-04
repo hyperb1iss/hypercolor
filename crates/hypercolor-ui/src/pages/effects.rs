@@ -9,6 +9,7 @@ use crate::components::canvas_preview::CanvasPreview;
 use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
 use crate::components::preset_panel::PresetToolbar;
+use hypercolor_types::effect::ControlValue;
 
 /// Category → accent RGB string for inline styles.
 fn category_accent_rgb(category: &str) -> &'static str {
@@ -96,6 +97,13 @@ pub fn EffectsPage() -> impl IntoView {
     // Control change handler
     let on_control_change = Callback::new(move |(name, value): (String, serde_json::Value)| {
         if fx.active_effect_id.get().is_some() {
+            if let Some(control_value) = json_to_control_value(&value) {
+                let control_name = name.clone();
+                fx.set_active_control_values.update(move |values| {
+                    values.insert(control_name, control_value);
+                });
+            }
+
             let controls_json = serde_json::json!({ name: value });
             leptos::task::spawn_local(async move {
                 let _ = api::update_controls(&controls_json).await;
@@ -298,6 +306,41 @@ pub fn EffectsPage() -> impl IntoView {
             </div>
         </div>
     }
+}
+
+fn json_to_control_value(value: &serde_json::Value) -> Option<ControlValue> {
+    if let Some(v) = value.as_bool() {
+        return Some(ControlValue::Boolean(v));
+    }
+    if let Some(v) = value.as_i64() {
+        let int = i32::try_from(v).ok()?;
+        return Some(ControlValue::Integer(int));
+    }
+    if let Some(v) = value.as_f64() {
+        let float = parse_f32(v)?;
+        return Some(ControlValue::Float(float));
+    }
+    if let Some(v) = value.as_str() {
+        return Some(ControlValue::Text(v.to_owned()));
+    }
+    if let Some(array) = value.as_array()
+        && array.len() == 4
+    {
+        let mut color = [0.0f32; 4];
+        for (idx, component) in array.iter().enumerate() {
+            let parsed = component.as_f64()?;
+            color[idx] = parse_f32(parsed)?;
+        }
+        return Some(ControlValue::Color(color));
+    }
+    None
+}
+
+fn parse_f32(value: f64) -> Option<f32> {
+    if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
+        return None;
+    }
+    Some(value as f32)
 }
 
 /// Loading skeleton for the effects grid.
