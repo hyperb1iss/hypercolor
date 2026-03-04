@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
@@ -15,7 +16,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use dpi::PhysicalSize;
 use hypercolor_types::canvas::{Canvas, Rgba};
-use hypercolor_types::effect::{ControlValue, EffectMetadata, EffectSource};
+use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
 use reqwest::Url;
 use servo::{
     DeviceIntPoint, DeviceIntRect, JSValue, JavaScriptEvaluationError, LoadStatus,
@@ -37,21 +38,7 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const RENDER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
-const NO_FRAME_STREAK_THRESHOLD: u32 = 3;
-const NO_FRAME_STREAK_LOG_INTERVAL: u32 = 120;
 const RECENT_CONSOLE_SAMPLE_SIZE: usize = 6;
-const ANIMATION_KICK_SCRIPT: &str = r"
-(function(){
-  const candidates = ['loop', 'update', 'render', 'animate', 'tick', 'draw', 'frame', 'main'];
-  for (const name of candidates) {
-    const fn = globalThis[name];
-    if (typeof fn === 'function') {
-      try { globalThis.requestAnimationFrame(fn); } catch (_err) {}
-      break;
-    }
-  }
-})();
-";
 
 static SERVO_WORKER: OnceLock<Mutex<Option<Arc<ServoWorker>>>> = OnceLock::new();
 
@@ -59,12 +46,14 @@ static SERVO_WORKER: OnceLock<Mutex<Option<Arc<ServoWorker>>>> = OnceLock::new()
 pub struct ServoRenderer {
     html_source: Option<PathBuf>,
     html_resolved_path: Option<PathBuf>,
+    runtime_html_path: Option<PathBuf>,
     controls: HashMap<String, ControlValue>,
     runtime: LightscriptRuntime,
     initialized: bool,
     pending_scripts: Vec<String>,
     worker: Option<Arc<ServoWorker>>,
     warned_fallback_frame: bool,
+    include_audio_updates: bool,
 }
 
 impl ServoRenderer {
@@ -74,12 +63,14 @@ impl ServoRenderer {
         Self {
             html_source: None,
             html_resolved_path: None,
+            runtime_html_path: None,
             controls: HashMap::new(),
             runtime: LightscriptRuntime::new(DEFAULT_WIDTH, DEFAULT_HEIGHT),
             initialized: false,
             pending_scripts: Vec::new(),
             worker: None,
             warned_fallback_frame: false,
+            include_audio_updates: true,
         }
     }
 
@@ -94,9 +85,13 @@ impl ServoRenderer {
         {
             self.pending_scripts.push(script);
         }
-        let frame_scripts = self.runtime.frame_scripts(&input.audio, &self.controls);
-        self.pending_scripts.push(frame_scripts.audio_update);
+        let frame_scripts =
+            self.runtime
+                .frame_scripts(&input.audio, &self.controls, self.include_audio_updates);
         self.pending_scripts.extend(frame_scripts.control_updates);
+        if let Some(audio_update) = frame_scripts.audio_update {
+            self.pending_scripts.push(audio_update);
+        }
     }
 
     fn placeholder_canvas(input: &FrameInput) -> Canvas {
@@ -112,6 +107,18 @@ impl ServoRenderer {
         let color = Rgba::new(frame_mod, audio_mod, frame_mod.saturating_add(32), 255);
         canvas.fill(color);
         canvas
+    }
+
+    fn cleanup_runtime_html(&mut self) {
+        if let Some(path) = self.runtime_html_path.take() {
+            if let Err(error) = std::fs::remove_file(&path) {
+                debug!(
+                    path = %path.display(),
+                    %error,
+                    "Failed to remove temporary runtime HTML source"
+                );
+            }
+        }
     }
 }
 
@@ -133,11 +140,13 @@ impl EffectRenderer for ServoRenderer {
             )
         })?;
 
+        self.cleanup_runtime_html();
         self.worker = None;
         self.controls.clear();
         self.runtime = LightscriptRuntime::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
         self.pending_scripts.clear();
         self.warned_fallback_frame = false;
+        self.include_audio_updates = effect_is_audio_reactive(metadata);
 
         match load_default_controls(&resolved) {
             Ok(default_controls) => {
@@ -158,18 +167,27 @@ impl EffectRenderer for ServoRenderer {
             }
         }
 
+        let (runtime_source, runtime_html_path) =
+            prepare_runtime_html_source(&resolved, &self.controls).with_context(|| {
+                format!(
+                    "failed to prepare runtime HTML source for '{}'",
+                    resolved.display()
+                )
+            })?;
+
         let worker = acquire_servo_worker(DEFAULT_WIDTH, DEFAULT_HEIGHT)?;
-        worker.load_effect(&resolved)?;
+        worker.load_effect(&runtime_source)?;
         self.worker = Some(worker);
         self.html_source = Some(path.clone());
-        self.html_resolved_path = Some(resolved.clone());
+        self.html_resolved_path = Some(runtime_source.clone());
+        self.runtime_html_path = runtime_html_path;
         self.initialized = true;
         self.enqueue_bootstrap_scripts();
 
         info!(
             effect = %metadata.name,
             source = %path.display(),
-            resolved = %resolved.display(),
+            resolved = %runtime_source.display(),
             "Initialized ServoRenderer worker"
         );
 
@@ -211,8 +229,10 @@ impl EffectRenderer for ServoRenderer {
         self.controls.clear();
         self.html_source = None;
         self.html_resolved_path = None;
+        self.cleanup_runtime_html();
         self.initialized = false;
         self.warned_fallback_frame = false;
+        self.include_audio_updates = true;
     }
 }
 
@@ -328,9 +348,6 @@ struct ServoWorkerRuntime {
     webview: WebView,
     rendering_context: Rc<dyn RenderingContext>,
     delegate: Rc<HypercolorWebViewDelegate>,
-    pending_unthrottle: bool,
-    no_frame_streak: u32,
-    animation_kick_attempted: bool,
 }
 
 impl ServoWorkerRuntime {
@@ -357,9 +374,6 @@ impl ServoWorkerRuntime {
             webview,
             rendering_context,
             delegate,
-            pending_unthrottle: false,
-            no_frame_streak: 0,
-            animation_kick_attempted: false,
         };
         runtime.wait_for_load_completion(LOAD_TIMEOUT, None)?;
         Ok(runtime)
@@ -406,76 +420,52 @@ impl ServoWorkerRuntime {
                 "Recent console output while loading Servo effect page"
             );
         }
-        self.pending_unthrottle = true;
-        self.no_frame_streak = 0;
-        self.animation_kick_attempted = false;
         Ok(())
     }
 
     fn render_frame(&mut self, scripts: &[String], width: u32, height: u32) -> Result<Canvas> {
-        self.resize_if_needed(width, height);
+        let result = (|| {
+            self.resize_if_needed(width, height);
 
-        for script in scripts {
-            self.evaluate_script(script)
-                .with_context(|| format!("failed to evaluate script: {script}"))?;
-        }
+            for script in scripts {
+                self.evaluate_script(script)
+                    .with_context(|| format!("failed to evaluate script: {script}"))?;
+            }
 
-        if self.pending_unthrottle {
+            // Let timers/RAF advance for one daemon-driven frame after scripts
+            // have injected controls/audio for this tick.
             self.webview.set_throttled(false);
-            self.pending_unthrottle = false;
-        }
-
-        self.servo.spin_event_loop();
-        let frame_ready = self.delegate.take_frame_ready();
-        if frame_ready {
-            self.no_frame_streak = 0;
-            trace!("Servo delegate signaled new frame");
-        } else {
-            self.no_frame_streak = self.no_frame_streak.saturating_add(1);
-            if self.animation_kick_attempted
-                && self.no_frame_streak >= NO_FRAME_STREAK_LOG_INTERVAL
-                && self.no_frame_streak % NO_FRAME_STREAK_LOG_INTERVAL == 0
-            {
-                self.log_frame_stall("Servo effect is still not reporting new frames");
-            }
-        }
-
-        if !self.animation_kick_attempted && self.no_frame_streak >= NO_FRAME_STREAK_THRESHOLD {
-            self.log_frame_stall("Servo effect has not reported frames; attempting animation kick");
-            if let Err(error) = self.evaluate_script(ANIMATION_KICK_SCRIPT) {
-                warn!(%error, "Failed to evaluate animation kick script");
-            }
-            self.animation_kick_attempted = true;
             self.servo.spin_event_loop();
-            if self.delegate.take_frame_ready() {
-                self.no_frame_streak = 0;
-                info!("Animation kick restored Servo frame delivery");
-            } else {
-                self.log_frame_stall("Animation kick did not restore frame delivery");
+            let frame_ready = self.delegate.take_frame_ready();
+            if frame_ready {
+                trace!("Servo delegate signaled new frame");
             }
-        }
-        self.webview.paint();
+            self.webview.paint();
 
-        let size = self.rendering_context.size();
-        let width_i32 =
-            i32::try_from(size.width).context("canvas width overflow for Servo readback")?;
-        let height_i32 =
-            i32::try_from(size.height).context("canvas height overflow for Servo readback")?;
-        let rect = DeviceIntRect::new(
-            DeviceIntPoint::new(0, 0),
-            DeviceIntPoint::new(width_i32, height_i32),
-        );
+            let size = self.rendering_context.size();
+            let width_i32 =
+                i32::try_from(size.width).context("canvas width overflow for Servo readback")?;
+            let height_i32 =
+                i32::try_from(size.height).context("canvas height overflow for Servo readback")?;
+            let rect = DeviceIntRect::new(
+                DeviceIntPoint::new(0, 0),
+                DeviceIntPoint::new(width_i32, height_i32),
+            );
 
-        let image = self
-            .rendering_context
-            .read_to_image(rect)
-            .ok_or_else(|| anyhow!("Servo returned no pixels for readback rectangle"))?;
+            let image = self
+                .rendering_context
+                .read_to_image(rect)
+                .ok_or_else(|| anyhow!("Servo returned no pixels for readback rectangle"))?;
 
-        Ok(Canvas::from_rgba(
-            image.as_raw(),
-            image.width(),
-            image.height(),
-        ))
+            Ok(Canvas::from_rgba(
+                image.as_raw(),
+                image.width(),
+                image.height(),
+            ))
+        })();
+
+        self.webview.set_throttled(true);
+        result
     }
 
     fn resize_if_needed(&self, width: u32, height: u32) {
@@ -540,28 +530,6 @@ impl ServoWorkerRuntime {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
-
-    fn log_frame_stall(&self, message: &'static str) {
-        let recent_console = summarize_console_messages(
-            self.delegate
-                .recent_console_messages(RECENT_CONSOLE_SAMPLE_SIZE),
-        );
-        let current_url = self.delegate.last_url();
-        if recent_console.is_empty() {
-            warn!(
-                streak = self.no_frame_streak,
-                url = ?current_url,
-                "{message}"
-            );
-        } else {
-            warn!(
-                streak = self.no_frame_streak,
-                url = ?current_url,
-                recent_console = ?recent_console,
-                "{message}"
-            );
-        }
-    }
 }
 
 fn summarize_console_messages(messages: Vec<ConsoleMessage>) -> Vec<String> {
@@ -601,6 +569,98 @@ fn file_url_for_path(path: &Path) -> Result<Url> {
             canonical_path.display()
         )
     })
+}
+
+fn prepare_runtime_html_source(
+    original_path: &Path,
+    controls: &HashMap<String, ControlValue>,
+) -> Result<(PathBuf, Option<PathBuf>)> {
+    if controls.is_empty() {
+        return Ok((original_path.to_path_buf(), None));
+    }
+
+    let html = std::fs::read_to_string(original_path).with_context(|| {
+        format!(
+            "failed to read HTML effect file while preparing runtime source: {}",
+            original_path.display()
+        )
+    })?;
+
+    let preamble = build_control_preamble_script(controls);
+    let base_tag = original_path
+        .parent()
+        .and_then(|parent| Url::from_directory_path(parent).ok())
+        .map_or_else(String::new, |url| format!("<base href=\"{url}\">\n"));
+    let injected_block = format!("{base_tag}<script>\n{preamble}\n</script>\n");
+    let runtime_html = inject_runtime_head_block(&html, &injected_block);
+
+    let cache_root = dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("hypercolor")
+        .join("servo-runtime");
+    std::fs::create_dir_all(&cache_root).with_context(|| {
+        format!(
+            "failed to create Servo runtime cache directory: {}",
+            cache_root.display()
+        )
+    })?;
+
+    let runtime_path = cache_root.join(format!("effect-{}.html", uuid::Uuid::now_v7()));
+    std::fs::write(&runtime_path, runtime_html).with_context(|| {
+        format!(
+            "failed to write runtime HTML source '{}'",
+            runtime_path.display()
+        )
+    })?;
+
+    Ok((runtime_path.clone(), Some(runtime_path)))
+}
+
+fn build_control_preamble_script(controls: &HashMap<String, ControlValue>) -> String {
+    let mut sorted_controls: Vec<_> = controls.iter().collect();
+    sorted_controls.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    let mut script = String::from("(function(){\n");
+    for (name, value) in sorted_controls {
+        let key_literal = serde_json::to_string(name).unwrap_or_else(|_| "\"invalid\"".to_owned());
+        let _ = writeln!(
+            script,
+            "  if (typeof globalThis[{key_literal}] === 'undefined') globalThis[{key_literal}] = {};",
+            value.to_js_literal()
+        );
+    }
+    script.push_str("})();");
+    script
+}
+
+fn inject_runtime_head_block(html: &str, block: &str) -> String {
+    let lowered = html.to_ascii_lowercase();
+
+    if let Some(head_start) = lowered.find("<head") {
+        if let Some(head_close_offset) = lowered[head_start..].find('>') {
+            let insert_at = head_start + head_close_offset + 1;
+            let (before, after) = html.split_at(insert_at);
+            return format!("{before}\n{block}{after}");
+        }
+    }
+
+    if let Some(script_start) = lowered.find("<script") {
+        let (before, after) = html.split_at(script_start);
+        return format!("{before}\n{block}{after}");
+    }
+
+    format!("{block}{html}")
+}
+
+fn effect_is_audio_reactive(metadata: &EffectMetadata) -> bool {
+    if matches!(metadata.category, EffectCategory::Audio) {
+        return true;
+    }
+
+    metadata
+        .tags
+        .iter()
+        .any(|tag| tag.eq_ignore_ascii_case("audio") || tag.eq_ignore_ascii_case("audio-reactive"))
 }
 
 fn load_default_controls(path: &Path) -> Result<HashMap<String, ControlValue>> {
@@ -649,4 +709,101 @@ fn parse_bool_default(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hypercolor_types::effect::EffectId;
+    use uuid::Uuid;
+
+    #[test]
+    fn control_preamble_assigns_all_defaults() {
+        let mut controls = HashMap::new();
+        controls.insert("speed".to_owned(), ControlValue::Float(42.0));
+        controls.insert("enabled".to_owned(), ControlValue::Boolean(true));
+        controls.insert("color".to_owned(), ControlValue::Text("#00ffaa".to_owned()));
+
+        let script = build_control_preamble_script(&controls);
+
+        assert!(script.contains("globalThis[\"speed\"] = 42"));
+        assert!(script.contains("globalThis[\"enabled\"] = true"));
+        assert!(script.contains("globalThis[\"color\"] = \"#00ffaa\""));
+    }
+
+    #[test]
+    fn inject_runtime_block_prefers_head_tag() {
+        let html = "<html><head><title>x</title></head><body><script>run()</script></body></html>";
+        let block = "<script>bootstrap()</script>\n";
+
+        let injected = inject_runtime_head_block(html, block);
+        let expected = "<html><head>\n<script>bootstrap()</script>\n<title>x</title></head>";
+        assert!(injected.contains(expected));
+    }
+
+    #[test]
+    fn inject_runtime_block_falls_back_to_first_script() {
+        let html = "<body><script>run()</script></body>";
+        let block = "<script>bootstrap()</script>\n";
+
+        let injected = inject_runtime_head_block(html, block);
+        assert!(injected.starts_with("<body>\n<script>bootstrap()</script>"));
+    }
+
+    #[test]
+    fn effect_is_audio_reactive_for_audio_category() {
+        let metadata = EffectMetadata {
+            id: EffectId::from(Uuid::nil()),
+            name: "Audio".to_owned(),
+            author: "hypercolor".to_owned(),
+            version: "0.1.0".to_owned(),
+            description: "Audio reactive".to_owned(),
+            category: EffectCategory::Audio,
+            tags: Vec::new(),
+            source: EffectSource::Html {
+                path: PathBuf::from("effects/audio.html"),
+            },
+            license: None,
+        };
+
+        assert!(effect_is_audio_reactive(&metadata));
+    }
+
+    #[test]
+    fn effect_is_audio_reactive_for_audio_tags() {
+        let metadata = EffectMetadata {
+            id: EffectId::from(Uuid::nil()),
+            name: "Ambient Audio".to_owned(),
+            author: "hypercolor".to_owned(),
+            version: "0.1.0".to_owned(),
+            description: "Ambient effect with audio response".to_owned(),
+            category: EffectCategory::Ambient,
+            tags: vec!["visual".to_owned(), "audio-reactive".to_owned()],
+            source: EffectSource::Html {
+                path: PathBuf::from("effects/ambient-audio.html"),
+            },
+            license: None,
+        };
+
+        assert!(effect_is_audio_reactive(&metadata));
+    }
+
+    #[test]
+    fn effect_is_not_audio_reactive_without_audio_signals() {
+        let metadata = EffectMetadata {
+            id: EffectId::from(Uuid::nil()),
+            name: "Electric Colors".to_owned(),
+            author: "hypercolor".to_owned(),
+            version: "0.1.0".to_owned(),
+            description: "Ambient effect".to_owned(),
+            category: EffectCategory::Ambient,
+            tags: vec!["ambient".to_owned(), "canvas2d".to_owned()],
+            source: EffectSource::Html {
+                path: PathBuf::from("effects/electric-colors.html"),
+            },
+            license: None,
+        };
+
+        assert!(!effect_is_audio_reactive(&metadata));
+    }
 }

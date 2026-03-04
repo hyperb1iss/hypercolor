@@ -13,8 +13,8 @@ const LEVEL_FLOOR_DB: f32 = -100.0;
 /// Batch of JavaScript snippets to evaluate for one frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LightscriptFrameScripts {
-    /// JavaScript that updates `window.engine.audio`.
-    pub audio_update: String,
+    /// JavaScript that updates `window.engine.audio`, when enabled.
+    pub audio_update: Option<String>,
 
     /// JavaScript snippets for changed control values.
     pub control_updates: Vec<String>,
@@ -95,8 +95,9 @@ impl LightscriptRuntime {
         &mut self,
         audio: &AudioData,
         controls: &HashMap<String, ControlValue>,
+        include_audio: bool,
     ) -> LightscriptFrameScripts {
-        let audio_update = Self::audio_update_script(audio);
+        let audio_update = include_audio.then(|| Self::audio_update_script(audio));
         let control_updates = self.control_update_scripts(controls);
 
         LightscriptFrameScripts {
@@ -263,15 +264,24 @@ mod tests {
         let mut controls = HashMap::new();
         controls.insert("speed".to_owned(), ControlValue::Float(0.5));
 
-        let first = runtime.frame_scripts(&audio, &controls);
+        let first = runtime.frame_scripts(&audio, &controls, true);
         assert_eq!(first.control_updates.len(), 1);
 
-        let second = runtime.frame_scripts(&audio, &controls);
+        let second = runtime.frame_scripts(&audio, &controls, true);
         assert!(second.control_updates.is_empty());
 
         controls.insert("speed".to_owned(), ControlValue::Float(0.8));
-        let third = runtime.frame_scripts(&audio, &controls);
+        let third = runtime.frame_scripts(&audio, &controls, true);
         assert_eq!(third.control_updates.len(), 1);
+    }
+
+    #[test]
+    fn frame_scripts_can_skip_audio_update() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let audio = AudioData::silence();
+
+        let scripts = runtime.frame_scripts(&audio, &HashMap::new(), false);
+        assert!(scripts.audio_update.is_none());
     }
 
     #[test]

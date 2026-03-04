@@ -115,3 +115,25 @@ tempfile = "3.14"
 lto = true
 codegen-units = 1
 strip = true
+
+# Servo HTML effects spend most CPU time in software canvas rasterization
+# (`vello_cpu` + SIMD helpers). Keep dev edit-compile loops fast while
+# avoiding debug-profile runtime cliffs for live preview.
+[profile.dev.package.vello_cpu]
+opt-level = 3
+
+[profile.dev.package.vello_common]
+opt-level = 3
+
+[profile.dev.package.fearless_simd]
+opt-level = 3
+
+# JavaScript-heavy effects spend significant time in Servo's script pipeline.
+[profile.dev.package.mozjs]
+opt-level = 3
+
+[profile.dev.package.script]
+opt-level = 3
+
+[profile.dev.package.script_bindings]
+opt-level = 3
