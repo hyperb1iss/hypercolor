@@ -440,6 +440,7 @@ pub async fn execute_discovery_scan(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<LifecycleAction>) {
     let mut pending: VecDeque<LifecycleAction> = actions.into();
 
@@ -463,7 +464,9 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
                         lifecycle.on_connected(device_id)
                     }
                     Err(error) => {
+                        let device_label = device_log_label(&runtime, device_id).await;
                         warn!(
+                            device = %device_label,
                             device_id = %device_id,
                             backend_id = %backend_id,
                             error = %error,
@@ -480,7 +483,13 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
                         sync_registry_state(&runtime, device_id).await;
                     }
                     Err(error) => {
-                        warn!(device_id = %device_id, error = %error, "lifecycle state update failed after connect");
+                        let device_label = device_log_label(&runtime, device_id).await;
+                        warn!(
+                            device = %device_label,
+                            device_id = %device_id,
+                            error = %error,
+                            "lifecycle state update failed after connect"
+                        );
                     }
                 }
             }
@@ -575,7 +584,9 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
         };
 
         let follow_up = if let Err(error) = connect_result {
+            let device_label = device_log_label(&runtime_for_task, device_id).await;
             warn!(
+                device = %device_label,
                 device_id = %device_id,
                 backend_id = %backend_id,
                 error = %error,
@@ -594,7 +605,9 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
                 sync_registry_state(&runtime_for_task, device_id).await;
             }
             Err(error) => {
+                let device_label = device_log_label(&runtime_for_task, device_id).await;
                 warn!(
+                    device = %device_label,
                     device_id = %device_id,
                     error = %error,
                     "failed to update lifecycle state after reconnect attempt"
@@ -630,6 +643,13 @@ async fn sync_registry_state(runtime: &DiscoveryRuntime, device_id: DeviceId) {
     if let Some(state) = state {
         let _ = runtime.device_registry.set_state(&device_id, state).await;
     }
+}
+
+async fn device_log_label(runtime: &DiscoveryRuntime, device_id: DeviceId) -> String {
+    runtime.device_registry.get(&device_id).await.map_or_else(
+        || device_id.to_string(),
+        |tracked| format!("{} ({device_id})", tracked.info.name),
+    )
 }
 
 fn backend_id_for_family(family: &DeviceFamily) -> String {
