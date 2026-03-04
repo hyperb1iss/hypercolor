@@ -5,10 +5,16 @@
 
 use std::collections::HashMap;
 
-use hypercolor_types::audio::AudioData;
+use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 use hypercolor_types::effect::ControlValue;
 
 const LEVEL_FLOOR_DB: f32 = -100.0;
+const DEFAULT_ZONE_WIDTH: usize = 28;
+const DEFAULT_ZONE_HEIGHT: usize = 20;
+const DEFAULT_ZONE_SAMPLES: usize = DEFAULT_ZONE_WIDTH * DEFAULT_ZONE_HEIGHT;
+const DEFAULT_ZONE_IMAGE_WIDTH: usize = 160;
+const DEFAULT_ZONE_IMAGE_HEIGHT: usize = 100;
+const DEFAULT_ZONE_IMAGE_BYTES: usize = DEFAULT_ZONE_IMAGE_WIDTH * DEFAULT_ZONE_IMAGE_HEIGHT * 4;
 
 /// Batch of JavaScript snippets to evaluate for one frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,27 +47,276 @@ impl LightscriptRuntime {
 
     /// Build JavaScript that initializes the `window.engine` object.
     #[must_use]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::format_push_string,
+        clippy::uninlined_format_args
+    )]
     pub fn bootstrap_script(&self) -> String {
-        format!(
-            concat!(
-                "(function(){{\n",
-                "  if (typeof window.engine !== 'object' || window.engine === null) {{ window.engine = {{}}; }}\n",
-                "  window.engine.width = {};\n",
-                "  window.engine.height = {};\n",
-                "  if (typeof window.engine.audio !== 'object' || window.engine.audio === null) {{ window.engine.audio = {{}}; }}\n",
-                "  window.engine.audio.level = {};\n",
-                "  window.engine.audio.bass = 0;\n",
-                "  window.engine.audio.mid = 0;\n",
-                "  window.engine.audio.treble = 0;\n",
-                "  window.engine.audio.density = 0;\n",
-                "  window.engine.audio.bpm = 0;\n",
-                "  window.engine.audio.beat = false;\n",
-                "  window.engine.audio.beatPulse = 0;\n",
-                "  window.engine.audio.freq = new Float32Array(200);\n",
-                "}})();",
-            ),
-            self.width, self.height, LEVEL_FLOOR_DB,
-        )
+        let mut script = String::new();
+        script.push_str("(function(){\n");
+        script.push_str(
+            "  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }\n",
+        );
+        script.push_str(&format!("  window.engine.width = {};\n", self.width));
+        script.push_str(&format!("  window.engine.height = {};\n", self.height));
+
+        // Core Lightscript/SignalRGB contract: audio + vision + zone are always present.
+        script.push_str(
+            "  if (typeof window.engine.audio !== 'object' || window.engine.audio === null) { window.engine.audio = {}; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.vision !== 'object' || window.engine.vision === null) { window.engine.vision = {}; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.zone !== 'object' || window.engine.zone === null) { window.engine.zone = {}; }\n",
+        );
+        script.push_str("  window.engine.meters = window.engine.vision;\n");
+
+        // Audio defaults (SignalRGB-compatible surface + extended fields used by
+        // lightscript-workshop helpers).
+        script.push_str(&format!(
+            "  if (!(window.engine.audio.freq instanceof Int8Array) || window.engine.audio.freq.length !== {}) {{ window.engine.audio.freq = new Int8Array({}); }}\n",
+            SPECTRUM_BINS, SPECTRUM_BINS
+        ));
+        script.push_str(&format!(
+            "  if (!(window.engine.audio.frequencyRaw instanceof Int8Array) || window.engine.audio.frequencyRaw.length !== {}) {{ window.engine.audio.frequencyRaw = new Int8Array({}); }}\n",
+            SPECTRUM_BINS, SPECTRUM_BINS
+        ));
+        script.push_str(&format!(
+            "  if (!(window.engine.audio.frequency instanceof Float32Array) || window.engine.audio.frequency.length !== {}) {{ window.engine.audio.frequency = new Float32Array({}); }}\n",
+            SPECTRUM_BINS, SPECTRUM_BINS
+        ));
+        script.push_str(&format!(
+            "  if (!(window.engine.audio.melBands instanceof Float32Array) || window.engine.audio.melBands.length !== {}) {{ window.engine.audio.melBands = new Float32Array({}); }}\n",
+            MEL_BANDS, MEL_BANDS
+        ));
+        script.push_str(&format!(
+            "  if (!(window.engine.audio.melBandsNormalized instanceof Float32Array) || window.engine.audio.melBandsNormalized.length !== {}) {{ window.engine.audio.melBandsNormalized = new Float32Array({}); }}\n",
+            MEL_BANDS, MEL_BANDS
+        ));
+        script.push_str(&format!(
+            "  if (!(window.engine.audio.chromagram instanceof Float32Array) || window.engine.audio.chromagram.length !== {}) {{ window.engine.audio.chromagram = new Float32Array({}); }}\n",
+            CHROMA_BINS, CHROMA_BINS
+        ));
+        script.push_str(
+            "  if (!(window.engine.audio.spectralFluxBands instanceof Float32Array) || window.engine.audio.spectralFluxBands.length !== 3) { window.engine.audio.spectralFluxBands = new Float32Array(3); }\n",
+        );
+        script.push_str(&format!(
+            "  window.engine.audio.level = {};\n",
+            LEVEL_FLOOR_DB
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.levelRaw = {};\n",
+            LEVEL_FLOOR_DB
+        ));
+        script.push_str("  window.engine.audio.levelLinear = 0;\n");
+        script.push_str("  window.engine.audio.rms = 0;\n");
+        script.push_str("  window.engine.audio.peak = 0;\n");
+        script.push_str("  window.engine.audio.bass = 0;\n");
+        script.push_str("  window.engine.audio.mid = 0;\n");
+        script.push_str("  window.engine.audio.treble = 0;\n");
+        script.push_str("  window.engine.audio.density = 0;\n");
+        script.push_str("  window.engine.audio.width = 0.5;\n");
+        script.push_str("  window.engine.audio.bpm = 0;\n");
+        script.push_str("  window.engine.audio.tempo = 0;\n");
+        script.push_str("  window.engine.audio.beat = false;\n");
+        script.push_str("  window.engine.audio.beatPulse = 0;\n");
+        script.push_str("  window.engine.audio.beatPhase = 0;\n");
+        script.push_str("  window.engine.audio.beatConfidence = 0;\n");
+        script.push_str("  window.engine.audio.confidence = 0;\n");
+        script.push_str("  window.engine.audio.onset = false;\n");
+        script.push_str("  window.engine.audio.onsetPulse = 0;\n");
+        script.push_str("  window.engine.audio.spectralFlux = 0;\n");
+        script.push_str("  window.engine.audio.brightness = 0;\n");
+        script.push_str("  window.engine.audio.spread = 0;\n");
+        script.push_str("  window.engine.audio.rolloff = 0;\n");
+        script.push_str("  window.engine.audio.roughness = 0;\n");
+        script.push_str("  window.engine.audio.harmonicHue = 0;\n");
+        script.push_str("  window.engine.audio.chordMood = 0;\n");
+        script.push_str("  window.engine.audio.dominantPitch = 0;\n");
+        script.push_str("  window.engine.audio.dominantPitchConfidence = 0;\n");
+
+        // Screen-ambience payload compatibility (`engine.zone`).
+        script.push_str(&format!(
+            "  if (!(window.engine.zone.hue instanceof Int16Array) || window.engine.zone.hue.length !== {}) {{ window.engine.zone.hue = new Int16Array({}); }}\n",
+            DEFAULT_ZONE_SAMPLES, DEFAULT_ZONE_SAMPLES
+        ));
+        script.push_str(&format!(
+            "  if (!(window.engine.zone.saturation instanceof Int8Array) || window.engine.zone.saturation.length !== {}) {{ window.engine.zone.saturation = new Int8Array({}); }}\n",
+            DEFAULT_ZONE_SAMPLES, DEFAULT_ZONE_SAMPLES
+        ));
+        script.push_str(&format!(
+            "  if (!(window.engine.zone.lightness instanceof Int8Array) || window.engine.zone.lightness.length !== {}) {{ window.engine.zone.lightness = new Int8Array({}); }}\n",
+            DEFAULT_ZONE_SAMPLES, DEFAULT_ZONE_SAMPLES
+        ));
+        script.push_str(&format!(
+            "  if (!(window.engine.zone.imagedata instanceof Uint8ClampedArray) || window.engine.zone.imagedata.length !== {}) {{ window.engine.zone.imagedata = new Uint8ClampedArray({}); }}\n",
+            DEFAULT_ZONE_IMAGE_BYTES, DEFAULT_ZONE_IMAGE_BYTES
+        ));
+        script.push_str(&format!(
+            "  window.engine.zone.width = {};\n",
+            DEFAULT_ZONE_WIDTH
+        ));
+        script.push_str(&format!(
+            "  window.engine.zone.height = {};\n",
+            DEFAULT_ZONE_HEIGHT
+        ));
+
+        // Sensor API used by community effects.
+        script.push_str(
+            "  if (typeof window.engine.sensors !== 'object' || window.engine.sensors === null) { window.engine.sensors = {}; }\n",
+        );
+        script.push_str(
+            "  if (!Array.isArray(window.engine.sensorList)) { window.engine.sensorList = []; }\n",
+        );
+        script.push_str("  if (typeof window.engine.getSensorValue !== 'function') {\n");
+        script.push_str("    window.engine.getSensorValue = function(name) {\n");
+        script.push_str(
+            "      const sensors = (window.engine && typeof window.engine.sensors === 'object' && window.engine.sensors !== null) ? window.engine.sensors : {};\n",
+        );
+        script.push_str("      const key = typeof name === 'string' ? name : '';\n");
+        script.push_str(
+            "      const entry = key && typeof sensors[key] === 'object' && sensors[key] !== null ? sensors[key] : null;\n",
+        );
+        script
+            .push_str("      if (!entry) { return { value: 0, min: 0, max: 100, unit: '%' }; }\n");
+        script.push_str("      const value = Number.isFinite(entry.value) ? entry.value : 0;\n");
+        script.push_str("      const min = Number.isFinite(entry.min) ? entry.min : 0;\n");
+        script.push_str("      let max = Number.isFinite(entry.max) ? entry.max : 100;\n");
+        script.push_str("      if (max === min) { max = min + 1; }\n");
+        script.push_str("      const unit = typeof entry.unit === 'string' ? entry.unit : '%';\n");
+        script.push_str("      return { value, min, max, unit };\n");
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+        script.push_str("  if (typeof window.engine.setSensorValue !== 'function') {\n");
+        script.push_str(
+            "    window.engine.setSensorValue = function(name, value, min, max, unit) {\n",
+        );
+        script.push_str("      if (typeof name !== 'string' || name.length === 0) { return; }\n");
+        script.push_str(
+            "      const safeMin = Number.isFinite(min) ? min : 0;\n      let safeMax = Number.isFinite(max) ? max : 100;\n      if (safeMax === safeMin) { safeMax = safeMin + 1; }\n",
+        );
+        script.push_str("      window.engine.sensors[name] = {\n");
+        script.push_str("        value: Number.isFinite(value) ? value : 0,\n");
+        script.push_str("        min: safeMin,\n");
+        script.push_str("        max: safeMax,\n");
+        script.push_str("        unit: typeof unit === 'string' ? unit : '%',\n");
+        script.push_str("      };\n");
+        script.push_str(
+            "      if (window.engine.sensorList.indexOf(name) === -1) { window.engine.sensorList.push(name); }\n",
+        );
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+        script.push_str("  if (typeof window.engine.resetSensors !== 'function') {\n");
+        script.push_str("    window.engine.resetSensors = function() {\n");
+        script.push_str("      window.engine.sensors = {};\n");
+        script.push_str("      window.engine.sensorList = [];\n");
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+
+        // Vision meter helpers.
+        script.push_str("  if (typeof window.engine.getMeterValue !== 'function') {\n");
+        script.push_str("    window.engine.getMeterValue = function(name) {\n");
+        script.push_str("      if (typeof name !== 'string' || name.length === 0) { return 0; }\n");
+        script.push_str("      const raw = window.engine.vision[name];\n");
+        script.push_str("      return Number.isFinite(raw) ? raw : 0;\n");
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+        script.push_str("  if (typeof window.engine.setMeterValue !== 'function') {\n");
+        script.push_str("    window.engine.setMeterValue = function(name, value) {\n");
+        script.push_str("      if (typeof name !== 'string' || name.length === 0) { return; }\n");
+        script.push_str("      window.engine.vision[name] = Number.isFinite(value) ? value : 0;\n");
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+        script.push_str("  if (typeof window.engine.setVisionValues !== 'function') {\n");
+        script.push_str("    window.engine.setVisionValues = function(values) {\n");
+        script.push_str("      if (typeof values !== 'object' || values === null) { return; }\n");
+        script.push_str(
+            "      for (const key in values) {\n        if (!Object.prototype.hasOwnProperty.call(values, key)) { continue; }\n        const value = values[key];\n        if (Number.isFinite(value)) { window.engine.vision[key] = value; }\n      }\n",
+        );
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+
+        // Keyboard/mouse stubs for interactive effects.
+        script.push_str(
+            "  if (typeof window.engine.keyboard !== 'object' || window.engine.keyboard === null) { window.engine.keyboard = {}; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.keyboard.keys !== 'object' || window.engine.keyboard.keys === null) { window.engine.keyboard.keys = {}; }\n",
+        );
+        script.push_str(
+            "  if (!Array.isArray(window.engine.keyboard.recent)) { window.engine.keyboard.recent = []; }\n",
+        );
+        script.push_str("  if (typeof window.engine.keyboard.isKeyDown !== 'function') {\n");
+        script.push_str("    window.engine.keyboard.isKeyDown = function(key) {\n");
+        script
+            .push_str("      if (typeof key !== 'string' || key.length === 0) { return false; }\n");
+        script.push_str("      return !!window.engine.keyboard.keys[key];\n");
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+        script
+            .push_str("  if (typeof window.engine.keyboard.consumePressedKeys !== 'function') {\n");
+        script.push_str("    window.engine.keyboard.consumePressedKeys = function() {\n");
+        script.push_str(
+            "      const recent = Array.isArray(window.engine.keyboard.recent) ? window.engine.keyboard.recent.slice() : [];\n",
+        );
+        script.push_str("      window.engine.keyboard.recent = [];\n");
+        script.push_str("      return recent;\n");
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+        script.push_str("  if (typeof window.engine.keyboard.wasKeyPressed !== 'function') {\n");
+        script.push_str("    window.engine.keyboard.wasKeyPressed = function(key) {\n");
+        script
+            .push_str("      if (typeof key !== 'string' || key.length === 0) { return false; }\n");
+        script.push_str(
+            "      const recent = Array.isArray(window.engine.keyboard.recent) ? window.engine.keyboard.recent : [];\n",
+        );
+        script.push_str("      return recent.indexOf(key) !== -1;\n");
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+
+        script.push_str(
+            "  if (typeof window.engine.mouse !== 'object' || window.engine.mouse === null) { window.engine.mouse = {}; }\n",
+        );
+        script.push_str(
+            "  if (!Number.isFinite(window.engine.mouse.x)) { window.engine.mouse.x = 0; }\n",
+        );
+        script.push_str(
+            "  if (!Number.isFinite(window.engine.mouse.y)) { window.engine.mouse.y = 0; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.mouse.down !== 'boolean') { window.engine.mouse.down = false; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.mouse.buttons !== 'object' || window.engine.mouse.buttons === null) { window.engine.mouse.buttons = {}; }\n",
+        );
+        script.push_str("  if (typeof window.engine.mouse.isDown !== 'function') {\n");
+        script.push_str("    window.engine.mouse.isDown = function(button) {\n");
+        script.push_str(
+            "      if (typeof button !== 'string' || button.length === 0) { return !!window.engine.mouse.down; }\n",
+        );
+        script.push_str("      return !!window.engine.mouse.buttons[button];\n");
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+
+        // Tap/game integration hooks used by community effects.
+        script.push_str("  if (typeof window.engine.onCanvasTapped !== 'function') {\n");
+        script.push_str("    window.engine.onCanvasTapped = function(x, y) {\n");
+        script.push_str(
+            "      if (typeof window.onCanvasTapped === 'function') { window.onCanvasTapped(x, y); }\n",
+        );
+        script.push_str("    };\n");
+        script.push_str("  }\n");
+        script.push_str("  if (typeof window.onCanvasApiEvent !== 'function') {\n");
+        script.push_str("    window.onCanvasApiEvent = function(_event) {};\n");
+        script.push_str("  }\n");
+        script.push_str("  if (typeof window.showNotification !== 'function') {\n");
+        script.push_str("    window.showNotification = function(_message, _isError) {};\n");
+        script.push_str("  }\n");
+        script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n");
+        script.push_str("})();");
+        script
     }
 
     /// Build JavaScript to update `window.engine` dimensions when canvas size
@@ -106,43 +361,171 @@ impl LightscriptRuntime {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        clippy::format_push_string,
+        clippy::uninlined_format_args
+    )]
     fn audio_update_script(audio: &AudioData) -> String {
-        let level_db = js_number(normalized_level_to_db(audio.rms_level));
+        let level_db = normalized_level_to_db(audio.rms_level);
+        let level_linear = clamp_unit(audio.rms_level);
+        let peak = clamp_unit(audio.peak_level);
+        let bass = clamp_unit(audio.bass());
+        let mid = clamp_unit(audio.mid());
+        let treble = clamp_unit(audio.treble());
+        let density = clamp_unit(audio.spectral_flux);
+        let brightness = clamp_unit(audio.spectral_centroid);
         let beat_pulse = if audio.beat_detected {
             1.0_f32
         } else {
             0.0_f32
         };
-        let spectrum_values = join_f32_csv(&audio.spectrum);
+        let onset_pulse = if audio.onset_detected {
+            1.0_f32
+        } else {
+            0.0_f32
+        };
 
-        format!(
-            concat!(
-                "(function(){{\n",
-                "  if (typeof window.engine !== 'object' || window.engine === null) {{ window.engine = {{}}; }}\n",
-                "  if (typeof window.engine.audio !== 'object' || window.engine.audio === null) {{ window.engine.audio = {{}}; }}\n",
-                "  window.engine.audio.level = {};\n",
-                "  window.engine.audio.bass = {};\n",
-                "  window.engine.audio.mid = {};\n",
-                "  window.engine.audio.treble = {};\n",
-                "  window.engine.audio.density = {};\n",
-                "  window.engine.audio.bpm = {};\n",
-                "  window.engine.audio.beat = {};\n",
-                "  window.engine.audio.beatPulse = {};\n",
-                "  window.engine.audio.confidence = {};\n",
-                "  window.engine.audio.freq = new Float32Array([{}]);\n",
-                "}})();",
-            ),
-            level_db,
-            js_number(audio.bass()),
-            js_number(audio.mid()),
-            js_number(audio.treble()),
-            js_number(audio.spectral_flux),
-            js_number(audio.bpm),
-            if audio.beat_detected { "true" } else { "false" },
-            js_number(beat_pulse),
-            js_number(audio.beat_confidence),
-            spectrum_values,
-        )
+        let spectrum = pad_and_sanitize_f32(&audio.spectrum, SPECTRUM_BINS);
+        let frequency_raw = spectrum
+            .iter()
+            .copied()
+            .map(normalized_to_int8)
+            .collect::<Vec<i8>>();
+        let mel_bands = pad_and_sanitize_f32(&audio.mel_bands, MEL_BANDS);
+        let chromagram = pad_and_sanitize_f32(&audio.chromagram, CHROMA_BINS);
+        let spectral_flux_bands = [bass, mid, treble];
+
+        let spectrum_csv = join_f32_csv(&spectrum);
+        let frequency_raw_csv = join_i8_csv(&frequency_raw);
+        let mel_csv = join_f32_csv(&mel_bands);
+        let chroma_csv = join_f32_csv(&chromagram);
+        let flux_bands_csv = join_f32_csv(&spectral_flux_bands);
+
+        let mut script = String::new();
+        script.push_str("(function(){\n");
+        script.push_str(
+            "  if (typeof window.engine !== 'object' || window.engine === null) { window.engine = {}; }\n",
+        );
+        script.push_str(
+            "  if (typeof window.engine.audio !== 'object' || window.engine.audio === null) { window.engine.audio = {}; }\n",
+        );
+        script.push_str(&format!(
+            "  window.engine.audio.level = {};\n",
+            js_number(level_db)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.levelRaw = {};\n",
+            js_number(level_db)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.levelLinear = {};\n",
+            js_number(level_linear)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.rms = {};\n",
+            js_number(level_linear)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.peak = {};\n",
+            js_number(peak)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.bass = {};\n",
+            js_number(bass)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.mid = {};\n",
+            js_number(mid)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.treble = {};\n",
+            js_number(treble)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.density = {};\n",
+            js_number(density)
+        ));
+        script.push_str("  window.engine.audio.width = 0.5;\n");
+        script.push_str(&format!(
+            "  window.engine.audio.bpm = {};\n",
+            js_number(audio.bpm)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.tempo = {};\n",
+            js_number(audio.bpm)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.beat = {};\n",
+            js_bool(audio.beat_detected)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.beatPulse = {};\n",
+            js_number(beat_pulse)
+        ));
+        script.push_str("  window.engine.audio.beatPhase = 0;\n");
+        script.push_str(&format!(
+            "  window.engine.audio.beatConfidence = {};\n",
+            js_number(audio.beat_confidence)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.confidence = {};\n",
+            js_number(audio.beat_confidence)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.onset = {};\n",
+            js_bool(audio.onset_detected)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.onsetPulse = {};\n",
+            js_number(onset_pulse)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.spectralFlux = {};\n",
+            js_number(audio.spectral_flux)
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.spectralFluxBands = new Float32Array([{}]);\n",
+            flux_bands_csv
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.brightness = {};\n",
+            js_number(brightness)
+        ));
+        script.push_str("  window.engine.audio.spread = 0;\n");
+        script.push_str("  window.engine.audio.rolloff = 0;\n");
+        script.push_str("  window.engine.audio.roughness = 0;\n");
+        script.push_str("  window.engine.audio.harmonicHue = 0;\n");
+        script.push_str("  window.engine.audio.chordMood = 0;\n");
+        script.push_str("  window.engine.audio.dominantPitch = 0;\n");
+        script.push_str("  window.engine.audio.dominantPitchConfidence = 0;\n");
+        script.push_str(&format!(
+            "  window.engine.audio.freq = new Int8Array([{}]);\n",
+            frequency_raw_csv
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.frequencyRaw = new Int8Array([{}]);\n",
+            frequency_raw_csv
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.frequency = new Float32Array([{}]);\n",
+            spectrum_csv
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.melBands = new Float32Array([{}]);\n",
+            mel_csv
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.melBandsNormalized = new Float32Array([{}]);\n",
+            mel_csv
+        ));
+        script.push_str(&format!(
+            "  window.engine.audio.chromagram = new Float32Array([{}]);\n",
+            chroma_csv
+        ));
+        script.push_str("  if (typeof globalThis === 'object' && globalThis !== null) { globalThis.engine = window.engine; }\n");
+        script.push_str("})();");
+        script
     }
 
     fn control_update_scripts(&mut self, controls: &HashMap<String, ControlValue>) -> Vec<String> {
@@ -200,11 +583,44 @@ pub fn normalized_level_to_db(level: f32) -> f32 {
     db.clamp(LEVEL_FLOOR_DB, 0.0)
 }
 
+fn clamp_unit(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn pad_and_sanitize_f32(values: &[f32], expected_len: usize) -> Vec<f32> {
+    let mut out = values
+        .iter()
+        .copied()
+        .take(expected_len)
+        .map(|value| if value.is_finite() { value } else { 0.0 })
+        .collect::<Vec<f32>>();
+    out.resize(expected_len, 0.0);
+    out
+}
+
+fn normalized_to_int8(value: f32) -> i8 {
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+    let scaled = (clamp_unit(value) * 127.0).round() as i16;
+    i8::try_from(scaled).unwrap_or_default()
+}
+
 fn join_f32_csv(values: &[f32]) -> String {
     values
         .iter()
         .copied()
         .map(js_number)
+        .collect::<Vec<String>>()
+        .join(",")
+}
+
+fn join_i8_csv(values: &[i8]) -> String {
+    values
+        .iter()
+        .map(std::string::ToString::to_string)
         .collect::<Vec<String>>()
         .join(",")
 }
@@ -215,6 +631,10 @@ fn js_number(value: f32) -> String {
     } else {
         "0".to_owned()
     }
+}
+
+const fn js_bool(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
 }
 
 #[cfg(test)]
@@ -228,7 +648,11 @@ mod tests {
 
         assert!(script.contains("window.engine.width = 320"));
         assert!(script.contains("window.engine.height = 200"));
-        assert!(script.contains("window.engine.audio.freq = new Float32Array(200)"));
+        assert!(script.contains("window.engine.audio.freq = new Int8Array(200)"));
+        assert!(script.contains("window.engine.zone.hue = new Int16Array(560)"));
+        assert!(script.contains("window.engine.getSensorValue = function(name)"));
+        assert!(script.contains("window.engine.keyboard.isKeyDown = function(key)"));
+        assert!(script.contains("window.engine.onCanvasTapped = function(x, y)"));
     }
 
     #[test]
@@ -292,7 +716,11 @@ mod tests {
 
         let script = LightscriptRuntime::audio_update_script(&audio);
         assert!(script.contains("window.engine.audio.level = 0"));
-        assert!(script.contains("window.engine.audio.freq = new Float32Array([0.1,0.2,0.3])"));
+        assert!(script.contains("window.engine.audio.levelRaw = 0"));
+        assert!(script.contains("window.engine.audio.freq = new Int8Array([13,25,38"));
+        assert!(script.contains("window.engine.audio.frequency = new Float32Array([0.1,0.2,0.3"));
+        assert!(script.contains("window.engine.audio.melBands = new Float32Array(["));
+        assert!(script.contains("window.engine.audio.chromagram = new Float32Array(["));
     }
 
     #[test]
@@ -300,13 +728,17 @@ mod tests {
         let mut audio = AudioData::silence();
         audio.rms_level = f32::NAN;
         audio.spectrum = vec![f32::INFINITY, f32::NEG_INFINITY, f32::NAN];
+        audio.mel_bands = vec![f32::INFINITY, f32::NEG_INFINITY];
+        audio.chromagram = vec![f32::NAN];
         audio.bpm = f32::INFINITY;
         audio.spectral_flux = f32::NEG_INFINITY;
 
         let script = LightscriptRuntime::audio_update_script(&audio);
         assert!(!script.contains("inf"));
         assert!(!script.contains("NaN"));
-        assert!(script.contains("window.engine.audio.freq = new Float32Array([0,0,0])"));
+        assert!(script.contains("window.engine.audio.freq = new Int8Array([0,0,0"));
+        assert!(script.contains("window.engine.audio.frequency = new Float32Array([0,0,0"));
+        assert!(script.contains("window.engine.audio.melBands = new Float32Array([0,0"));
     }
 
     #[test]

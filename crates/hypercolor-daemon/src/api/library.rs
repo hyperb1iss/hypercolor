@@ -359,7 +359,8 @@ pub async fn apply_preset(State(state): State<Arc<AppState>>, Path(id): Path<Str
         entry.metadata.clone()
     };
 
-    let activation = match activate_effect_with_controls(&state, &metadata, &preset.controls).await {
+    let activation = match activate_effect_with_controls(&state, &metadata, &preset.controls).await
+    {
         Ok(activation) => activation,
         Err(ActivateEffectError::Renderer(error)) => {
             return ApiError::bad_request(format!(
@@ -741,7 +742,10 @@ async fn run_playlist_task(
             );
         }
 
-        let duration_ms = item.duration_ms.unwrap_or(DEFAULT_PLAYLIST_ITEM_DURATION_MS).max(1);
+        let duration_ms = item
+            .duration_ms
+            .unwrap_or(DEFAULT_PLAYLIST_ITEM_DURATION_MS)
+            .max(1);
         if wait_for_item_window(duration_ms, &mut stop_rx).await {
             break;
         }
@@ -834,8 +838,8 @@ async fn activate_effect_with_controls(
     metadata: &EffectMetadata,
     controls: &HashMap<String, ControlValue>,
 ) -> Result<ActivationResult, ActivateEffectError> {
-    let renderer =
-        create_renderer_for_metadata(metadata).map_err(|error| ActivateEffectError::Renderer(error.to_string()))?;
+    let renderer = create_renderer_for_metadata(metadata)
+        .map_err(|error| ActivateEffectError::Renderer(error.to_string()))?;
 
     let mut applied: HashMap<String, ControlValue> = HashMap::new();
     let mut rejected: Vec<String> = Vec::new();

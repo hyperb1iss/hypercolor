@@ -453,9 +453,7 @@ fn engine_set_control_checked_validates_against_schema() {
         .set_control_checked("mode", &ControlValue::Text("invalid".to_owned()))
         .expect_err("mode should reject unknown option");
     assert!(
-        error
-            .to_string()
-            .contains("invalid option 'invalid'"),
+        error.to_string().contains("invalid option 'invalid'"),
         "unexpected error: {error}"
     );
 }

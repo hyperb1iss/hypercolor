@@ -234,6 +234,10 @@ fn device_family_display() {
     assert_eq!(DeviceFamily::OpenRgb.to_string(), "OpenRGB");
     assert_eq!(DeviceFamily::Wled.to_string(), "WLED");
     assert_eq!(DeviceFamily::Hue.to_string(), "Philips Hue");
+    assert_eq!(DeviceFamily::Razer.to_string(), "Razer");
+    assert_eq!(DeviceFamily::Corsair.to_string(), "Corsair");
+    assert_eq!(DeviceFamily::LianLi.to_string(), "Lian Li");
+    assert_eq!(DeviceFamily::PrismRgb.to_string(), "PrismRGB");
     assert_eq!(
         DeviceFamily::Custom("PrismRGB".into()).to_string(),
         "PrismRGB"
@@ -260,6 +264,10 @@ fn device_family_serde_round_trip() {
         DeviceFamily::OpenRgb,
         DeviceFamily::Wled,
         DeviceFamily::Hue,
+        DeviceFamily::Razer,
+        DeviceFamily::Corsair,
+        DeviceFamily::LianLi,
+        DeviceFamily::PrismRgb,
         DeviceFamily::Custom("PrismRGB".into()),
     ];
     for family in families {
@@ -275,11 +283,18 @@ fn device_family_serde_round_trip() {
 fn color_format_display() {
     assert_eq!(DeviceColorFormat::Rgb.to_string(), "RGB");
     assert_eq!(DeviceColorFormat::Rgbw.to_string(), "RGBW");
+    assert_eq!(DeviceColorFormat::Grb.to_string(), "GRB");
+    assert_eq!(DeviceColorFormat::Rbg.to_string(), "RBG");
 }
 
 #[test]
 fn color_format_serde_round_trip() {
-    for fmt in [DeviceColorFormat::Rgb, DeviceColorFormat::Rgbw] {
+    for fmt in [
+        DeviceColorFormat::Rgb,
+        DeviceColorFormat::Rgbw,
+        DeviceColorFormat::Grb,
+        DeviceColorFormat::Rbg,
+    ] {
         let json = serde_json::to_string(&fmt).expect("serialize");
         let back: DeviceColorFormat = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, fmt);
@@ -483,6 +498,15 @@ fn device_identifier_openrgb_display() {
 }
 
 #[test]
+fn device_identifier_bridge_display() {
+    let id = DeviceIdentifier::Bridge {
+        service: "openlinkhub".into(),
+        device_serial: "ABC1234".into(),
+    };
+    assert_eq!(id.display_short(), "openlinkhub:ABC1234");
+}
+
+#[test]
 fn device_identifier_fingerprint_usb_serial() {
     let id = DeviceIdentifier::UsbHid {
         vendor_id: 0x16D5,
@@ -550,6 +574,18 @@ fn device_identifier_fingerprint_openrgb() {
 }
 
 #[test]
+fn device_identifier_fingerprint_bridge() {
+    let id = DeviceIdentifier::Bridge {
+        service: "openlinkhub".into(),
+        device_serial: "ABC1234".into(),
+    };
+    assert_eq!(
+        id.fingerprint(),
+        DeviceFingerprint("bridge:openlinkhub:ABC1234".into())
+    );
+}
+
+#[test]
 fn device_identifier_serde_round_trip() {
     let identifiers = vec![
         DeviceIdentifier::UsbHid {
@@ -570,6 +606,10 @@ fn device_identifier_serde_round_trip() {
         DeviceIdentifier::OpenRgb {
             controller_name: "MSI Mystic".into(),
             location: "HID: /dev/hidraw0".into(),
+        },
+        DeviceIdentifier::Bridge {
+            service: "openlinkhub".into(),
+            device_serial: "bridge-serial".into(),
         },
     ];
 

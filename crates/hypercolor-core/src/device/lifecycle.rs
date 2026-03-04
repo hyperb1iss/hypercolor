@@ -451,8 +451,6 @@ fn sanitize_component(input: &str) -> String {
     for ch in input.trim().chars() {
         let mapped = if ch.is_ascii_alphanumeric() || ch == ':' || ch == '_' || ch == '-' {
             ch.to_ascii_lowercase()
-        } else if ch.is_whitespace() || matches!(ch, '/' | '\\' | '.' | ',') {
-            '-'
         } else {
             '-'
         };

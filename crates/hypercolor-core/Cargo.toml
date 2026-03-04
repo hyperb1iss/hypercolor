@@ -17,6 +17,7 @@ servo = ["dep:servo", "dep:dpi", "dep:rustls", "dep:mozjs-jit"]
 
 [dependencies]
 hypercolor-types = { workspace = true }
+hypercolor-hal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -365,9 +365,9 @@ fn parse_hex_color(hex: &str) -> Option<ControlValue> {
         let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
         let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
         Some(ControlValue::Color([
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
+            f32::from(r) / 255.0,
+            f32::from(g) / 255.0,
+            f32::from(b) / 255.0,
             1.0,
         ]))
     } else {

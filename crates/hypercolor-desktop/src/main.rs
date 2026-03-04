@@ -13,9 +13,8 @@ const DEFAULT_DAEMON_URL: &str = "http://127.0.0.1:9420";
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| {
-                "hypercolor_desktop=debug,tauri=info,wry=warn".to_string()
-            }),
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "hypercolor_desktop=debug,tauri=info,wry=warn".to_string()),
         )
         .init();
 

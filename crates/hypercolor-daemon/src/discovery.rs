@@ -218,6 +218,7 @@ pub fn backend_names(backends: &[DiscoveryBackend]) -> Vec<String> {
 ///
 /// This function assumes the caller already set `in_progress=true`. It always
 /// resets that flag on exit.
+#[allow(clippy::too_many_lines)]
 pub async fn execute_discovery_scan(
     runtime: DiscoveryRuntime,
     config: Arc<HypercolorConfig>,
@@ -523,7 +524,7 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
                 manager.unmap_device(&layout_device_id);
             }
             LifecycleAction::SpawnReconnect { device_id, delay } => {
-                spawn_reconnect_task(runtime.clone(), device_id, delay);
+                spawn_reconnect_task(&runtime, device_id, delay);
             }
             LifecycleAction::CancelReconnect { device_id } => {
                 cancel_reconnect_task(&runtime, device_id);
@@ -532,7 +533,7 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
     }
 }
 
-fn spawn_reconnect_task(runtime: DiscoveryRuntime, device_id: DeviceId, delay: Duration) {
+fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: Duration) {
     let runtime_for_task = runtime.clone();
     let task = tokio::spawn(async move {
         tokio::time::sleep(delay).await;

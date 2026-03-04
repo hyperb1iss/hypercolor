@@ -233,6 +233,18 @@ pub enum DeviceFamily {
     /// Philips Hue bridge + lights.
     Hue,
 
+    /// Native Razer USB devices.
+    Razer,
+
+    /// Native Corsair devices (and bridge-managed Corsair in phase 1).
+    Corsair,
+
+    /// Native Lian Li USB hub devices.
+    LianLi,
+
+    /// Native PrismRGB / Nollie USB controllers.
+    PrismRgb,
+
     /// Unknown or user-defined device family.
     Custom(String),
 }
@@ -243,6 +255,10 @@ impl fmt::Display for DeviceFamily {
             Self::OpenRgb => write!(f, "OpenRGB"),
             Self::Wled => write!(f, "WLED"),
             Self::Hue => write!(f, "Philips Hue"),
+            Self::Razer => write!(f, "Razer"),
+            Self::Corsair => write!(f, "Corsair"),
+            Self::LianLi => write!(f, "Lian Li"),
+            Self::PrismRgb => write!(f, "PrismRGB"),
             Self::Custom(name) => write!(f, "{name}"),
         }
     }
@@ -315,6 +331,12 @@ pub enum DeviceColorFormat {
 
     /// RGB + White channel (SK6812 RGBW strips via WLED).
     Rgbw,
+
+    /// Green-Red-Blue channel order.
+    Grb,
+
+    /// Red-Blue-Green channel order.
+    Rbg,
 }
 
 impl fmt::Display for DeviceColorFormat {
@@ -322,6 +344,8 @@ impl fmt::Display for DeviceColorFormat {
         match self {
             Self::Rgb => write!(f, "RGB"),
             Self::Rgbw => write!(f, "RGBW"),
+            Self::Grb => write!(f, "GRB"),
+            Self::Rbg => write!(f, "RBG"),
         }
     }
 }
@@ -468,6 +492,14 @@ pub enum DeviceIdentifier {
         /// Location string (bus type + address).
         location: String,
     },
+
+    /// Device managed by an external bridge service.
+    Bridge {
+        /// Bridge service identifier (for example, `openlinkhub`).
+        service: String,
+        /// Device ID inside the bridge service.
+        device_serial: String,
+    },
 }
 
 impl DeviceIdentifier {
@@ -503,6 +535,10 @@ impl DeviceIdentifier {
             Self::OpenRgb {
                 controller_name, ..
             } => controller_name.clone(),
+            Self::Bridge {
+                service,
+                device_serial,
+            } => format!("{service}:{device_serial}"),
         }
     }
 
@@ -535,6 +571,11 @@ impl DeviceIdentifier {
                 location,
                 ..
             } => DeviceFingerprint(format!("orgb:{controller_name}:{location}")),
+            Self::Bridge {
+                service,
+                device_serial,
+                ..
+            } => DeviceFingerprint(format!("bridge:{service}:{device_serial}")),
         }
     }
 }

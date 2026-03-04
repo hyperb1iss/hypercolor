@@ -77,6 +77,7 @@ notify = "7.0"
 
 # Workspace crates
 hypercolor-types = { path = "crates/hypercolor-types" }
+hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
 
 # Audio
@@ -91,6 +92,7 @@ reqwest = { version = "0.12", features = ["json"] }
 mdns-sd = "0.11"
 tonic = "0.12"
 prost = "0.13"
+nusb = { version = "0.2.2", features = ["tokio"] }
 
 # Screen capture
 xcap = "0.7"
