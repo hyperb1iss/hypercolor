@@ -24,7 +24,10 @@ pub enum LifecycleAction {
     },
 
     /// Disconnect a physical device.
-    Disconnect { device_id: DeviceId, backend_id: String },
+    Disconnect {
+        device_id: DeviceId,
+        backend_id: String,
+    },
 
     /// Explicit map action (kept for future split connect/map runtimes).
     Map {
@@ -37,7 +40,10 @@ pub enum LifecycleAction {
     Unmap { layout_device_id: String },
 
     /// Spawn or reschedule reconnect task.
-    SpawnReconnect { device_id: DeviceId, delay: Duration },
+    SpawnReconnect {
+        device_id: DeviceId,
+        delay: Duration,
+    },
 
     /// Cancel reconnect task if one exists.
     CancelReconnect { device_id: DeviceId },
@@ -91,6 +97,12 @@ impl DeviceLifecycleManager {
     #[must_use]
     pub fn tracked_device_count(&self) -> usize {
         self.devices.len()
+    }
+
+    /// Snapshot tracked device IDs.
+    #[must_use]
+    pub fn tracked_device_ids(&self) -> Vec<DeviceId> {
+        self.devices.keys().copied().collect()
     }
 
     /// Return the current state for a tracked device.
@@ -153,7 +165,10 @@ impl DeviceLifecycleManager {
     }
 
     /// Transition a device to connected after a successful backend connect.
-    pub fn on_connected(&mut self, device_id: DeviceId) -> Result<Vec<LifecycleAction>, DeviceError> {
+    pub fn on_connected(
+        &mut self,
+        device_id: DeviceId,
+    ) -> Result<Vec<LifecycleAction>, DeviceError> {
         let reconnect_canceled = self.reconnect_scheduled.remove(&device_id);
         let managed = self.managed_mut(device_id)?;
 
@@ -167,6 +182,19 @@ impl DeviceLifecycleManager {
         Ok(actions)
     }
 
+    /// Handle backend connect failure by entering reconnect mode.
+    pub fn on_connect_failed(
+        &mut self,
+        device_id: DeviceId,
+    ) -> Result<Vec<LifecycleAction>, DeviceError> {
+        let delay = {
+            let managed = self.managed_mut(device_id)?;
+            managed.state_machine.on_connect_failed()?
+        };
+        self.reconnect_scheduled.insert(device_id);
+        Ok(vec![LifecycleAction::SpawnReconnect { device_id, delay }])
+    }
+
     /// Mark that at least one frame was successfully written.
     pub fn on_frame_success(&mut self, device_id: DeviceId) -> Result<(), DeviceError> {
         let managed = self.managed_mut(device_id)?;
@@ -174,7 +202,10 @@ impl DeviceLifecycleManager {
     }
 
     /// Handle a communication failure and schedule reconnect.
-    pub fn on_comm_error(&mut self, device_id: DeviceId) -> Result<Vec<LifecycleAction>, DeviceError> {
+    pub fn on_comm_error(
+        &mut self,
+        device_id: DeviceId,
+    ) -> Result<Vec<LifecycleAction>, DeviceError> {
         let (disconnect_action, unmap_action, next_retry_delay) = {
             let managed = self.managed_mut(device_id)?;
             managed.state_machine.on_comm_error()?;
@@ -183,7 +214,10 @@ impl DeviceLifecycleManager {
                 LifecycleAction::Unmap {
                     layout_device_id: managed.layout_device_id.clone(),
                 },
-                managed.state_machine.reconnect_status().map(|status| status.next_retry),
+                managed
+                    .state_machine
+                    .reconnect_status()
+                    .map(|status| status.next_retry),
             )
         };
 
@@ -191,10 +225,7 @@ impl DeviceLifecycleManager {
 
         if let Some(delay) = next_retry_delay {
             self.reconnect_scheduled.insert(device_id);
-            actions.push(LifecycleAction::SpawnReconnect {
-                device_id,
-                delay,
-            });
+            actions.push(LifecycleAction::SpawnReconnect { device_id, delay });
         }
 
         Ok(actions)
@@ -261,7 +292,10 @@ impl DeviceLifecycleManager {
     }
 
     /// User-driven disable transition.
-    pub fn on_user_disable(&mut self, device_id: DeviceId) -> Result<Vec<LifecycleAction>, DeviceError> {
+    pub fn on_user_disable(
+        &mut self,
+        device_id: DeviceId,
+    ) -> Result<Vec<LifecycleAction>, DeviceError> {
         let reconnect_canceled = self.reconnect_scheduled.remove(&device_id);
         let managed = self.managed_mut(device_id)?;
         let previous = managed.state_machine.state().clone();
@@ -280,7 +314,10 @@ impl DeviceLifecycleManager {
     }
 
     /// User-driven enable transition.
-    pub fn on_user_enable(&mut self, device_id: DeviceId) -> Result<Vec<LifecycleAction>, DeviceError> {
+    pub fn on_user_enable(
+        &mut self,
+        device_id: DeviceId,
+    ) -> Result<Vec<LifecycleAction>, DeviceError> {
         let managed = self.managed_mut(device_id)?;
         let was_disabled = *managed.state_machine.state() == DeviceState::Disabled;
         managed.state_machine.on_user_enable();
@@ -344,7 +381,9 @@ impl DeviceLifecycleManager {
             }
         }
 
-        if backend_id == "openrgb" && let Some(value) = value.strip_prefix("orgb:") {
+        if backend_id == "openrgb"
+            && let Some(value) = value.strip_prefix("orgb:")
+        {
             return format!("openrgb:{value}");
         }
 
@@ -358,7 +397,9 @@ impl DeviceLifecycleManager {
     ) -> DeviceIdentifier {
         if let Some(fingerprint) = fingerprint {
             let value = fingerprint.0.clone();
-            if backend_id == "openrgb" && let Some(rest) = value.strip_prefix("orgb:") {
+            if backend_id == "openrgb"
+                && let Some(rest) = value.strip_prefix("orgb:")
+            {
                 let mut parts = rest.splitn(2, ':');
                 if let (Some(controller_name), Some(location)) = (parts.next(), parts.next()) {
                     return DeviceIdentifier::OpenRgb {
@@ -367,7 +408,9 @@ impl DeviceLifecycleManager {
                     };
                 }
             }
-            if backend_id == "wled" && let Some(rest) = value.strip_prefix("net:") {
+            if backend_id == "wled"
+                && let Some(rest) = value.strip_prefix("net:")
+            {
                 let mdns_hostname = rest
                     .strip_prefix("wled:")
                     .map(ToOwned::to_owned)
@@ -496,14 +539,33 @@ mod tests {
             .on_comm_error(info.id)
             .expect("comm error should transition");
 
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, LifecycleAction::Disconnect { .. }))
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, LifecycleAction::Unmap { .. }))
+        );
         assert!(actions.iter().any(|action| matches!(
             action,
-            LifecycleAction::Disconnect { .. }
+            LifecycleAction::SpawnReconnect { delay, .. }
+            if *delay == Duration::from_secs(1)
         )));
-        assert!(actions.iter().any(|action| matches!(
-            action,
-            LifecycleAction::Unmap { .. }
-        )));
+        assert_eq!(lifecycle.state(info.id), Some(DeviceState::Reconnecting));
+    }
+
+    #[test]
+    fn connect_failure_schedules_reconnect() {
+        let mut lifecycle = DeviceLifecycleManager::new();
+        let info = device_info("Unreachable Device", DeviceFamily::Wled);
+        lifecycle.on_discovered(info.id, &info, "wled", None);
+
+        let actions = lifecycle
+            .on_connect_failed(info.id)
+            .expect("connect failure should be tracked");
         assert!(actions.iter().any(|action| matches!(
             action,
             LifecycleAction::SpawnReconnect { delay, .. }
@@ -540,18 +602,20 @@ mod tests {
         let actions = lifecycle
             .on_reconnect_failed(info.id)
             .expect("first reconnect failure should schedule");
-        assert!(actions.iter().any(|action| matches!(
-            action,
-            LifecycleAction::SpawnReconnect { .. }
-        )));
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, LifecycleAction::SpawnReconnect { .. }))
+        );
 
         let exhaustion_actions = lifecycle
             .on_reconnect_failed(info.id)
             .expect("second reconnect failure should exhaust");
-        assert!(exhaustion_actions.iter().any(|action| matches!(
-            action,
-            LifecycleAction::CancelReconnect { .. }
-        )));
+        assert!(
+            exhaustion_actions
+                .iter()
+                .any(|action| matches!(action, LifecycleAction::CancelReconnect { .. }))
+        );
 
         assert_eq!(lifecycle.state(info.id), Some(DeviceState::Known));
     }
@@ -568,19 +632,21 @@ mod tests {
         let disable_actions = lifecycle
             .on_user_disable(info.id)
             .expect("disable should be valid");
-        assert!(disable_actions.iter().any(|action| matches!(
-            action,
-            LifecycleAction::Disconnect { .. }
-        )));
+        assert!(
+            disable_actions
+                .iter()
+                .any(|action| matches!(action, LifecycleAction::Disconnect { .. }))
+        );
         assert_eq!(lifecycle.state(info.id), Some(DeviceState::Disabled));
 
         let enable_actions = lifecycle
             .on_user_enable(info.id)
             .expect("enable should be valid");
-        assert!(enable_actions.iter().any(|action| matches!(
-            action,
-            LifecycleAction::Connect { .. }
-        )));
+        assert!(
+            enable_actions
+                .iter()
+                .any(|action| matches!(action, LifecycleAction::Connect { .. }))
+        );
         assert_eq!(lifecycle.state(info.id), Some(DeviceState::Known));
     }
 
@@ -597,14 +663,16 @@ mod tests {
             .expect("frame success should transition active");
 
         let actions = lifecycle.on_device_vanished(info.id);
-        assert!(actions.iter().any(|action| matches!(
-            action,
-            LifecycleAction::Disconnect { .. }
-        )));
-        assert!(actions.iter().any(|action| matches!(
-            action,
-            LifecycleAction::Unmap { .. }
-        )));
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, LifecycleAction::Disconnect { .. }))
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, LifecycleAction::Unmap { .. }))
+        );
         assert_eq!(lifecycle.state(info.id), Some(DeviceState::Known));
     }
 

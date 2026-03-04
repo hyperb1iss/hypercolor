@@ -23,10 +23,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Mutex as StdMutex;
 use std::time::Instant;
 
 use axum::Router;
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinHandle;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -34,11 +36,12 @@ use tracing::warn;
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::device::{BackendManager, DeviceRegistry};
+use hypercolor_core::device::{BackendManager, DeviceLifecycleManager, DeviceRegistry};
 use hypercolor_core::effect::{EffectEngine, EffectRegistry};
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
@@ -84,6 +87,12 @@ pub struct AppState {
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
+
+    /// Device lifecycle state/action orchestration.
+    pub lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
+
+    /// Active reconnect tasks keyed by device ID.
+    pub reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
 
     /// Configuration manager for config API endpoints.
     pub config_manager: Option<Arc<ConfigManager>>,
@@ -138,6 +147,8 @@ impl AppState {
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
             spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(default_layout))),
             backend_manager: Arc::new(Mutex::new(BackendManager::new())),
+            lifecycle_manager: Arc::new(Mutex::new(DeviceLifecycleManager::new())),
+            reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
             config_manager: None,
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             profiles: RwLock::new(HashMap::new()),
@@ -178,6 +189,8 @@ impl AppState {
             render_loop: Arc::clone(&daemon.render_loop),
             spatial_engine: Arc::clone(&daemon.spatial_engine),
             backend_manager: Arc::clone(&daemon.backend_manager),
+            lifecycle_manager: Arc::clone(&daemon.lifecycle_manager),
+            reconnect_tasks: Arc::clone(&daemon.reconnect_tasks),
             config_manager: Some(Arc::clone(&daemon.config_manager)),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: RwLock::new(HashMap::new()),

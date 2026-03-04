@@ -260,14 +260,19 @@ pub async fn discover_devices(
     let scan_id = format!("scan_{}", uuid::Uuid::now_v7());
     let backend_names = discovery::backend_names(&resolved_backends);
     if wait_for_completion {
+        let runtime = discovery::DiscoveryRuntime {
+            device_registry: state.device_registry.clone(),
+            backend_manager: Arc::clone(&state.backend_manager),
+            lifecycle_manager: Arc::clone(&state.lifecycle_manager),
+            reconnect_tasks: Arc::clone(&state.reconnect_tasks),
+            event_bus: Arc::clone(&state.event_bus),
+            in_progress: Arc::clone(&state.discovery_in_progress),
+        };
         let result = discovery::execute_discovery_scan(
-            state.device_registry.clone(),
-            Arc::clone(&state.backend_manager),
-            Arc::clone(&state.event_bus),
+            runtime,
             config,
             resolved_backends,
             timeout,
-            Arc::clone(&state.discovery_in_progress),
         )
         .await;
 
@@ -280,14 +285,19 @@ pub async fn discover_devices(
 
     let state_for_task = Arc::clone(&state);
     tokio::spawn(async move {
+        let runtime = discovery::DiscoveryRuntime {
+            device_registry: state_for_task.device_registry.clone(),
+            backend_manager: Arc::clone(&state_for_task.backend_manager),
+            lifecycle_manager: Arc::clone(&state_for_task.lifecycle_manager),
+            reconnect_tasks: Arc::clone(&state_for_task.reconnect_tasks),
+            event_bus: Arc::clone(&state_for_task.event_bus),
+            in_progress: Arc::clone(&state_for_task.discovery_in_progress),
+        };
         let _ = discovery::execute_discovery_scan(
-            state_for_task.device_registry.clone(),
-            Arc::clone(&state_for_task.backend_manager),
-            Arc::clone(&state_for_task.event_bus),
+            runtime,
             config,
             resolved_backends,
             timeout,
-            Arc::clone(&state_for_task.discovery_in_progress),
         )
         .await;
     });

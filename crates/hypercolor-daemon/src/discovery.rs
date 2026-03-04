@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -84,7 +85,7 @@ pub struct DiscoveryRuntime {
     pub lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
 
     /// Background reconnect tasks keyed by device ID.
-    pub reconnect_tasks: Arc<Mutex<HashMap<DeviceId, JoinHandle<()>>>>,
+    pub reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
 
     /// Event bus for discovery/lifecycle events.
     pub event_bus: Arc<HypercolorBus>,
@@ -421,6 +422,196 @@ pub async fn execute_discovery_scan(
         total_known: report.total_known,
         duration_ms,
         scanners: map_scanner_reports(&report.scanner_reports),
+    }
+}
+
+async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<LifecycleAction>) {
+    let mut pending: VecDeque<LifecycleAction> = actions.into();
+
+    while let Some(action) = pending.pop_front() {
+        match action {
+            LifecycleAction::Connect {
+                device_id,
+                backend_id,
+                layout_device_id,
+            } => {
+                let result = {
+                    let mut manager = runtime.backend_manager.lock().await;
+                    manager
+                        .connect_device(&backend_id, device_id, &layout_device_id)
+                        .await
+                };
+
+                let follow_up = match result {
+                    Ok(()) => {
+                        let mut lifecycle = runtime.lifecycle_manager.lock().await;
+                        lifecycle.on_connected(device_id)
+                    }
+                    Err(error) => {
+                        warn!(
+                            device_id = %device_id,
+                            backend_id = %backend_id,
+                            error = %error,
+                            "lifecycle connect action failed"
+                        );
+                        let mut lifecycle = runtime.lifecycle_manager.lock().await;
+                        lifecycle.on_connect_failed(device_id)
+                    }
+                };
+
+                match follow_up {
+                    Ok(next_actions) => {
+                        pending.extend(next_actions);
+                        sync_registry_state(&runtime, device_id).await;
+                    }
+                    Err(error) => {
+                        warn!(device_id = %device_id, error = %error, "lifecycle state update failed after connect");
+                    }
+                }
+            }
+            LifecycleAction::Disconnect {
+                device_id,
+                backend_id,
+            } => {
+                let layout_device_id = {
+                    let lifecycle = runtime.lifecycle_manager.lock().await;
+                    lifecycle.layout_device_id_for(device_id).map(ToOwned::to_owned)
+                };
+
+                let Some(layout_device_id) = layout_device_id else {
+                    warn!(
+                        device_id = %device_id,
+                        backend_id = %backend_id,
+                        "missing lifecycle layout id during disconnect action"
+                    );
+                    continue;
+                };
+
+                let result = {
+                    let mut manager = runtime.backend_manager.lock().await;
+                    manager
+                        .disconnect_device(&backend_id, device_id, &layout_device_id)
+                        .await
+                };
+                if let Err(error) = result {
+                    warn!(
+                        device_id = %device_id,
+                        backend_id = %backend_id,
+                        error = %error,
+                        "lifecycle disconnect action failed"
+                    );
+                }
+            }
+            LifecycleAction::Map {
+                layout_device_id,
+                backend_id,
+                device_id,
+            } => {
+                let mut manager = runtime.backend_manager.lock().await;
+                manager.map_device(layout_device_id, backend_id, device_id);
+            }
+            LifecycleAction::Unmap { layout_device_id } => {
+                let mut manager = runtime.backend_manager.lock().await;
+                manager.unmap_device(&layout_device_id);
+            }
+            LifecycleAction::SpawnReconnect { device_id, delay } => {
+                spawn_reconnect_task(runtime.clone(), device_id, delay);
+            }
+            LifecycleAction::CancelReconnect { device_id } => {
+                cancel_reconnect_task(&runtime, device_id);
+            }
+        }
+    }
+}
+
+fn spawn_reconnect_task(runtime: DiscoveryRuntime, device_id: DeviceId, delay: Duration) {
+    let runtime_for_task = runtime.clone();
+    let task = tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+
+        // Remove our own handle before executing follow-up logic so reschedules
+        // do not fight with this running task.
+        runtime_for_task
+            .reconnect_tasks
+            .lock()
+            .expect("reconnect task map lock poisoned")
+            .remove(&device_id);
+
+        let connect_action = {
+            let lifecycle = runtime_for_task.lifecycle_manager.lock().await;
+            lifecycle.on_reconnect_attempt(device_id)
+        };
+        let Some(LifecycleAction::Connect {
+            backend_id,
+            layout_device_id,
+            ..
+        }) = connect_action
+        else {
+            return;
+        };
+
+        let connect_result = {
+            let mut manager = runtime_for_task.backend_manager.lock().await;
+            manager
+                .connect_device(&backend_id, device_id, &layout_device_id)
+                .await
+        };
+
+        let follow_up = if let Err(error) = connect_result {
+            warn!(
+                device_id = %device_id,
+                backend_id = %backend_id,
+                error = %error,
+                "reconnect attempt failed"
+            );
+            let mut lifecycle = runtime_for_task.lifecycle_manager.lock().await;
+            lifecycle.on_reconnect_failed(device_id)
+        } else {
+            let mut lifecycle = runtime_for_task.lifecycle_manager.lock().await;
+            lifecycle.on_connected(device_id)
+        };
+
+        match follow_up {
+            Ok(actions) => {
+                execute_lifecycle_actions(runtime_for_task.clone(), actions).await;
+                sync_registry_state(&runtime_for_task, device_id).await;
+            }
+            Err(error) => {
+                warn!(
+                    device_id = %device_id,
+                    error = %error,
+                    "failed to update lifecycle state after reconnect attempt"
+                );
+            }
+        }
+    });
+
+    let mut tasks = runtime
+        .reconnect_tasks
+        .lock()
+        .expect("reconnect task map lock poisoned");
+    if let Some(existing) = tasks.insert(device_id, task) {
+        existing.abort();
+    }
+}
+
+fn cancel_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId) {
+    let mut tasks = runtime
+        .reconnect_tasks
+        .lock()
+        .expect("reconnect task map lock poisoned");
+    if let Some(handle) = tasks.remove(&device_id) {
+        handle.abort();
+    }
+}
+
+async fn sync_registry_state(runtime: &DiscoveryRuntime, device_id: DeviceId) {
+    let state = {
+        let lifecycle = runtime.lifecycle_manager.lock().await;
+        lifecycle.state(device_id)
+    };
+    if let Some(state) = state {
+        let _ = runtime.device_registry.set_state(&device_id, state).await;
     }
 }
 

@@ -9,10 +9,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
+use std::sync::Mutex as StdMutex;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use hypercolor_core::bus::HypercolorBus;
@@ -20,7 +23,7 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::openrgb::{ClientConfig as OpenRgbClientConfig, OpenRgbBackend};
 use hypercolor_core::device::wled::WledBackend;
-use hypercolor_core::device::{BackendManager, DeviceRegistry};
+use hypercolor_core::device::{BackendManager, DeviceLifecycleManager, DeviceRegistry};
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{
     EffectEngine, EffectRegistry, default_effect_search_paths, register_html_effects,
@@ -35,6 +38,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::device::DeviceId;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::render_thread::{RenderThread, RenderThreadState};
@@ -85,6 +89,12 @@ pub struct DaemonState {
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
+
+    /// Device lifecycle state/action orchestration.
+    pub lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
+
+    /// Active reconnect tasks keyed by device ID.
+    pub reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
 
     /// Input orchestrator — audio and screen capture sampling sources.
     pub input_manager: Arc<Mutex<InputManager>>,
@@ -200,6 +210,11 @@ impl DaemonState {
         let backend_manager = Arc::new(Mutex::new(backend_manager_inner));
         info!("Backend manager created");
 
+        // ── Device Lifecycle Manager ───────────────────────────────────
+        let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+        let reconnect_tasks = Arc::new(StdMutex::new(HashMap::new()));
+        info!("Device lifecycle manager created");
+
         // ── Input Manager ───────────────────────────────────────────────
         let input_manager = Arc::new(Mutex::new(build_input_manager(config)));
         info!(
@@ -220,6 +235,8 @@ impl DaemonState {
             render_loop,
             spatial_engine,
             backend_manager,
+            lifecycle_manager,
+            reconnect_tasks,
             input_manager,
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             render_thread: None,
@@ -334,6 +351,16 @@ impl DaemonState {
             handle.abort();
         }
 
+        {
+            let mut reconnect_tasks = self
+                .reconnect_tasks
+                .lock()
+                .expect("reconnect task map lock poisoned");
+            for (_id, handle) in reconnect_tasks.drain() {
+                handle.abort();
+            }
+        }
+
         // 3. Stop input sources.
         {
             let mut input_manager = self.input_manager.lock().await;
@@ -372,6 +399,8 @@ impl DaemonState {
     fn spawn_discovery_worker(&mut self, config: Arc<HypercolorConfig>) {
         let device_registry = self.device_registry.clone();
         let backend_manager = Arc::clone(&self.backend_manager);
+        let lifecycle_manager = Arc::clone(&self.lifecycle_manager);
+        let reconnect_tasks = Arc::clone(&self.reconnect_tasks);
         let event_bus = Arc::clone(&self.event_bus);
         let config_manager = Arc::clone(&self.config_manager);
         let in_progress = Arc::clone(&self.discovery_in_progress);
@@ -392,14 +421,19 @@ impl DaemonState {
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
             {
+                let runtime = discovery::DiscoveryRuntime {
+                    device_registry: device_registry.clone(),
+                    backend_manager: Arc::clone(&backend_manager),
+                    lifecycle_manager: Arc::clone(&lifecycle_manager),
+                    reconnect_tasks: Arc::clone(&reconnect_tasks),
+                    event_bus: Arc::clone(&event_bus),
+                    in_progress: Arc::clone(&in_progress),
+                };
                 let _ = discovery::execute_discovery_scan(
-                    device_registry.clone(),
-                    Arc::clone(&backend_manager),
-                    Arc::clone(&event_bus),
+                    runtime,
                     Arc::clone(&config),
                     initial_backends,
                     discovery::default_timeout(),
-                    Arc::clone(&in_progress),
                 )
                 .await;
             }
@@ -435,14 +469,19 @@ impl DaemonState {
                     continue;
                 }
 
+                let runtime = discovery::DiscoveryRuntime {
+                    device_registry: device_registry.clone(),
+                    backend_manager: Arc::clone(&backend_manager),
+                    lifecycle_manager: Arc::clone(&lifecycle_manager),
+                    reconnect_tasks: Arc::clone(&reconnect_tasks),
+                    event_bus: Arc::clone(&event_bus),
+                    in_progress: Arc::clone(&in_progress),
+                };
                 let _ = discovery::execute_discovery_scan(
-                    device_registry.clone(),
-                    Arc::clone(&backend_manager),
-                    Arc::clone(&event_bus),
+                    runtime,
                     latest_config,
                     backends,
                     discovery::default_timeout(),
-                    Arc::clone(&in_progress),
                 )
                 .await;
             }
