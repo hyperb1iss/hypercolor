@@ -6,15 +6,15 @@
   <title>Flow Field</title>
   <meta description="Poison-glow firefly garden with crisp trails and scene moods"/>
   <meta publisher="Hypercolor"/>
-  <meta property="scene" label="Scene" type="combobox" default="Calm" values="Calm,Swarm,Pulse" tooltip="Movement behavior preset"/>
-  <meta property="colorMode" label="Color Mode" type="combobox" default="Single" values="Single,Random,Rainbow" tooltip="Single hue, random fireflies, or animated rainbow"/>
-  <meta property="baseColor" label="Base Color" type="color" default="#b8ff4f" tooltip="Primary firefly color"/>
-  <meta property="count" label="Count" type="number" min="8" max="220" default="88" tooltip="Number of fireflies"/>
-  <meta property="size" label="Size" type="number" min="1" max="10" default="3" tooltip="Firefly body size"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Swarm movement speed"/>
-  <meta property="wander" label="Wander" type="number" min="0" max="100" default="62" tooltip="Random drift amount"/>
-  <meta property="glow" label="Glow" type="number" min="0" max="100" default="72" tooltip="Glow and trail intensity"/>
-  <meta property="bgColor" label="Background Color" type="color" default="#05060a" tooltip="Garden background color"/>
+  <meta property="scene" label="Scene" type="combobox" default="Calm" values="Calm,Swarm,Pulse"/>
+  <meta property="colorMode" label="Color Mode" type="combobox" default="Single" values="Single,Random,Rainbow"/>
+  <meta property="baseColor" label="Base Color" type="color" default="#b8ff4f"/>
+  <meta property="count" label="Count" type="number" min="8" max="220" default="88"/>
+  <meta property="size" label="Size" type="number" min="1" max="10" default="3"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5"/>
+  <meta property="wander" label="Wander" type="number" min="0" max="100" default="62"/>
+  <meta property="glow" label="Glow" type="number" min="0" max="100" default="72"/>
+  <meta property="bgColor" label="Bg Color" type="color" default="#05060a"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -46,14 +46,6 @@
     isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
     mod
   ));
-  var __decorateClass = (decorators, target, key, kind) => {
-    var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;
-    for (var i = decorators.length - 1, decorator; i >= 0; i--)
-      if (decorator = decorators[i])
-        result = (kind ? decorator(target, key, result) : decorator(result)) || result;
-    if (kind && result) __defProp(target, key, result);
-    return result;
-  };
 
   // node_modules/.bun/reflect-metadata@0.2.2/node_modules/reflect-metadata/Reflect.js
   var require_Reflect = __commonJS({
@@ -530,14 +522,14 @@
             var second;
             var rest;
             var targetProviderMap = new _WeakMap();
-            var registry = {
+            var registry2 = {
               registerProvider,
               getProvider,
               setProvider
             };
-            return registry;
+            return registry2;
             function registerProvider(provider) {
-              if (!Object.isExtensible(registry)) {
+              if (!Object.isExtensible(registry2)) {
                 throw new Error("Cannot add provider to a frozen registry.");
               }
               switch (true) {
@@ -649,7 +641,7 @@
             }
             return metadataRegistry2;
           }
-          function CreateMetadataProvider(registry) {
+          function CreateMetadataProvider(registry2) {
             var metadata2 = new _WeakMap();
             var provider = {
               isProviderFor: function(O, P) {
@@ -682,7 +674,7 @@
                   return void 0;
                 metadataMap = new _Map();
                 targetMetadata.set(P, metadataMap);
-                if (!registry.setProvider(O, P, provider)) {
+                if (!registry2.setProvider(O, P, provider)) {
                   targetMetadata.delete(P);
                   if (createdTargetMetadata) {
                     metadata2.delete(O);
@@ -1140,95 +1132,6 @@
     }
   });
 
-  // src/effects/flow-field/main.ts
-  var import_reflect_metadata2 = __toESM(require_Reflect());
-
-  // packages/core/src/controls/decorators.ts
-  var import_reflect_metadata = __toESM(require_Reflect(), 1);
-  var METADATA_KEYS = {
-    controls: /* @__PURE__ */ Symbol.for("hypercolor:controls"),
-    effect: /* @__PURE__ */ Symbol.for("hypercolor:effect")
-  };
-  var propertyMetadataKey = (propertyName) => /* @__PURE__ */ Symbol.for(`hypercolor:control:${propertyName}`);
-  function createControlDecorator(createDefinition) {
-    return (options) => (target, propertyKey) => {
-      if (typeof propertyKey !== "string") {
-        throw new Error("Control decorators can only be used on string properties");
-      }
-      const targetConstructor = target.constructor;
-      if (!Reflect.hasMetadata(METADATA_KEYS.controls, targetConstructor)) {
-        Reflect.defineMetadata(METADATA_KEYS.controls, [], targetConstructor);
-      }
-      const controlsMetadata = Reflect.getMetadata(METADATA_KEYS.controls, targetConstructor);
-      const controlDefinition = createDefinition(propertyKey, options);
-      controlsMetadata.push(controlDefinition);
-      Reflect.defineMetadata(propertyMetadataKey(propertyKey), controlDefinition, targetConstructor);
-    };
-  }
-  var NumberControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    max: options.max,
-    min: options.min,
-    step: options.step,
-    tooltip: options.tooltip,
-    type: "number"
-  }));
-  var BooleanControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "boolean"
-  }));
-  var ComboboxControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "combobox",
-    values: options.values
-  }));
-  var HueControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    max: options.max,
-    min: options.min,
-    tooltip: options.tooltip,
-    type: "hue"
-  }));
-  var ColorControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "color"
-  }));
-  var TextFieldControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "textfield"
-  }));
-  function Effect(options) {
-    return (target) => {
-      Reflect.defineMetadata(METADATA_KEYS.effect, options, target.prototype);
-      target.prototype.effectMetadata = options;
-    };
-  }
-
-  // packages/core/src/controls/helpers.ts
-  function getControlValue(propertyName, defaultValue) {
-    return window[propertyName] ?? defaultValue;
-  }
-  function normalizeSpeed(speed) {
-    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
-    return Math.max(0.2, (speed / 5) ** 1.5);
-  }
-
   // packages/core/src/utils/debug.ts
   var COLORS = {
     debug: "#9d9d9d",
@@ -1254,30 +1157,30 @@
     };
   }
   function stylizedLog(level, namespace, ...args) {
-    let color = COLORS.debug;
+    let color2 = COLORS.debug;
     let emoji = EMOJI.debug;
     let method = "log";
     switch (level) {
       case "info":
-        color = COLORS.secondary;
+        color2 = COLORS.secondary;
         emoji = EMOJI.info;
         break;
       case "warn":
-        color = COLORS.warning;
+        color2 = COLORS.warning;
         emoji = EMOJI.warn;
         method = "warn";
         break;
       case "error":
-        color = COLORS.error;
+        color2 = COLORS.error;
         emoji = EMOJI.error;
         method = "error";
         break;
       case "success":
-        color = COLORS.success;
+        color2 = COLORS.success;
         emoji = EMOJI.success;
         break;
     }
-    console[method](`%c${emoji} [${namespace}]`, `color: ${color}; font-weight: bold;`, ...args);
+    console[method](`%c${emoji} [${namespace}]`, `color: ${color2}; font-weight: bold;`, ...args);
   }
 
   // packages/core/src/effects/base-effect.ts
@@ -1410,7 +1313,128 @@
     }
   };
 
-  // packages/core/src/index.ts
+  // packages/core/src/controls/infer.ts
+  function inferControl(key, value, label) {
+    if (Array.isArray(value) && value.length >= 3 && value.length <= 4 && typeof value[0] === "number") {
+      const [min, max, defaultValue, step] = value;
+      return {
+        __brand: "ControlSpec",
+        __type: "number",
+        label,
+        defaultValue,
+        meta: { min, max, step }
+      };
+    }
+    if (Array.isArray(value) && value.length >= 1 && typeof value[0] === "string") {
+      return {
+        __brand: "ControlSpec",
+        __type: "combobox",
+        label,
+        defaultValue: value[0],
+        meta: { values: [...value] }
+      };
+    }
+    if (typeof value === "boolean") {
+      return {
+        __brand: "ControlSpec",
+        __type: "boolean",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "string" && value.startsWith("#")) {
+      return {
+        __brand: "ControlSpec",
+        __type: "color",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "string") {
+      return {
+        __brand: "ControlSpec",
+        __type: "textfield",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "number") {
+      return {
+        __brand: "ControlSpec",
+        __type: "number",
+        label,
+        defaultValue: value,
+        meta: { min: 0, max: 100 }
+      };
+    }
+    throw new Error(
+      `Cannot infer control type for "${key}". Expected [min, max, default], string[], boolean, '#hex', string, or number. Got: ${JSON.stringify(value)}`
+    );
+  }
+
+  // packages/core/src/controls/names.ts
+  function deriveLabel(key) {
+    return key.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase()).trim();
+  }
+  function deriveUniformName(key) {
+    return "i" + key.charAt(0).toUpperCase() + key.slice(1);
+  }
+  var MAGIC_NAMES = {
+    speed: "speed"
+  };
+  var MAGIC_TRANSFORMS = /* @__PURE__ */ new Set(["palette"]);
+  function getMagicNormalize(key) {
+    return MAGIC_NAMES[key] ?? "none";
+  }
+  function hasMagicTransform(key) {
+    return MAGIC_TRANSFORMS.has(key);
+  }
+  function resolveControlNames(key, spec) {
+    return {
+      label: spec.label,
+      uniformName: spec.uniform ?? deriveUniformName(key),
+      normalize: spec.normalize ?? getMagicNormalize(key)
+    };
+  }
+
+  // packages/core/src/controls/specs.ts
+  function isControlSpec(value) {
+    return value !== null && typeof value === "object" && value.__brand === "ControlSpec";
+  }
+
+  // packages/core/src/controls/helpers.ts
+  function getControlValue(propertyName, defaultValue) {
+    return window[propertyName] ?? defaultValue;
+  }
+  function normalizeSpeed(speed) {
+    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
+    return Math.max(0.2, (speed / 5) ** 1.5);
+  }
+  function comboboxValueToIndex(value, options, defaultIndex = 0) {
+    if (options.length === 0) return 0;
+    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const rounded = Math.round(value);
+      if (rounded >= 0 && rounded < options.length) return rounded;
+      return safeDefault;
+    }
+    if (typeof value !== "string") return safeDefault;
+    const exactIndex = options.indexOf(value);
+    if (exactIndex >= 0) return exactIndex;
+    const normalized = value.trim().toLowerCase();
+    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
+    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
+    const parsedNumeric = Number.parseInt(normalized, 10);
+    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
+      return parsedNumeric;
+    }
+    return safeDefault;
+  }
+
+  // packages/core/src/init.ts
   function detectInitMode() {
     if (typeof window === "undefined") return "metadata-only";
     if (window.__HYPERCOLOR_METADATA_ONLY__) return "metadata-only";
@@ -1436,6 +1460,563 @@
       options.onReady?.();
     }, { once: true });
   }
+
+  // shared/palettes.json
+  var palettes_default = [
+    {
+      id: "silkcircuit",
+      name: "SilkCircuit",
+      mood: ["electric", "dark", "vibrant"],
+      stops: ["#e135ff", "#80ffea", "#ff6ac1", "#f1fa8c", "#50fa7b"],
+      iq: { a: [0.5, 0.3, 0.5], b: [0.5, 0.5, 0.5], c: [1, 0.8, 0.6], d: [0.85, 0.2, 0.5] },
+      accent: "#e135ff",
+      background: "#0d0221"
+    },
+    {
+      id: "cyberpunk",
+      name: "Cyberpunk",
+      mood: ["dark", "neon", "futuristic"],
+      stops: ["#ff00ff", "#00ffff", "#ff0066", "#6600ff"],
+      iq: { a: [0.5, 0.2, 0.5], b: [0.5, 0.5, 0.5], c: [1, 1, 1], d: [0.8, 0.1, 0.6] },
+      accent: "#ff00ff",
+      background: "#0a0014"
+    },
+    {
+      id: "vaporwave",
+      name: "Vaporwave",
+      mood: ["retro", "dreamy", "pastel-neon"],
+      stops: ["#c4b5fd", "#f472b6", "#67e8f9", "#fda4af"],
+      iq: { a: [0.6, 0.4, 0.7], b: [0.3, 0.3, 0.3], c: [0.6, 0.8, 1], d: [0.7, 0.3, 0.6] },
+      accent: "#c4b5fd",
+      background: "#1a0030"
+    },
+    {
+      id: "synthwave",
+      name: "Synthwave",
+      mood: ["retro", "warm", "80s"],
+      stops: ["#4a0080", "#ff006a", "#ff6600", "#ffcc00"],
+      iq: { a: [0.5, 0.2, 0.3], b: [0.5, 0.5, 0.5], c: [1, 0.7, 0.4], d: [0, 0.15, 0.2] },
+      accent: "#ff006a",
+      background: "#0f0020"
+    },
+    {
+      id: "neon-flux",
+      name: "Neon Flux",
+      mood: ["energetic", "vibrant"],
+      stops: ["#ff00aa", "#00ffcc", "#ffaa00", "#aa00ff"],
+      iq: { a: [0.5, 0.5, 0.5], b: [0.5, 0.5, 0.5], c: [1, 1, 0.5], d: [0.8, 0.9, 0.3] },
+      accent: "#ff00aa",
+      background: "#050510"
+    },
+    {
+      id: "matrix",
+      name: "Matrix",
+      mood: ["dark", "digital", "monochrome"],
+      stops: ["#001100", "#003300", "#00ff00", "#66ff66"],
+      iq: { a: [0, 0.3, 0], b: [0, 0.5, 0], c: [0, 1, 0], d: [0, 0.3, 0] },
+      accent: "#00ff00",
+      background: "#000800"
+    },
+    {
+      id: "aurora",
+      name: "Aurora",
+      mood: ["cool", "ethereal", "northern"],
+      stops: ["#00bcd4", "#4caf50", "#7c4dff", "#00e5ff"],
+      iq: { a: [0.2, 0.5, 0.4], b: [0.3, 0.4, 0.4], c: [0.8, 0.7, 0.9], d: [0.6, 0.3, 0.7] },
+      accent: "#00e5ff",
+      background: "#020810"
+    },
+    {
+      id: "ocean",
+      name: "Ocean",
+      mood: ["calm", "deep", "aquatic"],
+      stops: ["#001f3f", "#0074d9", "#39cccc", "#7fdbff"],
+      iq: { a: [0.1, 0.3, 0.5], b: [0.2, 0.3, 0.4], c: [0.5, 0.7, 1], d: [0.4, 0.5, 0.6] },
+      accent: "#0074d9",
+      background: "#000a1a"
+    },
+    {
+      id: "forest",
+      name: "Forest",
+      mood: ["earthy", "organic", "lush"],
+      stops: ["#1b3a1a", "#2e7d32", "#4caf50", "#81c784", "#c6ff00"],
+      iq: { a: [0.1, 0.3, 0.1], b: [0.2, 0.4, 0.2], c: [0.5, 0.8, 0.4], d: [0.3, 0.4, 0.2] },
+      accent: "#4caf50",
+      background: "#0a1a0a"
+    },
+    {
+      id: "sunset",
+      name: "Sunset",
+      mood: ["warm", "romantic", "dusk"],
+      stops: ["#ff6f00", "#ff8a65", "#ff5252", "#ffd740"],
+      iq: { a: [0.5, 0.3, 0.2], b: [0.5, 0.4, 0.3], c: [1, 0.6, 0.4], d: [0, 0.1, 0.2] },
+      accent: "#ff6f00",
+      background: "#1a0800"
+    },
+    {
+      id: "cherry-blossom",
+      name: "Cherry Blossom",
+      mood: ["gentle", "spring", "delicate"],
+      stops: ["#ffffff", "#ffc0cb", "#ff69b4", "#db7093"],
+      iq: { a: [0.8, 0.6, 0.7], b: [0.2, 0.2, 0.2], c: [0.5, 0.3, 0.4], d: [0, 0.3, 0.4] },
+      accent: "#ff69b4",
+      background: "#1a0810"
+    },
+    {
+      id: "fire",
+      name: "Fire",
+      mood: ["hot", "intense", "primal"],
+      stops: ["#000000", "#8b0000", "#ff4500", "#ffa500", "#ffff00"],
+      iq: { a: [0.5, 0.2, 0], b: [0.5, 0.3, 0.1], c: [1, 0.7, 0.4], d: [0, 0.05, 0.1] },
+      accent: "#ff4500",
+      background: "#0a0000"
+    },
+    {
+      id: "lava",
+      name: "Lava",
+      mood: ["volcanic", "extreme"],
+      stops: ["#000000", "#8b0000", "#ff2200", "#ff6600", "#ffffff"],
+      iq: { a: [0.4, 0.1, 0], b: [0.5, 0.3, 0.2], c: [1, 0.5, 0.3], d: [0, 0, 0.1] },
+      accent: "#ff2200",
+      background: "#0a0000"
+    },
+    {
+      id: "ember",
+      name: "Ember",
+      mood: ["warm", "cozy", "glowing"],
+      stops: ["#3e2723", "#bf360c", "#ff9800", "#ffc107"],
+      iq: { a: [0.4, 0.2, 0.1], b: [0.3, 0.2, 0.1], c: [0.8, 0.6, 0.3], d: [0.1, 0.1, 0.05] },
+      accent: "#ff9800",
+      background: "#1a0a00"
+    },
+    {
+      id: "solar",
+      name: "Solar",
+      mood: ["bright", "radiant", "powerful"],
+      stops: ["#b8860b", "#ffd700", "#ffffff", "#fff59d"],
+      iq: { a: [0.6, 0.5, 0.2], b: [0.4, 0.4, 0.3], c: [0.8, 0.7, 0.5], d: [0, 0.1, 0.2] },
+      accent: "#ffd700",
+      background: "#1a1000"
+    },
+    {
+      id: "ice",
+      name: "Ice",
+      mood: ["cold", "crisp", "frozen"],
+      stops: ["#0d47a1", "#e1f5fe", "#00e5ff", "#b3e5fc"],
+      iq: { a: [0.3, 0.5, 0.7], b: [0.3, 0.4, 0.3], c: [0.6, 0.7, 0.8], d: [0.5, 0.6, 0.7] },
+      accent: "#00e5ff",
+      background: "#000a1a"
+    },
+    {
+      id: "deep-sea",
+      name: "Deep Sea",
+      mood: ["dark", "mysterious", "abyssal"],
+      stops: ["#020024", "#1a237e", "#00695c", "#00bfa5"],
+      iq: { a: [0.1, 0.1, 0.3], b: [0.2, 0.2, 0.3], c: [0.3, 0.5, 0.7], d: [0.6, 0.5, 0.6] },
+      accent: "#00bfa5",
+      background: "#000510"
+    },
+    {
+      id: "midnight",
+      name: "Midnight",
+      mood: ["dark", "contemplative", "elegant"],
+      stops: ["#0d0033", "#1a0066", "#4a148c", "#7b1fa2"],
+      iq: { a: [0.2, 0.1, 0.3], b: [0.2, 0.1, 0.3], c: [0.5, 0.3, 0.7], d: [0.7, 0.5, 0.7] },
+      accent: "#7b1fa2",
+      background: "#050010"
+    },
+    {
+      id: "frost",
+      name: "Frost",
+      mood: ["light", "winter", "clean"],
+      stops: ["#b3e5fc", "#e1f5fe", "#f5f5f5", "#cfd8dc"],
+      iq: { a: [0.7, 0.8, 0.9], b: [0.2, 0.2, 0.1], c: [0.3, 0.3, 0.3], d: [0.5, 0.6, 0.7] },
+      accent: "#b3e5fc",
+      background: "#0a1520"
+    },
+    {
+      id: "viridis",
+      name: "Viridis",
+      mood: ["perceptually-uniform", "data"],
+      stops: ["#440154", "#31688e", "#35b779", "#fde725"],
+      iq: { a: [0.3, 0.3, 0.3], b: [0.3, 0.3, 0.3], c: [0.8, 0.8, 0.5], d: [0.7, 0.1, 0.2] },
+      accent: "#35b779",
+      background: "#0a0020"
+    },
+    {
+      id: "inferno",
+      name: "Inferno",
+      mood: ["perceptually-uniform", "heat"],
+      stops: ["#000004", "#420a68", "#dd513a", "#fcffa4"],
+      iq: { a: [0.3, 0.15, 0.2], b: [0.4, 0.3, 0.3], c: [0.8, 0.5, 0.4], d: [0, 0.1, 0.2] },
+      accent: "#dd513a",
+      background: "#000004"
+    },
+    {
+      id: "plasma",
+      name: "Plasma",
+      mood: ["perceptually-uniform", "vivid"],
+      stops: ["#0d0887", "#7e03a8", "#cc4778", "#f89540", "#f0f921"],
+      iq: { a: [0.3, 0.2, 0.4], b: [0.4, 0.3, 0.4], c: [0.8, 0.6, 0.6], d: [0.6, 0.2, 0.4] },
+      accent: "#cc4778",
+      background: "#050020"
+    },
+    {
+      id: "magma",
+      name: "Magma",
+      mood: ["perceptually-uniform", "warm"],
+      stops: ["#000004", "#3b0f70", "#b63679", "#fb8861", "#fcfdbf"],
+      iq: { a: [0.3, 0.15, 0.25], b: [0.4, 0.3, 0.35], c: [0.7, 0.5, 0.5], d: [0.1, 0.15, 0.2] },
+      accent: "#fb8861",
+      background: "#000004"
+    },
+    {
+      id: "candy",
+      name: "Candy",
+      mood: ["sweet", "playful", "soft"],
+      stops: ["#f48fb1", "#ce93d8", "#80cbc4", "#ffcc80"],
+      iq: { a: [0.7, 0.6, 0.7], b: [0.3, 0.3, 0.3], c: [0.5, 0.5, 0.5], d: [0.8, 0.3, 0.5] },
+      accent: "#f48fb1",
+      background: "#1a0810"
+    },
+    {
+      id: "pastel",
+      name: "Pastel",
+      mood: ["gentle", "calm", "muted"],
+      stops: ["#c5cae9", "#b2dfdb", "#f8bbd0", "#fff9c4"],
+      iq: { a: [0.7, 0.7, 0.8], b: [0.2, 0.2, 0.2], c: [0.3, 0.4, 0.3], d: [0.5, 0.3, 0.5] },
+      accent: "#c5cae9",
+      background: "#101015"
+    },
+    {
+      id: "cotton-candy",
+      name: "Cotton Candy",
+      mood: ["whimsical", "light"],
+      stops: ["#ffb6c1", "#b0e0e6", "#ffc0cb", "#add8e6"],
+      iq: { a: [0.8, 0.7, 0.8], b: [0.2, 0.2, 0.2], c: [0.3, 0.3, 0.3], d: [0, 0.5, 0.7] },
+      accent: "#ffb6c1",
+      background: "#100810"
+    },
+    {
+      id: "mono",
+      name: "Mono",
+      mood: ["neutral", "classic"],
+      stops: ["#000000", "#555555", "#aaaaaa", "#ffffff"],
+      iq: { a: [0.5, 0.5, 0.5], b: [0.5, 0.5, 0.5], c: [0, 0, 0], d: [0, 0, 0] },
+      accent: "#ffffff",
+      background: "#000000"
+    },
+    {
+      id: "phosphor",
+      name: "Phosphor",
+      mood: ["retro", "terminal", "hacker"],
+      stops: ["#001100", "#003300", "#00aa00", "#00ff00"],
+      iq: { a: [0, 0.25, 0], b: [0, 0.25, 0], c: [0, 1, 0], d: [0, 0.5, 0] },
+      accent: "#00ff00",
+      background: "#000800"
+    }
+  ];
+
+  // packages/core/src/palette/runtime.ts
+  var registry = /* @__PURE__ */ new Map();
+  for (const p of palettes_default) {
+    registry.set(p.name, p);
+  }
+  function hexToRgb(hex) {
+    const h = hex.replace("#", "");
+    return [
+      Number.parseInt(h.slice(0, 2), 16) / 255,
+      Number.parseInt(h.slice(2, 4), 16) / 255,
+      Number.parseInt(h.slice(4, 6), 16) / 255
+    ];
+  }
+  function srgbToOklab(r, g, b) {
+    const lr = r <= 0.04045 ? r / 12.92 : ((r + 0.055) / 1.055) ** 2.4;
+    const lg = g <= 0.04045 ? g / 12.92 : ((g + 0.055) / 1.055) ** 2.4;
+    const lb = b <= 0.04045 ? b / 12.92 : ((b + 0.055) / 1.055) ** 2.4;
+    const l_ = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+    const m_ = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+    const s_ = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+    return [
+      0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_,
+      1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_,
+      0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_
+    ];
+  }
+  function oklabToSrgb(L, a, b) {
+    const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+    const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+    const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+    const l = l_ * l_ * l_;
+    const m = m_ * m_ * m_;
+    const s = s_ * s_ * s_;
+    let r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    let g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    let bl = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+    r = r <= 31308e-7 ? 12.92 * r : 1.055 * r ** (1 / 2.4) - 0.055;
+    g = g <= 31308e-7 ? 12.92 * g : 1.055 * g ** (1 / 2.4) - 0.055;
+    bl = bl <= 31308e-7 ? 12.92 * bl : 1.055 * bl ** (1 / 2.4) - 0.055;
+    return [
+      Math.max(0, Math.min(1, r)),
+      Math.max(0, Math.min(1, g)),
+      Math.max(0, Math.min(1, bl))
+    ];
+  }
+  var LUT_SIZE = 256;
+  var lutCache = /* @__PURE__ */ new Map();
+  function buildLut(palette) {
+    const stops = palette.stops.map(hexToRgb);
+    const oklabStops = stops.map(([r, g, b]) => srgbToOklab(r, g, b));
+    const lut = [];
+    for (let i = 0; i < LUT_SIZE; i++) {
+      const t = i / (LUT_SIZE - 1);
+      const segment = t * (oklabStops.length - 1);
+      const idx = Math.min(Math.floor(segment), oklabStops.length - 2);
+      const frac = segment - idx;
+      const a = oklabStops[idx];
+      const b = oklabStops[idx + 1];
+      const L = a[0] + (b[0] - a[0]) * frac;
+      const aa = a[1] + (b[1] - a[1]) * frac;
+      const bb = a[2] + (b[2] - a[2]) * frac;
+      lut.push(oklabToSrgb(L, aa, bb));
+    }
+    return lut;
+  }
+  function getLut(palette) {
+    let lut = lutCache.get(palette.name);
+    if (!lut) {
+      lut = buildLut(palette);
+      lutCache.set(palette.name, lut);
+    }
+    return lut;
+  }
+  function samplePalette(paletteName, t) {
+    const entry = registry.get(paletteName);
+    if (!entry) return [1, 0, 1];
+    const lut = getLut(entry);
+    const clamped = Math.max(0, Math.min(1, t));
+    const idx = Math.round(clamped * (LUT_SIZE - 1));
+    return lut[idx];
+  }
+  function samplePaletteCSS(paletteName, t, alpha) {
+    const [r, g, b] = samplePalette(paletteName, t);
+    const ri = Math.round(r * 255);
+    const gi = Math.round(g * 255);
+    const bi = Math.round(b * 255);
+    if (alpha !== void 0 && alpha < 1) {
+      return `rgba(${ri},${gi},${bi},${alpha.toFixed(3)})`;
+    }
+    return `rgb(${ri},${gi},${bi})`;
+  }
+  function createPaletteFn(paletteName) {
+    return (t, alpha) => samplePaletteCSS(paletteName, t, alpha);
+  }
+
+  // packages/core/src/effects/canvas-fn.ts
+  function resolveCanvasControls(controls) {
+    const resolved = [];
+    for (const [key, value] of Object.entries(controls)) {
+      const spec = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
+      const names = resolveControlNames(key, spec);
+      const isCombo = spec.__type === "combobox";
+      const values = spec.meta.values;
+      resolved.push({
+        key,
+        spec,
+        normalize: names.normalize,
+        isMagicTransform: hasMagicTransform(key) && isCombo,
+        isPalette: key === "palette" && isCombo,
+        values
+      });
+    }
+    return resolved;
+  }
+  function resolveValues(controls, paletteFnCache) {
+    const result = {};
+    for (const ctrl of controls) {
+      let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
+      if (ctrl.normalize === "speed" && typeof val === "number") {
+        val = normalizeSpeed(val);
+      }
+      if (ctrl.isPalette && ctrl.values) {
+        const paletteName = typeof val === "string" ? val : ctrl.values[0] ?? "SilkCircuit";
+        let fn = paletteFnCache.get(paletteName);
+        if (!fn) {
+          fn = createPaletteFn(paletteName);
+          paletteFnCache.set(paletteName, fn);
+        }
+        result[ctrl.key] = fn;
+        continue;
+      }
+      if (ctrl.isMagicTransform && !ctrl.isPalette && ctrl.values) {
+        val = comboboxValueToIndex(val, ctrl.values, 0);
+      }
+      result[ctrl.key] = val;
+    }
+    return result;
+  }
+  var GeneratedCanvasEffect = class extends CanvasEffect {
+    resolvedControls;
+    drawFn = null;
+    factoryFn = null;
+    directDrawFn = null;
+    currentControls = {};
+    paletteFnCache = /* @__PURE__ */ new Map();
+    constructor(name, resolvedControls, renderFn, isFactory, options) {
+      super({
+        id: name.toLowerCase().replace(/\s+/g, "-"),
+        name,
+        canvasWidth: options.width,
+        canvasHeight: options.height
+      });
+      this.resolvedControls = resolvedControls;
+      if (isFactory) {
+        this.factoryFn = renderFn;
+      } else {
+        this.directDrawFn = renderFn;
+      }
+    }
+    async initializeRenderer() {
+      await super.initializeRenderer();
+      if (this.factoryFn) {
+        this.drawFn = this.factoryFn();
+      } else {
+        this.drawFn = this.directDrawFn;
+      }
+    }
+    initializeControls() {
+      this.currentControls = resolveValues(this.resolvedControls, this.paletteFnCache);
+    }
+    getControlValues() {
+      return resolveValues(this.resolvedControls, this.paletteFnCache);
+    }
+    applyControls(controls) {
+      this.currentControls = controls;
+    }
+    draw(time, _deltaTime) {
+      if (!this.drawFn || !this.ctx) return;
+      this.drawFn(this.ctx, time, this.currentControls);
+    }
+    // Override clearCanvas to not auto-clear — let the draw function decide
+    clearCanvas() {
+    }
+  };
+  function storeCanvasMetadata(def) {
+    const g = globalThis;
+    const defs = g.__hypercolorEffectDefs__ ?? [];
+    defs.push(def);
+    g.__hypercolorEffectDefs__ = defs;
+  }
+  function canvas(name, controls, renderFn, options) {
+    const resolved = resolveCanvasControls(controls);
+    const opts = options ?? {};
+    const isFactory = renderFn.length === 0;
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeCanvasMetadata({
+        type: "canvas",
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        width: opts.width,
+        height: opts.height
+      });
+      return;
+    }
+    const fx = new GeneratedCanvasEffect(name, resolved, renderFn, isFactory, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  }
+  canvas.stateful = function stateful(name, controls, factory, options) {
+    const resolved = resolveCanvasControls(controls);
+    const opts = options ?? {};
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeCanvasMetadata({
+        type: "canvas",
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        width: opts.width,
+        height: opts.height
+      });
+      return;
+    }
+    const fx = new GeneratedCanvasEffect(name, resolved, factory, true, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  };
+
+  // packages/core/src/controls/decorators.ts
+  var import_reflect_metadata = __toESM(require_Reflect(), 1);
+  var METADATA_KEYS = {
+    controls: /* @__PURE__ */ Symbol.for("hypercolor:controls"),
+    effect: /* @__PURE__ */ Symbol.for("hypercolor:effect")
+  };
+  var propertyMetadataKey = (propertyName) => /* @__PURE__ */ Symbol.for(`hypercolor:control:${propertyName}`);
+  function createControlDecorator(createDefinition) {
+    return (options) => (target, propertyKey) => {
+      if (typeof propertyKey !== "string") {
+        throw new Error("Control decorators can only be used on string properties");
+      }
+      const targetConstructor = target.constructor;
+      if (!Reflect.hasMetadata(METADATA_KEYS.controls, targetConstructor)) {
+        Reflect.defineMetadata(METADATA_KEYS.controls, [], targetConstructor);
+      }
+      const controlsMetadata = Reflect.getMetadata(METADATA_KEYS.controls, targetConstructor);
+      const controlDefinition = createDefinition(propertyKey, options);
+      controlsMetadata.push(controlDefinition);
+      Reflect.defineMetadata(propertyMetadataKey(propertyKey), controlDefinition, targetConstructor);
+    };
+  }
+  var NumberControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    max: options.max,
+    min: options.min,
+    step: options.step,
+    tooltip: options.tooltip,
+    type: "number"
+  }));
+  var BooleanControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "boolean"
+  }));
+  var ComboboxControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "combobox",
+    values: options.values
+  }));
+  var HueControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    max: options.max,
+    min: options.min,
+    tooltip: options.tooltip,
+    type: "hue"
+  }));
+  var ColorControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "color"
+  }));
+  var TextFieldControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "textfield"
+  }));
 
   // src/effects/flow-field/main.ts
   var SCENES = ["Calm", "Swarm", "Pulse"];
@@ -1469,124 +2050,147 @@
       sparkle: 1.22
     }
   };
-  var FlowField = class extends CanvasEffect {
-    scene;
-    colorMode;
-    baseColor;
-    count;
-    size;
-    speed;
-    wander;
-    glow;
-    bgColor;
-    controlState = {
-      scene: "Calm",
-      colorMode: "Single",
-      baseColor: "#b8ff4f",
-      count: 88,
-      size: 3,
-      speed: normalizeSpeed(5),
-      wander: 62,
-      glow: 72,
-      bgColor: "#05060a"
+  function clamp(value, min, max) {
+    if (Number.isNaN(value)) return min;
+    return Math.max(min, Math.min(max, value));
+  }
+  function rgba(color2, alpha) {
+    return `rgba(${color2.r}, ${color2.g}, ${color2.b}, ${clamp(alpha, 0, 1).toFixed(3)})`;
+  }
+  function hexToRgb2(hex) {
+    const normalized = hex.replace("#", "");
+    const full = normalized.length === 3 ? `${normalized[0]}${normalized[0]}${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}` : normalized;
+    const parsed = parseInt(full, 16);
+    if (Number.isNaN(parsed)) return { r: 184, g: 255, b: 79 };
+    return { r: parsed >> 16 & 255, g: parsed >> 8 & 255, b: parsed & 255 };
+  }
+  function rgbToHsl(color2) {
+    const r = color2.r / 255;
+    const g = color2.g / 255;
+    const b = color2.b / 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const delta = max - min;
+    const l = (max + min) / 2;
+    if (delta === 0) return { h: 0, s: 0, l };
+    const s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+    let h;
+    if (max === r) h = (g - b) / delta + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / delta + 2;
+    else h = (r - g) / delta + 4;
+    h *= 60;
+    return { h, s, l };
+  }
+  function hslToRgb2(h, sPercent, lPercent) {
+    const s = clamp(sPercent, 0, 100) / 100;
+    const l = clamp(lPercent, 0, 100) / 100;
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const hPrime = (h % 360 + 360) % 360 / 60;
+    const x = c * (1 - Math.abs(hPrime % 2 - 1));
+    let r = 0, g = 0, b = 0;
+    if (hPrime < 1) [r, g, b] = [c, x, 0];
+    else if (hPrime < 2) [r, g, b] = [x, c, 0];
+    else if (hPrime < 3) [r, g, b] = [0, c, x];
+    else if (hPrime < 4) [r, g, b] = [0, x, c];
+    else if (hPrime < 5) [r, g, b] = [x, 0, c];
+    else [r, g, b] = [c, 0, x];
+    const m = l - c / 2;
+    return {
+      r: Math.round((r + m) * 255),
+      g: Math.round((g + m) * 255),
+      b: Math.round((b + m) * 255)
     };
-    fireflies = [];
-    cachedBaseColor = "#b8ff4f";
-    cachedBaseHsl = { h: 90, s: 0.9, l: 0.64 };
-    constructor() {
-      super({ id: "flow-field", name: "Flow Field", backgroundColor: "#05060a" });
+  }
+  function createFirefly(w, h) {
+    const x = Math.random() * w;
+    const y = Math.random() * h;
+    return {
+      x,
+      y,
+      vx: (Math.random() - 0.5) * 0.8,
+      vy: (Math.random() - 0.5) * 0.8,
+      phase: Math.random() * Math.PI * 2,
+      hueOffset: Math.random() * 2 - 1,
+      satOffset: Math.random() * 2 - 1,
+      lightOffset: Math.random() * 2 - 1,
+      sizeJitter: 0.68 + Math.random() * 0.72,
+      speedBias: 0.75 + Math.random() * 0.55,
+      wanderBias: 0.8 + Math.random() * 0.45,
+      trail: [{ x, y }]
+    };
+  }
+  function wrapFirefly(firefly, w, h) {
+    const margin = 12;
+    let wrapped = false;
+    if (firefly.x < -margin) {
+      firefly.x = w + margin;
+      wrapped = true;
+    } else if (firefly.x > w + margin) {
+      firefly.x = -margin;
+      wrapped = true;
     }
-    initializeControls() {
-      this.scene = getControlValue("scene", "Calm");
-      this.colorMode = getControlValue("colorMode", "Single");
-      this.baseColor = getControlValue("baseColor", "#b8ff4f");
-      this.count = getControlValue("count", 88);
-      this.size = getControlValue("size", 3);
-      this.speed = getControlValue("speed", 5);
-      this.wander = getControlValue("wander", 62);
-      this.glow = getControlValue("glow", 72);
-      this.bgColor = getControlValue("bgColor", "#05060a");
+    if (firefly.y < -margin) {
+      firefly.y = h + margin;
+      wrapped = true;
+    } else if (firefly.y > h + margin) {
+      firefly.y = -margin;
+      wrapped = true;
     }
-    getControlValues() {
-      return {
-        scene: getControlValue("scene", "Calm"),
-        colorMode: getControlValue("colorMode", "Single"),
-        baseColor: getControlValue("baseColor", "#b8ff4f"),
-        count: getControlValue("count", 88),
-        size: getControlValue("size", 3),
-        speed: normalizeSpeed(getControlValue("speed", 5)),
-        wander: getControlValue("wander", 62),
-        glow: getControlValue("glow", 72),
-        bgColor: getControlValue("bgColor", "#05060a")
-      };
+    return wrapped;
+  }
+  var main_default = canvas.stateful("Flow Field", {
+    scene: SCENES,
+    colorMode: COLOR_MODES,
+    baseColor: "#b8ff4f",
+    count: [8, 220, 88],
+    size: [1, 10, 3],
+    speed: [1, 10, 5],
+    wander: [0, 100, 62],
+    glow: [0, 100, 72],
+    bgColor: "#05060a"
+  }, () => {
+    let fireflies = [];
+    let cachedBaseColor = "#b8ff4f";
+    let cachedBaseHsl = { h: 90, s: 0.9, l: 0.64 };
+    let lastTime = -1;
+    function updateBaseColorCache(color2) {
+      if (color2 === cachedBaseColor) return;
+      cachedBaseColor = color2;
+      cachedBaseHsl = rgbToHsl(hexToRgb2(color2));
     }
-    applyControls(controls) {
-      this.controlState = controls;
-      this.backgroundColor = controls.bgColor;
-      this.updateBaseColorCache(controls.baseColor);
-      this.ensureFireflyCount(Math.floor(controls.count));
-    }
-    async loadResources() {
-      this.updateBaseColorCache(this.controlState.baseColor);
-      this.ensureFireflyCount(Math.floor(this.controlState.count));
-    }
-    draw(time, deltaTime) {
-      if (!this.ctx || !this.canvas) return;
-      const ctx = this.ctx;
-      const w = this.canvas.width;
-      const h = this.canvas.height;
-      const dt = deltaTime > 0 ? this.clamp(deltaTime * 60, 0.55, 2.4) : 1;
-      const scene = SCENE_TUNING[this.controlState.scene] ?? SCENE_TUNING.Calm;
-      const glowMix = this.clamp(this.controlState.glow / 100, 0, 1);
-      const wanderMix = this.clamp(this.controlState.wander / 100, 0, 1);
-      const baseSize = this.clamp(this.controlState.size, 1, 10);
-      this.drawAtmosphere(ctx, w, h, time, scene, glowMix);
-      ctx.save();
-      ctx.globalCompositeOperation = "lighter";
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      const particleCount = this.fireflies.length;
-      for (let i = 0; i < particleCount; i++) {
-        const firefly = this.fireflies[i];
-        this.updateFirefly(firefly, w, h, time, dt, scene, wanderMix, glowMix);
-        const twinkle = this.getTwinkle(firefly, time, scene);
-        const color = this.resolveColor(firefly, i, time, twinkle, particleCount);
-        const radius = Math.max(0.8, baseSize * (0.42 + twinkle * 0.58) * firefly.sizeJitter);
-        this.drawTrail(ctx, firefly, color, radius, glowMix, scene, twinkle);
-        this.drawBody(ctx, firefly, color, radius, glowMix, twinkle);
+    function ensureFireflyCount(count, w, h) {
+      const target = Math.max(8, Math.min(220, count));
+      if (fireflies.length < target) {
+        while (fireflies.length < target) fireflies.push(createFirefly(w, h));
+      } else if (fireflies.length > target) {
+        fireflies.length = target;
       }
-      ctx.restore();
     }
-    drawAtmosphere(ctx, w, h, time, scene, glowMix) {
-      const hueShift = Math.sin(time * 0.08) * 6;
-      const mistColor = this.hslToRgb((this.cachedBaseHsl.h + 12 + hueShift + 360) % 360, 82, 48);
-      const mist = ctx.createRadialGradient(
-        w * (0.5 + Math.sin(time * 0.04) * 0.08),
-        h * (0.55 + Math.cos(time * 0.05) * 0.08),
-        0,
-        w * 0.5,
-        h * 0.5,
-        Math.max(w, h) * 0.9
-      );
-      mist.addColorStop(0, this.rgba(mistColor, 0.08 + glowMix * 0.18));
-      mist.addColorStop(0.58, this.rgba(mistColor, 0.03 + glowMix * 0.06));
-      mist.addColorStop(1, this.rgba(mistColor, 0));
-      ctx.fillStyle = mist;
-      ctx.fillRect(0, 0, w, h);
-      const pulse = 0.035 + scene.pulse * 0.018 * (0.5 + 0.5 * Math.sin(time * 2.2));
-      const veil = this.hslToRgb((this.cachedBaseHsl.h + 300) % 360, 70, 38);
-      const gradient = ctx.createLinearGradient(0, 0, 0, h);
-      gradient.addColorStop(0, this.rgba(veil, pulse));
-      gradient.addColorStop(1, this.rgba(veil, 0));
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, w, h);
-      const vignette = ctx.createRadialGradient(w * 0.5, h * 0.5, 20, w * 0.5, h * 0.5, Math.max(w, h) * 0.8);
-      vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
-      vignette.addColorStop(1, "rgba(0, 0, 0, 0.42)");
-      ctx.fillStyle = vignette;
-      ctx.fillRect(0, 0, w, h);
+    function getTwinkle(firefly, time, scene) {
+      const pulse = Math.sin(time * (1.4 + scene.sparkle) + firefly.phase * 1.9);
+      const shimmer = Math.sin(time * 3.4 + firefly.phase * 6.7) * 0.5;
+      return clamp(0.54 + pulse * 0.3 + shimmer * 0.2, 0.12, 1);
     }
-    updateFirefly(firefly, w, h, time, dt, scene, wanderMix, glowMix) {
+    function resolveColor(firefly, index, time, twinkle, count, colorMode) {
+      const base = cachedBaseHsl;
+      if (colorMode === "Random") {
+        const hue3 = (base.h + firefly.hueOffset * 260 + Math.sin(time * 0.24 + firefly.phase * 5.3) * 22 + 360) % 360;
+        const sat2 = clamp(72 + firefly.satOffset * 22, 48, 100);
+        const light2 = clamp(43 + twinkle * 22 + firefly.lightOffset * 9, 30, 88);
+        return hslToRgb2(hue3, sat2, light2);
+      }
+      if (colorMode === "Rainbow") {
+        const hue3 = (time * 36 + index * (360 / Math.max(count, 1)) + firefly.hueOffset * 40 + 360) % 360;
+        const sat2 = clamp(80 + firefly.satOffset * 16, 58, 100);
+        const light2 = clamp(48 + twinkle * 20 + firefly.lightOffset * 6, 34, 90);
+        return hslToRgb2(hue3, sat2, light2);
+      }
+      const hue2 = (base.h + firefly.hueOffset * 20 + Math.sin(time * 0.4 + firefly.phase * 3.7) * 8 + 360) % 360;
+      const sat = clamp(base.s * 100 + 10 + firefly.satOffset * 6, 42, 100);
+      const light = clamp(base.l * 100 + twinkle * 16 + 4, 24, 88);
+      return hslToRgb2(hue2, sat, light);
+    }
+    function updateFirefly(firefly, w, h, time, dt, scene, wanderMix, glowMix, speed, sceneName) {
       const centerX = w * 0.5 + Math.sin(time * 0.24) * w * 0.2;
       const centerY = h * 0.5 + Math.cos(time * 0.19) * h * 0.16;
       const dx = centerX - firefly.x;
@@ -1607,7 +2211,7 @@
       const swirlForce = scene.swirl * (0.035 + glowMix * 0.02);
       firefly.vx += swirlX * swirlForce * dt;
       firefly.vy += swirlY * swirlForce * dt;
-      if (this.controlState.scene === "Pulse") {
+      if (sceneName === "Pulse") {
         const pulse = Math.sin(time * 4.1 + firefly.phase * 7.2);
         const pulseForce = scene.pulse * (0.11 + firefly.speedBias * 0.05);
         firefly.vx += dirX * pulse * pulseForce * dt;
@@ -1615,7 +2219,7 @@
       }
       firefly.vx *= 0.93;
       firefly.vy *= 0.93;
-      const speedScale = this.controlState.speed * scene.speed * (0.55 + firefly.speedBias * 0.6);
+      const speedScale = speed * scene.speed * (0.55 + firefly.speedBias * 0.6);
       const maxVelocity = Math.max(0.75, speedScale * 1.5);
       const velocity = Math.hypot(firefly.vx, firefly.vy);
       if (velocity > maxVelocity) {
@@ -1625,8 +2229,7 @@
       }
       firefly.x += firefly.vx * speedScale * dt;
       firefly.y += firefly.vy * speedScale * dt;
-      const wrapped = this.wrapFirefly(firefly, w, h);
-      if (wrapped) {
+      if (wrapFirefly(firefly, w, h)) {
         firefly.trail = [{ x: firefly.x, y: firefly.y }];
         return;
       }
@@ -1636,7 +2239,7 @@
         firefly.trail.length = trailLength;
       }
     }
-    drawTrail(ctx, firefly, color, radius, glowMix, scene, twinkle) {
+    function drawTrail(ctx, firefly, color2, radius, glowMix, scene, twinkle) {
       const trail = firefly.trail;
       if (trail.length < 2) return;
       for (let i = 1; i < trail.length; i++) {
@@ -1645,7 +2248,7 @@
         const depth = 1 - i / trail.length;
         const alpha = depth * depth * (0.07 + glowMix * 0.2) * (0.65 + twinkle * 0.7);
         const width = Math.max(0.45, radius * (0.28 + depth * (0.9 + scene.pulse * 0.16)));
-        ctx.strokeStyle = this.rgba(color, alpha);
+        ctx.strokeStyle = rgba(color2, alpha);
         ctx.lineWidth = width;
         ctx.beginPath();
         ctx.moveTo(head.x, head.y);
@@ -1653,19 +2256,19 @@
         ctx.stroke();
       }
     }
-    drawBody(ctx, firefly, color, radius, glowMix, twinkle) {
+    function drawBody(ctx, firefly, color2, radius, glowMix, twinkle) {
       const haloRadius = radius * (1.7 + glowMix * 4.3);
       if (glowMix > 0.01) {
         const glow = ctx.createRadialGradient(firefly.x, firefly.y, 0, firefly.x, firefly.y, haloRadius);
-        glow.addColorStop(0, this.rgba(color, (0.2 + glowMix * 0.4) * (0.55 + twinkle * 0.75)));
-        glow.addColorStop(0.6, this.rgba(color, 0.08 + glowMix * 0.12));
-        glow.addColorStop(1, this.rgba(color, 0));
+        glow.addColorStop(0, rgba(color2, (0.2 + glowMix * 0.4) * (0.55 + twinkle * 0.75)));
+        glow.addColorStop(0.6, rgba(color2, 0.08 + glowMix * 0.12));
+        glow.addColorStop(1, rgba(color2, 0));
         ctx.fillStyle = glow;
         ctx.beginPath();
         ctx.arc(firefly.x, firefly.y, haloRadius, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.fillStyle = this.rgba(color, 0.82 + twinkle * 0.18);
+      ctx.fillStyle = rgba(color2, 0.82 + twinkle * 0.18);
       ctx.beginPath();
       ctx.arc(firefly.x, firefly.y, radius, 0, Math.PI * 2);
       ctx.fill();
@@ -1674,192 +2277,77 @@
       ctx.arc(firefly.x - radius * 0.24, firefly.y - radius * 0.28, radius * 0.38, 0, Math.PI * 2);
       ctx.fill();
     }
-    resolveColor(firefly, index, time, twinkle, count) {
-      const mode = this.controlState.colorMode;
-      const base = this.cachedBaseHsl;
-      if (mode === "Random") {
-        const hue2 = (base.h + firefly.hueOffset * 260 + Math.sin(time * 0.24 + firefly.phase * 5.3) * 22 + 360) % 360;
-        const sat2 = this.clamp(72 + firefly.satOffset * 22, 48, 100);
-        const light2 = this.clamp(43 + twinkle * 22 + firefly.lightOffset * 9, 30, 88);
-        return this.hslToRgb(hue2, sat2, light2);
+    function drawAtmosphere(ctx, w, h, time, scene, glowMix) {
+      const hueShift = Math.sin(time * 0.08) * 6;
+      const mistColor = hslToRgb2((cachedBaseHsl.h + 12 + hueShift + 360) % 360, 82, 48);
+      const mist = ctx.createRadialGradient(
+        w * (0.5 + Math.sin(time * 0.04) * 0.08),
+        h * (0.55 + Math.cos(time * 0.05) * 0.08),
+        0,
+        w * 0.5,
+        h * 0.5,
+        Math.max(w, h) * 0.9
+      );
+      mist.addColorStop(0, rgba(mistColor, 0.08 + glowMix * 0.18));
+      mist.addColorStop(0.58, rgba(mistColor, 0.03 + glowMix * 0.06));
+      mist.addColorStop(1, rgba(mistColor, 0));
+      ctx.fillStyle = mist;
+      ctx.fillRect(0, 0, w, h);
+      const pulse = 0.035 + scene.pulse * 0.018 * (0.5 + 0.5 * Math.sin(time * 2.2));
+      const veil = hslToRgb2((cachedBaseHsl.h + 300) % 360, 70, 38);
+      const gradient = ctx.createLinearGradient(0, 0, 0, h);
+      gradient.addColorStop(0, rgba(veil, pulse));
+      gradient.addColorStop(1, rgba(veil, 0));
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, w, h);
+      const vignette = ctx.createRadialGradient(w * 0.5, h * 0.5, 20, w * 0.5, h * 0.5, Math.max(w, h) * 0.8);
+      vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
+      vignette.addColorStop(1, "rgba(0, 0, 0, 0.42)");
+      ctx.fillStyle = vignette;
+      ctx.fillRect(0, 0, w, h);
+    }
+    return (ctx, time, c) => {
+      const sceneName = c.scene;
+      const colorMode = c.colorMode;
+      const baseColor = c.baseColor;
+      const count = Math.floor(c.count);
+      const size = c.size;
+      const speed = c.speed;
+      const wander = c.wander;
+      const glow = c.glow;
+      const bgColor = c.bgColor;
+      const w = ctx.canvas.width;
+      const h = ctx.canvas.height;
+      const dt = lastTime < 0 ? 1 : clamp((time - lastTime) * 60, 0.55, 2.4);
+      lastTime = time;
+      const scene = SCENE_TUNING[sceneName] ?? SCENE_TUNING.Calm;
+      const glowMix = clamp(glow / 100, 0, 1);
+      const wanderMix = clamp(wander / 100, 0, 1);
+      const baseSize = clamp(size, 1, 10);
+      updateBaseColorCache(baseColor);
+      ensureFireflyCount(count, w, h);
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, w, h);
+      drawAtmosphere(ctx, w, h, time, scene, glowMix);
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      const particleCount = fireflies.length;
+      for (let i = 0; i < particleCount; i++) {
+        const firefly = fireflies[i];
+        updateFirefly(firefly, w, h, time, dt, scene, wanderMix, glowMix, speed, sceneName);
+        const twinkle = getTwinkle(firefly, time, scene);
+        const color2 = resolveColor(firefly, i, time, twinkle, particleCount, colorMode);
+        const radius = Math.max(0.8, baseSize * (0.42 + twinkle * 0.58) * firefly.sizeJitter);
+        drawTrail(ctx, firefly, color2, radius, glowMix, scene, twinkle);
+        drawBody(ctx, firefly, color2, radius, glowMix, twinkle);
       }
-      if (mode === "Rainbow") {
-        const hue2 = (time * 36 + index * (360 / Math.max(count, 1)) + firefly.hueOffset * 40 + 360) % 360;
-        const sat2 = this.clamp(80 + firefly.satOffset * 16, 58, 100);
-        const light2 = this.clamp(48 + twinkle * 20 + firefly.lightOffset * 6, 34, 90);
-        return this.hslToRgb(hue2, sat2, light2);
-      }
-      const hue = (base.h + firefly.hueOffset * 20 + Math.sin(time * 0.4 + firefly.phase * 3.7) * 8 + 360) % 360;
-      const sat = this.clamp(base.s * 100 + 10 + firefly.satOffset * 6, 42, 100);
-      const light = this.clamp(base.l * 100 + twinkle * 16 + 4, 24, 88);
-      return this.hslToRgb(hue, sat, light);
-    }
-    getTwinkle(firefly, time, scene) {
-      const pulse = Math.sin(time * (1.4 + scene.sparkle) + firefly.phase * 1.9);
-      const shimmer = Math.sin(time * 3.4 + firefly.phase * 6.7) * 0.5;
-      return this.clamp(0.54 + pulse * 0.3 + shimmer * 0.2, 0.12, 1);
-    }
-    ensureFireflyCount(count) {
-      const target = Math.max(8, Math.min(220, count));
-      const w = this.canvas?.width ?? 320;
-      const h = this.canvas?.height ?? 200;
-      if (this.fireflies.length < target) {
-        while (this.fireflies.length < target) {
-          this.fireflies.push(this.createFirefly(w, h));
-        }
-        return;
-      }
-      if (this.fireflies.length > target) {
-        this.fireflies.length = target;
-      }
-    }
-    createFirefly(w, h) {
-      const x = Math.random() * w;
-      const y = Math.random() * h;
-      return {
-        x,
-        y,
-        vx: (Math.random() - 0.5) * 0.8,
-        vy: (Math.random() - 0.5) * 0.8,
-        phase: Math.random() * Math.PI * 2,
-        hueOffset: Math.random() * 2 - 1,
-        satOffset: Math.random() * 2 - 1,
-        lightOffset: Math.random() * 2 - 1,
-        sizeJitter: 0.68 + Math.random() * 0.72,
-        speedBias: 0.75 + Math.random() * 0.55,
-        wanderBias: 0.8 + Math.random() * 0.45,
-        trail: [{ x, y }]
-      };
-    }
-    wrapFirefly(firefly, w, h) {
-      const margin = 12;
-      let wrapped = false;
-      if (firefly.x < -margin) {
-        firefly.x = w + margin;
-        wrapped = true;
-      } else if (firefly.x > w + margin) {
-        firefly.x = -margin;
-        wrapped = true;
-      }
-      if (firefly.y < -margin) {
-        firefly.y = h + margin;
-        wrapped = true;
-      } else if (firefly.y > h + margin) {
-        firefly.y = -margin;
-        wrapped = true;
-      }
-      return wrapped;
-    }
-    updateBaseColorCache(color) {
-      if (color === this.cachedBaseColor) return;
-      const rgb = this.hexToRgb(color);
-      this.cachedBaseColor = color;
-      this.cachedBaseHsl = this.rgbToHsl(rgb);
-    }
-    rgba(color, alpha) {
-      return `rgba(${color.r}, ${color.g}, ${color.b}, ${this.clamp(alpha, 0, 1).toFixed(3)})`;
-    }
-    clamp(value, min, max) {
-      if (Number.isNaN(value)) return min;
-      return Math.max(min, Math.min(max, value));
-    }
-    hexToRgb(hex) {
-      const normalized = hex.replace("#", "");
-      const full = normalized.length === 3 ? `${normalized[0]}${normalized[0]}${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}` : normalized;
-      const parsed = parseInt(full, 16);
-      if (Number.isNaN(parsed)) {
-        return { r: 184, g: 255, b: 79 };
-      }
-      return {
-        r: parsed >> 16 & 255,
-        g: parsed >> 8 & 255,
-        b: parsed & 255
-      };
-    }
-    rgbToHsl(color) {
-      const r = color.r / 255;
-      const g = color.g / 255;
-      const b = color.b / 255;
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      const delta = max - min;
-      const l = (max + min) / 2;
-      if (delta === 0) {
-        return { h: 0, s: 0, l };
-      }
-      const s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
-      let h;
-      if (max === r) h = (g - b) / delta + (g < b ? 6 : 0);
-      else if (max === g) h = (b - r) / delta + 2;
-      else h = (r - g) / delta + 4;
-      h *= 60;
-      return { h, s, l };
-    }
-    hslToRgb(h, sPercent, lPercent) {
-      const s = this.clamp(sPercent, 0, 100) / 100;
-      const l = this.clamp(lPercent, 0, 100) / 100;
-      const c = (1 - Math.abs(2 * l - 1)) * s;
-      const hPrime = (h % 360 + 360) % 360 / 60;
-      const x = c * (1 - Math.abs(hPrime % 2 - 1));
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      if (hPrime < 1) [r, g, b] = [c, x, 0];
-      else if (hPrime < 2) [r, g, b] = [x, c, 0];
-      else if (hPrime < 3) [r, g, b] = [0, c, x];
-      else if (hPrime < 4) [r, g, b] = [0, x, c];
-      else if (hPrime < 5) [r, g, b] = [x, 0, c];
-      else [r, g, b] = [c, 0, x];
-      const m = l - c / 2;
-      return {
-        r: Math.round((r + m) * 255),
-        g: Math.round((g + m) * 255),
-        b: Math.round((b + m) * 255)
-      };
-    }
-  };
-  __decorateClass([
-    ComboboxControl({ label: "Scene", values: SCENES, default: "Calm", tooltip: "Movement behavior preset" })
-  ], FlowField.prototype, "scene", 2);
-  __decorateClass([
-    ComboboxControl({
-      label: "Color Mode",
-      values: COLOR_MODES,
-      default: "Single",
-      tooltip: "Single hue, random fireflies, or animated rainbow"
-    })
-  ], FlowField.prototype, "colorMode", 2);
-  __decorateClass([
-    ColorControl({ label: "Base Color", default: "#b8ff4f", tooltip: "Primary firefly color" })
-  ], FlowField.prototype, "baseColor", 2);
-  __decorateClass([
-    NumberControl({ label: "Count", min: 8, max: 220, default: 88, tooltip: "Number of fireflies" })
-  ], FlowField.prototype, "count", 2);
-  __decorateClass([
-    NumberControl({ label: "Size", min: 1, max: 10, default: 3, tooltip: "Firefly body size" })
-  ], FlowField.prototype, "size", 2);
-  __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Swarm movement speed" })
-  ], FlowField.prototype, "speed", 2);
-  __decorateClass([
-    NumberControl({ label: "Wander", min: 0, max: 100, default: 62, tooltip: "Random drift amount" })
-  ], FlowField.prototype, "wander", 2);
-  __decorateClass([
-    NumberControl({ label: "Glow", min: 0, max: 100, default: 72, tooltip: "Glow and trail intensity" })
-  ], FlowField.prototype, "glow", 2);
-  __decorateClass([
-    ColorControl({ label: "Background Color", default: "#05060a", tooltip: "Garden background color" })
-  ], FlowField.prototype, "bgColor", 2);
-  FlowField = __decorateClass([
-    Effect({
-      name: "Flow Field",
-      description: "Poison-glow firefly garden with crisp trails and scene moods",
-      author: "Hypercolor",
-      audioReactive: false
-    })
-  ], FlowField);
-  var effect = new FlowField();
-  initializeEffect(() => effect.initialize(), { instance: effect });
+      ctx.restore();
+    };
+  }, {
+    description: "Poison-glow firefly garden with crisp trails and scene moods"
+  });
 })();
 /*! Bundled license information:
 

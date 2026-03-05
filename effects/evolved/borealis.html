@@ -6,12 +6,12 @@
   <title>Borealis</title>
   <meta description="Aurora borealis — layered curtains of light with domain-warped fBm noise"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Animation speed"/>
-  <meta property="intensity" label="Intensity" type="number" min="0" max="100" default="82" tooltip="Aurora brightness"/>
-  <meta property="warpStrength" label="Warp" type="number" min="0" max="100" default="62" tooltip="Domain warping strength"/>
-  <meta property="starBrightness" label="Stars" type="number" min="0" max="100" default="40" tooltip="Star brightness"/>
-  <meta property="curtainHeight" label="Height" type="number" min="20" max="90" default="55" tooltip="Aurora vertical position"/>
-  <meta property="palette" label="Palette" type="combobox" default="Northern Lights" values="Northern Lights,SilkCircuit,Cyberpunk,Sunset,Ice,Fire,Vaporwave,Phosphor" tooltip="Color palette"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5"/>
+  <meta property="intensity" label="Intensity" type="number" min="0" max="100" default="82"/>
+  <meta property="warpStrength" label="Warp Strength" type="number" min="0" max="100" default="62"/>
+  <meta property="starBrightness" label="Star Brightness" type="number" min="0" max="100" default="40"/>
+  <meta property="curtainHeight" label="Curtain Height" type="number" min="20" max="90" default="55"/>
+  <meta property="palette" label="Palette" type="combobox" default="Northern Lights" values="Northern Lights,SilkCircuit,Cyberpunk,Sunset,Ice,Fire,Vaporwave,Phosphor"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -43,14 +43,6 @@
     isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
     mod
   ));
-  var __decorateClass = (decorators, target, key, kind) => {
-    var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;
-    for (var i = decorators.length - 1, decorator; i >= 0; i--)
-      if (decorator = decorators[i])
-        result = (kind ? decorator(target, key, result) : decorator(result)) || result;
-    if (kind && result) __defProp(target, key, result);
-    return result;
-  };
 
   // node_modules/.bun/reflect-metadata@0.2.2/node_modules/reflect-metadata/Reflect.js
   var require_Reflect = __commonJS({
@@ -527,14 +519,14 @@
             var second;
             var rest;
             var targetProviderMap = new _WeakMap();
-            var registry = {
+            var registry2 = {
               registerProvider,
               getProvider,
               setProvider
             };
-            return registry;
+            return registry2;
             function registerProvider(provider) {
-              if (!Object.isExtensible(registry)) {
+              if (!Object.isExtensible(registry2)) {
                 throw new Error("Cannot add provider to a frozen registry.");
               }
               switch (true) {
@@ -646,7 +638,7 @@
             }
             return metadataRegistry2;
           }
-          function CreateMetadataProvider(registry) {
+          function CreateMetadataProvider(registry2) {
             var metadata2 = new _WeakMap();
             var provider = {
               isProviderFor: function(O, P) {
@@ -679,7 +671,7 @@
                   return void 0;
                 metadataMap = new _Map();
                 targetMetadata.set(P, metadataMap);
-                if (!registry.setProvider(O, P, provider)) {
+                if (!registry2.setProvider(O, P, provider)) {
                   targetMetadata.delete(P);
                   if (createdTargetMetadata) {
                     metadata2.delete(O);
@@ -1137,115 +1129,6 @@
     }
   });
 
-  // src/effects/borealis/main.ts
-  var import_reflect_metadata2 = __toESM(require_Reflect());
-
-  // packages/core/src/controls/decorators.ts
-  var import_reflect_metadata = __toESM(require_Reflect(), 1);
-  var METADATA_KEYS = {
-    controls: /* @__PURE__ */ Symbol.for("hypercolor:controls"),
-    effect: /* @__PURE__ */ Symbol.for("hypercolor:effect")
-  };
-  var propertyMetadataKey = (propertyName) => /* @__PURE__ */ Symbol.for(`hypercolor:control:${propertyName}`);
-  function createControlDecorator(createDefinition) {
-    return (options) => (target, propertyKey) => {
-      if (typeof propertyKey !== "string") {
-        throw new Error("Control decorators can only be used on string properties");
-      }
-      const targetConstructor = target.constructor;
-      if (!Reflect.hasMetadata(METADATA_KEYS.controls, targetConstructor)) {
-        Reflect.defineMetadata(METADATA_KEYS.controls, [], targetConstructor);
-      }
-      const controlsMetadata = Reflect.getMetadata(METADATA_KEYS.controls, targetConstructor);
-      const controlDefinition = createDefinition(propertyKey, options);
-      controlsMetadata.push(controlDefinition);
-      Reflect.defineMetadata(propertyMetadataKey(propertyKey), controlDefinition, targetConstructor);
-    };
-  }
-  var NumberControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    max: options.max,
-    min: options.min,
-    step: options.step,
-    tooltip: options.tooltip,
-    type: "number"
-  }));
-  var BooleanControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "boolean"
-  }));
-  var ComboboxControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "combobox",
-    values: options.values
-  }));
-  var HueControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    max: options.max,
-    min: options.min,
-    tooltip: options.tooltip,
-    type: "hue"
-  }));
-  var ColorControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "color"
-  }));
-  var TextFieldControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "textfield"
-  }));
-  function Effect(options) {
-    return (target) => {
-      Reflect.defineMetadata(METADATA_KEYS.effect, options, target.prototype);
-      target.prototype.effectMetadata = options;
-    };
-  }
-
-  // packages/core/src/controls/helpers.ts
-  function getControlValue(propertyName, defaultValue) {
-    return window[propertyName] ?? defaultValue;
-  }
-  function normalizeSpeed(speed) {
-    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
-    return Math.max(0.2, (speed / 5) ** 1.5);
-  }
-  function comboboxValueToIndex(value, options, defaultIndex = 0) {
-    if (options.length === 0) return 0;
-    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
-    if (typeof value === "number" && Number.isFinite(value)) {
-      const rounded = Math.round(value);
-      if (rounded >= 0 && rounded < options.length) return rounded;
-      return safeDefault;
-    }
-    if (typeof value !== "string") return safeDefault;
-    const exactIndex = options.indexOf(value);
-    if (exactIndex >= 0) return exactIndex;
-    const normalized = value.trim().toLowerCase();
-    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
-    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
-    const parsedNumeric = Number.parseInt(normalized, 10);
-    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
-      return parsedNumeric;
-    }
-    return safeDefault;
-  }
-
   // packages/core/src/utils/debug.ts
   var COLORS = {
     debug: "#9d9d9d",
@@ -1271,30 +1154,30 @@
     };
   }
   function stylizedLog(level, namespace, ...args) {
-    let color = COLORS.debug;
+    let color2 = COLORS.debug;
     let emoji = EMOJI.debug;
     let method = "log";
     switch (level) {
       case "info":
-        color = COLORS.secondary;
+        color2 = COLORS.secondary;
         emoji = EMOJI.info;
         break;
       case "warn":
-        color = COLORS.warning;
+        color2 = COLORS.warning;
         emoji = EMOJI.warn;
         method = "warn";
         break;
       case "error":
-        color = COLORS.error;
+        color2 = COLORS.error;
         emoji = EMOJI.error;
         method = "error";
         break;
       case "success":
-        color = COLORS.success;
+        color2 = COLORS.success;
         emoji = EMOJI.success;
         break;
     }
-    console[method](`%c${emoji} [${namespace}]`, `color: ${color}; font-weight: bold;`, ...args);
+    console[method](`%c${emoji} [${namespace}]`, `color: ${color2}; font-weight: bold;`, ...args);
   }
 
   // packages/core/src/effects/base-effect.ts
@@ -1386,6 +1269,44 @@
         }
       } catch {
       }
+    }
+  };
+
+  // packages/core/src/effects/canvas-effect.ts
+  var CanvasEffect = class extends BaseEffect {
+    ctx = null;
+    backgroundColor;
+    lastFrameTime = 0;
+    deltaTime = 0;
+    constructor(config) {
+      super(config);
+      this.backgroundColor = config.backgroundColor || "black";
+    }
+    async initializeRenderer() {
+      if (!this.canvas) throw new Error("Canvas not available");
+      this.ctx = this.canvas.getContext("2d");
+      if (!this.ctx) throw new Error("Could not get 2D context");
+      this.ctx.imageSmoothingEnabled = true;
+      this.clearCanvas();
+      await this.loadResources();
+    }
+    /** Override to load images, fonts, etc. */
+    async loadResources() {
+    }
+    clearCanvas() {
+      if (!this.ctx || !this.canvas) return;
+      this.ctx.fillStyle = this.backgroundColor;
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+    render(time) {
+      if (!this.ctx || !this.canvas) return;
+      this.deltaTime = this.lastFrameTime === 0 ? 0 : time - this.lastFrameTime;
+      this.lastFrameTime = time;
+      this.clearCanvas();
+      this.draw(time, this.deltaTime);
+    }
+    updateParameters(controls) {
+      this.applyControls(controls);
     }
   };
 
@@ -1714,7 +1635,128 @@ void main() {
     }
   };
 
-  // packages/core/src/index.ts
+  // packages/core/src/controls/infer.ts
+  function inferControl(key, value, label) {
+    if (Array.isArray(value) && value.length >= 3 && value.length <= 4 && typeof value[0] === "number") {
+      const [min, max, defaultValue, step] = value;
+      return {
+        __brand: "ControlSpec",
+        __type: "number",
+        label,
+        defaultValue,
+        meta: { min, max, step }
+      };
+    }
+    if (Array.isArray(value) && value.length >= 1 && typeof value[0] === "string") {
+      return {
+        __brand: "ControlSpec",
+        __type: "combobox",
+        label,
+        defaultValue: value[0],
+        meta: { values: [...value] }
+      };
+    }
+    if (typeof value === "boolean") {
+      return {
+        __brand: "ControlSpec",
+        __type: "boolean",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "string" && value.startsWith("#")) {
+      return {
+        __brand: "ControlSpec",
+        __type: "color",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "string") {
+      return {
+        __brand: "ControlSpec",
+        __type: "textfield",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "number") {
+      return {
+        __brand: "ControlSpec",
+        __type: "number",
+        label,
+        defaultValue: value,
+        meta: { min: 0, max: 100 }
+      };
+    }
+    throw new Error(
+      `Cannot infer control type for "${key}". Expected [min, max, default], string[], boolean, '#hex', string, or number. Got: ${JSON.stringify(value)}`
+    );
+  }
+
+  // packages/core/src/controls/names.ts
+  function deriveLabel(key) {
+    return key.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase()).trim();
+  }
+  function deriveUniformName(key) {
+    return "i" + key.charAt(0).toUpperCase() + key.slice(1);
+  }
+  var MAGIC_NAMES = {
+    speed: "speed"
+  };
+  var MAGIC_TRANSFORMS = /* @__PURE__ */ new Set(["palette"]);
+  function getMagicNormalize(key) {
+    return MAGIC_NAMES[key] ?? "none";
+  }
+  function hasMagicTransform(key) {
+    return MAGIC_TRANSFORMS.has(key);
+  }
+  function resolveControlNames(key, spec) {
+    return {
+      label: spec.label,
+      uniformName: spec.uniform ?? deriveUniformName(key),
+      normalize: spec.normalize ?? getMagicNormalize(key)
+    };
+  }
+
+  // packages/core/src/controls/specs.ts
+  function isControlSpec(value) {
+    return value !== null && typeof value === "object" && value.__brand === "ControlSpec";
+  }
+
+  // packages/core/src/controls/helpers.ts
+  function getControlValue(propertyName, defaultValue) {
+    return window[propertyName] ?? defaultValue;
+  }
+  function normalizeSpeed(speed) {
+    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
+    return Math.max(0.2, (speed / 5) ** 1.5);
+  }
+  function comboboxValueToIndex(value, options, defaultIndex = 0) {
+    if (options.length === 0) return 0;
+    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const rounded = Math.round(value);
+      if (rounded >= 0 && rounded < options.length) return rounded;
+      return safeDefault;
+    }
+    if (typeof value !== "string") return safeDefault;
+    const exactIndex = options.indexOf(value);
+    if (exactIndex >= 0) return exactIndex;
+    const normalized = value.trim().toLowerCase();
+    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
+    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
+    const parsedNumeric = Number.parseInt(normalized, 10);
+    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
+      return parsedNumeric;
+    }
+    return safeDefault;
+  }
+
+  // packages/core/src/init.ts
   function detectInitMode() {
     if (typeof window === "undefined") return "metadata-only";
     if (window.__HYPERCOLOR_METADATA_ONLY__) return "metadata-only";
@@ -1741,89 +1783,741 @@ void main() {
     }, { once: true });
   }
 
+  // packages/core/src/effects/effect-fn.ts
+  function resolveControls(controls) {
+    const resolved = [];
+    for (const [key, value] of Object.entries(controls)) {
+      const spec = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
+      const names = resolveControlNames(key, spec);
+      const values = spec.meta.values;
+      resolved.push({
+        key,
+        spec,
+        uniformName: names.uniformName,
+        normalize: names.normalize,
+        isMagicTransform: hasMagicTransform(key) && spec.__type === "combobox",
+        values
+      });
+    }
+    return resolved;
+  }
+  var GeneratedWebGLEffect = class extends WebGLEffect {
+    resolvedControls;
+    options;
+    shaderCtx = null;
+    constructor(name, shader, resolvedControls, options) {
+      super({
+        id: name.toLowerCase().replace(/\s+/g, "-"),
+        name,
+        fragmentShader: shader,
+        vertexShader: options.vertexShader,
+        audioReactive: options.audio ?? false
+      });
+      this.resolvedControls = resolvedControls;
+      this.options = options;
+    }
+    initializeControls() {
+      for (const ctrl of this.resolvedControls) {
+        ;
+        this[ctrl.key] = getControlValue(
+          ctrl.key,
+          ctrl.spec.defaultValue
+        );
+      }
+    }
+    getControlValues() {
+      const values = {};
+      for (const ctrl of this.resolvedControls) {
+        let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
+        if (ctrl.normalize === "speed" && typeof val === "number") {
+          val = normalizeSpeed(val);
+        }
+        if (ctrl.isMagicTransform && ctrl.values) {
+          val = comboboxValueToIndex(
+            val,
+            ctrl.values,
+            0
+          );
+        }
+        values[ctrl.key] = val;
+      }
+      return values;
+    }
+    createUniforms() {
+      for (const ctrl of this.resolvedControls) {
+        const initial = this.resolveInitialUniformValue(ctrl);
+        this.registerUniform(ctrl.uniformName, initial);
+      }
+    }
+    async initializeRenderer() {
+      await super.initializeRenderer();
+      if (this.options.setup && this.gl && this.program) {
+        this.shaderCtx = this.createShaderContext();
+        await this.options.setup(this.shaderCtx);
+      }
+    }
+    updateUniforms(controls) {
+      for (const ctrl of this.resolvedControls) {
+        const val = controls[ctrl.key];
+        if (val !== void 0) {
+          this.setUniform(ctrl.uniformName, val);
+        }
+      }
+    }
+    render(time) {
+      if (this.options.frame && this.gl && this.program) {
+        if (!this.shaderCtx) this.shaderCtx = this.createShaderContext();
+        this.options.frame(this.shaderCtx, time);
+      }
+      super.render(time);
+    }
+    resolveInitialUniformValue(ctrl) {
+      const val = ctrl.spec.defaultValue;
+      if (ctrl.isMagicTransform && ctrl.values) {
+        return comboboxValueToIndex(val, ctrl.values, 0);
+      }
+      if (ctrl.normalize === "speed" && typeof val === "number") {
+        return normalizeSpeed(val);
+      }
+      if (typeof val === "boolean") {
+        return val ? 1 : 0;
+      }
+      if (typeof val === "string" && val.startsWith("#")) {
+        return hexToFloats(val);
+      }
+      if (typeof val === "number") {
+        return val;
+      }
+      if (ctrl.spec.__type === "combobox" && ctrl.values) {
+        return comboboxValueToIndex(val, ctrl.values, 0);
+      }
+      return 0;
+    }
+    createShaderContext() {
+      const self2 = this;
+      return {
+        get controls() {
+          return self2.getControlValues();
+        },
+        get audio() {
+          return getAudioData();
+        },
+        gl: self2.gl,
+        program: self2.program,
+        get width() {
+          return self2.canvas?.width ?? 320;
+        },
+        get height() {
+          return self2.canvas?.height ?? 200;
+        },
+        registerUniform: (name, value) => self2.registerUniform(name, value),
+        setUniform: (name, value) => self2.setUniform(name, value)
+      };
+    }
+  };
+  function hexToFloats(hex) {
+    const h = hex.replace("#", "");
+    return [
+      Number.parseInt(h.slice(0, 2), 16) / 255,
+      Number.parseInt(h.slice(2, 4), 16) / 255,
+      Number.parseInt(h.slice(4, 6), 16) / 255
+    ];
+  }
+  function storeMetadata(def) {
+    const g = globalThis;
+    const defs = g.__hypercolorEffectDefs__ ?? [];
+    defs.push(def);
+    g.__hypercolorEffectDefs__ = defs;
+  }
+  function effect(name, shader, controls, options) {
+    const resolved = resolveControls(controls);
+    const opts = options ?? {};
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeMetadata({
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        audio: opts.audio
+      });
+      return;
+    }
+    const fx = new GeneratedWebGLEffect(name, shader, resolved, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  }
+
+  // shared/palettes.json
+  var palettes_default = [
+    {
+      id: "silkcircuit",
+      name: "SilkCircuit",
+      mood: ["electric", "dark", "vibrant"],
+      stops: ["#e135ff", "#80ffea", "#ff6ac1", "#f1fa8c", "#50fa7b"],
+      iq: { a: [0.5, 0.3, 0.5], b: [0.5, 0.5, 0.5], c: [1, 0.8, 0.6], d: [0.85, 0.2, 0.5] },
+      accent: "#e135ff",
+      background: "#0d0221"
+    },
+    {
+      id: "cyberpunk",
+      name: "Cyberpunk",
+      mood: ["dark", "neon", "futuristic"],
+      stops: ["#ff00ff", "#00ffff", "#ff0066", "#6600ff"],
+      iq: { a: [0.5, 0.2, 0.5], b: [0.5, 0.5, 0.5], c: [1, 1, 1], d: [0.8, 0.1, 0.6] },
+      accent: "#ff00ff",
+      background: "#0a0014"
+    },
+    {
+      id: "vaporwave",
+      name: "Vaporwave",
+      mood: ["retro", "dreamy", "pastel-neon"],
+      stops: ["#c4b5fd", "#f472b6", "#67e8f9", "#fda4af"],
+      iq: { a: [0.6, 0.4, 0.7], b: [0.3, 0.3, 0.3], c: [0.6, 0.8, 1], d: [0.7, 0.3, 0.6] },
+      accent: "#c4b5fd",
+      background: "#1a0030"
+    },
+    {
+      id: "synthwave",
+      name: "Synthwave",
+      mood: ["retro", "warm", "80s"],
+      stops: ["#4a0080", "#ff006a", "#ff6600", "#ffcc00"],
+      iq: { a: [0.5, 0.2, 0.3], b: [0.5, 0.5, 0.5], c: [1, 0.7, 0.4], d: [0, 0.15, 0.2] },
+      accent: "#ff006a",
+      background: "#0f0020"
+    },
+    {
+      id: "neon-flux",
+      name: "Neon Flux",
+      mood: ["energetic", "vibrant"],
+      stops: ["#ff00aa", "#00ffcc", "#ffaa00", "#aa00ff"],
+      iq: { a: [0.5, 0.5, 0.5], b: [0.5, 0.5, 0.5], c: [1, 1, 0.5], d: [0.8, 0.9, 0.3] },
+      accent: "#ff00aa",
+      background: "#050510"
+    },
+    {
+      id: "matrix",
+      name: "Matrix",
+      mood: ["dark", "digital", "monochrome"],
+      stops: ["#001100", "#003300", "#00ff00", "#66ff66"],
+      iq: { a: [0, 0.3, 0], b: [0, 0.5, 0], c: [0, 1, 0], d: [0, 0.3, 0] },
+      accent: "#00ff00",
+      background: "#000800"
+    },
+    {
+      id: "aurora",
+      name: "Aurora",
+      mood: ["cool", "ethereal", "northern"],
+      stops: ["#00bcd4", "#4caf50", "#7c4dff", "#00e5ff"],
+      iq: { a: [0.2, 0.5, 0.4], b: [0.3, 0.4, 0.4], c: [0.8, 0.7, 0.9], d: [0.6, 0.3, 0.7] },
+      accent: "#00e5ff",
+      background: "#020810"
+    },
+    {
+      id: "ocean",
+      name: "Ocean",
+      mood: ["calm", "deep", "aquatic"],
+      stops: ["#001f3f", "#0074d9", "#39cccc", "#7fdbff"],
+      iq: { a: [0.1, 0.3, 0.5], b: [0.2, 0.3, 0.4], c: [0.5, 0.7, 1], d: [0.4, 0.5, 0.6] },
+      accent: "#0074d9",
+      background: "#000a1a"
+    },
+    {
+      id: "forest",
+      name: "Forest",
+      mood: ["earthy", "organic", "lush"],
+      stops: ["#1b3a1a", "#2e7d32", "#4caf50", "#81c784", "#c6ff00"],
+      iq: { a: [0.1, 0.3, 0.1], b: [0.2, 0.4, 0.2], c: [0.5, 0.8, 0.4], d: [0.3, 0.4, 0.2] },
+      accent: "#4caf50",
+      background: "#0a1a0a"
+    },
+    {
+      id: "sunset",
+      name: "Sunset",
+      mood: ["warm", "romantic", "dusk"],
+      stops: ["#ff6f00", "#ff8a65", "#ff5252", "#ffd740"],
+      iq: { a: [0.5, 0.3, 0.2], b: [0.5, 0.4, 0.3], c: [1, 0.6, 0.4], d: [0, 0.1, 0.2] },
+      accent: "#ff6f00",
+      background: "#1a0800"
+    },
+    {
+      id: "cherry-blossom",
+      name: "Cherry Blossom",
+      mood: ["gentle", "spring", "delicate"],
+      stops: ["#ffffff", "#ffc0cb", "#ff69b4", "#db7093"],
+      iq: { a: [0.8, 0.6, 0.7], b: [0.2, 0.2, 0.2], c: [0.5, 0.3, 0.4], d: [0, 0.3, 0.4] },
+      accent: "#ff69b4",
+      background: "#1a0810"
+    },
+    {
+      id: "fire",
+      name: "Fire",
+      mood: ["hot", "intense", "primal"],
+      stops: ["#000000", "#8b0000", "#ff4500", "#ffa500", "#ffff00"],
+      iq: { a: [0.5, 0.2, 0], b: [0.5, 0.3, 0.1], c: [1, 0.7, 0.4], d: [0, 0.05, 0.1] },
+      accent: "#ff4500",
+      background: "#0a0000"
+    },
+    {
+      id: "lava",
+      name: "Lava",
+      mood: ["volcanic", "extreme"],
+      stops: ["#000000", "#8b0000", "#ff2200", "#ff6600", "#ffffff"],
+      iq: { a: [0.4, 0.1, 0], b: [0.5, 0.3, 0.2], c: [1, 0.5, 0.3], d: [0, 0, 0.1] },
+      accent: "#ff2200",
+      background: "#0a0000"
+    },
+    {
+      id: "ember",
+      name: "Ember",
+      mood: ["warm", "cozy", "glowing"],
+      stops: ["#3e2723", "#bf360c", "#ff9800", "#ffc107"],
+      iq: { a: [0.4, 0.2, 0.1], b: [0.3, 0.2, 0.1], c: [0.8, 0.6, 0.3], d: [0.1, 0.1, 0.05] },
+      accent: "#ff9800",
+      background: "#1a0a00"
+    },
+    {
+      id: "solar",
+      name: "Solar",
+      mood: ["bright", "radiant", "powerful"],
+      stops: ["#b8860b", "#ffd700", "#ffffff", "#fff59d"],
+      iq: { a: [0.6, 0.5, 0.2], b: [0.4, 0.4, 0.3], c: [0.8, 0.7, 0.5], d: [0, 0.1, 0.2] },
+      accent: "#ffd700",
+      background: "#1a1000"
+    },
+    {
+      id: "ice",
+      name: "Ice",
+      mood: ["cold", "crisp", "frozen"],
+      stops: ["#0d47a1", "#e1f5fe", "#00e5ff", "#b3e5fc"],
+      iq: { a: [0.3, 0.5, 0.7], b: [0.3, 0.4, 0.3], c: [0.6, 0.7, 0.8], d: [0.5, 0.6, 0.7] },
+      accent: "#00e5ff",
+      background: "#000a1a"
+    },
+    {
+      id: "deep-sea",
+      name: "Deep Sea",
+      mood: ["dark", "mysterious", "abyssal"],
+      stops: ["#020024", "#1a237e", "#00695c", "#00bfa5"],
+      iq: { a: [0.1, 0.1, 0.3], b: [0.2, 0.2, 0.3], c: [0.3, 0.5, 0.7], d: [0.6, 0.5, 0.6] },
+      accent: "#00bfa5",
+      background: "#000510"
+    },
+    {
+      id: "midnight",
+      name: "Midnight",
+      mood: ["dark", "contemplative", "elegant"],
+      stops: ["#0d0033", "#1a0066", "#4a148c", "#7b1fa2"],
+      iq: { a: [0.2, 0.1, 0.3], b: [0.2, 0.1, 0.3], c: [0.5, 0.3, 0.7], d: [0.7, 0.5, 0.7] },
+      accent: "#7b1fa2",
+      background: "#050010"
+    },
+    {
+      id: "frost",
+      name: "Frost",
+      mood: ["light", "winter", "clean"],
+      stops: ["#b3e5fc", "#e1f5fe", "#f5f5f5", "#cfd8dc"],
+      iq: { a: [0.7, 0.8, 0.9], b: [0.2, 0.2, 0.1], c: [0.3, 0.3, 0.3], d: [0.5, 0.6, 0.7] },
+      accent: "#b3e5fc",
+      background: "#0a1520"
+    },
+    {
+      id: "viridis",
+      name: "Viridis",
+      mood: ["perceptually-uniform", "data"],
+      stops: ["#440154", "#31688e", "#35b779", "#fde725"],
+      iq: { a: [0.3, 0.3, 0.3], b: [0.3, 0.3, 0.3], c: [0.8, 0.8, 0.5], d: [0.7, 0.1, 0.2] },
+      accent: "#35b779",
+      background: "#0a0020"
+    },
+    {
+      id: "inferno",
+      name: "Inferno",
+      mood: ["perceptually-uniform", "heat"],
+      stops: ["#000004", "#420a68", "#dd513a", "#fcffa4"],
+      iq: { a: [0.3, 0.15, 0.2], b: [0.4, 0.3, 0.3], c: [0.8, 0.5, 0.4], d: [0, 0.1, 0.2] },
+      accent: "#dd513a",
+      background: "#000004"
+    },
+    {
+      id: "plasma",
+      name: "Plasma",
+      mood: ["perceptually-uniform", "vivid"],
+      stops: ["#0d0887", "#7e03a8", "#cc4778", "#f89540", "#f0f921"],
+      iq: { a: [0.3, 0.2, 0.4], b: [0.4, 0.3, 0.4], c: [0.8, 0.6, 0.6], d: [0.6, 0.2, 0.4] },
+      accent: "#cc4778",
+      background: "#050020"
+    },
+    {
+      id: "magma",
+      name: "Magma",
+      mood: ["perceptually-uniform", "warm"],
+      stops: ["#000004", "#3b0f70", "#b63679", "#fb8861", "#fcfdbf"],
+      iq: { a: [0.3, 0.15, 0.25], b: [0.4, 0.3, 0.35], c: [0.7, 0.5, 0.5], d: [0.1, 0.15, 0.2] },
+      accent: "#fb8861",
+      background: "#000004"
+    },
+    {
+      id: "candy",
+      name: "Candy",
+      mood: ["sweet", "playful", "soft"],
+      stops: ["#f48fb1", "#ce93d8", "#80cbc4", "#ffcc80"],
+      iq: { a: [0.7, 0.6, 0.7], b: [0.3, 0.3, 0.3], c: [0.5, 0.5, 0.5], d: [0.8, 0.3, 0.5] },
+      accent: "#f48fb1",
+      background: "#1a0810"
+    },
+    {
+      id: "pastel",
+      name: "Pastel",
+      mood: ["gentle", "calm", "muted"],
+      stops: ["#c5cae9", "#b2dfdb", "#f8bbd0", "#fff9c4"],
+      iq: { a: [0.7, 0.7, 0.8], b: [0.2, 0.2, 0.2], c: [0.3, 0.4, 0.3], d: [0.5, 0.3, 0.5] },
+      accent: "#c5cae9",
+      background: "#101015"
+    },
+    {
+      id: "cotton-candy",
+      name: "Cotton Candy",
+      mood: ["whimsical", "light"],
+      stops: ["#ffb6c1", "#b0e0e6", "#ffc0cb", "#add8e6"],
+      iq: { a: [0.8, 0.7, 0.8], b: [0.2, 0.2, 0.2], c: [0.3, 0.3, 0.3], d: [0, 0.5, 0.7] },
+      accent: "#ffb6c1",
+      background: "#100810"
+    },
+    {
+      id: "mono",
+      name: "Mono",
+      mood: ["neutral", "classic"],
+      stops: ["#000000", "#555555", "#aaaaaa", "#ffffff"],
+      iq: { a: [0.5, 0.5, 0.5], b: [0.5, 0.5, 0.5], c: [0, 0, 0], d: [0, 0, 0] },
+      accent: "#ffffff",
+      background: "#000000"
+    },
+    {
+      id: "phosphor",
+      name: "Phosphor",
+      mood: ["retro", "terminal", "hacker"],
+      stops: ["#001100", "#003300", "#00aa00", "#00ff00"],
+      iq: { a: [0, 0.25, 0], b: [0, 0.25, 0], c: [0, 1, 0], d: [0, 0.5, 0] },
+      accent: "#00ff00",
+      background: "#000800"
+    }
+  ];
+
+  // packages/core/src/palette/runtime.ts
+  var registry = /* @__PURE__ */ new Map();
+  for (const p of palettes_default) {
+    registry.set(p.name, p);
+  }
+  function hexToRgb(hex) {
+    const h = hex.replace("#", "");
+    return [
+      Number.parseInt(h.slice(0, 2), 16) / 255,
+      Number.parseInt(h.slice(2, 4), 16) / 255,
+      Number.parseInt(h.slice(4, 6), 16) / 255
+    ];
+  }
+  function srgbToOklab(r, g, b) {
+    const lr = r <= 0.04045 ? r / 12.92 : ((r + 0.055) / 1.055) ** 2.4;
+    const lg = g <= 0.04045 ? g / 12.92 : ((g + 0.055) / 1.055) ** 2.4;
+    const lb = b <= 0.04045 ? b / 12.92 : ((b + 0.055) / 1.055) ** 2.4;
+    const l_ = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+    const m_ = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+    const s_ = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+    return [
+      0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_,
+      1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_,
+      0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_
+    ];
+  }
+  function oklabToSrgb(L, a, b) {
+    const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+    const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+    const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+    const l = l_ * l_ * l_;
+    const m = m_ * m_ * m_;
+    const s = s_ * s_ * s_;
+    let r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    let g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    let bl = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+    r = r <= 31308e-7 ? 12.92 * r : 1.055 * r ** (1 / 2.4) - 0.055;
+    g = g <= 31308e-7 ? 12.92 * g : 1.055 * g ** (1 / 2.4) - 0.055;
+    bl = bl <= 31308e-7 ? 12.92 * bl : 1.055 * bl ** (1 / 2.4) - 0.055;
+    return [
+      Math.max(0, Math.min(1, r)),
+      Math.max(0, Math.min(1, g)),
+      Math.max(0, Math.min(1, bl))
+    ];
+  }
+  var LUT_SIZE = 256;
+  var lutCache = /* @__PURE__ */ new Map();
+  function buildLut(palette) {
+    const stops = palette.stops.map(hexToRgb);
+    const oklabStops = stops.map(([r, g, b]) => srgbToOklab(r, g, b));
+    const lut = [];
+    for (let i = 0; i < LUT_SIZE; i++) {
+      const t = i / (LUT_SIZE - 1);
+      const segment = t * (oklabStops.length - 1);
+      const idx = Math.min(Math.floor(segment), oklabStops.length - 2);
+      const frac = segment - idx;
+      const a = oklabStops[idx];
+      const b = oklabStops[idx + 1];
+      const L = a[0] + (b[0] - a[0]) * frac;
+      const aa = a[1] + (b[1] - a[1]) * frac;
+      const bb = a[2] + (b[2] - a[2]) * frac;
+      lut.push(oklabToSrgb(L, aa, bb));
+    }
+    return lut;
+  }
+  function getLut(palette) {
+    let lut = lutCache.get(palette.name);
+    if (!lut) {
+      lut = buildLut(palette);
+      lutCache.set(palette.name, lut);
+    }
+    return lut;
+  }
+  function samplePalette(paletteName, t) {
+    const entry = registry.get(paletteName);
+    if (!entry) return [1, 0, 1];
+    const lut = getLut(entry);
+    const clamped = Math.max(0, Math.min(1, t));
+    const idx = Math.round(clamped * (LUT_SIZE - 1));
+    return lut[idx];
+  }
+  function samplePaletteCSS(paletteName, t, alpha) {
+    const [r, g, b] = samplePalette(paletteName, t);
+    const ri = Math.round(r * 255);
+    const gi = Math.round(g * 255);
+    const bi = Math.round(b * 255);
+    if (alpha !== void 0 && alpha < 1) {
+      return `rgba(${ri},${gi},${bi},${alpha.toFixed(3)})`;
+    }
+    return `rgb(${ri},${gi},${bi})`;
+  }
+  function createPaletteFn(paletteName) {
+    return (t, alpha) => samplePaletteCSS(paletteName, t, alpha);
+  }
+
+  // packages/core/src/effects/canvas-fn.ts
+  function resolveCanvasControls(controls) {
+    const resolved = [];
+    for (const [key, value] of Object.entries(controls)) {
+      const spec = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
+      const names = resolveControlNames(key, spec);
+      const isCombo = spec.__type === "combobox";
+      const values = spec.meta.values;
+      resolved.push({
+        key,
+        spec,
+        normalize: names.normalize,
+        isMagicTransform: hasMagicTransform(key) && isCombo,
+        isPalette: key === "palette" && isCombo,
+        values
+      });
+    }
+    return resolved;
+  }
+  function resolveValues(controls, paletteFnCache) {
+    const result = {};
+    for (const ctrl of controls) {
+      let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
+      if (ctrl.normalize === "speed" && typeof val === "number") {
+        val = normalizeSpeed(val);
+      }
+      if (ctrl.isPalette && ctrl.values) {
+        const paletteName = typeof val === "string" ? val : ctrl.values[0] ?? "SilkCircuit";
+        let fn = paletteFnCache.get(paletteName);
+        if (!fn) {
+          fn = createPaletteFn(paletteName);
+          paletteFnCache.set(paletteName, fn);
+        }
+        result[ctrl.key] = fn;
+        continue;
+      }
+      if (ctrl.isMagicTransform && !ctrl.isPalette && ctrl.values) {
+        val = comboboxValueToIndex(val, ctrl.values, 0);
+      }
+      result[ctrl.key] = val;
+    }
+    return result;
+  }
+  var GeneratedCanvasEffect = class extends CanvasEffect {
+    resolvedControls;
+    drawFn = null;
+    factoryFn = null;
+    directDrawFn = null;
+    currentControls = {};
+    paletteFnCache = /* @__PURE__ */ new Map();
+    constructor(name, resolvedControls, renderFn, isFactory, options) {
+      super({
+        id: name.toLowerCase().replace(/\s+/g, "-"),
+        name,
+        canvasWidth: options.width,
+        canvasHeight: options.height
+      });
+      this.resolvedControls = resolvedControls;
+      if (isFactory) {
+        this.factoryFn = renderFn;
+      } else {
+        this.directDrawFn = renderFn;
+      }
+    }
+    async initializeRenderer() {
+      await super.initializeRenderer();
+      if (this.factoryFn) {
+        this.drawFn = this.factoryFn();
+      } else {
+        this.drawFn = this.directDrawFn;
+      }
+    }
+    initializeControls() {
+      this.currentControls = resolveValues(this.resolvedControls, this.paletteFnCache);
+    }
+    getControlValues() {
+      return resolveValues(this.resolvedControls, this.paletteFnCache);
+    }
+    applyControls(controls) {
+      this.currentControls = controls;
+    }
+    draw(time, _deltaTime) {
+      if (!this.drawFn || !this.ctx) return;
+      this.drawFn(this.ctx, time, this.currentControls);
+    }
+    // Override clearCanvas to not auto-clear — let the draw function decide
+    clearCanvas() {
+    }
+  };
+  function storeCanvasMetadata(def) {
+    const g = globalThis;
+    const defs = g.__hypercolorEffectDefs__ ?? [];
+    defs.push(def);
+    g.__hypercolorEffectDefs__ = defs;
+  }
+  function canvas(name, controls, renderFn, options) {
+    const resolved = resolveCanvasControls(controls);
+    const opts = options ?? {};
+    const isFactory = renderFn.length === 0;
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeCanvasMetadata({
+        type: "canvas",
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        width: opts.width,
+        height: opts.height
+      });
+      return;
+    }
+    const fx = new GeneratedCanvasEffect(name, resolved, renderFn, isFactory, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  }
+  canvas.stateful = function stateful(name, controls, factory, options) {
+    const resolved = resolveCanvasControls(controls);
+    const opts = options ?? {};
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeCanvasMetadata({
+        type: "canvas",
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        width: opts.width,
+        height: opts.height
+      });
+      return;
+    }
+    const fx = new GeneratedCanvasEffect(name, resolved, factory, true, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  };
+
+  // packages/core/src/controls/decorators.ts
+  var import_reflect_metadata = __toESM(require_Reflect(), 1);
+  var METADATA_KEYS = {
+    controls: /* @__PURE__ */ Symbol.for("hypercolor:controls"),
+    effect: /* @__PURE__ */ Symbol.for("hypercolor:effect")
+  };
+  var propertyMetadataKey = (propertyName) => /* @__PURE__ */ Symbol.for(`hypercolor:control:${propertyName}`);
+  function createControlDecorator(createDefinition) {
+    return (options) => (target, propertyKey) => {
+      if (typeof propertyKey !== "string") {
+        throw new Error("Control decorators can only be used on string properties");
+      }
+      const targetConstructor = target.constructor;
+      if (!Reflect.hasMetadata(METADATA_KEYS.controls, targetConstructor)) {
+        Reflect.defineMetadata(METADATA_KEYS.controls, [], targetConstructor);
+      }
+      const controlsMetadata = Reflect.getMetadata(METADATA_KEYS.controls, targetConstructor);
+      const controlDefinition = createDefinition(propertyKey, options);
+      controlsMetadata.push(controlDefinition);
+      Reflect.defineMetadata(propertyMetadataKey(propertyKey), controlDefinition, targetConstructor);
+    };
+  }
+  var NumberControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    max: options.max,
+    min: options.min,
+    step: options.step,
+    tooltip: options.tooltip,
+    type: "number"
+  }));
+  var BooleanControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "boolean"
+  }));
+  var ComboboxControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "combobox",
+    values: options.values
+  }));
+  var HueControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    max: options.max,
+    min: options.min,
+    tooltip: options.tooltip,
+    type: "hue"
+  }));
+  var ColorControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "color"
+  }));
+  var TextFieldControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "textfield"
+  }));
+
   // src/effects/borealis/fragment.glsl
   var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iSpeed;\nuniform float iIntensity;\nuniform float iWarpStrength;\nuniform float iStarBrightness;\nuniform float iCurtainHeight;\nuniform int iPalette;\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat vnoise(vec2 p) {\n    vec2 i = floor(p);\n    vec2 f = fract(p);\n    f = f * f * (3.0 - 2.0 * f);\n\n    float a = hash21(i);\n    float b = hash21(i + vec2(1.0, 0.0));\n    float c = hash21(i + vec2(0.0, 1.0));\n    float d = hash21(i + vec2(1.0, 1.0));\n    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n}\n\nfloat fbm(vec2 p, int octaves) {\n    float sum = 0.0;\n    float amp = 0.5;\n    float freq = 1.0;\n    for (int i = 0; i < 8; i++) {\n        if (i >= octaves) break;\n        sum += amp * vnoise(p * freq);\n        freq *= 2.0;\n        amp *= 0.5;\n    }\n    return sum;\n}\n\nvec2 domainWarp(vec2 p, float strength, float scale) {\n    float nx = fbm(p * scale + vec2(1.7, 9.2), 4);\n    float ny = fbm(p * scale + vec2(8.3, 2.8), 4);\n    return p + vec2(nx - 0.5, ny - 0.5) * strength;\n}\n\nmat2 rot(float a) {\n    float c = cos(a);\n    float s = sin(a);\n    return mat2(c, -s, s, c);\n}\n\nfloat tri(float x) {\n    return clamp(abs(fract(x) - 0.5), 0.01, 0.49);\n}\n\nvec2 tri2(vec2 p) {\n    return vec2(tri(p.x) + tri(p.y), tri(p.y + tri(p.x)));\n}\n\nfloat triNoise2d(vec2 p, float speed, float time) {\n    float z = 1.7;\n    float z2 = 2.5;\n    float rz = 0.0;\n\n    p *= rot(p.x * 0.06);\n    vec2 bp = p;\n    const mat2 m2 = mat2(0.95534, -0.29552, 0.29552, 0.95534);\n\n    for (int i = 0; i < 5; i++) {\n        vec2 dg = tri2(bp * 1.85) * 0.75;\n        dg *= rot(time * speed);\n\n        p -= dg / z2;\n        bp *= 1.3;\n        z2 *= 0.52;\n        z *= 0.47;\n        p *= 1.22;\n        p = m2 * p;\n\n        rz += tri(p.x + tri(p.y)) * z;\n    }\n\n    return clamp(1.0 / pow(rz * 30.0, 1.25), 0.0, 1.0);\n}\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) {\n        // Physically inspired northern lights: green dominant with magenta/purple accents.\n        float primary = 0.5 + 0.5 * sin(6.28318 * (t * 0.55));\n        float secondary = 0.5 + 0.5 * sin(6.28318 * (t * 0.87 + 0.22));\n        vec3 emerald = vec3(0.08, 0.96, 0.47);\n        vec3 magenta = vec3(0.93, 0.32, 0.84);\n        vec3 violet = vec3(0.60, 0.27, 0.97);\n        vec3 base = mix(emerald, magenta, 0.18 + primary * 0.34);\n        return mix(base, violet, 0.14 + secondary * 0.30);\n    }\n    if (id == 1) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    if (id == 3) return iqPalette(t, vec3(0.5, 0.5, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.1, 0.2));\n    if (id == 4) return iqPalette(t, vec3(0.5, 0.6, 0.8), vec3(0.2, 0.3, 0.2), vec3(0.6, 0.8, 1.0), vec3(0.0, 0.1, 0.3));\n    if (id == 5) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    if (id == 6) return iqPalette(t, vec3(0.6, 0.4, 0.7), vec3(0.3, 0.3, 0.3), vec3(0.6, 0.8, 1.0), vec3(0.7, 0.3, 0.6));\n    if (id == 7) return iqPalette(t, vec3(0.0, 0.3, 0.0), vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.0, 0.0));\n    return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n}\n\nfloat starField(vec2 uv, float time) {\n    vec2 denseUV = uv * vec2(180.0, 130.0);\n    vec2 cell = floor(denseUV);\n    float rng = hash21(cell);\n    if (rng > 0.035) return 0.0;\n\n    vec2 local = fract(denseUV) - 0.5;\n    vec2 jitter = vec2(hash21(cell + 1.3), hash21(cell + 7.9)) - 0.5;\n    float dist = length(local - jitter * 0.45);\n\n    float twinkle = 0.55 + 0.45 * sin(time * (1.2 + rng * 3.5) + rng * 15.0);\n    float size = mix(0.02, 0.045, rng * 18.0);\n    return (1.0 - smoothstep(0.0, size, dist)) * twinkle;\n}\n\nvec3 auroraLayer(vec2 p, float time, float layer, float baseHeight) {\n    float depth = layer / 5.0;\n    float warp = (0.06 + iWarpStrength * 0.0038) * (1.0 + depth * 0.65);\n\n    vec2 q = p;\n    q.x *= 1.2 + depth * 0.6;\n    q.y *= 0.75 + depth * 0.16;\n    q.x += time * (0.05 + depth * 0.05);\n    q = domainWarp(q + vec2(depth * 2.7, 0.0), warp, 1.0 + depth * 0.8);\n\n    float ridgeNoise = fbm(vec2(q.x * 1.35 + depth * 4.1, time * 0.04 + depth * 2.3), 5) - 0.5;\n    float ridge = baseHeight + ridgeNoise * (0.38 - depth * 0.08);\n    float drop = ridge - p.y;\n\n    float curtain = smoothstep(-0.05, 0.12, drop) * (1.0 - smoothstep(0.84, 1.08, drop));\n    float rays = triNoise2d(vec2(q.x * 2.3 + depth * 6.0, p.y * 0.95 - depth * 1.9), 0.08 + depth * 0.04, time);\n    float filament = pow(rays, 1.35);\n    float shimmer = 0.68 + 0.32 * sin(time * 1.3 + q.x * 4.5 + depth * 5.7);\n    float glow = exp(-abs(drop - 0.16) * 7.0);\n\n    float intensity = curtain * filament * shimmer * (1.0 - depth * 0.12);\n    intensity += glow * filament * 0.15;\n\n    float colorT = depth * 0.18 + q.x * 0.08 + filament * 0.14 + time * 0.02;\n    vec3 col = paletteColor(colorT, iPalette);\n    if (iPalette == 0) {\n        // Vertical color structure: green curtain body, magenta mid ribbons, purple crown.\n        float crown = smoothstep(-0.02, 0.16, drop) * (1.0 - smoothstep(0.16, 0.34, drop));\n        float ribbon = smoothstep(0.05, 0.36, drop) * (1.0 - smoothstep(0.36, 0.70, drop));\n        float body = smoothstep(0.18, 0.80, drop) * (1.0 - smoothstep(0.80, 1.22, drop));\n        float sweep = 0.5 + 0.5 * sin(q.x * 5.0 + time * 0.8 + layer * 1.1);\n        float striation = 0.5 + 0.5 * sin(q.x * 10.5 + time * 1.05 + layer * 2.4 + filament * 4.2);\n\n        vec3 greenCore = vec3(0.07, 0.97, 0.45);\n        vec3 magentaRibbon = vec3(0.94, 0.32, 0.84);\n        vec3 purpleCrown = vec3(0.62, 0.30, 0.98);\n\n        vec3 physical = greenCore * (0.50 + 0.35 * body);\n        physical += magentaRibbon * (0.12 + 0.48 * ribbon * sweep);\n        physical += purpleCrown * (0.08 + 0.35 * crown * striation);\n\n        col = mix(col, physical, 0.90);\n        col = mix(col, magentaRibbon, 0.24 * ribbon * striation);\n        col = mix(col, purpleCrown, 0.18 * crown * (0.7 + 0.3 * sweep));\n    }\n    vec3 highlight = (iPalette == 0) ? vec3(0.62, 0.98, 0.84) : vec3(0.88, 0.98, 0.95);\n    col = mix(col, highlight, pow(filament, 3.0) * 0.16);\n\n    return col * intensity * (0.05 + iIntensity * 0.0115);\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    vec2 p = (uv - 0.5) * vec2(iResolution.x / iResolution.y, 1.0);\n    float time = iTime * iSpeed * 0.32;\n\n    vec3 skyZenith = vec3(0.005, 0.012, 0.03);\n    vec3 skyBase = (iPalette == 0) ? vec3(0.024, 0.046, 0.08) : vec3(0.02, 0.05, 0.12);\n    vec3 skyHorizon = mix(skyBase, paletteColor(0.18 + time * 0.02, iPalette) * 0.24, 0.6);\n    float skyMix = smoothstep(-0.45, 0.7, p.y);\n    vec3 col = mix(skyHorizon, skyZenith, skyMix);\n    float lowMist = 1.0 - smoothstep(-0.42, -0.04, p.y);\n    col += skyBase * lowMist * 0.12;\n\n    float stars = starField(uv, iTime) * (iStarBrightness * 0.012);\n    col += vec3(0.8, 0.9, 1.0) * stars;\n\n    float baseHeight = mix(-0.08, 0.3, clamp(iCurtainHeight * 0.01, 0.0, 1.0));\n    vec3 aur = vec3(0.0);\n    for (int i = 0; i < 6; i++) {\n        aur += auroraLayer(p, time, float(i), baseHeight);\n    }\n\n    // Horizon haze + volumetric bloom where curtains meet atmosphere.\n    float horizonHaze = exp(-abs(p.y + 0.2) * 8.5);\n    aur += paletteColor(0.52 + time * 0.01, iPalette) * horizonHaze * 0.06 * (iIntensity * 0.008);\n\n    col += aur;\n    if (iPalette == 0) {\n        float upperTint = smoothstep(-0.10, 0.85, p.y);\n        col += vec3(0.20, 0.08, 0.28) * upperTint * 0.08;\n    }\n\n    // Subtle reflection to avoid a dead lower half.\n    vec2 rp = vec2(p.x, -p.y - 0.16);\n    vec3 reflection = vec3(0.0);\n    for (int i = 0; i < 3; i++) {\n        reflection += auroraLayer(rp, time * 0.86, float(i), baseHeight - 0.12);\n    }\n    float waterMask = 1.0 - smoothstep(-0.48, -0.18, p.y);\n    col += reflection * waterMask * 0.34;\n    float seamGlow = exp(-abs(p.y + 0.18) * 14.0);\n    col += paletteColor(0.34 + time * 0.015, iPalette) * seamGlow * 0.02;\n\n    // Filmic tone mapping tuned to preserve colored highlights.\n    col = max(col, vec3(0.0));\n    col = 1.0 - exp(-col * (0.96 + iIntensity * 0.0032));\n    col = pow(clamp(col, 0.0, 1.0), vec3(0.94));\n\n    fragColor = vec4(col, 1.0);\n}\n";
 
   // src/effects/borealis/main.ts
-  var PALETTES = ["Northern Lights", "SilkCircuit", "Cyberpunk", "Sunset", "Ice", "Fire", "Vaporwave", "Phosphor"];
-  var Borealis = class extends WebGLEffect {
-    speed;
-    intensity;
-    warpStrength;
-    starBrightness;
-    curtainHeight;
-    palette;
-    constructor() {
-      super({ fragmentShader: fragment_default });
-    }
-    initializeControls() {
-      this.speed = getControlValue("speed", 5);
-      this.intensity = getControlValue("intensity", 82);
-      this.warpStrength = getControlValue("warpStrength", 62);
-      this.starBrightness = getControlValue("starBrightness", 40);
-      this.curtainHeight = getControlValue("curtainHeight", 55);
-      this.palette = getControlValue("palette", "Northern Lights");
-    }
-    getControlValues() {
-      return {
-        speed: normalizeSpeed(getControlValue("speed", 5)),
-        intensity: getControlValue("intensity", 82),
-        warpStrength: getControlValue("warpStrength", 62),
-        starBrightness: getControlValue("starBrightness", 40),
-        curtainHeight: getControlValue("curtainHeight", 55),
-        palette: comboboxValueToIndex(getControlValue("palette", "Northern Lights"), PALETTES, 0)
-      };
-    }
-    createUniforms() {
-      this.registerUniform("iSpeed", 1);
-      this.registerUniform("iIntensity", 82);
-      this.registerUniform("iWarpStrength", 62);
-      this.registerUniform("iStarBrightness", 40);
-      this.registerUniform("iCurtainHeight", 55);
-      this.registerUniform("iPalette", 0);
-    }
-    updateUniforms(controls) {
-      this.setUniform("iSpeed", controls.speed);
-      this.setUniform("iIntensity", controls.intensity);
-      this.setUniform("iWarpStrength", controls.warpStrength);
-      this.setUniform("iStarBrightness", controls.starBrightness);
-      this.setUniform("iCurtainHeight", controls.curtainHeight);
-      this.setUniform("iPalette", controls.palette);
-    }
-  };
-  __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Animation speed" })
-  ], Borealis.prototype, "speed", 2);
-  __decorateClass([
-    NumberControl({ label: "Intensity", min: 0, max: 100, default: 82, tooltip: "Aurora brightness" })
-  ], Borealis.prototype, "intensity", 2);
-  __decorateClass([
-    NumberControl({ label: "Warp", min: 0, max: 100, default: 62, tooltip: "Domain warping strength" })
-  ], Borealis.prototype, "warpStrength", 2);
-  __decorateClass([
-    NumberControl({ label: "Stars", min: 0, max: 100, default: 40, tooltip: "Star brightness" })
-  ], Borealis.prototype, "starBrightness", 2);
-  __decorateClass([
-    NumberControl({ label: "Height", min: 20, max: 90, default: 55, tooltip: "Aurora vertical position" })
-  ], Borealis.prototype, "curtainHeight", 2);
-  __decorateClass([
-    ComboboxControl({
-      label: "Palette",
-      values: PALETTES,
-      default: "Northern Lights",
-      tooltip: "Color palette"
-    })
-  ], Borealis.prototype, "palette", 2);
-  Borealis = __decorateClass([
-    Effect({
-      name: "Borealis",
-      description: "Aurora borealis \u2014 layered curtains of light with domain-warped fBm noise",
-      author: "Hypercolor",
-      audioReactive: false
-    })
-  ], Borealis);
-  var effect = new Borealis();
-  initializeEffect(() => effect.initialize(), { instance: effect });
+  var main_default = effect("Borealis", fragment_default, {
+    speed: [1, 10, 5],
+    intensity: [0, 100, 82],
+    warpStrength: [0, 100, 62],
+    starBrightness: [0, 100, 40],
+    curtainHeight: [20, 90, 55],
+    palette: ["Northern Lights", "SilkCircuit", "Cyberpunk", "Sunset", "Ice", "Fire", "Vaporwave", "Phosphor"]
+  }, {
+    description: "Aurora borealis \u2014 layered curtains of light with domain-warped fBm noise"
+  });
 })();
 /*! Bundled license information:
 

@@ -6,14 +6,14 @@
   <title>Voronoi Glass</title>
   <meta description="Community Swirl Reactor style orbital particles with crisp RGB trails"/>
   <meta publisher="Hypercolor"/>
-  <meta property="arms" label="Arms" type="number" min="1" max="10" default="5" tooltip="Number of spiral lanes"/>
-  <meta property="count" label="Spawn / Count" type="number" min="16" max="320" default="150" tooltip="Particle population and spawn flow"/>
-  <meta property="particleSize" label="Particle Size" type="number" min="1" max="14" default="4" tooltip="Particle radius"/>
-  <meta property="growth" label="Growth" type="number" min="0" max="100" default="62" tooltip="Outward expansion amount"/>
-  <meta property="rotationMode" label="Rotation Mode" type="combobox" default="Alternating" values="Clockwise,Counter-Clockwise,Alternating,Pulse" tooltip="Orbit spin direction behavior"/>
-  <meta property="colorMode" label="Color Mode" type="combobox" default="RGB Split" values="RGB Split,RGB Cycle,Prism,Mono" tooltip="Particle color pattern"/>
-  <meta property="cycleSpeed" label="Cycle Speed" type="number" min="0" max="100" default="58" tooltip="Rotation and hue cycle speed"/>
-  <meta property="background" label="Background" type="color" default="#04060f" tooltip="Background color"/>
+  <meta property="arms" label="Arms" type="number" min="1" max="10" default="5"/>
+  <meta property="count" label="Count" type="number" min="16" max="320" default="150"/>
+  <meta property="particleSize" label="Particle Size" type="number" min="1" max="14" default="4"/>
+  <meta property="growth" label="Growth" type="number" min="0" max="100" default="62"/>
+  <meta property="rotationMode" label="Rotation Mode" type="combobox" default="Alternating" values="Clockwise,Counter-Clockwise,Alternating,Pulse"/>
+  <meta property="colorMode" label="Color Mode" type="combobox" default="RGB Split" values="RGB Split,RGB Cycle,Prism,Mono"/>
+  <meta property="cycleSpeed" label="Cycle Speed" type="number" min="0" max="100" default="58"/>
+  <meta property="background" label="Background" type="color" default="#04060f"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -45,14 +45,6 @@
     isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
     mod
   ));
-  var __decorateClass = (decorators, target, key, kind) => {
-    var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;
-    for (var i = decorators.length - 1, decorator; i >= 0; i--)
-      if (decorator = decorators[i])
-        result = (kind ? decorator(target, key, result) : decorator(result)) || result;
-    if (kind && result) __defProp(target, key, result);
-    return result;
-  };
 
   // node_modules/.bun/reflect-metadata@0.2.2/node_modules/reflect-metadata/Reflect.js
   var require_Reflect = __commonJS({
@@ -529,14 +521,14 @@
             var second;
             var rest;
             var targetProviderMap = new _WeakMap();
-            var registry = {
+            var registry2 = {
               registerProvider,
               getProvider,
               setProvider
             };
-            return registry;
+            return registry2;
             function registerProvider(provider) {
-              if (!Object.isExtensible(registry)) {
+              if (!Object.isExtensible(registry2)) {
                 throw new Error("Cannot add provider to a frozen registry.");
               }
               switch (true) {
@@ -648,7 +640,7 @@
             }
             return metadataRegistry2;
           }
-          function CreateMetadataProvider(registry) {
+          function CreateMetadataProvider(registry2) {
             var metadata2 = new _WeakMap();
             var provider = {
               isProviderFor: function(O, P) {
@@ -681,7 +673,7 @@
                   return void 0;
                 metadataMap = new _Map();
                 targetMetadata.set(P, metadataMap);
-                if (!registry.setProvider(O, P, provider)) {
+                if (!registry2.setProvider(O, P, provider)) {
                   targetMetadata.delete(P);
                   if (createdTargetMetadata) {
                     metadata2.delete(O);
@@ -1139,91 +1131,6 @@
     }
   });
 
-  // src/effects/voronoi-glass/main.ts
-  var import_reflect_metadata2 = __toESM(require_Reflect());
-
-  // packages/core/src/controls/decorators.ts
-  var import_reflect_metadata = __toESM(require_Reflect(), 1);
-  var METADATA_KEYS = {
-    controls: /* @__PURE__ */ Symbol.for("hypercolor:controls"),
-    effect: /* @__PURE__ */ Symbol.for("hypercolor:effect")
-  };
-  var propertyMetadataKey = (propertyName) => /* @__PURE__ */ Symbol.for(`hypercolor:control:${propertyName}`);
-  function createControlDecorator(createDefinition) {
-    return (options) => (target, propertyKey) => {
-      if (typeof propertyKey !== "string") {
-        throw new Error("Control decorators can only be used on string properties");
-      }
-      const targetConstructor = target.constructor;
-      if (!Reflect.hasMetadata(METADATA_KEYS.controls, targetConstructor)) {
-        Reflect.defineMetadata(METADATA_KEYS.controls, [], targetConstructor);
-      }
-      const controlsMetadata = Reflect.getMetadata(METADATA_KEYS.controls, targetConstructor);
-      const controlDefinition = createDefinition(propertyKey, options);
-      controlsMetadata.push(controlDefinition);
-      Reflect.defineMetadata(propertyMetadataKey(propertyKey), controlDefinition, targetConstructor);
-    };
-  }
-  var NumberControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    max: options.max,
-    min: options.min,
-    step: options.step,
-    tooltip: options.tooltip,
-    type: "number"
-  }));
-  var BooleanControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "boolean"
-  }));
-  var ComboboxControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "combobox",
-    values: options.values
-  }));
-  var HueControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    max: options.max,
-    min: options.min,
-    tooltip: options.tooltip,
-    type: "hue"
-  }));
-  var ColorControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "color"
-  }));
-  var TextFieldControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "textfield"
-  }));
-  function Effect(options) {
-    return (target) => {
-      Reflect.defineMetadata(METADATA_KEYS.effect, options, target.prototype);
-      target.prototype.effectMetadata = options;
-    };
-  }
-
-  // packages/core/src/controls/helpers.ts
-  function getControlValue(propertyName, defaultValue) {
-    return window[propertyName] ?? defaultValue;
-  }
-
   // packages/core/src/utils/debug.ts
   var COLORS = {
     debug: "#9d9d9d",
@@ -1249,30 +1156,30 @@
     };
   }
   function stylizedLog(level, namespace, ...args) {
-    let color = COLORS.debug;
+    let color2 = COLORS.debug;
     let emoji = EMOJI.debug;
     let method = "log";
     switch (level) {
       case "info":
-        color = COLORS.secondary;
+        color2 = COLORS.secondary;
         emoji = EMOJI.info;
         break;
       case "warn":
-        color = COLORS.warning;
+        color2 = COLORS.warning;
         emoji = EMOJI.warn;
         method = "warn";
         break;
       case "error":
-        color = COLORS.error;
+        color2 = COLORS.error;
         emoji = EMOJI.error;
         method = "error";
         break;
       case "success":
-        color = COLORS.success;
+        color2 = COLORS.success;
         emoji = EMOJI.success;
         break;
     }
-    console[method](`%c${emoji} [${namespace}]`, `color: ${color}; font-weight: bold;`, ...args);
+    console[method](`%c${emoji} [${namespace}]`, `color: ${color2}; font-weight: bold;`, ...args);
   }
 
   // packages/core/src/effects/base-effect.ts
@@ -1405,7 +1312,146 @@
     }
   };
 
-  // packages/core/src/index.ts
+  // packages/core/src/controls/infer.ts
+  function inferControl(key, value, label) {
+    if (Array.isArray(value) && value.length >= 3 && value.length <= 4 && typeof value[0] === "number") {
+      const [min, max, defaultValue, step] = value;
+      return {
+        __brand: "ControlSpec",
+        __type: "number",
+        label,
+        defaultValue,
+        meta: { min, max, step }
+      };
+    }
+    if (Array.isArray(value) && value.length >= 1 && typeof value[0] === "string") {
+      return {
+        __brand: "ControlSpec",
+        __type: "combobox",
+        label,
+        defaultValue: value[0],
+        meta: { values: [...value] }
+      };
+    }
+    if (typeof value === "boolean") {
+      return {
+        __brand: "ControlSpec",
+        __type: "boolean",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "string" && value.startsWith("#")) {
+      return {
+        __brand: "ControlSpec",
+        __type: "color",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "string") {
+      return {
+        __brand: "ControlSpec",
+        __type: "textfield",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "number") {
+      return {
+        __brand: "ControlSpec",
+        __type: "number",
+        label,
+        defaultValue: value,
+        meta: { min: 0, max: 100 }
+      };
+    }
+    throw new Error(
+      `Cannot infer control type for "${key}". Expected [min, max, default], string[], boolean, '#hex', string, or number. Got: ${JSON.stringify(value)}`
+    );
+  }
+
+  // packages/core/src/controls/names.ts
+  function deriveLabel(key) {
+    return key.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase()).trim();
+  }
+  function deriveUniformName(key) {
+    return "i" + key.charAt(0).toUpperCase() + key.slice(1);
+  }
+  var MAGIC_NAMES = {
+    speed: "speed"
+  };
+  var MAGIC_TRANSFORMS = /* @__PURE__ */ new Set(["palette"]);
+  function getMagicNormalize(key) {
+    return MAGIC_NAMES[key] ?? "none";
+  }
+  function hasMagicTransform(key) {
+    return MAGIC_TRANSFORMS.has(key);
+  }
+  function resolveControlNames(key, spec2) {
+    return {
+      label: spec2.label,
+      uniformName: spec2.uniform ?? deriveUniformName(key),
+      normalize: spec2.normalize ?? getMagicNormalize(key)
+    };
+  }
+
+  // packages/core/src/controls/specs.ts
+  function spec(type, label, defaultValue, meta, opts) {
+    return {
+      __brand: "ControlSpec",
+      __type: type,
+      label,
+      defaultValue,
+      tooltip: opts?.tooltip,
+      uniform: opts?.uniform,
+      normalize: opts?.normalize,
+      meta
+    };
+  }
+  function isControlSpec(value) {
+    return value !== null && typeof value === "object" && value.__brand === "ControlSpec";
+  }
+  function combo(label, values, opts) {
+    const defaultValue = opts?.default ?? values[0];
+    return spec("combobox", label, defaultValue, {
+      values: [...values]
+    }, opts);
+  }
+
+  // packages/core/src/controls/helpers.ts
+  function getControlValue(propertyName, defaultValue) {
+    return window[propertyName] ?? defaultValue;
+  }
+  function normalizeSpeed(speed) {
+    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
+    return Math.max(0.2, (speed / 5) ** 1.5);
+  }
+  function comboboxValueToIndex(value, options, defaultIndex = 0) {
+    if (options.length === 0) return 0;
+    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const rounded = Math.round(value);
+      if (rounded >= 0 && rounded < options.length) return rounded;
+      return safeDefault;
+    }
+    if (typeof value !== "string") return safeDefault;
+    const exactIndex = options.indexOf(value);
+    if (exactIndex >= 0) return exactIndex;
+    const normalized = value.trim().toLowerCase();
+    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
+    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
+    const parsedNumeric = Number.parseInt(normalized, 10);
+    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
+      return parsedNumeric;
+    }
+    return safeDefault;
+  }
+
+  // packages/core/src/init.ts
   function detectInitMode() {
     if (typeof window === "undefined") return "metadata-only";
     if (window.__HYPERCOLOR_METADATA_ONLY__) return "metadata-only";
@@ -1432,91 +1478,758 @@
     }, { once: true });
   }
 
+  // shared/palettes.json
+  var palettes_default = [
+    {
+      id: "silkcircuit",
+      name: "SilkCircuit",
+      mood: ["electric", "dark", "vibrant"],
+      stops: ["#e135ff", "#80ffea", "#ff6ac1", "#f1fa8c", "#50fa7b"],
+      iq: { a: [0.5, 0.3, 0.5], b: [0.5, 0.5, 0.5], c: [1, 0.8, 0.6], d: [0.85, 0.2, 0.5] },
+      accent: "#e135ff",
+      background: "#0d0221"
+    },
+    {
+      id: "cyberpunk",
+      name: "Cyberpunk",
+      mood: ["dark", "neon", "futuristic"],
+      stops: ["#ff00ff", "#00ffff", "#ff0066", "#6600ff"],
+      iq: { a: [0.5, 0.2, 0.5], b: [0.5, 0.5, 0.5], c: [1, 1, 1], d: [0.8, 0.1, 0.6] },
+      accent: "#ff00ff",
+      background: "#0a0014"
+    },
+    {
+      id: "vaporwave",
+      name: "Vaporwave",
+      mood: ["retro", "dreamy", "pastel-neon"],
+      stops: ["#c4b5fd", "#f472b6", "#67e8f9", "#fda4af"],
+      iq: { a: [0.6, 0.4, 0.7], b: [0.3, 0.3, 0.3], c: [0.6, 0.8, 1], d: [0.7, 0.3, 0.6] },
+      accent: "#c4b5fd",
+      background: "#1a0030"
+    },
+    {
+      id: "synthwave",
+      name: "Synthwave",
+      mood: ["retro", "warm", "80s"],
+      stops: ["#4a0080", "#ff006a", "#ff6600", "#ffcc00"],
+      iq: { a: [0.5, 0.2, 0.3], b: [0.5, 0.5, 0.5], c: [1, 0.7, 0.4], d: [0, 0.15, 0.2] },
+      accent: "#ff006a",
+      background: "#0f0020"
+    },
+    {
+      id: "neon-flux",
+      name: "Neon Flux",
+      mood: ["energetic", "vibrant"],
+      stops: ["#ff00aa", "#00ffcc", "#ffaa00", "#aa00ff"],
+      iq: { a: [0.5, 0.5, 0.5], b: [0.5, 0.5, 0.5], c: [1, 1, 0.5], d: [0.8, 0.9, 0.3] },
+      accent: "#ff00aa",
+      background: "#050510"
+    },
+    {
+      id: "matrix",
+      name: "Matrix",
+      mood: ["dark", "digital", "monochrome"],
+      stops: ["#001100", "#003300", "#00ff00", "#66ff66"],
+      iq: { a: [0, 0.3, 0], b: [0, 0.5, 0], c: [0, 1, 0], d: [0, 0.3, 0] },
+      accent: "#00ff00",
+      background: "#000800"
+    },
+    {
+      id: "aurora",
+      name: "Aurora",
+      mood: ["cool", "ethereal", "northern"],
+      stops: ["#00bcd4", "#4caf50", "#7c4dff", "#00e5ff"],
+      iq: { a: [0.2, 0.5, 0.4], b: [0.3, 0.4, 0.4], c: [0.8, 0.7, 0.9], d: [0.6, 0.3, 0.7] },
+      accent: "#00e5ff",
+      background: "#020810"
+    },
+    {
+      id: "ocean",
+      name: "Ocean",
+      mood: ["calm", "deep", "aquatic"],
+      stops: ["#001f3f", "#0074d9", "#39cccc", "#7fdbff"],
+      iq: { a: [0.1, 0.3, 0.5], b: [0.2, 0.3, 0.4], c: [0.5, 0.7, 1], d: [0.4, 0.5, 0.6] },
+      accent: "#0074d9",
+      background: "#000a1a"
+    },
+    {
+      id: "forest",
+      name: "Forest",
+      mood: ["earthy", "organic", "lush"],
+      stops: ["#1b3a1a", "#2e7d32", "#4caf50", "#81c784", "#c6ff00"],
+      iq: { a: [0.1, 0.3, 0.1], b: [0.2, 0.4, 0.2], c: [0.5, 0.8, 0.4], d: [0.3, 0.4, 0.2] },
+      accent: "#4caf50",
+      background: "#0a1a0a"
+    },
+    {
+      id: "sunset",
+      name: "Sunset",
+      mood: ["warm", "romantic", "dusk"],
+      stops: ["#ff6f00", "#ff8a65", "#ff5252", "#ffd740"],
+      iq: { a: [0.5, 0.3, 0.2], b: [0.5, 0.4, 0.3], c: [1, 0.6, 0.4], d: [0, 0.1, 0.2] },
+      accent: "#ff6f00",
+      background: "#1a0800"
+    },
+    {
+      id: "cherry-blossom",
+      name: "Cherry Blossom",
+      mood: ["gentle", "spring", "delicate"],
+      stops: ["#ffffff", "#ffc0cb", "#ff69b4", "#db7093"],
+      iq: { a: [0.8, 0.6, 0.7], b: [0.2, 0.2, 0.2], c: [0.5, 0.3, 0.4], d: [0, 0.3, 0.4] },
+      accent: "#ff69b4",
+      background: "#1a0810"
+    },
+    {
+      id: "fire",
+      name: "Fire",
+      mood: ["hot", "intense", "primal"],
+      stops: ["#000000", "#8b0000", "#ff4500", "#ffa500", "#ffff00"],
+      iq: { a: [0.5, 0.2, 0], b: [0.5, 0.3, 0.1], c: [1, 0.7, 0.4], d: [0, 0.05, 0.1] },
+      accent: "#ff4500",
+      background: "#0a0000"
+    },
+    {
+      id: "lava",
+      name: "Lava",
+      mood: ["volcanic", "extreme"],
+      stops: ["#000000", "#8b0000", "#ff2200", "#ff6600", "#ffffff"],
+      iq: { a: [0.4, 0.1, 0], b: [0.5, 0.3, 0.2], c: [1, 0.5, 0.3], d: [0, 0, 0.1] },
+      accent: "#ff2200",
+      background: "#0a0000"
+    },
+    {
+      id: "ember",
+      name: "Ember",
+      mood: ["warm", "cozy", "glowing"],
+      stops: ["#3e2723", "#bf360c", "#ff9800", "#ffc107"],
+      iq: { a: [0.4, 0.2, 0.1], b: [0.3, 0.2, 0.1], c: [0.8, 0.6, 0.3], d: [0.1, 0.1, 0.05] },
+      accent: "#ff9800",
+      background: "#1a0a00"
+    },
+    {
+      id: "solar",
+      name: "Solar",
+      mood: ["bright", "radiant", "powerful"],
+      stops: ["#b8860b", "#ffd700", "#ffffff", "#fff59d"],
+      iq: { a: [0.6, 0.5, 0.2], b: [0.4, 0.4, 0.3], c: [0.8, 0.7, 0.5], d: [0, 0.1, 0.2] },
+      accent: "#ffd700",
+      background: "#1a1000"
+    },
+    {
+      id: "ice",
+      name: "Ice",
+      mood: ["cold", "crisp", "frozen"],
+      stops: ["#0d47a1", "#e1f5fe", "#00e5ff", "#b3e5fc"],
+      iq: { a: [0.3, 0.5, 0.7], b: [0.3, 0.4, 0.3], c: [0.6, 0.7, 0.8], d: [0.5, 0.6, 0.7] },
+      accent: "#00e5ff",
+      background: "#000a1a"
+    },
+    {
+      id: "deep-sea",
+      name: "Deep Sea",
+      mood: ["dark", "mysterious", "abyssal"],
+      stops: ["#020024", "#1a237e", "#00695c", "#00bfa5"],
+      iq: { a: [0.1, 0.1, 0.3], b: [0.2, 0.2, 0.3], c: [0.3, 0.5, 0.7], d: [0.6, 0.5, 0.6] },
+      accent: "#00bfa5",
+      background: "#000510"
+    },
+    {
+      id: "midnight",
+      name: "Midnight",
+      mood: ["dark", "contemplative", "elegant"],
+      stops: ["#0d0033", "#1a0066", "#4a148c", "#7b1fa2"],
+      iq: { a: [0.2, 0.1, 0.3], b: [0.2, 0.1, 0.3], c: [0.5, 0.3, 0.7], d: [0.7, 0.5, 0.7] },
+      accent: "#7b1fa2",
+      background: "#050010"
+    },
+    {
+      id: "frost",
+      name: "Frost",
+      mood: ["light", "winter", "clean"],
+      stops: ["#b3e5fc", "#e1f5fe", "#f5f5f5", "#cfd8dc"],
+      iq: { a: [0.7, 0.8, 0.9], b: [0.2, 0.2, 0.1], c: [0.3, 0.3, 0.3], d: [0.5, 0.6, 0.7] },
+      accent: "#b3e5fc",
+      background: "#0a1520"
+    },
+    {
+      id: "viridis",
+      name: "Viridis",
+      mood: ["perceptually-uniform", "data"],
+      stops: ["#440154", "#31688e", "#35b779", "#fde725"],
+      iq: { a: [0.3, 0.3, 0.3], b: [0.3, 0.3, 0.3], c: [0.8, 0.8, 0.5], d: [0.7, 0.1, 0.2] },
+      accent: "#35b779",
+      background: "#0a0020"
+    },
+    {
+      id: "inferno",
+      name: "Inferno",
+      mood: ["perceptually-uniform", "heat"],
+      stops: ["#000004", "#420a68", "#dd513a", "#fcffa4"],
+      iq: { a: [0.3, 0.15, 0.2], b: [0.4, 0.3, 0.3], c: [0.8, 0.5, 0.4], d: [0, 0.1, 0.2] },
+      accent: "#dd513a",
+      background: "#000004"
+    },
+    {
+      id: "plasma",
+      name: "Plasma",
+      mood: ["perceptually-uniform", "vivid"],
+      stops: ["#0d0887", "#7e03a8", "#cc4778", "#f89540", "#f0f921"],
+      iq: { a: [0.3, 0.2, 0.4], b: [0.4, 0.3, 0.4], c: [0.8, 0.6, 0.6], d: [0.6, 0.2, 0.4] },
+      accent: "#cc4778",
+      background: "#050020"
+    },
+    {
+      id: "magma",
+      name: "Magma",
+      mood: ["perceptually-uniform", "warm"],
+      stops: ["#000004", "#3b0f70", "#b63679", "#fb8861", "#fcfdbf"],
+      iq: { a: [0.3, 0.15, 0.25], b: [0.4, 0.3, 0.35], c: [0.7, 0.5, 0.5], d: [0.1, 0.15, 0.2] },
+      accent: "#fb8861",
+      background: "#000004"
+    },
+    {
+      id: "candy",
+      name: "Candy",
+      mood: ["sweet", "playful", "soft"],
+      stops: ["#f48fb1", "#ce93d8", "#80cbc4", "#ffcc80"],
+      iq: { a: [0.7, 0.6, 0.7], b: [0.3, 0.3, 0.3], c: [0.5, 0.5, 0.5], d: [0.8, 0.3, 0.5] },
+      accent: "#f48fb1",
+      background: "#1a0810"
+    },
+    {
+      id: "pastel",
+      name: "Pastel",
+      mood: ["gentle", "calm", "muted"],
+      stops: ["#c5cae9", "#b2dfdb", "#f8bbd0", "#fff9c4"],
+      iq: { a: [0.7, 0.7, 0.8], b: [0.2, 0.2, 0.2], c: [0.3, 0.4, 0.3], d: [0.5, 0.3, 0.5] },
+      accent: "#c5cae9",
+      background: "#101015"
+    },
+    {
+      id: "cotton-candy",
+      name: "Cotton Candy",
+      mood: ["whimsical", "light"],
+      stops: ["#ffb6c1", "#b0e0e6", "#ffc0cb", "#add8e6"],
+      iq: { a: [0.8, 0.7, 0.8], b: [0.2, 0.2, 0.2], c: [0.3, 0.3, 0.3], d: [0, 0.5, 0.7] },
+      accent: "#ffb6c1",
+      background: "#100810"
+    },
+    {
+      id: "mono",
+      name: "Mono",
+      mood: ["neutral", "classic"],
+      stops: ["#000000", "#555555", "#aaaaaa", "#ffffff"],
+      iq: { a: [0.5, 0.5, 0.5], b: [0.5, 0.5, 0.5], c: [0, 0, 0], d: [0, 0, 0] },
+      accent: "#ffffff",
+      background: "#000000"
+    },
+    {
+      id: "phosphor",
+      name: "Phosphor",
+      mood: ["retro", "terminal", "hacker"],
+      stops: ["#001100", "#003300", "#00aa00", "#00ff00"],
+      iq: { a: [0, 0.25, 0], b: [0, 0.25, 0], c: [0, 1, 0], d: [0, 0.5, 0] },
+      accent: "#00ff00",
+      background: "#000800"
+    }
+  ];
+
+  // packages/core/src/palette/runtime.ts
+  var registry = /* @__PURE__ */ new Map();
+  for (const p of palettes_default) {
+    registry.set(p.name, p);
+  }
+  function hexToRgb(hex) {
+    const h = hex.replace("#", "");
+    return [
+      Number.parseInt(h.slice(0, 2), 16) / 255,
+      Number.parseInt(h.slice(2, 4), 16) / 255,
+      Number.parseInt(h.slice(4, 6), 16) / 255
+    ];
+  }
+  function srgbToOklab(r, g, b) {
+    const lr = r <= 0.04045 ? r / 12.92 : ((r + 0.055) / 1.055) ** 2.4;
+    const lg = g <= 0.04045 ? g / 12.92 : ((g + 0.055) / 1.055) ** 2.4;
+    const lb = b <= 0.04045 ? b / 12.92 : ((b + 0.055) / 1.055) ** 2.4;
+    const l_ = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+    const m_ = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+    const s_ = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+    return [
+      0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_,
+      1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_,
+      0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_
+    ];
+  }
+  function oklabToSrgb(L, a, b) {
+    const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+    const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+    const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+    const l = l_ * l_ * l_;
+    const m = m_ * m_ * m_;
+    const s = s_ * s_ * s_;
+    let r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    let g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    let bl = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+    r = r <= 31308e-7 ? 12.92 * r : 1.055 * r ** (1 / 2.4) - 0.055;
+    g = g <= 31308e-7 ? 12.92 * g : 1.055 * g ** (1 / 2.4) - 0.055;
+    bl = bl <= 31308e-7 ? 12.92 * bl : 1.055 * bl ** (1 / 2.4) - 0.055;
+    return [
+      Math.max(0, Math.min(1, r)),
+      Math.max(0, Math.min(1, g)),
+      Math.max(0, Math.min(1, bl))
+    ];
+  }
+  var LUT_SIZE = 256;
+  var lutCache = /* @__PURE__ */ new Map();
+  function buildLut(palette) {
+    const stops = palette.stops.map(hexToRgb);
+    const oklabStops = stops.map(([r, g, b]) => srgbToOklab(r, g, b));
+    const lut = [];
+    for (let i = 0; i < LUT_SIZE; i++) {
+      const t = i / (LUT_SIZE - 1);
+      const segment = t * (oklabStops.length - 1);
+      const idx = Math.min(Math.floor(segment), oklabStops.length - 2);
+      const frac = segment - idx;
+      const a = oklabStops[idx];
+      const b = oklabStops[idx + 1];
+      const L = a[0] + (b[0] - a[0]) * frac;
+      const aa = a[1] + (b[1] - a[1]) * frac;
+      const bb = a[2] + (b[2] - a[2]) * frac;
+      lut.push(oklabToSrgb(L, aa, bb));
+    }
+    return lut;
+  }
+  function getLut(palette) {
+    let lut = lutCache.get(palette.name);
+    if (!lut) {
+      lut = buildLut(palette);
+      lutCache.set(palette.name, lut);
+    }
+    return lut;
+  }
+  function samplePalette(paletteName, t) {
+    const entry = registry.get(paletteName);
+    if (!entry) return [1, 0, 1];
+    const lut = getLut(entry);
+    const clamped = Math.max(0, Math.min(1, t));
+    const idx = Math.round(clamped * (LUT_SIZE - 1));
+    return lut[idx];
+  }
+  function samplePaletteCSS(paletteName, t, alpha) {
+    const [r, g, b] = samplePalette(paletteName, t);
+    const ri = Math.round(r * 255);
+    const gi = Math.round(g * 255);
+    const bi = Math.round(b * 255);
+    if (alpha !== void 0 && alpha < 1) {
+      return `rgba(${ri},${gi},${bi},${alpha.toFixed(3)})`;
+    }
+    return `rgb(${ri},${gi},${bi})`;
+  }
+  function createPaletteFn(paletteName) {
+    return (t, alpha) => samplePaletteCSS(paletteName, t, alpha);
+  }
+
+  // packages/core/src/effects/canvas-fn.ts
+  function resolveCanvasControls(controls) {
+    const resolved = [];
+    for (const [key, value] of Object.entries(controls)) {
+      const spec2 = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
+      const names = resolveControlNames(key, spec2);
+      const isCombo = spec2.__type === "combobox";
+      const values = spec2.meta.values;
+      resolved.push({
+        key,
+        spec: spec2,
+        normalize: names.normalize,
+        isMagicTransform: hasMagicTransform(key) && isCombo,
+        isPalette: key === "palette" && isCombo,
+        values
+      });
+    }
+    return resolved;
+  }
+  function resolveValues(controls, paletteFnCache) {
+    const result = {};
+    for (const ctrl of controls) {
+      let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
+      if (ctrl.normalize === "speed" && typeof val === "number") {
+        val = normalizeSpeed(val);
+      }
+      if (ctrl.isPalette && ctrl.values) {
+        const paletteName = typeof val === "string" ? val : ctrl.values[0] ?? "SilkCircuit";
+        let fn = paletteFnCache.get(paletteName);
+        if (!fn) {
+          fn = createPaletteFn(paletteName);
+          paletteFnCache.set(paletteName, fn);
+        }
+        result[ctrl.key] = fn;
+        continue;
+      }
+      if (ctrl.isMagicTransform && !ctrl.isPalette && ctrl.values) {
+        val = comboboxValueToIndex(val, ctrl.values, 0);
+      }
+      result[ctrl.key] = val;
+    }
+    return result;
+  }
+  var GeneratedCanvasEffect = class extends CanvasEffect {
+    resolvedControls;
+    drawFn = null;
+    factoryFn = null;
+    directDrawFn = null;
+    currentControls = {};
+    paletteFnCache = /* @__PURE__ */ new Map();
+    constructor(name, resolvedControls, renderFn, isFactory, options) {
+      super({
+        id: name.toLowerCase().replace(/\s+/g, "-"),
+        name,
+        canvasWidth: options.width,
+        canvasHeight: options.height
+      });
+      this.resolvedControls = resolvedControls;
+      if (isFactory) {
+        this.factoryFn = renderFn;
+      } else {
+        this.directDrawFn = renderFn;
+      }
+    }
+    async initializeRenderer() {
+      await super.initializeRenderer();
+      if (this.factoryFn) {
+        this.drawFn = this.factoryFn();
+      } else {
+        this.drawFn = this.directDrawFn;
+      }
+    }
+    initializeControls() {
+      this.currentControls = resolveValues(this.resolvedControls, this.paletteFnCache);
+    }
+    getControlValues() {
+      return resolveValues(this.resolvedControls, this.paletteFnCache);
+    }
+    applyControls(controls) {
+      this.currentControls = controls;
+    }
+    draw(time, _deltaTime) {
+      if (!this.drawFn || !this.ctx) return;
+      this.drawFn(this.ctx, time, this.currentControls);
+    }
+    // Override clearCanvas to not auto-clear — let the draw function decide
+    clearCanvas() {
+    }
+  };
+  function storeCanvasMetadata(def) {
+    const g = globalThis;
+    const defs = g.__hypercolorEffectDefs__ ?? [];
+    defs.push(def);
+    g.__hypercolorEffectDefs__ = defs;
+  }
+  function canvas(name, controls, renderFn, options) {
+    const resolved = resolveCanvasControls(controls);
+    const opts = options ?? {};
+    const isFactory = renderFn.length === 0;
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeCanvasMetadata({
+        type: "canvas",
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        width: opts.width,
+        height: opts.height
+      });
+      return;
+    }
+    const fx = new GeneratedCanvasEffect(name, resolved, renderFn, isFactory, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  }
+  canvas.stateful = function stateful(name, controls, factory, options) {
+    const resolved = resolveCanvasControls(controls);
+    const opts = options ?? {};
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeCanvasMetadata({
+        type: "canvas",
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        width: opts.width,
+        height: opts.height
+      });
+      return;
+    }
+    const fx = new GeneratedCanvasEffect(name, resolved, factory, true, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  };
+
+  // packages/core/src/controls/decorators.ts
+  var import_reflect_metadata = __toESM(require_Reflect(), 1);
+  var METADATA_KEYS = {
+    controls: /* @__PURE__ */ Symbol.for("hypercolor:controls"),
+    effect: /* @__PURE__ */ Symbol.for("hypercolor:effect")
+  };
+  var propertyMetadataKey = (propertyName) => /* @__PURE__ */ Symbol.for(`hypercolor:control:${propertyName}`);
+  function createControlDecorator(createDefinition) {
+    return (options) => (target, propertyKey) => {
+      if (typeof propertyKey !== "string") {
+        throw new Error("Control decorators can only be used on string properties");
+      }
+      const targetConstructor = target.constructor;
+      if (!Reflect.hasMetadata(METADATA_KEYS.controls, targetConstructor)) {
+        Reflect.defineMetadata(METADATA_KEYS.controls, [], targetConstructor);
+      }
+      const controlsMetadata = Reflect.getMetadata(METADATA_KEYS.controls, targetConstructor);
+      const controlDefinition = createDefinition(propertyKey, options);
+      controlsMetadata.push(controlDefinition);
+      Reflect.defineMetadata(propertyMetadataKey(propertyKey), controlDefinition, targetConstructor);
+    };
+  }
+  var NumberControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    max: options.max,
+    min: options.min,
+    step: options.step,
+    tooltip: options.tooltip,
+    type: "number"
+  }));
+  var BooleanControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "boolean"
+  }));
+  var ComboboxControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "combobox",
+    values: options.values
+  }));
+  var HueControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    max: options.max,
+    min: options.min,
+    tooltip: options.tooltip,
+    type: "hue"
+  }));
+  var ColorControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "color"
+  }));
+  var TextFieldControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "textfield"
+  }));
+
   // src/effects/voronoi-glass/main.ts
   var ROTATION_MODES = ["Clockwise", "Counter-Clockwise", "Alternating", "Pulse"];
   var COLOR_MODES = ["RGB Split", "RGB Cycle", "Prism", "Mono"];
   var DEFAULT_BACKGROUND = "#04060f";
-  var VoronoiGlass = class extends CanvasEffect {
-    arms;
-    count;
-    particleSize;
-    growth;
-    rotationMode;
-    colorMode;
-    cycleSpeed;
-    background;
-    controls = {
-      arms: 5,
-      count: 150,
-      particleSize: 4,
-      growth: 62,
-      rotationMode: "Alternating",
-      colorMode: "RGB Split",
-      cycleSpeed: 58,
-      background: DEFAULT_BACKGROUND
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function fract(value) {
+    return value - Math.floor(value);
+  }
+  function hash(value) {
+    const x = Math.sin(value * 127.1) * 43758.5453123;
+    return x - Math.floor(x);
+  }
+  function toRgba(color2, alpha) {
+    return `rgba(${color2.r},${color2.g},${color2.b},${clamp(alpha, 0, 1).toFixed(3)})`;
+  }
+  function hslToRgb2(h, s, l) {
+    const hue2 = (h % 360 + 360) % 360;
+    const sat = clamp(s / 100, 0, 1);
+    const light = clamp(l / 100, 0, 1);
+    const c = (1 - Math.abs(2 * light - 1)) * sat;
+    const x = c * (1 - Math.abs(hue2 / 60 % 2 - 1));
+    const m = light - c / 2;
+    let r = 0, g = 0, b = 0;
+    if (hue2 < 60) {
+      r = c;
+      g = x;
+    } else if (hue2 < 120) {
+      r = x;
+      g = c;
+    } else if (hue2 < 180) {
+      g = c;
+      b = x;
+    } else if (hue2 < 240) {
+      g = x;
+      b = c;
+    } else if (hue2 < 300) {
+      r = x;
+      b = c;
+    } else {
+      r = c;
+      b = x;
+    }
+    return {
+      r: Math.round((r + m) * 255),
+      g: Math.round((g + m) * 255),
+      b: Math.round((b + m) * 255)
     };
-    particles = [];
-    particleCount = 0;
-    constructor() {
-      super({ id: "voronoi-glass", name: "Voronoi Glass", backgroundColor: DEFAULT_BACKGROUND });
+  }
+  function scaleColor(color2, scale) {
+    return {
+      r: clamp(Math.round(color2.r * scale), 0, 255),
+      g: clamp(Math.round(color2.g * scale), 0, 255),
+      b: clamp(Math.round(color2.b * scale), 0, 255)
+    };
+  }
+  function createSeed(index) {
+    const i = index + 1;
+    return {
+      orbitOffset: hash(i * 1.137 + 0.29),
+      radialOffset: hash(i * 2.413 + 3.18),
+      speedBias: hash(i * 3.977 + 8.24),
+      sizeBias: hash(i * 5.331 + 1.77),
+      jitter: hash(i * 7.739 + 5.65),
+      twinkle: hash(i * 11.129 + 9.92)
+    };
+  }
+  function resolveDirection(mode, arm, time) {
+    switch (mode) {
+      case "Clockwise":
+        return 1;
+      case "Counter-Clockwise":
+        return -1;
+      case "Pulse":
+        return Math.sin(time * 1.25 + arm * 0.75) >= 0 ? 1 : -1;
+      case "Alternating":
+      default:
+        return arm % 2 === 0 ? 1 : -1;
     }
-    initializeControls() {
-      this.arms = getControlValue("arms", 5);
-      this.count = getControlValue("count", 150);
-      this.particleSize = getControlValue("particleSize", 4);
-      this.growth = getControlValue("growth", 62);
-      this.rotationMode = getControlValue("rotationMode", "Alternating");
-      this.colorMode = getControlValue("colorMode", "RGB Split");
-      this.cycleSpeed = getControlValue("cycleSpeed", 58);
-      this.background = getControlValue("background", DEFAULT_BACKGROUND);
+  }
+  function resolveColor(mode, arm, index, arms, time, life, cycleRate) {
+    const rgbArmPalette = [
+      { r: 255, g: 74, b: 86 },
+      { r: 78, g: 255, b: 155 },
+      { r: 82, g: 146, b: 255 }
+    ];
+    if (mode === "RGB Split") {
+      const base = rgbArmPalette[arm % rgbArmPalette.length];
+      const boost = 0.78 + 0.22 * Math.sin(time * (2.6 + cycleRate * 4.2) + life * Math.PI * 2);
+      return scaleColor(base, boost);
     }
-    getControlValues() {
-      return {
-        arms: this.clamp(Math.round(getControlValue("arms", this.controls.arms)), 1, 10),
-        count: this.clamp(Math.round(getControlValue("count", this.controls.count)), 16, 320),
-        particleSize: this.clamp(getControlValue("particleSize", this.controls.particleSize), 1, 14),
-        growth: this.clamp(getControlValue("growth", this.controls.growth), 0, 100),
-        rotationMode: this.pickValue(getControlValue("rotationMode", this.controls.rotationMode), ROTATION_MODES, "Alternating"),
-        colorMode: this.pickValue(getControlValue("colorMode", this.controls.colorMode), COLOR_MODES, "RGB Split"),
-        cycleSpeed: this.clamp(getControlValue("cycleSpeed", this.controls.cycleSpeed), 0, 100),
-        background: this.normalizeHexColor(getControlValue("background", this.controls.background), DEFAULT_BACKGROUND)
-      };
+    if (mode === "RGB Cycle") {
+      const hue2 = (time * (52 + cycleRate * 188) + arm / Math.max(arms, 1) * 360 + life * 90) % 360;
+      return hslToRgb2(hue2, 92, 60);
     }
-    async loadResources() {
-      this.ensureParticleCount(this.controls.count);
+    if (mode === "Prism") {
+      const hue2 = (index * 137.508 + time * (26 + cycleRate * 96) + life * 122) % 360;
+      return hslToRgb2(hue2, 88, 58);
     }
-    applyControls(controls) {
-      this.controls = controls;
-      this.backgroundColor = controls.background;
-      this.ensureParticleCount(controls.count);
+    const monoHue = 208 + Math.sin(time * (2.2 + cycleRate * 3.8) + arm) * 22;
+    return hslToRgb2(monoHue, 48, 72);
+  }
+  var main_default = canvas.stateful("Voronoi Glass", {
+    arms: [1, 10, 5],
+    count: [16, 320, 150],
+    particleSize: [1, 14, 4],
+    growth: [0, 100, 62],
+    rotationMode: combo("Rotation Mode", ROTATION_MODES, { default: "Alternating" }),
+    colorMode: combo("Color Mode", COLOR_MODES, { default: "RGB Split" }),
+    cycleSpeed: [0, 100, 58],
+    background: DEFAULT_BACKGROUND
+  }, () => {
+    let particles = [];
+    let particleCount = 0;
+    function ensureParticleCount(count) {
+      const target = clamp(Math.round(count), 16, 320);
+      if (target === particleCount && particles.length === target) return;
+      if (target > particles.length) {
+        for (let i = particles.length; i < target; i++) {
+          particles.push(createSeed(i));
+        }
+      } else {
+        particles.length = target;
+      }
+      particleCount = target;
     }
-    draw(time, _deltaTime) {
-      if (!this.ctx || !this.canvas) return;
-      const ctx = this.ctx;
-      const w = this.canvas.width;
-      const h = this.canvas.height;
+    function drawBacklight(ctx, width, height, time, cycleRate) {
+      const centerX = width * (0.5 + Math.sin(time * 0.16) * 0.04);
+      const centerY = height * (0.5 + Math.cos(time * 0.18) * 0.04);
+      const radius = Math.max(width, height) * 0.84;
+      const hue2 = (210 + time * (16 + cycleRate * 70)) % 360;
+      const base = hslToRgb2(hue2, 82, 53);
+      const accent = hslToRgb2((hue2 + 130) % 360, 86, 58);
+      const glow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+      glow.addColorStop(0, toRgba(base, 0.11));
+      glow.addColorStop(0.52, toRgba(accent, 0.05));
+      glow.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, width, height);
+    }
+    function drawCore(ctx, cx, cy, coreRadius, time, cycleRate) {
+      const hue2 = (time * (40 + cycleRate * 90) + 6) % 360;
+      const coreA = hslToRgb2(hue2, 94, 60);
+      const coreB = hslToRgb2((hue2 + 150) % 360, 90, 54);
+      const pulse = 1 + Math.sin(time * (4.2 + cycleRate * 4.8)) * 0.16;
+      const radius = coreRadius * pulse;
+      const coreGradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius * 3.1);
+      coreGradient.addColorStop(0, toRgba(coreA, 0.72));
+      coreGradient.addColorStop(0.35, toRgba(coreB, 0.38));
+      coreGradient.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = coreGradient;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius * 3.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = toRgba(coreB, 0.34);
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius * 1.8, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    return (ctx, time, c) => {
+      const arms = Math.max(1, Math.round(c.arms));
+      const count = Math.round(c.count);
+      const particleSizeCtrl = c.particleSize;
+      const growth = c.growth;
+      const rotationMode = c.rotationMode;
+      const colorMode = c.colorMode;
+      const cycleSpeed = c.cycleSpeed;
+      const background = c.background;
+      const w = ctx.canvas.width;
+      const h = ctx.canvas.height;
       const cx = w * 0.5;
       const cy = h * 0.5;
       const minDim = Math.min(w, h);
-      const arms = Math.max(1, this.controls.arms);
-      const count = this.particles.length;
-      if (count === 0) return;
-      const growthMix = this.controls.growth / 100;
-      const cycleRate = this.controls.cycleSpeed / 100;
+      ensureParticleCount(count);
+      if (particles.length === 0) return;
+      const growthMix = growth / 100;
+      const cycleRate = cycleSpeed / 100;
       const rotationVelocity = 0.4 + cycleRate * 2.2;
-      const spawnVelocity = 0.65 + cycleRate * 2.1 + count / 220;
+      const spawnVelocity = 0.65 + cycleRate * 2.1 + particles.length / 220;
       const maxRadius = minDim * (0.18 + growthMix * 0.58);
       const coreRadius = minDim * (0.036 + growthMix * 0.02);
       const laneTwist = 2.1 + growthMix * 5.2;
-      this.drawBacklight(ctx, w, h, time, cycleRate);
-      this.drawCore(ctx, cx, cy, coreRadius, time, cycleRate);
+      ctx.fillStyle = background;
+      ctx.fillRect(0, 0, w, h);
+      drawBacklight(ctx, w, h, time, cycleRate);
+      drawCore(ctx, cx, cy, coreRadius, time, cycleRate);
       ctx.save();
       ctx.globalCompositeOperation = "lighter";
-      for (let i = 0; i < count; i++) {
-        const seed = this.particles[i];
+      for (let i = 0; i < particles.length; i++) {
+        const seed = particles[i];
         const arm = i % arms;
-        const direction = this.resolveDirection(this.controls.rotationMode, arm, time);
-        const life = this.fract(time * spawnVelocity * (0.55 + seed.speedBias) + seed.orbitOffset);
+        const direction = resolveDirection(rotationMode, arm, time);
+        const life = fract(time * spawnVelocity * (0.55 + seed.speedBias) + seed.orbitOffset);
         const radialCurve = Math.pow(life, 0.36 + (1 - growthMix) * 0.92);
         const radius = coreRadius + radialCurve * maxRadius + (seed.radialOffset - 0.5) * minDim * 0.045;
         const laneBase = arm / arms * Math.PI * 2;
@@ -1525,15 +2238,15 @@
         const angle = laneBase + orbital + wobble;
         const x = cx + Math.cos(angle) * radius;
         const y = cy + Math.sin(angle) * radius * (0.9 + seed.jitter * 0.08);
-        const color = this.resolveColor(this.controls.colorMode, arm, i, arms, time, life, cycleRate);
+        const color2 = resolveColor(colorMode, arm, i, arms, time, life, cycleRate);
         const pulse = 0.62 + 0.38 * Math.sin(time * (4.5 + seed.speedBias * 3.1) + seed.twinkle * 11);
-        const size = Math.max(0.7, this.controls.particleSize * (0.5 + seed.sizeBias * 1.05) * (0.65 + radialCurve * 0.8));
-        const alpha = this.clamp((0.24 + 0.9 * Math.sin(Math.PI * life)) * pulse, 0.08, 1);
-        ctx.fillStyle = this.toRgba(color, 0.16 * alpha);
+        const size = Math.max(0.7, particleSizeCtrl * (0.5 + seed.sizeBias * 1.05) * (0.65 + radialCurve * 0.8));
+        const alpha = clamp((0.24 + 0.9 * Math.sin(Math.PI * life)) * pulse, 0.08, 1);
+        ctx.fillStyle = toRgba(color2, 0.16 * alpha);
         ctx.beginPath();
         ctx.arc(x, y, size * 2.2, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = this.toRgba(color, 0.78 * alpha);
+        ctx.fillStyle = toRgba(color2, 0.78 * alpha);
         ctx.beginPath();
         ctx.arc(x, y, size, 0, Math.PI * 2);
         ctx.fill();
@@ -1543,213 +2256,10 @@
         ctx.fill();
       }
       ctx.restore();
-    }
-    drawBacklight(ctx, width, height, time, cycleRate) {
-      const centerX = width * (0.5 + Math.sin(time * 0.16) * 0.04);
-      const centerY = height * (0.5 + Math.cos(time * 0.18) * 0.04);
-      const radius = Math.max(width, height) * 0.84;
-      const hue = (210 + time * (16 + cycleRate * 70)) % 360;
-      const base = this.hslToRgb(hue, 82, 53);
-      const accent = this.hslToRgb((hue + 130) % 360, 86, 58);
-      const glow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
-      glow.addColorStop(0, this.toRgba(base, 0.11));
-      glow.addColorStop(0.52, this.toRgba(accent, 0.05));
-      glow.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = glow;
-      ctx.fillRect(0, 0, width, height);
-    }
-    drawCore(ctx, cx, cy, coreRadius, time, cycleRate) {
-      const hue = (time * (40 + cycleRate * 90) + 6) % 360;
-      const coreA = this.hslToRgb(hue, 94, 60);
-      const coreB = this.hslToRgb((hue + 150) % 360, 90, 54);
-      const pulse = 1 + Math.sin(time * (4.2 + cycleRate * 4.8)) * 0.16;
-      const radius = coreRadius * pulse;
-      const coreGradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius * 3.1);
-      coreGradient.addColorStop(0, this.toRgba(coreA, 0.72));
-      coreGradient.addColorStop(0.35, this.toRgba(coreB, 0.38));
-      coreGradient.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = coreGradient;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius * 3.1, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = this.toRgba(coreB, 0.34);
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius * 1.8, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    ensureParticleCount(count) {
-      const target = this.clamp(Math.round(count), 16, 320);
-      if (target === this.particleCount && this.particles.length === target) return;
-      if (target > this.particles.length) {
-        for (let i = this.particles.length; i < target; i++) {
-          this.particles.push(this.createSeed(i));
-        }
-      } else {
-        this.particles.length = target;
-      }
-      this.particleCount = target;
-    }
-    createSeed(index) {
-      const i = index + 1;
-      return {
-        orbitOffset: this.hash(i * 1.137 + 0.29),
-        radialOffset: this.hash(i * 2.413 + 3.18),
-        speedBias: this.hash(i * 3.977 + 8.24),
-        sizeBias: this.hash(i * 5.331 + 1.77),
-        jitter: this.hash(i * 7.739 + 5.65),
-        twinkle: this.hash(i * 11.129 + 9.92)
-      };
-    }
-    resolveDirection(mode, arm, time) {
-      switch (mode) {
-        case "Clockwise":
-          return 1;
-        case "Counter-Clockwise":
-          return -1;
-        case "Pulse":
-          return Math.sin(time * 1.25 + arm * 0.75) >= 0 ? 1 : -1;
-        case "Alternating":
-        default:
-          return arm % 2 === 0 ? 1 : -1;
-      }
-    }
-    resolveColor(mode, arm, index, arms, time, life, cycleRate) {
-      const rgbArmPalette = [
-        { r: 255, g: 74, b: 86 },
-        { r: 78, g: 255, b: 155 },
-        { r: 82, g: 146, b: 255 }
-      ];
-      if (mode === "RGB Split") {
-        const base = rgbArmPalette[arm % rgbArmPalette.length];
-        const boost = 0.78 + 0.22 * Math.sin(time * (2.6 + cycleRate * 4.2) + life * Math.PI * 2);
-        return this.scaleColor(base, boost);
-      }
-      if (mode === "RGB Cycle") {
-        const hue = (time * (52 + cycleRate * 188) + arm / Math.max(arms, 1) * 360 + life * 90) % 360;
-        return this.hslToRgb(hue, 92, 60);
-      }
-      if (mode === "Prism") {
-        const hue = (index * 137.508 + time * (26 + cycleRate * 96) + life * 122) % 360;
-        return this.hslToRgb(hue, 88, 58);
-      }
-      const monoHue = 208 + Math.sin(time * (2.2 + cycleRate * 3.8) + arm) * 22;
-      return this.hslToRgb(monoHue, 48, 72);
-    }
-    scaleColor(color, scale) {
-      return {
-        r: this.clamp(Math.round(color.r * scale), 0, 255),
-        g: this.clamp(Math.round(color.g * scale), 0, 255),
-        b: this.clamp(Math.round(color.b * scale), 0, 255)
-      };
-    }
-    toRgba(color, alpha) {
-      return `rgba(${color.r},${color.g},${color.b},${this.clamp(alpha, 0, 1).toFixed(3)})`;
-    }
-    hslToRgb(h, s, l) {
-      const hue = (h % 360 + 360) % 360;
-      const sat = this.clamp(s / 100, 0, 1);
-      const light = this.clamp(l / 100, 0, 1);
-      const c = (1 - Math.abs(2 * light - 1)) * sat;
-      const x = c * (1 - Math.abs(hue / 60 % 2 - 1));
-      const m = light - c / 2;
-      let r = 0;
-      let g = 0;
-      let b = 0;
-      if (hue < 60) {
-        r = c;
-        g = x;
-      } else if (hue < 120) {
-        r = x;
-        g = c;
-      } else if (hue < 180) {
-        g = c;
-        b = x;
-      } else if (hue < 240) {
-        g = x;
-        b = c;
-      } else if (hue < 300) {
-        r = x;
-        b = c;
-      } else {
-        r = c;
-        b = x;
-      }
-      return {
-        r: Math.round((r + m) * 255),
-        g: Math.round((g + m) * 255),
-        b: Math.round((b + m) * 255)
-      };
-    }
-    normalizeHexColor(value, fallback) {
-      const input = value.trim().replace(/^#/, "");
-      const fallbackInput = fallback.trim().replace(/^#/, "");
-      if (/^[0-9a-fA-F]{6}$/.test(input)) return `#${input.toLowerCase()}`;
-      if (/^[0-9a-fA-F]{3}$/.test(input)) {
-        const expanded = input.split("").map((part) => `${part}${part}`).join("");
-        return `#${expanded.toLowerCase()}`;
-      }
-      if (/^[0-9a-fA-F]{6}$/.test(fallbackInput)) return `#${fallbackInput.toLowerCase()}`;
-      return DEFAULT_BACKGROUND;
-    }
-    pickValue(value, options, fallback) {
-      return options.includes(value) ? value : fallback;
-    }
-    clamp(value, min, max) {
-      return Math.max(min, Math.min(max, value));
-    }
-    fract(value) {
-      return value - Math.floor(value);
-    }
-    hash(value) {
-      const x = Math.sin(value * 127.1) * 43758.5453123;
-      return x - Math.floor(x);
-    }
-  };
-  __decorateClass([
-    NumberControl({ label: "Arms", min: 1, max: 10, default: 5, tooltip: "Number of spiral lanes" })
-  ], VoronoiGlass.prototype, "arms", 2);
-  __decorateClass([
-    NumberControl({ label: "Spawn / Count", min: 16, max: 320, default: 150, tooltip: "Particle population and spawn flow" })
-  ], VoronoiGlass.prototype, "count", 2);
-  __decorateClass([
-    NumberControl({ label: "Particle Size", min: 1, max: 14, default: 4, tooltip: "Particle radius" })
-  ], VoronoiGlass.prototype, "particleSize", 2);
-  __decorateClass([
-    NumberControl({ label: "Growth", min: 0, max: 100, default: 62, tooltip: "Outward expansion amount" })
-  ], VoronoiGlass.prototype, "growth", 2);
-  __decorateClass([
-    ComboboxControl({
-      label: "Rotation Mode",
-      values: ROTATION_MODES,
-      default: "Alternating",
-      tooltip: "Orbit spin direction behavior"
-    })
-  ], VoronoiGlass.prototype, "rotationMode", 2);
-  __decorateClass([
-    ComboboxControl({
-      label: "Color Mode",
-      values: COLOR_MODES,
-      default: "RGB Split",
-      tooltip: "Particle color pattern"
-    })
-  ], VoronoiGlass.prototype, "colorMode", 2);
-  __decorateClass([
-    NumberControl({ label: "Cycle Speed", min: 0, max: 100, default: 58, tooltip: "Rotation and hue cycle speed" })
-  ], VoronoiGlass.prototype, "cycleSpeed", 2);
-  __decorateClass([
-    ColorControl({ label: "Background", default: DEFAULT_BACKGROUND, tooltip: "Background color" })
-  ], VoronoiGlass.prototype, "background", 2);
-  VoronoiGlass = __decorateClass([
-    Effect({
-      name: "Voronoi Glass",
-      description: "Community Swirl Reactor style orbital particles with crisp RGB trails",
-      author: "Hypercolor",
-      audioReactive: false
-    })
-  ], VoronoiGlass);
-  var effect = new VoronoiGlass();
-  initializeEffect(() => effect.initialize(), { instance: effect });
+    };
+  }, {
+    description: "Community Swirl Reactor style orbital particles with crisp RGB trails"
+  });
 })();
 /*! Bundled license information:
 

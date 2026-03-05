@@ -23,9 +23,31 @@ export function normalizeSpeed(speed: number): number {
 
 /** Convert combobox string value to numeric index. */
 export function comboboxValueToIndex(value: string | number, options: string[], defaultIndex = 0): number {
-    if (typeof value === 'number') return value
-    const index = options.indexOf(value)
-    return index === -1 ? defaultIndex : index
+    if (options.length === 0) return 0
+
+    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1))
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        const rounded = Math.round(value)
+        if (rounded >= 0 && rounded < options.length) return rounded
+        return safeDefault
+    }
+
+    if (typeof value !== 'string') return safeDefault
+
+    const exactIndex = options.indexOf(value)
+    if (exactIndex >= 0) return exactIndex
+
+    const normalized = value.trim().toLowerCase()
+    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized)
+    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex
+
+    const parsedNumeric = Number.parseInt(normalized, 10)
+    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
+        return parsedNumeric
+    }
+
+    return safeDefault
 }
 
 /** Normalize percentage (0-200) to factor (0-2). */

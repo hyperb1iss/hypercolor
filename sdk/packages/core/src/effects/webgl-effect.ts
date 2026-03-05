@@ -181,14 +181,44 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
         const gl = this.gl!
         const program = this.program!
 
-        // Build a set of integer uniform names by querying active uniforms
-        const intTypes: Set<number> = new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL])
+        // Build a set of integer-like uniform names by querying active uniforms.
+        // This includes bool vectors, uint vectors, and sampler types since those
+        // must be uploaded through integer uniform calls.
+        const intTypes: Set<number> = new Set([
+            gl.INT,
+            gl.INT_VEC2,
+            gl.INT_VEC3,
+            gl.INT_VEC4,
+            gl.BOOL,
+            gl.BOOL_VEC2,
+            gl.BOOL_VEC3,
+            gl.BOOL_VEC4,
+            gl.UNSIGNED_INT,
+            gl.UNSIGNED_INT_VEC2,
+            gl.UNSIGNED_INT_VEC3,
+            gl.UNSIGNED_INT_VEC4,
+            gl.SAMPLER_2D,
+            gl.SAMPLER_CUBE,
+            gl.SAMPLER_3D,
+            gl.SAMPLER_2D_SHADOW,
+            gl.SAMPLER_2D_ARRAY,
+            gl.SAMPLER_2D_ARRAY_SHADOW,
+            gl.SAMPLER_CUBE_SHADOW,
+            gl.INT_SAMPLER_2D,
+            gl.INT_SAMPLER_3D,
+            gl.INT_SAMPLER_CUBE,
+            gl.INT_SAMPLER_2D_ARRAY,
+            gl.UNSIGNED_INT_SAMPLER_2D,
+            gl.UNSIGNED_INT_SAMPLER_3D,
+            gl.UNSIGNED_INT_SAMPLER_CUBE,
+            gl.UNSIGNED_INT_SAMPLER_2D_ARRAY,
+        ])
         const intUniforms = new Set<string>()
         const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS) as number
         for (let i = 0; i < numActive; i++) {
             const info = gl.getActiveUniform(program, i)
             if (info && intTypes.has(info.type)) {
-                intUniforms.add(info.name)
+                intUniforms.add(info.name.replace(/\[0\]$/, ''))
             }
         }
 

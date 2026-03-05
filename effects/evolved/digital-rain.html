@@ -6,12 +6,12 @@
   <title>Digital Rain</title>
   <meta description="Community-style matrix rain with crisp block glyph columns and configurable palettes"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Column fall speed"/>
-  <meta property="density" label="Density" type="number" min="10" max="100" default="62" tooltip="Active column density"/>
-  <meta property="trailLength" label="Trail" type="number" min="5" max="100" default="58" tooltip="Trail length behind each head"/>
-  <meta property="charSize" label="Size" type="number" min="0" max="100" default="42" tooltip="Character grid size"/>
-  <meta property="palette" label="Color Mode" type="combobox" default="Matrix" values="Matrix,Phosphor,SilkCircuit,Cyberpunk,Ice" tooltip="Palette preset"/>
-  <meta property="glitch" label="Glitch" type="boolean" default="false" tooltip="Adds occasional data tears and flicker"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5"/>
+  <meta property="density" label="Density" type="number" min="10" max="100" default="62"/>
+  <meta property="trailLength" label="Trail Length" type="number" min="5" max="100" default="58"/>
+  <meta property="charSize" label="Char Size" type="number" min="0" max="100" default="42"/>
+  <meta property="colorMode" label="Color Mode" type="combobox" default="Matrix" values="Matrix,Phosphor,SilkCircuit,Cyberpunk,Ice"/>
+  <meta property="glitch" label="Glitch" type="boolean" default="false"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -43,14 +43,6 @@
     isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
     mod
   ));
-  var __decorateClass = (decorators, target, key, kind) => {
-    var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;
-    for (var i = decorators.length - 1, decorator; i >= 0; i--)
-      if (decorator = decorators[i])
-        result = (kind ? decorator(target, key, result) : decorator(result)) || result;
-    if (kind && result) __defProp(target, key, result);
-    return result;
-  };
 
   // node_modules/.bun/reflect-metadata@0.2.2/node_modules/reflect-metadata/Reflect.js
   var require_Reflect = __commonJS({
@@ -527,14 +519,14 @@
             var second;
             var rest;
             var targetProviderMap = new _WeakMap();
-            var registry = {
+            var registry2 = {
               registerProvider,
               getProvider,
               setProvider
             };
-            return registry;
+            return registry2;
             function registerProvider(provider) {
-              if (!Object.isExtensible(registry)) {
+              if (!Object.isExtensible(registry2)) {
                 throw new Error("Cannot add provider to a frozen registry.");
               }
               switch (true) {
@@ -646,7 +638,7 @@
             }
             return metadataRegistry2;
           }
-          function CreateMetadataProvider(registry) {
+          function CreateMetadataProvider(registry2) {
             var metadata2 = new _WeakMap();
             var provider = {
               isProviderFor: function(O, P) {
@@ -679,7 +671,7 @@
                   return void 0;
                 metadataMap = new _Map();
                 targetMetadata.set(P, metadataMap);
-                if (!registry.setProvider(O, P, provider)) {
+                if (!registry2.setProvider(O, P, provider)) {
                   targetMetadata.delete(P);
                   if (createdTargetMetadata) {
                     metadata2.delete(O);
@@ -1137,95 +1129,6 @@
     }
   });
 
-  // src/effects/digital-rain/main.ts
-  var import_reflect_metadata2 = __toESM(require_Reflect());
-
-  // packages/core/src/controls/decorators.ts
-  var import_reflect_metadata = __toESM(require_Reflect(), 1);
-  var METADATA_KEYS = {
-    controls: /* @__PURE__ */ Symbol.for("hypercolor:controls"),
-    effect: /* @__PURE__ */ Symbol.for("hypercolor:effect")
-  };
-  var propertyMetadataKey = (propertyName) => /* @__PURE__ */ Symbol.for(`hypercolor:control:${propertyName}`);
-  function createControlDecorator(createDefinition) {
-    return (options) => (target, propertyKey) => {
-      if (typeof propertyKey !== "string") {
-        throw new Error("Control decorators can only be used on string properties");
-      }
-      const targetConstructor = target.constructor;
-      if (!Reflect.hasMetadata(METADATA_KEYS.controls, targetConstructor)) {
-        Reflect.defineMetadata(METADATA_KEYS.controls, [], targetConstructor);
-      }
-      const controlsMetadata = Reflect.getMetadata(METADATA_KEYS.controls, targetConstructor);
-      const controlDefinition = createDefinition(propertyKey, options);
-      controlsMetadata.push(controlDefinition);
-      Reflect.defineMetadata(propertyMetadataKey(propertyKey), controlDefinition, targetConstructor);
-    };
-  }
-  var NumberControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    max: options.max,
-    min: options.min,
-    step: options.step,
-    tooltip: options.tooltip,
-    type: "number"
-  }));
-  var BooleanControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "boolean"
-  }));
-  var ComboboxControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "combobox",
-    values: options.values
-  }));
-  var HueControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    max: options.max,
-    min: options.min,
-    tooltip: options.tooltip,
-    type: "hue"
-  }));
-  var ColorControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "color"
-  }));
-  var TextFieldControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "textfield"
-  }));
-  function Effect(options) {
-    return (target) => {
-      Reflect.defineMetadata(METADATA_KEYS.effect, options, target.prototype);
-      target.prototype.effectMetadata = options;
-    };
-  }
-
-  // packages/core/src/controls/helpers.ts
-  function getControlValue(propertyName, defaultValue) {
-    return window[propertyName] ?? defaultValue;
-  }
-  function normalizeSpeed(speed) {
-    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
-    return Math.max(0.2, (speed / 5) ** 1.5);
-  }
-
   // packages/core/src/utils/debug.ts
   var COLORS = {
     debug: "#9d9d9d",
@@ -1251,30 +1154,30 @@
     };
   }
   function stylizedLog(level, namespace, ...args) {
-    let color = COLORS.debug;
+    let color2 = COLORS.debug;
     let emoji = EMOJI.debug;
     let method = "log";
     switch (level) {
       case "info":
-        color = COLORS.secondary;
+        color2 = COLORS.secondary;
         emoji = EMOJI.info;
         break;
       case "warn":
-        color = COLORS.warning;
+        color2 = COLORS.warning;
         emoji = EMOJI.warn;
         method = "warn";
         break;
       case "error":
-        color = COLORS.error;
+        color2 = COLORS.error;
         emoji = EMOJI.error;
         method = "error";
         break;
       case "success":
-        color = COLORS.success;
+        color2 = COLORS.success;
         emoji = EMOJI.success;
         break;
     }
-    console[method](`%c${emoji} [${namespace}]`, `color: ${color}; font-weight: bold;`, ...args);
+    console[method](`%c${emoji} [${namespace}]`, `color: ${color2}; font-weight: bold;`, ...args);
   }
 
   // packages/core/src/effects/base-effect.ts
@@ -1407,7 +1310,146 @@
     }
   };
 
-  // packages/core/src/index.ts
+  // packages/core/src/controls/infer.ts
+  function inferControl(key, value, label) {
+    if (Array.isArray(value) && value.length >= 3 && value.length <= 4 && typeof value[0] === "number") {
+      const [min, max, defaultValue, step] = value;
+      return {
+        __brand: "ControlSpec",
+        __type: "number",
+        label,
+        defaultValue,
+        meta: { min, max, step }
+      };
+    }
+    if (Array.isArray(value) && value.length >= 1 && typeof value[0] === "string") {
+      return {
+        __brand: "ControlSpec",
+        __type: "combobox",
+        label,
+        defaultValue: value[0],
+        meta: { values: [...value] }
+      };
+    }
+    if (typeof value === "boolean") {
+      return {
+        __brand: "ControlSpec",
+        __type: "boolean",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "string" && value.startsWith("#")) {
+      return {
+        __brand: "ControlSpec",
+        __type: "color",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "string") {
+      return {
+        __brand: "ControlSpec",
+        __type: "textfield",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "number") {
+      return {
+        __brand: "ControlSpec",
+        __type: "number",
+        label,
+        defaultValue: value,
+        meta: { min: 0, max: 100 }
+      };
+    }
+    throw new Error(
+      `Cannot infer control type for "${key}". Expected [min, max, default], string[], boolean, '#hex', string, or number. Got: ${JSON.stringify(value)}`
+    );
+  }
+
+  // packages/core/src/controls/names.ts
+  function deriveLabel(key) {
+    return key.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase()).trim();
+  }
+  function deriveUniformName(key) {
+    return "i" + key.charAt(0).toUpperCase() + key.slice(1);
+  }
+  var MAGIC_NAMES = {
+    speed: "speed"
+  };
+  var MAGIC_TRANSFORMS = /* @__PURE__ */ new Set(["palette"]);
+  function getMagicNormalize(key) {
+    return MAGIC_NAMES[key] ?? "none";
+  }
+  function hasMagicTransform(key) {
+    return MAGIC_TRANSFORMS.has(key);
+  }
+  function resolveControlNames(key, spec2) {
+    return {
+      label: spec2.label,
+      uniformName: spec2.uniform ?? deriveUniformName(key),
+      normalize: spec2.normalize ?? getMagicNormalize(key)
+    };
+  }
+
+  // packages/core/src/controls/specs.ts
+  function spec(type, label, defaultValue, meta, opts) {
+    return {
+      __brand: "ControlSpec",
+      __type: type,
+      label,
+      defaultValue,
+      tooltip: opts?.tooltip,
+      uniform: opts?.uniform,
+      normalize: opts?.normalize,
+      meta
+    };
+  }
+  function isControlSpec(value) {
+    return value !== null && typeof value === "object" && value.__brand === "ControlSpec";
+  }
+  function combo(label, values, opts) {
+    const defaultValue = opts?.default ?? values[0];
+    return spec("combobox", label, defaultValue, {
+      values: [...values]
+    }, opts);
+  }
+
+  // packages/core/src/controls/helpers.ts
+  function getControlValue(propertyName, defaultValue) {
+    return window[propertyName] ?? defaultValue;
+  }
+  function normalizeSpeed(speed) {
+    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
+    return Math.max(0.2, (speed / 5) ** 1.5);
+  }
+  function comboboxValueToIndex(value, options, defaultIndex = 0) {
+    if (options.length === 0) return 0;
+    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const rounded = Math.round(value);
+      if (rounded >= 0 && rounded < options.length) return rounded;
+      return safeDefault;
+    }
+    if (typeof value !== "string") return safeDefault;
+    const exactIndex = options.indexOf(value);
+    if (exactIndex >= 0) return exactIndex;
+    const normalized = value.trim().toLowerCase();
+    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
+    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
+    const parsedNumeric = Number.parseInt(normalized, 10);
+    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
+      return parsedNumeric;
+    }
+    return safeDefault;
+  }
+
+  // packages/core/src/init.ts
   function detectInitMode() {
     if (typeof window === "undefined") return "metadata-only";
     if (window.__HYPERCOLOR_METADATA_ONLY__) return "metadata-only";
@@ -1433,6 +1475,563 @@
       options.onReady?.();
     }, { once: true });
   }
+
+  // shared/palettes.json
+  var palettes_default = [
+    {
+      id: "silkcircuit",
+      name: "SilkCircuit",
+      mood: ["electric", "dark", "vibrant"],
+      stops: ["#e135ff", "#80ffea", "#ff6ac1", "#f1fa8c", "#50fa7b"],
+      iq: { a: [0.5, 0.3, 0.5], b: [0.5, 0.5, 0.5], c: [1, 0.8, 0.6], d: [0.85, 0.2, 0.5] },
+      accent: "#e135ff",
+      background: "#0d0221"
+    },
+    {
+      id: "cyberpunk",
+      name: "Cyberpunk",
+      mood: ["dark", "neon", "futuristic"],
+      stops: ["#ff00ff", "#00ffff", "#ff0066", "#6600ff"],
+      iq: { a: [0.5, 0.2, 0.5], b: [0.5, 0.5, 0.5], c: [1, 1, 1], d: [0.8, 0.1, 0.6] },
+      accent: "#ff00ff",
+      background: "#0a0014"
+    },
+    {
+      id: "vaporwave",
+      name: "Vaporwave",
+      mood: ["retro", "dreamy", "pastel-neon"],
+      stops: ["#c4b5fd", "#f472b6", "#67e8f9", "#fda4af"],
+      iq: { a: [0.6, 0.4, 0.7], b: [0.3, 0.3, 0.3], c: [0.6, 0.8, 1], d: [0.7, 0.3, 0.6] },
+      accent: "#c4b5fd",
+      background: "#1a0030"
+    },
+    {
+      id: "synthwave",
+      name: "Synthwave",
+      mood: ["retro", "warm", "80s"],
+      stops: ["#4a0080", "#ff006a", "#ff6600", "#ffcc00"],
+      iq: { a: [0.5, 0.2, 0.3], b: [0.5, 0.5, 0.5], c: [1, 0.7, 0.4], d: [0, 0.15, 0.2] },
+      accent: "#ff006a",
+      background: "#0f0020"
+    },
+    {
+      id: "neon-flux",
+      name: "Neon Flux",
+      mood: ["energetic", "vibrant"],
+      stops: ["#ff00aa", "#00ffcc", "#ffaa00", "#aa00ff"],
+      iq: { a: [0.5, 0.5, 0.5], b: [0.5, 0.5, 0.5], c: [1, 1, 0.5], d: [0.8, 0.9, 0.3] },
+      accent: "#ff00aa",
+      background: "#050510"
+    },
+    {
+      id: "matrix",
+      name: "Matrix",
+      mood: ["dark", "digital", "monochrome"],
+      stops: ["#001100", "#003300", "#00ff00", "#66ff66"],
+      iq: { a: [0, 0.3, 0], b: [0, 0.5, 0], c: [0, 1, 0], d: [0, 0.3, 0] },
+      accent: "#00ff00",
+      background: "#000800"
+    },
+    {
+      id: "aurora",
+      name: "Aurora",
+      mood: ["cool", "ethereal", "northern"],
+      stops: ["#00bcd4", "#4caf50", "#7c4dff", "#00e5ff"],
+      iq: { a: [0.2, 0.5, 0.4], b: [0.3, 0.4, 0.4], c: [0.8, 0.7, 0.9], d: [0.6, 0.3, 0.7] },
+      accent: "#00e5ff",
+      background: "#020810"
+    },
+    {
+      id: "ocean",
+      name: "Ocean",
+      mood: ["calm", "deep", "aquatic"],
+      stops: ["#001f3f", "#0074d9", "#39cccc", "#7fdbff"],
+      iq: { a: [0.1, 0.3, 0.5], b: [0.2, 0.3, 0.4], c: [0.5, 0.7, 1], d: [0.4, 0.5, 0.6] },
+      accent: "#0074d9",
+      background: "#000a1a"
+    },
+    {
+      id: "forest",
+      name: "Forest",
+      mood: ["earthy", "organic", "lush"],
+      stops: ["#1b3a1a", "#2e7d32", "#4caf50", "#81c784", "#c6ff00"],
+      iq: { a: [0.1, 0.3, 0.1], b: [0.2, 0.4, 0.2], c: [0.5, 0.8, 0.4], d: [0.3, 0.4, 0.2] },
+      accent: "#4caf50",
+      background: "#0a1a0a"
+    },
+    {
+      id: "sunset",
+      name: "Sunset",
+      mood: ["warm", "romantic", "dusk"],
+      stops: ["#ff6f00", "#ff8a65", "#ff5252", "#ffd740"],
+      iq: { a: [0.5, 0.3, 0.2], b: [0.5, 0.4, 0.3], c: [1, 0.6, 0.4], d: [0, 0.1, 0.2] },
+      accent: "#ff6f00",
+      background: "#1a0800"
+    },
+    {
+      id: "cherry-blossom",
+      name: "Cherry Blossom",
+      mood: ["gentle", "spring", "delicate"],
+      stops: ["#ffffff", "#ffc0cb", "#ff69b4", "#db7093"],
+      iq: { a: [0.8, 0.6, 0.7], b: [0.2, 0.2, 0.2], c: [0.5, 0.3, 0.4], d: [0, 0.3, 0.4] },
+      accent: "#ff69b4",
+      background: "#1a0810"
+    },
+    {
+      id: "fire",
+      name: "Fire",
+      mood: ["hot", "intense", "primal"],
+      stops: ["#000000", "#8b0000", "#ff4500", "#ffa500", "#ffff00"],
+      iq: { a: [0.5, 0.2, 0], b: [0.5, 0.3, 0.1], c: [1, 0.7, 0.4], d: [0, 0.05, 0.1] },
+      accent: "#ff4500",
+      background: "#0a0000"
+    },
+    {
+      id: "lava",
+      name: "Lava",
+      mood: ["volcanic", "extreme"],
+      stops: ["#000000", "#8b0000", "#ff2200", "#ff6600", "#ffffff"],
+      iq: { a: [0.4, 0.1, 0], b: [0.5, 0.3, 0.2], c: [1, 0.5, 0.3], d: [0, 0, 0.1] },
+      accent: "#ff2200",
+      background: "#0a0000"
+    },
+    {
+      id: "ember",
+      name: "Ember",
+      mood: ["warm", "cozy", "glowing"],
+      stops: ["#3e2723", "#bf360c", "#ff9800", "#ffc107"],
+      iq: { a: [0.4, 0.2, 0.1], b: [0.3, 0.2, 0.1], c: [0.8, 0.6, 0.3], d: [0.1, 0.1, 0.05] },
+      accent: "#ff9800",
+      background: "#1a0a00"
+    },
+    {
+      id: "solar",
+      name: "Solar",
+      mood: ["bright", "radiant", "powerful"],
+      stops: ["#b8860b", "#ffd700", "#ffffff", "#fff59d"],
+      iq: { a: [0.6, 0.5, 0.2], b: [0.4, 0.4, 0.3], c: [0.8, 0.7, 0.5], d: [0, 0.1, 0.2] },
+      accent: "#ffd700",
+      background: "#1a1000"
+    },
+    {
+      id: "ice",
+      name: "Ice",
+      mood: ["cold", "crisp", "frozen"],
+      stops: ["#0d47a1", "#e1f5fe", "#00e5ff", "#b3e5fc"],
+      iq: { a: [0.3, 0.5, 0.7], b: [0.3, 0.4, 0.3], c: [0.6, 0.7, 0.8], d: [0.5, 0.6, 0.7] },
+      accent: "#00e5ff",
+      background: "#000a1a"
+    },
+    {
+      id: "deep-sea",
+      name: "Deep Sea",
+      mood: ["dark", "mysterious", "abyssal"],
+      stops: ["#020024", "#1a237e", "#00695c", "#00bfa5"],
+      iq: { a: [0.1, 0.1, 0.3], b: [0.2, 0.2, 0.3], c: [0.3, 0.5, 0.7], d: [0.6, 0.5, 0.6] },
+      accent: "#00bfa5",
+      background: "#000510"
+    },
+    {
+      id: "midnight",
+      name: "Midnight",
+      mood: ["dark", "contemplative", "elegant"],
+      stops: ["#0d0033", "#1a0066", "#4a148c", "#7b1fa2"],
+      iq: { a: [0.2, 0.1, 0.3], b: [0.2, 0.1, 0.3], c: [0.5, 0.3, 0.7], d: [0.7, 0.5, 0.7] },
+      accent: "#7b1fa2",
+      background: "#050010"
+    },
+    {
+      id: "frost",
+      name: "Frost",
+      mood: ["light", "winter", "clean"],
+      stops: ["#b3e5fc", "#e1f5fe", "#f5f5f5", "#cfd8dc"],
+      iq: { a: [0.7, 0.8, 0.9], b: [0.2, 0.2, 0.1], c: [0.3, 0.3, 0.3], d: [0.5, 0.6, 0.7] },
+      accent: "#b3e5fc",
+      background: "#0a1520"
+    },
+    {
+      id: "viridis",
+      name: "Viridis",
+      mood: ["perceptually-uniform", "data"],
+      stops: ["#440154", "#31688e", "#35b779", "#fde725"],
+      iq: { a: [0.3, 0.3, 0.3], b: [0.3, 0.3, 0.3], c: [0.8, 0.8, 0.5], d: [0.7, 0.1, 0.2] },
+      accent: "#35b779",
+      background: "#0a0020"
+    },
+    {
+      id: "inferno",
+      name: "Inferno",
+      mood: ["perceptually-uniform", "heat"],
+      stops: ["#000004", "#420a68", "#dd513a", "#fcffa4"],
+      iq: { a: [0.3, 0.15, 0.2], b: [0.4, 0.3, 0.3], c: [0.8, 0.5, 0.4], d: [0, 0.1, 0.2] },
+      accent: "#dd513a",
+      background: "#000004"
+    },
+    {
+      id: "plasma",
+      name: "Plasma",
+      mood: ["perceptually-uniform", "vivid"],
+      stops: ["#0d0887", "#7e03a8", "#cc4778", "#f89540", "#f0f921"],
+      iq: { a: [0.3, 0.2, 0.4], b: [0.4, 0.3, 0.4], c: [0.8, 0.6, 0.6], d: [0.6, 0.2, 0.4] },
+      accent: "#cc4778",
+      background: "#050020"
+    },
+    {
+      id: "magma",
+      name: "Magma",
+      mood: ["perceptually-uniform", "warm"],
+      stops: ["#000004", "#3b0f70", "#b63679", "#fb8861", "#fcfdbf"],
+      iq: { a: [0.3, 0.15, 0.25], b: [0.4, 0.3, 0.35], c: [0.7, 0.5, 0.5], d: [0.1, 0.15, 0.2] },
+      accent: "#fb8861",
+      background: "#000004"
+    },
+    {
+      id: "candy",
+      name: "Candy",
+      mood: ["sweet", "playful", "soft"],
+      stops: ["#f48fb1", "#ce93d8", "#80cbc4", "#ffcc80"],
+      iq: { a: [0.7, 0.6, 0.7], b: [0.3, 0.3, 0.3], c: [0.5, 0.5, 0.5], d: [0.8, 0.3, 0.5] },
+      accent: "#f48fb1",
+      background: "#1a0810"
+    },
+    {
+      id: "pastel",
+      name: "Pastel",
+      mood: ["gentle", "calm", "muted"],
+      stops: ["#c5cae9", "#b2dfdb", "#f8bbd0", "#fff9c4"],
+      iq: { a: [0.7, 0.7, 0.8], b: [0.2, 0.2, 0.2], c: [0.3, 0.4, 0.3], d: [0.5, 0.3, 0.5] },
+      accent: "#c5cae9",
+      background: "#101015"
+    },
+    {
+      id: "cotton-candy",
+      name: "Cotton Candy",
+      mood: ["whimsical", "light"],
+      stops: ["#ffb6c1", "#b0e0e6", "#ffc0cb", "#add8e6"],
+      iq: { a: [0.8, 0.7, 0.8], b: [0.2, 0.2, 0.2], c: [0.3, 0.3, 0.3], d: [0, 0.5, 0.7] },
+      accent: "#ffb6c1",
+      background: "#100810"
+    },
+    {
+      id: "mono",
+      name: "Mono",
+      mood: ["neutral", "classic"],
+      stops: ["#000000", "#555555", "#aaaaaa", "#ffffff"],
+      iq: { a: [0.5, 0.5, 0.5], b: [0.5, 0.5, 0.5], c: [0, 0, 0], d: [0, 0, 0] },
+      accent: "#ffffff",
+      background: "#000000"
+    },
+    {
+      id: "phosphor",
+      name: "Phosphor",
+      mood: ["retro", "terminal", "hacker"],
+      stops: ["#001100", "#003300", "#00aa00", "#00ff00"],
+      iq: { a: [0, 0.25, 0], b: [0, 0.25, 0], c: [0, 1, 0], d: [0, 0.5, 0] },
+      accent: "#00ff00",
+      background: "#000800"
+    }
+  ];
+
+  // packages/core/src/palette/runtime.ts
+  var registry = /* @__PURE__ */ new Map();
+  for (const p of palettes_default) {
+    registry.set(p.name, p);
+  }
+  function hexToRgb(hex) {
+    const h = hex.replace("#", "");
+    return [
+      Number.parseInt(h.slice(0, 2), 16) / 255,
+      Number.parseInt(h.slice(2, 4), 16) / 255,
+      Number.parseInt(h.slice(4, 6), 16) / 255
+    ];
+  }
+  function srgbToOklab(r, g, b) {
+    const lr = r <= 0.04045 ? r / 12.92 : ((r + 0.055) / 1.055) ** 2.4;
+    const lg = g <= 0.04045 ? g / 12.92 : ((g + 0.055) / 1.055) ** 2.4;
+    const lb = b <= 0.04045 ? b / 12.92 : ((b + 0.055) / 1.055) ** 2.4;
+    const l_ = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+    const m_ = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+    const s_ = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+    return [
+      0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_,
+      1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_,
+      0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_
+    ];
+  }
+  function oklabToSrgb(L, a, b) {
+    const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+    const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+    const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+    const l = l_ * l_ * l_;
+    const m = m_ * m_ * m_;
+    const s = s_ * s_ * s_;
+    let r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    let g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    let bl = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+    r = r <= 31308e-7 ? 12.92 * r : 1.055 * r ** (1 / 2.4) - 0.055;
+    g = g <= 31308e-7 ? 12.92 * g : 1.055 * g ** (1 / 2.4) - 0.055;
+    bl = bl <= 31308e-7 ? 12.92 * bl : 1.055 * bl ** (1 / 2.4) - 0.055;
+    return [
+      Math.max(0, Math.min(1, r)),
+      Math.max(0, Math.min(1, g)),
+      Math.max(0, Math.min(1, bl))
+    ];
+  }
+  var LUT_SIZE = 256;
+  var lutCache = /* @__PURE__ */ new Map();
+  function buildLut(palette) {
+    const stops = palette.stops.map(hexToRgb);
+    const oklabStops = stops.map(([r, g, b]) => srgbToOklab(r, g, b));
+    const lut = [];
+    for (let i = 0; i < LUT_SIZE; i++) {
+      const t = i / (LUT_SIZE - 1);
+      const segment = t * (oklabStops.length - 1);
+      const idx = Math.min(Math.floor(segment), oklabStops.length - 2);
+      const frac = segment - idx;
+      const a = oklabStops[idx];
+      const b = oklabStops[idx + 1];
+      const L = a[0] + (b[0] - a[0]) * frac;
+      const aa = a[1] + (b[1] - a[1]) * frac;
+      const bb = a[2] + (b[2] - a[2]) * frac;
+      lut.push(oklabToSrgb(L, aa, bb));
+    }
+    return lut;
+  }
+  function getLut(palette) {
+    let lut = lutCache.get(palette.name);
+    if (!lut) {
+      lut = buildLut(palette);
+      lutCache.set(palette.name, lut);
+    }
+    return lut;
+  }
+  function samplePalette(paletteName, t) {
+    const entry = registry.get(paletteName);
+    if (!entry) return [1, 0, 1];
+    const lut = getLut(entry);
+    const clamped = Math.max(0, Math.min(1, t));
+    const idx = Math.round(clamped * (LUT_SIZE - 1));
+    return lut[idx];
+  }
+  function samplePaletteCSS(paletteName, t, alpha) {
+    const [r, g, b] = samplePalette(paletteName, t);
+    const ri = Math.round(r * 255);
+    const gi = Math.round(g * 255);
+    const bi = Math.round(b * 255);
+    if (alpha !== void 0 && alpha < 1) {
+      return `rgba(${ri},${gi},${bi},${alpha.toFixed(3)})`;
+    }
+    return `rgb(${ri},${gi},${bi})`;
+  }
+  function createPaletteFn(paletteName) {
+    return (t, alpha) => samplePaletteCSS(paletteName, t, alpha);
+  }
+
+  // packages/core/src/effects/canvas-fn.ts
+  function resolveCanvasControls(controls) {
+    const resolved = [];
+    for (const [key, value] of Object.entries(controls)) {
+      const spec2 = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
+      const names = resolveControlNames(key, spec2);
+      const isCombo = spec2.__type === "combobox";
+      const values = spec2.meta.values;
+      resolved.push({
+        key,
+        spec: spec2,
+        normalize: names.normalize,
+        isMagicTransform: hasMagicTransform(key) && isCombo,
+        isPalette: key === "palette" && isCombo,
+        values
+      });
+    }
+    return resolved;
+  }
+  function resolveValues(controls, paletteFnCache) {
+    const result = {};
+    for (const ctrl of controls) {
+      let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
+      if (ctrl.normalize === "speed" && typeof val === "number") {
+        val = normalizeSpeed(val);
+      }
+      if (ctrl.isPalette && ctrl.values) {
+        const paletteName = typeof val === "string" ? val : ctrl.values[0] ?? "SilkCircuit";
+        let fn = paletteFnCache.get(paletteName);
+        if (!fn) {
+          fn = createPaletteFn(paletteName);
+          paletteFnCache.set(paletteName, fn);
+        }
+        result[ctrl.key] = fn;
+        continue;
+      }
+      if (ctrl.isMagicTransform && !ctrl.isPalette && ctrl.values) {
+        val = comboboxValueToIndex(val, ctrl.values, 0);
+      }
+      result[ctrl.key] = val;
+    }
+    return result;
+  }
+  var GeneratedCanvasEffect = class extends CanvasEffect {
+    resolvedControls;
+    drawFn = null;
+    factoryFn = null;
+    directDrawFn = null;
+    currentControls = {};
+    paletteFnCache = /* @__PURE__ */ new Map();
+    constructor(name, resolvedControls, renderFn, isFactory, options) {
+      super({
+        id: name.toLowerCase().replace(/\s+/g, "-"),
+        name,
+        canvasWidth: options.width,
+        canvasHeight: options.height
+      });
+      this.resolvedControls = resolvedControls;
+      if (isFactory) {
+        this.factoryFn = renderFn;
+      } else {
+        this.directDrawFn = renderFn;
+      }
+    }
+    async initializeRenderer() {
+      await super.initializeRenderer();
+      if (this.factoryFn) {
+        this.drawFn = this.factoryFn();
+      } else {
+        this.drawFn = this.directDrawFn;
+      }
+    }
+    initializeControls() {
+      this.currentControls = resolveValues(this.resolvedControls, this.paletteFnCache);
+    }
+    getControlValues() {
+      return resolveValues(this.resolvedControls, this.paletteFnCache);
+    }
+    applyControls(controls) {
+      this.currentControls = controls;
+    }
+    draw(time, _deltaTime) {
+      if (!this.drawFn || !this.ctx) return;
+      this.drawFn(this.ctx, time, this.currentControls);
+    }
+    // Override clearCanvas to not auto-clear — let the draw function decide
+    clearCanvas() {
+    }
+  };
+  function storeCanvasMetadata(def) {
+    const g = globalThis;
+    const defs = g.__hypercolorEffectDefs__ ?? [];
+    defs.push(def);
+    g.__hypercolorEffectDefs__ = defs;
+  }
+  function canvas(name, controls, renderFn, options) {
+    const resolved = resolveCanvasControls(controls);
+    const opts = options ?? {};
+    const isFactory = renderFn.length === 0;
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeCanvasMetadata({
+        type: "canvas",
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        width: opts.width,
+        height: opts.height
+      });
+      return;
+    }
+    const fx = new GeneratedCanvasEffect(name, resolved, renderFn, isFactory, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  }
+  canvas.stateful = function stateful(name, controls, factory, options) {
+    const resolved = resolveCanvasControls(controls);
+    const opts = options ?? {};
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeCanvasMetadata({
+        type: "canvas",
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        width: opts.width,
+        height: opts.height
+      });
+      return;
+    }
+    const fx = new GeneratedCanvasEffect(name, resolved, factory, true, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  };
+
+  // packages/core/src/controls/decorators.ts
+  var import_reflect_metadata = __toESM(require_Reflect(), 1);
+  var METADATA_KEYS = {
+    controls: /* @__PURE__ */ Symbol.for("hypercolor:controls"),
+    effect: /* @__PURE__ */ Symbol.for("hypercolor:effect")
+  };
+  var propertyMetadataKey = (propertyName) => /* @__PURE__ */ Symbol.for(`hypercolor:control:${propertyName}`);
+  function createControlDecorator(createDefinition) {
+    return (options) => (target, propertyKey) => {
+      if (typeof propertyKey !== "string") {
+        throw new Error("Control decorators can only be used on string properties");
+      }
+      const targetConstructor = target.constructor;
+      if (!Reflect.hasMetadata(METADATA_KEYS.controls, targetConstructor)) {
+        Reflect.defineMetadata(METADATA_KEYS.controls, [], targetConstructor);
+      }
+      const controlsMetadata = Reflect.getMetadata(METADATA_KEYS.controls, targetConstructor);
+      const controlDefinition = createDefinition(propertyKey, options);
+      controlsMetadata.push(controlDefinition);
+      Reflect.defineMetadata(propertyMetadataKey(propertyKey), controlDefinition, targetConstructor);
+    };
+  }
+  var NumberControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    max: options.max,
+    min: options.min,
+    step: options.step,
+    tooltip: options.tooltip,
+    type: "number"
+  }));
+  var BooleanControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "boolean"
+  }));
+  var ComboboxControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "combobox",
+    values: options.values
+  }));
+  var HueControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    max: options.max,
+    min: options.min,
+    tooltip: options.tooltip,
+    type: "hue"
+  }));
+  var ColorControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "color"
+  }));
+  var TextFieldControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "textfield"
+  }));
 
   // src/effects/digital-rain/main.ts
   var COLOR_MODES = ["Matrix", "Phosphor", "SilkCircuit", "Cyberpunk", "Ice"];
@@ -1514,320 +2113,261 @@
       glitch: { r: 162, g: 252, b: 255 }
     }
   };
-  var DigitalRain = class extends CanvasEffect {
-    speed;
-    density;
-    trailLength;
-    charSize;
-    palette;
-    glitch;
-    controlState = {
-      speed: normalizeSpeed(5),
-      density: 62,
-      trailLength: 58,
-      charSize: 42,
-      palette: "Matrix",
-      glitch: false
+  function clamp(value, min, max) {
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+  }
+  function randomRange(min, max) {
+    return min + Math.random() * (max - min);
+  }
+  function randomGlyphIndex() {
+    return Math.floor(Math.random() * GLYPHS.length);
+  }
+  function rgba(color2, alpha) {
+    return `rgba(${color2.r}, ${color2.g}, ${color2.b}, ${clamp(alpha, 0, 1).toFixed(3)})`;
+  }
+  function mixRgb(a, b, t) {
+    const blend = clamp(t, 0, 1);
+    return {
+      r: Math.round(a.r + (b.r - a.r) * blend),
+      g: Math.round(a.g + (b.g - a.g) * blend),
+      b: Math.round(a.b + (b.b - a.b) * blend)
     };
-    paletteState = PALETTES.Matrix;
-    columns = [];
-    rows = 0;
-    cols = 0;
-    cellWidth = 10;
-    cellHeight = 16;
-    lastCanvasWidth = 0;
-    lastCanvasHeight = 0;
-    needsGridSync = true;
-    constructor() {
-      super({ id: "digital-rain", name: "Digital Rain", backgroundColor: PALETTES.Matrix.background });
+  }
+  function resolvePalette(mode) {
+    return PALETTES[mode] ?? PALETTES.Matrix;
+  }
+  function wrapRow(row, rows) {
+    if (rows <= 0) return 0;
+    const wrapped = row % rows;
+    return wrapped < 0 ? wrapped + rows : wrapped;
+  }
+  function activeProbability(density) {
+    const normalized = clamp((density - 10) / 90, 0, 1);
+    return 0.14 + normalized * 0.84;
+  }
+  function columnTrailCells(column, trailLength, density) {
+    const baseTrail = 4 + trailLength * 0.26;
+    const densityBoost = 0.86 + activeProbability(density) * 0.24;
+    return Math.max(4, Math.round(baseTrail * column.trailBias * densityBoost));
+  }
+  function createColumn(rows, seedHead, density) {
+    const glyphs = new Array(rows);
+    for (let i = 0; i < rows; i++) glyphs[i] = randomGlyphIndex();
+    return {
+      head: seedHead ? randomRange(-rows, rows) : -randomRange(2, rows * 1.2 + 2),
+      speedBias: randomRange(0.62, 1.52),
+      trailBias: randomRange(0.72, 1.28),
+      active: Math.random() < activeProbability(density),
+      respawnGap: randomRange(2, 8),
+      glyphs,
+      mutateClock: Math.random() * 0.2,
+      mutateEvery: randomRange(0.03, 0.16)
+    };
+  }
+  function resetColumn(column, rows, density, forceActive) {
+    column.active = forceActive || Math.random() < activeProbability(density);
+    column.head = -randomRange(2, rows * (0.4 + Math.random() * 0.9));
+    column.speedBias = randomRange(0.6, 1.58);
+    column.trailBias = randomRange(0.7, 1.35);
+    column.respawnGap = randomRange(2, 9);
+    column.mutateClock = Math.random() * 0.25;
+    column.mutateEvery = randomRange(0.03, 0.18);
+    if (column.glyphs.length !== rows) {
+      column.glyphs = new Array(rows);
+      for (let i = 0; i < rows; i++) column.glyphs[i] = randomGlyphIndex();
+      return;
     }
-    initializeControls() {
-      this.speed = getControlValue("speed", 5);
-      this.density = getControlValue("density", 62);
-      this.trailLength = getControlValue("trailLength", 58);
-      this.charSize = getControlValue("charSize", 42);
-      this.palette = getControlValue("palette", "Matrix");
-      this.glitch = getControlValue("glitch", false);
-      this.controlState = this.getControlValues();
-      this.paletteState = this.resolvePalette(this.controlState.palette);
-      this.backgroundColor = this.paletteState.background;
-      this.needsGridSync = true;
-    }
-    getControlValues() {
-      return {
-        speed: normalizeSpeed(getControlValue("speed", 5)),
-        density: getControlValue("density", 62),
-        trailLength: getControlValue("trailLength", 58),
-        charSize: getControlValue("charSize", 42),
-        palette: getControlValue("palette", "Matrix"),
-        glitch: getControlValue("glitch", false)
-      };
-    }
-    async loadResources() {
-      this.paletteState = this.resolvePalette(this.controlState.palette);
-      this.backgroundColor = this.paletteState.background;
-      if (this.ctx) this.ctx.imageSmoothingEnabled = false;
-      this.needsGridSync = true;
-    }
-    applyControls(controls) {
-      const sizeChanged = controls.charSize !== this.controlState.charSize;
-      const paletteChanged = controls.palette !== this.controlState.palette;
-      this.controlState = controls;
-      if (paletteChanged) {
-        this.paletteState = this.resolvePalette(controls.palette);
-        this.backgroundColor = this.paletteState.background;
+    for (let i = 0; i < rows; i++) {
+      if (Math.random() < 0.34) {
+        column.glyphs[i] = randomGlyphIndex();
       }
-      if (sizeChanged) this.needsGridSync = true;
     }
-    draw(time, deltaTime) {
-      if (!this.ctx || !this.canvas) return;
-      const ctx = this.ctx;
-      const w = this.canvas.width;
-      const h = this.canvas.height;
-      const dt = deltaTime > 0 ? Math.min(0.08, deltaTime) : 1 / 60;
-      this.syncGrid(w, h);
-      this.updateColumns(dt);
-      this.drawAtmosphere(ctx, w, h);
-      this.drawStreams(ctx, time);
+  }
+  function mutateColumnGlyphs(column, rows, trailLength, density) {
+    const mutationCount = 1 + (Math.random() < 0.4 ? 1 : 0);
+    const headRow = Math.floor(column.head);
+    for (let i = 0; i < mutationCount; i++) {
+      const offset = Math.floor(Math.random() * columnTrailCells(column, trailLength, density));
+      const jitter = Math.floor((Math.random() - 0.5) * 6);
+      const row = wrapRow(headRow - offset + jitter, rows);
+      column.glyphs[row] = randomGlyphIndex();
     }
-    syncGrid(w, h) {
-      const nextCellWidth = Math.max(6, Math.round(6 + this.controlState.charSize * 0.14));
+    if (Math.random() < 0.12) {
+      const randomRow = Math.floor(Math.random() * rows);
+      column.glyphs[randomRow] = randomGlyphIndex();
+    }
+  }
+  var main_default = canvas.stateful("Digital Rain", {
+    speed: [1, 10, 5],
+    density: [10, 100, 62],
+    trailLength: [5, 100, 58],
+    charSize: [0, 100, 42],
+    colorMode: combo("Color Mode", [...COLOR_MODES], { default: "Matrix" }),
+    glitch: false
+  }, () => {
+    let columns = [];
+    let rows = 0;
+    let cols = 0;
+    let cellWidth = 10;
+    let cellHeight = 16;
+    let lastCanvasWidth = 0;
+    let lastCanvasHeight = 0;
+    let needsGridSync = true;
+    let paletteState = PALETTES.Matrix;
+    let lastTime = -1;
+    let prevCharSize = 42;
+    let prevColorMode = "Matrix";
+    function rebuildColumns(density) {
+      columns = [];
+      for (let i = 0; i < cols; i++) {
+        columns.push(createColumn(rows, true, density));
+      }
+    }
+    function syncGrid(w, h, charSize, density) {
+      const nextCellWidth = Math.max(6, Math.round(6 + charSize * 0.14));
       const nextCellHeight = Math.max(nextCellWidth + 2, Math.round(nextCellWidth * 1.55));
       const nextCols = Math.max(8, Math.floor(w / nextCellWidth));
       const nextRows = Math.max(8, Math.floor(h / nextCellHeight));
-      const canvasChanged = this.lastCanvasWidth !== w || this.lastCanvasHeight !== h;
-      const gridChanged = this.cellWidth !== nextCellWidth || this.cellHeight !== nextCellHeight || this.cols !== nextCols || this.rows !== nextRows;
-      if (!this.needsGridSync && !canvasChanged && !gridChanged) return;
-      this.lastCanvasWidth = w;
-      this.lastCanvasHeight = h;
-      this.cellWidth = nextCellWidth;
-      this.cellHeight = nextCellHeight;
-      this.cols = nextCols;
-      this.rows = nextRows;
-      this.rebuildColumns();
-      this.needsGridSync = false;
+      const canvasChanged = lastCanvasWidth !== w || lastCanvasHeight !== h;
+      const gridChanged = cellWidth !== nextCellWidth || cellHeight !== nextCellHeight || cols !== nextCols || rows !== nextRows;
+      if (!needsGridSync && !canvasChanged && !gridChanged) return;
+      lastCanvasWidth = w;
+      lastCanvasHeight = h;
+      cellWidth = nextCellWidth;
+      cellHeight = nextCellHeight;
+      cols = nextCols;
+      rows = nextRows;
+      rebuildColumns(density);
+      needsGridSync = false;
     }
-    rebuildColumns() {
-      this.columns = [];
-      for (let i = 0; i < this.cols; i++) {
-        this.columns.push(this.createColumn(true));
-      }
-    }
-    createColumn(seedHead) {
-      const glyphs = new Array(this.rows);
-      for (let i = 0; i < this.rows; i++) glyphs[i] = this.randomGlyphIndex();
-      return {
-        head: seedHead ? this.randomRange(-this.rows, this.rows) : -this.randomRange(2, this.rows * 1.2 + 2),
-        speedBias: this.randomRange(0.62, 1.52),
-        trailBias: this.randomRange(0.72, 1.28),
-        active: Math.random() < this.activeProbability(),
-        respawnGap: this.randomRange(2, 8),
-        glyphs,
-        mutateClock: Math.random() * 0.2,
-        mutateEvery: this.randomRange(0.03, 0.16)
-      };
-    }
-    updateColumns(dt) {
-      const rowsPerSecond = 3.5 + this.controlState.speed * 8.2;
-      const wakeChance = dt * (0.14 + this.controlState.density * 4e-3);
-      for (const column of this.columns) {
+    function updateColumns(dt, speed, density, trailLength) {
+      const rowsPerSecond = 3.5 + speed * 8.2;
+      const wakeChance = dt * (0.14 + density * 4e-3);
+      for (const column of columns) {
         if (!column.active) {
-          if (Math.random() < wakeChance * (0.35 + this.activeProbability())) {
-            this.resetColumn(column, true);
+          if (Math.random() < wakeChance * (0.35 + activeProbability(density))) {
+            resetColumn(column, rows, density, true);
           }
           continue;
         }
         column.head += rowsPerSecond * column.speedBias * dt;
-        const trailCells = this.columnTrailCells(column);
-        if (column.head - trailCells > this.rows + column.respawnGap) {
-          this.resetColumn(column, false);
+        const trailCells = columnTrailCells(column, trailLength, density);
+        if (column.head - trailCells > rows + column.respawnGap) {
+          resetColumn(column, rows, density, false);
           continue;
         }
         column.mutateClock += dt;
         if (column.mutateClock >= column.mutateEvery) {
           column.mutateClock = 0;
-          this.mutateColumnGlyphs(column);
+          mutateColumnGlyphs(column, rows, trailLength, density);
         }
       }
     }
-    resetColumn(column, forceActive) {
-      column.active = forceActive || Math.random() < this.activeProbability();
-      column.head = -this.randomRange(2, this.rows * (0.4 + Math.random() * 0.9));
-      column.speedBias = this.randomRange(0.6, 1.58);
-      column.trailBias = this.randomRange(0.7, 1.35);
-      column.respawnGap = this.randomRange(2, 9);
-      column.mutateClock = Math.random() * 0.25;
-      column.mutateEvery = this.randomRange(0.03, 0.18);
-      if (column.glyphs.length !== this.rows) {
-        column.glyphs = new Array(this.rows);
-        for (let i = 0; i < this.rows; i++) column.glyphs[i] = this.randomGlyphIndex();
-        return;
-      }
-      for (let i = 0; i < this.rows; i++) {
-        if (Math.random() < 0.34) {
-          column.glyphs[i] = this.randomGlyphIndex();
-        }
-      }
-    }
-    mutateColumnGlyphs(column) {
-      const mutationCount = 1 + (Math.random() < 0.4 ? 1 : 0);
-      const headRow = Math.floor(column.head);
-      for (let i = 0; i < mutationCount; i++) {
-        const offset = Math.floor(Math.random() * this.columnTrailCells(column));
-        const jitter = Math.floor((Math.random() - 0.5) * 6);
-        const row = this.wrapRow(headRow - offset + jitter);
-        column.glyphs[row] = this.randomGlyphIndex();
-      }
-      if (Math.random() < 0.12) {
-        const randomRow = Math.floor(Math.random() * this.rows);
-        column.glyphs[randomRow] = this.randomGlyphIndex();
-      }
-    }
-    drawAtmosphere(ctx, w, h) {
+    function drawAtmosphere(ctx, w, h, trailLength, density, glitch) {
       const haze = ctx.createLinearGradient(0, 0, 0, h);
-      haze.addColorStop(0, this.rgba(this.paletteState.shadow, 0.28));
-      haze.addColorStop(0.58, this.rgba(this.paletteState.shadow, 0.1));
-      haze.addColorStop(1, this.rgba(this.paletteState.shadow, 0.02));
+      haze.addColorStop(0, rgba(paletteState.shadow, 0.28));
+      haze.addColorStop(0.58, rgba(paletteState.shadow, 0.1));
+      haze.addColorStop(1, rgba(paletteState.shadow, 0.02));
       ctx.fillStyle = haze;
       ctx.fillRect(0, 0, w, h);
-      const scanlineAlpha = 0.02 + this.controlState.trailLength / 100 * 0.05;
-      ctx.fillStyle = this.rgba(this.paletteState.trail, scanlineAlpha);
+      const scanlineAlpha = 0.02 + trailLength / 100 * 0.05;
+      ctx.fillStyle = rgba(paletteState.trail, scanlineAlpha);
       for (let y = 1; y < h; y += 3) {
         ctx.fillRect(0, y, w, 1);
       }
-      if (!this.controlState.glitch || Math.random() >= 0.14) return;
+      if (!glitch || Math.random() >= 0.14) return;
       const bandY = Math.floor(Math.random() * h);
       const bandHeight = 1 + Math.floor(Math.random() * 3);
-      ctx.fillStyle = this.rgba(this.paletteState.glitch, 0.08 + Math.random() * 0.2);
+      ctx.fillStyle = rgba(paletteState.glitch, 0.08 + Math.random() * 0.2);
       ctx.fillRect(0, bandY, w, bandHeight);
     }
-    drawStreams(ctx, time) {
-      const fontSize = Math.max(8, Math.round(this.cellHeight * 0.9));
-      const glitchPulse = this.controlState.glitch ? 0.5 + 0.5 * Math.sin(time * 18) : 0;
+    function drawDormantGlyph(ctx, columnIndex, density) {
+      if (Math.random() >= 0.01 + density / 100 * 0.02) return;
+      const row = Math.floor(Math.random() * rows);
+      const glyph = GLYPHS[randomGlyphIndex()];
+      const x = columnIndex * cellWidth;
+      const y = row * cellHeight;
+      ctx.fillStyle = rgba(paletteState.trail, 0.05);
+      ctx.fillText(glyph, x, y);
+    }
+    function drawColumnTrail(ctx, column, columnIndex, glitchPulse, trailLength, density, glitch) {
+      const trailCells = columnTrailCells(column, trailLength, density);
+      const headRow = Math.floor(column.head);
+      const x = columnIndex * cellWidth;
+      for (let step = 0; step < trailCells; step++) {
+        const row = headRow - step;
+        if (row < 0 || row >= rows) continue;
+        const energy = 1 - step / trailCells;
+        const fade = Math.pow(energy, 1.6);
+        if (fade < 0.02) continue;
+        const glyph = GLYPHS[column.glyphs[row] ?? 0];
+        const y = row * cellHeight;
+        let color2 = mixRgb(paletteState.trail, paletteState.bright, Math.pow(energy, 0.58));
+        let alpha = (0.12 + trailLength / 135) * fade;
+        if (step === 0) {
+          alpha = 0.98;
+          color2 = paletteState.head;
+          column.glyphs[row] = randomGlyphIndex();
+          ctx.fillStyle = rgba(paletteState.bright, 0.18);
+          ctx.fillRect(x, y, cellWidth - 1, cellHeight - 1);
+        }
+        if (glitch && Math.random() < 0.012 + glitchPulse * 0.02) {
+          const jitter = Math.random() < 0.5 ? -1 : 1;
+          ctx.fillStyle = rgba(paletteState.glitch, Math.min(1, alpha * 0.65));
+          ctx.fillText(glyph, x + jitter, y);
+          color2 = mixRgb(color2, paletteState.glitch, 0.55);
+          alpha = Math.min(1, alpha + 0.12);
+        }
+        ctx.fillStyle = rgba(color2, alpha);
+        ctx.fillText(glyph, x, y);
+      }
+    }
+    return (ctx, time, c) => {
+      const speed = c.speed;
+      const density = c.density;
+      const trailLength = c.trailLength;
+      const charSize = c.charSize;
+      const colorMode = c.colorMode;
+      const glitch = c.glitch;
+      const w = ctx.canvas.width;
+      const h = ctx.canvas.height;
+      const dt = lastTime < 0 ? 1 / 60 : Math.min(0.08, time - lastTime);
+      lastTime = time;
+      if (colorMode !== prevColorMode) {
+        paletteState = resolvePalette(colorMode);
+        prevColorMode = colorMode;
+      }
+      if (charSize !== prevCharSize) {
+        needsGridSync = true;
+        prevCharSize = charSize;
+      }
+      syncGrid(w, h, charSize, density);
+      updateColumns(dt, speed, density, trailLength);
+      ctx.fillStyle = paletteState.background;
+      ctx.fillRect(0, 0, w, h);
+      drawAtmosphere(ctx, w, h, trailLength, density, glitch);
+      const fontSize = Math.max(8, Math.round(cellHeight * 0.9));
+      const glitchPulse = glitch ? 0.5 + 0.5 * Math.sin(time * 18) : 0;
       ctx.save();
       ctx.imageSmoothingEnabled = false;
       ctx.textBaseline = "top";
       ctx.textAlign = "left";
       ctx.font = `700 ${fontSize}px "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace`;
-      for (let columnIndex = 0; columnIndex < this.columns.length; columnIndex++) {
-        const column = this.columns[columnIndex];
+      for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
+        const column = columns[columnIndex];
         if (!column.active) {
-          this.drawDormantGlyph(ctx, columnIndex);
+          drawDormantGlyph(ctx, columnIndex, density);
           continue;
         }
-        this.drawColumnTrail(ctx, column, columnIndex, glitchPulse);
+        drawColumnTrail(ctx, column, columnIndex, glitchPulse, trailLength, density, glitch);
       }
       ctx.restore();
-    }
-    drawDormantGlyph(ctx, columnIndex) {
-      if (Math.random() >= 0.01 + this.controlState.density / 100 * 0.02) return;
-      const row = Math.floor(Math.random() * this.rows);
-      const glyph = GLYPHS[this.randomGlyphIndex()];
-      const x = columnIndex * this.cellWidth;
-      const y = row * this.cellHeight;
-      ctx.fillStyle = this.rgba(this.paletteState.trail, 0.05);
-      ctx.fillText(glyph, x, y);
-    }
-    drawColumnTrail(ctx, column, columnIndex, glitchPulse) {
-      const trailCells = this.columnTrailCells(column);
-      const headRow = Math.floor(column.head);
-      const x = columnIndex * this.cellWidth;
-      for (let step = 0; step < trailCells; step++) {
-        const row = headRow - step;
-        if (row < 0 || row >= this.rows) continue;
-        const energy = 1 - step / trailCells;
-        const fade = Math.pow(energy, 1.6);
-        if (fade < 0.02) continue;
-        const glyph = GLYPHS[column.glyphs[row] ?? 0];
-        const y = row * this.cellHeight;
-        let color = this.mixRgb(this.paletteState.trail, this.paletteState.bright, Math.pow(energy, 0.58));
-        let alpha = (0.12 + this.controlState.trailLength / 135) * fade;
-        if (step === 0) {
-          alpha = 0.98;
-          color = this.paletteState.head;
-          column.glyphs[row] = this.randomGlyphIndex();
-          ctx.fillStyle = this.rgba(this.paletteState.bright, 0.18);
-          ctx.fillRect(x, y, this.cellWidth - 1, this.cellHeight - 1);
-        }
-        if (this.controlState.glitch && Math.random() < 0.012 + glitchPulse * 0.02) {
-          const jitter = Math.random() < 0.5 ? -1 : 1;
-          ctx.fillStyle = this.rgba(this.paletteState.glitch, Math.min(1, alpha * 0.65));
-          ctx.fillText(glyph, x + jitter, y);
-          color = this.mixRgb(color, this.paletteState.glitch, 0.55);
-          alpha = Math.min(1, alpha + 0.12);
-        }
-        ctx.fillStyle = this.rgba(color, alpha);
-        ctx.fillText(glyph, x, y);
-      }
-    }
-    columnTrailCells(column) {
-      const baseTrail = 4 + this.controlState.trailLength * 0.26;
-      const densityBoost = 0.86 + this.activeProbability() * 0.24;
-      return Math.max(4, Math.round(baseTrail * column.trailBias * densityBoost));
-    }
-    activeProbability() {
-      const normalized = this.clamp((this.controlState.density - 10) / 90, 0, 1);
-      return 0.14 + normalized * 0.84;
-    }
-    resolvePalette(mode) {
-      return PALETTES[mode] ?? PALETTES.Matrix;
-    }
-    wrapRow(row) {
-      if (this.rows <= 0) return 0;
-      const wrapped = row % this.rows;
-      return wrapped < 0 ? wrapped + this.rows : wrapped;
-    }
-    mixRgb(a, b, t) {
-      const blend = this.clamp(t, 0, 1);
-      return {
-        r: Math.round(a.r + (b.r - a.r) * blend),
-        g: Math.round(a.g + (b.g - a.g) * blend),
-        b: Math.round(a.b + (b.b - a.b) * blend)
-      };
-    }
-    rgba(color, alpha) {
-      return `rgba(${color.r}, ${color.g}, ${color.b}, ${this.clamp(alpha, 0, 1).toFixed(3)})`;
-    }
-    randomGlyphIndex() {
-      return Math.floor(Math.random() * GLYPHS.length);
-    }
-    randomRange(min, max) {
-      return min + Math.random() * (max - min);
-    }
-    clamp(value, min, max) {
-      if (value < min) return min;
-      if (value > max) return max;
-      return value;
-    }
-  };
-  __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Column fall speed" })
-  ], DigitalRain.prototype, "speed", 2);
-  __decorateClass([
-    NumberControl({ label: "Density", min: 10, max: 100, default: 62, tooltip: "Active column density" })
-  ], DigitalRain.prototype, "density", 2);
-  __decorateClass([
-    NumberControl({ label: "Trail", min: 5, max: 100, default: 58, tooltip: "Trail length behind each head" })
-  ], DigitalRain.prototype, "trailLength", 2);
-  __decorateClass([
-    NumberControl({ label: "Size", min: 0, max: 100, default: 42, tooltip: "Character grid size" })
-  ], DigitalRain.prototype, "charSize", 2);
-  __decorateClass([
-    ComboboxControl({ label: "Color Mode", values: COLOR_MODES, default: "Matrix", tooltip: "Palette preset" })
-  ], DigitalRain.prototype, "palette", 2);
-  __decorateClass([
-    BooleanControl({ label: "Glitch", default: false, tooltip: "Adds occasional data tears and flicker" })
-  ], DigitalRain.prototype, "glitch", 2);
-  DigitalRain = __decorateClass([
-    Effect({
-      name: "Digital Rain",
-      description: "Community-style matrix rain with crisp block glyph columns and configurable palettes",
-      author: "Hypercolor",
-      audioReactive: false
-    })
-  ], DigitalRain);
-  var effect = new DigitalRain();
-  initializeEffect(() => effect.initialize(), { instance: effect });
+    };
+  }, {
+    description: "Community-style matrix rain with crisp block glyph columns and configurable palettes"
+  });
 })();
 /*! Bundled license information:
 

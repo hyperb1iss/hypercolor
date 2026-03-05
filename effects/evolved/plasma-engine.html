@@ -6,14 +6,14 @@
   <title>Plasma Engine</title>
   <meta description="Dual-flow Poison Bloom particle field with crisp additive sparks"/>
   <meta publisher="Hypercolor"/>
-  <meta property="bgColor" label="Background color" type="color" default="#03020c" tooltip="Background tone"/>
-  <meta property="color1" label="Color 1" type="color" default="#94ff4f" tooltip="Primary particle stream color"/>
-  <meta property="color2" label="Color 2" type="color" default="#2cc8ff" tooltip="Secondary counter-flow color"/>
-  <meta property="color3" label="Color 3" type="color" default="#ff4fd8" tooltip="Bloom accent color"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Animation speed"/>
-  <meta property="bloom" label="Bloom" type="number" min="0" max="100" default="68" tooltip="Additive glow strength"/>
-  <meta property="spread" label="Spread" type="number" min="0" max="100" default="54" tooltip="Flow curl and orbit spread"/>
-  <meta property="density" label="Density" type="number" min="10" max="100" default="60" tooltip="Particle count"/>
+  <meta property="bgColor" label="Bg Color" type="color" default="#03020c"/>
+  <meta property="color1" label="Color1" type="color" default="#94ff4f"/>
+  <meta property="color2" label="Color2" type="color" default="#2cc8ff"/>
+  <meta property="color3" label="Color3" type="color" default="#ff4fd8"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5"/>
+  <meta property="bloom" label="Bloom" type="number" min="0" max="100" default="68"/>
+  <meta property="spread" label="Spread" type="number" min="0" max="100" default="54"/>
+  <meta property="density" label="Density" type="number" min="10" max="100" default="60"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -45,14 +45,6 @@
     isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
     mod
   ));
-  var __decorateClass = (decorators, target, key, kind) => {
-    var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;
-    for (var i = decorators.length - 1, decorator; i >= 0; i--)
-      if (decorator = decorators[i])
-        result = (kind ? decorator(target, key, result) : decorator(result)) || result;
-    if (kind && result) __defProp(target, key, result);
-    return result;
-  };
 
   // node_modules/.bun/reflect-metadata@0.2.2/node_modules/reflect-metadata/Reflect.js
   var require_Reflect = __commonJS({
@@ -529,14 +521,14 @@
             var second;
             var rest;
             var targetProviderMap = new _WeakMap();
-            var registry = {
+            var registry2 = {
               registerProvider,
               getProvider,
               setProvider
             };
-            return registry;
+            return registry2;
             function registerProvider(provider) {
-              if (!Object.isExtensible(registry)) {
+              if (!Object.isExtensible(registry2)) {
                 throw new Error("Cannot add provider to a frozen registry.");
               }
               switch (true) {
@@ -648,7 +640,7 @@
             }
             return metadataRegistry2;
           }
-          function CreateMetadataProvider(registry) {
+          function CreateMetadataProvider(registry2) {
             var metadata2 = new _WeakMap();
             var provider = {
               isProviderFor: function(O, P) {
@@ -681,7 +673,7 @@
                   return void 0;
                 metadataMap = new _Map();
                 targetMetadata.set(P, metadataMap);
-                if (!registry.setProvider(O, P, provider)) {
+                if (!registry2.setProvider(O, P, provider)) {
                   targetMetadata.delete(P);
                   if (createdTargetMetadata) {
                     metadata2.delete(O);
@@ -1139,95 +1131,6 @@
     }
   });
 
-  // src/effects/plasma-engine/main.ts
-  var import_reflect_metadata2 = __toESM(require_Reflect());
-
-  // packages/core/src/controls/decorators.ts
-  var import_reflect_metadata = __toESM(require_Reflect(), 1);
-  var METADATA_KEYS = {
-    controls: /* @__PURE__ */ Symbol.for("hypercolor:controls"),
-    effect: /* @__PURE__ */ Symbol.for("hypercolor:effect")
-  };
-  var propertyMetadataKey = (propertyName) => /* @__PURE__ */ Symbol.for(`hypercolor:control:${propertyName}`);
-  function createControlDecorator(createDefinition) {
-    return (options) => (target, propertyKey) => {
-      if (typeof propertyKey !== "string") {
-        throw new Error("Control decorators can only be used on string properties");
-      }
-      const targetConstructor = target.constructor;
-      if (!Reflect.hasMetadata(METADATA_KEYS.controls, targetConstructor)) {
-        Reflect.defineMetadata(METADATA_KEYS.controls, [], targetConstructor);
-      }
-      const controlsMetadata = Reflect.getMetadata(METADATA_KEYS.controls, targetConstructor);
-      const controlDefinition = createDefinition(propertyKey, options);
-      controlsMetadata.push(controlDefinition);
-      Reflect.defineMetadata(propertyMetadataKey(propertyKey), controlDefinition, targetConstructor);
-    };
-  }
-  var NumberControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    max: options.max,
-    min: options.min,
-    step: options.step,
-    tooltip: options.tooltip,
-    type: "number"
-  }));
-  var BooleanControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "boolean"
-  }));
-  var ComboboxControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "combobox",
-    values: options.values
-  }));
-  var HueControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    max: options.max,
-    min: options.min,
-    tooltip: options.tooltip,
-    type: "hue"
-  }));
-  var ColorControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "color"
-  }));
-  var TextFieldControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "textfield"
-  }));
-  function Effect(options) {
-    return (target) => {
-      Reflect.defineMetadata(METADATA_KEYS.effect, options, target.prototype);
-      target.prototype.effectMetadata = options;
-    };
-  }
-
-  // packages/core/src/controls/helpers.ts
-  function getControlValue(propertyName, defaultValue) {
-    return window[propertyName] ?? defaultValue;
-  }
-  function normalizeSpeed(speed) {
-    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
-    return Math.max(0.2, (speed / 5) ** 1.5);
-  }
-
   // packages/core/src/utils/debug.ts
   var COLORS = {
     debug: "#9d9d9d",
@@ -1253,30 +1156,30 @@
     };
   }
   function stylizedLog(level, namespace, ...args) {
-    let color = COLORS.debug;
+    let color2 = COLORS.debug;
     let emoji = EMOJI.debug;
     let method = "log";
     switch (level) {
       case "info":
-        color = COLORS.secondary;
+        color2 = COLORS.secondary;
         emoji = EMOJI.info;
         break;
       case "warn":
-        color = COLORS.warning;
+        color2 = COLORS.warning;
         emoji = EMOJI.warn;
         method = "warn";
         break;
       case "error":
-        color = COLORS.error;
+        color2 = COLORS.error;
         emoji = EMOJI.error;
         method = "error";
         break;
       case "success":
-        color = COLORS.success;
+        color2 = COLORS.success;
         emoji = EMOJI.success;
         break;
     }
-    console[method](`%c${emoji} [${namespace}]`, `color: ${color}; font-weight: bold;`, ...args);
+    console[method](`%c${emoji} [${namespace}]`, `color: ${color2}; font-weight: bold;`, ...args);
   }
 
   // packages/core/src/effects/base-effect.ts
@@ -1368,6 +1271,44 @@
         }
       } catch {
       }
+    }
+  };
+
+  // packages/core/src/effects/canvas-effect.ts
+  var CanvasEffect = class extends BaseEffect {
+    ctx = null;
+    backgroundColor;
+    lastFrameTime = 0;
+    deltaTime = 0;
+    constructor(config) {
+      super(config);
+      this.backgroundColor = config.backgroundColor || "black";
+    }
+    async initializeRenderer() {
+      if (!this.canvas) throw new Error("Canvas not available");
+      this.ctx = this.canvas.getContext("2d");
+      if (!this.ctx) throw new Error("Could not get 2D context");
+      this.ctx.imageSmoothingEnabled = true;
+      this.clearCanvas();
+      await this.loadResources();
+    }
+    /** Override to load images, fonts, etc. */
+    async loadResources() {
+    }
+    clearCanvas() {
+      if (!this.ctx || !this.canvas) return;
+      this.ctx.fillStyle = this.backgroundColor;
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+    render(time) {
+      if (!this.ctx || !this.canvas) return;
+      this.deltaTime = this.lastFrameTime === 0 ? 0 : time - this.lastFrameTime;
+      this.lastFrameTime = time;
+      this.clearCanvas();
+      this.draw(time, this.deltaTime);
+    }
+    updateParameters(controls) {
+      this.applyControls(controls);
     }
   };
 
@@ -1696,7 +1637,128 @@ void main() {
     }
   };
 
-  // packages/core/src/index.ts
+  // packages/core/src/controls/infer.ts
+  function inferControl(key, value, label) {
+    if (Array.isArray(value) && value.length >= 3 && value.length <= 4 && typeof value[0] === "number") {
+      const [min, max, defaultValue, step] = value;
+      return {
+        __brand: "ControlSpec",
+        __type: "number",
+        label,
+        defaultValue,
+        meta: { min, max, step }
+      };
+    }
+    if (Array.isArray(value) && value.length >= 1 && typeof value[0] === "string") {
+      return {
+        __brand: "ControlSpec",
+        __type: "combobox",
+        label,
+        defaultValue: value[0],
+        meta: { values: [...value] }
+      };
+    }
+    if (typeof value === "boolean") {
+      return {
+        __brand: "ControlSpec",
+        __type: "boolean",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "string" && value.startsWith("#")) {
+      return {
+        __brand: "ControlSpec",
+        __type: "color",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "string") {
+      return {
+        __brand: "ControlSpec",
+        __type: "textfield",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "number") {
+      return {
+        __brand: "ControlSpec",
+        __type: "number",
+        label,
+        defaultValue: value,
+        meta: { min: 0, max: 100 }
+      };
+    }
+    throw new Error(
+      `Cannot infer control type for "${key}". Expected [min, max, default], string[], boolean, '#hex', string, or number. Got: ${JSON.stringify(value)}`
+    );
+  }
+
+  // packages/core/src/controls/names.ts
+  function deriveLabel(key) {
+    return key.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase()).trim();
+  }
+  function deriveUniformName(key) {
+    return "i" + key.charAt(0).toUpperCase() + key.slice(1);
+  }
+  var MAGIC_NAMES = {
+    speed: "speed"
+  };
+  var MAGIC_TRANSFORMS = /* @__PURE__ */ new Set(["palette"]);
+  function getMagicNormalize(key) {
+    return MAGIC_NAMES[key] ?? "none";
+  }
+  function hasMagicTransform(key) {
+    return MAGIC_TRANSFORMS.has(key);
+  }
+  function resolveControlNames(key, spec) {
+    return {
+      label: spec.label,
+      uniformName: spec.uniform ?? deriveUniformName(key),
+      normalize: spec.normalize ?? getMagicNormalize(key)
+    };
+  }
+
+  // packages/core/src/controls/specs.ts
+  function isControlSpec(value) {
+    return value !== null && typeof value === "object" && value.__brand === "ControlSpec";
+  }
+
+  // packages/core/src/controls/helpers.ts
+  function getControlValue(propertyName, defaultValue) {
+    return window[propertyName] ?? defaultValue;
+  }
+  function normalizeSpeed(speed) {
+    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
+    return Math.max(0.2, (speed / 5) ** 1.5);
+  }
+  function comboboxValueToIndex(value, options, defaultIndex = 0) {
+    if (options.length === 0) return 0;
+    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const rounded = Math.round(value);
+      if (rounded >= 0 && rounded < options.length) return rounded;
+      return safeDefault;
+    }
+    if (typeof value !== "string") return safeDefault;
+    const exactIndex = options.indexOf(value);
+    if (exactIndex >= 0) return exactIndex;
+    const normalized = value.trim().toLowerCase();
+    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
+    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
+    const parsedNumeric = Number.parseInt(normalized, 10);
+    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
+      return parsedNumeric;
+    }
+    return safeDefault;
+  }
+
+  // packages/core/src/init.ts
   function detectInitMode() {
     if (typeof window === "undefined") return "metadata-only";
     if (window.__HYPERCOLOR_METADATA_ONLY__) return "metadata-only";
@@ -1723,118 +1785,743 @@ void main() {
     }, { once: true });
   }
 
+  // packages/core/src/effects/effect-fn.ts
+  function resolveControls(controls) {
+    const resolved = [];
+    for (const [key, value] of Object.entries(controls)) {
+      const spec = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
+      const names = resolveControlNames(key, spec);
+      const values = spec.meta.values;
+      resolved.push({
+        key,
+        spec,
+        uniformName: names.uniformName,
+        normalize: names.normalize,
+        isMagicTransform: hasMagicTransform(key) && spec.__type === "combobox",
+        values
+      });
+    }
+    return resolved;
+  }
+  var GeneratedWebGLEffect = class extends WebGLEffect {
+    resolvedControls;
+    options;
+    shaderCtx = null;
+    constructor(name, shader, resolvedControls, options) {
+      super({
+        id: name.toLowerCase().replace(/\s+/g, "-"),
+        name,
+        fragmentShader: shader,
+        vertexShader: options.vertexShader,
+        audioReactive: options.audio ?? false
+      });
+      this.resolvedControls = resolvedControls;
+      this.options = options;
+    }
+    initializeControls() {
+      for (const ctrl of this.resolvedControls) {
+        ;
+        this[ctrl.key] = getControlValue(
+          ctrl.key,
+          ctrl.spec.defaultValue
+        );
+      }
+    }
+    getControlValues() {
+      const values = {};
+      for (const ctrl of this.resolvedControls) {
+        let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
+        if (ctrl.normalize === "speed" && typeof val === "number") {
+          val = normalizeSpeed(val);
+        }
+        if (ctrl.isMagicTransform && ctrl.values) {
+          val = comboboxValueToIndex(
+            val,
+            ctrl.values,
+            0
+          );
+        }
+        values[ctrl.key] = val;
+      }
+      return values;
+    }
+    createUniforms() {
+      for (const ctrl of this.resolvedControls) {
+        const initial = this.resolveInitialUniformValue(ctrl);
+        this.registerUniform(ctrl.uniformName, initial);
+      }
+    }
+    async initializeRenderer() {
+      await super.initializeRenderer();
+      if (this.options.setup && this.gl && this.program) {
+        this.shaderCtx = this.createShaderContext();
+        await this.options.setup(this.shaderCtx);
+      }
+    }
+    updateUniforms(controls) {
+      for (const ctrl of this.resolvedControls) {
+        const val = controls[ctrl.key];
+        if (val !== void 0) {
+          this.setUniform(ctrl.uniformName, val);
+        }
+      }
+    }
+    render(time) {
+      if (this.options.frame && this.gl && this.program) {
+        if (!this.shaderCtx) this.shaderCtx = this.createShaderContext();
+        this.options.frame(this.shaderCtx, time);
+      }
+      super.render(time);
+    }
+    resolveInitialUniformValue(ctrl) {
+      const val = ctrl.spec.defaultValue;
+      if (ctrl.isMagicTransform && ctrl.values) {
+        return comboboxValueToIndex(val, ctrl.values, 0);
+      }
+      if (ctrl.normalize === "speed" && typeof val === "number") {
+        return normalizeSpeed(val);
+      }
+      if (typeof val === "boolean") {
+        return val ? 1 : 0;
+      }
+      if (typeof val === "string" && val.startsWith("#")) {
+        return hexToFloats(val);
+      }
+      if (typeof val === "number") {
+        return val;
+      }
+      if (ctrl.spec.__type === "combobox" && ctrl.values) {
+        return comboboxValueToIndex(val, ctrl.values, 0);
+      }
+      return 0;
+    }
+    createShaderContext() {
+      const self2 = this;
+      return {
+        get controls() {
+          return self2.getControlValues();
+        },
+        get audio() {
+          return getAudioData();
+        },
+        gl: self2.gl,
+        program: self2.program,
+        get width() {
+          return self2.canvas?.width ?? 320;
+        },
+        get height() {
+          return self2.canvas?.height ?? 200;
+        },
+        registerUniform: (name, value) => self2.registerUniform(name, value),
+        setUniform: (name, value) => self2.setUniform(name, value)
+      };
+    }
+  };
+  function hexToFloats(hex) {
+    const h = hex.replace("#", "");
+    return [
+      Number.parseInt(h.slice(0, 2), 16) / 255,
+      Number.parseInt(h.slice(2, 4), 16) / 255,
+      Number.parseInt(h.slice(4, 6), 16) / 255
+    ];
+  }
+  function storeMetadata(def) {
+    const g = globalThis;
+    const defs = g.__hypercolorEffectDefs__ ?? [];
+    defs.push(def);
+    g.__hypercolorEffectDefs__ = defs;
+  }
+  function effect(name, shader, controls, options) {
+    const resolved = resolveControls(controls);
+    const opts = options ?? {};
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeMetadata({
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        audio: opts.audio
+      });
+      return;
+    }
+    const fx = new GeneratedWebGLEffect(name, shader, resolved, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  }
+
+  // shared/palettes.json
+  var palettes_default = [
+    {
+      id: "silkcircuit",
+      name: "SilkCircuit",
+      mood: ["electric", "dark", "vibrant"],
+      stops: ["#e135ff", "#80ffea", "#ff6ac1", "#f1fa8c", "#50fa7b"],
+      iq: { a: [0.5, 0.3, 0.5], b: [0.5, 0.5, 0.5], c: [1, 0.8, 0.6], d: [0.85, 0.2, 0.5] },
+      accent: "#e135ff",
+      background: "#0d0221"
+    },
+    {
+      id: "cyberpunk",
+      name: "Cyberpunk",
+      mood: ["dark", "neon", "futuristic"],
+      stops: ["#ff00ff", "#00ffff", "#ff0066", "#6600ff"],
+      iq: { a: [0.5, 0.2, 0.5], b: [0.5, 0.5, 0.5], c: [1, 1, 1], d: [0.8, 0.1, 0.6] },
+      accent: "#ff00ff",
+      background: "#0a0014"
+    },
+    {
+      id: "vaporwave",
+      name: "Vaporwave",
+      mood: ["retro", "dreamy", "pastel-neon"],
+      stops: ["#c4b5fd", "#f472b6", "#67e8f9", "#fda4af"],
+      iq: { a: [0.6, 0.4, 0.7], b: [0.3, 0.3, 0.3], c: [0.6, 0.8, 1], d: [0.7, 0.3, 0.6] },
+      accent: "#c4b5fd",
+      background: "#1a0030"
+    },
+    {
+      id: "synthwave",
+      name: "Synthwave",
+      mood: ["retro", "warm", "80s"],
+      stops: ["#4a0080", "#ff006a", "#ff6600", "#ffcc00"],
+      iq: { a: [0.5, 0.2, 0.3], b: [0.5, 0.5, 0.5], c: [1, 0.7, 0.4], d: [0, 0.15, 0.2] },
+      accent: "#ff006a",
+      background: "#0f0020"
+    },
+    {
+      id: "neon-flux",
+      name: "Neon Flux",
+      mood: ["energetic", "vibrant"],
+      stops: ["#ff00aa", "#00ffcc", "#ffaa00", "#aa00ff"],
+      iq: { a: [0.5, 0.5, 0.5], b: [0.5, 0.5, 0.5], c: [1, 1, 0.5], d: [0.8, 0.9, 0.3] },
+      accent: "#ff00aa",
+      background: "#050510"
+    },
+    {
+      id: "matrix",
+      name: "Matrix",
+      mood: ["dark", "digital", "monochrome"],
+      stops: ["#001100", "#003300", "#00ff00", "#66ff66"],
+      iq: { a: [0, 0.3, 0], b: [0, 0.5, 0], c: [0, 1, 0], d: [0, 0.3, 0] },
+      accent: "#00ff00",
+      background: "#000800"
+    },
+    {
+      id: "aurora",
+      name: "Aurora",
+      mood: ["cool", "ethereal", "northern"],
+      stops: ["#00bcd4", "#4caf50", "#7c4dff", "#00e5ff"],
+      iq: { a: [0.2, 0.5, 0.4], b: [0.3, 0.4, 0.4], c: [0.8, 0.7, 0.9], d: [0.6, 0.3, 0.7] },
+      accent: "#00e5ff",
+      background: "#020810"
+    },
+    {
+      id: "ocean",
+      name: "Ocean",
+      mood: ["calm", "deep", "aquatic"],
+      stops: ["#001f3f", "#0074d9", "#39cccc", "#7fdbff"],
+      iq: { a: [0.1, 0.3, 0.5], b: [0.2, 0.3, 0.4], c: [0.5, 0.7, 1], d: [0.4, 0.5, 0.6] },
+      accent: "#0074d9",
+      background: "#000a1a"
+    },
+    {
+      id: "forest",
+      name: "Forest",
+      mood: ["earthy", "organic", "lush"],
+      stops: ["#1b3a1a", "#2e7d32", "#4caf50", "#81c784", "#c6ff00"],
+      iq: { a: [0.1, 0.3, 0.1], b: [0.2, 0.4, 0.2], c: [0.5, 0.8, 0.4], d: [0.3, 0.4, 0.2] },
+      accent: "#4caf50",
+      background: "#0a1a0a"
+    },
+    {
+      id: "sunset",
+      name: "Sunset",
+      mood: ["warm", "romantic", "dusk"],
+      stops: ["#ff6f00", "#ff8a65", "#ff5252", "#ffd740"],
+      iq: { a: [0.5, 0.3, 0.2], b: [0.5, 0.4, 0.3], c: [1, 0.6, 0.4], d: [0, 0.1, 0.2] },
+      accent: "#ff6f00",
+      background: "#1a0800"
+    },
+    {
+      id: "cherry-blossom",
+      name: "Cherry Blossom",
+      mood: ["gentle", "spring", "delicate"],
+      stops: ["#ffffff", "#ffc0cb", "#ff69b4", "#db7093"],
+      iq: { a: [0.8, 0.6, 0.7], b: [0.2, 0.2, 0.2], c: [0.5, 0.3, 0.4], d: [0, 0.3, 0.4] },
+      accent: "#ff69b4",
+      background: "#1a0810"
+    },
+    {
+      id: "fire",
+      name: "Fire",
+      mood: ["hot", "intense", "primal"],
+      stops: ["#000000", "#8b0000", "#ff4500", "#ffa500", "#ffff00"],
+      iq: { a: [0.5, 0.2, 0], b: [0.5, 0.3, 0.1], c: [1, 0.7, 0.4], d: [0, 0.05, 0.1] },
+      accent: "#ff4500",
+      background: "#0a0000"
+    },
+    {
+      id: "lava",
+      name: "Lava",
+      mood: ["volcanic", "extreme"],
+      stops: ["#000000", "#8b0000", "#ff2200", "#ff6600", "#ffffff"],
+      iq: { a: [0.4, 0.1, 0], b: [0.5, 0.3, 0.2], c: [1, 0.5, 0.3], d: [0, 0, 0.1] },
+      accent: "#ff2200",
+      background: "#0a0000"
+    },
+    {
+      id: "ember",
+      name: "Ember",
+      mood: ["warm", "cozy", "glowing"],
+      stops: ["#3e2723", "#bf360c", "#ff9800", "#ffc107"],
+      iq: { a: [0.4, 0.2, 0.1], b: [0.3, 0.2, 0.1], c: [0.8, 0.6, 0.3], d: [0.1, 0.1, 0.05] },
+      accent: "#ff9800",
+      background: "#1a0a00"
+    },
+    {
+      id: "solar",
+      name: "Solar",
+      mood: ["bright", "radiant", "powerful"],
+      stops: ["#b8860b", "#ffd700", "#ffffff", "#fff59d"],
+      iq: { a: [0.6, 0.5, 0.2], b: [0.4, 0.4, 0.3], c: [0.8, 0.7, 0.5], d: [0, 0.1, 0.2] },
+      accent: "#ffd700",
+      background: "#1a1000"
+    },
+    {
+      id: "ice",
+      name: "Ice",
+      mood: ["cold", "crisp", "frozen"],
+      stops: ["#0d47a1", "#e1f5fe", "#00e5ff", "#b3e5fc"],
+      iq: { a: [0.3, 0.5, 0.7], b: [0.3, 0.4, 0.3], c: [0.6, 0.7, 0.8], d: [0.5, 0.6, 0.7] },
+      accent: "#00e5ff",
+      background: "#000a1a"
+    },
+    {
+      id: "deep-sea",
+      name: "Deep Sea",
+      mood: ["dark", "mysterious", "abyssal"],
+      stops: ["#020024", "#1a237e", "#00695c", "#00bfa5"],
+      iq: { a: [0.1, 0.1, 0.3], b: [0.2, 0.2, 0.3], c: [0.3, 0.5, 0.7], d: [0.6, 0.5, 0.6] },
+      accent: "#00bfa5",
+      background: "#000510"
+    },
+    {
+      id: "midnight",
+      name: "Midnight",
+      mood: ["dark", "contemplative", "elegant"],
+      stops: ["#0d0033", "#1a0066", "#4a148c", "#7b1fa2"],
+      iq: { a: [0.2, 0.1, 0.3], b: [0.2, 0.1, 0.3], c: [0.5, 0.3, 0.7], d: [0.7, 0.5, 0.7] },
+      accent: "#7b1fa2",
+      background: "#050010"
+    },
+    {
+      id: "frost",
+      name: "Frost",
+      mood: ["light", "winter", "clean"],
+      stops: ["#b3e5fc", "#e1f5fe", "#f5f5f5", "#cfd8dc"],
+      iq: { a: [0.7, 0.8, 0.9], b: [0.2, 0.2, 0.1], c: [0.3, 0.3, 0.3], d: [0.5, 0.6, 0.7] },
+      accent: "#b3e5fc",
+      background: "#0a1520"
+    },
+    {
+      id: "viridis",
+      name: "Viridis",
+      mood: ["perceptually-uniform", "data"],
+      stops: ["#440154", "#31688e", "#35b779", "#fde725"],
+      iq: { a: [0.3, 0.3, 0.3], b: [0.3, 0.3, 0.3], c: [0.8, 0.8, 0.5], d: [0.7, 0.1, 0.2] },
+      accent: "#35b779",
+      background: "#0a0020"
+    },
+    {
+      id: "inferno",
+      name: "Inferno",
+      mood: ["perceptually-uniform", "heat"],
+      stops: ["#000004", "#420a68", "#dd513a", "#fcffa4"],
+      iq: { a: [0.3, 0.15, 0.2], b: [0.4, 0.3, 0.3], c: [0.8, 0.5, 0.4], d: [0, 0.1, 0.2] },
+      accent: "#dd513a",
+      background: "#000004"
+    },
+    {
+      id: "plasma",
+      name: "Plasma",
+      mood: ["perceptually-uniform", "vivid"],
+      stops: ["#0d0887", "#7e03a8", "#cc4778", "#f89540", "#f0f921"],
+      iq: { a: [0.3, 0.2, 0.4], b: [0.4, 0.3, 0.4], c: [0.8, 0.6, 0.6], d: [0.6, 0.2, 0.4] },
+      accent: "#cc4778",
+      background: "#050020"
+    },
+    {
+      id: "magma",
+      name: "Magma",
+      mood: ["perceptually-uniform", "warm"],
+      stops: ["#000004", "#3b0f70", "#b63679", "#fb8861", "#fcfdbf"],
+      iq: { a: [0.3, 0.15, 0.25], b: [0.4, 0.3, 0.35], c: [0.7, 0.5, 0.5], d: [0.1, 0.15, 0.2] },
+      accent: "#fb8861",
+      background: "#000004"
+    },
+    {
+      id: "candy",
+      name: "Candy",
+      mood: ["sweet", "playful", "soft"],
+      stops: ["#f48fb1", "#ce93d8", "#80cbc4", "#ffcc80"],
+      iq: { a: [0.7, 0.6, 0.7], b: [0.3, 0.3, 0.3], c: [0.5, 0.5, 0.5], d: [0.8, 0.3, 0.5] },
+      accent: "#f48fb1",
+      background: "#1a0810"
+    },
+    {
+      id: "pastel",
+      name: "Pastel",
+      mood: ["gentle", "calm", "muted"],
+      stops: ["#c5cae9", "#b2dfdb", "#f8bbd0", "#fff9c4"],
+      iq: { a: [0.7, 0.7, 0.8], b: [0.2, 0.2, 0.2], c: [0.3, 0.4, 0.3], d: [0.5, 0.3, 0.5] },
+      accent: "#c5cae9",
+      background: "#101015"
+    },
+    {
+      id: "cotton-candy",
+      name: "Cotton Candy",
+      mood: ["whimsical", "light"],
+      stops: ["#ffb6c1", "#b0e0e6", "#ffc0cb", "#add8e6"],
+      iq: { a: [0.8, 0.7, 0.8], b: [0.2, 0.2, 0.2], c: [0.3, 0.3, 0.3], d: [0, 0.5, 0.7] },
+      accent: "#ffb6c1",
+      background: "#100810"
+    },
+    {
+      id: "mono",
+      name: "Mono",
+      mood: ["neutral", "classic"],
+      stops: ["#000000", "#555555", "#aaaaaa", "#ffffff"],
+      iq: { a: [0.5, 0.5, 0.5], b: [0.5, 0.5, 0.5], c: [0, 0, 0], d: [0, 0, 0] },
+      accent: "#ffffff",
+      background: "#000000"
+    },
+    {
+      id: "phosphor",
+      name: "Phosphor",
+      mood: ["retro", "terminal", "hacker"],
+      stops: ["#001100", "#003300", "#00aa00", "#00ff00"],
+      iq: { a: [0, 0.25, 0], b: [0, 0.25, 0], c: [0, 1, 0], d: [0, 0.5, 0] },
+      accent: "#00ff00",
+      background: "#000800"
+    }
+  ];
+
+  // packages/core/src/palette/runtime.ts
+  var registry = /* @__PURE__ */ new Map();
+  for (const p of palettes_default) {
+    registry.set(p.name, p);
+  }
+  function hexToRgb(hex) {
+    const h = hex.replace("#", "");
+    return [
+      Number.parseInt(h.slice(0, 2), 16) / 255,
+      Number.parseInt(h.slice(2, 4), 16) / 255,
+      Number.parseInt(h.slice(4, 6), 16) / 255
+    ];
+  }
+  function srgbToOklab(r, g, b) {
+    const lr = r <= 0.04045 ? r / 12.92 : ((r + 0.055) / 1.055) ** 2.4;
+    const lg = g <= 0.04045 ? g / 12.92 : ((g + 0.055) / 1.055) ** 2.4;
+    const lb = b <= 0.04045 ? b / 12.92 : ((b + 0.055) / 1.055) ** 2.4;
+    const l_ = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+    const m_ = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+    const s_ = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+    return [
+      0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_,
+      1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_,
+      0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_
+    ];
+  }
+  function oklabToSrgb(L, a, b) {
+    const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+    const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+    const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+    const l = l_ * l_ * l_;
+    const m = m_ * m_ * m_;
+    const s = s_ * s_ * s_;
+    let r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    let g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    let bl = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+    r = r <= 31308e-7 ? 12.92 * r : 1.055 * r ** (1 / 2.4) - 0.055;
+    g = g <= 31308e-7 ? 12.92 * g : 1.055 * g ** (1 / 2.4) - 0.055;
+    bl = bl <= 31308e-7 ? 12.92 * bl : 1.055 * bl ** (1 / 2.4) - 0.055;
+    return [
+      Math.max(0, Math.min(1, r)),
+      Math.max(0, Math.min(1, g)),
+      Math.max(0, Math.min(1, bl))
+    ];
+  }
+  var LUT_SIZE = 256;
+  var lutCache = /* @__PURE__ */ new Map();
+  function buildLut(palette) {
+    const stops = palette.stops.map(hexToRgb);
+    const oklabStops = stops.map(([r, g, b]) => srgbToOklab(r, g, b));
+    const lut = [];
+    for (let i = 0; i < LUT_SIZE; i++) {
+      const t = i / (LUT_SIZE - 1);
+      const segment = t * (oklabStops.length - 1);
+      const idx = Math.min(Math.floor(segment), oklabStops.length - 2);
+      const frac = segment - idx;
+      const a = oklabStops[idx];
+      const b = oklabStops[idx + 1];
+      const L = a[0] + (b[0] - a[0]) * frac;
+      const aa = a[1] + (b[1] - a[1]) * frac;
+      const bb = a[2] + (b[2] - a[2]) * frac;
+      lut.push(oklabToSrgb(L, aa, bb));
+    }
+    return lut;
+  }
+  function getLut(palette) {
+    let lut = lutCache.get(palette.name);
+    if (!lut) {
+      lut = buildLut(palette);
+      lutCache.set(palette.name, lut);
+    }
+    return lut;
+  }
+  function samplePalette(paletteName, t) {
+    const entry = registry.get(paletteName);
+    if (!entry) return [1, 0, 1];
+    const lut = getLut(entry);
+    const clamped = Math.max(0, Math.min(1, t));
+    const idx = Math.round(clamped * (LUT_SIZE - 1));
+    return lut[idx];
+  }
+  function samplePaletteCSS(paletteName, t, alpha) {
+    const [r, g, b] = samplePalette(paletteName, t);
+    const ri = Math.round(r * 255);
+    const gi = Math.round(g * 255);
+    const bi = Math.round(b * 255);
+    if (alpha !== void 0 && alpha < 1) {
+      return `rgba(${ri},${gi},${bi},${alpha.toFixed(3)})`;
+    }
+    return `rgb(${ri},${gi},${bi})`;
+  }
+  function createPaletteFn(paletteName) {
+    return (t, alpha) => samplePaletteCSS(paletteName, t, alpha);
+  }
+
+  // packages/core/src/effects/canvas-fn.ts
+  function resolveCanvasControls(controls) {
+    const resolved = [];
+    for (const [key, value] of Object.entries(controls)) {
+      const spec = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
+      const names = resolveControlNames(key, spec);
+      const isCombo = spec.__type === "combobox";
+      const values = spec.meta.values;
+      resolved.push({
+        key,
+        spec,
+        normalize: names.normalize,
+        isMagicTransform: hasMagicTransform(key) && isCombo,
+        isPalette: key === "palette" && isCombo,
+        values
+      });
+    }
+    return resolved;
+  }
+  function resolveValues(controls, paletteFnCache) {
+    const result = {};
+    for (const ctrl of controls) {
+      let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
+      if (ctrl.normalize === "speed" && typeof val === "number") {
+        val = normalizeSpeed(val);
+      }
+      if (ctrl.isPalette && ctrl.values) {
+        const paletteName = typeof val === "string" ? val : ctrl.values[0] ?? "SilkCircuit";
+        let fn = paletteFnCache.get(paletteName);
+        if (!fn) {
+          fn = createPaletteFn(paletteName);
+          paletteFnCache.set(paletteName, fn);
+        }
+        result[ctrl.key] = fn;
+        continue;
+      }
+      if (ctrl.isMagicTransform && !ctrl.isPalette && ctrl.values) {
+        val = comboboxValueToIndex(val, ctrl.values, 0);
+      }
+      result[ctrl.key] = val;
+    }
+    return result;
+  }
+  var GeneratedCanvasEffect = class extends CanvasEffect {
+    resolvedControls;
+    drawFn = null;
+    factoryFn = null;
+    directDrawFn = null;
+    currentControls = {};
+    paletteFnCache = /* @__PURE__ */ new Map();
+    constructor(name, resolvedControls, renderFn, isFactory, options) {
+      super({
+        id: name.toLowerCase().replace(/\s+/g, "-"),
+        name,
+        canvasWidth: options.width,
+        canvasHeight: options.height
+      });
+      this.resolvedControls = resolvedControls;
+      if (isFactory) {
+        this.factoryFn = renderFn;
+      } else {
+        this.directDrawFn = renderFn;
+      }
+    }
+    async initializeRenderer() {
+      await super.initializeRenderer();
+      if (this.factoryFn) {
+        this.drawFn = this.factoryFn();
+      } else {
+        this.drawFn = this.directDrawFn;
+      }
+    }
+    initializeControls() {
+      this.currentControls = resolveValues(this.resolvedControls, this.paletteFnCache);
+    }
+    getControlValues() {
+      return resolveValues(this.resolvedControls, this.paletteFnCache);
+    }
+    applyControls(controls) {
+      this.currentControls = controls;
+    }
+    draw(time, _deltaTime) {
+      if (!this.drawFn || !this.ctx) return;
+      this.drawFn(this.ctx, time, this.currentControls);
+    }
+    // Override clearCanvas to not auto-clear — let the draw function decide
+    clearCanvas() {
+    }
+  };
+  function storeCanvasMetadata(def) {
+    const g = globalThis;
+    const defs = g.__hypercolorEffectDefs__ ?? [];
+    defs.push(def);
+    g.__hypercolorEffectDefs__ = defs;
+  }
+  function canvas(name, controls, renderFn, options) {
+    const resolved = resolveCanvasControls(controls);
+    const opts = options ?? {};
+    const isFactory = renderFn.length === 0;
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeCanvasMetadata({
+        type: "canvas",
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        width: opts.width,
+        height: opts.height
+      });
+      return;
+    }
+    const fx = new GeneratedCanvasEffect(name, resolved, renderFn, isFactory, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  }
+  canvas.stateful = function stateful(name, controls, factory, options) {
+    const resolved = resolveCanvasControls(controls);
+    const opts = options ?? {};
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeCanvasMetadata({
+        type: "canvas",
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        width: opts.width,
+        height: opts.height
+      });
+      return;
+    }
+    const fx = new GeneratedCanvasEffect(name, resolved, factory, true, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  };
+
+  // packages/core/src/controls/decorators.ts
+  var import_reflect_metadata = __toESM(require_Reflect(), 1);
+  var METADATA_KEYS = {
+    controls: /* @__PURE__ */ Symbol.for("hypercolor:controls"),
+    effect: /* @__PURE__ */ Symbol.for("hypercolor:effect")
+  };
+  var propertyMetadataKey = (propertyName) => /* @__PURE__ */ Symbol.for(`hypercolor:control:${propertyName}`);
+  function createControlDecorator(createDefinition) {
+    return (options) => (target, propertyKey) => {
+      if (typeof propertyKey !== "string") {
+        throw new Error("Control decorators can only be used on string properties");
+      }
+      const targetConstructor = target.constructor;
+      if (!Reflect.hasMetadata(METADATA_KEYS.controls, targetConstructor)) {
+        Reflect.defineMetadata(METADATA_KEYS.controls, [], targetConstructor);
+      }
+      const controlsMetadata = Reflect.getMetadata(METADATA_KEYS.controls, targetConstructor);
+      const controlDefinition = createDefinition(propertyKey, options);
+      controlsMetadata.push(controlDefinition);
+      Reflect.defineMetadata(propertyMetadataKey(propertyKey), controlDefinition, targetConstructor);
+    };
+  }
+  var NumberControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    max: options.max,
+    min: options.min,
+    step: options.step,
+    tooltip: options.tooltip,
+    type: "number"
+  }));
+  var BooleanControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "boolean"
+  }));
+  var ComboboxControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "combobox",
+    values: options.values
+  }));
+  var HueControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    max: options.max,
+    min: options.min,
+    tooltip: options.tooltip,
+    type: "hue"
+  }));
+  var ColorControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "color"
+  }));
+  var TextFieldControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "textfield"
+  }));
+
   // src/effects/plasma-engine/fragment.glsl
   var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\n// Controls\nuniform vec3 iBackgroundColor;\nuniform vec3 iColor1;\nuniform vec3 iColor2;\nuniform vec3 iColor3;\nuniform float iSpeed;\nuniform float iBloom;\nuniform float iSpread;\nuniform float iDensity;\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec2 hash22(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.xx + p3.yz) * p3.zy);\n}\n\nmat2 rot(float a) {\n    float s = sin(a);\n    float c = cos(a);\n    return mat2(c, -s, s, c);\n}\n\nvec2 flowA(vec2 p, float t, float spread) {\n    vec2 q = p;\n    q += vec2(sin(p.y * 1.70 + t * 0.82), cos(p.x * 1.38 - t * 1.07)) * (0.45 + spread * 0.85);\n    q = rot(0.22 * sin(t * 0.20) + 0.12) * q;\n    return q;\n}\n\nvec2 flowB(vec2 p, float t, float spread) {\n    vec2 q = p;\n    q += vec2(cos(p.y * 1.28 - t * 0.96), sin(p.x * 1.82 + t * 0.88)) * (0.40 + spread * 0.80);\n    q = rot(-0.30 * cos(t * 0.16) - 0.14) * q;\n    return q;\n}\n\nvoid main() {\n    vec2 uv = (gl_FragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;\n    float t = iTime * iSpeed * 0.60;\n    float bloom = clamp(iBloom * 0.01, 0.0, 1.0);\n    float spread = clamp(iSpread * 0.01, 0.0, 1.0);\n    float density = clamp(iDensity * 0.01, 0.10, 1.0);\n\n    float gridScale = mix(9.0, 30.0, density);\n    vec2 domain = uv * gridScale;\n    float warpScale = 0.82 + spread * 0.75;\n\n    vec2 streamA = flowA(domain * warpScale, t, spread);\n    vec2 streamB = flowB(domain * vec2(warpScale * 0.95, warpScale), t, spread);\n\n    vec2 baseA = floor(streamA);\n    vec2 baseB = floor(streamB);\n\n    vec3 accum = vec3(0.0);\n    float energyA = 0.0;\n    float energyB = 0.0;\n    float bloomGain = mix(0.22, 1.25, bloom);\n\n    for (int oy = -1; oy <= 1; oy++) {\n        for (int ox = -1; ox <= 1; ox++) {\n            vec2 offset = vec2(float(ox), float(oy));\n\n            vec2 cellA = baseA + offset;\n            vec2 seedA = hash22(cellA + 37.1);\n            float phaseA = hash21(cellA + 141.7) * 6.2831853;\n            vec2 orbitA = vec2(\n                sin(t * (0.95 + seedA.x * 0.90) + phaseA),\n                cos(t * (1.10 + seedA.y * 0.85) - phaseA)\n            );\n            vec2 jitterA = (seedA - 0.5) * (0.85 + spread * 1.75);\n            vec2 particleA = cellA + 0.5 + jitterA * 0.45 + orbitA * (0.22 + spread * 0.44);\n            float distA = length(streamA - particleA);\n\n            float coreA = smoothstep(0.22, 0.0, distA);\n            coreA *= coreA;\n            float haloA = exp(-distA * mix(16.0, 7.0, bloom));\n            float twinkleA = 0.72 + 0.28 * sin(t * 8.5 + phaseA * 2.7 + seedA.x * 21.0);\n            float contribA = coreA * (1.15 + twinkleA) + haloA * 0.20 * bloomGain;\n            accum += iColor1 * contribA;\n            energyA += coreA;\n\n            vec2 cellB = baseB + offset;\n            vec2 seedB = hash22(cellB + 91.3);\n            float phaseB = hash21(cellB + 269.9) * 6.2831853;\n            vec2 orbitB = vec2(\n                cos(-t * (1.02 + seedB.y * 0.92) + phaseB),\n                sin(-t * (0.88 + seedB.x * 0.86) - phaseB)\n            );\n            vec2 jitterB = (seedB - 0.5) * (0.92 + spread * 1.95);\n            vec2 particleB = cellB + 0.5 + jitterB * 0.48 + orbitB * (0.25 + spread * 0.48);\n            float distB = length(streamB - particleB);\n\n            float coreB = smoothstep(0.21, 0.0, distB);\n            coreB *= coreB;\n            float haloB = exp(-distB * mix(17.0, 7.4, bloom));\n            float twinkleB = 0.70 + 0.30 * sin(-t * 9.2 + phaseB * 2.1 + seedB.y * 23.0);\n            float contribB = coreB * (1.20 + twinkleB) + haloB * 0.19 * bloomGain;\n            accum += iColor2 * contribB;\n            energyB += coreB;\n        }\n    }\n\n    float overlap = sqrt(max(0.0, energyA * energyB));\n    float pulse = 0.65 + 0.35 * sin(t * 2.3 + length(uv) * 9.5);\n    accum += iColor3 * overlap * (1.45 + bloom * 2.75) * pulse;\n\n    float edgeFade = 1.0 - smoothstep(0.18, 1.28 + spread * 0.20, length(uv));\n    accum *= 0.75 + edgeFade * 0.45;\n\n    vec3 color = iBackgroundColor + accum * (1.0 + density * 1.35);\n    color = 1.0 - exp(-color * mix(1.05, 1.85, bloom));\n\n    fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);\n}\n";
 
   // src/effects/plasma-engine/main.ts
-  var DEFAULT_BG = "#03020c";
-  var DEFAULT_COLOR_1 = "#94ff4f";
-  var DEFAULT_COLOR_2 = "#2cc8ff";
-  var DEFAULT_COLOR_3 = "#ff4fd8";
-  var PlasmaEngine = class extends WebGLEffect {
-    bgColor;
-    color1;
-    color2;
-    color3;
-    speed;
-    bloom;
-    spread;
-    density;
-    constructor() {
-      super({ id: "plasma-engine", name: "Plasma Engine", fragmentShader: fragment_default });
-    }
-    initializeControls() {
-      this.bgColor = getControlValue("bgColor", DEFAULT_BG);
-      this.color1 = getControlValue("color1", DEFAULT_COLOR_1);
-      this.color2 = getControlValue("color2", DEFAULT_COLOR_2);
-      this.color3 = getControlValue("color3", DEFAULT_COLOR_3);
-      this.speed = getControlValue("speed", 5);
-      this.bloom = getControlValue("bloom", 68);
-      this.spread = getControlValue("spread", 54);
-      this.density = getControlValue("density", 60);
-    }
-    getControlValues() {
-      return {
-        bgColor: this.hexToVec3(getControlValue("bgColor", DEFAULT_BG), DEFAULT_BG),
-        color1: this.hexToVec3(getControlValue("color1", DEFAULT_COLOR_1), DEFAULT_COLOR_1),
-        color2: this.hexToVec3(getControlValue("color2", DEFAULT_COLOR_2), DEFAULT_COLOR_2),
-        color3: this.hexToVec3(getControlValue("color3", DEFAULT_COLOR_3), DEFAULT_COLOR_3),
-        speed: normalizeSpeed(getControlValue("speed", 5)),
-        bloom: getControlValue("bloom", 68),
-        spread: getControlValue("spread", 54),
-        density: getControlValue("density", 60)
-      };
-    }
-    createUniforms() {
-      this.registerUniform("iBackgroundColor", this.hexToVec3(DEFAULT_BG, DEFAULT_BG));
-      this.registerUniform("iColor1", this.hexToVec3(DEFAULT_COLOR_1, DEFAULT_COLOR_1));
-      this.registerUniform("iColor2", this.hexToVec3(DEFAULT_COLOR_2, DEFAULT_COLOR_2));
-      this.registerUniform("iColor3", this.hexToVec3(DEFAULT_COLOR_3, DEFAULT_COLOR_3));
-      this.registerUniform("iSpeed", 1);
-      this.registerUniform("iBloom", 68);
-      this.registerUniform("iSpread", 54);
-      this.registerUniform("iDensity", 60);
-    }
-    updateUniforms(controls) {
-      this.setUniform("iBackgroundColor", controls.bgColor);
-      this.setUniform("iColor1", controls.color1);
-      this.setUniform("iColor2", controls.color2);
-      this.setUniform("iColor3", controls.color3);
-      this.setUniform("iSpeed", controls.speed);
-      this.setUniform("iBloom", controls.bloom);
-      this.setUniform("iSpread", controls.spread);
-      this.setUniform("iDensity", controls.density);
-    }
-    hexToVec3(hex, fallback) {
-      const parseHex = (value) => {
-        const stripped = value.trim().replace(/^#/, "");
-        if (/^[0-9a-fA-F]{6}$/.test(stripped)) return stripped;
-        if (/^[0-9a-fA-F]{3}$/.test(stripped)) {
-          return stripped.split("").map((digit) => `${digit}${digit}`).join("");
-        }
-        return null;
-      };
-      const safeHex = parseHex(hex) ?? parseHex(fallback) ?? "000000";
-      return [
-        Number.parseInt(safeHex.slice(0, 2), 16) / 255,
-        Number.parseInt(safeHex.slice(2, 4), 16) / 255,
-        Number.parseInt(safeHex.slice(4, 6), 16) / 255
-      ];
-    }
-  };
-  __decorateClass([
-    ColorControl({ label: "Background color", default: DEFAULT_BG, tooltip: "Background tone" })
-  ], PlasmaEngine.prototype, "bgColor", 2);
-  __decorateClass([
-    ColorControl({ label: "Color 1", default: DEFAULT_COLOR_1, tooltip: "Primary particle stream color" })
-  ], PlasmaEngine.prototype, "color1", 2);
-  __decorateClass([
-    ColorControl({ label: "Color 2", default: DEFAULT_COLOR_2, tooltip: "Secondary counter-flow color" })
-  ], PlasmaEngine.prototype, "color2", 2);
-  __decorateClass([
-    ColorControl({ label: "Color 3", default: DEFAULT_COLOR_3, tooltip: "Bloom accent color" })
-  ], PlasmaEngine.prototype, "color3", 2);
-  __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Animation speed" })
-  ], PlasmaEngine.prototype, "speed", 2);
-  __decorateClass([
-    NumberControl({ label: "Bloom", min: 0, max: 100, default: 68, tooltip: "Additive glow strength" })
-  ], PlasmaEngine.prototype, "bloom", 2);
-  __decorateClass([
-    NumberControl({ label: "Spread", min: 0, max: 100, default: 54, tooltip: "Flow curl and orbit spread" })
-  ], PlasmaEngine.prototype, "spread", 2);
-  __decorateClass([
-    NumberControl({ label: "Density", min: 10, max: 100, default: 60, tooltip: "Particle count" })
-  ], PlasmaEngine.prototype, "density", 2);
-  PlasmaEngine = __decorateClass([
-    Effect({
-      name: "Plasma Engine",
-      description: "Dual-flow Poison Bloom particle field with crisp additive sparks",
-      author: "Hypercolor"
-    })
-  ], PlasmaEngine);
-  var effect = new PlasmaEngine();
-  initializeEffect(() => effect.initialize(), { instance: effect });
+  var main_default = effect("Plasma Engine", fragment_default, {
+    bgColor: "#03020c",
+    color1: "#94ff4f",
+    color2: "#2cc8ff",
+    color3: "#ff4fd8",
+    speed: [1, 10, 5],
+    bloom: [0, 100, 68],
+    spread: [0, 100, 54],
+    density: [10, 100, 60]
+  }, {
+    description: "Dual-flow Poison Bloom particle field with crisp additive sparks"
+  });
 })();
 /*! Bundled license information:
 

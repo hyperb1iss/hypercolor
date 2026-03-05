@@ -6,13 +6,13 @@
   <title>Spectral Fire</title>
   <meta description="Layered community-style fire tongues with embers and optional audio lift"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="6" tooltip="Flame animation speed"/>
-  <meta property="flameHeight" label="Flame Height" type="number" min="20" max="100" default="78" tooltip="Vertical flame reach"/>
-  <meta property="turbulence" label="Turbulence" type="number" min="0" max="100" default="62" tooltip="Curl and breakup in flame layers"/>
-  <meta property="intensity" label="Intensity" type="number" min="20" max="100" default="84" tooltip="Overall fire brightness and heat"/>
-  <meta property="palette" label="Palette" type="combobox" default="Bonfire" values="Bonfire,Forge,Spellfire,Sulfur,Ashfall" tooltip="Flame color profile"/>
-  <meta property="emberAmount" label="Ember Amount" type="number" min="0" max="100" default="60" tooltip="Amount of rising ember particles"/>
-  <meta property="scene" label="Scene" type="combobox" default="Classic" values="Classic,Inferno,Torch,Wildfire" tooltip="Optional fire behavior mode"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="6"/>
+  <meta property="flameHeight" label="Flame Height" type="number" min="20" max="100" default="78"/>
+  <meta property="turbulence" label="Turbulence" type="number" min="0" max="100" default="62"/>
+  <meta property="intensity" label="Intensity" type="number" min="20" max="100" default="84"/>
+  <meta property="palette" label="Palette" type="combobox" default="Bonfire" values="Bonfire,Forge,Spellfire,Sulfur,Ashfall"/>
+  <meta property="emberAmount" label="Ember Amount" type="number" min="0" max="100" default="60"/>
+  <meta property="scene" label="Scene" type="combobox" default="Classic" values="Classic,Inferno,Torch,Wildfire"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -44,14 +44,6 @@
     isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
     mod
   ));
-  var __decorateClass = (decorators, target, key, kind) => {
-    var result = kind > 1 ? void 0 : kind ? __getOwnPropDesc(target, key) : target;
-    for (var i = decorators.length - 1, decorator; i >= 0; i--)
-      if (decorator = decorators[i])
-        result = (kind ? decorator(target, key, result) : decorator(result)) || result;
-    if (kind && result) __defProp(target, key, result);
-    return result;
-  };
 
   // node_modules/.bun/reflect-metadata@0.2.2/node_modules/reflect-metadata/Reflect.js
   var require_Reflect = __commonJS({
@@ -528,14 +520,14 @@
             var second;
             var rest;
             var targetProviderMap = new _WeakMap();
-            var registry = {
+            var registry2 = {
               registerProvider,
               getProvider,
               setProvider
             };
-            return registry;
+            return registry2;
             function registerProvider(provider) {
-              if (!Object.isExtensible(registry)) {
+              if (!Object.isExtensible(registry2)) {
                 throw new Error("Cannot add provider to a frozen registry.");
               }
               switch (true) {
@@ -647,7 +639,7 @@
             }
             return metadataRegistry2;
           }
-          function CreateMetadataProvider(registry) {
+          function CreateMetadataProvider(registry2) {
             var metadata2 = new _WeakMap();
             var provider = {
               isProviderFor: function(O, P) {
@@ -680,7 +672,7 @@
                   return void 0;
                 metadataMap = new _Map();
                 targetMetadata.set(P, metadataMap);
-                if (!registry.setProvider(O, P, provider)) {
+                if (!registry2.setProvider(O, P, provider)) {
                   targetMetadata.delete(P);
                   if (createdTargetMetadata) {
                     metadata2.delete(O);
@@ -1138,115 +1130,6 @@
     }
   });
 
-  // src/effects/spectral-fire/main.ts
-  var import_reflect_metadata2 = __toESM(require_Reflect());
-
-  // packages/core/src/controls/decorators.ts
-  var import_reflect_metadata = __toESM(require_Reflect(), 1);
-  var METADATA_KEYS = {
-    controls: /* @__PURE__ */ Symbol.for("hypercolor:controls"),
-    effect: /* @__PURE__ */ Symbol.for("hypercolor:effect")
-  };
-  var propertyMetadataKey = (propertyName) => /* @__PURE__ */ Symbol.for(`hypercolor:control:${propertyName}`);
-  function createControlDecorator(createDefinition) {
-    return (options) => (target, propertyKey) => {
-      if (typeof propertyKey !== "string") {
-        throw new Error("Control decorators can only be used on string properties");
-      }
-      const targetConstructor = target.constructor;
-      if (!Reflect.hasMetadata(METADATA_KEYS.controls, targetConstructor)) {
-        Reflect.defineMetadata(METADATA_KEYS.controls, [], targetConstructor);
-      }
-      const controlsMetadata = Reflect.getMetadata(METADATA_KEYS.controls, targetConstructor);
-      const controlDefinition = createDefinition(propertyKey, options);
-      controlsMetadata.push(controlDefinition);
-      Reflect.defineMetadata(propertyMetadataKey(propertyKey), controlDefinition, targetConstructor);
-    };
-  }
-  var NumberControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    max: options.max,
-    min: options.min,
-    step: options.step,
-    tooltip: options.tooltip,
-    type: "number"
-  }));
-  var BooleanControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "boolean"
-  }));
-  var ComboboxControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "combobox",
-    values: options.values
-  }));
-  var HueControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    max: options.max,
-    min: options.min,
-    tooltip: options.tooltip,
-    type: "hue"
-  }));
-  var ColorControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "color"
-  }));
-  var TextFieldControl = createControlDecorator((propertyKey, options) => ({
-    default: options.default,
-    id: propertyKey,
-    label: options.label,
-    tooltip: options.tooltip,
-    type: "textfield"
-  }));
-  function Effect(options) {
-    return (target) => {
-      Reflect.defineMetadata(METADATA_KEYS.effect, options, target.prototype);
-      target.prototype.effectMetadata = options;
-    };
-  }
-
-  // packages/core/src/controls/helpers.ts
-  function getControlValue(propertyName, defaultValue) {
-    return window[propertyName] ?? defaultValue;
-  }
-  function normalizeSpeed(speed) {
-    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
-    return Math.max(0.2, (speed / 5) ** 1.5);
-  }
-  function comboboxValueToIndex(value, options, defaultIndex = 0) {
-    if (options.length === 0) return 0;
-    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
-    if (typeof value === "number" && Number.isFinite(value)) {
-      const rounded = Math.round(value);
-      if (rounded >= 0 && rounded < options.length) return rounded;
-      return safeDefault;
-    }
-    if (typeof value !== "string") return safeDefault;
-    const exactIndex = options.indexOf(value);
-    if (exactIndex >= 0) return exactIndex;
-    const normalized = value.trim().toLowerCase();
-    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
-    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
-    const parsedNumeric = Number.parseInt(normalized, 10);
-    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
-      return parsedNumeric;
-    }
-    return safeDefault;
-  }
-
   // packages/core/src/utils/debug.ts
   var COLORS = {
     debug: "#9d9d9d",
@@ -1272,30 +1155,30 @@
     };
   }
   function stylizedLog(level, namespace, ...args) {
-    let color = COLORS.debug;
+    let color2 = COLORS.debug;
     let emoji = EMOJI.debug;
     let method = "log";
     switch (level) {
       case "info":
-        color = COLORS.secondary;
+        color2 = COLORS.secondary;
         emoji = EMOJI.info;
         break;
       case "warn":
-        color = COLORS.warning;
+        color2 = COLORS.warning;
         emoji = EMOJI.warn;
         method = "warn";
         break;
       case "error":
-        color = COLORS.error;
+        color2 = COLORS.error;
         emoji = EMOJI.error;
         method = "error";
         break;
       case "success":
-        color = COLORS.success;
+        color2 = COLORS.success;
         emoji = EMOJI.success;
         break;
     }
-    console[method](`%c${emoji} [${namespace}]`, `color: ${color}; font-weight: bold;`, ...args);
+    console[method](`%c${emoji} [${namespace}]`, `color: ${color2}; font-weight: bold;`, ...args);
   }
 
   // packages/core/src/effects/base-effect.ts
@@ -1387,6 +1270,44 @@
         }
       } catch {
       }
+    }
+  };
+
+  // packages/core/src/effects/canvas-effect.ts
+  var CanvasEffect = class extends BaseEffect {
+    ctx = null;
+    backgroundColor;
+    lastFrameTime = 0;
+    deltaTime = 0;
+    constructor(config) {
+      super(config);
+      this.backgroundColor = config.backgroundColor || "black";
+    }
+    async initializeRenderer() {
+      if (!this.canvas) throw new Error("Canvas not available");
+      this.ctx = this.canvas.getContext("2d");
+      if (!this.ctx) throw new Error("Could not get 2D context");
+      this.ctx.imageSmoothingEnabled = true;
+      this.clearCanvas();
+      await this.loadResources();
+    }
+    /** Override to load images, fonts, etc. */
+    async loadResources() {
+    }
+    clearCanvas() {
+      if (!this.ctx || !this.canvas) return;
+      this.ctx.fillStyle = this.backgroundColor;
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    }
+    render(time) {
+      if (!this.ctx || !this.canvas) return;
+      this.deltaTime = this.lastFrameTime === 0 ? 0 : time - this.lastFrameTime;
+      this.lastFrameTime = time;
+      this.clearCanvas();
+      this.draw(time, this.deltaTime);
+    }
+    updateParameters(controls) {
+      this.applyControls(controls);
     }
   };
 
@@ -1715,7 +1636,128 @@ void main() {
     }
   };
 
-  // packages/core/src/index.ts
+  // packages/core/src/controls/infer.ts
+  function inferControl(key, value, label) {
+    if (Array.isArray(value) && value.length >= 3 && value.length <= 4 && typeof value[0] === "number") {
+      const [min, max, defaultValue, step] = value;
+      return {
+        __brand: "ControlSpec",
+        __type: "number",
+        label,
+        defaultValue,
+        meta: { min, max, step }
+      };
+    }
+    if (Array.isArray(value) && value.length >= 1 && typeof value[0] === "string") {
+      return {
+        __brand: "ControlSpec",
+        __type: "combobox",
+        label,
+        defaultValue: value[0],
+        meta: { values: [...value] }
+      };
+    }
+    if (typeof value === "boolean") {
+      return {
+        __brand: "ControlSpec",
+        __type: "boolean",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "string" && value.startsWith("#")) {
+      return {
+        __brand: "ControlSpec",
+        __type: "color",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "string") {
+      return {
+        __brand: "ControlSpec",
+        __type: "textfield",
+        label,
+        defaultValue: value,
+        meta: {}
+      };
+    }
+    if (typeof value === "number") {
+      return {
+        __brand: "ControlSpec",
+        __type: "number",
+        label,
+        defaultValue: value,
+        meta: { min: 0, max: 100 }
+      };
+    }
+    throw new Error(
+      `Cannot infer control type for "${key}". Expected [min, max, default], string[], boolean, '#hex', string, or number. Got: ${JSON.stringify(value)}`
+    );
+  }
+
+  // packages/core/src/controls/names.ts
+  function deriveLabel(key) {
+    return key.replace(/([A-Z])/g, " $1").replace(/^./, (c) => c.toUpperCase()).trim();
+  }
+  function deriveUniformName(key) {
+    return "i" + key.charAt(0).toUpperCase() + key.slice(1);
+  }
+  var MAGIC_NAMES = {
+    speed: "speed"
+  };
+  var MAGIC_TRANSFORMS = /* @__PURE__ */ new Set(["palette"]);
+  function getMagicNormalize(key) {
+    return MAGIC_NAMES[key] ?? "none";
+  }
+  function hasMagicTransform(key) {
+    return MAGIC_TRANSFORMS.has(key);
+  }
+  function resolveControlNames(key, spec) {
+    return {
+      label: spec.label,
+      uniformName: spec.uniform ?? deriveUniformName(key),
+      normalize: spec.normalize ?? getMagicNormalize(key)
+    };
+  }
+
+  // packages/core/src/controls/specs.ts
+  function isControlSpec(value) {
+    return value !== null && typeof value === "object" && value.__brand === "ControlSpec";
+  }
+
+  // packages/core/src/controls/helpers.ts
+  function getControlValue(propertyName, defaultValue) {
+    return window[propertyName] ?? defaultValue;
+  }
+  function normalizeSpeed(speed) {
+    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
+    return Math.max(0.2, (speed / 5) ** 1.5);
+  }
+  function comboboxValueToIndex(value, options, defaultIndex = 0) {
+    if (options.length === 0) return 0;
+    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const rounded = Math.round(value);
+      if (rounded >= 0 && rounded < options.length) return rounded;
+      return safeDefault;
+    }
+    if (typeof value !== "string") return safeDefault;
+    const exactIndex = options.indexOf(value);
+    if (exactIndex >= 0) return exactIndex;
+    const normalized = value.trim().toLowerCase();
+    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
+    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
+    const parsedNumeric = Number.parseInt(normalized, 10);
+    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
+      return parsedNumeric;
+    }
+    return safeDefault;
+  }
+
+  // packages/core/src/init.ts
   function detectInitMode() {
     if (typeof window === "undefined") return "metadata-only";
     if (window.__HYPERCOLOR_METADATA_ONLY__) return "metadata-only";
@@ -1742,93 +1784,743 @@ void main() {
     }, { once: true });
   }
 
+  // packages/core/src/effects/effect-fn.ts
+  function resolveControls(controls) {
+    const resolved = [];
+    for (const [key, value] of Object.entries(controls)) {
+      const spec = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
+      const names = resolveControlNames(key, spec);
+      const values = spec.meta.values;
+      resolved.push({
+        key,
+        spec,
+        uniformName: names.uniformName,
+        normalize: names.normalize,
+        isMagicTransform: hasMagicTransform(key) && spec.__type === "combobox",
+        values
+      });
+    }
+    return resolved;
+  }
+  var GeneratedWebGLEffect = class extends WebGLEffect {
+    resolvedControls;
+    options;
+    shaderCtx = null;
+    constructor(name, shader, resolvedControls, options) {
+      super({
+        id: name.toLowerCase().replace(/\s+/g, "-"),
+        name,
+        fragmentShader: shader,
+        vertexShader: options.vertexShader,
+        audioReactive: options.audio ?? false
+      });
+      this.resolvedControls = resolvedControls;
+      this.options = options;
+    }
+    initializeControls() {
+      for (const ctrl of this.resolvedControls) {
+        ;
+        this[ctrl.key] = getControlValue(
+          ctrl.key,
+          ctrl.spec.defaultValue
+        );
+      }
+    }
+    getControlValues() {
+      const values = {};
+      for (const ctrl of this.resolvedControls) {
+        let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
+        if (ctrl.normalize === "speed" && typeof val === "number") {
+          val = normalizeSpeed(val);
+        }
+        if (ctrl.isMagicTransform && ctrl.values) {
+          val = comboboxValueToIndex(
+            val,
+            ctrl.values,
+            0
+          );
+        }
+        values[ctrl.key] = val;
+      }
+      return values;
+    }
+    createUniforms() {
+      for (const ctrl of this.resolvedControls) {
+        const initial = this.resolveInitialUniformValue(ctrl);
+        this.registerUniform(ctrl.uniformName, initial);
+      }
+    }
+    async initializeRenderer() {
+      await super.initializeRenderer();
+      if (this.options.setup && this.gl && this.program) {
+        this.shaderCtx = this.createShaderContext();
+        await this.options.setup(this.shaderCtx);
+      }
+    }
+    updateUniforms(controls) {
+      for (const ctrl of this.resolvedControls) {
+        const val = controls[ctrl.key];
+        if (val !== void 0) {
+          this.setUniform(ctrl.uniformName, val);
+        }
+      }
+    }
+    render(time) {
+      if (this.options.frame && this.gl && this.program) {
+        if (!this.shaderCtx) this.shaderCtx = this.createShaderContext();
+        this.options.frame(this.shaderCtx, time);
+      }
+      super.render(time);
+    }
+    resolveInitialUniformValue(ctrl) {
+      const val = ctrl.spec.defaultValue;
+      if (ctrl.isMagicTransform && ctrl.values) {
+        return comboboxValueToIndex(val, ctrl.values, 0);
+      }
+      if (ctrl.normalize === "speed" && typeof val === "number") {
+        return normalizeSpeed(val);
+      }
+      if (typeof val === "boolean") {
+        return val ? 1 : 0;
+      }
+      if (typeof val === "string" && val.startsWith("#")) {
+        return hexToFloats(val);
+      }
+      if (typeof val === "number") {
+        return val;
+      }
+      if (ctrl.spec.__type === "combobox" && ctrl.values) {
+        return comboboxValueToIndex(val, ctrl.values, 0);
+      }
+      return 0;
+    }
+    createShaderContext() {
+      const self2 = this;
+      return {
+        get controls() {
+          return self2.getControlValues();
+        },
+        get audio() {
+          return getAudioData();
+        },
+        gl: self2.gl,
+        program: self2.program,
+        get width() {
+          return self2.canvas?.width ?? 320;
+        },
+        get height() {
+          return self2.canvas?.height ?? 200;
+        },
+        registerUniform: (name, value) => self2.registerUniform(name, value),
+        setUniform: (name, value) => self2.setUniform(name, value)
+      };
+    }
+  };
+  function hexToFloats(hex) {
+    const h = hex.replace("#", "");
+    return [
+      Number.parseInt(h.slice(0, 2), 16) / 255,
+      Number.parseInt(h.slice(2, 4), 16) / 255,
+      Number.parseInt(h.slice(4, 6), 16) / 255
+    ];
+  }
+  function storeMetadata(def) {
+    const g = globalThis;
+    const defs = g.__hypercolorEffectDefs__ ?? [];
+    defs.push(def);
+    g.__hypercolorEffectDefs__ = defs;
+  }
+  function effect(name, shader, controls, options) {
+    const resolved = resolveControls(controls);
+    const opts = options ?? {};
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeMetadata({
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        audio: opts.audio
+      });
+      return;
+    }
+    const fx = new GeneratedWebGLEffect(name, shader, resolved, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  }
+
+  // shared/palettes.json
+  var palettes_default = [
+    {
+      id: "silkcircuit",
+      name: "SilkCircuit",
+      mood: ["electric", "dark", "vibrant"],
+      stops: ["#e135ff", "#80ffea", "#ff6ac1", "#f1fa8c", "#50fa7b"],
+      iq: { a: [0.5, 0.3, 0.5], b: [0.5, 0.5, 0.5], c: [1, 0.8, 0.6], d: [0.85, 0.2, 0.5] },
+      accent: "#e135ff",
+      background: "#0d0221"
+    },
+    {
+      id: "cyberpunk",
+      name: "Cyberpunk",
+      mood: ["dark", "neon", "futuristic"],
+      stops: ["#ff00ff", "#00ffff", "#ff0066", "#6600ff"],
+      iq: { a: [0.5, 0.2, 0.5], b: [0.5, 0.5, 0.5], c: [1, 1, 1], d: [0.8, 0.1, 0.6] },
+      accent: "#ff00ff",
+      background: "#0a0014"
+    },
+    {
+      id: "vaporwave",
+      name: "Vaporwave",
+      mood: ["retro", "dreamy", "pastel-neon"],
+      stops: ["#c4b5fd", "#f472b6", "#67e8f9", "#fda4af"],
+      iq: { a: [0.6, 0.4, 0.7], b: [0.3, 0.3, 0.3], c: [0.6, 0.8, 1], d: [0.7, 0.3, 0.6] },
+      accent: "#c4b5fd",
+      background: "#1a0030"
+    },
+    {
+      id: "synthwave",
+      name: "Synthwave",
+      mood: ["retro", "warm", "80s"],
+      stops: ["#4a0080", "#ff006a", "#ff6600", "#ffcc00"],
+      iq: { a: [0.5, 0.2, 0.3], b: [0.5, 0.5, 0.5], c: [1, 0.7, 0.4], d: [0, 0.15, 0.2] },
+      accent: "#ff006a",
+      background: "#0f0020"
+    },
+    {
+      id: "neon-flux",
+      name: "Neon Flux",
+      mood: ["energetic", "vibrant"],
+      stops: ["#ff00aa", "#00ffcc", "#ffaa00", "#aa00ff"],
+      iq: { a: [0.5, 0.5, 0.5], b: [0.5, 0.5, 0.5], c: [1, 1, 0.5], d: [0.8, 0.9, 0.3] },
+      accent: "#ff00aa",
+      background: "#050510"
+    },
+    {
+      id: "matrix",
+      name: "Matrix",
+      mood: ["dark", "digital", "monochrome"],
+      stops: ["#001100", "#003300", "#00ff00", "#66ff66"],
+      iq: { a: [0, 0.3, 0], b: [0, 0.5, 0], c: [0, 1, 0], d: [0, 0.3, 0] },
+      accent: "#00ff00",
+      background: "#000800"
+    },
+    {
+      id: "aurora",
+      name: "Aurora",
+      mood: ["cool", "ethereal", "northern"],
+      stops: ["#00bcd4", "#4caf50", "#7c4dff", "#00e5ff"],
+      iq: { a: [0.2, 0.5, 0.4], b: [0.3, 0.4, 0.4], c: [0.8, 0.7, 0.9], d: [0.6, 0.3, 0.7] },
+      accent: "#00e5ff",
+      background: "#020810"
+    },
+    {
+      id: "ocean",
+      name: "Ocean",
+      mood: ["calm", "deep", "aquatic"],
+      stops: ["#001f3f", "#0074d9", "#39cccc", "#7fdbff"],
+      iq: { a: [0.1, 0.3, 0.5], b: [0.2, 0.3, 0.4], c: [0.5, 0.7, 1], d: [0.4, 0.5, 0.6] },
+      accent: "#0074d9",
+      background: "#000a1a"
+    },
+    {
+      id: "forest",
+      name: "Forest",
+      mood: ["earthy", "organic", "lush"],
+      stops: ["#1b3a1a", "#2e7d32", "#4caf50", "#81c784", "#c6ff00"],
+      iq: { a: [0.1, 0.3, 0.1], b: [0.2, 0.4, 0.2], c: [0.5, 0.8, 0.4], d: [0.3, 0.4, 0.2] },
+      accent: "#4caf50",
+      background: "#0a1a0a"
+    },
+    {
+      id: "sunset",
+      name: "Sunset",
+      mood: ["warm", "romantic", "dusk"],
+      stops: ["#ff6f00", "#ff8a65", "#ff5252", "#ffd740"],
+      iq: { a: [0.5, 0.3, 0.2], b: [0.5, 0.4, 0.3], c: [1, 0.6, 0.4], d: [0, 0.1, 0.2] },
+      accent: "#ff6f00",
+      background: "#1a0800"
+    },
+    {
+      id: "cherry-blossom",
+      name: "Cherry Blossom",
+      mood: ["gentle", "spring", "delicate"],
+      stops: ["#ffffff", "#ffc0cb", "#ff69b4", "#db7093"],
+      iq: { a: [0.8, 0.6, 0.7], b: [0.2, 0.2, 0.2], c: [0.5, 0.3, 0.4], d: [0, 0.3, 0.4] },
+      accent: "#ff69b4",
+      background: "#1a0810"
+    },
+    {
+      id: "fire",
+      name: "Fire",
+      mood: ["hot", "intense", "primal"],
+      stops: ["#000000", "#8b0000", "#ff4500", "#ffa500", "#ffff00"],
+      iq: { a: [0.5, 0.2, 0], b: [0.5, 0.3, 0.1], c: [1, 0.7, 0.4], d: [0, 0.05, 0.1] },
+      accent: "#ff4500",
+      background: "#0a0000"
+    },
+    {
+      id: "lava",
+      name: "Lava",
+      mood: ["volcanic", "extreme"],
+      stops: ["#000000", "#8b0000", "#ff2200", "#ff6600", "#ffffff"],
+      iq: { a: [0.4, 0.1, 0], b: [0.5, 0.3, 0.2], c: [1, 0.5, 0.3], d: [0, 0, 0.1] },
+      accent: "#ff2200",
+      background: "#0a0000"
+    },
+    {
+      id: "ember",
+      name: "Ember",
+      mood: ["warm", "cozy", "glowing"],
+      stops: ["#3e2723", "#bf360c", "#ff9800", "#ffc107"],
+      iq: { a: [0.4, 0.2, 0.1], b: [0.3, 0.2, 0.1], c: [0.8, 0.6, 0.3], d: [0.1, 0.1, 0.05] },
+      accent: "#ff9800",
+      background: "#1a0a00"
+    },
+    {
+      id: "solar",
+      name: "Solar",
+      mood: ["bright", "radiant", "powerful"],
+      stops: ["#b8860b", "#ffd700", "#ffffff", "#fff59d"],
+      iq: { a: [0.6, 0.5, 0.2], b: [0.4, 0.4, 0.3], c: [0.8, 0.7, 0.5], d: [0, 0.1, 0.2] },
+      accent: "#ffd700",
+      background: "#1a1000"
+    },
+    {
+      id: "ice",
+      name: "Ice",
+      mood: ["cold", "crisp", "frozen"],
+      stops: ["#0d47a1", "#e1f5fe", "#00e5ff", "#b3e5fc"],
+      iq: { a: [0.3, 0.5, 0.7], b: [0.3, 0.4, 0.3], c: [0.6, 0.7, 0.8], d: [0.5, 0.6, 0.7] },
+      accent: "#00e5ff",
+      background: "#000a1a"
+    },
+    {
+      id: "deep-sea",
+      name: "Deep Sea",
+      mood: ["dark", "mysterious", "abyssal"],
+      stops: ["#020024", "#1a237e", "#00695c", "#00bfa5"],
+      iq: { a: [0.1, 0.1, 0.3], b: [0.2, 0.2, 0.3], c: [0.3, 0.5, 0.7], d: [0.6, 0.5, 0.6] },
+      accent: "#00bfa5",
+      background: "#000510"
+    },
+    {
+      id: "midnight",
+      name: "Midnight",
+      mood: ["dark", "contemplative", "elegant"],
+      stops: ["#0d0033", "#1a0066", "#4a148c", "#7b1fa2"],
+      iq: { a: [0.2, 0.1, 0.3], b: [0.2, 0.1, 0.3], c: [0.5, 0.3, 0.7], d: [0.7, 0.5, 0.7] },
+      accent: "#7b1fa2",
+      background: "#050010"
+    },
+    {
+      id: "frost",
+      name: "Frost",
+      mood: ["light", "winter", "clean"],
+      stops: ["#b3e5fc", "#e1f5fe", "#f5f5f5", "#cfd8dc"],
+      iq: { a: [0.7, 0.8, 0.9], b: [0.2, 0.2, 0.1], c: [0.3, 0.3, 0.3], d: [0.5, 0.6, 0.7] },
+      accent: "#b3e5fc",
+      background: "#0a1520"
+    },
+    {
+      id: "viridis",
+      name: "Viridis",
+      mood: ["perceptually-uniform", "data"],
+      stops: ["#440154", "#31688e", "#35b779", "#fde725"],
+      iq: { a: [0.3, 0.3, 0.3], b: [0.3, 0.3, 0.3], c: [0.8, 0.8, 0.5], d: [0.7, 0.1, 0.2] },
+      accent: "#35b779",
+      background: "#0a0020"
+    },
+    {
+      id: "inferno",
+      name: "Inferno",
+      mood: ["perceptually-uniform", "heat"],
+      stops: ["#000004", "#420a68", "#dd513a", "#fcffa4"],
+      iq: { a: [0.3, 0.15, 0.2], b: [0.4, 0.3, 0.3], c: [0.8, 0.5, 0.4], d: [0, 0.1, 0.2] },
+      accent: "#dd513a",
+      background: "#000004"
+    },
+    {
+      id: "plasma",
+      name: "Plasma",
+      mood: ["perceptually-uniform", "vivid"],
+      stops: ["#0d0887", "#7e03a8", "#cc4778", "#f89540", "#f0f921"],
+      iq: { a: [0.3, 0.2, 0.4], b: [0.4, 0.3, 0.4], c: [0.8, 0.6, 0.6], d: [0.6, 0.2, 0.4] },
+      accent: "#cc4778",
+      background: "#050020"
+    },
+    {
+      id: "magma",
+      name: "Magma",
+      mood: ["perceptually-uniform", "warm"],
+      stops: ["#000004", "#3b0f70", "#b63679", "#fb8861", "#fcfdbf"],
+      iq: { a: [0.3, 0.15, 0.25], b: [0.4, 0.3, 0.35], c: [0.7, 0.5, 0.5], d: [0.1, 0.15, 0.2] },
+      accent: "#fb8861",
+      background: "#000004"
+    },
+    {
+      id: "candy",
+      name: "Candy",
+      mood: ["sweet", "playful", "soft"],
+      stops: ["#f48fb1", "#ce93d8", "#80cbc4", "#ffcc80"],
+      iq: { a: [0.7, 0.6, 0.7], b: [0.3, 0.3, 0.3], c: [0.5, 0.5, 0.5], d: [0.8, 0.3, 0.5] },
+      accent: "#f48fb1",
+      background: "#1a0810"
+    },
+    {
+      id: "pastel",
+      name: "Pastel",
+      mood: ["gentle", "calm", "muted"],
+      stops: ["#c5cae9", "#b2dfdb", "#f8bbd0", "#fff9c4"],
+      iq: { a: [0.7, 0.7, 0.8], b: [0.2, 0.2, 0.2], c: [0.3, 0.4, 0.3], d: [0.5, 0.3, 0.5] },
+      accent: "#c5cae9",
+      background: "#101015"
+    },
+    {
+      id: "cotton-candy",
+      name: "Cotton Candy",
+      mood: ["whimsical", "light"],
+      stops: ["#ffb6c1", "#b0e0e6", "#ffc0cb", "#add8e6"],
+      iq: { a: [0.8, 0.7, 0.8], b: [0.2, 0.2, 0.2], c: [0.3, 0.3, 0.3], d: [0, 0.5, 0.7] },
+      accent: "#ffb6c1",
+      background: "#100810"
+    },
+    {
+      id: "mono",
+      name: "Mono",
+      mood: ["neutral", "classic"],
+      stops: ["#000000", "#555555", "#aaaaaa", "#ffffff"],
+      iq: { a: [0.5, 0.5, 0.5], b: [0.5, 0.5, 0.5], c: [0, 0, 0], d: [0, 0, 0] },
+      accent: "#ffffff",
+      background: "#000000"
+    },
+    {
+      id: "phosphor",
+      name: "Phosphor",
+      mood: ["retro", "terminal", "hacker"],
+      stops: ["#001100", "#003300", "#00aa00", "#00ff00"],
+      iq: { a: [0, 0.25, 0], b: [0, 0.25, 0], c: [0, 1, 0], d: [0, 0.5, 0] },
+      accent: "#00ff00",
+      background: "#000800"
+    }
+  ];
+
+  // packages/core/src/palette/runtime.ts
+  var registry = /* @__PURE__ */ new Map();
+  for (const p of palettes_default) {
+    registry.set(p.name, p);
+  }
+  function hexToRgb(hex) {
+    const h = hex.replace("#", "");
+    return [
+      Number.parseInt(h.slice(0, 2), 16) / 255,
+      Number.parseInt(h.slice(2, 4), 16) / 255,
+      Number.parseInt(h.slice(4, 6), 16) / 255
+    ];
+  }
+  function srgbToOklab(r, g, b) {
+    const lr = r <= 0.04045 ? r / 12.92 : ((r + 0.055) / 1.055) ** 2.4;
+    const lg = g <= 0.04045 ? g / 12.92 : ((g + 0.055) / 1.055) ** 2.4;
+    const lb = b <= 0.04045 ? b / 12.92 : ((b + 0.055) / 1.055) ** 2.4;
+    const l_ = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+    const m_ = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+    const s_ = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+    return [
+      0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_,
+      1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_,
+      0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_
+    ];
+  }
+  function oklabToSrgb(L, a, b) {
+    const l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+    const m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+    const s_ = L - 0.0894841775 * a - 1.291485548 * b;
+    const l = l_ * l_ * l_;
+    const m = m_ * m_ * m_;
+    const s = s_ * s_ * s_;
+    let r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+    let g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+    let bl = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s;
+    r = r <= 31308e-7 ? 12.92 * r : 1.055 * r ** (1 / 2.4) - 0.055;
+    g = g <= 31308e-7 ? 12.92 * g : 1.055 * g ** (1 / 2.4) - 0.055;
+    bl = bl <= 31308e-7 ? 12.92 * bl : 1.055 * bl ** (1 / 2.4) - 0.055;
+    return [
+      Math.max(0, Math.min(1, r)),
+      Math.max(0, Math.min(1, g)),
+      Math.max(0, Math.min(1, bl))
+    ];
+  }
+  var LUT_SIZE = 256;
+  var lutCache = /* @__PURE__ */ new Map();
+  function buildLut(palette) {
+    const stops = palette.stops.map(hexToRgb);
+    const oklabStops = stops.map(([r, g, b]) => srgbToOklab(r, g, b));
+    const lut = [];
+    for (let i = 0; i < LUT_SIZE; i++) {
+      const t = i / (LUT_SIZE - 1);
+      const segment = t * (oklabStops.length - 1);
+      const idx = Math.min(Math.floor(segment), oklabStops.length - 2);
+      const frac = segment - idx;
+      const a = oklabStops[idx];
+      const b = oklabStops[idx + 1];
+      const L = a[0] + (b[0] - a[0]) * frac;
+      const aa = a[1] + (b[1] - a[1]) * frac;
+      const bb = a[2] + (b[2] - a[2]) * frac;
+      lut.push(oklabToSrgb(L, aa, bb));
+    }
+    return lut;
+  }
+  function getLut(palette) {
+    let lut = lutCache.get(palette.name);
+    if (!lut) {
+      lut = buildLut(palette);
+      lutCache.set(palette.name, lut);
+    }
+    return lut;
+  }
+  function samplePalette(paletteName, t) {
+    const entry = registry.get(paletteName);
+    if (!entry) return [1, 0, 1];
+    const lut = getLut(entry);
+    const clamped = Math.max(0, Math.min(1, t));
+    const idx = Math.round(clamped * (LUT_SIZE - 1));
+    return lut[idx];
+  }
+  function samplePaletteCSS(paletteName, t, alpha) {
+    const [r, g, b] = samplePalette(paletteName, t);
+    const ri = Math.round(r * 255);
+    const gi = Math.round(g * 255);
+    const bi = Math.round(b * 255);
+    if (alpha !== void 0 && alpha < 1) {
+      return `rgba(${ri},${gi},${bi},${alpha.toFixed(3)})`;
+    }
+    return `rgb(${ri},${gi},${bi})`;
+  }
+  function createPaletteFn(paletteName) {
+    return (t, alpha) => samplePaletteCSS(paletteName, t, alpha);
+  }
+
+  // packages/core/src/effects/canvas-fn.ts
+  function resolveCanvasControls(controls) {
+    const resolved = [];
+    for (const [key, value] of Object.entries(controls)) {
+      const spec = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
+      const names = resolveControlNames(key, spec);
+      const isCombo = spec.__type === "combobox";
+      const values = spec.meta.values;
+      resolved.push({
+        key,
+        spec,
+        normalize: names.normalize,
+        isMagicTransform: hasMagicTransform(key) && isCombo,
+        isPalette: key === "palette" && isCombo,
+        values
+      });
+    }
+    return resolved;
+  }
+  function resolveValues(controls, paletteFnCache) {
+    const result = {};
+    for (const ctrl of controls) {
+      let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
+      if (ctrl.normalize === "speed" && typeof val === "number") {
+        val = normalizeSpeed(val);
+      }
+      if (ctrl.isPalette && ctrl.values) {
+        const paletteName = typeof val === "string" ? val : ctrl.values[0] ?? "SilkCircuit";
+        let fn = paletteFnCache.get(paletteName);
+        if (!fn) {
+          fn = createPaletteFn(paletteName);
+          paletteFnCache.set(paletteName, fn);
+        }
+        result[ctrl.key] = fn;
+        continue;
+      }
+      if (ctrl.isMagicTransform && !ctrl.isPalette && ctrl.values) {
+        val = comboboxValueToIndex(val, ctrl.values, 0);
+      }
+      result[ctrl.key] = val;
+    }
+    return result;
+  }
+  var GeneratedCanvasEffect = class extends CanvasEffect {
+    resolvedControls;
+    drawFn = null;
+    factoryFn = null;
+    directDrawFn = null;
+    currentControls = {};
+    paletteFnCache = /* @__PURE__ */ new Map();
+    constructor(name, resolvedControls, renderFn, isFactory, options) {
+      super({
+        id: name.toLowerCase().replace(/\s+/g, "-"),
+        name,
+        canvasWidth: options.width,
+        canvasHeight: options.height
+      });
+      this.resolvedControls = resolvedControls;
+      if (isFactory) {
+        this.factoryFn = renderFn;
+      } else {
+        this.directDrawFn = renderFn;
+      }
+    }
+    async initializeRenderer() {
+      await super.initializeRenderer();
+      if (this.factoryFn) {
+        this.drawFn = this.factoryFn();
+      } else {
+        this.drawFn = this.directDrawFn;
+      }
+    }
+    initializeControls() {
+      this.currentControls = resolveValues(this.resolvedControls, this.paletteFnCache);
+    }
+    getControlValues() {
+      return resolveValues(this.resolvedControls, this.paletteFnCache);
+    }
+    applyControls(controls) {
+      this.currentControls = controls;
+    }
+    draw(time, _deltaTime) {
+      if (!this.drawFn || !this.ctx) return;
+      this.drawFn(this.ctx, time, this.currentControls);
+    }
+    // Override clearCanvas to not auto-clear — let the draw function decide
+    clearCanvas() {
+    }
+  };
+  function storeCanvasMetadata(def) {
+    const g = globalThis;
+    const defs = g.__hypercolorEffectDefs__ ?? [];
+    defs.push(def);
+    g.__hypercolorEffectDefs__ = defs;
+  }
+  function canvas(name, controls, renderFn, options) {
+    const resolved = resolveCanvasControls(controls);
+    const opts = options ?? {};
+    const isFactory = renderFn.length === 0;
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeCanvasMetadata({
+        type: "canvas",
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        width: opts.width,
+        height: opts.height
+      });
+      return;
+    }
+    const fx = new GeneratedCanvasEffect(name, resolved, renderFn, isFactory, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  }
+  canvas.stateful = function stateful(name, controls, factory, options) {
+    const resolved = resolveCanvasControls(controls);
+    const opts = options ?? {};
+    if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
+      storeCanvasMetadata({
+        type: "canvas",
+        name,
+        controls,
+        resolvedControls: resolved,
+        description: opts.description,
+        author: opts.author,
+        width: opts.width,
+        height: opts.height
+      });
+      return;
+    }
+    const fx = new GeneratedCanvasEffect(name, resolved, factory, true, opts);
+    initializeEffect(() => fx.initialize(), { instance: fx });
+  };
+
+  // packages/core/src/controls/decorators.ts
+  var import_reflect_metadata = __toESM(require_Reflect(), 1);
+  var METADATA_KEYS = {
+    controls: /* @__PURE__ */ Symbol.for("hypercolor:controls"),
+    effect: /* @__PURE__ */ Symbol.for("hypercolor:effect")
+  };
+  var propertyMetadataKey = (propertyName) => /* @__PURE__ */ Symbol.for(`hypercolor:control:${propertyName}`);
+  function createControlDecorator(createDefinition) {
+    return (options) => (target, propertyKey) => {
+      if (typeof propertyKey !== "string") {
+        throw new Error("Control decorators can only be used on string properties");
+      }
+      const targetConstructor = target.constructor;
+      if (!Reflect.hasMetadata(METADATA_KEYS.controls, targetConstructor)) {
+        Reflect.defineMetadata(METADATA_KEYS.controls, [], targetConstructor);
+      }
+      const controlsMetadata = Reflect.getMetadata(METADATA_KEYS.controls, targetConstructor);
+      const controlDefinition = createDefinition(propertyKey, options);
+      controlsMetadata.push(controlDefinition);
+      Reflect.defineMetadata(propertyMetadataKey(propertyKey), controlDefinition, targetConstructor);
+    };
+  }
+  var NumberControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    max: options.max,
+    min: options.min,
+    step: options.step,
+    tooltip: options.tooltip,
+    type: "number"
+  }));
+  var BooleanControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "boolean"
+  }));
+  var ComboboxControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "combobox",
+    values: options.values
+  }));
+  var HueControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    max: options.max,
+    min: options.min,
+    tooltip: options.tooltip,
+    type: "hue"
+  }));
+  var ColorControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "color"
+  }));
+  var TextFieldControl = createControlDecorator((propertyKey, options) => ({
+    default: options.default,
+    id: propertyKey,
+    label: options.label,
+    tooltip: options.tooltip,
+    type: "textfield"
+  }));
+
   // src/effects/spectral-fire/fragment.glsl
   var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iAudioBass;\nuniform float iAudioMid;\nuniform float iAudioTreble;\nuniform float iAudioLevel;\nuniform float iAudioBeatPulse;\nuniform float iAudioSpectralFlux;\n\nuniform float iSpeed;\nuniform float iFlameHeight;\nuniform float iTurbulence;\nuniform float iIntensity;\nuniform float iEmberAmount;\nuniform int iPalette;\nuniform int iScene;\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec2 hash22(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.xx + p3.yz) * p3.zy);\n}\n\nfloat saturate(float v) {\n    return clamp(v, 0.0, 1.0);\n}\n\nfloat noise(vec2 x) {\n    vec2 i = floor(x);\n    vec2 f = fract(x);\n    f = f * f * (3.0 - 2.0 * f);\n\n    float a = hash21(i);\n    float b = hash21(i + vec2(1.0, 0.0));\n    float c = hash21(i + vec2(0.0, 1.0));\n    float d = hash21(i + vec2(1.0, 1.0));\n\n    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n}\n\nfloat fbm(vec2 p) {\n    float sum = 0.0;\n    float amp = 0.5;\n    for (int i = 0; i < 5; i++) {\n        sum += amp * noise(p);\n        p *= 2.0;\n        amp *= 0.5;\n    }\n    return sum;\n}\n\nfloat ridge(float n) {\n    return 1.0 - abs(n * 2.0 - 1.0);\n}\n\nvec3 fireRamp(float t, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {\n    t = saturate(t);\n    vec3 col = mix(c0, c1, smoothstep(0.0, 0.35, t));\n    col = mix(col, c2, smoothstep(0.24, 0.74, t));\n    col = mix(col, c3, smoothstep(0.62, 1.0, t));\n    return col;\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return fireRamp(t, vec3(0.02, 0.0, 0.0), vec3(0.70, 0.07, 0.0), vec3(1.0, 0.44, 0.05), vec3(0.86, 0.48, 0.14));\n    if (id == 1) return fireRamp(t, vec3(0.01, 0.0, 0.0), vec3(0.78, 0.16, 0.02), vec3(1.0, 0.62, 0.06), vec3(0.88, 0.54, 0.17));\n    if (id == 2) return fireRamp(t, vec3(0.03, 0.0, 0.05), vec3(0.58, 0.07, 0.72), vec3(0.17, 0.74, 1.0), vec3(0.58, 0.86, 0.98));\n    if (id == 3) return fireRamp(t, vec3(0.01, 0.01, 0.0), vec3(0.28, 0.38, 0.0), vec3(0.86, 0.95, 0.12), vec3(0.82, 0.70, 0.22));\n    if (id == 4) return fireRamp(t, vec3(0.01, 0.0, 0.0), vec3(0.52, 0.09, 0.05), vec3(0.88, 0.46, 0.25), vec3(0.86, 0.84, 0.82));\n    return fireRamp(t, vec3(0.02, 0.0, 0.0), vec3(0.70, 0.07, 0.0), vec3(1.0, 0.44, 0.05), vec3(1.0, 0.95, 0.75));\n}\n\nvoid sceneTuning(int scene, out float heightBoost, out float turbulenceBoost, out float emberBoost, out float slenderness, out float flicker) {\n    heightBoost = 1.0;\n    turbulenceBoost = 1.0;\n    emberBoost = 1.0;\n    slenderness = 1.0;\n    flicker = 1.0;\n\n    if (scene == 1) {\n        heightBoost = 1.22;\n        turbulenceBoost = 1.18;\n        emberBoost = 0.95;\n        slenderness = 0.9;\n        flicker = 1.18;\n    } else if (scene == 2) {\n        heightBoost = 0.9;\n        turbulenceBoost = 0.75;\n        emberBoost = 0.7;\n        slenderness = 1.3;\n        flicker = 0.85;\n    } else if (scene == 3) {\n        heightBoost = 1.05;\n        turbulenceBoost = 1.45;\n        emberBoost = 1.35;\n        slenderness = 1.05;\n        flicker = 1.32;\n    }\n}\n\nfloat tongueLayer(vec2 uv, float time, float seedOffset, float count, float baseHeight, float sway, float edge) {\n    float x = uv.x * count;\n    float cell = floor(x);\n    float local = fract(x) * 2.0 - 1.0;\n\n    float seed = hash21(vec2(cell, seedOffset));\n    float width = mix(0.26, 0.50, seed);\n    float wobble = sin(time * (1.4 + seed * 2.4) + cell * (1.0 + seed * 0.45));\n    float bend = (seed - 0.5) * 0.95 + wobble * sway;\n\n    float profile = 1.0 - abs(local + bend * pow(uv.y + 0.04, 0.9) * 0.95);\n    profile = smoothstep(width, width + edge, profile);\n\n    float flicker = 0.82 + 0.24 * sin(time * (2.7 + seed * 3.3) + seed * 17.0);\n    float reach = baseHeight * mix(0.62, 1.18, seed) * profile * flicker;\n\n    return smoothstep(0.0, edge, reach - uv.y);\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution.xy;\n    float aspect = iResolution.x / max(iResolution.y, 1.0);\n\n    float speed = max(iSpeed, 0.05);\n    float time = iTime * (0.45 + speed * 0.9);\n\n    float heightCtrl = saturate(iFlameHeight / 100.0);\n    float turbulenceCtrl = saturate(iTurbulence / 100.0);\n    float intensityCtrl = saturate(iIntensity / 100.0);\n    float emberCtrl = saturate(iEmberAmount / 100.0);\n\n    float sceneHeight;\n    float sceneTurbulence;\n    float sceneEmber;\n    float sceneSlenderness;\n    float sceneFlicker;\n    sceneTuning(iScene, sceneHeight, sceneTurbulence, sceneEmber, sceneSlenderness, sceneFlicker);\n\n    vec3 audioBands = clamp(vec3(iAudioBass, iAudioMid, iAudioTreble), 0.0, 1.0);\n    float audioPresence = smoothstep(0.025, 0.16, max(max(audioBands.x, audioBands.y), max(audioBands.z, iAudioLevel)));\n    vec3 fallbackBands = vec3(\n        0.35 + 0.12 * sin(time * 1.1),\n        0.33 + 0.11 * sin(time * 1.3 + 1.5),\n        0.31 + 0.10 * sin(time * 1.7 + 3.2)\n    );\n    vec3 bands = mix(fallbackBands, audioBands, audioPresence);\n\n    float audioDrive = saturate(iAudioLevel * 1.15 + iAudioBeatPulse * 0.8 + iAudioSpectralFlux * 0.55);\n    float drive = 0.28 + 0.46 * audioPresence * audioDrive;\n\n    float turbulence = clamp(turbulenceCtrl * sceneTurbulence, 0.0, 1.6);\n\n    vec2 fuv = uv;\n    float flow = fbm(vec2((uv.x - 0.5) * aspect * (3.4 + turbulence * 4.8), uv.y * (2.6 + turbulence * 2.2) - time * (1.4 + 0.25 * sceneFlicker)));\n    float curl = fbm(vec2((uv.x - 0.5) * aspect * (8.0 + turbulence * 8.0) + time * 0.35, uv.y * 5.8 - time * (2.5 + turbulence)));\n    float ridged = ridge(fbm(vec2((uv.x - 0.5) * aspect * 6.5, uv.y * 8.0 - time * 3.2)));\n    float xWarp = ((flow - 0.5) * (0.18 + turbulence * 0.34) + (curl - 0.5) * (0.12 + turbulence * 0.22) + (ridged - 0.5) * 0.1) * (0.25 + uv.y * 0.85);\n    fuv.x += xWarp;\n\n    float bassBand = (1.0 - smoothstep(0.22, 0.52, uv.x)) * bands.x;\n    float midBand = (1.0 - abs(uv.x - 0.5) * 2.0) * bands.y;\n    float trebleBand = smoothstep(0.48, 0.78, uv.x) * bands.z;\n    float bandMix = saturate(bassBand + midBand + trebleBand) * (0.45 + 0.55 * audioPresence);\n\n    float maxHeight = (0.38 + heightCtrl * 0.56 + drive * 0.16) * sceneHeight;\n    maxHeight = clamp(maxHeight, 0.28, 1.05);\n\n    float layer1 = tongueLayer(\n        fuv,\n        time * sceneFlicker,\n        11.0 + bandMix * 5.0,\n        mix(4.5, 7.0, turbulence) * sceneSlenderness,\n        maxHeight * (0.74 + bandMix * 0.24),\n        0.24 + turbulence * 0.30,\n        0.07\n    );\n\n    float layer2 = tongueLayer(\n        fuv + vec2(0.07 * sin(time * 0.9), 0.0),\n        time * (1.25 + turbulence * 0.4),\n        23.0 + bandMix * 7.0,\n        mix(7.8, 11.8, turbulence) * sceneSlenderness,\n        maxHeight * (0.66 + bandMix * 0.30),\n        0.30 + turbulence * 0.36,\n        0.055\n    );\n\n    float layer3 = tongueLayer(\n        fuv + vec2(-0.05 * sin(time * 1.3 + 2.0), 0.0),\n        time * (1.8 + turbulence * 0.6),\n        37.0 + bandMix * 9.0,\n        mix(10.5, 15.0, turbulence) * sceneSlenderness,\n        maxHeight * (0.56 + bandMix * 0.24),\n        0.38 + turbulence * 0.40,\n        0.045\n    );\n\n    float flame = layer1 * 0.62 + layer2 * 0.50 + layer3 * 0.35;\n    float cap = 1.0 - smoothstep(maxHeight - 0.08, maxHeight + 0.08, uv.y);\n    flame *= cap;\n\n    float breakup = ridge(fbm(vec2(fuv.x * 12.0 + time * 0.6, uv.y * 11.0 - time * 2.8)));\n    flame = max(flame - breakup * (0.08 + uv.y * 0.14) * (0.5 + turbulence * 0.9), 0.0);\n\n    float coreGradient = saturate((maxHeight - uv.y) / max(maxHeight, 0.001));\n    float core = smoothstep(0.2, 0.92, flame) * pow(coreGradient, 0.55);\n    float rim = smoothstep(0.05, 0.22, flame) - smoothstep(0.26, 0.65, flame);\n\n    float temperature = saturate(flame * (0.55 + core * 0.6) + layer3 * 0.18 + drive * 0.2 + bandMix * 0.22);\n\n    vec3 col = vec3(0.0);\n    vec3 flameColor = paletteColor(temperature, iPalette);\n    col += flameColor * flame * (0.62 + intensityCtrl * 1.18);\n    col += paletteColor(saturate(temperature + 0.2), iPalette) * core * (0.16 + intensityCtrl * 0.42);\n    col += paletteColor(0.82, iPalette) * rim * (0.03 + intensityCtrl * 0.08);\n\n    float emberBedNoise = fbm(vec2(fuv.x * 7.0, time * 0.2));\n    float emberBed = smoothstep(0.22, 0.0, uv.y) * (0.25 + emberBedNoise * 0.75) * (0.28 + intensityCtrl * 0.5);\n    col += paletteColor(0.22, iPalette) * emberBed * 0.6;\n\n    float emberDensity = emberCtrl * sceneEmber;\n    emberDensity *= 0.85 + 0.3 * mix(0.25, saturate(iAudioBeatPulse), audioPresence);\n\n    for (int layer = 0; layer < 3; layer++) {\n        float fl = float(layer);\n        float scale = 26.0 + fl * 18.0;\n        vec2 puv = vec2(uv.x * scale, uv.y * (scale * 1.35));\n        puv.y -= time * (1.9 + fl * 0.9);\n        puv.x += sin(time * (0.7 + fl * 0.4) + fl * 2.0) * (1.2 + turbulence * 1.6);\n\n        vec2 cell = floor(puv);\n        vec2 local = fract(puv) - 0.5;\n        float seed = hash21(cell + vec2(fl * 37.0, fl * 11.0));\n        float threshold = emberDensity * (0.014 + fl * 0.007);\n\n        if (seed < threshold) {\n            vec2 jitter = (hash22(cell + vec2(17.0 + fl * 9.0, 29.0 + fl * 7.0)) - 0.5) * vec2(0.7, 0.5);\n            float dist = length(local - jitter);\n            float size = mix(0.13, 0.045, seed) * (1.0 - fl * 0.18);\n            float ember = smoothstep(size, size * 0.22, dist);\n            float trail = smoothstep(size * 2.4, 0.0, length(vec2((local.x - jitter.x) * 1.3, (local.y - jitter.y) * 0.45)));\n            float cooling = 1.0 - saturate(uv.y * (0.8 + fl * 0.4));\n            float emberFlicker = 0.72 + 0.28 * sin(time * (7.5 + fl * 1.8) + seed * 55.0);\n            vec3 emberColor = paletteColor(0.6 + cooling * 0.35, iPalette);\n            col += emberColor * (ember + trail * 0.3) * cooling * emberFlicker * (0.24 - fl * 0.05);\n        }\n    }\n\n    float haze = fbm(vec2((uv.x - 0.5) * aspect * 2.8, uv.y * 3.6 - time * 0.4));\n    col += paletteColor(0.12, iPalette) * haze * (0.03 + flame * 0.04) * (0.6 + intensityCtrl * 0.5);\n\n    float vignette = 1.0 - 0.42 * length((uv - vec2(0.5, 0.28)) * vec2(1.2, 0.9));\n    col *= max(vignette, 0.1);\n\n    col = col / (1.0 + col * 0.55);\n    col = pow(clamp(col, 0.0, 1.0), vec3(0.95));\n\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
 
   // src/effects/spectral-fire/main.ts
-  var PALETTES = ["Bonfire", "Forge", "Spellfire", "Sulfur", "Ashfall"];
-  var SCENES = ["Classic", "Inferno", "Torch", "Wildfire"];
-  var SpectralFire = class extends WebGLEffect {
-    speed;
-    flameHeight;
-    turbulence;
-    intensity;
-    palette;
-    emberAmount;
-    scene;
-    constructor() {
-      super({ id: "spectral-fire", name: "Spectral Fire", fragmentShader: fragment_default, audioReactive: true });
-    }
-    initializeControls() {
-      this.speed = getControlValue("speed", 6);
-      this.flameHeight = getControlValue("flameHeight", 78);
-      this.turbulence = getControlValue("turbulence", 62);
-      this.intensity = getControlValue("intensity", 84);
-      this.palette = getControlValue("palette", "Bonfire");
-      this.emberAmount = getControlValue("emberAmount", 60);
-      this.scene = getControlValue("scene", "Classic");
-    }
-    getControlValues() {
-      return {
-        speed: normalizeSpeed(getControlValue("speed", 6)),
-        flameHeight: getControlValue("flameHeight", 78),
-        turbulence: getControlValue("turbulence", 62),
-        intensity: getControlValue("intensity", 84),
-        emberAmount: getControlValue("emberAmount", 60),
-        palette: comboboxValueToIndex(getControlValue("palette", "Bonfire"), PALETTES, 0),
-        scene: comboboxValueToIndex(getControlValue("scene", "Classic"), SCENES, 0)
-      };
-    }
-    createUniforms() {
-      this.registerUniform("iSpeed", normalizeSpeed(6));
-      this.registerUniform("iFlameHeight", 78);
-      this.registerUniform("iTurbulence", 62);
-      this.registerUniform("iIntensity", 84);
-      this.registerUniform("iEmberAmount", 60);
-      this.registerUniform("iPalette", 0);
-      this.registerUniform("iScene", 0);
-    }
-    updateUniforms(c) {
-      this.setUniform("iSpeed", c.speed);
-      this.setUniform("iFlameHeight", c.flameHeight);
-      this.setUniform("iTurbulence", c.turbulence);
-      this.setUniform("iIntensity", c.intensity);
-      this.setUniform("iEmberAmount", c.emberAmount);
-      this.setUniform("iPalette", c.palette);
-      this.setUniform("iScene", c.scene);
-    }
-  };
-  __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 6, tooltip: "Flame animation speed" })
-  ], SpectralFire.prototype, "speed", 2);
-  __decorateClass([
-    NumberControl({ label: "Flame Height", min: 20, max: 100, default: 78, tooltip: "Vertical flame reach" })
-  ], SpectralFire.prototype, "flameHeight", 2);
-  __decorateClass([
-    NumberControl({ label: "Turbulence", min: 0, max: 100, default: 62, tooltip: "Curl and breakup in flame layers" })
-  ], SpectralFire.prototype, "turbulence", 2);
-  __decorateClass([
-    NumberControl({ label: "Intensity", min: 20, max: 100, default: 84, tooltip: "Overall fire brightness and heat" })
-  ], SpectralFire.prototype, "intensity", 2);
-  __decorateClass([
-    ComboboxControl({ label: "Palette", values: PALETTES, default: "Bonfire", tooltip: "Flame color profile" })
-  ], SpectralFire.prototype, "palette", 2);
-  __decorateClass([
-    NumberControl({ label: "Ember Amount", min: 0, max: 100, default: 60, tooltip: "Amount of rising ember particles" })
-  ], SpectralFire.prototype, "emberAmount", 2);
-  __decorateClass([
-    ComboboxControl({ label: "Scene", values: SCENES, default: "Classic", tooltip: "Optional fire behavior mode" })
-  ], SpectralFire.prototype, "scene", 2);
-  SpectralFire = __decorateClass([
-    Effect({
-      name: "Spectral Fire",
-      description: "Layered community-style fire tongues with embers and optional audio lift",
-      author: "Hypercolor",
-      audioReactive: true
-    })
-  ], SpectralFire);
-  var effect = new SpectralFire();
-  initializeEffect(() => effect.initialize(), { instance: effect });
+  var main_default = effect("Spectral Fire", fragment_default, {
+    speed: [1, 10, 6],
+    flameHeight: [20, 100, 78],
+    turbulence: [0, 100, 62],
+    intensity: [20, 100, 84],
+    palette: ["Bonfire", "Forge", "Spellfire", "Sulfur", "Ashfall"],
+    emberAmount: [0, 100, 60],
+    scene: ["Classic", "Inferno", "Torch", "Wildfire"]
+  }, {
+    description: "Layered community-style fire tongues with embers and optional audio lift",
+    audio: true
+  });
 })();
 /*! Bundled license information:
 
