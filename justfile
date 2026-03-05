@@ -125,15 +125,23 @@ ui-dist: ui-build
 
 # Install SDK dependencies
 sdk-install:
-    cd sdk && npm install
+    cd sdk && bun install
 
 # Build SDK packages
 sdk-build:
-    cd sdk && npm run build
+    cd sdk && bun run build
 
 # Start SDK dev server with HMR
 sdk-dev:
-    cd sdk && npm run dev
+    cd sdk && bun run dev
+
+# Typecheck SDK
+sdk-check:
+    cd sdk && bun run typecheck
+
+# Lint & format SDK
+sdk-lint:
+    cd sdk && bun run check
 
 # ─── Housekeeping ─────────────────────────────────────────
 

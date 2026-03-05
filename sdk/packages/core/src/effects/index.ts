@@ -1,0 +1,6 @@
+export type { EffectConfig } from './base-effect'
+export { BaseEffect } from './base-effect'
+export type { CanvasEffectConfig } from './canvas-effect'
+export { CanvasEffect } from './canvas-effect'
+export type { UniformValue, WebGLEffectConfig } from './webgl-effect'
+export { WebGLEffect } from './webgl-effect'

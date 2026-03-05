@@ -1,0 +1,3 @@
+[install]
+# Use hardlinks for fast installs
+link = "hardlink"

@@ -1,0 +1,94 @@
+{
+    "$schema": "https://biomejs.dev/schemas/2.3.8/schema.json",
+
+    "vcs": {
+        "enabled": true,
+        "clientKind": "git",
+        "useIgnoreFile": true
+    },
+
+    "files": {
+        "ignoreUnknown": true
+    },
+
+    "formatter": {
+        "enabled": true,
+        "indentStyle": "space",
+        "indentWidth": 4,
+        "lineWidth": 120
+    },
+
+    "javascript": {
+        "formatter": {
+            "quoteStyle": "single",
+            "jsxQuoteStyle": "double",
+            "trailingCommas": "all",
+            "semicolons": "asNeeded",
+            "arrowParentheses": "always"
+        }
+    },
+
+    "linter": {
+        "enabled": true,
+        "rules": {
+            "recommended": true,
+            "complexity": {
+                "useLiteralKeys": "off",
+                "noStaticOnlyClass": "off"
+            },
+            "correctness": {
+                "noUnusedVariables": "warn",
+                "noUnusedImports": "error"
+            },
+            "style": {
+                "noInferrableTypes": "error",
+                "noNonNullAssertion": "warn",
+                "noParameterAssign": "error",
+                "noUnusedTemplateLiteral": "error",
+                "noUselessElse": "error",
+                "useAsConstAssertion": "error",
+                "useConst": "error",
+                "useDefaultParameterLast": "error",
+                "useImportType": "off",
+                "useSelfClosingElements": "error",
+                "useShorthandFunctionType": "error",
+                "useSingleVarDeclarator": "error",
+                "useTemplate": "error"
+            },
+            "suspicious": {
+                "noExplicitAny": "off",
+                "noConsole": "off",
+                "noVar": "error"
+            }
+        }
+    },
+
+    "assist": {
+        "enabled": true,
+        "actions": {
+            "source": {
+                "useSortedAttributes": "on",
+                "useSortedKeys": "on"
+            }
+        }
+    },
+
+    "overrides": [
+        {
+            "includes": ["**/*.md", "**/*.yml", "**/*.yaml", "**/*.json"],
+            "formatter": { "enabled": false },
+            "linter": { "enabled": false },
+            "assist": { "enabled": false }
+        },
+        {
+            "includes": ["**/package.json", "**/biome.jsonc"],
+            "assist": {
+                "actions": {
+                    "source": {
+                        "useSortedKeys": "off"
+                    }
+                }
+            }
+        }
+    ]
+}

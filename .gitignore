@@ -14,10 +14,12 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
-# Node (web/ frontend)
+# Node / Bun
 node_modules/
 web/dist/
 web/.svelte-kit/
+sdk/packages/*/dist/
+bun.lock
 
 # Environment
 .env
