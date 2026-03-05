@@ -1854,13 +1854,14 @@ void main() {
       if (this.options.setup && this.gl && this.program) {
         this.shaderCtx = this.createShaderContext();
         await this.options.setup(this.shaderCtx);
+        this.resolveNewUniforms();
       }
     }
     updateUniforms(controls) {
       for (const ctrl of this.resolvedControls) {
-        const val = controls[ctrl.key];
-        if (val !== void 0) {
-          this.setUniform(ctrl.uniformName, val);
+        const raw = controls[ctrl.key];
+        if (raw !== void 0) {
+          this.setUniform(ctrl.uniformName, this.toUniformValue(ctrl, raw));
         }
       }
     }
@@ -1871,27 +1872,32 @@ void main() {
       }
       super.render(time);
     }
-    resolveInitialUniformValue(ctrl) {
-      const val = ctrl.spec.defaultValue;
-      if (ctrl.isMagicTransform && ctrl.values) {
-        return comboboxValueToIndex(val, ctrl.values, 0);
-      }
-      if (ctrl.normalize === "speed" && typeof val === "number") {
-        return normalizeSpeed(val);
-      }
-      if (typeof val === "boolean") {
-        return val ? 1 : 0;
-      }
-      if (typeof val === "string" && val.startsWith("#")) {
-        return hexToFloats(val);
-      }
-      if (typeof val === "number") {
-        return val;
-      }
+    /** Re-resolve uniform locations for any uniforms registered after init. */
+    resolveNewUniforms() {
+      this.resolveLocations();
+      this.pushAllUniforms();
+    }
+    /** Convert a raw control value to a GPU-compatible uniform value. */
+    toUniformValue(ctrl, raw) {
       if (ctrl.spec.__type === "combobox" && ctrl.values) {
-        return comboboxValueToIndex(val, ctrl.values, 0);
+        return comboboxValueToIndex(raw, ctrl.values, 0);
+      }
+      if (ctrl.normalize === "speed" && typeof raw === "number") {
+        return normalizeSpeed(raw);
+      }
+      if (typeof raw === "boolean") {
+        return raw ? 1 : 0;
+      }
+      if (typeof raw === "string" && raw.startsWith("#")) {
+        return hexToFloats(raw);
+      }
+      if (typeof raw === "number") {
+        return raw;
       }
       return 0;
+    }
+    resolveInitialUniformValue(ctrl) {
+      return this.toUniformValue(ctrl, ctrl.spec.defaultValue);
     }
     createShaderContext() {
       const self2 = this;

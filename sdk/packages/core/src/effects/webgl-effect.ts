@@ -171,13 +171,13 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
         gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0)
     }
 
-    private pushAllUniforms(): void {
+    protected pushAllUniforms(): void {
         for (const [name, entry] of this.uniforms) {
             this.pushUniform(name, entry)
         }
     }
 
-    private resolveLocations(): void {
+    protected resolveLocations(): void {
         const gl = this.gl!
         const program = this.program!
 

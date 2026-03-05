@@ -160,14 +160,18 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
         if (this.options.setup && this.gl && this.program) {
             this.shaderCtx = this.createShaderContext()
             await this.options.setup(this.shaderCtx)
+
+            // Resolve locations for any uniforms registered in setup()
+            // (super already resolved its own; re-resolving is idempotent)
+            this.resolveNewUniforms()
         }
     }
 
     protected updateUniforms(controls: Record<string, unknown>): void {
         for (const ctrl of this.resolvedControls) {
-            const val = controls[ctrl.key]
-            if (val !== undefined) {
-                this.setUniform(ctrl.uniformName, val as UniformValue)
+            const raw = controls[ctrl.key]
+            if (raw !== undefined) {
+                this.setUniform(ctrl.uniformName, this.toUniformValue(ctrl, raw))
             }
         }
     }
@@ -181,28 +185,38 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
         super.render(time)
     }
 
-    private resolveInitialUniformValue(ctrl: ResolvedControl): UniformValue {
-        const val = ctrl.spec.defaultValue
-        if (ctrl.isMagicTransform && ctrl.values) {
-            return comboboxValueToIndex(val as string | number, ctrl.values, 0)
-        }
-        if (ctrl.normalize === 'speed' && typeof val === 'number') {
-            return normalizeSpeed(val)
-        }
-        if (typeof val === 'boolean') {
-            return val ? 1 : 0
-        }
-        if (typeof val === 'string' && val.startsWith('#')) {
-            return hexToFloats(val)
-        }
-        if (typeof val === 'number') {
-            return val
-        }
-        // Combobox without magic transform: return index 0
+    /** Re-resolve uniform locations for any uniforms registered after init. */
+    private resolveNewUniforms(): void {
+        this.resolveLocations()
+        this.pushAllUniforms()
+    }
+
+    /** Convert a raw control value to a GPU-compatible uniform value. */
+    private toUniformValue(ctrl: ResolvedControl, raw: unknown): UniformValue {
+        // Combobox → integer index (palette magic or any combobox)
         if (ctrl.spec.__type === 'combobox' && ctrl.values) {
-            return comboboxValueToIndex(val as string | number, ctrl.values, 0)
+            return comboboxValueToIndex(raw as string | number, ctrl.values, 0)
+        }
+        // Speed normalization
+        if (ctrl.normalize === 'speed' && typeof raw === 'number') {
+            return normalizeSpeed(raw)
+        }
+        // Boolean → 0/1
+        if (typeof raw === 'boolean') {
+            return raw ? 1 : 0
+        }
+        // Color hex → vec3 floats
+        if (typeof raw === 'string' && raw.startsWith('#')) {
+            return hexToFloats(raw)
+        }
+        if (typeof raw === 'number') {
+            return raw
         }
         return 0
+    }
+
+    private resolveInitialUniformValue(ctrl: ResolvedControl): UniformValue {
+        return this.toUniformValue(ctrl, ctrl.spec.defaultValue)
     }
 
     private createShaderContext(): ShaderContext {
