@@ -316,6 +316,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(effects::reset_controls),
         )
         .route("/effects/stop", axum::routing::post(effects::stop_effect))
+        .route(
+            "/effects/rescan",
+            axum::routing::post(effects::rescan_effects),
+        )
         .route("/effects/{id}", axum::routing::get(effects::get_effect))
         .route(
             "/effects/{id}/layout",

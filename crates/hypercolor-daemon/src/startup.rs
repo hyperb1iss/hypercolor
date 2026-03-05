@@ -29,8 +29,8 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{
-    EffectEngine, EffectRegistry, create_renderer_for_metadata, default_effect_search_paths,
-    register_html_effects,
+    EffectEngine, EffectRegistry, EffectWatchEvent, EffectWatcher, create_renderer_for_metadata,
+    default_effect_search_paths, register_html_effects,
 };
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::InputManager;
@@ -128,6 +128,9 @@ pub struct DaemonState {
     /// Handle to the running render thread (if started).
     render_thread: Option<RenderThread>,
 
+    /// Effect file watcher for hot-reload.
+    effect_watcher_task: Option<tokio::task::JoinHandle<()>>,
+
     /// Periodic discovery worker task.
     discovery_task: Option<tokio::task::JoinHandle<()>>,
 
@@ -146,6 +149,10 @@ impl DaemonState {
     ///
     /// Returns an error if the config manager cannot be created from the
     /// resolved config path.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "initialization is inherently sequential; splitting would scatter related setup across helpers"
+    )]
     pub fn initialize(config: &HypercolorConfig, config_path: PathBuf) -> Result<Self> {
         info!("Initializing daemon subsystems");
 
@@ -310,6 +317,7 @@ impl DaemonState {
             runtime_state_path,
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             render_thread: None,
+            effect_watcher_task: None,
             discovery_task: None,
             start_time: Instant::now(),
         })
@@ -384,6 +392,11 @@ impl DaemonState {
                 effect_count: u32::try_from(effect_count).unwrap_or(u32::MAX),
             });
 
+        // Spawn effect file watcher for hot-reload.
+        if config.effect_engine.watch_effects {
+            self.spawn_effect_watcher().await;
+        }
+
         self.spawn_discovery_worker(Arc::clone(&config));
 
         info!("Daemon is running");
@@ -421,6 +434,9 @@ impl DaemonState {
             }
         }
 
+        if let Some(handle) = self.effect_watcher_task.take() {
+            handle.abort();
+        }
         if let Some(handle) = self.discovery_task.take() {
             handle.abort();
         }
@@ -554,6 +570,55 @@ impl DaemonState {
         );
 
         Ok(())
+    }
+
+    async fn spawn_effect_watcher(&mut self) {
+        let registry = Arc::clone(&self.effect_registry);
+        let event_bus = Arc::clone(&self.event_bus);
+
+        let search_paths = {
+            let reg = self.effect_registry.read().await;
+            reg.search_paths().to_vec()
+        };
+
+        let (watcher, mut rx) = match EffectWatcher::start(&search_paths) {
+            Ok(pair) => pair,
+            Err(error) => {
+                warn!(%error, "Failed to start effect file watcher; hot-reload disabled");
+                return;
+            }
+        };
+
+        // Keep the watcher alive by moving it into the task.
+        self.effect_watcher_task = Some(tokio::spawn(async move {
+            let _watcher = watcher; // prevent drop until task ends
+
+            info!("✨ Effect hot-reload watcher active");
+
+            while let Some(event) = rx.recv().await {
+                let (action, path) = match &event {
+                    EffectWatchEvent::Created(p) => ("created", p.clone()),
+                    EffectWatchEvent::Modified(p) => ("modified", p.clone()),
+                    EffectWatchEvent::Removed(p) => ("removed", p.clone()),
+                };
+                info!(path = %path.display(), action, "Effect file change detected");
+
+                let report = {
+                    let mut reg = registry.write().await;
+                    reg.reload_single(&path)
+                };
+
+                event_bus.publish(
+                    hypercolor_types::event::HypercolorEvent::EffectRegistryUpdated {
+                        added: report.added,
+                        removed: report.removed,
+                        updated: report.updated,
+                    },
+                );
+            }
+
+            debug!("Effect watcher channel closed; task exiting");
+        }));
     }
 
     fn spawn_discovery_worker(&mut self, config: Arc<HypercolorConfig>) {

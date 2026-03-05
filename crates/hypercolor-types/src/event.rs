@@ -392,6 +392,16 @@ pub enum HypercolorEvent {
     /// A compositing layer was removed from the effect stack.
     EffectLayerRemoved { layer_id: String, effect_id: String },
 
+    /// The effect registry was rescanned (hot-reload or manual trigger).
+    EffectRegistryUpdated {
+        /// Number of newly discovered effects.
+        added: usize,
+        /// Number of effects removed (source file deleted).
+        removed: usize,
+        /// Number of effects re-loaded (source file modified).
+        updated: usize,
+    },
+
     /// An effect failed to load, render, or initialize.
     EffectError {
         effect_id: String,
@@ -668,6 +678,7 @@ impl HypercolorEvent {
             | Self::EffectControlChanged { .. }
             | Self::EffectLayerAdded { .. }
             | Self::EffectLayerRemoved { .. }
+            | Self::EffectRegistryUpdated { .. }
             | Self::EffectError { .. } => EventCategory::Effect,
 
             Self::SceneActivated { .. }

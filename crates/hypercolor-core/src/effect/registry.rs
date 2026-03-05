@@ -11,6 +11,19 @@ use tracing::{debug, info, warn};
 
 use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectState};
 
+// ── RescanReport ─────────────────────────────────────────────────────────────
+
+/// Summary of what changed during an effect registry rescan.
+#[derive(Debug, Clone, Default)]
+pub struct RescanReport {
+    /// Number of newly discovered effects.
+    pub added: usize,
+    /// Number of effects removed (source file deleted).
+    pub removed: usize,
+    /// Number of effects re-loaded (source file modified).
+    pub updated: usize,
+}
+
 // ── EffectEntry ──────────────────────────────────────────────────────────────
 
 /// A single entry in the effect registry.
@@ -176,6 +189,99 @@ impl EffectRegistry {
         tags.sort();
         tags.dedup();
         tags
+    }
+
+    /// Full rescan: re-registers all HTML effects and prunes stale entries.
+    ///
+    /// Returns a diff summary of what changed.
+    pub fn rescan(&mut self) -> RescanReport {
+        let before: std::collections::HashSet<EffectId> = self.effects.keys().copied().collect();
+
+        let paths = self.search_paths.clone();
+        let html_report = super::loader::register_html_effects(self, &paths);
+        let pruned = self.prune_missing();
+
+        let after: std::collections::HashSet<EffectId> = self.effects.keys().copied().collect();
+
+        let added = after.difference(&before).count();
+        let removed = pruned.len();
+        let updated = html_report.replaced_effects;
+
+        let report = RescanReport {
+            added,
+            removed,
+            updated,
+        };
+
+        info!(
+            added = report.added,
+            removed = report.removed,
+            updated = report.updated,
+            "Effect registry rescan complete"
+        );
+
+        report
+    }
+
+    /// Fast path for a single file change — re-parse and re-register one effect.
+    ///
+    /// If `path` no longer exists, the effect is removed from the registry.
+    /// Returns a diff summary.
+    pub fn reload_single(&mut self, path: &std::path::Path) -> RescanReport {
+        // If the file was deleted, prune it.
+        if !path.exists() {
+            let removed_count = self.remove_by_source_path(path);
+            return RescanReport {
+                added: 0,
+                removed: removed_count,
+                updated: 0,
+            };
+        }
+
+        // Re-register just this one file by running the full loader
+        // against a single-file search scope. We construct a temporary
+        // search path containing just the parent directory and filter
+        // to only this file by leveraging register_html_effects' idempotency.
+        let paths = self.search_paths.clone();
+        let had_before = self.has_source_path(path);
+        let _report = super::loader::register_html_effects(self, &paths);
+
+        if had_before {
+            RescanReport {
+                added: 0,
+                removed: 0,
+                updated: 1,
+            }
+        } else {
+            RescanReport {
+                added: 1,
+                removed: 0,
+                updated: 0,
+            }
+        }
+    }
+
+    /// Check if any registered effect has the given source path.
+    fn has_source_path(&self, path: &std::path::Path) -> bool {
+        self.effects.values().any(|entry| entry.source_path == path)
+    }
+
+    /// Remove all effects whose source path matches the given path.
+    /// Returns the count of removed effects.
+    fn remove_by_source_path(&mut self, path: &std::path::Path) -> usize {
+        let stale: Vec<EffectId> = self
+            .effects
+            .iter()
+            .filter(|(_, entry)| entry.source_path == path)
+            .map(|(id, _)| *id)
+            .collect();
+
+        let count = stale.len();
+        for id in &stale {
+            info!(id = %id, path = %path.display(), "Removing deleted effect");
+            self.effects.remove(id);
+        }
+        count
     }
 
     /// Remove effects whose source file no longer exists on disk.

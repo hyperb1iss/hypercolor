@@ -527,6 +527,42 @@ pub async fn reset_controls(State(state): State<Arc<AppState>>) -> Response {
     }))
 }
 
+/// `POST /api/v1/effects/rescan` — Manually trigger an effect registry rescan.
+pub async fn rescan_effects(State(state): State<Arc<AppState>>) -> Response {
+    let report = {
+        let mut registry = state.effect_registry.write().await;
+        registry.rescan()
+    };
+
+    info!(
+        added = report.added,
+        removed = report.removed,
+        updated = report.updated,
+        "Manual effect rescan completed"
+    );
+
+    state.event_bus.publish(
+        hypercolor_types::event::HypercolorEvent::EffectRegistryUpdated {
+            added: report.added,
+            removed: report.removed,
+            updated: report.updated,
+        },
+    );
+
+    ApiResponse::ok(RescanResponse {
+        added: report.added,
+        removed: report.removed,
+        updated: report.updated,
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct RescanResponse {
+    pub added: usize,
+    pub removed: usize,
+    pub updated: usize,
+}
+
 pub(super) fn resolve_effect_metadata(
     registry: &EffectRegistry,
     id_or_name: &str,

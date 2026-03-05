@@ -20,6 +20,7 @@ mod servo_delegate;
 #[cfg(feature = "servo")]
 mod servo_renderer;
 mod traits;
+pub mod watcher;
 
 pub use engine::EffectEngine;
 pub use factory::create_renderer_for_metadata;
@@ -31,7 +32,7 @@ pub use meta_parser::{
     HtmlControlKind, HtmlControlMetadata, ParsedHtmlEffectMetadata, parse_html_effect_metadata,
 };
 pub use paths::{bundled_effects_root, resolve_html_source_path};
-pub use registry::{EffectEntry, EffectRegistry};
+pub use registry::{EffectEntry, EffectRegistry, RescanReport};
 #[cfg(feature = "servo")]
 pub use servo_bootstrap::bootstrap_software_rendering_context;
 #[cfg(feature = "servo")]
@@ -39,3 +40,4 @@ pub use servo_delegate::{ConsoleMessage, HypercolorWebViewDelegate};
 #[cfg(feature = "servo")]
 pub use servo_renderer::ServoRenderer;
 pub use traits::{EffectRenderer, FrameInput};
+pub use watcher::{EffectWatchEvent, EffectWatcher};
