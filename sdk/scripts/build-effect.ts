@@ -56,6 +56,46 @@ function parseArgs() {
 
 // ── Metadata Extraction ────────────────────────────────────────────────
 
+interface NewApiDef {
+    name: string
+    description?: string
+    author?: string
+    audio?: boolean
+    controls: Record<string, unknown>
+    resolvedControls: Array<{
+        key: string
+        spec: {
+            __type: string
+            label: string
+            defaultValue: unknown
+            tooltip?: string
+            meta: Record<string, unknown>
+        }
+        uniformName?: string
+    }>
+}
+
+/**
+ * Convert a new-API effect definition to the legacy ControlDef[] format
+ * so the existing meta tag generation works unchanged.
+ */
+function newApiToControls(def: NewApiDef): ControlDef[] {
+    return def.resolvedControls.map((ctrl) => {
+        const base: ControlDef = {
+            id: ctrl.key,
+            type: ctrl.spec.__type === 'textfield' ? 'textfield' : ctrl.spec.__type,
+            label: ctrl.spec.label,
+            default: ctrl.spec.defaultValue as any,
+            tooltip: ctrl.spec.tooltip,
+        }
+        if (ctrl.spec.meta.min != null) base.min = ctrl.spec.meta.min as number
+        if (ctrl.spec.meta.max != null) base.max = ctrl.spec.meta.max as number
+        if (ctrl.spec.meta.step != null) base.step = ctrl.spec.meta.step as number
+        if (ctrl.spec.meta.values) base.values = ctrl.spec.meta.values as string[]
+        return base
+    })
+}
+
 async function extractMetadata(entryPath: string) {
     // Set metadata-only flag so initializeEffect() skips runtime init
     ;(globalThis as any).__HYPERCOLOR_METADATA_ONLY__ = true
@@ -71,9 +111,28 @@ async function extractMetadata(entryPath: string) {
             }
         }
 
+        // Clear any previous effect defs
+        delete (globalThis as any).__hypercolorEffectDefs__
+        delete (globalThis as any).__hypercolorEffectInstance__
+
         const mod = await import(entryPath)
 
-        // initializeEffect() stores the instance on globalThis in metadata-only mode
+        // ── New API path: check __hypercolorEffectDefs__ first ────────
+        const defs = (globalThis as any).__hypercolorEffectDefs__ as NewApiDef[] | undefined
+        if (defs && defs.length > 0) {
+            const def = defs[defs.length - 1] // use last entry (single-effect files)
+            return {
+                effect: {
+                    name: def.name,
+                    description: def.description ?? '',
+                    author: def.author ?? 'Hypercolor',
+                    audioReactive: def.audio ?? false,
+                },
+                controls: newApiToControls(def),
+            }
+        }
+
+        // ── Legacy decorator path ────────────────────────────────────
         const effectInstance =
             (globalThis as any).__hypercolorEffectInstance__ ??
             (globalThis as any).effectInstance ??
@@ -103,6 +162,7 @@ async function extractMetadata(entryPath: string) {
     } finally {
         delete (globalThis as any).__HYPERCOLOR_METADATA_ONLY__
         delete (globalThis as any).__hypercolorEffectInstance__
+        delete (globalThis as any).__hypercolorEffectDefs__
     }
 }
 
