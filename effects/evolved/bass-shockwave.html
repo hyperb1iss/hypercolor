@@ -4,13 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Bass Shockwave</title>
-  <meta description="Radial shockwave rings expanding on beat with particle bursts"/>
+  <meta description="Crisp burst-driven shockwave rings with scene-selectable compositions"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Animation speed"/>
-  <meta property="intensity" label="Intensity" type="number" min="0" max="100" default="75" tooltip="Brightness"/>
-  <meta property="ringCount" label="Rings" type="number" min="0" max="100" default="50" tooltip="Ring count"/>
-  <meta property="decay" label="Decay" type="number" min="0" max="100" default="50" tooltip="Ring fade speed"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="6" tooltip="Ring expansion speed"/>
+  <meta property="intensity" label="Intensity" type="number" min="0" max="100" default="78" tooltip="Ring brightness and burst punch"/>
+  <meta property="ringCount" label="Ring Count" type="number" min="0" max="100" default="58" tooltip="Number of active expanding rings"/>
+  <meta property="decay" label="Decay" type="number" min="0" max="100" default="52" tooltip="How quickly older rings fade"/>
   <meta property="palette" label="Palette" type="combobox" default="SilkCircuit" values="SilkCircuit,Cyberpunk,Fire,Aurora,Ice" tooltip="Color palette"/>
+  <meta property="scene" label="Scene" type="combobox" default="Core Burst" values="Core Burst,Twin Burst,Prism Grid" tooltip="Shockwave composition mode"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1224,6 +1225,26 @@
     if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
     return Math.max(0.2, (speed / 5) ** 1.5);
   }
+  function comboboxValueToIndex(value, options, defaultIndex = 0) {
+    if (options.length === 0) return 0;
+    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const rounded = Math.round(value);
+      if (rounded >= 0 && rounded < options.length) return rounded;
+      return safeDefault;
+    }
+    if (typeof value !== "string") return safeDefault;
+    const exactIndex = options.indexOf(value);
+    if (exactIndex >= 0) return exactIndex;
+    const normalized = value.trim().toLowerCase();
+    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
+    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
+    const parsedNumeric = Number.parseInt(normalized, 10);
+    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
+      return parsedNumeric;
+    }
+    return safeDefault;
+  }
 
   // packages/core/src/utils/debug.ts
   var COLORS = {
@@ -1579,13 +1600,41 @@ void main() {
     resolveLocations() {
       const gl = this.gl;
       const program = this.program;
-      const intTypes = /* @__PURE__ */ new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL]);
+      const intTypes = /* @__PURE__ */ new Set([
+        gl.INT,
+        gl.INT_VEC2,
+        gl.INT_VEC3,
+        gl.INT_VEC4,
+        gl.BOOL,
+        gl.BOOL_VEC2,
+        gl.BOOL_VEC3,
+        gl.BOOL_VEC4,
+        gl.UNSIGNED_INT,
+        gl.UNSIGNED_INT_VEC2,
+        gl.UNSIGNED_INT_VEC3,
+        gl.UNSIGNED_INT_VEC4,
+        gl.SAMPLER_2D,
+        gl.SAMPLER_CUBE,
+        gl.SAMPLER_3D,
+        gl.SAMPLER_2D_SHADOW,
+        gl.SAMPLER_2D_ARRAY,
+        gl.SAMPLER_2D_ARRAY_SHADOW,
+        gl.SAMPLER_CUBE_SHADOW,
+        gl.INT_SAMPLER_2D,
+        gl.INT_SAMPLER_3D,
+        gl.INT_SAMPLER_CUBE,
+        gl.INT_SAMPLER_2D_ARRAY,
+        gl.UNSIGNED_INT_SAMPLER_2D,
+        gl.UNSIGNED_INT_SAMPLER_3D,
+        gl.UNSIGNED_INT_SAMPLER_CUBE,
+        gl.UNSIGNED_INT_SAMPLER_2D_ARRAY
+      ]);
       const intUniforms = /* @__PURE__ */ new Set();
       const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
       for (let i = 0; i < numActive; i++) {
         const info = gl.getActiveUniform(program, i);
         if (info && intTypes.has(info.type)) {
-          intUniforms.add(info.name);
+          intUniforms.add(info.name.replace(/\[0\]$/, ""));
         }
       }
       for (const [name, entry] of this.uniforms) {
@@ -1693,41 +1742,51 @@ void main() {
   }
 
   // src/effects/bass-shockwave/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iAudioBass;\nuniform float iAudioMid;\nuniform float iAudioTreble;\nuniform float iAudioBeat;\nuniform float iAudioBeatPulse;\nuniform float iAudioLevel;\nuniform float iAudioSwell;\nuniform float iAudioSpectralFlux;\n\nuniform float iSpeed;\nuniform float iIntensity;\nuniform float iRingCount;\nuniform float iDecay;\nuniform int iPalette;\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    if (id == 1) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    if (id == 3) return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n    if (id == 4) return iqPalette(t, vec3(0.5, 0.6, 0.8), vec3(0.2, 0.3, 0.2), vec3(0.6, 0.8, 1.0), vec3(0.0, 0.1, 0.3));\n    return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n}\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvoid main() {\n    vec2 uv = (gl_FragCoord.xy - 0.5 * iResolution) / iResolution.y;\n    float time = iTime * iSpeed * 0.3;\n\n    float r = length(uv);\n    float angle = atan(uv.y, uv.x);\n\n    float bass = iAudioBass;\n    float beatPulse = iAudioBeatPulse;\n    float level = iAudioLevel;\n\n    vec3 col = vec3(0.0);\n\n    // Expanding shockwave rings on beat\n    float ringCount = 3.0 + iRingCount * 0.09;\n    float decayRate = 2.0 + iDecay * 0.06;\n\n    for (int i = 0; i < 12; i++) {\n        if (float(i) >= ringCount) break;\n        float fi = float(i);\n\n        // Each ring expands outward from center\n        float ringPhase = fract(time * 0.2 + fi / ringCount);\n        float ringRadius = ringPhase * 1.2;\n\n        // Ring fades as it expands\n        float ringFade = exp(-ringPhase * decayRate);\n\n        // Ring width modulated by bass\n        float ringWidth = 0.015 + bass * 0.02 + beatPulse * 0.01;\n\n        // Distance from this pixel to the ring\n        float ringDist = abs(r - ringRadius);\n        float ring = smoothstep(ringWidth, ringWidth * 0.2, ringDist) * ringFade;\n\n        // Angular variation \u2014 ring isn't perfectly circular\n        float angularWarp = sin(angle * 3.0 + fi * 2.0 + time) * 0.02 * bass;\n        ring *= 1.0 + angularWarp;\n\n        // Beat pulse makes the newest ring flash bright\n        float isBeatRing = smoothstep(0.1, 0.0, ringPhase);\n        ring += isBeatRing * beatPulse * 0.5 * smoothstep(ringWidth * 2.0, 0.0, ringDist);\n\n        // Color shifts per ring\n        float colorT = fi / ringCount + ringPhase * 0.3;\n        vec3 ringColor = paletteColor(colorT, iPalette);\n\n        col += ringColor * ring * iIntensity * 0.015;\n    }\n\n    // Central glow \u2014 pulses with bass\n    float centerGlow = exp(-r * (4.0 - bass * 2.0)) * (0.3 + bass * 0.5 + beatPulse * 0.3);\n    col += paletteColor(time * 0.05, iPalette) * centerGlow * iIntensity * 0.01;\n\n    // Radial displacement lines on beat\n    float radialLines = sin(angle * 8.0 + time * 2.0) * 0.5 + 0.5;\n    radialLines *= exp(-r * 3.0) * beatPulse * 0.3;\n    col += paletteColor(angle / 6.28 + 0.5, iPalette) * radialLines;\n\n    // Particle burst on strong beats\n    float particleSeed = floor(time * 4.0);\n    for (int p = 0; p < 8; p++) {\n        float fp = float(p);\n        float pAngle = hash21(vec2(fp, particleSeed)) * 6.28318;\n        float pSpeed = 0.3 + hash21(vec2(fp + 10.0, particleSeed)) * 0.7;\n        float pPhase = fract(time * 0.5 - particleSeed * 0.25);\n        float pRadius = pPhase * pSpeed;\n        float pFade = exp(-pPhase * 3.0) * beatPulse;\n\n        vec2 pPos = vec2(cos(pAngle), sin(pAngle)) * pRadius;\n        float pDist = length(uv - pPos);\n        float particle = smoothstep(0.02, 0.005, pDist) * pFade;\n\n        col += paletteColor(fp * 0.125, iPalette) * particle * 0.5;\n    }\n\n    col = col / (1.0 + col * 0.5);\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
+  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iAudioBass;\nuniform float iAudioMid;\nuniform float iAudioTreble;\nuniform float iAudioBeat;\nuniform float iAudioBeatPulse;\nuniform float iAudioLevel;\nuniform float iAudioSwell;\nuniform float iAudioSpectralFlux;\n\nuniform float iSpeed;\nuniform float iIntensity;\nuniform float iRingCount;\nuniform float iDecay;\nuniform int iPalette;\nuniform int iScene;\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    if (id == 1) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    if (id == 3) return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n    if (id == 4) return iqPalette(t, vec3(0.5, 0.6, 0.8), vec3(0.2, 0.3, 0.2), vec3(0.6, 0.8, 1.0), vec3(0.0, 0.1, 0.3));\n    return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n}\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat ringProfile(float dist, float width) {\n    float core = smoothstep(width, width * 0.10, dist);\n    float halo = smoothstep(width * 3.6, width * 0.7, dist) * 0.28;\n    return core * 1.35 + halo;\n}\n\nint sceneEmitterCount(int mode) {\n    if (mode == 1) return 2;\n    if (mode == 2) return 3;\n    return 1;\n}\n\nvec2 emitterPos(int mode, int idx) {\n    if (mode == 1) {\n        return idx == 0 ? vec2(-0.32, 0.02) : vec2(0.32, -0.02);\n    }\n    if (mode == 2) {\n        if (idx == 0) return vec2(0.0, 0.0);\n        if (idx == 1) return vec2(-0.24, -0.18);\n        return vec2(0.24, 0.18);\n    }\n    return vec2(0.0);\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    vec2 p = uv * 2.0 - 1.0;\n    p.x *= iResolution.x / iResolution.y;\n\n    float speedNorm = clamp(iSpeed / 2.8, 0.0, 1.0);\n    float intensityNorm = clamp(iIntensity * 0.01, 0.0, 1.0);\n    float ringNorm = clamp(iRingCount * 0.01, 0.0, 1.0);\n    float decayNorm = clamp(iDecay * 0.01, 0.0, 1.0);\n\n    float bass = clamp(iAudioBass, 0.0, 1.0);\n    float beat = clamp(iAudioBeatPulse, 0.0, 1.0);\n    float level = clamp(iAudioLevel, 0.0, 1.0);\n    float flux = clamp(iAudioSpectralFlux, 0.0, 1.0);\n\n    float t = iTime * (0.40 + iSpeed * 0.90);\n\n    // Fallback pulse keeps motion alive when audio features are near zero.\n    float fallbackBeat = pow(max(0.0, sin(t * (1.75 + speedNorm * 1.85))), 6.0);\n    float fallbackSwell = 0.5 + 0.5 * sin(t * 0.55 + sin(t * 0.17) * 2.1);\n    float fallbackEnergy = 0.18 + fallbackBeat * 0.82 + fallbackSwell * 0.24;\n\n    float audioEnergy = max(level, max(bass * 0.95 + flux * 0.35, beat));\n    float audioPresence = smoothstep(0.02, 0.14, level + bass + beat + flux);\n    float pulse = mix(0.25 + fallbackBeat * 0.75, max(beat, fallbackBeat * 0.45 + 0.20), audioPresence);\n    float energy = mix(fallbackEnergy, audioEnergy, audioPresence);\n    energy = clamp(max(energy, 0.25 + fallbackBeat * 0.55), 0.0, 1.4);\n\n    int sceneMode = clamp(iScene, 0, 2);\n    int emitters = sceneEmitterCount(sceneMode);\n\n    float ringTarget = floor(mix(3.0, 14.0, ringNorm));\n    float ringsPerEmitter = max(2.0, ringTarget / float(emitters));\n    float decayRate = mix(1.6, 8.2, decayNorm);\n    float ringSpeed = mix(0.26, 0.92, speedNorm);\n    float baseWidth = mix(0.017, 0.0065, ringNorm) * mix(1.0, 0.72, pulse);\n\n    vec3 col = vec3(0.0);\n\n    for (int e = 0; e < 3; e++) {\n        if (e >= emitters) break;\n        vec2 origin = emitterPos(sceneMode, e);\n        vec2 q = p - origin;\n        float r = length(q);\n        float a = atan(q.y, q.x);\n\n        for (int i = 0; i < 16; i++) {\n            float fi = float(i);\n            if (fi >= ringsPerEmitter) break;\n\n            float phase = fract(t * ringSpeed + float(e) * 0.21 + fi / ringsPerEmitter);\n            float maxRadius = sceneMode == 0 ? 1.45 : 1.20;\n            float radius = phase * maxRadius;\n\n            float radialJitter = hash21(vec2(fi + float(e) * 37.0, floor(t * 0.75 + float(e) * 4.0))) - 0.5;\n            radius += radialJitter * (0.010 + energy * 0.014);\n\n            float dist = abs(r - radius);\n            float ring = ringProfile(dist, baseWidth);\n\n            float life = exp(-phase * decayRate);\n            float segmentation = 0.74 + 0.26 * smoothstep(\n                0.42,\n                0.98,\n                0.5 + 0.5 * sin(a * (8.0 + float(e) * 2.0) + fi * 1.55 - t * 2.3)\n            );\n            float strike = smoothstep(0.11, 0.0, phase) * (0.55 + pulse * 1.25);\n\n            ring *= life * segmentation;\n            ring *= 1.0 + strike;\n\n            float tone = fract(fi / max(ringsPerEmitter, 1.0) + float(e) * 0.16 + t * 0.028);\n            vec3 ringColor = paletteColor(tone, iPalette);\n            col += ringColor * ring;\n        }\n\n        float spokeCount = mix(10.0, 26.0, ringNorm);\n        float spoke = smoothstep(\n            0.90,\n            1.0,\n            abs(sin(a * spokeCount + t * (3.0 + speedNorm * 2.8) + float(e) * 1.4))\n        );\n        spoke *= exp(-r * (2.8 + decayNorm * 2.6));\n        spoke *= 0.16 + pulse * 0.55 + energy * 0.22;\n\n        col += paletteColor(0.62 + a / 6.28318 + float(e) * 0.1, iPalette) * spoke;\n    }\n\n    float centerR = length(p);\n    float core = exp(-centerR * (17.0 - pulse * 6.5));\n    float coreRing = ringProfile(abs(centerR - (0.04 + pulse * 0.055)), 0.010);\n    col += paletteColor(0.09 + t * 0.045, iPalette) * (core * (0.45 + energy * 0.7) + coreRing * 0.7);\n\n    if (sceneMode == 1) {\n        float lane = abs(p.y + sin(t * 1.6) * 0.03);\n        float bridge = smoothstep(0.045, 0.008, lane) * exp(-abs(p.x) * 1.7);\n        col += paletteColor(0.82 + p.x * 0.16 - t * 0.02, iPalette) * bridge * (0.18 + pulse * 0.55);\n    } else if (sceneMode == 2) {\n        vec2 gp = abs(fract((p + vec2(t * 0.04, -t * 0.03)) * (6.0 + ringNorm * 7.0)) - 0.5);\n        float grid = smoothstep(0.49, 0.44, max(gp.x, gp.y));\n        float gate = exp(-centerR * 1.9);\n        col += paletteColor(0.44 + (p.x + p.y) * 0.12, iPalette) * grid * gate * (0.12 + pulse * 0.32);\n    }\n\n    col *= (0.34 + intensityNorm * 1.75) * (0.78 + energy * 0.42);\n\n    float vignette = smoothstep(1.45, 0.14, length(p));\n    col *= 0.35 + vignette * 0.75;\n\n    col = col / (1.0 + col * 0.55);\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
 
   // src/effects/bass-shockwave/main.ts
   var PALETTES = ["SilkCircuit", "Cyberpunk", "Fire", "Aurora", "Ice"];
+  var SCENES = ["Core Burst", "Twin Burst", "Prism Grid"];
   var BassShockwave = class extends WebGLEffect {
     speed;
     intensity;
     ringCount;
     decay;
     palette;
+    scene;
     constructor() {
-      super({ fragmentShader: fragment_default, audioReactive: true });
+      super({
+        id: "bass-shockwave",
+        name: "Bass Shockwave",
+        fragmentShader: fragment_default,
+        audioReactive: true
+      });
     }
     initializeControls() {
-      this.speed = getControlValue("speed", 5);
-      this.intensity = getControlValue("intensity", 75);
-      this.ringCount = getControlValue("ringCount", 50);
-      this.decay = getControlValue("decay", 50);
+      this.speed = getControlValue("speed", 6);
+      this.intensity = getControlValue("intensity", 78);
+      this.ringCount = getControlValue("ringCount", 58);
+      this.decay = getControlValue("decay", 52);
       this.palette = getControlValue("palette", "SilkCircuit");
+      this.scene = getControlValue("scene", "Core Burst");
     }
     getControlValues() {
       return {
-        speed: normalizeSpeed(getControlValue("speed", 5)),
-        intensity: getControlValue("intensity", 75),
-        ringCount: getControlValue("ringCount", 50),
-        decay: getControlValue("decay", 50),
-        palette: PALETTES.indexOf(getControlValue("palette", "SilkCircuit"))
+        speed: normalizeSpeed(getControlValue("speed", 6)),
+        intensity: getControlValue("intensity", 78),
+        ringCount: getControlValue("ringCount", 58),
+        decay: getControlValue("decay", 52),
+        palette: comboboxValueToIndex(getControlValue("palette", "SilkCircuit"), PALETTES, 0),
+        scene: comboboxValueToIndex(getControlValue("scene", "Core Burst"), SCENES, 0)
       };
     }
     createUniforms() {
       this.registerUniform("iSpeed", 1);
-      this.registerUniform("iIntensity", 75);
-      this.registerUniform("iRingCount", 50);
-      this.registerUniform("iDecay", 50);
+      this.registerUniform("iIntensity", 78);
+      this.registerUniform("iRingCount", 58);
+      this.registerUniform("iDecay", 52);
       this.registerUniform("iPalette", 0);
+      this.registerUniform("iScene", 0);
     }
     updateUniforms(c) {
       this.setUniform("iSpeed", c.speed);
@@ -1735,27 +1794,31 @@ void main() {
       this.setUniform("iRingCount", c.ringCount);
       this.setUniform("iDecay", c.decay);
       this.setUniform("iPalette", c.palette);
+      this.setUniform("iScene", c.scene);
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Animation speed" })
+    NumberControl({ label: "Speed", min: 1, max: 10, default: 6, tooltip: "Ring expansion speed" })
   ], BassShockwave.prototype, "speed", 2);
   __decorateClass([
-    NumberControl({ label: "Intensity", min: 0, max: 100, default: 75, tooltip: "Brightness" })
+    NumberControl({ label: "Intensity", min: 0, max: 100, default: 78, tooltip: "Ring brightness and burst punch" })
   ], BassShockwave.prototype, "intensity", 2);
   __decorateClass([
-    NumberControl({ label: "Rings", min: 0, max: 100, default: 50, tooltip: "Ring count" })
+    NumberControl({ label: "Ring Count", min: 0, max: 100, default: 58, tooltip: "Number of active expanding rings" })
   ], BassShockwave.prototype, "ringCount", 2);
   __decorateClass([
-    NumberControl({ label: "Decay", min: 0, max: 100, default: 50, tooltip: "Ring fade speed" })
+    NumberControl({ label: "Decay", min: 0, max: 100, default: 52, tooltip: "How quickly older rings fade" })
   ], BassShockwave.prototype, "decay", 2);
   __decorateClass([
     ComboboxControl({ label: "Palette", values: PALETTES, default: "SilkCircuit", tooltip: "Color palette" })
   ], BassShockwave.prototype, "palette", 2);
+  __decorateClass([
+    ComboboxControl({ label: "Scene", values: SCENES, default: "Core Burst", tooltip: "Shockwave composition mode" })
+  ], BassShockwave.prototype, "scene", 2);
   BassShockwave = __decorateClass([
     Effect({
       name: "Bass Shockwave",
-      description: "Radial shockwave rings expanding on beat with particle bursts",
+      description: "Crisp burst-driven shockwave rings with scene-selectable compositions",
       author: "Hypercolor",
       audioReactive: true
     })

@@ -4,13 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Synth Horizon</title>
-  <meta description="Retrowave perspective grid with setting sun, audio-reactive horizon"/>
+  <meta description="Crisp retro roller-rink geometry with arcade carpet motifs and neon horizon scenes"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Grid scroll speed"/>
-  <meta property="gridDensity" label="Grid" type="number" min="10" max="100" default="50" tooltip="Grid density"/>
-  <meta property="sunSize" label="Sun" type="number" min="10" max="100" default="60" tooltip="Sun size"/>
-  <meta property="glow" label="Glow" type="number" min="10" max="100" default="70" tooltip="Overall glow"/>
-  <meta property="palette" label="Palette" type="combobox" default="Synthwave" values="SilkCircuit,Synthwave,Cyberpunk,Fire,Aurora" tooltip="Color palette"/>
+  <meta property="scene" label="Scene" type="combobox" default="Roller Grid" values="Roller Grid,Arcade Carpet,Laser Lanes" tooltip="Retro composition style"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Animation speed"/>
+  <meta property="gridDensity" label="Grid" type="number" min="10" max="100" default="62" tooltip="Grid and motif density"/>
+  <meta property="glow" label="Glow" type="number" min="10" max="100" default="72" tooltip="Neon bloom intensity"/>
+  <meta property="palette" label="Palette" type="combobox" default="Rink Pop" values="SilkCircuit,Rink Pop,Arcade Heat,Ice Neon,Midnight" tooltip="Retro color palette"/>
+  <meta property="colorMode" label="Color Mode" type="combobox" default="Color Cycle" values="Static,Color Cycle,Mono Neon" tooltip="Static, cycling, or monochrome tinting"/>
+  <meta property="cycleSpeed" label="Cycle Speed" type="number" min="0" max="100" default="44" tooltip="Color cycle speed"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1224,6 +1226,26 @@
     if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
     return Math.max(0.2, (speed / 5) ** 1.5);
   }
+  function comboboxValueToIndex(value, options, defaultIndex = 0) {
+    if (options.length === 0) return 0;
+    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const rounded = Math.round(value);
+      if (rounded >= 0 && rounded < options.length) return rounded;
+      return safeDefault;
+    }
+    if (typeof value !== "string") return safeDefault;
+    const exactIndex = options.indexOf(value);
+    if (exactIndex >= 0) return exactIndex;
+    const normalized = value.trim().toLowerCase();
+    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
+    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
+    const parsedNumeric = Number.parseInt(normalized, 10);
+    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
+      return parsedNumeric;
+    }
+    return safeDefault;
+  }
 
   // packages/core/src/utils/debug.ts
   var COLORS = {
@@ -1579,13 +1601,41 @@ void main() {
     resolveLocations() {
       const gl = this.gl;
       const program = this.program;
-      const intTypes = /* @__PURE__ */ new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL]);
+      const intTypes = /* @__PURE__ */ new Set([
+        gl.INT,
+        gl.INT_VEC2,
+        gl.INT_VEC3,
+        gl.INT_VEC4,
+        gl.BOOL,
+        gl.BOOL_VEC2,
+        gl.BOOL_VEC3,
+        gl.BOOL_VEC4,
+        gl.UNSIGNED_INT,
+        gl.UNSIGNED_INT_VEC2,
+        gl.UNSIGNED_INT_VEC3,
+        gl.UNSIGNED_INT_VEC4,
+        gl.SAMPLER_2D,
+        gl.SAMPLER_CUBE,
+        gl.SAMPLER_3D,
+        gl.SAMPLER_2D_SHADOW,
+        gl.SAMPLER_2D_ARRAY,
+        gl.SAMPLER_2D_ARRAY_SHADOW,
+        gl.SAMPLER_CUBE_SHADOW,
+        gl.INT_SAMPLER_2D,
+        gl.INT_SAMPLER_3D,
+        gl.INT_SAMPLER_CUBE,
+        gl.INT_SAMPLER_2D_ARRAY,
+        gl.UNSIGNED_INT_SAMPLER_2D,
+        gl.UNSIGNED_INT_SAMPLER_3D,
+        gl.UNSIGNED_INT_SAMPLER_CUBE,
+        gl.UNSIGNED_INT_SAMPLER_2D_ARRAY
+      ]);
       const intUniforms = /* @__PURE__ */ new Set();
       const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
       for (let i = 0; i < numActive; i++) {
         const info = gl.getActiveUniform(program, i);
         if (info && intTypes.has(info.type)) {
-          intUniforms.add(info.name);
+          intUniforms.add(info.name.replace(/\[0\]$/, ""));
         }
       }
       for (const [name, entry] of this.uniforms) {
@@ -1693,71 +1743,94 @@ void main() {
   }
 
   // src/effects/synth-horizon/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iAudioBass;\nuniform float iAudioMid;\nuniform float iAudioTreble;\nuniform float iAudioBeatPulse;\nuniform float iAudioLevel;\n\nuniform float iSpeed;\nuniform float iGridDensity;\nuniform float iSunSize;\nuniform float iGlow;\nuniform int iPalette;\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    // Synthwave: deep purple \u2192 hot pink \u2192 orange\n    if (id == 0) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    if (id == 1) return iqPalette(t, vec3(0.3, 0.1, 0.4), vec3(0.5, 0.3, 0.5), vec3(0.8, 0.5, 0.7), vec3(0.9, 0.2, 0.4));\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    if (id == 3) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    if (id == 4) return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n    return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    float aspect = iResolution.x / iResolution.y;\n\n    float time = iTime * iSpeed * 0.3;\n    float bass = iAudioBass;\n    float beatPulse = iAudioBeatPulse;\n\n    vec3 col = vec3(0.0);\n\n    // Sky gradient \u2014 dark purple to warm horizon\n    float skyGrad = uv.y;\n    vec3 skyTop = paletteColor(0.7, iPalette) * 0.1;\n    vec3 skyBottom = paletteColor(0.0, iPalette) * 0.4;\n    vec3 sky = mix(skyBottom, skyTop, smoothstep(0.4, 0.9, skyGrad));\n    col = sky;\n\n    // Retrowave sun\n    float sunY = 0.55 + bass * 0.02;\n    float sunRadius = iSunSize * 0.003 + beatPulse * 0.02;\n    vec2 sunCenter = vec2(0.5, sunY);\n    vec2 sunUV = vec2((uv.x - 0.5) * aspect, uv.y) - vec2(0.0, sunY);\n    float sunDist = length(sunUV);\n\n    // Sun body with horizontal slice lines\n    float sun = smoothstep(sunRadius + 0.005, sunRadius - 0.005, sunDist);\n    // Horizontal bands cut through the sun\n    float bands = step(0.0, sin((uv.y - sunY) * 80.0 - time * 2.0));\n    float bandMask = smoothstep(sunY - sunRadius, sunY - sunRadius * 0.3, uv.y);\n    sun *= mix(1.0, bands, bandMask * 0.5);\n\n    vec3 sunColor = mix(\n        paletteColor(0.15, iPalette),\n        paletteColor(0.0, iPalette),\n        smoothstep(sunY - sunRadius, sunY + sunRadius, uv.y)\n    );\n    col += sunColor * sun * 1.5;\n\n    // Sun glow\n    float sunGlow = exp(-sunDist * sunDist * 15.0) * iGlow * 0.008;\n    col += paletteColor(0.1, iPalette) * sunGlow;\n\n    // Perspective grid floor\n    float horizon = 0.42;\n    if (uv.y < horizon) {\n        float floorY = horizon - uv.y;\n        float depth = 0.1 / (floorY + 0.001);\n\n        // Grid lines \u2014 Z direction (horizontal on floor)\n        float gridZ = depth * 0.5 + time * 2.0;\n        float lineZ = smoothstep(0.05, 0.0, abs(fract(gridZ) - 0.5) - 0.47);\n        lineZ *= smoothstep(0.0, 0.05, floorY);\n\n        // Grid lines \u2014 X direction (vertical on floor)\n        float gridX = (uv.x - 0.5) * depth * iGridDensity * 0.1;\n        float lineX = smoothstep(0.05, 0.0, abs(fract(gridX) - 0.5) - 0.47);\n        lineX *= smoothstep(0.0, 0.05, floorY);\n\n        float grid = max(lineX, lineZ);\n\n        // Grid pulses on beat\n        grid *= 0.6 + beatPulse * 0.4;\n\n        // Grid color \u2014 brighter near horizon, fades with distance\n        float distFade = exp(-floorY * 8.0);\n        vec3 gridColor = paletteColor(0.5 + depth * 0.01, iPalette);\n        col += gridColor * grid * distFade * iGlow * 0.012;\n\n        // Floor base darkness\n        col *= 0.3 + 0.7 * smoothstep(0.0, horizon, uv.y);\n\n        // Audio-reactive grid height displacement\n        float waveX = sin((uv.x - 0.5) * 20.0 + time * 3.0) * bass * 0.02;\n        float waveLine = smoothstep(0.003, 0.0, abs(floorY - 0.1 - waveX)) * distFade;\n        col += paletteColor(0.3, iPalette) * waveLine * 0.5;\n    }\n\n    // Horizon glow line\n    float horizonGlow = exp(-abs(uv.y - horizon) * 60.0);\n    col += paletteColor(0.2, iPalette) * horizonGlow * iGlow * 0.005 * (1.0 + beatPulse * 0.5);\n\n    // Scanlines overlay\n    float scanline = 0.95 + 0.05 * sin(gl_FragCoord.y * 1.5);\n    col *= scanline;\n\n    col = col / (1.0 + col * 0.3);\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
+  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iSpeed;\nuniform float iGridDensity;\nuniform float iGlow;\nuniform int iScene;\nuniform int iPalette;\nuniform int iColorMode;\nuniform float iCycleSpeed;\n\nvec3 rgb2hsv(vec3 c) {\n    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);\n    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));\n    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));\n\n    float d = q.x - min(q.w, q.y);\n    float e = 1.0e-10;\n    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);\n}\n\nvec3 hsv2rgb(vec3 c) {\n    vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);\n    vec3 rgb = clamp(p - 1.0, 0.0, 1.0);\n    return c.z * mix(vec3(1.0), rgb, c.y);\n}\n\nvec3 hueShift(vec3 color, float shift) {\n    vec3 hsv = rgb2hsv(color);\n    hsv.x = fract(hsv.x + shift);\n    return hsv2rgb(hsv);\n}\n\nfloat lineGrid(float value, float width) {\n    float g = abs(fract(value) - 0.5);\n    float aa = fwidth(value) * 0.7;\n    return 1.0 - smoothstep(width, width + aa, g);\n}\n\nfloat diamondMask(vec2 p, float radius) {\n    float d = abs(p.x) + abs(p.y);\n    float aa = fwidth(d) * 1.4;\n    return 1.0 - smoothstep(radius, radius + aa, d);\n}\n\nvec3 paletteColor(int id, int slot) {\n    if (id == 0) {\n        if (slot == 0) return vec3(0.04, 0.02, 0.09);\n        if (slot == 1) return vec3(0.10, 0.02, 0.14);\n        if (slot == 2) return vec3(0.88, 0.21, 1.00);\n        if (slot == 3) return vec3(0.50, 1.00, 0.92);\n        return vec3(0.95, 0.98, 0.55);\n    }\n\n    if (id == 1) {\n        if (slot == 0) return vec3(0.07, 0.04, 0.02);\n        if (slot == 1) return vec3(0.14, 0.05, 0.08);\n        if (slot == 2) return vec3(1.00, 0.42, 0.72);\n        if (slot == 3) return vec3(0.35, 0.95, 0.55);\n        return vec3(1.00, 0.92, 0.55);\n    }\n\n    if (id == 2) {\n        if (slot == 0) return vec3(0.06, 0.02, 0.00);\n        if (slot == 1) return vec3(0.18, 0.03, 0.02);\n        if (slot == 2) return vec3(1.00, 0.24, 0.12);\n        if (slot == 3) return vec3(1.00, 0.76, 0.14);\n        return vec3(0.95, 0.98, 0.70);\n    }\n\n    if (id == 3) {\n        if (slot == 0) return vec3(0.01, 0.04, 0.08);\n        if (slot == 1) return vec3(0.02, 0.08, 0.14);\n        if (slot == 2) return vec3(0.22, 0.82, 1.00);\n        if (slot == 3) return vec3(0.53, 1.00, 0.86);\n        return vec3(0.99, 0.99, 1.00);\n    }\n\n    if (slot == 0) return vec3(0.01, 0.01, 0.04);\n    if (slot == 1) return vec3(0.06, 0.02, 0.08);\n    if (slot == 2) return vec3(0.54, 0.39, 1.00);\n    if (slot == 3) return vec3(0.98, 0.27, 0.63);\n    return vec3(0.58, 0.91, 1.00);\n}\n\nvec3 applyColorMode(vec3 color, int mode, float shift) {\n    if (mode == 1) {\n        return hueShift(color, shift);\n    }\n\n    if (mode == 2) {\n        float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));\n        return mix(vec3(0.04, 0.15, 0.20), vec3(0.85, 1.00, 0.96), luma);\n    }\n\n    return color;\n}\n\nvec4 sceneRollerGrid(vec2 p, float t, float density) {\n    float horizon = -0.08;\n    float floorMask = step(p.y, horizon);\n    float floorY = max(0.0, horizon - p.y);\n    float depth = 1.0 / (0.09 + floorY);\n\n    float laneScale = mix(3.5, 11.0, density);\n    float lane = lineGrid(p.x * depth * laneScale, 0.055);\n    float cross = lineGrid((depth + t * 1.3) * (0.75 + density * 2.6), 0.050);\n    float primary = max(lane, cross) * floorMask * smoothstep(0.0, 0.85, floorY);\n\n    float side = lineGrid((p.x * depth + sin(depth * 1.7 + t * 1.8) * 0.35) * (1.1 + density * 3.8), 0.030);\n    float accent = side * floorMask * (0.35 + 0.65 * smoothstep(0.02, 0.55, floorY));\n\n    float horizonStripe = 1.0 - smoothstep(0.0, 0.012, abs(p.y - horizon));\n    float arches = lineGrid(length(vec2(p.x, max(0.0, p.y - horizon) * 1.25)) * (3.2 + density * 8.0) - t * 0.35, 0.040)\n        * step(horizon, p.y);\n\n    vec2 tile = vec2(\n        p.x * (6.0 + density * 10.0),\n        (p.y - horizon) * (4.0 + density * 7.0) + t * 0.25\n    );\n    vec2 gv = fract(tile) - 0.5;\n    float skyDiamond = diamondMask(gv, 0.19) * (1.0 - smoothstep(0.42, 0.95, p.y - horizon));\n\n    float highlight = max(horizonStripe * 1.2, arches * 0.9) + skyDiamond * 0.55;\n    float fill = step(horizon, p.y) * (0.18 + 0.22 * lineGrid((p.y - horizon) * (2.5 + density * 4.0), 0.16));\n\n    return vec4(primary, accent + skyDiamond * 0.3, highlight, fill);\n}\n\nvec4 sceneArcadeCarpet(vec2 p, float t, float density) {\n    float scale = mix(3.0, 11.0, density);\n    vec2 q = p * scale + vec2(t * 0.4, -t * 0.28);\n    vec2 id = floor(q);\n    vec2 gv = fract(q) - 0.5;\n\n    float checker = mod(id.x + id.y, 2.0);\n    float diamondRing = smoothstep(0.34, 0.31, abs(gv.x) + abs(gv.y)) - smoothstep(0.20, 0.17, abs(gv.x) + abs(gv.y));\n    float boxRing = smoothstep(0.46, 0.43, max(abs(gv.x), abs(gv.y))) - smoothstep(0.28, 0.25, max(abs(gv.x), abs(gv.y)));\n    float cross = max(1.0 - smoothstep(0.04, 0.05, abs(gv.x)), 1.0 - smoothstep(0.04, 0.05, abs(gv.y)));\n\n    mat2 rot = mat2(0.70710678, -0.70710678, 0.70710678, 0.70710678);\n    vec2 rg = rot * gv;\n    float stripeA = lineGrid(rg.x * (6.0 + density * 8.0) + t * 0.45, 0.08);\n    float stripeB = lineGrid(rg.y * (6.0 + density * 8.0) - t * 0.45, 0.08);\n\n    float sparkle = diamondMask(gv + vec2(0.0, sin((id.x + id.y) * 0.8 + t) * 0.12), 0.08);\n\n    float primary = mix(diamondRing, boxRing, checker);\n    float accent = cross * (0.6 + 0.4 * (1.0 - checker)) + (stripeA * stripeB) * 0.35;\n    float highlight = max(stripeA, stripeB) * 0.35 + sparkle * 0.7;\n\n    return vec4(primary, accent, highlight, checker);\n}\n\nvec4 sceneLaserLanes(vec2 p, float t, float density) {\n    float horizon = -0.18;\n    float floorMask = step(p.y, horizon);\n    float floorY = max(0.0, horizon - p.y);\n    float depth = 1.0 / (0.10 + floorY);\n\n    float laneWarp = sin(depth * 1.6 + t * 0.8) * 0.28;\n    float lanesA = lineGrid((p.x * depth + laneWarp) * (1.8 + density * 7.2), 0.035);\n    float lanesB = lineGrid((p.x * depth * 0.72 - t * 0.9) * (1.2 + density * 5.0), 0.030);\n    float zBeats = lineGrid((depth + t * 1.4) * (0.6 + density * 2.4), 0.050);\n\n    float primary = max(lanesA, zBeats) * floorMask;\n    float accent = max(lanesB, (1.0 - smoothstep(0.0, 0.02, abs(p.x))) * zBeats) * floorMask * 0.95;\n\n    float skyMask = step(horizon, p.y);\n    float skyBands = lineGrid((p.y - horizon) * (8.0 + density * 14.0) + t * 0.75, 0.060);\n    float skyColumns = lineGrid((p.x + sin((p.y - horizon) * 7.0 + t) * 0.15) * (2.6 + density * 4.5), 0.040);\n    float arch = lineGrid(length(vec2(p.x, max(0.0, p.y - horizon) * 1.05)) * (4.0 + density * 7.0) - t * 0.32, 0.035)\n        * skyMask;\n\n    float highlight = max(arch, skyBands * 0.45 + skyColumns * 0.5);\n    float fill = skyMask * (0.15 + 0.35 * skyBands);\n\n    return vec4(primary, accent, highlight, fill);\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution.xy;\n    vec2 p = uv * 2.0 - 1.0;\n    p.x *= iResolution.x / iResolution.y;\n\n    float density = clamp(iGridDensity / 100.0, 0.0, 1.0);\n    float glow = clamp(iGlow / 100.0, 0.0, 1.0);\n    float t = iTime * (0.55 + max(iSpeed, 0.05) * 1.2);\n    float cycleShift = iTime * (iCycleSpeed * 0.01);\n\n    vec4 scene;\n    if (iScene == 1) {\n        scene = sceneArcadeCarpet(p, t, density);\n    } else if (iScene == 2) {\n        scene = sceneLaserLanes(p, t, density);\n    } else {\n        scene = sceneRollerGrid(p, t, density);\n    }\n\n    vec3 bgA = applyColorMode(paletteColor(iPalette, 0), iColorMode, cycleShift);\n    vec3 bgB = applyColorMode(paletteColor(iPalette, 1), iColorMode, cycleShift);\n    vec3 primary = applyColorMode(paletteColor(iPalette, 2), iColorMode, cycleShift);\n    vec3 accent = applyColorMode(paletteColor(iPalette, 3), iColorMode, cycleShift);\n    vec3 highlight = applyColorMode(paletteColor(iPalette, 4), iColorMode, cycleShift);\n\n    float baseMix = clamp(scene.w * 0.85 + uv.y * 0.35, 0.0, 1.0);\n    vec3 color = mix(bgA, bgB, baseMix);\n\n    float primaryMask = clamp(scene.x, 0.0, 1.2);\n    float accentMask = clamp(scene.y, 0.0, 1.2);\n    float highlightMask = clamp(scene.z, 0.0, 1.4);\n\n    color += primary * primaryMask * (0.65 + glow * 0.95);\n    color += accent * accentMask * (0.62 + glow * 1.00);\n    color += highlight * highlightMask * (0.72 + glow * 1.30);\n\n    float bloom = (\n        primaryMask * primaryMask * 0.55 +\n        accentMask * accentMask * 0.60 +\n        highlightMask * highlightMask * 0.80\n    ) * glow;\n    color += highlight * bloom * 0.55;\n\n    float scan = 0.92 + 0.08 * step(0.5, fract(gl_FragCoord.y * 0.5));\n    color *= scan;\n\n    fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);\n}\n";
 
   // src/effects/synth-horizon/main.ts
-  var PALETTES = ["SilkCircuit", "Synthwave", "Cyberpunk", "Fire", "Aurora"];
+  var SCENES = ["Roller Grid", "Arcade Carpet", "Laser Lanes"];
+  var PALETTES = ["SilkCircuit", "Rink Pop", "Arcade Heat", "Ice Neon", "Midnight"];
+  var COLOR_MODES = ["Static", "Color Cycle", "Mono Neon"];
   var SynthHorizon = class extends WebGLEffect {
+    scene;
     speed;
     gridDensity;
-    sunSize;
     glow;
     palette;
+    colorMode;
+    cycleSpeed;
     constructor() {
-      super({ fragmentShader: fragment_default, audioReactive: true });
+      super({ fragmentShader: fragment_default, audioReactive: false });
     }
     initializeControls() {
+      this.scene = getControlValue("scene", "Roller Grid");
       this.speed = getControlValue("speed", 5);
-      this.gridDensity = getControlValue("gridDensity", 50);
-      this.sunSize = getControlValue("sunSize", 60);
-      this.glow = getControlValue("glow", 70);
-      this.palette = getControlValue("palette", "Synthwave");
+      this.gridDensity = getControlValue("gridDensity", 62);
+      this.glow = getControlValue("glow", 72);
+      this.palette = getControlValue("palette", "Rink Pop");
+      this.colorMode = getControlValue("colorMode", "Color Cycle");
+      this.cycleSpeed = getControlValue("cycleSpeed", 44);
     }
     getControlValues() {
       return {
+        scene: comboboxValueToIndex(getControlValue("scene", "Roller Grid"), SCENES, 0),
         speed: normalizeSpeed(getControlValue("speed", 5)),
-        gridDensity: getControlValue("gridDensity", 50),
-        sunSize: getControlValue("sunSize", 60),
-        glow: getControlValue("glow", 70),
-        palette: PALETTES.indexOf(getControlValue("palette", "Synthwave"))
+        gridDensity: getControlValue("gridDensity", 62),
+        glow: getControlValue("glow", 72),
+        palette: comboboxValueToIndex(getControlValue("palette", "Rink Pop"), PALETTES, 1),
+        colorMode: comboboxValueToIndex(getControlValue("colorMode", "Color Cycle"), COLOR_MODES, 1),
+        cycleSpeed: getControlValue("cycleSpeed", 44)
       };
     }
     createUniforms() {
       this.registerUniform("iSpeed", 1);
-      this.registerUniform("iGridDensity", 50);
-      this.registerUniform("iSunSize", 60);
-      this.registerUniform("iGlow", 70);
+      this.registerUniform("iGridDensity", 62);
+      this.registerUniform("iGlow", 72);
+      this.registerUniform("iScene", 0);
       this.registerUniform("iPalette", 1);
+      this.registerUniform("iColorMode", 1);
+      this.registerUniform("iCycleSpeed", 44);
     }
     updateUniforms(c) {
       this.setUniform("iSpeed", c.speed);
       this.setUniform("iGridDensity", c.gridDensity);
-      this.setUniform("iSunSize", c.sunSize);
       this.setUniform("iGlow", c.glow);
+      this.setUniform("iScene", c.scene);
       this.setUniform("iPalette", c.palette);
+      this.setUniform("iColorMode", c.colorMode);
+      this.setUniform("iCycleSpeed", c.cycleSpeed);
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Grid scroll speed" })
+    ComboboxControl({ label: "Scene", values: SCENES, default: "Roller Grid", tooltip: "Retro composition style" })
+  ], SynthHorizon.prototype, "scene", 2);
+  __decorateClass([
+    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Animation speed" })
   ], SynthHorizon.prototype, "speed", 2);
   __decorateClass([
-    NumberControl({ label: "Grid", min: 10, max: 100, default: 50, tooltip: "Grid density" })
+    NumberControl({ label: "Grid", min: 10, max: 100, default: 62, tooltip: "Grid and motif density" })
   ], SynthHorizon.prototype, "gridDensity", 2);
   __decorateClass([
-    NumberControl({ label: "Sun", min: 10, max: 100, default: 60, tooltip: "Sun size" })
-  ], SynthHorizon.prototype, "sunSize", 2);
-  __decorateClass([
-    NumberControl({ label: "Glow", min: 10, max: 100, default: 70, tooltip: "Overall glow" })
+    NumberControl({ label: "Glow", min: 10, max: 100, default: 72, tooltip: "Neon bloom intensity" })
   ], SynthHorizon.prototype, "glow", 2);
   __decorateClass([
-    ComboboxControl({ label: "Palette", values: PALETTES, default: "Synthwave", tooltip: "Color palette" })
+    ComboboxControl({ label: "Palette", values: PALETTES, default: "Rink Pop", tooltip: "Retro color palette" })
   ], SynthHorizon.prototype, "palette", 2);
+  __decorateClass([
+    ComboboxControl({
+      label: "Color Mode",
+      values: COLOR_MODES,
+      default: "Color Cycle",
+      tooltip: "Static, cycling, or monochrome tinting"
+    })
+  ], SynthHorizon.prototype, "colorMode", 2);
+  __decorateClass([
+    NumberControl({ label: "Cycle Speed", min: 0, max: 100, default: 44, tooltip: "Color cycle speed" })
+  ], SynthHorizon.prototype, "cycleSpeed", 2);
   SynthHorizon = __decorateClass([
     Effect({
       name: "Synth Horizon",
-      description: "Retrowave perspective grid with setting sun, audio-reactive horizon",
+      description: "Crisp retro roller-rink geometry with arcade carpet motifs and neon horizon scenes",
       author: "Hypercolor",
-      audioReactive: true
+      audioReactive: false
     })
   ], SynthHorizon);
   var effect = new SynthHorizon();

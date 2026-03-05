@@ -4,6 +4,7 @@ import {
     Effect,
     NumberControl,
     WebGLEffect,
+    comboboxValueToIndex,
     getControlValue,
     initializeEffect,
     normalizeSpeed,
@@ -16,61 +17,76 @@ interface FireControls {
     flameHeight: number
     turbulence: number
     intensity: number
+    emberAmount: number
     palette: number
+    scene: number
 }
 
-const PALETTES = ['SilkCircuit', 'Fire', 'Ice', 'Aurora', 'Cyberpunk']
+const PALETTES = ['Bonfire', 'Forge', 'Spellfire', 'Sulfur', 'Ashfall']
+const SCENES = ['Classic', 'Inferno', 'Torch', 'Wildfire']
 
 @Effect({
     name: 'Spectral Fire',
-    description: 'Audio-reactive flames with frequency-band height mapping and blackbody color',
+    description: 'Layered community-style fire tongues with embers and optional audio lift',
     author: 'Hypercolor',
     audioReactive: true,
 })
 class SpectralFire extends WebGLEffect<FireControls> {
-    @NumberControl({ label: 'Speed', min: 1, max: 10, default: 5, tooltip: 'Flame animation speed' })
+    @NumberControl({ label: 'Speed', min: 1, max: 10, default: 6, tooltip: 'Flame animation speed' })
     speed!: number
 
-    @NumberControl({ label: 'Height', min: 10, max: 100, default: 60, tooltip: 'Base flame height' })
+    @NumberControl({ label: 'Flame Height', min: 20, max: 100, default: 78, tooltip: 'Vertical flame reach' })
     flameHeight!: number
 
-    @NumberControl({ label: 'Turbulence', min: 10, max: 100, default: 50, tooltip: 'Flame turbulence' })
+    @NumberControl({ label: 'Turbulence', min: 0, max: 100, default: 62, tooltip: 'Curl and breakup in flame layers' })
     turbulence!: number
 
-    @NumberControl({ label: 'Intensity', min: 10, max: 100, default: 70, tooltip: 'Brightness' })
+    @NumberControl({ label: 'Intensity', min: 20, max: 100, default: 84, tooltip: 'Overall fire brightness and heat' })
     intensity!: number
 
-    @ComboboxControl({ label: 'Palette', values: PALETTES, default: 'Fire', tooltip: 'Color palette' })
+    @ComboboxControl({ label: 'Palette', values: PALETTES, default: 'Bonfire', tooltip: 'Flame color profile' })
     palette!: string
 
+    @NumberControl({ label: 'Ember Amount', min: 0, max: 100, default: 60, tooltip: 'Amount of rising ember particles' })
+    emberAmount!: number
+
+    @ComboboxControl({ label: 'Scene', values: SCENES, default: 'Classic', tooltip: 'Optional fire behavior mode' })
+    scene!: string
+
     constructor() {
-        super({ fragmentShader, audioReactive: true })
+        super({ id: 'spectral-fire', name: 'Spectral Fire', fragmentShader, audioReactive: true })
     }
 
     protected initializeControls(): void {
-        this.speed = getControlValue('speed', 5)
-        this.flameHeight = getControlValue('flameHeight', 60)
-        this.turbulence = getControlValue('turbulence', 50)
-        this.intensity = getControlValue('intensity', 70)
-        this.palette = getControlValue('palette', 'Fire')
+        this.speed = getControlValue('speed', 6)
+        this.flameHeight = getControlValue('flameHeight', 78)
+        this.turbulence = getControlValue('turbulence', 62)
+        this.intensity = getControlValue('intensity', 84)
+        this.palette = getControlValue('palette', 'Bonfire')
+        this.emberAmount = getControlValue('emberAmount', 60)
+        this.scene = getControlValue('scene', 'Classic')
     }
 
     protected getControlValues(): FireControls {
         return {
-            speed: normalizeSpeed(getControlValue('speed', 5)),
-            flameHeight: getControlValue('flameHeight', 60),
-            turbulence: getControlValue('turbulence', 50),
-            intensity: getControlValue('intensity', 70),
-            palette: PALETTES.indexOf(getControlValue('palette', 'Fire')),
+            speed: normalizeSpeed(getControlValue('speed', 6)),
+            flameHeight: getControlValue('flameHeight', 78),
+            turbulence: getControlValue('turbulence', 62),
+            intensity: getControlValue('intensity', 84),
+            emberAmount: getControlValue('emberAmount', 60),
+            palette: comboboxValueToIndex(getControlValue('palette', 'Bonfire'), PALETTES, 0),
+            scene: comboboxValueToIndex(getControlValue('scene', 'Classic'), SCENES, 0),
         }
     }
 
     protected createUniforms(): void {
-        this.registerUniform('iSpeed', 1.0)
-        this.registerUniform('iFlameHeight', 60)
-        this.registerUniform('iTurbulence', 50)
-        this.registerUniform('iIntensity', 70)
-        this.registerUniform('iPalette', 1)
+        this.registerUniform('iSpeed', normalizeSpeed(6))
+        this.registerUniform('iFlameHeight', 78)
+        this.registerUniform('iTurbulence', 62)
+        this.registerUniform('iIntensity', 84)
+        this.registerUniform('iEmberAmount', 60)
+        this.registerUniform('iPalette', 0)
+        this.registerUniform('iScene', 0)
     }
 
     protected updateUniforms(c: FireControls): void {
@@ -78,7 +94,9 @@ class SpectralFire extends WebGLEffect<FireControls> {
         this.setUniform('iFlameHeight', c.flameHeight)
         this.setUniform('iTurbulence', c.turbulence)
         this.setUniform('iIntensity', c.intensity)
+        this.setUniform('iEmberAmount', c.emberAmount)
         this.setUniform('iPalette', c.palette)
+        this.setUniform('iScene', c.scene)
     }
 }
 

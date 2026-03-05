@@ -4,13 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Neon City</title>
-  <meta description="Parallax cyberpunk cityscape with neon signs, rain, and wet reflections"/>
+  <meta description="Geometric electric-space composition with stars, shards, sweep lines, and a dark-matter void"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="4" tooltip="Animation speed"/>
-  <meta property="density" label="Density" type="number" min="10" max="100" default="50" tooltip="Building density"/>
-  <meta property="glow" label="Glow" type="number" min="10" max="100" default="70" tooltip="Neon glow intensity"/>
-  <meta property="rainIntensity" label="Rain" type="number" min="0" max="100" default="40" tooltip="Rain intensity"/>
-  <meta property="palette" label="Palette" type="combobox" default="Cyberpunk" values="SilkCircuit,Cyberpunk,Synthwave,Fire,Aurora" tooltip="Color palette"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Animation speed"/>
+  <meta property="shardDensity" label="Shard Density" type="number" min="10" max="100" default="58" tooltip="Amount of crystal shards"/>
+  <meta property="lineSweep" label="Line Sweep" type="number" min="0" max="100" default="62" tooltip="Sweep line intensity"/>
+  <meta property="voidStrength" label="Void Strength" type="number" min="0" max="100" default="56" tooltip="Dark-matter core strength"/>
+  <meta property="sparks" label="Sparks" type="boolean" default="true" tooltip="Enable spark bursts"/>
+  <meta property="glow" label="Glow" type="number" min="0" max="100" default="72" tooltip="Overall luminous bloom"/>
+  <meta property="palette" label="Palette" type="combobox" default="Dark Matter" values="SilkCircuit,Dark Matter,Ion Storm,Supernova,Aurora" tooltip="Color palette"/>
+  <meta property="scene" label="Scene" type="combobox" default="Orbital" values="Orbital,Rift,Hyperlane" tooltip="Space composition mode"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1368,300 +1371,41 @@
     }
   };
 
-  // packages/core/src/audio/analysis.ts
-  var FFT_SIZE = 200;
-  var MEL_BANDS = 24;
-  var PITCH_CLASSES = 12;
-  function getAudioData() {
-    const hasEngine = typeof engine !== "undefined" && engine?.audio;
-    if (!hasEngine) return createSilentAudioData();
-    const audio = engine.audio;
-    return {
-      // Legacy
-      bass: audio.bass ?? 0,
-      bassEnv: audio.bassEnv ?? 0,
-      beat: Number(audio.beat ?? 0),
-      beatConfidence: audio.beatConfidence ?? 0,
-      beatPhase: audio.beatPhase ?? 0,
-      beatPulse: audio.beatPulse ?? 0,
-      brightness: audio.brightness ?? 0.5,
-      chordMood: audio.chordMood ?? 0,
-      chromagram: audio.chromagram ?? new Float32Array(PITCH_CLASSES),
-      density: audio.density ?? 0,
-      dominantPitch: audio.dominantPitch ?? 0,
-      dominantPitchConfidence: audio.dominantPitchConfidence ?? 0,
-      frequency: audio.frequency ?? new Float32Array(FFT_SIZE),
-      frequencyRaw: audio.frequencyRaw ?? new Int8Array(FFT_SIZE),
-      frequencyWeighted: audio.frequencyWeighted ?? new Float32Array(FFT_SIZE),
-      harmonicHue: audio.harmonicHue ?? 0,
-      level: audio.level != null ? normalizeAudioLevel(audio.level) : 0,
-      levelLong: audio.levelLong ?? 0,
-      levelRaw: audio.level ?? -100,
-      levelShort: audio.levelShort ?? 0,
-      melBands: audio.melBands ?? new Float32Array(MEL_BANDS),
-      melBandsNormalized: audio.melBandsNormalized ?? new Float32Array(MEL_BANDS),
-      mid: audio.mid ?? 0,
-      midEnv: audio.midEnv ?? 0,
-      momentum: audio.momentum ?? 0,
-      onset: Number(audio.onset ?? 0),
-      onsetPulse: audio.onsetPulse ?? 0,
-      rolloff: audio.rolloff ?? 0.5,
-      roughness: audio.roughness ?? 0.2,
-      spectralFlux: audio.spectralFlux ?? 0,
-      spectralFluxBands: audio.spectralFluxBands ?? new Float32Array(3),
-      spread: audio.spread ?? 0.3,
-      swell: audio.swell ?? 0,
-      tempo: audio.tempo ?? 120,
-      treble: audio.treble ?? 0,
-      trebleEnv: audio.trebleEnv ?? 0,
-      width: audio.width ?? 0.5
-    };
-  }
-  function normalizeAudioLevel(levelDb) {
-    return Math.max(0, Math.min(1, (levelDb + 100) / 100));
-  }
-  function createSilentAudioData() {
-    return {
-      bass: 0,
-      bassEnv: 0,
-      beat: 0,
-      beatConfidence: 0,
-      beatPhase: 0,
-      beatPulse: 0,
-      brightness: 0.5,
-      chordMood: 0,
-      chromagram: new Float32Array(PITCH_CLASSES),
-      density: 0,
-      dominantPitch: 0,
-      dominantPitchConfidence: 0,
-      frequency: new Float32Array(FFT_SIZE),
-      frequencyRaw: new Int8Array(FFT_SIZE),
-      frequencyWeighted: new Float32Array(FFT_SIZE),
-      harmonicHue: 0,
-      level: 0,
-      levelLong: 0,
-      levelRaw: -100,
-      levelShort: 0,
-      melBands: new Float32Array(MEL_BANDS),
-      melBandsNormalized: new Float32Array(MEL_BANDS),
-      mid: 0,
-      midEnv: 0,
-      momentum: 0,
-      onset: 0,
-      onsetPulse: 0,
-      rolloff: 0.5,
-      roughness: 0.2,
-      spectralFlux: 0,
-      spectralFluxBands: new Float32Array(3),
-      spread: 0.3,
-      swell: 0,
-      tempo: 120,
-      treble: 0,
-      trebleEnv: 0,
-      width: 0.5
-    };
-  }
-
-  // packages/core/src/effects/webgl-effect.ts
-  var DEFAULT_VERTEX_SHADER = `#version 300 es
-precision highp float;
-in vec2 aPosition;
-void main() {
-    gl_Position = vec4(aPosition, 0.0, 1.0);
-}
-`;
-  var WebGLEffect = class extends BaseEffect {
-    gl = null;
-    program = null;
-    uniforms = /* @__PURE__ */ new Map();
-    fragmentShader;
-    vertexShader;
-    audioReactive;
-    currentAudioData = null;
+  // packages/core/src/effects/canvas-effect.ts
+  var CanvasEffect = class extends BaseEffect {
+    ctx = null;
+    backgroundColor;
+    lastFrameTime = 0;
+    deltaTime = 0;
     constructor(config) {
       super(config);
-      this.fragmentShader = config.fragmentShader;
-      this.vertexShader = config.vertexShader ?? DEFAULT_VERTEX_SHADER;
-      this.audioReactive = config.audioReactive ?? false;
+      this.backgroundColor = config.backgroundColor || "black";
     }
     async initializeRenderer() {
       if (!this.canvas) throw new Error("Canvas not available");
-      this.gl = this.canvas.getContext("webgl2", { preserveDrawingBuffer: true });
-      if (!this.gl) throw new Error("WebGL2 not supported");
-      this.program = this.createProgram(this.vertexShader, this.fragmentShader);
-      this.gl.useProgram(this.program);
-      this.createQuad();
-      this.registerUniform("iTime", 0);
-      this.registerUniform("iResolution", [this.canvas.width, this.canvas.height]);
-      this.registerUniform("iMouse", [0, 0]);
-      if (this.audioReactive) {
-        this.registerAudioUniforms();
-      }
-      this.createUniforms();
-      this.resolveLocations();
-      this.pushAllUniforms();
-      this.debug("success", "WebGL2 renderer initialized");
+      this.ctx = this.canvas.getContext("2d");
+      if (!this.ctx) throw new Error("Could not get 2D context");
+      this.ctx.imageSmoothingEnabled = true;
+      this.clearCanvas();
+      await this.loadResources();
+    }
+    /** Override to load images, fonts, etc. */
+    async loadResources() {
+    }
+    clearCanvas() {
+      if (!this.ctx || !this.canvas) return;
+      this.ctx.fillStyle = this.backgroundColor;
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
     render(time) {
-      if (!this.gl || !this.program) return;
-      this.setUniform("iTime", time);
-      if (this.audioReactive) {
-        this.currentAudioData = getAudioData();
-        this.pushAudioUniforms(this.currentAudioData);
-      }
-      this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
-    }
-    getAudio() {
-      return this.currentAudioData;
+      if (!this.ctx || !this.canvas) return;
+      this.deltaTime = this.lastFrameTime === 0 ? 0 : time - this.lastFrameTime;
+      this.lastFrameTime = time;
+      this.clearCanvas();
+      this.draw(time, this.deltaTime);
     }
     updateParameters(controls) {
-      if (!this.program) return;
-      this.updateUniforms(controls);
-    }
-    // ── Uniform API ─────────────────────────────────────────────────────
-    /** Register a uniform. Call in createUniforms(). */
-    registerUniform(name, value) {
-      this.uniforms.set(name, { location: null, value, isInt: false });
-    }
-    /** Set a uniform value (will be pushed on next draw). */
-    setUniform(name, value) {
-      const entry = this.uniforms.get(name);
-      if (entry) {
-        entry.value = value;
-        this.pushUniform(name, entry);
-      }
-    }
-    // ── Internal ────────────────────────────────────────────────────────
-    createProgram(vertSrc, fragSrc) {
-      const gl = this.gl;
-      const vert = this.compileShader(gl.VERTEX_SHADER, vertSrc);
-      const frag = this.compileShader(gl.FRAGMENT_SHADER, fragSrc);
-      const program = gl.createProgram();
-      gl.attachShader(program, vert);
-      gl.attachShader(program, frag);
-      gl.linkProgram(program);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        const info = gl.getProgramInfoLog(program);
-        gl.deleteProgram(program);
-        throw new Error(`Shader link failed: ${info}`);
-      }
-      gl.deleteShader(vert);
-      gl.deleteShader(frag);
-      return program;
-    }
-    compileShader(type, source) {
-      const gl = this.gl;
-      const shader = gl.createShader(type);
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        const info = gl.getShaderInfoLog(shader);
-        gl.deleteShader(shader);
-        throw new Error(`Shader compile failed: ${info}`);
-      }
-      return shader;
-    }
-    createQuad() {
-      const gl = this.gl;
-      const vertices = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
-      const buffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-      const posLoc = gl.getAttribLocation(this.program, "aPosition");
-      gl.enableVertexAttribArray(posLoc);
-      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-    }
-    pushAllUniforms() {
-      for (const [name, entry] of this.uniforms) {
-        this.pushUniform(name, entry);
-      }
-    }
-    resolveLocations() {
-      const gl = this.gl;
-      const program = this.program;
-      const intTypes = /* @__PURE__ */ new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL]);
-      const intUniforms = /* @__PURE__ */ new Set();
-      const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
-      for (let i = 0; i < numActive; i++) {
-        const info = gl.getActiveUniform(program, i);
-        if (info && intTypes.has(info.type)) {
-          intUniforms.add(info.name);
-        }
-      }
-      for (const [name, entry] of this.uniforms) {
-        entry.location = gl.getUniformLocation(program, name);
-        entry.isInt = intUniforms.has(name);
-      }
-    }
-    pushUniform(_name, entry) {
-      const gl = this.gl;
-      if (!gl || !entry.location) return;
-      const val = entry.value;
-      if (typeof val === "number") {
-        if (entry.isInt) {
-          gl.uniform1i(entry.location, val | 0);
-        } else {
-          gl.uniform1f(entry.location, val);
-        }
-      } else if (val.length === 2) {
-        if (entry.isInt) {
-          gl.uniform2iv(entry.location, val);
-        } else {
-          gl.uniform2fv(entry.location, val);
-        }
-      } else if (val.length === 3) {
-        if (entry.isInt) {
-          gl.uniform3iv(entry.location, val);
-        } else {
-          gl.uniform3fv(entry.location, val);
-        }
-      } else if (val.length === 4) {
-        if (entry.isInt) {
-          gl.uniform4iv(entry.location, val);
-        } else {
-          gl.uniform4fv(entry.location, val);
-        }
-      }
-    }
-    registerAudioUniforms() {
-      this.registerUniform("iAudioLevel", 0);
-      this.registerUniform("iAudioBass", 0);
-      this.registerUniform("iAudioMid", 0);
-      this.registerUniform("iAudioTreble", 0);
-      this.registerUniform("iAudioBeat", 0);
-      this.registerUniform("iAudioBeatPulse", 0);
-      this.registerUniform("iAudioBeatPhase", 0);
-      this.registerUniform("iAudioBeatConfidence", 0);
-      this.registerUniform("iAudioOnset", 0);
-      this.registerUniform("iAudioOnsetPulse", 0);
-      this.registerUniform("iAudioSpectralFlux", 0);
-      this.registerUniform("iAudioHarmonicHue", 0);
-      this.registerUniform("iAudioChordMood", 0);
-      this.registerUniform("iAudioBrightness", 0.5);
-      this.registerUniform("iAudioMomentum", 0);
-      this.registerUniform("iAudioSwell", 0);
-      this.registerUniform("iAudioTempo", 120);
-      this.registerUniform("iAudioFluxBands", [0, 0, 0]);
-    }
-    pushAudioUniforms(audio) {
-      this.setUniform("iAudioLevel", audio.level);
-      this.setUniform("iAudioBass", audio.bass);
-      this.setUniform("iAudioMid", audio.mid);
-      this.setUniform("iAudioTreble", audio.treble);
-      this.setUniform("iAudioBeat", audio.beat);
-      this.setUniform("iAudioBeatPulse", audio.beatPulse);
-      this.setUniform("iAudioBeatPhase", audio.beatPhase);
-      this.setUniform("iAudioBeatConfidence", audio.beatConfidence);
-      this.setUniform("iAudioOnset", audio.onset);
-      this.setUniform("iAudioOnsetPulse", audio.onsetPulse);
-      this.setUniform("iAudioSpectralFlux", audio.spectralFlux);
-      this.setUniform("iAudioHarmonicHue", audio.harmonicHue);
-      this.setUniform("iAudioChordMood", audio.chordMood);
-      this.setUniform("iAudioBrightness", audio.brightness);
-      this.setUniform("iAudioMomentum", audio.momentum);
-      this.setUniform("iAudioSwell", audio.swell);
-      this.setUniform("iAudioTempo", audio.tempo);
-      this.setUniform("iAudioFluxBands", Array.from(audio.spectralFluxBands));
+      this.applyControls(controls);
     }
   };
 
@@ -1692,71 +1436,361 @@ void main() {
     }, { once: true });
   }
 
-  // src/effects/neon-city/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iSpeed;\nuniform float iDensity;\nuniform float iGlow;\nuniform float iRainIntensity;\nuniform int iPalette;\n\nfloat hash11(float p) {\n    p = fract(p * 0.1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n}\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    if (id == 1) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    if (id == 2) return iqPalette(t, vec3(0.3, 0.1, 0.4), vec3(0.5, 0.3, 0.5), vec3(0.8, 0.5, 0.7), vec3(0.9, 0.2, 0.4));\n    if (id == 3) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    if (id == 4) return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n    return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n}\n\n// Building silhouette\nfloat building(vec2 uv, float x, float width, float height, float seed) {\n    float left = x - width * 0.5;\n    float right = x + width * 0.5;\n\n    if (uv.x < left || uv.x > right || uv.y > height) return 0.0;\n\n    // Rooftop variation\n    float roofType = hash11(seed * 3.14);\n    float h = height;\n    if (roofType > 0.7) {\n        // Antenna\n        float antennaX = x + (hash11(seed * 5.0) - 0.5) * width * 0.3;\n        if (abs(uv.x - antennaX) < 0.002 && uv.y < height + 0.06) {\n            return 1.0;\n        }\n    }\n\n    return 1.0;\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    float aspect = iResolution.x / iResolution.y;\n\n    float time = iTime * iSpeed * 0.2;\n\n    // Night sky gradient\n    vec3 col = mix(\n        vec3(0.02, 0.01, 0.05),\n        vec3(0.05, 0.02, 0.08),\n        uv.y\n    );\n\n    // Stars\n    vec2 starUV = uv * vec2(aspect, 1.0) * 100.0;\n    vec2 starCell = floor(starUV);\n    float starRng = hash21(starCell);\n    if (starRng > 0.97 && uv.y > 0.5) {\n        vec2 starLocal = fract(starUV) - 0.5;\n        float twinkle = 0.5 + 0.5 * sin(iTime * 2.0 + starRng * 40.0);\n        col += vec3(0.5, 0.6, 0.8) * smoothstep(0.04, 0.0, length(starLocal)) * twinkle * 0.3;\n    }\n\n    // Parallax building layers\n    float buildingMask = 0.0;\n    vec3 neonGlow = vec3(0.0);\n\n    for (int layer = 0; layer < 3; layer++) {\n        float fl = float(layer);\n        float depth = 1.0 - fl * 0.3;\n        float parallaxShift = fl * 0.02 * sin(time * 0.3);\n\n        float numBuildings = 8.0 + iDensity * 0.1 + fl * 3.0;\n        float buildingScale = 0.8 - fl * 0.15;\n\n        for (int b = 0; b < 20; b++) {\n            if (float(b) >= numBuildings) break;\n            float fb = float(b);\n            float seed = fb + fl * 100.0;\n\n            float bx = fb / numBuildings + parallaxShift;\n            bx = fract(bx) * (1.0 + 0.2 / numBuildings) - 0.1;\n\n            float bWidth = 0.03 + hash11(seed * 1.7) * 0.04;\n            float bHeight = 0.15 + hash11(seed * 2.3) * 0.35 * buildingScale;\n\n            float b_val = building(uv, bx, bWidth, bHeight, seed);\n\n            if (b_val > 0.0) {\n                // Building body \u2014 dark silhouette\n                vec3 bColor = vec3(0.02, 0.015, 0.03) * depth;\n\n                // Windows\n                float windowCols = 2.0 + floor(hash11(seed * 4.0) * 4.0);\n                float windowRows = floor(bHeight / 0.025);\n                float wx = fract((uv.x - (bx - bWidth * 0.5)) / bWidth * windowCols);\n                float wy = fract(uv.y / 0.025);\n\n                float windowOn = step(0.6, hash21(vec2(\n                    floor((uv.x - (bx - bWidth * 0.5)) / bWidth * windowCols),\n                    floor(uv.y / 0.025)\n                ) + seed));\n\n                // Flickering\n                float flicker = step(0.97, hash21(vec2(\n                    floor(iTime * 0.5),\n                    floor((uv.x - (bx - bWidth * 0.5)) / bWidth * windowCols) + floor(uv.y / 0.025)\n                ) + seed));\n                windowOn = max(windowOn, flicker) * (1.0 - flicker * 0.5);\n\n                float windowShape = step(0.2, wx) * step(wx, 0.8) *\n                                    step(0.3, wy) * step(wy, 0.7);\n\n                vec3 windowColor = paletteColor(hash11(seed * 6.0 + floor(uv.y / 0.025)), iPalette);\n                bColor += windowColor * windowShape * windowOn * 0.3;\n\n                // Neon sign on some buildings\n                if (hash11(seed * 7.0) > 0.5 && layer < 2) {\n                    float signY = bHeight * 0.6;\n                    float signH = 0.02;\n                    if (uv.y > signY - signH && uv.y < signY + signH &&\n                        uv.x > bx - bWidth * 0.4 && uv.x < bx + bWidth * 0.4) {\n\n                        vec3 neonColor = paletteColor(hash11(seed * 8.0), iPalette);\n                        float pulse = 0.7 + 0.3 * sin(iTime * 3.0 + seed * 5.0);\n                        bColor += neonColor * pulse * iGlow * 0.015;\n\n                        // Neon glow spread\n                        float neonDist = abs(uv.y - signY);\n                        neonGlow += neonColor * exp(-neonDist * 40.0) * iGlow * 0.003 * pulse;\n                    }\n                }\n\n                if (layer == 0 || buildingMask < 0.5) {\n                    col = bColor;\n                }\n                buildingMask = 1.0;\n            }\n        }\n    }\n\n    col += neonGlow;\n\n    // Rain streaks\n    if (iRainIntensity > 10.0) {\n        float rainDensity = iRainIntensity * 0.005;\n        vec2 rainUV = vec2(uv.x * 80.0, uv.y * 15.0 - time * 8.0);\n        vec2 rainCell = floor(rainUV);\n        float rainRng = hash21(rainCell);\n\n        if (rainRng < rainDensity) {\n            float rainLocal = fract(rainUV.y);\n            float streak = smoothstep(0.0, 0.3, rainLocal) * smoothstep(1.0, 0.7, rainLocal);\n            float rainX = fract(rainUV.x) - 0.5;\n            streak *= smoothstep(0.02, 0.0, abs(rainX));\n            col += vec3(0.3, 0.4, 0.6) * streak * 0.15;\n        }\n    }\n\n    // Ground reflection\n    if (uv.y < 0.05) {\n        float reflectY = 0.1 - uv.y;\n        float reflectFade = smoothstep(0.05, 0.0, reflectY);\n        // Mirror the neon glow\n        col += neonGlow * reflectFade * 0.3;\n        // Wet ground specular\n        col *= 1.0 + reflectFade * 0.5;\n    }\n\n    col = col / (1.0 + col * 0.3);\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
-
   // src/effects/neon-city/main.ts
-  var PALETTES = ["SilkCircuit", "Cyberpunk", "Synthwave", "Fire", "Aurora"];
-  var NeonCity = class extends WebGLEffect {
+  var PALETTES = ["SilkCircuit", "Dark Matter", "Ion Storm", "Supernova", "Aurora"];
+  var SCENES = ["Orbital", "Rift", "Hyperlane"];
+  var NeonCity = class extends CanvasEffect {
     speed;
-    density;
+    shardDensity;
+    lineSweep;
+    voidStrength;
+    sparks;
     glow;
-    rainIntensity;
     palette;
+    scene;
+    controls = {
+      speed: normalizeSpeed(5),
+      shardDensity: 58,
+      lineSweep: 62,
+      voidStrength: 56,
+      sparks: true,
+      glow: 72,
+      palette: "Dark Matter",
+      scene: "Orbital"
+    };
+    stars = [];
+    shards = [];
+    sparkLanes = [];
+    counts = { stars: 130, shards: 52, sparks: 24 };
     constructor() {
-      super({ fragmentShader: fragment_default });
+      super({ id: "neon-city", name: "Neon City", backgroundColor: "#060a16" });
     }
     initializeControls() {
-      this.speed = getControlValue("speed", 4);
-      this.density = getControlValue("density", 50);
-      this.glow = getControlValue("glow", 70);
-      this.rainIntensity = getControlValue("rainIntensity", 40);
-      this.palette = getControlValue("palette", "Cyberpunk");
+      this.speed = getControlValue("speed", 5);
+      this.shardDensity = getControlValue("shardDensity", 58);
+      this.lineSweep = getControlValue("lineSweep", 62);
+      this.voidStrength = getControlValue("voidStrength", 56);
+      this.sparks = getControlValue("sparks", true);
+      this.glow = getControlValue("glow", 72);
+      this.palette = getControlValue("palette", "Dark Matter");
+      this.scene = getControlValue("scene", "Orbital");
     }
     getControlValues() {
       return {
-        speed: normalizeSpeed(getControlValue("speed", 4)),
-        density: getControlValue("density", 50),
-        glow: getControlValue("glow", 70),
-        rainIntensity: getControlValue("rainIntensity", 40),
-        palette: PALETTES.indexOf(getControlValue("palette", "Cyberpunk"))
+        speed: normalizeSpeed(getControlValue("speed", 5)),
+        shardDensity: getControlValue("shardDensity", 58),
+        lineSweep: getControlValue("lineSweep", 62),
+        voidStrength: getControlValue("voidStrength", 56),
+        sparks: getControlValue("sparks", true),
+        glow: getControlValue("glow", 72),
+        palette: getControlValue("palette", "Dark Matter"),
+        scene: getControlValue("scene", "Orbital")
       };
     }
-    createUniforms() {
-      this.registerUniform("iSpeed", 1);
-      this.registerUniform("iDensity", 50);
-      this.registerUniform("iGlow", 70);
-      this.registerUniform("iRainIntensity", 40);
-      this.registerUniform("iPalette", 1);
+    applyControls(controls) {
+      this.controls = controls;
+      const nextCounts = this.computeCounts(controls.shardDensity);
+      if (nextCounts.stars !== this.counts.stars || nextCounts.shards !== this.counts.shards || nextCounts.sparks !== this.counts.sparks) {
+        this.counts = nextCounts;
+        this.seedFields(true);
+      }
     }
-    updateUniforms(c) {
-      this.setUniform("iSpeed", c.speed);
-      this.setUniform("iDensity", c.density);
-      this.setUniform("iGlow", c.glow);
-      this.setUniform("iRainIntensity", c.rainIntensity);
-      this.setUniform("iPalette", c.palette);
+    async loadResources() {
+      this.seedFields(false);
+    }
+    draw(time) {
+      if (!this.ctx || !this.canvas) return;
+      const ctx = this.ctx;
+      const w = this.canvas.width;
+      const h = this.canvas.height;
+      const t = time * this.controls.speed;
+      const palette = this.getPalette(this.controls.palette);
+      const glow = this.controls.glow / 100;
+      const lineSweep = this.controls.lineSweep / 100;
+      const voidStrength = this.controls.voidStrength / 100;
+      this.drawBackground(ctx, w, h, palette, t);
+      const sceneIndex = SCENES.indexOf(this.controls.scene);
+      const center = this.getVoidCenter(sceneIndex, w, h, t);
+      this.drawVoid(ctx, center.x, center.y, Math.min(w, h), voidStrength, palette, t);
+      this.drawStars(ctx, w, h, t, palette, glow);
+      this.drawShards(ctx, w, h, t, palette, glow, sceneIndex);
+      this.drawSweepLines(ctx, w, h, t, palette, lineSweep, sceneIndex);
+      if (this.controls.sparks) {
+        this.drawSparks(ctx, w, h, t, palette, glow, sceneIndex);
+      }
+    }
+    computeCounts(density) {
+      const d = Math.max(0, Math.min(100, density)) / 100;
+      return {
+        stars: Math.floor(70 + d * 170),
+        shards: Math.floor(24 + d * 84),
+        sparks: Math.floor(12 + d * 48)
+      };
+    }
+    seedFields(force) {
+      if (!this.canvas && !force) return;
+      const w = this.canvas?.width ?? 320;
+      const h = this.canvas?.height ?? 200;
+      this.stars = Array.from({ length: this.counts.stars }, () => ({
+        x: Math.random(),
+        y: Math.random(),
+        size: 0.6 + Math.random() * 1.8,
+        drift: 0.05 + Math.random() * 0.35,
+        twinkle: Math.random() * Math.PI * 2
+      }));
+      this.shards = Array.from({ length: this.counts.shards }, () => ({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        length: 8 + Math.random() * 42,
+        width: 1 + Math.random() * 2.8,
+        baseAngle: Math.random() * Math.PI * 2,
+        spin: (Math.random() - 0.5) * 1.6,
+        hueOffset: Math.random()
+      }));
+      this.sparkLanes = Array.from({ length: this.counts.sparks }, () => ({
+        lane: Math.random(),
+        offset: Math.random(),
+        speed: 0.2 + Math.random() * 0.9,
+        size: 1 + Math.random() * 2.2,
+        jitter: Math.random() * Math.PI * 2
+      }));
+    }
+    drawBackground(ctx, w, h, palette, time) {
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, palette.bgA);
+      grad.addColorStop(1, palette.bgB);
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+      const haze = ctx.createRadialGradient(w * 0.45, h * 0.3, 12, w * 0.45, h * 0.3, Math.max(w, h) * 0.8);
+      haze.addColorStop(0, this.hexToRgba(palette.shardA, 0.22));
+      haze.addColorStop(1, this.hexToRgba(palette.shardA, 0));
+      ctx.fillStyle = haze;
+      ctx.fillRect(0, 0, w, h);
+      const grainCount = 70;
+      for (let i = 0; i < grainCount; i++) {
+        const px = this.hash(i * 1.37 + 4.9 + time * 0.2) * w;
+        const py = this.hash(i * 2.11 + 3.4 + time * 0.15) * h;
+        const alpha = 0.02 + this.hash(i * 4.21 + 1.7) * 0.04;
+        ctx.fillStyle = this.hexToRgba("#ffffff", alpha);
+        ctx.fillRect(px, py, 1, 1);
+      }
+    }
+    drawVoid(ctx, x, y, minDim, strength, palette, time) {
+      const r = minDim * (0.12 + strength * 0.24);
+      const ringR = r * (1.25 + 0.15 * Math.sin(time * 0.8));
+      const core = ctx.createRadialGradient(x, y, 0, x, y, r);
+      core.addColorStop(0, this.hexToRgba("#000000", 0.92));
+      core.addColorStop(1, this.hexToRgba("#000000", 0));
+      ctx.fillStyle = core;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = this.hexToRgba(palette.shardB, 0.2 + strength * 0.32);
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(x, y, ringR, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    drawStars(ctx, w, h, time, palette, glow) {
+      for (const s of this.stars) {
+        const tw = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(time * (0.8 + s.drift) + s.twinkle));
+        const x = (s.x * w + Math.sin(time * s.drift + s.twinkle) * 3 + w) % w;
+        const y = (s.y * h + Math.cos(time * s.drift * 0.7 + s.twinkle) * 2 + h) % h;
+        const radius = s.size * (0.8 + tw * 0.7);
+        ctx.fillStyle = this.hexToRgba(palette.star, 0.24 + tw * 0.7);
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        if (glow > 0.2 && tw > 0.65) {
+          ctx.fillStyle = this.hexToRgba(palette.star, 0.08 + glow * 0.2);
+          ctx.beginPath();
+          ctx.arc(x, y, radius * 3.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+    drawShards(ctx, w, h, time, palette, glow, scene) {
+      const driftX = scene === 2 ? -16 : 10;
+      const driftY = scene === 1 ? 8 : -4;
+      for (const shard of this.shards) {
+        const x = (shard.x + Math.sin(time * 0.3 + shard.hueOffset * 8) * driftX + w) % w;
+        const y = (shard.y + Math.cos(time * 0.22 + shard.hueOffset * 7) * driftY + h) % h;
+        const a = shard.baseAngle + time * shard.spin;
+        const x1 = x + Math.cos(a) * shard.length * 0.5;
+        const y1 = y + Math.sin(a) * shard.length * 0.5;
+        const x2 = x - Math.cos(a) * shard.length * 0.5;
+        const y2 = y - Math.sin(a) * shard.length * 0.5;
+        const c = shard.hueOffset > 0.5 ? palette.shardA : palette.shardB;
+        ctx.strokeStyle = this.hexToRgba(c, 0.28 + glow * 0.52);
+        ctx.lineWidth = shard.width;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.strokeStyle = this.hexToRgba(palette.sweep, 0.05 + glow * 0.1);
+        ctx.lineWidth = Math.max(1, shard.width * 0.45);
+        ctx.beginPath();
+        ctx.moveTo(x1 * 0.96 + x * 0.04, y1 * 0.96 + y * 0.04);
+        ctx.lineTo(x2 * 0.96 + x * 0.04, y2 * 0.96 + y * 0.04);
+        ctx.stroke();
+      }
+    }
+    drawSweepLines(ctx, w, h, time, palette, sweep, scene) {
+      if (sweep <= 0.01) return;
+      const laneCount = 4 + Math.floor(sweep * 10);
+      const tilt = scene === 1 ? 0.6 : scene === 2 ? -0.45 : -0.22;
+      const speed = 22 + sweep * 80;
+      ctx.lineWidth = 1.25;
+      for (let i = 0; i < laneCount; i++) {
+        const offset = (time * speed + i * (h / laneCount + 16)) % (h + 40) - 20;
+        const wobble = Math.sin(time * 1.4 + i * 2.1) * 9;
+        ctx.strokeStyle = this.hexToRgba(palette.sweep, 0.08 + sweep * 0.18);
+        ctx.beginPath();
+        ctx.moveTo(-20, offset + wobble);
+        ctx.lineTo(w + 20, offset + wobble + tilt * w);
+        ctx.stroke();
+      }
+    }
+    drawSparks(ctx, w, h, time, palette, glow, scene) {
+      const dir = scene === 1 ? -1 : 1;
+      for (const s of this.sparkLanes) {
+        const x = ((s.offset + time * s.speed * 0.25 * dir) % 1 + 1) % 1;
+        const laneY = h * (0.1 + s.lane * 0.82);
+        const y = laneY + Math.sin(time * 3 + s.jitter) * (3 + scene * 1.5);
+        const px = x * w;
+        const head = 2 + s.size * 1.4;
+        const tail = 12 + s.size * 10;
+        ctx.strokeStyle = this.hexToRgba(palette.spark, 0.34 + glow * 0.46);
+        ctx.lineWidth = s.size;
+        ctx.beginPath();
+        ctx.moveTo(px - tail * dir, y);
+        ctx.lineTo(px, y);
+        ctx.stroke();
+        ctx.fillStyle = this.hexToRgba(palette.spark, 0.32 + glow * 0.28);
+        ctx.beginPath();
+        ctx.arc(px, y, head, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    getVoidCenter(scene, w, h, time) {
+      if (scene === 1) {
+        return {
+          x: w * 0.3 + Math.sin(time * 0.5) * 12,
+          y: h * 0.5 + Math.cos(time * 0.4) * 8
+        };
+      }
+      if (scene === 2) {
+        return {
+          x: w * 0.66 + Math.cos(time * 0.55) * 10,
+          y: h * 0.42 + Math.sin(time * 0.35) * 7
+        };
+      }
+      return {
+        x: w * 0.5 + Math.sin(time * 0.4) * 9,
+        y: h * 0.5 + Math.cos(time * 0.3) * 9
+      };
+    }
+    getPalette(name) {
+      if (name === "SilkCircuit") {
+        return {
+          bgA: "#0f0621",
+          bgB: "#1f1238",
+          star: "#80ffea",
+          shardA: "#e135ff",
+          shardB: "#ff6ac1",
+          sweep: "#80ffea",
+          spark: "#f1fa8c"
+        };
+      }
+      if (name === "Ion Storm") {
+        return {
+          bgA: "#051126",
+          bgB: "#0a2d45",
+          star: "#9be5ff",
+          shardA: "#5ad8ff",
+          shardB: "#b8f6ff",
+          sweep: "#62c9ff",
+          spark: "#f3ffb8"
+        };
+      }
+      if (name === "Supernova") {
+        return {
+          bgA: "#270e05",
+          bgB: "#44210c",
+          star: "#ffd9a8",
+          shardA: "#ff7c2a",
+          shardB: "#ffd16c",
+          sweep: "#ff9545",
+          spark: "#fff2b5"
+        };
+      }
+      if (name === "Aurora") {
+        return {
+          bgA: "#071c1a",
+          bgB: "#122731",
+          star: "#c9fff4",
+          shardA: "#43ff95",
+          shardB: "#ad7bff",
+          sweep: "#85ffd8",
+          spark: "#e8fff1"
+        };
+      }
+      return {
+        bgA: "#06091a",
+        bgB: "#130f2a",
+        star: "#b8d1ff",
+        shardA: "#8a5bff",
+        shardB: "#ff57d6",
+        sweep: "#82a8ff",
+        spark: "#d8f2ff"
+      };
+    }
+    hexToRgba(hex, alpha) {
+      const c = this.hexToRgb(hex);
+      return `rgba(${c.r}, ${c.g}, ${c.b}, ${Math.max(0, Math.min(1, alpha)).toFixed(3)})`;
+    }
+    hexToRgb(hex) {
+      const norm = hex.replace("#", "");
+      const full = norm.length === 3 ? `${norm[0]}${norm[0]}${norm[1]}${norm[1]}${norm[2]}${norm[2]}` : norm;
+      const n = parseInt(full, 16);
+      return { r: n >> 16 & 255, g: n >> 8 & 255, b: n & 255 };
+    }
+    hash(v) {
+      const s = Math.sin(v * 12.9898 + 78.233) * 43758.5453;
+      return s - Math.floor(s);
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 4, tooltip: "Animation speed" })
+    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Animation speed" })
   ], NeonCity.prototype, "speed", 2);
   __decorateClass([
-    NumberControl({ label: "Density", min: 10, max: 100, default: 50, tooltip: "Building density" })
-  ], NeonCity.prototype, "density", 2);
+    NumberControl({ label: "Shard Density", min: 10, max: 100, default: 58, tooltip: "Amount of crystal shards" })
+  ], NeonCity.prototype, "shardDensity", 2);
   __decorateClass([
-    NumberControl({ label: "Glow", min: 10, max: 100, default: 70, tooltip: "Neon glow intensity" })
+    NumberControl({ label: "Line Sweep", min: 0, max: 100, default: 62, tooltip: "Sweep line intensity" })
+  ], NeonCity.prototype, "lineSweep", 2);
+  __decorateClass([
+    NumberControl({ label: "Void Strength", min: 0, max: 100, default: 56, tooltip: "Dark-matter core strength" })
+  ], NeonCity.prototype, "voidStrength", 2);
+  __decorateClass([
+    BooleanControl({ label: "Sparks", default: true, tooltip: "Enable spark bursts" })
+  ], NeonCity.prototype, "sparks", 2);
+  __decorateClass([
+    NumberControl({ label: "Glow", min: 0, max: 100, default: 72, tooltip: "Overall luminous bloom" })
   ], NeonCity.prototype, "glow", 2);
   __decorateClass([
-    NumberControl({ label: "Rain", min: 0, max: 100, default: 40, tooltip: "Rain intensity" })
-  ], NeonCity.prototype, "rainIntensity", 2);
-  __decorateClass([
-    ComboboxControl({ label: "Palette", values: PALETTES, default: "Cyberpunk", tooltip: "Color palette" })
+    ComboboxControl({ label: "Palette", values: PALETTES, default: "Dark Matter", tooltip: "Color palette" })
   ], NeonCity.prototype, "palette", 2);
+  __decorateClass([
+    ComboboxControl({ label: "Scene", values: SCENES, default: "Orbital", tooltip: "Space composition mode" })
+  ], NeonCity.prototype, "scene", 2);
   NeonCity = __decorateClass([
     Effect({
       name: "Neon City",
-      description: "Parallax cyberpunk cityscape with neon signs, rain, and wet reflections",
-      author: "Hypercolor"
+      description: "Geometric electric-space composition with stars, shards, sweep lines, and a dark-matter void",
+      author: "Hypercolor",
+      audioReactive: false
     })
   ], NeonCity);
   var effect = new NeonCity();

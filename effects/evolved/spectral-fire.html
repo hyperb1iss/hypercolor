@@ -4,13 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Spectral Fire</title>
-  <meta description="Audio-reactive flames with frequency-band height mapping and blackbody color"/>
+  <meta description="Layered community-style fire tongues with embers and optional audio lift"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Flame animation speed"/>
-  <meta property="flameHeight" label="Height" type="number" min="10" max="100" default="60" tooltip="Base flame height"/>
-  <meta property="turbulence" label="Turbulence" type="number" min="10" max="100" default="50" tooltip="Flame turbulence"/>
-  <meta property="intensity" label="Intensity" type="number" min="10" max="100" default="70" tooltip="Brightness"/>
-  <meta property="palette" label="Palette" type="combobox" default="Fire" values="SilkCircuit,Fire,Ice,Aurora,Cyberpunk" tooltip="Color palette"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="6" tooltip="Flame animation speed"/>
+  <meta property="flameHeight" label="Flame Height" type="number" min="20" max="100" default="78" tooltip="Vertical flame reach"/>
+  <meta property="turbulence" label="Turbulence" type="number" min="0" max="100" default="62" tooltip="Curl and breakup in flame layers"/>
+  <meta property="intensity" label="Intensity" type="number" min="20" max="100" default="84" tooltip="Overall fire brightness and heat"/>
+  <meta property="palette" label="Palette" type="combobox" default="Bonfire" values="Bonfire,Forge,Spellfire,Sulfur,Ashfall" tooltip="Flame color profile"/>
+  <meta property="emberAmount" label="Ember Amount" type="number" min="0" max="100" default="60" tooltip="Amount of rising ember particles"/>
+  <meta property="scene" label="Scene" type="combobox" default="Classic" values="Classic,Inferno,Torch,Wildfire" tooltip="Optional fire behavior mode"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1224,6 +1226,26 @@
     if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
     return Math.max(0.2, (speed / 5) ** 1.5);
   }
+  function comboboxValueToIndex(value, options, defaultIndex = 0) {
+    if (options.length === 0) return 0;
+    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const rounded = Math.round(value);
+      if (rounded >= 0 && rounded < options.length) return rounded;
+      return safeDefault;
+    }
+    if (typeof value !== "string") return safeDefault;
+    const exactIndex = options.indexOf(value);
+    if (exactIndex >= 0) return exactIndex;
+    const normalized = value.trim().toLowerCase();
+    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
+    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
+    const parsedNumeric = Number.parseInt(normalized, 10);
+    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
+      return parsedNumeric;
+    }
+    return safeDefault;
+  }
 
   // packages/core/src/utils/debug.ts
   var COLORS = {
@@ -1579,13 +1601,41 @@ void main() {
     resolveLocations() {
       const gl = this.gl;
       const program = this.program;
-      const intTypes = /* @__PURE__ */ new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL]);
+      const intTypes = /* @__PURE__ */ new Set([
+        gl.INT,
+        gl.INT_VEC2,
+        gl.INT_VEC3,
+        gl.INT_VEC4,
+        gl.BOOL,
+        gl.BOOL_VEC2,
+        gl.BOOL_VEC3,
+        gl.BOOL_VEC4,
+        gl.UNSIGNED_INT,
+        gl.UNSIGNED_INT_VEC2,
+        gl.UNSIGNED_INT_VEC3,
+        gl.UNSIGNED_INT_VEC4,
+        gl.SAMPLER_2D,
+        gl.SAMPLER_CUBE,
+        gl.SAMPLER_3D,
+        gl.SAMPLER_2D_SHADOW,
+        gl.SAMPLER_2D_ARRAY,
+        gl.SAMPLER_2D_ARRAY_SHADOW,
+        gl.SAMPLER_CUBE_SHADOW,
+        gl.INT_SAMPLER_2D,
+        gl.INT_SAMPLER_3D,
+        gl.INT_SAMPLER_CUBE,
+        gl.INT_SAMPLER_2D_ARRAY,
+        gl.UNSIGNED_INT_SAMPLER_2D,
+        gl.UNSIGNED_INT_SAMPLER_3D,
+        gl.UNSIGNED_INT_SAMPLER_CUBE,
+        gl.UNSIGNED_INT_SAMPLER_2D_ARRAY
+      ]);
       const intUniforms = /* @__PURE__ */ new Set();
       const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
       for (let i = 0; i < numActive; i++) {
         const info = gl.getActiveUniform(program, i);
         if (info && intTypes.has(info.type)) {
-          intUniforms.add(info.name);
+          intUniforms.add(info.name.replace(/\[0\]$/, ""));
         }
       }
       for (const [name, entry] of this.uniforms) {
@@ -1693,69 +1743,86 @@ void main() {
   }
 
   // src/effects/spectral-fire/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iAudioBass;\nuniform float iAudioMid;\nuniform float iAudioTreble;\nuniform float iAudioLevel;\nuniform float iAudioBeatPulse;\nuniform float iAudioSpectralFlux;\n\nuniform float iSpeed;\nuniform float iFlameHeight;\nuniform float iTurbulence;\nuniform float iIntensity;\nuniform int iPalette;\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat noise(vec2 p) {\n    vec2 i = floor(p);\n    vec2 f = fract(p);\n    f = f * f * (3.0 - 2.0 * f);\n\n    float a = hash21(i);\n    float b = hash21(i + vec2(1.0, 0.0));\n    float c = hash21(i + vec2(0.0, 1.0));\n    float d = hash21(i + vec2(1.0, 1.0));\n\n    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n}\n\nfloat fbm(vec2 p) {\n    float value = 0.0;\n    float amplitude = 0.5;\n    for (int i = 0; i < 5; i++) {\n        value += amplitude * noise(p);\n        p *= 2.0;\n        amplitude *= 0.5;\n    }\n    return value;\n}\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    // Fire: black \u2192 red \u2192 orange \u2192 yellow\n    if (id == 1) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.6, 0.8), vec3(0.2, 0.3, 0.2), vec3(0.6, 0.8, 1.0), vec3(0.0, 0.1, 0.3));\n    if (id == 3) return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n    if (id == 4) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n}\n\n// Blackbody approximation for fire temperature\nvec3 blackbody(float t) {\n    t = clamp(t, 0.0, 1.0);\n    vec3 col = vec3(0.0);\n    // Red channel ramps first\n    col.r = smoothstep(0.0, 0.4, t);\n    // Green follows\n    col.g = smoothstep(0.2, 0.7, t) * 0.9;\n    // Blue last (only at very hot)\n    col.b = smoothstep(0.6, 1.0, t) * 0.6;\n    return col;\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    float aspect = iResolution.x / iResolution.y;\n\n    float time = iTime * iSpeed * 0.4;\n\n    // Map audio to flame columns\n    // Divide into frequency bands across X axis\n    float bass = iAudioBass;\n    float mid = iAudioMid;\n    float treble = iAudioTreble;\n    float level = iAudioLevel;\n\n    // Per-column audio intensity\n    float x = uv.x;\n    float bandIntensity;\n    if (x < 0.33) {\n        bandIntensity = bass;\n    } else if (x < 0.66) {\n        bandIntensity = mid;\n    } else {\n        bandIntensity = treble;\n    }\n    // Smooth blend between bands\n    float blendBass = smoothstep(0.33, 0.0, x) * bass;\n    float blendMid = (1.0 - abs(x - 0.5) * 3.0) * mid;\n    float blendTreble = smoothstep(0.66, 1.0, x) * treble;\n    bandIntensity = blendBass + blendMid + blendTreble;\n\n    // Flame height driven by audio\n    float baseHeight = iFlameHeight * 0.008;\n    float flameHeight = baseHeight + bandIntensity * 0.4;\n\n    // Turbulent flame shape\n    float turbScale = 3.0 + iTurbulence * 0.05;\n    float turb1 = fbm(vec2(x * turbScale, time * 2.0));\n    float turb2 = fbm(vec2(x * turbScale * 2.0 + 10.0, time * 3.0));\n\n    // Flame density: strongest at bottom, tapers up\n    float flameBase = 1.0 - uv.y;\n    float flameTaper = smoothstep(flameHeight, 0.0, 1.0 - uv.y);\n\n    // Add turbulent displacement\n    float displaced = flameBase + (turb1 - 0.5) * 0.3 + (turb2 - 0.5) * 0.15;\n    float flame = smoothstep(0.0, flameHeight, displaced) * flameTaper;\n\n    // Temperature map: hotter at base, cooler at tips\n    float temperature = flame * (1.0 - (1.0 - uv.y) * 0.5);\n    temperature += bandIntensity * 0.3;\n\n    // Color: mix blackbody with palette\n    vec3 fireColor = blackbody(temperature * 0.8);\n    vec3 palColor = paletteColor(temperature * 0.5 + x * 0.2, iPalette);\n    vec3 col = mix(fireColor, palColor, 0.3) * flame * iIntensity * 0.02;\n\n    // Bright core\n    float core = smoothstep(0.2, 0.0, 1.0 - uv.y) * flame * 0.5;\n    col += vec3(1.0, 0.9, 0.6) * core;\n\n    // Sparks on beat\n    float sparkSeed = floor(time * 4.0 + x * 10.0);\n    float sparkRng = hash21(vec2(sparkSeed, floor(uv.y * 20.0)));\n    if (sparkRng > 0.95 && iAudioBeatPulse > 0.3) {\n        float sparkY = fract(time * 2.0 + sparkRng * 5.0);\n        if (abs(uv.y - sparkY) < 0.01 && uv.y > 0.3) {\n            col += paletteColor(sparkRng, iPalette) * 0.5;\n        }\n    }\n\n    // Ember glow at base\n    float emberGlow = exp(-(1.0 - uv.y) * 3.0) * level * 0.3;\n    col += paletteColor(0.1, iPalette) * emberGlow;\n\n    col = col / (1.0 + col * 0.3);\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
+  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iAudioBass;\nuniform float iAudioMid;\nuniform float iAudioTreble;\nuniform float iAudioLevel;\nuniform float iAudioBeatPulse;\nuniform float iAudioSpectralFlux;\n\nuniform float iSpeed;\nuniform float iFlameHeight;\nuniform float iTurbulence;\nuniform float iIntensity;\nuniform float iEmberAmount;\nuniform int iPalette;\nuniform int iScene;\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec2 hash22(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.xx + p3.yz) * p3.zy);\n}\n\nfloat saturate(float v) {\n    return clamp(v, 0.0, 1.0);\n}\n\nfloat noise(vec2 x) {\n    vec2 i = floor(x);\n    vec2 f = fract(x);\n    f = f * f * (3.0 - 2.0 * f);\n\n    float a = hash21(i);\n    float b = hash21(i + vec2(1.0, 0.0));\n    float c = hash21(i + vec2(0.0, 1.0));\n    float d = hash21(i + vec2(1.0, 1.0));\n\n    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n}\n\nfloat fbm(vec2 p) {\n    float sum = 0.0;\n    float amp = 0.5;\n    for (int i = 0; i < 5; i++) {\n        sum += amp * noise(p);\n        p *= 2.0;\n        amp *= 0.5;\n    }\n    return sum;\n}\n\nfloat ridge(float n) {\n    return 1.0 - abs(n * 2.0 - 1.0);\n}\n\nvec3 fireRamp(float t, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {\n    t = saturate(t);\n    vec3 col = mix(c0, c1, smoothstep(0.0, 0.35, t));\n    col = mix(col, c2, smoothstep(0.24, 0.74, t));\n    col = mix(col, c3, smoothstep(0.62, 1.0, t));\n    return col;\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return fireRamp(t, vec3(0.02, 0.0, 0.0), vec3(0.70, 0.07, 0.0), vec3(1.0, 0.44, 0.05), vec3(0.86, 0.48, 0.14));\n    if (id == 1) return fireRamp(t, vec3(0.01, 0.0, 0.0), vec3(0.78, 0.16, 0.02), vec3(1.0, 0.62, 0.06), vec3(0.88, 0.54, 0.17));\n    if (id == 2) return fireRamp(t, vec3(0.03, 0.0, 0.05), vec3(0.58, 0.07, 0.72), vec3(0.17, 0.74, 1.0), vec3(0.58, 0.86, 0.98));\n    if (id == 3) return fireRamp(t, vec3(0.01, 0.01, 0.0), vec3(0.28, 0.38, 0.0), vec3(0.86, 0.95, 0.12), vec3(0.82, 0.70, 0.22));\n    if (id == 4) return fireRamp(t, vec3(0.01, 0.0, 0.0), vec3(0.52, 0.09, 0.05), vec3(0.88, 0.46, 0.25), vec3(0.86, 0.84, 0.82));\n    return fireRamp(t, vec3(0.02, 0.0, 0.0), vec3(0.70, 0.07, 0.0), vec3(1.0, 0.44, 0.05), vec3(1.0, 0.95, 0.75));\n}\n\nvoid sceneTuning(int scene, out float heightBoost, out float turbulenceBoost, out float emberBoost, out float slenderness, out float flicker) {\n    heightBoost = 1.0;\n    turbulenceBoost = 1.0;\n    emberBoost = 1.0;\n    slenderness = 1.0;\n    flicker = 1.0;\n\n    if (scene == 1) {\n        heightBoost = 1.22;\n        turbulenceBoost = 1.18;\n        emberBoost = 0.95;\n        slenderness = 0.9;\n        flicker = 1.18;\n    } else if (scene == 2) {\n        heightBoost = 0.9;\n        turbulenceBoost = 0.75;\n        emberBoost = 0.7;\n        slenderness = 1.3;\n        flicker = 0.85;\n    } else if (scene == 3) {\n        heightBoost = 1.05;\n        turbulenceBoost = 1.45;\n        emberBoost = 1.35;\n        slenderness = 1.05;\n        flicker = 1.32;\n    }\n}\n\nfloat tongueLayer(vec2 uv, float time, float seedOffset, float count, float baseHeight, float sway, float edge) {\n    float x = uv.x * count;\n    float cell = floor(x);\n    float local = fract(x) * 2.0 - 1.0;\n\n    float seed = hash21(vec2(cell, seedOffset));\n    float width = mix(0.26, 0.50, seed);\n    float wobble = sin(time * (1.4 + seed * 2.4) + cell * (1.0 + seed * 0.45));\n    float bend = (seed - 0.5) * 0.95 + wobble * sway;\n\n    float profile = 1.0 - abs(local + bend * pow(uv.y + 0.04, 0.9) * 0.95);\n    profile = smoothstep(width, width + edge, profile);\n\n    float flicker = 0.82 + 0.24 * sin(time * (2.7 + seed * 3.3) + seed * 17.0);\n    float reach = baseHeight * mix(0.62, 1.18, seed) * profile * flicker;\n\n    return smoothstep(0.0, edge, reach - uv.y);\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution.xy;\n    float aspect = iResolution.x / max(iResolution.y, 1.0);\n\n    float speed = max(iSpeed, 0.05);\n    float time = iTime * (0.45 + speed * 0.9);\n\n    float heightCtrl = saturate(iFlameHeight / 100.0);\n    float turbulenceCtrl = saturate(iTurbulence / 100.0);\n    float intensityCtrl = saturate(iIntensity / 100.0);\n    float emberCtrl = saturate(iEmberAmount / 100.0);\n\n    float sceneHeight;\n    float sceneTurbulence;\n    float sceneEmber;\n    float sceneSlenderness;\n    float sceneFlicker;\n    sceneTuning(iScene, sceneHeight, sceneTurbulence, sceneEmber, sceneSlenderness, sceneFlicker);\n\n    vec3 audioBands = clamp(vec3(iAudioBass, iAudioMid, iAudioTreble), 0.0, 1.0);\n    float audioPresence = smoothstep(0.025, 0.16, max(max(audioBands.x, audioBands.y), max(audioBands.z, iAudioLevel)));\n    vec3 fallbackBands = vec3(\n        0.35 + 0.12 * sin(time * 1.1),\n        0.33 + 0.11 * sin(time * 1.3 + 1.5),\n        0.31 + 0.10 * sin(time * 1.7 + 3.2)\n    );\n    vec3 bands = mix(fallbackBands, audioBands, audioPresence);\n\n    float audioDrive = saturate(iAudioLevel * 1.15 + iAudioBeatPulse * 0.8 + iAudioSpectralFlux * 0.55);\n    float drive = 0.28 + 0.46 * audioPresence * audioDrive;\n\n    float turbulence = clamp(turbulenceCtrl * sceneTurbulence, 0.0, 1.6);\n\n    vec2 fuv = uv;\n    float flow = fbm(vec2((uv.x - 0.5) * aspect * (3.4 + turbulence * 4.8), uv.y * (2.6 + turbulence * 2.2) - time * (1.4 + 0.25 * sceneFlicker)));\n    float curl = fbm(vec2((uv.x - 0.5) * aspect * (8.0 + turbulence * 8.0) + time * 0.35, uv.y * 5.8 - time * (2.5 + turbulence)));\n    float ridged = ridge(fbm(vec2((uv.x - 0.5) * aspect * 6.5, uv.y * 8.0 - time * 3.2)));\n    float xWarp = ((flow - 0.5) * (0.18 + turbulence * 0.34) + (curl - 0.5) * (0.12 + turbulence * 0.22) + (ridged - 0.5) * 0.1) * (0.25 + uv.y * 0.85);\n    fuv.x += xWarp;\n\n    float bassBand = (1.0 - smoothstep(0.22, 0.52, uv.x)) * bands.x;\n    float midBand = (1.0 - abs(uv.x - 0.5) * 2.0) * bands.y;\n    float trebleBand = smoothstep(0.48, 0.78, uv.x) * bands.z;\n    float bandMix = saturate(bassBand + midBand + trebleBand) * (0.45 + 0.55 * audioPresence);\n\n    float maxHeight = (0.38 + heightCtrl * 0.56 + drive * 0.16) * sceneHeight;\n    maxHeight = clamp(maxHeight, 0.28, 1.05);\n\n    float layer1 = tongueLayer(\n        fuv,\n        time * sceneFlicker,\n        11.0 + bandMix * 5.0,\n        mix(4.5, 7.0, turbulence) * sceneSlenderness,\n        maxHeight * (0.74 + bandMix * 0.24),\n        0.24 + turbulence * 0.30,\n        0.07\n    );\n\n    float layer2 = tongueLayer(\n        fuv + vec2(0.07 * sin(time * 0.9), 0.0),\n        time * (1.25 + turbulence * 0.4),\n        23.0 + bandMix * 7.0,\n        mix(7.8, 11.8, turbulence) * sceneSlenderness,\n        maxHeight * (0.66 + bandMix * 0.30),\n        0.30 + turbulence * 0.36,\n        0.055\n    );\n\n    float layer3 = tongueLayer(\n        fuv + vec2(-0.05 * sin(time * 1.3 + 2.0), 0.0),\n        time * (1.8 + turbulence * 0.6),\n        37.0 + bandMix * 9.0,\n        mix(10.5, 15.0, turbulence) * sceneSlenderness,\n        maxHeight * (0.56 + bandMix * 0.24),\n        0.38 + turbulence * 0.40,\n        0.045\n    );\n\n    float flame = layer1 * 0.62 + layer2 * 0.50 + layer3 * 0.35;\n    float cap = 1.0 - smoothstep(maxHeight - 0.08, maxHeight + 0.08, uv.y);\n    flame *= cap;\n\n    float breakup = ridge(fbm(vec2(fuv.x * 12.0 + time * 0.6, uv.y * 11.0 - time * 2.8)));\n    flame = max(flame - breakup * (0.08 + uv.y * 0.14) * (0.5 + turbulence * 0.9), 0.0);\n\n    float coreGradient = saturate((maxHeight - uv.y) / max(maxHeight, 0.001));\n    float core = smoothstep(0.2, 0.92, flame) * pow(coreGradient, 0.55);\n    float rim = smoothstep(0.05, 0.22, flame) - smoothstep(0.26, 0.65, flame);\n\n    float temperature = saturate(flame * (0.55 + core * 0.6) + layer3 * 0.18 + drive * 0.2 + bandMix * 0.22);\n\n    vec3 col = vec3(0.0);\n    vec3 flameColor = paletteColor(temperature, iPalette);\n    col += flameColor * flame * (0.62 + intensityCtrl * 1.18);\n    col += paletteColor(saturate(temperature + 0.2), iPalette) * core * (0.16 + intensityCtrl * 0.42);\n    col += paletteColor(0.82, iPalette) * rim * (0.03 + intensityCtrl * 0.08);\n\n    float emberBedNoise = fbm(vec2(fuv.x * 7.0, time * 0.2));\n    float emberBed = smoothstep(0.22, 0.0, uv.y) * (0.25 + emberBedNoise * 0.75) * (0.28 + intensityCtrl * 0.5);\n    col += paletteColor(0.22, iPalette) * emberBed * 0.6;\n\n    float emberDensity = emberCtrl * sceneEmber;\n    emberDensity *= 0.85 + 0.3 * mix(0.25, saturate(iAudioBeatPulse), audioPresence);\n\n    for (int layer = 0; layer < 3; layer++) {\n        float fl = float(layer);\n        float scale = 26.0 + fl * 18.0;\n        vec2 puv = vec2(uv.x * scale, uv.y * (scale * 1.35));\n        puv.y -= time * (1.9 + fl * 0.9);\n        puv.x += sin(time * (0.7 + fl * 0.4) + fl * 2.0) * (1.2 + turbulence * 1.6);\n\n        vec2 cell = floor(puv);\n        vec2 local = fract(puv) - 0.5;\n        float seed = hash21(cell + vec2(fl * 37.0, fl * 11.0));\n        float threshold = emberDensity * (0.014 + fl * 0.007);\n\n        if (seed < threshold) {\n            vec2 jitter = (hash22(cell + vec2(17.0 + fl * 9.0, 29.0 + fl * 7.0)) - 0.5) * vec2(0.7, 0.5);\n            float dist = length(local - jitter);\n            float size = mix(0.13, 0.045, seed) * (1.0 - fl * 0.18);\n            float ember = smoothstep(size, size * 0.22, dist);\n            float trail = smoothstep(size * 2.4, 0.0, length(vec2((local.x - jitter.x) * 1.3, (local.y - jitter.y) * 0.45)));\n            float cooling = 1.0 - saturate(uv.y * (0.8 + fl * 0.4));\n            float emberFlicker = 0.72 + 0.28 * sin(time * (7.5 + fl * 1.8) + seed * 55.0);\n            vec3 emberColor = paletteColor(0.6 + cooling * 0.35, iPalette);\n            col += emberColor * (ember + trail * 0.3) * cooling * emberFlicker * (0.24 - fl * 0.05);\n        }\n    }\n\n    float haze = fbm(vec2((uv.x - 0.5) * aspect * 2.8, uv.y * 3.6 - time * 0.4));\n    col += paletteColor(0.12, iPalette) * haze * (0.03 + flame * 0.04) * (0.6 + intensityCtrl * 0.5);\n\n    float vignette = 1.0 - 0.42 * length((uv - vec2(0.5, 0.28)) * vec2(1.2, 0.9));\n    col *= max(vignette, 0.1);\n\n    col = col / (1.0 + col * 0.55);\n    col = pow(clamp(col, 0.0, 1.0), vec3(0.95));\n\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
 
   // src/effects/spectral-fire/main.ts
-  var PALETTES = ["SilkCircuit", "Fire", "Ice", "Aurora", "Cyberpunk"];
+  var PALETTES = ["Bonfire", "Forge", "Spellfire", "Sulfur", "Ashfall"];
+  var SCENES = ["Classic", "Inferno", "Torch", "Wildfire"];
   var SpectralFire = class extends WebGLEffect {
     speed;
     flameHeight;
     turbulence;
     intensity;
     palette;
+    emberAmount;
+    scene;
     constructor() {
-      super({ fragmentShader: fragment_default, audioReactive: true });
+      super({ id: "spectral-fire", name: "Spectral Fire", fragmentShader: fragment_default, audioReactive: true });
     }
     initializeControls() {
-      this.speed = getControlValue("speed", 5);
-      this.flameHeight = getControlValue("flameHeight", 60);
-      this.turbulence = getControlValue("turbulence", 50);
-      this.intensity = getControlValue("intensity", 70);
-      this.palette = getControlValue("palette", "Fire");
+      this.speed = getControlValue("speed", 6);
+      this.flameHeight = getControlValue("flameHeight", 78);
+      this.turbulence = getControlValue("turbulence", 62);
+      this.intensity = getControlValue("intensity", 84);
+      this.palette = getControlValue("palette", "Bonfire");
+      this.emberAmount = getControlValue("emberAmount", 60);
+      this.scene = getControlValue("scene", "Classic");
     }
     getControlValues() {
       return {
-        speed: normalizeSpeed(getControlValue("speed", 5)),
-        flameHeight: getControlValue("flameHeight", 60),
-        turbulence: getControlValue("turbulence", 50),
-        intensity: getControlValue("intensity", 70),
-        palette: PALETTES.indexOf(getControlValue("palette", "Fire"))
+        speed: normalizeSpeed(getControlValue("speed", 6)),
+        flameHeight: getControlValue("flameHeight", 78),
+        turbulence: getControlValue("turbulence", 62),
+        intensity: getControlValue("intensity", 84),
+        emberAmount: getControlValue("emberAmount", 60),
+        palette: comboboxValueToIndex(getControlValue("palette", "Bonfire"), PALETTES, 0),
+        scene: comboboxValueToIndex(getControlValue("scene", "Classic"), SCENES, 0)
       };
     }
     createUniforms() {
-      this.registerUniform("iSpeed", 1);
-      this.registerUniform("iFlameHeight", 60);
-      this.registerUniform("iTurbulence", 50);
-      this.registerUniform("iIntensity", 70);
-      this.registerUniform("iPalette", 1);
+      this.registerUniform("iSpeed", normalizeSpeed(6));
+      this.registerUniform("iFlameHeight", 78);
+      this.registerUniform("iTurbulence", 62);
+      this.registerUniform("iIntensity", 84);
+      this.registerUniform("iEmberAmount", 60);
+      this.registerUniform("iPalette", 0);
+      this.registerUniform("iScene", 0);
     }
     updateUniforms(c) {
       this.setUniform("iSpeed", c.speed);
       this.setUniform("iFlameHeight", c.flameHeight);
       this.setUniform("iTurbulence", c.turbulence);
       this.setUniform("iIntensity", c.intensity);
+      this.setUniform("iEmberAmount", c.emberAmount);
       this.setUniform("iPalette", c.palette);
+      this.setUniform("iScene", c.scene);
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Flame animation speed" })
+    NumberControl({ label: "Speed", min: 1, max: 10, default: 6, tooltip: "Flame animation speed" })
   ], SpectralFire.prototype, "speed", 2);
   __decorateClass([
-    NumberControl({ label: "Height", min: 10, max: 100, default: 60, tooltip: "Base flame height" })
+    NumberControl({ label: "Flame Height", min: 20, max: 100, default: 78, tooltip: "Vertical flame reach" })
   ], SpectralFire.prototype, "flameHeight", 2);
   __decorateClass([
-    NumberControl({ label: "Turbulence", min: 10, max: 100, default: 50, tooltip: "Flame turbulence" })
+    NumberControl({ label: "Turbulence", min: 0, max: 100, default: 62, tooltip: "Curl and breakup in flame layers" })
   ], SpectralFire.prototype, "turbulence", 2);
   __decorateClass([
-    NumberControl({ label: "Intensity", min: 10, max: 100, default: 70, tooltip: "Brightness" })
+    NumberControl({ label: "Intensity", min: 20, max: 100, default: 84, tooltip: "Overall fire brightness and heat" })
   ], SpectralFire.prototype, "intensity", 2);
   __decorateClass([
-    ComboboxControl({ label: "Palette", values: PALETTES, default: "Fire", tooltip: "Color palette" })
+    ComboboxControl({ label: "Palette", values: PALETTES, default: "Bonfire", tooltip: "Flame color profile" })
   ], SpectralFire.prototype, "palette", 2);
+  __decorateClass([
+    NumberControl({ label: "Ember Amount", min: 0, max: 100, default: 60, tooltip: "Amount of rising ember particles" })
+  ], SpectralFire.prototype, "emberAmount", 2);
+  __decorateClass([
+    ComboboxControl({ label: "Scene", values: SCENES, default: "Classic", tooltip: "Optional fire behavior mode" })
+  ], SpectralFire.prototype, "scene", 2);
   SpectralFire = __decorateClass([
     Effect({
       name: "Spectral Fire",
-      description: "Audio-reactive flames with frequency-band height mapping and blackbody color",
+      description: "Layered community-style fire tongues with embers and optional audio lift",
       author: "Hypercolor",
       audioReactive: true
     })

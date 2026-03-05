@@ -4,14 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Voronoi Glass</title>
-  <meta description="Stained glass Voronoi cells with F2-F1 edge glow and caustic shimmer"/>
+  <meta description="Community Swirl Reactor style orbital particles with crisp RGB trails"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="4" tooltip="Animation speed"/>
-  <meta property="scale" label="Scale" type="number" min="0" max="100" default="50" tooltip="Cell density"/>
-  <meta property="edgeGlow" label="Edge Glow" type="number" min="0" max="100" default="60" tooltip="Edge brightness"/>
-  <meta property="colorShift" label="Color Shift" type="number" min="0" max="100" default="30" tooltip="Color animation speed"/>
-  <meta property="palette" label="Palette" type="combobox" default="SilkCircuit" values="SilkCircuit,Aurora,Cyberpunk,Sunset,Fire,Vaporwave" tooltip="Color palette"/>
-  <meta property="distanceMode" label="Distance" type="combobox" default="Euclidean" values="Euclidean,Manhattan,Chebyshev" tooltip="Voronoi distance formula"/>
+  <meta property="arms" label="Arms" type="number" min="1" max="10" default="5" tooltip="Number of spiral lanes"/>
+  <meta property="count" label="Spawn / Count" type="number" min="16" max="320" default="150" tooltip="Particle population and spawn flow"/>
+  <meta property="particleSize" label="Particle Size" type="number" min="1" max="14" default="4" tooltip="Particle radius"/>
+  <meta property="growth" label="Growth" type="number" min="0" max="100" default="62" tooltip="Outward expansion amount"/>
+  <meta property="rotationMode" label="Rotation Mode" type="combobox" default="Alternating" values="Clockwise,Counter-Clockwise,Alternating,Pulse" tooltip="Orbit spin direction behavior"/>
+  <meta property="colorMode" label="Color Mode" type="combobox" default="RGB Split" values="RGB Split,RGB Cycle,Prism,Mono" tooltip="Particle color pattern"/>
+  <meta property="cycleSpeed" label="Cycle Speed" type="number" min="0" max="100" default="58" tooltip="Rotation and hue cycle speed"/>
+  <meta property="background" label="Background" type="color" default="#04060f" tooltip="Background color"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1221,10 +1223,6 @@
   function getControlValue(propertyName, defaultValue) {
     return window[propertyName] ?? defaultValue;
   }
-  function normalizeSpeed(speed) {
-    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
-    return Math.max(0.2, (speed / 5) ** 1.5);
-  }
 
   // packages/core/src/utils/debug.ts
   var COLORS = {
@@ -1369,300 +1367,41 @@
     }
   };
 
-  // packages/core/src/audio/analysis.ts
-  var FFT_SIZE = 200;
-  var MEL_BANDS = 24;
-  var PITCH_CLASSES = 12;
-  function getAudioData() {
-    const hasEngine = typeof engine !== "undefined" && engine?.audio;
-    if (!hasEngine) return createSilentAudioData();
-    const audio = engine.audio;
-    return {
-      // Legacy
-      bass: audio.bass ?? 0,
-      bassEnv: audio.bassEnv ?? 0,
-      beat: Number(audio.beat ?? 0),
-      beatConfidence: audio.beatConfidence ?? 0,
-      beatPhase: audio.beatPhase ?? 0,
-      beatPulse: audio.beatPulse ?? 0,
-      brightness: audio.brightness ?? 0.5,
-      chordMood: audio.chordMood ?? 0,
-      chromagram: audio.chromagram ?? new Float32Array(PITCH_CLASSES),
-      density: audio.density ?? 0,
-      dominantPitch: audio.dominantPitch ?? 0,
-      dominantPitchConfidence: audio.dominantPitchConfidence ?? 0,
-      frequency: audio.frequency ?? new Float32Array(FFT_SIZE),
-      frequencyRaw: audio.frequencyRaw ?? new Int8Array(FFT_SIZE),
-      frequencyWeighted: audio.frequencyWeighted ?? new Float32Array(FFT_SIZE),
-      harmonicHue: audio.harmonicHue ?? 0,
-      level: audio.level != null ? normalizeAudioLevel(audio.level) : 0,
-      levelLong: audio.levelLong ?? 0,
-      levelRaw: audio.level ?? -100,
-      levelShort: audio.levelShort ?? 0,
-      melBands: audio.melBands ?? new Float32Array(MEL_BANDS),
-      melBandsNormalized: audio.melBandsNormalized ?? new Float32Array(MEL_BANDS),
-      mid: audio.mid ?? 0,
-      midEnv: audio.midEnv ?? 0,
-      momentum: audio.momentum ?? 0,
-      onset: Number(audio.onset ?? 0),
-      onsetPulse: audio.onsetPulse ?? 0,
-      rolloff: audio.rolloff ?? 0.5,
-      roughness: audio.roughness ?? 0.2,
-      spectralFlux: audio.spectralFlux ?? 0,
-      spectralFluxBands: audio.spectralFluxBands ?? new Float32Array(3),
-      spread: audio.spread ?? 0.3,
-      swell: audio.swell ?? 0,
-      tempo: audio.tempo ?? 120,
-      treble: audio.treble ?? 0,
-      trebleEnv: audio.trebleEnv ?? 0,
-      width: audio.width ?? 0.5
-    };
-  }
-  function normalizeAudioLevel(levelDb) {
-    return Math.max(0, Math.min(1, (levelDb + 100) / 100));
-  }
-  function createSilentAudioData() {
-    return {
-      bass: 0,
-      bassEnv: 0,
-      beat: 0,
-      beatConfidence: 0,
-      beatPhase: 0,
-      beatPulse: 0,
-      brightness: 0.5,
-      chordMood: 0,
-      chromagram: new Float32Array(PITCH_CLASSES),
-      density: 0,
-      dominantPitch: 0,
-      dominantPitchConfidence: 0,
-      frequency: new Float32Array(FFT_SIZE),
-      frequencyRaw: new Int8Array(FFT_SIZE),
-      frequencyWeighted: new Float32Array(FFT_SIZE),
-      harmonicHue: 0,
-      level: 0,
-      levelLong: 0,
-      levelRaw: -100,
-      levelShort: 0,
-      melBands: new Float32Array(MEL_BANDS),
-      melBandsNormalized: new Float32Array(MEL_BANDS),
-      mid: 0,
-      midEnv: 0,
-      momentum: 0,
-      onset: 0,
-      onsetPulse: 0,
-      rolloff: 0.5,
-      roughness: 0.2,
-      spectralFlux: 0,
-      spectralFluxBands: new Float32Array(3),
-      spread: 0.3,
-      swell: 0,
-      tempo: 120,
-      treble: 0,
-      trebleEnv: 0,
-      width: 0.5
-    };
-  }
-
-  // packages/core/src/effects/webgl-effect.ts
-  var DEFAULT_VERTEX_SHADER = `#version 300 es
-precision highp float;
-in vec2 aPosition;
-void main() {
-    gl_Position = vec4(aPosition, 0.0, 1.0);
-}
-`;
-  var WebGLEffect = class extends BaseEffect {
-    gl = null;
-    program = null;
-    uniforms = /* @__PURE__ */ new Map();
-    fragmentShader;
-    vertexShader;
-    audioReactive;
-    currentAudioData = null;
+  // packages/core/src/effects/canvas-effect.ts
+  var CanvasEffect = class extends BaseEffect {
+    ctx = null;
+    backgroundColor;
+    lastFrameTime = 0;
+    deltaTime = 0;
     constructor(config) {
       super(config);
-      this.fragmentShader = config.fragmentShader;
-      this.vertexShader = config.vertexShader ?? DEFAULT_VERTEX_SHADER;
-      this.audioReactive = config.audioReactive ?? false;
+      this.backgroundColor = config.backgroundColor || "black";
     }
     async initializeRenderer() {
       if (!this.canvas) throw new Error("Canvas not available");
-      this.gl = this.canvas.getContext("webgl2", { preserveDrawingBuffer: true });
-      if (!this.gl) throw new Error("WebGL2 not supported");
-      this.program = this.createProgram(this.vertexShader, this.fragmentShader);
-      this.gl.useProgram(this.program);
-      this.createQuad();
-      this.registerUniform("iTime", 0);
-      this.registerUniform("iResolution", [this.canvas.width, this.canvas.height]);
-      this.registerUniform("iMouse", [0, 0]);
-      if (this.audioReactive) {
-        this.registerAudioUniforms();
-      }
-      this.createUniforms();
-      this.resolveLocations();
-      this.pushAllUniforms();
-      this.debug("success", "WebGL2 renderer initialized");
+      this.ctx = this.canvas.getContext("2d");
+      if (!this.ctx) throw new Error("Could not get 2D context");
+      this.ctx.imageSmoothingEnabled = true;
+      this.clearCanvas();
+      await this.loadResources();
+    }
+    /** Override to load images, fonts, etc. */
+    async loadResources() {
+    }
+    clearCanvas() {
+      if (!this.ctx || !this.canvas) return;
+      this.ctx.fillStyle = this.backgroundColor;
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
     render(time) {
-      if (!this.gl || !this.program) return;
-      this.setUniform("iTime", time);
-      if (this.audioReactive) {
-        this.currentAudioData = getAudioData();
-        this.pushAudioUniforms(this.currentAudioData);
-      }
-      this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
-    }
-    getAudio() {
-      return this.currentAudioData;
+      if (!this.ctx || !this.canvas) return;
+      this.deltaTime = this.lastFrameTime === 0 ? 0 : time - this.lastFrameTime;
+      this.lastFrameTime = time;
+      this.clearCanvas();
+      this.draw(time, this.deltaTime);
     }
     updateParameters(controls) {
-      if (!this.program) return;
-      this.updateUniforms(controls);
-    }
-    // ── Uniform API ─────────────────────────────────────────────────────
-    /** Register a uniform. Call in createUniforms(). */
-    registerUniform(name, value) {
-      this.uniforms.set(name, { location: null, value, isInt: false });
-    }
-    /** Set a uniform value (will be pushed on next draw). */
-    setUniform(name, value) {
-      const entry = this.uniforms.get(name);
-      if (entry) {
-        entry.value = value;
-        this.pushUniform(name, entry);
-      }
-    }
-    // ── Internal ────────────────────────────────────────────────────────
-    createProgram(vertSrc, fragSrc) {
-      const gl = this.gl;
-      const vert = this.compileShader(gl.VERTEX_SHADER, vertSrc);
-      const frag = this.compileShader(gl.FRAGMENT_SHADER, fragSrc);
-      const program = gl.createProgram();
-      gl.attachShader(program, vert);
-      gl.attachShader(program, frag);
-      gl.linkProgram(program);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        const info = gl.getProgramInfoLog(program);
-        gl.deleteProgram(program);
-        throw new Error(`Shader link failed: ${info}`);
-      }
-      gl.deleteShader(vert);
-      gl.deleteShader(frag);
-      return program;
-    }
-    compileShader(type, source) {
-      const gl = this.gl;
-      const shader = gl.createShader(type);
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        const info = gl.getShaderInfoLog(shader);
-        gl.deleteShader(shader);
-        throw new Error(`Shader compile failed: ${info}`);
-      }
-      return shader;
-    }
-    createQuad() {
-      const gl = this.gl;
-      const vertices = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
-      const buffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-      const posLoc = gl.getAttribLocation(this.program, "aPosition");
-      gl.enableVertexAttribArray(posLoc);
-      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-    }
-    pushAllUniforms() {
-      for (const [name, entry] of this.uniforms) {
-        this.pushUniform(name, entry);
-      }
-    }
-    resolveLocations() {
-      const gl = this.gl;
-      const program = this.program;
-      const intTypes = /* @__PURE__ */ new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL]);
-      const intUniforms = /* @__PURE__ */ new Set();
-      const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
-      for (let i = 0; i < numActive; i++) {
-        const info = gl.getActiveUniform(program, i);
-        if (info && intTypes.has(info.type)) {
-          intUniforms.add(info.name);
-        }
-      }
-      for (const [name, entry] of this.uniforms) {
-        entry.location = gl.getUniformLocation(program, name);
-        entry.isInt = intUniforms.has(name);
-      }
-    }
-    pushUniform(_name, entry) {
-      const gl = this.gl;
-      if (!gl || !entry.location) return;
-      const val = entry.value;
-      if (typeof val === "number") {
-        if (entry.isInt) {
-          gl.uniform1i(entry.location, val | 0);
-        } else {
-          gl.uniform1f(entry.location, val);
-        }
-      } else if (val.length === 2) {
-        if (entry.isInt) {
-          gl.uniform2iv(entry.location, val);
-        } else {
-          gl.uniform2fv(entry.location, val);
-        }
-      } else if (val.length === 3) {
-        if (entry.isInt) {
-          gl.uniform3iv(entry.location, val);
-        } else {
-          gl.uniform3fv(entry.location, val);
-        }
-      } else if (val.length === 4) {
-        if (entry.isInt) {
-          gl.uniform4iv(entry.location, val);
-        } else {
-          gl.uniform4fv(entry.location, val);
-        }
-      }
-    }
-    registerAudioUniforms() {
-      this.registerUniform("iAudioLevel", 0);
-      this.registerUniform("iAudioBass", 0);
-      this.registerUniform("iAudioMid", 0);
-      this.registerUniform("iAudioTreble", 0);
-      this.registerUniform("iAudioBeat", 0);
-      this.registerUniform("iAudioBeatPulse", 0);
-      this.registerUniform("iAudioBeatPhase", 0);
-      this.registerUniform("iAudioBeatConfidence", 0);
-      this.registerUniform("iAudioOnset", 0);
-      this.registerUniform("iAudioOnsetPulse", 0);
-      this.registerUniform("iAudioSpectralFlux", 0);
-      this.registerUniform("iAudioHarmonicHue", 0);
-      this.registerUniform("iAudioChordMood", 0);
-      this.registerUniform("iAudioBrightness", 0.5);
-      this.registerUniform("iAudioMomentum", 0);
-      this.registerUniform("iAudioSwell", 0);
-      this.registerUniform("iAudioTempo", 120);
-      this.registerUniform("iAudioFluxBands", [0, 0, 0]);
-    }
-    pushAudioUniforms(audio) {
-      this.setUniform("iAudioLevel", audio.level);
-      this.setUniform("iAudioBass", audio.bass);
-      this.setUniform("iAudioMid", audio.mid);
-      this.setUniform("iAudioTreble", audio.treble);
-      this.setUniform("iAudioBeat", audio.beat);
-      this.setUniform("iAudioBeatPulse", audio.beatPulse);
-      this.setUniform("iAudioBeatPhase", audio.beatPhase);
-      this.setUniform("iAudioBeatConfidence", audio.beatConfidence);
-      this.setUniform("iAudioOnset", audio.onset);
-      this.setUniform("iAudioOnsetPulse", audio.onsetPulse);
-      this.setUniform("iAudioSpectralFlux", audio.spectralFlux);
-      this.setUniform("iAudioHarmonicHue", audio.harmonicHue);
-      this.setUniform("iAudioChordMood", audio.chordMood);
-      this.setUniform("iAudioBrightness", audio.brightness);
-      this.setUniform("iAudioMomentum", audio.momentum);
-      this.setUniform("iAudioSwell", audio.swell);
-      this.setUniform("iAudioTempo", audio.tempo);
-      this.setUniform("iAudioFluxBands", Array.from(audio.spectralFluxBands));
+      this.applyControls(controls);
     }
   };
 
@@ -1693,90 +1432,320 @@ void main() {
     }, { once: true });
   }
 
-  // src/effects/voronoi-glass/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\n// Controls\nuniform float iSpeed;\nuniform float iScale;\nuniform float iEdgeGlow;\nuniform float iColorShift;\nuniform int iPalette;\nuniform int iDistanceMode;\n\n// \u2500\u2500 Noise \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nvec2 hash22(vec2 p) {\n    p = fract(p * vec2(443.8975, 397.2973));\n    p += dot(p, p.yx + 19.19);\n    return fract(vec2(p.x * p.y, p.y * p.x));\n}\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\n// \u2500\u2500 Palettes \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    if (id == 1) return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    if (id == 3) return iqPalette(t, vec3(0.5, 0.5, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.1, 0.2));\n    if (id == 4) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    if (id == 5) return iqPalette(t, vec3(0.6, 0.4, 0.7), vec3(0.3, 0.3, 0.3), vec3(0.6, 0.8, 1.0), vec3(0.7, 0.3, 0.6));\n    return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n}\n\n// \u2500\u2500 Voronoi \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n// Returns (F1, F2, cell_id_hash) for stained glass effect\nvec3 voronoi(vec2 p, float time) {\n    vec2 i = floor(p);\n    vec2 f = fract(p);\n\n    float F1 = 1.0;\n    float F2 = 1.0;\n    float cellId = 0.0;\n    vec2 nearestPoint = vec2(0.0);\n\n    for (int y = -1; y <= 1; y++) {\n        for (int x = -1; x <= 1; x++) {\n            vec2 neighbor = vec2(float(x), float(y));\n            vec2 cell = i + neighbor;\n            vec2 point = hash22(cell);\n\n            // Animate points \u2014 slow organic drift\n            point = 0.5 + 0.45 * sin(time * 0.4 + point * 6.28318);\n\n            vec2 diff = neighbor + point - f;\n\n            // Distance modes\n            float d;\n            if (iDistanceMode == 0) {\n                d = dot(diff, diff); // Euclidean\xB2\n            } else if (iDistanceMode == 1) {\n                d = abs(diff.x) + abs(diff.y); // Manhattan\n            } else {\n                d = max(abs(diff.x), abs(diff.y)); // Chebyshev\n            }\n\n            if (d < F1) {\n                F2 = F1;\n                F1 = d;\n                nearestPoint = cell;\n                cellId = hash21(cell);\n            } else if (d < F2) {\n                F2 = d;\n            }\n        }\n    }\n\n    return vec3(sqrt(F1), sqrt(F2), cellId);\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    vec2 aspect = vec2(iResolution.x / iResolution.y, 1.0);\n    float time = iTime * iSpeed * 0.2;\n\n    // Scale and center\n    float scale = 3.0 + iScale * 0.12;\n    vec2 p = (uv - 0.5) * aspect * scale;\n\n    // Slow global rotation for dynamism\n    float angle = time * 0.05;\n    mat2 rot = mat2(cos(angle), -sin(angle), sin(angle), cos(angle));\n    p = rot * p;\n\n    // Compute Voronoi\n    vec3 vor = voronoi(p, time);\n    float F1 = vor.x;\n    float F2 = vor.y;\n    float cellId = vor.z;\n\n    // \u2500\u2500 Cell fill color \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n    float colorT = cellId + time * iColorShift * 0.003;\n    vec3 cellColor = paletteColor(colorT, iPalette);\n\n    // Brightness varies per cell \u2014 stained glass panes\n    float cellBrightness = 0.3 + 0.4 * cellId;\n\n    // Subtle inner gradient (darker toward edges of each cell)\n    float innerGradient = smoothstep(0.0, 0.5, F1);\n    cellBrightness *= 0.7 + 0.3 * (1.0 - innerGradient);\n\n    vec3 col = cellColor * cellBrightness;\n\n    // \u2500\u2500 Edge glow (F2 - F1 technique) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n    float edgeDist = F2 - F1;\n    float edgeWidth = 0.02 + iEdgeGlow * 0.002;\n\n    // Crisp edge line\n    float edge = smoothstep(edgeWidth, edgeWidth * 0.3, edgeDist);\n\n    // Soft glow around edges\n    float edgeGlow = exp(-edgeDist * (8.0 + iEdgeGlow * 0.3)) * iEdgeGlow * 0.012;\n\n    // Edge color: brighter version of surrounding cells\n    vec3 edgeColor = paletteColor(colorT + 0.3, iPalette);\n\n    // Combine: cell fill + edge highlight\n    col = mix(col, edgeColor * 1.5, edge * 0.8);\n    col += edgeColor * edgeGlow;\n\n    // \u2500\u2500 Light transmission effect \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n    // Simulate light passing through colored glass\n    float lightAngle = sin(time * 0.15) * 0.5;\n    float lightDir = dot(normalize(vec2(cos(lightAngle), sin(lightAngle))), uv - 0.5);\n    float lightIntensity = 0.8 + 0.2 * lightDir;\n    col *= lightIntensity;\n\n    // \u2500\u2500 Subtle caustics \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n    vec3 vor2 = voronoi(p * 2.0 + vec2(time * 0.1), time * 1.3);\n    float caustic = smoothstep(0.4, 0.0, vor2.x) * 0.08;\n    col += caustic * edgeColor;\n\n    // Tonemapping\n    col = col / (1.0 + col * 0.4);\n    col = pow(col, vec3(0.95));\n\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
-
   // src/effects/voronoi-glass/main.ts
-  var PALETTES = ["SilkCircuit", "Aurora", "Cyberpunk", "Sunset", "Fire", "Vaporwave"];
-  var DISTANCE_MODES = ["Euclidean", "Manhattan", "Chebyshev"];
-  var VoronoiGlass = class extends WebGLEffect {
-    speed;
-    scale;
-    edgeGlow;
-    colorShift;
-    palette;
-    distanceMode;
+  var ROTATION_MODES = ["Clockwise", "Counter-Clockwise", "Alternating", "Pulse"];
+  var COLOR_MODES = ["RGB Split", "RGB Cycle", "Prism", "Mono"];
+  var DEFAULT_BACKGROUND = "#04060f";
+  var VoronoiGlass = class extends CanvasEffect {
+    arms;
+    count;
+    particleSize;
+    growth;
+    rotationMode;
+    colorMode;
+    cycleSpeed;
+    background;
+    controls = {
+      arms: 5,
+      count: 150,
+      particleSize: 4,
+      growth: 62,
+      rotationMode: "Alternating",
+      colorMode: "RGB Split",
+      cycleSpeed: 58,
+      background: DEFAULT_BACKGROUND
+    };
+    particles = [];
+    particleCount = 0;
     constructor() {
-      super({ fragmentShader: fragment_default });
+      super({ id: "voronoi-glass", name: "Voronoi Glass", backgroundColor: DEFAULT_BACKGROUND });
     }
     initializeControls() {
-      this.speed = getControlValue("speed", 4);
-      this.scale = getControlValue("scale", 50);
-      this.edgeGlow = getControlValue("edgeGlow", 60);
-      this.colorShift = getControlValue("colorShift", 30);
-      this.palette = getControlValue("palette", "SilkCircuit");
-      this.distanceMode = getControlValue("distanceMode", "Euclidean");
+      this.arms = getControlValue("arms", 5);
+      this.count = getControlValue("count", 150);
+      this.particleSize = getControlValue("particleSize", 4);
+      this.growth = getControlValue("growth", 62);
+      this.rotationMode = getControlValue("rotationMode", "Alternating");
+      this.colorMode = getControlValue("colorMode", "RGB Split");
+      this.cycleSpeed = getControlValue("cycleSpeed", 58);
+      this.background = getControlValue("background", DEFAULT_BACKGROUND);
     }
     getControlValues() {
       return {
-        speed: normalizeSpeed(getControlValue("speed", 4)),
-        scale: getControlValue("scale", 50),
-        edgeGlow: getControlValue("edgeGlow", 60),
-        colorShift: getControlValue("colorShift", 30),
-        palette: PALETTES.indexOf(getControlValue("palette", "SilkCircuit")),
-        distanceMode: DISTANCE_MODES.indexOf(getControlValue("distanceMode", "Euclidean"))
+        arms: this.clamp(Math.round(getControlValue("arms", this.controls.arms)), 1, 10),
+        count: this.clamp(Math.round(getControlValue("count", this.controls.count)), 16, 320),
+        particleSize: this.clamp(getControlValue("particleSize", this.controls.particleSize), 1, 14),
+        growth: this.clamp(getControlValue("growth", this.controls.growth), 0, 100),
+        rotationMode: this.pickValue(getControlValue("rotationMode", this.controls.rotationMode), ROTATION_MODES, "Alternating"),
+        colorMode: this.pickValue(getControlValue("colorMode", this.controls.colorMode), COLOR_MODES, "RGB Split"),
+        cycleSpeed: this.clamp(getControlValue("cycleSpeed", this.controls.cycleSpeed), 0, 100),
+        background: this.normalizeHexColor(getControlValue("background", this.controls.background), DEFAULT_BACKGROUND)
       };
     }
-    createUniforms() {
-      this.registerUniform("iSpeed", 1);
-      this.registerUniform("iScale", 50);
-      this.registerUniform("iEdgeGlow", 60);
-      this.registerUniform("iColorShift", 30);
-      this.registerUniform("iPalette", 0);
-      this.registerUniform("iDistanceMode", 0);
+    async loadResources() {
+      this.ensureParticleCount(this.controls.count);
     }
-    updateUniforms(controls) {
-      this.setUniform("iSpeed", controls.speed);
-      this.setUniform("iScale", controls.scale);
-      this.setUniform("iEdgeGlow", controls.edgeGlow);
-      this.setUniform("iColorShift", controls.colorShift);
-      this.setUniform("iPalette", controls.palette);
-      this.setUniform("iDistanceMode", controls.distanceMode);
+    applyControls(controls) {
+      this.controls = controls;
+      this.backgroundColor = controls.background;
+      this.ensureParticleCount(controls.count);
+    }
+    draw(time, _deltaTime) {
+      if (!this.ctx || !this.canvas) return;
+      const ctx = this.ctx;
+      const w = this.canvas.width;
+      const h = this.canvas.height;
+      const cx = w * 0.5;
+      const cy = h * 0.5;
+      const minDim = Math.min(w, h);
+      const arms = Math.max(1, this.controls.arms);
+      const count = this.particles.length;
+      if (count === 0) return;
+      const growthMix = this.controls.growth / 100;
+      const cycleRate = this.controls.cycleSpeed / 100;
+      const rotationVelocity = 0.4 + cycleRate * 2.2;
+      const spawnVelocity = 0.65 + cycleRate * 2.1 + count / 220;
+      const maxRadius = minDim * (0.18 + growthMix * 0.58);
+      const coreRadius = minDim * (0.036 + growthMix * 0.02);
+      const laneTwist = 2.1 + growthMix * 5.2;
+      this.drawBacklight(ctx, w, h, time, cycleRate);
+      this.drawCore(ctx, cx, cy, coreRadius, time, cycleRate);
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      for (let i = 0; i < count; i++) {
+        const seed = this.particles[i];
+        const arm = i % arms;
+        const direction = this.resolveDirection(this.controls.rotationMode, arm, time);
+        const life = this.fract(time * spawnVelocity * (0.55 + seed.speedBias) + seed.orbitOffset);
+        const radialCurve = Math.pow(life, 0.36 + (1 - growthMix) * 0.92);
+        const radius = coreRadius + radialCurve * maxRadius + (seed.radialOffset - 0.5) * minDim * 0.045;
+        const laneBase = arm / arms * Math.PI * 2;
+        const orbital = direction * (time * rotationVelocity + life * Math.PI * 2 * laneTwist);
+        const wobble = Math.sin(time * (1.6 + seed.speedBias * 1.9) + seed.twinkle * 9.1) * seed.jitter * 0.42;
+        const angle = laneBase + orbital + wobble;
+        const x = cx + Math.cos(angle) * radius;
+        const y = cy + Math.sin(angle) * radius * (0.9 + seed.jitter * 0.08);
+        const color = this.resolveColor(this.controls.colorMode, arm, i, arms, time, life, cycleRate);
+        const pulse = 0.62 + 0.38 * Math.sin(time * (4.5 + seed.speedBias * 3.1) + seed.twinkle * 11);
+        const size = Math.max(0.7, this.controls.particleSize * (0.5 + seed.sizeBias * 1.05) * (0.65 + radialCurve * 0.8));
+        const alpha = this.clamp((0.24 + 0.9 * Math.sin(Math.PI * life)) * pulse, 0.08, 1);
+        ctx.fillStyle = this.toRgba(color, 0.16 * alpha);
+        ctx.beginPath();
+        ctx.arc(x, y, size * 2.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = this.toRgba(color, 0.78 * alpha);
+        ctx.beginPath();
+        ctx.arc(x, y, size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = `rgba(255,255,255,${(0.22 * alpha).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.arc(x, y, Math.max(0.55, size * 0.28), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    drawBacklight(ctx, width, height, time, cycleRate) {
+      const centerX = width * (0.5 + Math.sin(time * 0.16) * 0.04);
+      const centerY = height * (0.5 + Math.cos(time * 0.18) * 0.04);
+      const radius = Math.max(width, height) * 0.84;
+      const hue = (210 + time * (16 + cycleRate * 70)) % 360;
+      const base = this.hslToRgb(hue, 82, 53);
+      const accent = this.hslToRgb((hue + 130) % 360, 86, 58);
+      const glow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+      glow.addColorStop(0, this.toRgba(base, 0.11));
+      glow.addColorStop(0.52, this.toRgba(accent, 0.05));
+      glow.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, width, height);
+    }
+    drawCore(ctx, cx, cy, coreRadius, time, cycleRate) {
+      const hue = (time * (40 + cycleRate * 90) + 6) % 360;
+      const coreA = this.hslToRgb(hue, 94, 60);
+      const coreB = this.hslToRgb((hue + 150) % 360, 90, 54);
+      const pulse = 1 + Math.sin(time * (4.2 + cycleRate * 4.8)) * 0.16;
+      const radius = coreRadius * pulse;
+      const coreGradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius * 3.1);
+      coreGradient.addColorStop(0, this.toRgba(coreA, 0.72));
+      coreGradient.addColorStop(0.35, this.toRgba(coreB, 0.38));
+      coreGradient.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = coreGradient;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius * 3.1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = this.toRgba(coreB, 0.34);
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius * 1.8, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ensureParticleCount(count) {
+      const target = this.clamp(Math.round(count), 16, 320);
+      if (target === this.particleCount && this.particles.length === target) return;
+      if (target > this.particles.length) {
+        for (let i = this.particles.length; i < target; i++) {
+          this.particles.push(this.createSeed(i));
+        }
+      } else {
+        this.particles.length = target;
+      }
+      this.particleCount = target;
+    }
+    createSeed(index) {
+      const i = index + 1;
+      return {
+        orbitOffset: this.hash(i * 1.137 + 0.29),
+        radialOffset: this.hash(i * 2.413 + 3.18),
+        speedBias: this.hash(i * 3.977 + 8.24),
+        sizeBias: this.hash(i * 5.331 + 1.77),
+        jitter: this.hash(i * 7.739 + 5.65),
+        twinkle: this.hash(i * 11.129 + 9.92)
+      };
+    }
+    resolveDirection(mode, arm, time) {
+      switch (mode) {
+        case "Clockwise":
+          return 1;
+        case "Counter-Clockwise":
+          return -1;
+        case "Pulse":
+          return Math.sin(time * 1.25 + arm * 0.75) >= 0 ? 1 : -1;
+        case "Alternating":
+        default:
+          return arm % 2 === 0 ? 1 : -1;
+      }
+    }
+    resolveColor(mode, arm, index, arms, time, life, cycleRate) {
+      const rgbArmPalette = [
+        { r: 255, g: 74, b: 86 },
+        { r: 78, g: 255, b: 155 },
+        { r: 82, g: 146, b: 255 }
+      ];
+      if (mode === "RGB Split") {
+        const base = rgbArmPalette[arm % rgbArmPalette.length];
+        const boost = 0.78 + 0.22 * Math.sin(time * (2.6 + cycleRate * 4.2) + life * Math.PI * 2);
+        return this.scaleColor(base, boost);
+      }
+      if (mode === "RGB Cycle") {
+        const hue = (time * (52 + cycleRate * 188) + arm / Math.max(arms, 1) * 360 + life * 90) % 360;
+        return this.hslToRgb(hue, 92, 60);
+      }
+      if (mode === "Prism") {
+        const hue = (index * 137.508 + time * (26 + cycleRate * 96) + life * 122) % 360;
+        return this.hslToRgb(hue, 88, 58);
+      }
+      const monoHue = 208 + Math.sin(time * (2.2 + cycleRate * 3.8) + arm) * 22;
+      return this.hslToRgb(monoHue, 48, 72);
+    }
+    scaleColor(color, scale) {
+      return {
+        r: this.clamp(Math.round(color.r * scale), 0, 255),
+        g: this.clamp(Math.round(color.g * scale), 0, 255),
+        b: this.clamp(Math.round(color.b * scale), 0, 255)
+      };
+    }
+    toRgba(color, alpha) {
+      return `rgba(${color.r},${color.g},${color.b},${this.clamp(alpha, 0, 1).toFixed(3)})`;
+    }
+    hslToRgb(h, s, l) {
+      const hue = (h % 360 + 360) % 360;
+      const sat = this.clamp(s / 100, 0, 1);
+      const light = this.clamp(l / 100, 0, 1);
+      const c = (1 - Math.abs(2 * light - 1)) * sat;
+      const x = c * (1 - Math.abs(hue / 60 % 2 - 1));
+      const m = light - c / 2;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      if (hue < 60) {
+        r = c;
+        g = x;
+      } else if (hue < 120) {
+        r = x;
+        g = c;
+      } else if (hue < 180) {
+        g = c;
+        b = x;
+      } else if (hue < 240) {
+        g = x;
+        b = c;
+      } else if (hue < 300) {
+        r = x;
+        b = c;
+      } else {
+        r = c;
+        b = x;
+      }
+      return {
+        r: Math.round((r + m) * 255),
+        g: Math.round((g + m) * 255),
+        b: Math.round((b + m) * 255)
+      };
+    }
+    normalizeHexColor(value, fallback) {
+      const input = value.trim().replace(/^#/, "");
+      const fallbackInput = fallback.trim().replace(/^#/, "");
+      if (/^[0-9a-fA-F]{6}$/.test(input)) return `#${input.toLowerCase()}`;
+      if (/^[0-9a-fA-F]{3}$/.test(input)) {
+        const expanded = input.split("").map((part) => `${part}${part}`).join("");
+        return `#${expanded.toLowerCase()}`;
+      }
+      if (/^[0-9a-fA-F]{6}$/.test(fallbackInput)) return `#${fallbackInput.toLowerCase()}`;
+      return DEFAULT_BACKGROUND;
+    }
+    pickValue(value, options, fallback) {
+      return options.includes(value) ? value : fallback;
+    }
+    clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+    fract(value) {
+      return value - Math.floor(value);
+    }
+    hash(value) {
+      const x = Math.sin(value * 127.1) * 43758.5453123;
+      return x - Math.floor(x);
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 4, tooltip: "Animation speed" })
-  ], VoronoiGlass.prototype, "speed", 2);
+    NumberControl({ label: "Arms", min: 1, max: 10, default: 5, tooltip: "Number of spiral lanes" })
+  ], VoronoiGlass.prototype, "arms", 2);
   __decorateClass([
-    NumberControl({ label: "Scale", min: 0, max: 100, default: 50, tooltip: "Cell density" })
-  ], VoronoiGlass.prototype, "scale", 2);
+    NumberControl({ label: "Spawn / Count", min: 16, max: 320, default: 150, tooltip: "Particle population and spawn flow" })
+  ], VoronoiGlass.prototype, "count", 2);
   __decorateClass([
-    NumberControl({ label: "Edge Glow", min: 0, max: 100, default: 60, tooltip: "Edge brightness" })
-  ], VoronoiGlass.prototype, "edgeGlow", 2);
+    NumberControl({ label: "Particle Size", min: 1, max: 14, default: 4, tooltip: "Particle radius" })
+  ], VoronoiGlass.prototype, "particleSize", 2);
   __decorateClass([
-    NumberControl({ label: "Color Shift", min: 0, max: 100, default: 30, tooltip: "Color animation speed" })
-  ], VoronoiGlass.prototype, "colorShift", 2);
-  __decorateClass([
-    ComboboxControl({
-      label: "Palette",
-      values: PALETTES,
-      default: "SilkCircuit",
-      tooltip: "Color palette"
-    })
-  ], VoronoiGlass.prototype, "palette", 2);
+    NumberControl({ label: "Growth", min: 0, max: 100, default: 62, tooltip: "Outward expansion amount" })
+  ], VoronoiGlass.prototype, "growth", 2);
   __decorateClass([
     ComboboxControl({
-      label: "Distance",
-      values: DISTANCE_MODES,
-      default: "Euclidean",
-      tooltip: "Voronoi distance formula"
+      label: "Rotation Mode",
+      values: ROTATION_MODES,
+      default: "Alternating",
+      tooltip: "Orbit spin direction behavior"
     })
-  ], VoronoiGlass.prototype, "distanceMode", 2);
+  ], VoronoiGlass.prototype, "rotationMode", 2);
+  __decorateClass([
+    ComboboxControl({
+      label: "Color Mode",
+      values: COLOR_MODES,
+      default: "RGB Split",
+      tooltip: "Particle color pattern"
+    })
+  ], VoronoiGlass.prototype, "colorMode", 2);
+  __decorateClass([
+    NumberControl({ label: "Cycle Speed", min: 0, max: 100, default: 58, tooltip: "Rotation and hue cycle speed" })
+  ], VoronoiGlass.prototype, "cycleSpeed", 2);
+  __decorateClass([
+    ColorControl({ label: "Background", default: DEFAULT_BACKGROUND, tooltip: "Background color" })
+  ], VoronoiGlass.prototype, "background", 2);
   VoronoiGlass = __decorateClass([
     Effect({
       name: "Voronoi Glass",
-      description: "Stained glass Voronoi cells with F2-F1 edge glow and caustic shimmer",
-      author: "Hypercolor"
+      description: "Community Swirl Reactor style orbital particles with crisp RGB trails",
+      author: "Hypercolor",
+      audioReactive: false
     })
   ], VoronoiGlass);
   var effect = new VoronoiGlass();

@@ -4,13 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ember Glow</title>
-  <meta description="Smoldering embers with thermal convection, blackbody color, and rising sparks"/>
+  <meta description="Crisp ember flecks in directional poison-forge flow with selectable scene behavior"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="4" tooltip="Animation speed"/>
-  <meta property="intensity" label="Intensity" type="number" min="0" max="100" default="70" tooltip="Heat intensity"/>
-  <meta property="emberDensity" label="Embers" type="number" min="0" max="100" default="55" tooltip="Floating ember density"/>
-  <meta property="heatWarp" label="Heat Warp" type="number" min="0" max="100" default="40" tooltip="Heat shimmer"/>
-  <meta property="palette" label="Palette" type="combobox" default="Ember" values="Ember,Lava,SilkCircuit,Solar,Phosphor" tooltip="Color palette"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Animation speed"/>
+  <meta property="intensity" label="Intensity" type="number" min="0" max="100" default="74" tooltip="Heat and brightness"/>
+  <meta property="emberDensity" label="Ember Density" type="number" min="0" max="100" default="58" tooltip="Crisp fleck count"/>
+  <meta property="flowSpread" label="Flow/Spread" type="number" min="0" max="100" default="62" tooltip="Directional drift and turbulence"/>
+  <meta property="glow" label="Glow" type="number" min="0" max="100" default="68" tooltip="Bloom around hot clusters"/>
+  <meta property="palette" label="Palette" type="combobox" default="Forge" values="Forge,Poison,SilkCircuit,Ash Bloom,Toxic Rust" tooltip="Color personality"/>
+  <meta property="scene" label="Scene" type="combobox" default="Updraft" values="Updraft,Crosswind,Vortex" tooltip="Directional flow mode"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1224,6 +1226,26 @@
     if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
     return Math.max(0.2, (speed / 5) ** 1.5);
   }
+  function comboboxValueToIndex(value, options, defaultIndex = 0) {
+    if (options.length === 0) return 0;
+    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const rounded = Math.round(value);
+      if (rounded >= 0 && rounded < options.length) return rounded;
+      return safeDefault;
+    }
+    if (typeof value !== "string") return safeDefault;
+    const exactIndex = options.indexOf(value);
+    if (exactIndex >= 0) return exactIndex;
+    const normalized = value.trim().toLowerCase();
+    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
+    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
+    const parsedNumeric = Number.parseInt(normalized, 10);
+    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
+      return parsedNumeric;
+    }
+    return safeDefault;
+  }
 
   // packages/core/src/utils/debug.ts
   var COLORS = {
@@ -1579,13 +1601,41 @@ void main() {
     resolveLocations() {
       const gl = this.gl;
       const program = this.program;
-      const intTypes = /* @__PURE__ */ new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL]);
+      const intTypes = /* @__PURE__ */ new Set([
+        gl.INT,
+        gl.INT_VEC2,
+        gl.INT_VEC3,
+        gl.INT_VEC4,
+        gl.BOOL,
+        gl.BOOL_VEC2,
+        gl.BOOL_VEC3,
+        gl.BOOL_VEC4,
+        gl.UNSIGNED_INT,
+        gl.UNSIGNED_INT_VEC2,
+        gl.UNSIGNED_INT_VEC3,
+        gl.UNSIGNED_INT_VEC4,
+        gl.SAMPLER_2D,
+        gl.SAMPLER_CUBE,
+        gl.SAMPLER_3D,
+        gl.SAMPLER_2D_SHADOW,
+        gl.SAMPLER_2D_ARRAY,
+        gl.SAMPLER_2D_ARRAY_SHADOW,
+        gl.SAMPLER_CUBE_SHADOW,
+        gl.INT_SAMPLER_2D,
+        gl.INT_SAMPLER_3D,
+        gl.INT_SAMPLER_CUBE,
+        gl.INT_SAMPLER_2D_ARRAY,
+        gl.UNSIGNED_INT_SAMPLER_2D,
+        gl.UNSIGNED_INT_SAMPLER_3D,
+        gl.UNSIGNED_INT_SAMPLER_CUBE,
+        gl.UNSIGNED_INT_SAMPLER_2D_ARRAY
+      ]);
       const intUniforms = /* @__PURE__ */ new Set();
       const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
       for (let i = 0; i < numActive; i++) {
         const info = gl.getActiveUniform(program, i);
         if (info && intTypes.has(info.type)) {
-          intUniforms.add(info.name);
+          intUniforms.add(info.name.replace(/\[0\]$/, ""));
         }
       }
       for (const [name, entry] of this.uniforms) {
@@ -1693,75 +1743,98 @@ void main() {
   }
 
   // src/effects/ember-glow/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\n// Controls\nuniform float iSpeed;\nuniform float iIntensity;\nuniform float iEmberDensity;\nuniform float iHeatWarp;\nuniform int iPalette;\n\n// \u2500\u2500 Noise \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec2 hash22(vec2 p) {\n    p = fract(p * vec2(443.8975, 397.2973));\n    p += dot(p, p.yx + 19.19);\n    return fract(vec2(p.x * p.y, p.y * p.x));\n}\n\nfloat vnoise(vec2 x) {\n    vec2 i = floor(x);\n    vec2 f = fract(x);\n    f = f * f * (3.0 - 2.0 * f);\n    float a = hash21(i);\n    float b = hash21(i + vec2(1.0, 0.0));\n    float c = hash21(i + vec2(0.0, 1.0));\n    float d = hash21(i + vec2(1.0, 1.0));\n    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n}\n\nfloat fbm(vec2 p, int octaves) {\n    float sum = 0.0;\n    float amp = 0.5;\n    float freq = 1.0;\n    for (int i = 0; i < 6; i++) {\n        if (i >= octaves) break;\n        sum += amp * vnoise(p * freq);\n        freq *= 2.0;\n        amp *= 0.5;\n    }\n    return sum;\n}\n\n// \u2500\u2500 Blackbody-inspired color \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nvec3 blackbody(float t) {\n    // Approximate blackbody radiation color\n    // t: 0 = cold/dark, 1 = white hot\n    vec3 col;\n    col.r = smoothstep(0.0, 0.4, t);\n    col.g = smoothstep(0.2, 0.7, t) * 0.8;\n    col.b = smoothstep(0.6, 1.0, t) * 0.3;\n\n    // Push toward orange-yellow at mid range\n    col.r = pow(col.r, 0.6);\n    col.g = pow(col.g, 1.2);\n\n    return col;\n}\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    // Ember (default) \u2014 blackbody\n    if (id == 0) return blackbody(t);\n    // Lava\n    if (id == 1) {\n        vec3 col = blackbody(t);\n        col.r *= 1.2;\n        col.b += smoothstep(0.5, 1.0, t) * 0.15;\n        return col;\n    }\n    // SilkCircuit\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    // Solar\n    if (id == 3) {\n        vec3 col = blackbody(t * 0.8 + 0.2);\n        col += vec3(0.1, 0.05, 0.0);\n        return col;\n    }\n    // Phosphor green\n    if (id == 4) return vec3(0.0, 1.0, 0.2) * smoothstep(0.0, 0.5, t) * (0.5 + t * 0.5);\n    return blackbody(t);\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    float time = iTime * iSpeed * 0.2;\n\n    // Heat distortion\n    float heatWarp = iHeatWarp * 0.003;\n    vec2 heatOffset = vec2(\n        vnoise(vec2(uv.x * 4.0, uv.y * 6.0 + time * 2.0)) * heatWarp,\n        vnoise(vec2(uv.x * 3.0 + 5.0, uv.y * 8.0 + time * 1.5)) * heatWarp\n    );\n    // Heat rises \u2014 stronger distortion at top\n    heatOffset *= (0.3 + uv.y * 0.7);\n    vec2 warped = uv + heatOffset;\n\n    // \u2500\u2500 Ember bed (bottom layer) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n    float emberNoise = fbm(warped * vec2(5.0, 3.0) + vec2(0.0, -time * 0.3), 5);\n    float heatMap = fbm(warped * 3.0 + vec2(time * 0.1, -time * 0.2), 4);\n\n    // Vertical gradient: hotter at bottom\n    float verticalHeat = 1.0 - uv.y * 0.7;\n\n    // Pulsing hotspots\n    float pulse = sin(time * 0.8 + emberNoise * 6.28) * 0.5 + 0.5;\n    float hotspots = smoothstep(0.4, 0.7, heatMap + pulse * 0.2) * verticalHeat;\n\n    // Map to temperature\n    float temperature = hotspots * iIntensity * 0.012;\n    temperature = clamp(temperature, 0.0, 1.0);\n\n    vec3 col = paletteColor(temperature, iPalette) * temperature;\n\n    // \u2500\u2500 Floating embers (particles rising) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n    float density = iEmberDensity * 0.35;\n    for (int layer = 0; layer < 3; layer++) {\n        float fl = float(layer);\n        float particleScale = 30.0 + fl * 20.0;\n        vec2 particleUV = warped * particleScale;\n\n        // Particles rise\n        particleUV.y -= time * (1.5 + fl * 0.8) * (1.0 + vnoise(vec2(fl * 10.0, time * 0.1)) * 0.5);\n        // Slight horizontal drift\n        particleUV.x += sin(time * 0.5 + fl * 2.0) * 2.0;\n\n        vec2 cell = floor(particleUV);\n        vec2 local = fract(particleUV) - 0.5;\n\n        float rng = hash21(cell + fl * 100.0);\n        if (rng < density * 0.01) {\n            vec2 offset = (hash22(cell + fl * 77.0) - 0.5) * 0.6;\n            float dist = length(local - offset);\n\n            // Ember size varies\n            float size = 0.03 + rng * 0.06;\n            float ember = smoothstep(size, size * 0.2, dist);\n\n            // Embers cool as they rise\n            float lifeProgress = fract(time * 0.3 + rng);\n            float cooling = 1.0 - lifeProgress * 0.6;\n\n            // Flickering\n            float flicker = 0.7 + 0.3 * sin(time * 8.0 + rng * 50.0);\n\n            vec3 emberColor = paletteColor(cooling * 0.8 + 0.1, iPalette);\n            col += emberColor * ember * flicker * cooling * (0.4 - fl * 0.1);\n        }\n    }\n\n    // \u2500\u2500 Ambient heat glow \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n    float ambientHeat = fbm(warped * 2.0 + vec2(-time * 0.05), 3) * verticalHeat * 0.15;\n    col += paletteColor(0.2, iPalette) * ambientHeat * iIntensity * 0.01;\n\n    // Vignette \u2014 darker edges\n    float vignette = 1.0 - 0.4 * length((uv - vec2(0.5, 0.3)) * vec2(1.2, 1.0));\n    col *= max(vignette, 0.0);\n\n    // Tonemapping\n    col = col / (1.0 + col * 0.4);\n\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
+  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\n// Controls\nuniform float iSpeed;\nuniform float iIntensity;\nuniform float iEmberDensity;\nuniform float iFlowSpread;\nuniform float iGlow;\nuniform int iPalette;\nuniform int iScene;\n\nconst float TAU = 6.28318530718;\n\nfloat saturate(float v) { return clamp(v, 0.0, 1.0); }\n\n// \u2500\u2500 Noise \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 31.32);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec2 hash22(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.0973, 0.1099));\n    p3 += dot(p3, p3.yzx + 29.57);\n    return fract((p3.xx + p3.yz) * p3.zy);\n}\n\nfloat vnoise(vec2 x) {\n    vec2 i = floor(x);\n    vec2 f = fract(x);\n    f = f * f * (3.0 - 2.0 * f);\n    float a = hash21(i);\n    float b = hash21(i + vec2(1.0, 0.0));\n    float c = hash21(i + vec2(0.0, 1.0));\n    float d = hash21(i + vec2(1.0, 1.0));\n    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n}\n\nfloat fbm(vec2 p, int octaves) {\n    float sum = 0.0;\n    float amp = 0.5;\n    float freq = 1.0;\n    for (int i = 0; i < 6; i++) {\n        if (i >= octaves) break;\n        sum += amp * vnoise(p * freq);\n        freq *= 2.02;\n        amp *= 0.5;\n    }\n    return sum;\n}\n\n// \u2500\u2500 Scene vectors \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nvec2 sceneDirection(int scene) {\n    if (scene == 1) return normalize(vec2(0.95, 0.82));\n    if (scene == 2) return normalize(vec2(0.30, 1.00));\n    return normalize(vec2(0.14, 1.00));\n}\n\nfloat sceneLift(int scene) {\n    if (scene == 1) return 0.82;\n    if (scene == 2) return 1.12;\n    return 1.00;\n}\n\nfloat sceneSwirl(int scene) {\n    if (scene == 1) return 0.45;\n    if (scene == 2) return 1.00;\n    return 0.25;\n}\n\n// \u2500\u2500 Palette \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nvec3 triGradient(float t, vec3 a, vec3 b, vec3 c) {\n    t = saturate(t);\n    if (t < 0.5) return mix(a, b, t * 2.0);\n    return mix(b, c, (t - 0.5) * 2.0);\n}\n\nvec3 paletteColor(float t, int palette) {\n    if (palette == 0) {\n        return triGradient(t, vec3(0.02, 0.005, 0.002), vec3(0.88, 0.20, 0.03), vec3(1.00, 0.54, 0.08));\n    }\n    if (palette == 1) {\n        return triGradient(t, vec3(0.015, 0.05, 0.028), vec3(0.30, 0.93, 0.20), vec3(0.76, 1.00, 0.82));\n    }\n    if (palette == 2) {\n        return triGradient(t, vec3(0.03, 0.02, 0.08), vec3(0.88, 0.18, 0.96), vec3(0.50, 0.98, 0.93));\n    }\n    if (palette == 3) {\n        return triGradient(t, vec3(0.055, 0.025, 0.045), vec3(0.88, 0.21, 0.64), vec3(1.00, 0.60, 0.22));\n    }\n    return triGradient(t, vec3(0.03, 0.045, 0.028), vec3(0.57, 0.84, 0.16), vec3(1.00, 0.63, 0.24));\n}\n\n// \u2500\u2500 Flow field \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nvec2 flowVector(vec2 p, float time, float spread, int scene) {\n    vec2 dir = sceneDirection(scene);\n    vec2 side = vec2(-dir.y, dir.x);\n\n    float nA = vnoise(p * 2.2 + vec2(time * 0.29, -time * 0.21));\n    float nB = vnoise(p * 3.1 + vec2(-time * 0.24, time * 0.27));\n    vec2 curl = vec2(nA - 0.5, nB - 0.5);\n\n    float wave = sin(dot(p, side * 4.6) + time * (1.5 + spread * 2.4));\n    vec2 bend = side * wave * (0.08 + spread * 0.26);\n\n    vec2 flow = dir + curl * (0.18 + spread * 0.52) + bend;\n    if (scene == 2) {\n        vec2 center = p - vec2(0.35, 0.28);\n        float radius = max(length(center), 0.08);\n        flow += vec2(-center.y, center.x) * (0.18 + spread * 0.62) / (0.22 + radius * 1.8);\n    }\n\n    return normalize(flow + vec2(1e-4, 0.0));\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution.xy;\n    vec2 p = uv;\n    p.x *= iResolution.x / max(iResolution.y, 1.0);\n\n    float time = iTime * max(iSpeed, 0.05) * 0.52;\n    float intensity = saturate(iIntensity / 100.0);\n    float density = saturate(iEmberDensity / 100.0);\n    float spread = saturate(iFlowSpread / 100.0);\n    float glow = saturate(iGlow / 100.0);\n\n    vec2 baseFlow = flowVector(p * vec2(0.95, 1.45), time, spread, iScene);\n    vec2 side = vec2(-baseFlow.y, baseFlow.x);\n    float lift = sceneLift(iScene);\n    float swirl = sceneSwirl(iScene);\n\n    vec2 adv = p;\n    adv -= baseFlow * time * 0.055 * lift;\n    adv += side * (vnoise(p * vec2(3.6, 2.9) + vec2(time * 0.42, -time * 0.28)) - 0.5) * (0.03 + spread * 0.08);\n\n    // Ember bed: ridged tongues rather than fog fill.\n    float floorHeat = smoothstep(1.05, -0.08, uv.y);\n    float emberBed = fbm(adv * vec2(3.4, 2.2) + vec2(0.0, -time * (0.55 + lift * 0.35)), 5);\n    float ridges = 1.0 - abs(fbm(adv * vec2(5.4, 3.7) + vec2(time * 0.35, -time * 0.88), 4) * 2.0 - 1.0);\n    float tongues = smoothstep(0.64 - intensity * 0.16, 1.04, emberBed * 0.88 + ridges * 0.42 + floorHeat * (0.28 + intensity * 0.14));\n\n    float haze = fbm(adv * vec2(1.8, 1.35) + vec2(-time * 0.12, time * 0.07), 3);\n    haze *= (0.03 + glow * 0.08) * (0.16 + floorHeat * 0.56);\n\n    float heat = saturate(tongues * (0.38 + intensity * 0.72) + haze * (0.14 + spread * 0.12));\n    vec3 col = paletteColor(heat, iPalette) * pow(max(heat, 0.0), 1.22) * (0.26 + intensity * 0.66);\n\n    // Directional streamers to reinforce flow identity.\n    float streamAxis = dot(adv, baseFlow * (7.5 + spread * 5.0) + side * (1.4 + swirl * 1.6));\n    float streamNoise = fbm(adv * vec2(7.8, 2.9) + vec2(time * 1.18, -time * 0.46), 3);\n    float streaks = smoothstep(0.68, 0.94, fract(streamAxis - time * (1.45 + spread * 1.9) + streamNoise * 0.9));\n    streaks *= smoothstep(0.05, 0.88, floorHeat + 0.24);\n    col += paletteColor(0.34 + streamNoise * 0.58, iPalette) * streaks * (0.04 + intensity * 0.11);\n\n    // Crisp flecks with anisotropic tails aligned to local flow.\n    vec3 fleckColor = vec3(0.0);\n    float fleckGlow = 0.0;\n    for (int layer = 0; layer < 4; layer++) {\n        float lf = float(layer);\n        float layerMix = lf / 3.0;\n        float scale = mix(24.0, 74.0, layerMix);\n        float layerSpeed = (0.75 + lf * 0.34) * lift;\n\n        vec2 layerFlow = flowVector(p * (1.0 + lf * 0.18) + vec2(lf * 2.7, -lf * 1.9), time * (1.0 + lf * 0.2), spread, iScene);\n        vec2 layerSide = vec2(-layerFlow.y, layerFlow.x);\n\n        vec2 q = p * scale;\n        q -= layerFlow * time * (5.6 + lf * 3.1) * layerSpeed;\n        q += layerSide * sin((p.y + lf * 0.17) * TAU * 1.25 + time * (1.7 + lf * 0.45)) * (0.30 + spread * (0.42 + layerMix * 0.28));\n\n        vec2 cell = floor(q);\n        vec2 local = fract(q) - 0.5;\n        float spawnRate = (0.02 + density * 0.10) * (1.0 - layerMix * 0.24);\n\n        for (int oy = -1; oy <= 1; oy++) {\n            for (int ox = -1; ox <= 1; ox++) {\n                vec2 cid = cell + vec2(float(ox), float(oy));\n                float seed = hash21(cid + vec2(37.1 + lf * 21.3, 9.3 + lf * 17.7));\n                if (seed > spawnRate) continue;\n\n                vec2 jitter = hash22(cid + vec2(19.2 + lf * 4.3, 71.8 + lf * 5.9)) - 0.5;\n                vec2 rel = local - vec2(float(ox), float(oy)) - jitter * (0.82 + spread * 0.74);\n\n                float along = dot(rel, layerFlow);\n                float across = dot(rel, layerSide);\n\n                float core = exp(-(across * across * (102.0 + lf * 26.0) + along * along * (56.0 + lf * 14.0)));\n                float tail = exp(-(across * across * (64.0 + lf * 19.0) + pow(max(along + 0.10 + lf * 0.025, 0.0), 2.0) * (22.0 + lf * 9.0)));\n                float fleck = smoothstep(0.18, 1.0, core + tail * (0.44 + spread * 0.52));\n\n                float flicker = 0.64 + 0.36 * sin(time * (8.8 + lf * 2.1) + seed * 67.0);\n                float altitude = clamp(1.08 - uv.y * (0.60 + layerMix * 0.42), 0.1, 1.0);\n                float hotness = saturate(0.18 + altitude * 0.78 + seed * 0.32);\n\n                float alpha = fleck * flicker * altitude * (0.36 - layerMix * 0.12) * (0.52 + intensity * 0.9);\n                fleckColor += paletteColor(hotness, iPalette) * alpha;\n                fleckGlow += alpha;\n            }\n        }\n    }\n\n    col += fleckColor;\n\n    float veil = fbm(p * vec2(1.2, 1.6) + vec2(time * 0.09, -time * 0.13), 4);\n    veil *= smoothstep(0.0, 0.95, uv.y) * (0.015 + spread * 0.04 + glow * 0.04);\n    col += paletteColor(0.30 + veil * 0.35, iPalette) * veil;\n\n    float bloom = heat * (0.26 + glow * 0.78) + fleckGlow * (0.16 + glow * 0.48);\n    col += paletteColor(0.56 + heat * 0.3, iPalette) * bloom * 0.22;\n\n    vec2 center = uv - vec2(0.5, 0.44);\n    float vignette = 1.0 - dot(center * vec2(1.1, 0.95), center * vec2(1.1, 0.95)) * 1.35;\n    col *= clamp(vignette, 0.2, 1.0);\n\n    col = col / (vec3(1.0) + col * 0.8);\n    col = pow(col, vec3(0.95));\n\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
 
   // src/effects/ember-glow/main.ts
-  var PALETTES = ["Ember", "Lava", "SilkCircuit", "Solar", "Phosphor"];
+  var PALETTES = ["Forge", "Poison", "SilkCircuit", "Ash Bloom", "Toxic Rust"];
+  var SCENES = ["Updraft", "Crosswind", "Vortex"];
   var EmberGlow = class extends WebGLEffect {
     speed;
     intensity;
     emberDensity;
-    heatWarp;
+    flowSpread;
+    glow;
     palette;
+    scene;
     constructor() {
-      super({ fragmentShader: fragment_default });
+      super({ id: "ember-glow", name: "Ember Glow", fragmentShader: fragment_default, audioReactive: false });
     }
     initializeControls() {
-      this.speed = getControlValue("speed", 4);
-      this.intensity = getControlValue("intensity", 70);
-      this.emberDensity = getControlValue("emberDensity", 55);
-      this.heatWarp = getControlValue("heatWarp", 40);
-      this.palette = getControlValue("palette", "Ember");
+      this.speed = getControlValue("speed", 5);
+      this.intensity = getControlValue("intensity", 74);
+      this.emberDensity = getControlValue("emberDensity", 58);
+      this.flowSpread = getControlValue("flowSpread", 62);
+      this.glow = getControlValue("glow", 68);
+      this.palette = getControlValue("palette", "Forge");
+      this.scene = getControlValue("scene", "Updraft");
     }
     getControlValues() {
       return {
-        speed: normalizeSpeed(getControlValue("speed", 4)),
-        intensity: getControlValue("intensity", 70),
-        emberDensity: getControlValue("emberDensity", 55),
-        heatWarp: getControlValue("heatWarp", 40),
-        palette: PALETTES.indexOf(getControlValue("palette", "Ember"))
+        speed: normalizeSpeed(getControlValue("speed", 5)),
+        intensity: getControlValue("intensity", 74),
+        emberDensity: getControlValue("emberDensity", 58),
+        flowSpread: getControlValue("flowSpread", 62),
+        glow: getControlValue("glow", 68),
+        palette: comboboxValueToIndex(getControlValue("palette", "Forge"), PALETTES, 0),
+        scene: comboboxValueToIndex(getControlValue("scene", "Updraft"), SCENES, 0)
       };
     }
     createUniforms() {
-      this.registerUniform("iSpeed", 1);
-      this.registerUniform("iIntensity", 70);
-      this.registerUniform("iEmberDensity", 55);
-      this.registerUniform("iHeatWarp", 40);
+      this.registerUniform("iSpeed", normalizeSpeed(5));
+      this.registerUniform("iIntensity", 74);
+      this.registerUniform("iEmberDensity", 58);
+      this.registerUniform("iFlowSpread", 62);
+      this.registerUniform("iGlow", 68);
       this.registerUniform("iPalette", 0);
+      this.registerUniform("iScene", 0);
     }
     updateUniforms(controls) {
       this.setUniform("iSpeed", controls.speed);
       this.setUniform("iIntensity", controls.intensity);
       this.setUniform("iEmberDensity", controls.emberDensity);
-      this.setUniform("iHeatWarp", controls.heatWarp);
+      this.setUniform("iFlowSpread", controls.flowSpread);
+      this.setUniform("iGlow", controls.glow);
       this.setUniform("iPalette", controls.palette);
+      this.setUniform("iScene", controls.scene);
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 4, tooltip: "Animation speed" })
+    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Animation speed" })
   ], EmberGlow.prototype, "speed", 2);
   __decorateClass([
-    NumberControl({ label: "Intensity", min: 0, max: 100, default: 70, tooltip: "Heat intensity" })
+    NumberControl({ label: "Intensity", min: 0, max: 100, default: 74, tooltip: "Heat and brightness" })
   ], EmberGlow.prototype, "intensity", 2);
   __decorateClass([
-    NumberControl({ label: "Embers", min: 0, max: 100, default: 55, tooltip: "Floating ember density" })
+    NumberControl({ label: "Ember Density", min: 0, max: 100, default: 58, tooltip: "Crisp fleck count" })
   ], EmberGlow.prototype, "emberDensity", 2);
   __decorateClass([
-    NumberControl({ label: "Heat Warp", min: 0, max: 100, default: 40, tooltip: "Heat shimmer" })
-  ], EmberGlow.prototype, "heatWarp", 2);
+    NumberControl({ label: "Flow/Spread", min: 0, max: 100, default: 62, tooltip: "Directional drift and turbulence" })
+  ], EmberGlow.prototype, "flowSpread", 2);
+  __decorateClass([
+    NumberControl({ label: "Glow", min: 0, max: 100, default: 68, tooltip: "Bloom around hot clusters" })
+  ], EmberGlow.prototype, "glow", 2);
   __decorateClass([
     ComboboxControl({
       label: "Palette",
       values: PALETTES,
-      default: "Ember",
-      tooltip: "Color palette"
+      default: "Forge",
+      tooltip: "Color personality"
     })
   ], EmberGlow.prototype, "palette", 2);
+  __decorateClass([
+    ComboboxControl({
+      label: "Scene",
+      values: SCENES,
+      default: "Updraft",
+      tooltip: "Directional flow mode"
+    })
+  ], EmberGlow.prototype, "scene", 2);
   EmberGlow = __decorateClass([
     Effect({
       name: "Ember Glow",
-      description: "Smoldering embers with thermal convection, blackbody color, and rising sparks",
-      author: "Hypercolor"
+      description: "Crisp ember flecks in directional poison-forge flow with selectable scene behavior",
+      author: "Hypercolor",
+      audioReactive: false
     })
   ], EmberGlow);
   var effect = new EmberGlow();

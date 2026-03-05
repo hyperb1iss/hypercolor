@@ -21,7 +21,7 @@ interface BorealisControls {
     palette: number
 }
 
-const PALETTES = ['Aurora', 'SilkCircuit', 'Cyberpunk', 'Sunset', 'Ice', 'Fire', 'Vaporwave', 'Phosphor']
+const PALETTES = ['Northern Lights', 'SilkCircuit', 'Cyberpunk', 'Sunset', 'Ice', 'Fire', 'Vaporwave', 'Phosphor']
 
 @Effect({
     name: 'Borealis',
@@ -48,7 +48,7 @@ class Borealis extends WebGLEffect<BorealisControls> {
     @ComboboxControl({
         label: 'Palette',
         values: PALETTES,
-        default: 'Aurora',
+        default: 'Northern Lights',
         tooltip: 'Color palette',
     })
     palette!: string
@@ -63,7 +63,7 @@ class Borealis extends WebGLEffect<BorealisControls> {
         this.warpStrength = getControlValue('warpStrength', 62)
         this.starBrightness = getControlValue('starBrightness', 40)
         this.curtainHeight = getControlValue('curtainHeight', 55)
-        this.palette = getControlValue('palette', 'Aurora')
+        this.palette = getControlValue('palette', 'Northern Lights')
     }
 
     protected getControlValues(): BorealisControls {
@@ -73,7 +73,7 @@ class Borealis extends WebGLEffect<BorealisControls> {
             warpStrength: getControlValue('warpStrength', 62),
             starBrightness: getControlValue('starBrightness', 40),
             curtainHeight: getControlValue('curtainHeight', 55),
-            palette: comboboxValueToIndex(getControlValue('palette', 'Aurora'), PALETTES, 0),
+            palette: comboboxValueToIndex(getControlValue('palette', 'Northern Lights'), PALETTES, 0),
         }
     }
 

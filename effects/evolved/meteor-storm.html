@@ -4,13 +4,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Meteor Storm</title>
-  <meta description="Streaking meteors with physics trails and atmospheric glow"/>
+  <meta description="Crisp falling stars with directional hyperspace trails over a gradient night sky"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Meteor speed"/>
-  <meta property="density" label="Density" type="number" min="10" max="100" default="50" tooltip="Meteor count"/>
-  <meta property="trailLength" label="Trail" type="number" min="10" max="100" default="60" tooltip="Trail length"/>
-  <meta property="glow" label="Glow" type="number" min="10" max="100" default="65" tooltip="Glow intensity"/>
-  <meta property="palette" label="Palette" type="combobox" default="SilkCircuit" values="SilkCircuit,Fire,Ice,Aurora,Cyberpunk" tooltip="Color palette"/>
+  <meta property="path" label="Path" type="combobox" default="Diagonal" values="Diagonal,Vertical" tooltip="Meteor trajectory direction"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Meteor travel speed"/>
+  <meta property="starSize" label="Star Size" type="number" min="1" max="20" default="8" tooltip="Meteor head and star size"/>
+  <meta property="density" label="Density" type="number" min="10" max="100" default="58" tooltip="Star and meteor count"/>
+  <meta property="trail" label="Trail" type="number" min="10" max="100" default="72" tooltip="Meteor trail length and glow"/>
+  <meta property="skyTop" label="Sky Top color" type="color" default="#0b1233" tooltip="Top gradient color"/>
+  <meta property="skyBottom" label="Sky Bottom color" type="color" default="#1a3f89" tooltip="Bottom gradient color"/>
+  <meta property="starColor" label="Star Color" type="color" default="#fff6bd" tooltip="Star and meteor color"/>
+  <meta property="scene" label="Scene" type="combobox" default="Night" values="Night,Pastel" tooltip="Scene tint preset"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1368,300 +1372,41 @@
     }
   };
 
-  // packages/core/src/audio/analysis.ts
-  var FFT_SIZE = 200;
-  var MEL_BANDS = 24;
-  var PITCH_CLASSES = 12;
-  function getAudioData() {
-    const hasEngine = typeof engine !== "undefined" && engine?.audio;
-    if (!hasEngine) return createSilentAudioData();
-    const audio = engine.audio;
-    return {
-      // Legacy
-      bass: audio.bass ?? 0,
-      bassEnv: audio.bassEnv ?? 0,
-      beat: Number(audio.beat ?? 0),
-      beatConfidence: audio.beatConfidence ?? 0,
-      beatPhase: audio.beatPhase ?? 0,
-      beatPulse: audio.beatPulse ?? 0,
-      brightness: audio.brightness ?? 0.5,
-      chordMood: audio.chordMood ?? 0,
-      chromagram: audio.chromagram ?? new Float32Array(PITCH_CLASSES),
-      density: audio.density ?? 0,
-      dominantPitch: audio.dominantPitch ?? 0,
-      dominantPitchConfidence: audio.dominantPitchConfidence ?? 0,
-      frequency: audio.frequency ?? new Float32Array(FFT_SIZE),
-      frequencyRaw: audio.frequencyRaw ?? new Int8Array(FFT_SIZE),
-      frequencyWeighted: audio.frequencyWeighted ?? new Float32Array(FFT_SIZE),
-      harmonicHue: audio.harmonicHue ?? 0,
-      level: audio.level != null ? normalizeAudioLevel(audio.level) : 0,
-      levelLong: audio.levelLong ?? 0,
-      levelRaw: audio.level ?? -100,
-      levelShort: audio.levelShort ?? 0,
-      melBands: audio.melBands ?? new Float32Array(MEL_BANDS),
-      melBandsNormalized: audio.melBandsNormalized ?? new Float32Array(MEL_BANDS),
-      mid: audio.mid ?? 0,
-      midEnv: audio.midEnv ?? 0,
-      momentum: audio.momentum ?? 0,
-      onset: Number(audio.onset ?? 0),
-      onsetPulse: audio.onsetPulse ?? 0,
-      rolloff: audio.rolloff ?? 0.5,
-      roughness: audio.roughness ?? 0.2,
-      spectralFlux: audio.spectralFlux ?? 0,
-      spectralFluxBands: audio.spectralFluxBands ?? new Float32Array(3),
-      spread: audio.spread ?? 0.3,
-      swell: audio.swell ?? 0,
-      tempo: audio.tempo ?? 120,
-      treble: audio.treble ?? 0,
-      trebleEnv: audio.trebleEnv ?? 0,
-      width: audio.width ?? 0.5
-    };
-  }
-  function normalizeAudioLevel(levelDb) {
-    return Math.max(0, Math.min(1, (levelDb + 100) / 100));
-  }
-  function createSilentAudioData() {
-    return {
-      bass: 0,
-      bassEnv: 0,
-      beat: 0,
-      beatConfidence: 0,
-      beatPhase: 0,
-      beatPulse: 0,
-      brightness: 0.5,
-      chordMood: 0,
-      chromagram: new Float32Array(PITCH_CLASSES),
-      density: 0,
-      dominantPitch: 0,
-      dominantPitchConfidence: 0,
-      frequency: new Float32Array(FFT_SIZE),
-      frequencyRaw: new Int8Array(FFT_SIZE),
-      frequencyWeighted: new Float32Array(FFT_SIZE),
-      harmonicHue: 0,
-      level: 0,
-      levelLong: 0,
-      levelRaw: -100,
-      levelShort: 0,
-      melBands: new Float32Array(MEL_BANDS),
-      melBandsNormalized: new Float32Array(MEL_BANDS),
-      mid: 0,
-      midEnv: 0,
-      momentum: 0,
-      onset: 0,
-      onsetPulse: 0,
-      rolloff: 0.5,
-      roughness: 0.2,
-      spectralFlux: 0,
-      spectralFluxBands: new Float32Array(3),
-      spread: 0.3,
-      swell: 0,
-      tempo: 120,
-      treble: 0,
-      trebleEnv: 0,
-      width: 0.5
-    };
-  }
-
-  // packages/core/src/effects/webgl-effect.ts
-  var DEFAULT_VERTEX_SHADER = `#version 300 es
-precision highp float;
-in vec2 aPosition;
-void main() {
-    gl_Position = vec4(aPosition, 0.0, 1.0);
-}
-`;
-  var WebGLEffect = class extends BaseEffect {
-    gl = null;
-    program = null;
-    uniforms = /* @__PURE__ */ new Map();
-    fragmentShader;
-    vertexShader;
-    audioReactive;
-    currentAudioData = null;
+  // packages/core/src/effects/canvas-effect.ts
+  var CanvasEffect = class extends BaseEffect {
+    ctx = null;
+    backgroundColor;
+    lastFrameTime = 0;
+    deltaTime = 0;
     constructor(config) {
       super(config);
-      this.fragmentShader = config.fragmentShader;
-      this.vertexShader = config.vertexShader ?? DEFAULT_VERTEX_SHADER;
-      this.audioReactive = config.audioReactive ?? false;
+      this.backgroundColor = config.backgroundColor || "black";
     }
     async initializeRenderer() {
       if (!this.canvas) throw new Error("Canvas not available");
-      this.gl = this.canvas.getContext("webgl2", { preserveDrawingBuffer: true });
-      if (!this.gl) throw new Error("WebGL2 not supported");
-      this.program = this.createProgram(this.vertexShader, this.fragmentShader);
-      this.gl.useProgram(this.program);
-      this.createQuad();
-      this.registerUniform("iTime", 0);
-      this.registerUniform("iResolution", [this.canvas.width, this.canvas.height]);
-      this.registerUniform("iMouse", [0, 0]);
-      if (this.audioReactive) {
-        this.registerAudioUniforms();
-      }
-      this.createUniforms();
-      this.resolveLocations();
-      this.pushAllUniforms();
-      this.debug("success", "WebGL2 renderer initialized");
+      this.ctx = this.canvas.getContext("2d");
+      if (!this.ctx) throw new Error("Could not get 2D context");
+      this.ctx.imageSmoothingEnabled = true;
+      this.clearCanvas();
+      await this.loadResources();
+    }
+    /** Override to load images, fonts, etc. */
+    async loadResources() {
+    }
+    clearCanvas() {
+      if (!this.ctx || !this.canvas) return;
+      this.ctx.fillStyle = this.backgroundColor;
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
     render(time) {
-      if (!this.gl || !this.program) return;
-      this.setUniform("iTime", time);
-      if (this.audioReactive) {
-        this.currentAudioData = getAudioData();
-        this.pushAudioUniforms(this.currentAudioData);
-      }
-      this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
-    }
-    getAudio() {
-      return this.currentAudioData;
+      if (!this.ctx || !this.canvas) return;
+      this.deltaTime = this.lastFrameTime === 0 ? 0 : time - this.lastFrameTime;
+      this.lastFrameTime = time;
+      this.clearCanvas();
+      this.draw(time, this.deltaTime);
     }
     updateParameters(controls) {
-      if (!this.program) return;
-      this.updateUniforms(controls);
-    }
-    // ── Uniform API ─────────────────────────────────────────────────────
-    /** Register a uniform. Call in createUniforms(). */
-    registerUniform(name, value) {
-      this.uniforms.set(name, { location: null, value, isInt: false });
-    }
-    /** Set a uniform value (will be pushed on next draw). */
-    setUniform(name, value) {
-      const entry = this.uniforms.get(name);
-      if (entry) {
-        entry.value = value;
-        this.pushUniform(name, entry);
-      }
-    }
-    // ── Internal ────────────────────────────────────────────────────────
-    createProgram(vertSrc, fragSrc) {
-      const gl = this.gl;
-      const vert = this.compileShader(gl.VERTEX_SHADER, vertSrc);
-      const frag = this.compileShader(gl.FRAGMENT_SHADER, fragSrc);
-      const program = gl.createProgram();
-      gl.attachShader(program, vert);
-      gl.attachShader(program, frag);
-      gl.linkProgram(program);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        const info = gl.getProgramInfoLog(program);
-        gl.deleteProgram(program);
-        throw new Error(`Shader link failed: ${info}`);
-      }
-      gl.deleteShader(vert);
-      gl.deleteShader(frag);
-      return program;
-    }
-    compileShader(type, source) {
-      const gl = this.gl;
-      const shader = gl.createShader(type);
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        const info = gl.getShaderInfoLog(shader);
-        gl.deleteShader(shader);
-        throw new Error(`Shader compile failed: ${info}`);
-      }
-      return shader;
-    }
-    createQuad() {
-      const gl = this.gl;
-      const vertices = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
-      const buffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-      const posLoc = gl.getAttribLocation(this.program, "aPosition");
-      gl.enableVertexAttribArray(posLoc);
-      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-    }
-    pushAllUniforms() {
-      for (const [name, entry] of this.uniforms) {
-        this.pushUniform(name, entry);
-      }
-    }
-    resolveLocations() {
-      const gl = this.gl;
-      const program = this.program;
-      const intTypes = /* @__PURE__ */ new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL]);
-      const intUniforms = /* @__PURE__ */ new Set();
-      const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
-      for (let i = 0; i < numActive; i++) {
-        const info = gl.getActiveUniform(program, i);
-        if (info && intTypes.has(info.type)) {
-          intUniforms.add(info.name);
-        }
-      }
-      for (const [name, entry] of this.uniforms) {
-        entry.location = gl.getUniformLocation(program, name);
-        entry.isInt = intUniforms.has(name);
-      }
-    }
-    pushUniform(_name, entry) {
-      const gl = this.gl;
-      if (!gl || !entry.location) return;
-      const val = entry.value;
-      if (typeof val === "number") {
-        if (entry.isInt) {
-          gl.uniform1i(entry.location, val | 0);
-        } else {
-          gl.uniform1f(entry.location, val);
-        }
-      } else if (val.length === 2) {
-        if (entry.isInt) {
-          gl.uniform2iv(entry.location, val);
-        } else {
-          gl.uniform2fv(entry.location, val);
-        }
-      } else if (val.length === 3) {
-        if (entry.isInt) {
-          gl.uniform3iv(entry.location, val);
-        } else {
-          gl.uniform3fv(entry.location, val);
-        }
-      } else if (val.length === 4) {
-        if (entry.isInt) {
-          gl.uniform4iv(entry.location, val);
-        } else {
-          gl.uniform4fv(entry.location, val);
-        }
-      }
-    }
-    registerAudioUniforms() {
-      this.registerUniform("iAudioLevel", 0);
-      this.registerUniform("iAudioBass", 0);
-      this.registerUniform("iAudioMid", 0);
-      this.registerUniform("iAudioTreble", 0);
-      this.registerUniform("iAudioBeat", 0);
-      this.registerUniform("iAudioBeatPulse", 0);
-      this.registerUniform("iAudioBeatPhase", 0);
-      this.registerUniform("iAudioBeatConfidence", 0);
-      this.registerUniform("iAudioOnset", 0);
-      this.registerUniform("iAudioOnsetPulse", 0);
-      this.registerUniform("iAudioSpectralFlux", 0);
-      this.registerUniform("iAudioHarmonicHue", 0);
-      this.registerUniform("iAudioChordMood", 0);
-      this.registerUniform("iAudioBrightness", 0.5);
-      this.registerUniform("iAudioMomentum", 0);
-      this.registerUniform("iAudioSwell", 0);
-      this.registerUniform("iAudioTempo", 120);
-      this.registerUniform("iAudioFluxBands", [0, 0, 0]);
-    }
-    pushAudioUniforms(audio) {
-      this.setUniform("iAudioLevel", audio.level);
-      this.setUniform("iAudioBass", audio.bass);
-      this.setUniform("iAudioMid", audio.mid);
-      this.setUniform("iAudioTreble", audio.treble);
-      this.setUniform("iAudioBeat", audio.beat);
-      this.setUniform("iAudioBeatPulse", audio.beatPulse);
-      this.setUniform("iAudioBeatPhase", audio.beatPhase);
-      this.setUniform("iAudioBeatConfidence", audio.beatConfidence);
-      this.setUniform("iAudioOnset", audio.onset);
-      this.setUniform("iAudioOnsetPulse", audio.onsetPulse);
-      this.setUniform("iAudioSpectralFlux", audio.spectralFlux);
-      this.setUniform("iAudioHarmonicHue", audio.harmonicHue);
-      this.setUniform("iAudioChordMood", audio.chordMood);
-      this.setUniform("iAudioBrightness", audio.brightness);
-      this.setUniform("iAudioMomentum", audio.momentum);
-      this.setUniform("iAudioSwell", audio.swell);
-      this.setUniform("iAudioTempo", audio.tempo);
-      this.setUniform("iAudioFluxBands", Array.from(audio.spectralFluxBands));
+      this.applyControls(controls);
     }
   };
 
@@ -1692,71 +1437,325 @@ void main() {
     }, { once: true });
   }
 
-  // src/effects/meteor-storm/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iSpeed;\nuniform float iDensity;\nuniform float iTrailLength;\nuniform float iGlow;\nuniform int iPalette;\n\nfloat hash11(float p) {\n    p = fract(p * 0.1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n}\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    if (id == 1) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.6, 0.8), vec3(0.2, 0.3, 0.2), vec3(0.6, 0.8, 1.0), vec3(0.0, 0.1, 0.3));\n    if (id == 3) return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n    if (id == 4) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n}\n\n// Single meteor trail\nfloat meteor(vec2 uv, vec2 origin, float angle, float progress, float trailLen) {\n    // Rotate UV to meteor's frame\n    float ca = cos(angle), sa = sin(angle);\n    mat2 rot = mat2(ca, sa, -sa, ca);\n    vec2 local = rot * (uv - origin);\n\n    // Meteor head position\n    float headX = progress * 2.0;\n    local.x -= headX;\n\n    // Trail shape: thin line behind the head\n    float trail = smoothstep(0.0, trailLen, -local.x) * smoothstep(trailLen + 0.1, trailLen, -local.x);\n    float width = 0.004 + 0.002 * smoothstep(0.0, trailLen * 0.3, -local.x);\n    float shape = smoothstep(width, width * 0.3, abs(local.y)) * trail;\n\n    // Head glow\n    float headDist = length(local);\n    float head = exp(-headDist * headDist * 800.0);\n\n    return shape + head * 2.0;\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    vec2 aspect = vec2(iResolution.x / iResolution.y, 1.0);\n    uv = (uv - 0.5) * aspect;\n\n    float time = iTime * iSpeed * 0.3;\n\n    // Starfield background\n    vec3 col = vec3(0.0);\n    vec2 starUV = (uv + 0.5) * 150.0;\n    vec2 starCell = floor(starUV);\n    float starRng = hash21(starCell);\n    if (starRng > 0.95) {\n        vec2 starLocal = fract(starUV) - 0.5;\n        float starDist = length(starLocal);\n        float twinkle = 0.5 + 0.5 * sin(iTime * 2.0 + starRng * 50.0);\n        col += vec3(0.6, 0.7, 1.0) * smoothstep(0.04, 0.0, starDist) * twinkle * 0.5;\n    }\n\n    // Meteors\n    float trailLen = 0.1 + iTrailLength * 0.004;\n    int meteorCount = 4 + int(iDensity * 0.12);\n\n    for (int i = 0; i < 16; i++) {\n        if (i >= meteorCount) break;\n        float fi = float(i);\n\n        // Deterministic meteor parameters per cycle\n        float cycle = floor(time * 0.3 + fi * 0.618);\n        float seed = hash11(fi * 17.0 + cycle * 31.0);\n\n        // Origin: top-right region\n        vec2 origin = vec2(\n            0.3 + seed * 0.6,\n            0.2 + hash11(seed * 100.0 + cycle) * 0.5\n        ) * aspect - aspect * 0.5;\n\n        // Angle: mostly upper-left to lower-right\n        float angle = -0.6 - seed * 0.4;\n\n        // Progress through the streak\n        float progress = fract(time * (0.3 + seed * 0.4) + fi * 0.618);\n\n        // Visibility window\n        float visible = smoothstep(0.0, 0.05, progress) * smoothstep(0.8, 0.6, progress);\n\n        float m = meteor(uv, origin, angle, progress, trailLen) * visible;\n\n        // Color: hot white head \u2192 palette tail\n        float headAmount = smoothstep(0.5, 2.0, m);\n        vec3 tailColor = paletteColor(seed + fi * 0.1, iPalette);\n        vec3 headColor = vec3(1.0, 0.95, 0.85);\n        vec3 meteorColor = mix(tailColor, headColor, headAmount);\n\n        col += meteorColor * m * iGlow * 0.015;\n    }\n\n    // Atmospheric glow at horizon\n    float horizon = exp(-abs(uv.y + 0.3) * 8.0) * 0.05;\n    col += paletteColor(0.5, iPalette) * horizon;\n\n    col = col / (1.0 + col * 0.4);\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
-
   // src/effects/meteor-storm/main.ts
-  var PALETTES = ["SilkCircuit", "Fire", "Ice", "Aurora", "Cyberpunk"];
-  var MeteorStorm = class extends WebGLEffect {
+  var PATHS = ["Diagonal", "Vertical"];
+  var SCENES = ["Night", "Pastel"];
+  var MeteorStorm = class extends CanvasEffect {
+    path;
     speed;
+    starSize;
     density;
-    trailLength;
-    glow;
-    palette;
+    trail;
+    skyTop;
+    skyBottom;
+    starColor;
+    scene;
+    controlState = {
+      path: "Diagonal",
+      speed: normalizeSpeed(5),
+      starSize: 8,
+      density: 58,
+      trail: 72,
+      skyTop: "#0b1233",
+      skyBottom: "#1a3f89",
+      starColor: "#fff6bd",
+      scene: "Night"
+    };
+    stars = [];
+    meteors = [];
+    spawnBudget = 0;
+    lastWidth = 0;
+    lastHeight = 0;
+    lastPath = "Diagonal";
+    lastStarCount = 0;
     constructor() {
-      super({ fragmentShader: fragment_default });
+      super({
+        id: "meteor-storm",
+        name: "Meteor Storm",
+        backgroundColor: "#060a17"
+      });
     }
     initializeControls() {
+      this.path = getControlValue("path", "Diagonal");
       this.speed = getControlValue("speed", 5);
-      this.density = getControlValue("density", 50);
-      this.trailLength = getControlValue("trailLength", 60);
-      this.glow = getControlValue("glow", 65);
-      this.palette = getControlValue("palette", "SilkCircuit");
+      this.starSize = getControlValue("starSize", 8);
+      this.density = getControlValue("density", 58);
+      this.trail = getControlValue("trail", 72);
+      this.skyTop = getControlValue("skyTop", "#0b1233");
+      this.skyBottom = getControlValue("skyBottom", "#1a3f89");
+      this.starColor = getControlValue("starColor", "#fff6bd");
+      this.scene = getControlValue("scene", "Night");
     }
     getControlValues() {
       return {
+        path: getControlValue("path", "Diagonal"),
         speed: normalizeSpeed(getControlValue("speed", 5)),
-        density: getControlValue("density", 50),
-        trailLength: getControlValue("trailLength", 60),
-        glow: getControlValue("glow", 65),
-        palette: PALETTES.indexOf(getControlValue("palette", "SilkCircuit"))
+        starSize: getControlValue("starSize", 8),
+        density: getControlValue("density", 58),
+        trail: getControlValue("trail", 72),
+        skyTop: getControlValue("skyTop", "#0b1233"),
+        skyBottom: getControlValue("skyBottom", "#1a3f89"),
+        starColor: getControlValue("starColor", "#fff6bd"),
+        scene: getControlValue("scene", "Night")
       };
     }
-    createUniforms() {
-      this.registerUniform("iSpeed", 1);
-      this.registerUniform("iDensity", 50);
-      this.registerUniform("iTrailLength", 60);
-      this.registerUniform("iGlow", 65);
-      this.registerUniform("iPalette", 0);
+    async loadResources() {
+      if (!this.canvas) return;
+      this.syncStarfield(this.canvas.width, this.canvas.height, true);
     }
-    updateUniforms(c) {
-      this.setUniform("iSpeed", c.speed);
-      this.setUniform("iDensity", c.density);
-      this.setUniform("iTrailLength", c.trailLength);
-      this.setUniform("iGlow", c.glow);
-      this.setUniform("iPalette", c.palette);
+    applyControls(controls) {
+      if (controls.path !== this.lastPath) {
+        this.meteors = [];
+        this.spawnBudget = 0;
+        this.lastPath = controls.path;
+      }
+      this.controlState = controls;
+      this.backgroundColor = controls.skyBottom;
+    }
+    draw(time, deltaTime) {
+      if (!this.ctx || !this.canvas) return;
+      const ctx = this.ctx;
+      const w = this.canvas.width;
+      const h = this.canvas.height;
+      const dt = deltaTime > 0 ? Math.min(0.05, deltaTime) : 1 / 60;
+      this.syncStarfield(w, h);
+      const tone = this.getSceneTone(this.controlState);
+      this.drawSky(ctx, w, h, tone);
+      this.drawBackgroundStars(ctx, w, h, time, tone);
+      this.updateMeteors(dt, w, h);
+      this.drawMeteors(ctx, time, tone);
+    }
+    syncStarfield(w, h, force = false) {
+      const targetCount = this.computeBackgroundStarCount();
+      const sizeChanged = this.lastWidth !== w || this.lastHeight !== h;
+      if (!force && !sizeChanged && targetCount === this.lastStarCount) return;
+      this.lastWidth = w;
+      this.lastHeight = h;
+      this.lastStarCount = targetCount;
+      this.stars = [];
+      for (let i = 0; i < targetCount; i++) {
+        this.stars.push({
+          x: Math.random() * w,
+          y: Math.random() * h,
+          size: 0.35 + Math.random() * 1.4,
+          phase: Math.random() * Math.PI * 2,
+          depth: 0.25 + Math.random() * 0.95
+        });
+      }
+    }
+    drawSky(ctx, w, h, tone) {
+      const gradient = ctx.createLinearGradient(0, 0, 0, h);
+      gradient.addColorStop(0, this.rgbToCss(tone.skyTop));
+      gradient.addColorStop(1, this.rgbToCss(tone.skyBottom));
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, w, h);
+      const haze = ctx.createLinearGradient(0, h * 0.35, 0, h);
+      haze.addColorStop(0, this.rgbToRgba(tone.trail, 0));
+      haze.addColorStop(1, this.rgbToRgba(tone.trail, 0.04 + this.controlState.trail * 12e-4));
+      ctx.fillStyle = haze;
+      ctx.fillRect(0, 0, w, h);
+    }
+    drawBackgroundStars(ctx, w, h, time, tone) {
+      const drift = 8 + this.controlState.speed * 18;
+      const driftX = this.controlState.path === "Diagonal" ? drift * 0.38 : drift * 0.04;
+      const driftY = this.controlState.path === "Vertical" ? drift * 0.52 : drift * 0.34;
+      const sizeScale = 0.6 + this.controlState.starSize * 0.06;
+      for (const star of this.stars) {
+        const x = (star.x + time * driftX * star.depth) % w;
+        const y = (star.y + time * driftY * (0.4 + star.depth)) % h;
+        const twinkle = 0.5 + 0.5 * Math.sin(time * (1.2 + star.depth * 1.6) + star.phase * 2.4);
+        const alpha = (0.15 + twinkle * 0.46) * (0.72 + star.depth * 0.28);
+        const size = Math.max(1, (star.size + sizeScale * 0.22) * (0.8 + star.depth * 0.28));
+        ctx.fillStyle = this.rgbToRgba(tone.star, alpha * 0.7);
+        ctx.fillRect(x, y, size, size);
+        if (size > 1.45 && twinkle > 0.76) {
+          ctx.fillStyle = this.rgbToRgba(tone.star, alpha * 0.5);
+          const streak = size * 2.2;
+          ctx.fillRect(x - streak * 0.5, y + size * 0.1, streak, 1);
+          ctx.fillRect(x + size * 0.1, y - streak * 0.5, 1, streak);
+        }
+      }
+    }
+    updateMeteors(dt, w, h) {
+      const maxMeteors = this.computeMeteorCap();
+      const spawnRate = this.computeMeteorSpawnRate();
+      this.spawnBudget += dt * spawnRate;
+      while (this.spawnBudget >= 1 && this.meteors.length < maxMeteors) {
+        this.meteors.push(this.spawnMeteor(w, h));
+        this.spawnBudget -= 1;
+      }
+      if (this.meteors.length < maxMeteors && Math.random() < dt * spawnRate * 0.4) {
+        this.meteors.push(this.spawnMeteor(w, h));
+      }
+      for (const meteor of this.meteors) {
+        meteor.x += meteor.vx * dt;
+        meteor.y += meteor.vy * dt;
+        meteor.brightness = 0.72 + 0.28 * Math.sin(meteor.phase + meteor.y * 0.03);
+      }
+      this.meteors = this.meteors.filter(
+        (meteor) => meteor.x > -meteor.trail - 45 && meteor.x < w + meteor.trail + 45 && meteor.y < h + meteor.trail + 55
+      );
+    }
+    spawnMeteor(w, h) {
+      const baseSpeed = 65 + this.controlState.speed * 120;
+      const size = Math.max(1.2, 0.65 + this.controlState.starSize * 0.16) * (0.72 + Math.random() * 0.65);
+      const trail = (12 + this.controlState.trail * 1.45 + size * 4.5) * (0.82 + Math.random() * 0.36);
+      if (this.controlState.path === "Vertical") {
+        const vy2 = baseSpeed * (0.85 + Math.random() * 0.8);
+        const vx2 = (Math.random() - 0.5) * baseSpeed * 0.09;
+        return {
+          x: Math.random() * (w + 24) - 12,
+          y: -trail - Math.random() * h * 0.32,
+          vx: vx2,
+          vy: vy2,
+          size,
+          trail,
+          phase: Math.random() * Math.PI * 2,
+          brightness: 1
+        };
+      }
+      const vy = baseSpeed * (0.78 + Math.random() * 0.76);
+      const direction = Math.random() < 0.86 ? 1 : -1;
+      const vx = baseSpeed * (0.3 + Math.random() * 0.34) * direction;
+      return {
+        x: Math.random() * (w + 32) - 16,
+        y: -trail - Math.random() * h * 0.42,
+        vx,
+        vy,
+        size,
+        trail,
+        phase: Math.random() * Math.PI * 2,
+        brightness: 1
+      };
+    }
+    drawMeteors(ctx, time, tone) {
+      const headColor = this.mixRgb(tone.star, { r: 255, g: 255, b: 255 }, 0.35);
+      for (const meteor of this.meteors) {
+        const velocity = Math.hypot(meteor.vx, meteor.vy);
+        if (velocity <= 1e-4) continue;
+        const ux = meteor.vx / velocity;
+        const uy = meteor.vy / velocity;
+        const dynamicTrail = meteor.trail * (0.84 + 0.16 * Math.sin(time * 4.6 + meteor.phase));
+        const tailX = meteor.x - ux * dynamicTrail;
+        const tailY = meteor.y - uy * dynamicTrail;
+        const mainTrail = ctx.createLinearGradient(meteor.x, meteor.y, tailX, tailY);
+        mainTrail.addColorStop(0, this.rgbToRgba(headColor, 0.92 * meteor.brightness));
+        mainTrail.addColorStop(0.24, this.rgbToRgba(tone.star, 0.58 * meteor.brightness));
+        mainTrail.addColorStop(1, this.rgbToRgba(tone.trail, 0));
+        ctx.lineCap = "round";
+        ctx.lineWidth = Math.max(1.15, meteor.size * 0.82);
+        ctx.strokeStyle = mainTrail;
+        ctx.beginPath();
+        ctx.moveTo(meteor.x, meteor.y);
+        ctx.lineTo(tailX, tailY);
+        ctx.stroke();
+        const bloomTrail = ctx.createLinearGradient(meteor.x, meteor.y, tailX, tailY);
+        bloomTrail.addColorStop(0, this.rgbToRgba(tone.trail, 0.28 * meteor.brightness));
+        bloomTrail.addColorStop(1, this.rgbToRgba(tone.trail, 0));
+        ctx.lineWidth = Math.max(2.25, meteor.size * 2.05);
+        ctx.strokeStyle = bloomTrail;
+        ctx.beginPath();
+        ctx.moveTo(meteor.x, meteor.y);
+        ctx.lineTo(tailX, tailY);
+        ctx.stroke();
+        const headSize = Math.max(1.5, meteor.size * 0.92);
+        ctx.fillStyle = this.rgbToRgba(headColor, 0.98);
+        ctx.fillRect(meteor.x - headSize * 0.5, meteor.y - headSize * 0.5, headSize, headSize);
+        const flare = headSize * 1.85;
+        ctx.fillStyle = this.rgbToRgba(headColor, 0.56 * meteor.brightness);
+        ctx.fillRect(meteor.x - flare * 0.5, meteor.y - 0.5, flare, 1);
+        ctx.fillRect(meteor.x - 0.5, meteor.y - flare * 0.5, 1, flare);
+      }
+    }
+    computeBackgroundStarCount() {
+      return Math.max(36, Math.floor(40 + this.controlState.density * 1.9 - this.controlState.starSize * 0.55));
+    }
+    computeMeteorCap() {
+      return Math.max(4, Math.floor(3 + this.controlState.density * 0.15 - this.controlState.starSize * 0.05));
+    }
+    computeMeteorSpawnRate() {
+      return 1 + this.controlState.density * 0.05 + this.controlState.speed * 0.8;
+    }
+    getSceneTone(controls) {
+      const top = this.hexToRgb(controls.skyTop);
+      const bottom = this.hexToRgb(controls.skyBottom);
+      const star = this.hexToRgb(controls.starColor);
+      if (controls.scene === "Pastel") {
+        return {
+          skyTop: this.mixRgb(top, { r: 255, g: 227, b: 246 }, 0.24),
+          skyBottom: this.mixRgb(bottom, { r: 210, g: 230, b: 255 }, 0.2),
+          star: this.mixRgb(star, { r: 255, g: 255, b: 255 }, 0.24),
+          trail: this.mixRgb(star, { r: 255, g: 214, b: 242 }, 0.34)
+        };
+      }
+      return {
+        skyTop: this.mixRgb(top, { r: 3, g: 6, b: 18 }, 0.32),
+        skyBottom: this.mixRgb(bottom, { r: 15, g: 30, b: 68 }, 0.2),
+        star: this.mixRgb(star, { r: 255, g: 255, b: 255 }, 0.16),
+        trail: this.mixRgb(star, { r: 146, g: 198, b: 255 }, 0.24)
+      };
+    }
+    hexToRgb(hex) {
+      const normalized = hex.trim().replace("#", "");
+      const expanded = normalized.length === 3 ? normalized.split("").map((char) => `${char}${char}`).join("") : normalized;
+      if (!/^[0-9a-fA-F]{6}$/.test(expanded)) {
+        return { r: 255, g: 255, b: 255 };
+      }
+      const value = Number.parseInt(expanded, 16);
+      return {
+        r: value >> 16 & 255,
+        g: value >> 8 & 255,
+        b: value & 255
+      };
+    }
+    mixRgb(a, b, t) {
+      const ratio = Math.max(0, Math.min(1, t));
+      return {
+        r: Math.round(a.r + (b.r - a.r) * ratio),
+        g: Math.round(a.g + (b.g - a.g) * ratio),
+        b: Math.round(a.b + (b.b - a.b) * ratio)
+      };
+    }
+    rgbToCss(color) {
+      return `rgb(${color.r}, ${color.g}, ${color.b})`;
+    }
+    rgbToRgba(color, alpha) {
+      return `rgba(${color.r}, ${color.g}, ${color.b}, ${Math.max(0, Math.min(1, alpha))})`;
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Meteor speed" })
+    ComboboxControl({ label: "Path", values: PATHS, default: "Diagonal", tooltip: "Meteor trajectory direction" })
+  ], MeteorStorm.prototype, "path", 2);
+  __decorateClass([
+    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Meteor travel speed" })
   ], MeteorStorm.prototype, "speed", 2);
   __decorateClass([
-    NumberControl({ label: "Density", min: 10, max: 100, default: 50, tooltip: "Meteor count" })
+    NumberControl({ label: "Star Size", min: 1, max: 20, default: 8, tooltip: "Meteor head and star size" })
+  ], MeteorStorm.prototype, "starSize", 2);
+  __decorateClass([
+    NumberControl({ label: "Density", min: 10, max: 100, default: 58, tooltip: "Star and meteor count" })
   ], MeteorStorm.prototype, "density", 2);
   __decorateClass([
-    NumberControl({ label: "Trail", min: 10, max: 100, default: 60, tooltip: "Trail length" })
-  ], MeteorStorm.prototype, "trailLength", 2);
+    NumberControl({ label: "Trail", min: 10, max: 100, default: 72, tooltip: "Meteor trail length and glow" })
+  ], MeteorStorm.prototype, "trail", 2);
   __decorateClass([
-    NumberControl({ label: "Glow", min: 10, max: 100, default: 65, tooltip: "Glow intensity" })
-  ], MeteorStorm.prototype, "glow", 2);
+    ColorControl({ label: "Sky Top color", default: "#0b1233", tooltip: "Top gradient color" })
+  ], MeteorStorm.prototype, "skyTop", 2);
   __decorateClass([
-    ComboboxControl({ label: "Palette", values: PALETTES, default: "SilkCircuit", tooltip: "Color palette" })
-  ], MeteorStorm.prototype, "palette", 2);
+    ColorControl({ label: "Sky Bottom color", default: "#1a3f89", tooltip: "Bottom gradient color" })
+  ], MeteorStorm.prototype, "skyBottom", 2);
+  __decorateClass([
+    ColorControl({ label: "Star Color", default: "#fff6bd", tooltip: "Star and meteor color" })
+  ], MeteorStorm.prototype, "starColor", 2);
+  __decorateClass([
+    ComboboxControl({ label: "Scene", values: SCENES, default: "Night", tooltip: "Scene tint preset" })
+  ], MeteorStorm.prototype, "scene", 2);
   MeteorStorm = __decorateClass([
     Effect({
       name: "Meteor Storm",
-      description: "Streaking meteors with physics trails and atmospheric glow",
-      author: "Hypercolor"
+      description: "Crisp falling stars with directional hyperspace trails over a gradient night sky",
+      author: "Hypercolor",
+      audioReactive: false
     })
   ], MeteorStorm);
   var effect = new MeteorStorm();

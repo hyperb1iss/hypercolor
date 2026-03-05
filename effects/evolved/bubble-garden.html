@@ -4,16 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Bubble Garden</title>
-  <meta description="Layered bubble field with depth, refraction tint, and scene-based motion"/>
+  <meta description="Community-style bouncing bubbles with crisp rendering and simple controls"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Overall motion speed"/>
-  <meta property="density" label="Density" type="number" min="0" max="100" default="58" tooltip="Bubble amount"/>
-  <meta property="size" label="Size" type="number" min="0" max="100" default="48" tooltip="Bubble size range"/>
-  <meta property="drift" label="Drift" type="number" min="0" max="100" default="42" tooltip="Horizontal sway"/>
-  <meta property="refraction" label="Refraction" type="number" min="0" max="100" default="60" tooltip="Inner bubble distortion"/>
-  <meta property="glow" label="Glow" type="number" min="0" max="100" default="52" tooltip="Bloom and highlights"/>
-  <meta property="scene" label="Scene" type="combobox" default="Fizz" values="Calm,Fizz,Storm" tooltip="Motion style"/>
-  <meta property="palette" label="Palette" type="combobox" default="Ocean" values="Ocean,Soda Pop,Neon,Pastel,Twilight" tooltip="Color scene"/>
+  <meta property="colorMode" label="Color Mode" type="combobox" default="Single Color" values="Single Color,Rainbow,Color Cycle" tooltip="Single, rainbow, or cycling bubble color"/>
+  <meta property="bgColor" label="Background Color" type="color" default="#000000" tooltip="Canvas background color"/>
+  <meta property="color" label="Color" type="color" default="#ff0066" tooltip="Primary bubble color"/>
+  <meta property="speed" label="Bubble Speed" type="number" min="0" max="100" default="10" tooltip="Movement speed"/>
+  <meta property="size" label="Bubble Size" type="number" min="1" max="10" default="5" tooltip="Bubble radius scale"/>
+  <meta property="count" label="Bubble Count" type="number" min="10" max="120" default="50" tooltip="Number of bubbles"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1223,30 +1221,6 @@
   function getControlValue(propertyName, defaultValue) {
     return window[propertyName] ?? defaultValue;
   }
-  function normalizeSpeed(speed) {
-    if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
-    return Math.max(0.2, (speed / 5) ** 1.5);
-  }
-  function comboboxValueToIndex(value, options, defaultIndex = 0) {
-    if (options.length === 0) return 0;
-    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
-    if (typeof value === "number" && Number.isFinite(value)) {
-      const rounded = Math.round(value);
-      if (rounded >= 0 && rounded < options.length) return rounded;
-      return safeDefault;
-    }
-    if (typeof value !== "string") return safeDefault;
-    const exactIndex = options.indexOf(value);
-    if (exactIndex >= 0) return exactIndex;
-    const normalized = value.trim().toLowerCase();
-    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
-    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
-    const parsedNumeric = Number.parseInt(normalized, 10);
-    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
-      return parsedNumeric;
-    }
-    return safeDefault;
-  }
 
   // packages/core/src/utils/debug.ts
   var COLORS = {
@@ -1391,328 +1365,41 @@
     }
   };
 
-  // packages/core/src/audio/analysis.ts
-  var FFT_SIZE = 200;
-  var MEL_BANDS = 24;
-  var PITCH_CLASSES = 12;
-  function getAudioData() {
-    const hasEngine = typeof engine !== "undefined" && engine?.audio;
-    if (!hasEngine) return createSilentAudioData();
-    const audio = engine.audio;
-    return {
-      // Legacy
-      bass: audio.bass ?? 0,
-      bassEnv: audio.bassEnv ?? 0,
-      beat: Number(audio.beat ?? 0),
-      beatConfidence: audio.beatConfidence ?? 0,
-      beatPhase: audio.beatPhase ?? 0,
-      beatPulse: audio.beatPulse ?? 0,
-      brightness: audio.brightness ?? 0.5,
-      chordMood: audio.chordMood ?? 0,
-      chromagram: audio.chromagram ?? new Float32Array(PITCH_CLASSES),
-      density: audio.density ?? 0,
-      dominantPitch: audio.dominantPitch ?? 0,
-      dominantPitchConfidence: audio.dominantPitchConfidence ?? 0,
-      frequency: audio.frequency ?? new Float32Array(FFT_SIZE),
-      frequencyRaw: audio.frequencyRaw ?? new Int8Array(FFT_SIZE),
-      frequencyWeighted: audio.frequencyWeighted ?? new Float32Array(FFT_SIZE),
-      harmonicHue: audio.harmonicHue ?? 0,
-      level: audio.level != null ? normalizeAudioLevel(audio.level) : 0,
-      levelLong: audio.levelLong ?? 0,
-      levelRaw: audio.level ?? -100,
-      levelShort: audio.levelShort ?? 0,
-      melBands: audio.melBands ?? new Float32Array(MEL_BANDS),
-      melBandsNormalized: audio.melBandsNormalized ?? new Float32Array(MEL_BANDS),
-      mid: audio.mid ?? 0,
-      midEnv: audio.midEnv ?? 0,
-      momentum: audio.momentum ?? 0,
-      onset: Number(audio.onset ?? 0),
-      onsetPulse: audio.onsetPulse ?? 0,
-      rolloff: audio.rolloff ?? 0.5,
-      roughness: audio.roughness ?? 0.2,
-      spectralFlux: audio.spectralFlux ?? 0,
-      spectralFluxBands: audio.spectralFluxBands ?? new Float32Array(3),
-      spread: audio.spread ?? 0.3,
-      swell: audio.swell ?? 0,
-      tempo: audio.tempo ?? 120,
-      treble: audio.treble ?? 0,
-      trebleEnv: audio.trebleEnv ?? 0,
-      width: audio.width ?? 0.5
-    };
-  }
-  function normalizeAudioLevel(levelDb) {
-    return Math.max(0, Math.min(1, (levelDb + 100) / 100));
-  }
-  function createSilentAudioData() {
-    return {
-      bass: 0,
-      bassEnv: 0,
-      beat: 0,
-      beatConfidence: 0,
-      beatPhase: 0,
-      beatPulse: 0,
-      brightness: 0.5,
-      chordMood: 0,
-      chromagram: new Float32Array(PITCH_CLASSES),
-      density: 0,
-      dominantPitch: 0,
-      dominantPitchConfidence: 0,
-      frequency: new Float32Array(FFT_SIZE),
-      frequencyRaw: new Int8Array(FFT_SIZE),
-      frequencyWeighted: new Float32Array(FFT_SIZE),
-      harmonicHue: 0,
-      level: 0,
-      levelLong: 0,
-      levelRaw: -100,
-      levelShort: 0,
-      melBands: new Float32Array(MEL_BANDS),
-      melBandsNormalized: new Float32Array(MEL_BANDS),
-      mid: 0,
-      midEnv: 0,
-      momentum: 0,
-      onset: 0,
-      onsetPulse: 0,
-      rolloff: 0.5,
-      roughness: 0.2,
-      spectralFlux: 0,
-      spectralFluxBands: new Float32Array(3),
-      spread: 0.3,
-      swell: 0,
-      tempo: 120,
-      treble: 0,
-      trebleEnv: 0,
-      width: 0.5
-    };
-  }
-
-  // packages/core/src/effects/webgl-effect.ts
-  var DEFAULT_VERTEX_SHADER = `#version 300 es
-precision highp float;
-in vec2 aPosition;
-void main() {
-    gl_Position = vec4(aPosition, 0.0, 1.0);
-}
-`;
-  var WebGLEffect = class extends BaseEffect {
-    gl = null;
-    program = null;
-    uniforms = /* @__PURE__ */ new Map();
-    fragmentShader;
-    vertexShader;
-    audioReactive;
-    currentAudioData = null;
+  // packages/core/src/effects/canvas-effect.ts
+  var CanvasEffect = class extends BaseEffect {
+    ctx = null;
+    backgroundColor;
+    lastFrameTime = 0;
+    deltaTime = 0;
     constructor(config) {
       super(config);
-      this.fragmentShader = config.fragmentShader;
-      this.vertexShader = config.vertexShader ?? DEFAULT_VERTEX_SHADER;
-      this.audioReactive = config.audioReactive ?? false;
+      this.backgroundColor = config.backgroundColor || "black";
     }
     async initializeRenderer() {
       if (!this.canvas) throw new Error("Canvas not available");
-      this.gl = this.canvas.getContext("webgl2", { preserveDrawingBuffer: true });
-      if (!this.gl) throw new Error("WebGL2 not supported");
-      this.program = this.createProgram(this.vertexShader, this.fragmentShader);
-      this.gl.useProgram(this.program);
-      this.createQuad();
-      this.registerUniform("iTime", 0);
-      this.registerUniform("iResolution", [this.canvas.width, this.canvas.height]);
-      this.registerUniform("iMouse", [0, 0]);
-      if (this.audioReactive) {
-        this.registerAudioUniforms();
-      }
-      this.createUniforms();
-      this.resolveLocations();
-      this.pushAllUniforms();
-      this.debug("success", "WebGL2 renderer initialized");
+      this.ctx = this.canvas.getContext("2d");
+      if (!this.ctx) throw new Error("Could not get 2D context");
+      this.ctx.imageSmoothingEnabled = true;
+      this.clearCanvas();
+      await this.loadResources();
+    }
+    /** Override to load images, fonts, etc. */
+    async loadResources() {
+    }
+    clearCanvas() {
+      if (!this.ctx || !this.canvas) return;
+      this.ctx.fillStyle = this.backgroundColor;
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
     render(time) {
-      if (!this.gl || !this.program) return;
-      this.setUniform("iTime", time);
-      if (this.audioReactive) {
-        this.currentAudioData = getAudioData();
-        this.pushAudioUniforms(this.currentAudioData);
-      }
-      this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
-    }
-    getAudio() {
-      return this.currentAudioData;
+      if (!this.ctx || !this.canvas) return;
+      this.deltaTime = this.lastFrameTime === 0 ? 0 : time - this.lastFrameTime;
+      this.lastFrameTime = time;
+      this.clearCanvas();
+      this.draw(time, this.deltaTime);
     }
     updateParameters(controls) {
-      if (!this.program) return;
-      this.updateUniforms(controls);
-    }
-    // ── Uniform API ─────────────────────────────────────────────────────
-    /** Register a uniform. Call in createUniforms(). */
-    registerUniform(name, value) {
-      this.uniforms.set(name, { location: null, value, isInt: false });
-    }
-    /** Set a uniform value (will be pushed on next draw). */
-    setUniform(name, value) {
-      const entry = this.uniforms.get(name);
-      if (entry) {
-        entry.value = value;
-        this.pushUniform(name, entry);
-      }
-    }
-    // ── Internal ────────────────────────────────────────────────────────
-    createProgram(vertSrc, fragSrc) {
-      const gl = this.gl;
-      const vert = this.compileShader(gl.VERTEX_SHADER, vertSrc);
-      const frag = this.compileShader(gl.FRAGMENT_SHADER, fragSrc);
-      const program = gl.createProgram();
-      gl.attachShader(program, vert);
-      gl.attachShader(program, frag);
-      gl.linkProgram(program);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        const info = gl.getProgramInfoLog(program);
-        gl.deleteProgram(program);
-        throw new Error(`Shader link failed: ${info}`);
-      }
-      gl.deleteShader(vert);
-      gl.deleteShader(frag);
-      return program;
-    }
-    compileShader(type, source) {
-      const gl = this.gl;
-      const shader = gl.createShader(type);
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        const info = gl.getShaderInfoLog(shader);
-        gl.deleteShader(shader);
-        throw new Error(`Shader compile failed: ${info}`);
-      }
-      return shader;
-    }
-    createQuad() {
-      const gl = this.gl;
-      const vertices = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
-      const buffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-      const posLoc = gl.getAttribLocation(this.program, "aPosition");
-      gl.enableVertexAttribArray(posLoc);
-      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-    }
-    pushAllUniforms() {
-      for (const [name, entry] of this.uniforms) {
-        this.pushUniform(name, entry);
-      }
-    }
-    resolveLocations() {
-      const gl = this.gl;
-      const program = this.program;
-      const intTypes = /* @__PURE__ */ new Set([
-        gl.INT,
-        gl.INT_VEC2,
-        gl.INT_VEC3,
-        gl.INT_VEC4,
-        gl.BOOL,
-        gl.BOOL_VEC2,
-        gl.BOOL_VEC3,
-        gl.BOOL_VEC4,
-        gl.UNSIGNED_INT,
-        gl.UNSIGNED_INT_VEC2,
-        gl.UNSIGNED_INT_VEC3,
-        gl.UNSIGNED_INT_VEC4,
-        gl.SAMPLER_2D,
-        gl.SAMPLER_CUBE,
-        gl.SAMPLER_3D,
-        gl.SAMPLER_2D_SHADOW,
-        gl.SAMPLER_2D_ARRAY,
-        gl.SAMPLER_2D_ARRAY_SHADOW,
-        gl.SAMPLER_CUBE_SHADOW,
-        gl.INT_SAMPLER_2D,
-        gl.INT_SAMPLER_3D,
-        gl.INT_SAMPLER_CUBE,
-        gl.INT_SAMPLER_2D_ARRAY,
-        gl.UNSIGNED_INT_SAMPLER_2D,
-        gl.UNSIGNED_INT_SAMPLER_3D,
-        gl.UNSIGNED_INT_SAMPLER_CUBE,
-        gl.UNSIGNED_INT_SAMPLER_2D_ARRAY
-      ]);
-      const intUniforms = /* @__PURE__ */ new Set();
-      const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
-      for (let i = 0; i < numActive; i++) {
-        const info = gl.getActiveUniform(program, i);
-        if (info && intTypes.has(info.type)) {
-          intUniforms.add(info.name.replace(/\[0\]$/, ""));
-        }
-      }
-      for (const [name, entry] of this.uniforms) {
-        entry.location = gl.getUniformLocation(program, name);
-        entry.isInt = intUniforms.has(name);
-      }
-    }
-    pushUniform(_name, entry) {
-      const gl = this.gl;
-      if (!gl || !entry.location) return;
-      const val = entry.value;
-      if (typeof val === "number") {
-        if (entry.isInt) {
-          gl.uniform1i(entry.location, val | 0);
-        } else {
-          gl.uniform1f(entry.location, val);
-        }
-      } else if (val.length === 2) {
-        if (entry.isInt) {
-          gl.uniform2iv(entry.location, val);
-        } else {
-          gl.uniform2fv(entry.location, val);
-        }
-      } else if (val.length === 3) {
-        if (entry.isInt) {
-          gl.uniform3iv(entry.location, val);
-        } else {
-          gl.uniform3fv(entry.location, val);
-        }
-      } else if (val.length === 4) {
-        if (entry.isInt) {
-          gl.uniform4iv(entry.location, val);
-        } else {
-          gl.uniform4fv(entry.location, val);
-        }
-      }
-    }
-    registerAudioUniforms() {
-      this.registerUniform("iAudioLevel", 0);
-      this.registerUniform("iAudioBass", 0);
-      this.registerUniform("iAudioMid", 0);
-      this.registerUniform("iAudioTreble", 0);
-      this.registerUniform("iAudioBeat", 0);
-      this.registerUniform("iAudioBeatPulse", 0);
-      this.registerUniform("iAudioBeatPhase", 0);
-      this.registerUniform("iAudioBeatConfidence", 0);
-      this.registerUniform("iAudioOnset", 0);
-      this.registerUniform("iAudioOnsetPulse", 0);
-      this.registerUniform("iAudioSpectralFlux", 0);
-      this.registerUniform("iAudioHarmonicHue", 0);
-      this.registerUniform("iAudioChordMood", 0);
-      this.registerUniform("iAudioBrightness", 0.5);
-      this.registerUniform("iAudioMomentum", 0);
-      this.registerUniform("iAudioSwell", 0);
-      this.registerUniform("iAudioTempo", 120);
-      this.registerUniform("iAudioFluxBands", [0, 0, 0]);
-    }
-    pushAudioUniforms(audio) {
-      this.setUniform("iAudioLevel", audio.level);
-      this.setUniform("iAudioBass", audio.bass);
-      this.setUniform("iAudioMid", audio.mid);
-      this.setUniform("iAudioTreble", audio.treble);
-      this.setUniform("iAudioBeat", audio.beat);
-      this.setUniform("iAudioBeatPulse", audio.beatPulse);
-      this.setUniform("iAudioBeatPhase", audio.beatPhase);
-      this.setUniform("iAudioBeatConfidence", audio.beatConfidence);
-      this.setUniform("iAudioOnset", audio.onset);
-      this.setUniform("iAudioOnsetPulse", audio.onsetPulse);
-      this.setUniform("iAudioSpectralFlux", audio.spectralFlux);
-      this.setUniform("iAudioHarmonicHue", audio.harmonicHue);
-      this.setUniform("iAudioChordMood", audio.chordMood);
-      this.setUniform("iAudioBrightness", audio.brightness);
-      this.setUniform("iAudioMomentum", audio.momentum);
-      this.setUniform("iAudioSwell", audio.swell);
-      this.setUniform("iAudioTempo", audio.tempo);
-      this.setUniform("iAudioFluxBands", Array.from(audio.spectralFluxBands));
+      this.applyControls(controls);
     }
   };
 
@@ -1743,95 +1430,205 @@ void main() {
     }, { once: true });
   }
 
-  // src/effects/bubble-garden/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iSpeed;\nuniform float iDensity;\nuniform float iSize;\nuniform float iDrift;\nuniform float iRefraction;\nuniform float iGlow;\nuniform int iScene;\nuniform int iPalette;\n\nfloat hash11(float p) {\n    p = fract(p * 0.1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n}\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat noise(vec2 p) {\n    vec2 i = floor(p);\n    vec2 f = fract(p);\n    f = f * f * (3.0 - 2.0 * f);\n    float a = hash21(i);\n    float b = hash21(i + vec2(1.0, 0.0));\n    float c = hash21(i + vec2(0.0, 1.0));\n    float d = hash21(i + vec2(1.0, 1.0));\n    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n}\n\nvoid palette(int id, out vec3 bg0, out vec3 bg1, out vec3 tint, out vec3 rim) {\n    if (id == 0) {\n        bg0 = vec3(0.02, 0.14, 0.22);\n        bg1 = vec3(0.01, 0.03, 0.09);\n        tint = vec3(0.38, 0.82, 1.0);\n        rim = vec3(0.82, 0.96, 1.0);\n        return;\n    }\n    if (id == 1) {\n        bg0 = vec3(0.20, 0.03, 0.11);\n        bg1 = vec3(0.04, 0.01, 0.08);\n        tint = vec3(1.0, 0.35, 0.72);\n        rim = vec3(1.0, 0.88, 0.62);\n        return;\n    }\n    if (id == 2) {\n        bg0 = vec3(0.05, 0.02, 0.16);\n        bg1 = vec3(0.01, 0.0, 0.05);\n        tint = vec3(0.62, 0.34, 1.0);\n        rim = vec3(0.78, 1.0, 0.95);\n        return;\n    }\n    if (id == 3) {\n        bg0 = vec3(0.18, 0.12, 0.22);\n        bg1 = vec3(0.06, 0.04, 0.12);\n        tint = vec3(0.74, 0.76, 1.0);\n        rim = vec3(1.0, 0.92, 0.96);\n        return;\n    }\n    bg0 = vec3(0.05, 0.08, 0.20);\n    bg1 = vec3(0.02, 0.02, 0.10);\n    tint = vec3(0.66, 0.66, 1.0);\n    rim = vec3(0.92, 0.90, 1.0);\n}\n\nvoid sceneParams(int scene, out float riseMul, out float driftMul, out float popMul) {\n    if (scene == 0) {\n        riseMul = 0.65;\n        driftMul = 0.45;\n        popMul = 0.35;\n        return;\n    }\n    if (scene == 2) {\n        riseMul = 1.45;\n        driftMul = 1.25;\n        popMul = 1.25;\n        return;\n    }\n    riseMul = 1.0;\n    driftMul = 0.95;\n    popMul = 0.75;\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    vec2 ap = vec2(iResolution.x / iResolution.y, 1.0);\n    vec2 p = (uv - 0.5) * ap;\n\n    vec3 bg0;\n    vec3 bg1;\n    vec3 tint;\n    vec3 rimCol;\n    palette(iPalette, bg0, bg1, tint, rimCol);\n\n    float riseMul;\n    float driftMul;\n    float popMul;\n    sceneParams(iScene, riseMul, driftMul, popMul);\n\n    float t = iTime * (0.35 + iSpeed * 0.2);\n    vec3 col = mix(bg0, bg1, smoothstep(-0.55, 0.8, p.y));\n\n    // Add soft underwater/soda turbulence in the background.\n    float bgNoise = noise(uv * vec2(5.0, 3.0) + vec2(t * 0.07, -t * 0.05));\n    col += tint * (bgNoise * 0.04);\n\n    int bubbleCount = 8 + int(iDensity * 0.34);\n    float baseSize = mix(0.02, 0.09, iSize * 0.01);\n    float drift = iDrift * 0.01 * driftMul;\n    float refract = iRefraction * 0.01;\n\n    for (int i = 0; i < 48; i++) {\n        if (i >= bubbleCount) break;\n        float fi = float(i);\n\n        float s1 = hash11(fi * 17.7);\n        float s2 = hash11(fi * 31.9 + 2.0);\n        float s3 = hash11(fi * 9.3 + 6.0);\n\n        float depth = mix(0.35, 1.0, s3);\n        float radius = baseSize * mix(0.55, 1.45, s2) * depth;\n\n        float rise = fract(s1 + t * (0.045 + s2 * 0.09) * riseMul);\n        float y = 1.15 - rise * 1.45;\n\n        float xBase = s2 * 1.1 - 0.05;\n        float sway = sin(t * (0.55 + s3) + fi * 3.4) * (0.02 + drift * 0.22);\n        float swirl = sin(t * (0.2 + s1 * 0.5) + y * 14.0) * (0.01 + drift * 0.08);\n        float x = xBase + sway + swirl;\n\n        vec2 center = vec2(x, y);\n        vec2 d = (uv - center) * ap;\n        float dist = length(d);\n\n        float bubble = smoothstep(radius, radius * 0.92, dist);\n        float inner = smoothstep(radius * 0.78, radius * 0.35, dist);\n        float rim = clamp(bubble - inner, 0.0, 1.0);\n\n        // Refraction-like inner variation.\n        vec2 n = d / max(dist, 0.001);\n        float refr = noise((uv + n * refract * 0.03) * vec2(8.0, 6.0) + vec2(t * 0.1, -t * 0.07));\n        float iridescence = 0.4 + 0.6 * sin(fi + refr * 6.28318 + t * 0.4);\n        vec3 bubbleTint = mix(tint * 0.45, tint * (0.75 + iridescence * 0.35), inner * 0.7);\n\n        // Specular highlight near upper-left.\n        vec2 hPos = center + vec2(-radius * 0.25, -radius * 0.28);\n        float spec = smoothstep(radius * 0.26, 0.0, length((uv - hPos) * ap));\n\n        col += bubbleTint * inner * 0.55 * depth;\n        col += rimCol * rim * (0.45 + iGlow * 0.006);\n        col += vec3(1.0) * spec * 0.6 * depth;\n\n        // Tiny pop flashes near top.\n        if (y < 0.02 && hash11(fi + floor(t * 7.0)) > 0.92 - popMul * 0.12) {\n            col += rimCol * (0.08 + iGlow * 0.002);\n        }\n    }\n\n    // Atmosphere bloom.\n    float bloom = smoothstep(0.4, -0.65, p.y) * (0.05 + iGlow * 0.002);\n    col += tint * bloom * 0.4;\n\n    col = 1.0 - exp(-col * 1.22);\n    col = pow(clamp(col, 0.0, 1.0), vec3(0.94));\n\n    fragColor = vec4(col, 1.0);\n}\n";
-
   // src/effects/bubble-garden/main.ts
-  var SCENES = ["Calm", "Fizz", "Storm"];
-  var PALETTES = ["Ocean", "Soda Pop", "Neon", "Pastel", "Twilight"];
-  var BubbleGarden = class extends WebGLEffect {
+  var COLOR_MODES = ["Single Color", "Rainbow", "Color Cycle"];
+  var BubbleGarden = class extends CanvasEffect {
+    colorMode;
+    bgColor;
+    color;
     speed;
-    density;
     size;
-    drift;
-    refraction;
-    glow;
-    scene;
-    palette;
+    count;
+    controls = {
+      colorMode: "Single Color",
+      bgColor: "#000000",
+      color: "#ff0066",
+      speed: 10,
+      size: 5,
+      count: 50
+    };
+    bubbles = [];
+    hue = 0;
+    bubbleCount = 0;
     constructor() {
-      super({ fragmentShader: fragment_default, audioReactive: false });
+      super({ id: "bubble-garden", name: "Bubble Garden", backgroundColor: "#000000" });
     }
     initializeControls() {
-      this.speed = getControlValue("speed", 5);
-      this.density = getControlValue("density", 58);
-      this.size = getControlValue("size", 48);
-      this.drift = getControlValue("drift", 42);
-      this.refraction = getControlValue("refraction", 60);
-      this.glow = getControlValue("glow", 52);
-      this.scene = getControlValue("scene", "Fizz");
-      this.palette = getControlValue("palette", "Ocean");
+      this.colorMode = getControlValue("colorMode", "Single Color");
+      this.bgColor = getControlValue("bgColor", "#000000");
+      this.color = getControlValue("color", "#ff0066");
+      this.speed = getControlValue("speed", 10);
+      this.size = getControlValue("size", 5);
+      this.count = getControlValue("count", 50);
     }
     getControlValues() {
       return {
-        speed: normalizeSpeed(getControlValue("speed", 5)),
-        density: getControlValue("density", 58),
-        size: getControlValue("size", 48),
-        drift: getControlValue("drift", 42),
-        refraction: getControlValue("refraction", 60),
-        glow: getControlValue("glow", 52),
-        scene: comboboxValueToIndex(getControlValue("scene", "Fizz"), SCENES, 1),
-        palette: comboboxValueToIndex(getControlValue("palette", "Ocean"), PALETTES, 0)
+        colorMode: getControlValue("colorMode", "Single Color"),
+        bgColor: getControlValue("bgColor", "#000000"),
+        color: getControlValue("color", "#ff0066"),
+        speed: getControlValue("speed", 10),
+        size: getControlValue("size", 5),
+        count: getControlValue("count", 50)
       };
     }
-    createUniforms() {
-      this.registerUniform("iSpeed", normalizeSpeed(5));
-      this.registerUniform("iDensity", 58);
-      this.registerUniform("iSize", 48);
-      this.registerUniform("iDrift", 42);
-      this.registerUniform("iRefraction", 60);
-      this.registerUniform("iGlow", 52);
-      this.registerUniform("iScene", 1);
-      this.registerUniform("iPalette", 0);
+    applyControls(controls) {
+      const normalizedCount = Math.max(10, Math.floor(controls.count));
+      const speedChanged = controls.speed !== this.controls.speed;
+      this.controls = { ...controls, count: normalizedCount };
+      this.backgroundColor = controls.bgColor;
+      if (normalizedCount !== this.bubbleCount) {
+        this.resetBubbles(normalizedCount);
+      } else if (speedChanged) {
+        this.randomizeVelocities();
+      }
     }
-    updateUniforms(c) {
-      this.setUniform("iSpeed", c.speed);
-      this.setUniform("iDensity", c.density);
-      this.setUniform("iSize", c.size);
-      this.setUniform("iDrift", c.drift);
-      this.setUniform("iRefraction", c.refraction);
-      this.setUniform("iGlow", c.glow);
-      this.setUniform("iScene", c.scene);
-      this.setUniform("iPalette", c.palette);
+    async loadResources() {
+      this.resetBubbles(Math.max(10, Math.floor(this.controls.count)));
+    }
+    draw(_time) {
+      if (!this.ctx || !this.canvas) return;
+      const ctx = this.ctx;
+      const width = this.canvas.width;
+      const height = this.canvas.height;
+      ctx.fillStyle = this.controls.bgColor;
+      ctx.fillRect(0, 0, width, height);
+      const speedScale = Math.max(0, this.controls.speed) / 10;
+      const sizeScale = Math.max(0.2, this.controls.size / 5);
+      this.hue = (this.hue + 1) % 360;
+      for (let i = 0; i < this.bubbles.length; i++) {
+        const b = this.bubbles[i];
+        const radius = b.baseSize * sizeScale;
+        if (speedScale > 0) {
+          b.x += b.vx * speedScale;
+          b.y += b.vy * speedScale;
+          if (b.x + radius >= width) {
+            b.x = width - radius;
+            b.vx = -Math.abs(b.vx);
+          } else if (b.x - radius <= 0) {
+            b.x = radius;
+            b.vx = Math.abs(b.vx);
+          }
+          if (b.y + radius >= height) {
+            b.y = height - radius;
+            b.vy = -Math.abs(b.vy);
+          } else if (b.y - radius <= 0) {
+            b.y = radius;
+            b.vy = Math.abs(b.vy);
+          }
+        }
+        const fill = this.resolveColor(this.controls.colorMode, b.x, width);
+        ctx.fillStyle = this.hexToRgba(fill, b.alpha);
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = this.hexToRgba("#ffffff", 0.22);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, Math.max(1, radius - 0.5), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    resolveColor(mode, bubbleX, width) {
+      if (mode === "Color Cycle") {
+        return this.hslToHex(this.hue, 100, 50);
+      }
+      if (mode === "Rainbow") {
+        const hue = bubbleX / Math.max(width, 1) * 360;
+        return this.hslToHex(hue, 100, 50);
+      }
+      return this.controls.color;
+    }
+    resetBubbles(count) {
+      const width = this.canvas?.width ?? 320;
+      const height = this.canvas?.height ?? 200;
+      this.bubbleCount = count;
+      this.bubbles = [];
+      for (let i = 0; i < count; i++) {
+        const radius = this.rand(10, 20);
+        const alpha = 0.5 + i / Math.max(1, count - 1) * 0.4;
+        this.bubbles.push({
+          x: this.rand(radius, Math.max(radius, width - radius)),
+          y: this.rand(radius, Math.max(radius, height - radius)),
+          vx: this.randomVelocity(),
+          vy: this.randomVelocity(),
+          baseSize: radius,
+          alpha
+        });
+      }
+    }
+    randomizeVelocities() {
+      for (let i = 0; i < this.bubbles.length; i++) {
+        this.bubbles[i].vx = this.randomVelocity();
+        this.bubbles[i].vy = this.randomVelocity();
+      }
+    }
+    randomVelocity() {
+      const velocity = this.rand(-10, 10) / 10;
+      if (Math.abs(velocity) < 1e-3) {
+        return Math.random() < 0.5 ? -1 : 1;
+      }
+      return velocity;
+    }
+    rand(min, max) {
+      return Math.floor(Math.random() * (max - min + 1)) + min;
+    }
+    hexToRgba(hex, alpha) {
+      const c = this.hexToRgb(hex);
+      return `rgba(${c.r}, ${c.g}, ${c.b}, ${Math.max(0, Math.min(1, alpha)).toFixed(3)})`;
+    }
+    hexToRgb(hex) {
+      const norm = hex.replace("#", "");
+      const full = norm.length === 3 ? `${norm[0]}${norm[0]}${norm[1]}${norm[1]}${norm[2]}${norm[2]}` : norm;
+      const n = parseInt(full, 16);
+      return { r: n >> 16 & 255, g: n >> 8 & 255, b: n & 255 };
+    }
+    hslToHex(h, s, l) {
+      h = (h % 360 + 360) % 360;
+      s /= 100;
+      l /= 100;
+      const c = (1 - Math.abs(2 * l - 1)) * s;
+      const x = c * (1 - Math.abs(h / 60 % 2 - 1));
+      const m = l - c / 2;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      if (h < 60) [r, g, b] = [c, x, 0];
+      else if (h < 120) [r, g, b] = [x, c, 0];
+      else if (h < 180) [r, g, b] = [0, c, x];
+      else if (h < 240) [r, g, b] = [0, x, c];
+      else if (h < 300) [r, g, b] = [x, 0, c];
+      else [r, g, b] = [c, 0, x];
+      const toHex = (v) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+      return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Overall motion speed" })
+    ComboboxControl({
+      label: "Color Mode",
+      values: COLOR_MODES,
+      default: "Single Color",
+      tooltip: "Single, rainbow, or cycling bubble color"
+    })
+  ], BubbleGarden.prototype, "colorMode", 2);
+  __decorateClass([
+    ColorControl({ label: "Background Color", default: "#000000", tooltip: "Canvas background color" })
+  ], BubbleGarden.prototype, "bgColor", 2);
+  __decorateClass([
+    ColorControl({ label: "Color", default: "#ff0066", tooltip: "Primary bubble color" })
+  ], BubbleGarden.prototype, "color", 2);
+  __decorateClass([
+    NumberControl({ label: "Bubble Speed", min: 0, max: 100, default: 10, tooltip: "Movement speed" })
   ], BubbleGarden.prototype, "speed", 2);
   __decorateClass([
-    NumberControl({ label: "Density", min: 0, max: 100, default: 58, tooltip: "Bubble amount" })
-  ], BubbleGarden.prototype, "density", 2);
-  __decorateClass([
-    NumberControl({ label: "Size", min: 0, max: 100, default: 48, tooltip: "Bubble size range" })
+    NumberControl({ label: "Bubble Size", min: 1, max: 10, default: 5, tooltip: "Bubble radius scale" })
   ], BubbleGarden.prototype, "size", 2);
   __decorateClass([
-    NumberControl({ label: "Drift", min: 0, max: 100, default: 42, tooltip: "Horizontal sway" })
-  ], BubbleGarden.prototype, "drift", 2);
-  __decorateClass([
-    NumberControl({ label: "Refraction", min: 0, max: 100, default: 60, tooltip: "Inner bubble distortion" })
-  ], BubbleGarden.prototype, "refraction", 2);
-  __decorateClass([
-    NumberControl({ label: "Glow", min: 0, max: 100, default: 52, tooltip: "Bloom and highlights" })
-  ], BubbleGarden.prototype, "glow", 2);
-  __decorateClass([
-    ComboboxControl({ label: "Scene", values: SCENES, default: "Fizz", tooltip: "Motion style" })
-  ], BubbleGarden.prototype, "scene", 2);
-  __decorateClass([
-    ComboboxControl({ label: "Palette", values: PALETTES, default: "Ocean", tooltip: "Color scene" })
-  ], BubbleGarden.prototype, "palette", 2);
+    NumberControl({ label: "Bubble Count", min: 10, max: 120, default: 50, tooltip: "Number of bubbles" })
+  ], BubbleGarden.prototype, "count", 2);
   BubbleGarden = __decorateClass([
     Effect({
       name: "Bubble Garden",
-      description: "Layered bubble field with depth, refraction tint, and scene-based motion",
+      description: "Community-style bouncing bubbles with crisp rendering and simple controls",
       author: "Hypercolor",
       audioReactive: false
     })

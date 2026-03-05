@@ -4,6 +4,7 @@ import {
     Effect,
     NumberControl,
     WebGLEffect,
+    comboboxValueToIndex,
     getControlValue,
     initializeEffect,
     normalizeSpeed,
@@ -17,60 +18,73 @@ interface ShockwaveControls {
     ringCount: number
     decay: number
     palette: number
+    scene: number
 }
 
 const PALETTES = ['SilkCircuit', 'Cyberpunk', 'Fire', 'Aurora', 'Ice']
+const SCENES = ['Core Burst', 'Twin Burst', 'Prism Grid']
 
 @Effect({
     name: 'Bass Shockwave',
-    description: 'Radial shockwave rings expanding on beat with particle bursts',
+    description: 'Crisp burst-driven shockwave rings with scene-selectable compositions',
     author: 'Hypercolor',
     audioReactive: true,
 })
 class BassShockwave extends WebGLEffect<ShockwaveControls> {
-    @NumberControl({ label: 'Speed', min: 1, max: 10, default: 5, tooltip: 'Animation speed' })
+    @NumberControl({ label: 'Speed', min: 1, max: 10, default: 6, tooltip: 'Ring expansion speed' })
     speed!: number
 
-    @NumberControl({ label: 'Intensity', min: 0, max: 100, default: 75, tooltip: 'Brightness' })
+    @NumberControl({ label: 'Intensity', min: 0, max: 100, default: 78, tooltip: 'Ring brightness and burst punch' })
     intensity!: number
 
-    @NumberControl({ label: 'Rings', min: 0, max: 100, default: 50, tooltip: 'Ring count' })
+    @NumberControl({ label: 'Ring Count', min: 0, max: 100, default: 58, tooltip: 'Number of active expanding rings' })
     ringCount!: number
 
-    @NumberControl({ label: 'Decay', min: 0, max: 100, default: 50, tooltip: 'Ring fade speed' })
+    @NumberControl({ label: 'Decay', min: 0, max: 100, default: 52, tooltip: 'How quickly older rings fade' })
     decay!: number
 
     @ComboboxControl({ label: 'Palette', values: PALETTES, default: 'SilkCircuit', tooltip: 'Color palette' })
     palette!: string
 
+    @ComboboxControl({ label: 'Scene', values: SCENES, default: 'Core Burst', tooltip: 'Shockwave composition mode' })
+    scene!: string
+
     constructor() {
-        super({ fragmentShader, audioReactive: true })
+        super({
+            id: 'bass-shockwave',
+            name: 'Bass Shockwave',
+            fragmentShader,
+            audioReactive: true,
+        })
     }
 
     protected initializeControls(): void {
-        this.speed = getControlValue('speed', 5)
-        this.intensity = getControlValue('intensity', 75)
-        this.ringCount = getControlValue('ringCount', 50)
-        this.decay = getControlValue('decay', 50)
+        this.speed = getControlValue('speed', 6)
+        this.intensity = getControlValue('intensity', 78)
+        this.ringCount = getControlValue('ringCount', 58)
+        this.decay = getControlValue('decay', 52)
         this.palette = getControlValue('palette', 'SilkCircuit')
+        this.scene = getControlValue('scene', 'Core Burst')
     }
 
     protected getControlValues(): ShockwaveControls {
         return {
-            speed: normalizeSpeed(getControlValue('speed', 5)),
-            intensity: getControlValue('intensity', 75),
-            ringCount: getControlValue('ringCount', 50),
-            decay: getControlValue('decay', 50),
-            palette: PALETTES.indexOf(getControlValue('palette', 'SilkCircuit')),
+            speed: normalizeSpeed(getControlValue('speed', 6)),
+            intensity: getControlValue('intensity', 78),
+            ringCount: getControlValue('ringCount', 58),
+            decay: getControlValue('decay', 52),
+            palette: comboboxValueToIndex(getControlValue('palette', 'SilkCircuit'), PALETTES, 0),
+            scene: comboboxValueToIndex(getControlValue('scene', 'Core Burst'), SCENES, 0),
         }
     }
 
     protected createUniforms(): void {
         this.registerUniform('iSpeed', 1.0)
-        this.registerUniform('iIntensity', 75)
-        this.registerUniform('iRingCount', 50)
-        this.registerUniform('iDecay', 50)
+        this.registerUniform('iIntensity', 78)
+        this.registerUniform('iRingCount', 58)
+        this.registerUniform('iDecay', 52)
         this.registerUniform('iPalette', 0)
+        this.registerUniform('iScene', 0)
     }
 
     protected updateUniforms(c: ShockwaveControls): void {
@@ -79,6 +93,7 @@ class BassShockwave extends WebGLEffect<ShockwaveControls> {
         this.setUniform('iRingCount', c.ringCount)
         this.setUniform('iDecay', c.decay)
         this.setUniform('iPalette', c.palette)
+        this.setUniform('iScene', c.scene)
     }
 }
 

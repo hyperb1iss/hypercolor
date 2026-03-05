@@ -4,6 +4,7 @@ import {
     Effect,
     NumberControl,
     WebGLEffect,
+    comboboxValueToIndex,
     getControlValue,
     initializeEffect,
     normalizeSpeed,
@@ -18,13 +19,15 @@ interface CascadeControls {
     barWidth: number
     palette: number
     glow: number
+    scene: number
 }
 
 const PALETTES = ['SilkCircuit', 'Aurora', 'Cyberpunk', 'Fire', 'Sunset', 'Ice']
+const SCENES = ['Cascade', 'Pulse Grid', 'Spectrum Tunnel', 'Prism Skyline']
 
 @Effect({
     name: 'Frequency Cascade',
-    description: 'Audio-reactive waterfall spectrogram with smooth band interpolation',
+    description: 'Community-style spectrum cascade with scene modes and no-audio fallback motion',
     author: 'Hypercolor',
     audioReactive: true,
 })
@@ -52,8 +55,21 @@ class FrequencyCascade extends WebGLEffect<CascadeControls> {
     @NumberControl({ label: 'Glow', min: 0, max: 100, default: 40, tooltip: 'Bloom intensity' })
     glow!: number
 
+    @ComboboxControl({
+        label: 'Scene',
+        values: SCENES,
+        default: 'Cascade',
+        tooltip: 'Visualizer composition mode',
+    })
+    scene!: string
+
     constructor() {
-        super({ fragmentShader, audioReactive: true })
+        super({
+            id: 'frequency-cascade',
+            name: 'Frequency Cascade',
+            fragmentShader,
+            audioReactive: true,
+        })
     }
 
     protected initializeControls(): void {
@@ -63,6 +79,7 @@ class FrequencyCascade extends WebGLEffect<CascadeControls> {
         this.barWidth = getControlValue('barWidth', 40)
         this.palette = getControlValue('palette', 'SilkCircuit')
         this.glow = getControlValue('glow', 40)
+        this.scene = getControlValue('scene', 'Cascade')
     }
 
     protected getControlValues(): CascadeControls {
@@ -71,8 +88,9 @@ class FrequencyCascade extends WebGLEffect<CascadeControls> {
             intensity: getControlValue('intensity', 75),
             smoothing: getControlValue('smoothing', 50),
             barWidth: getControlValue('barWidth', 40),
-            palette: PALETTES.indexOf(getControlValue('palette', 'SilkCircuit')),
+            palette: comboboxValueToIndex(getControlValue('palette', 'SilkCircuit'), PALETTES, 0),
             glow: getControlValue('glow', 40),
+            scene: comboboxValueToIndex(getControlValue('scene', 'Cascade'), SCENES, 0),
         }
     }
 
@@ -83,6 +101,7 @@ class FrequencyCascade extends WebGLEffect<CascadeControls> {
         this.registerUniform('iBarWidth', 40)
         this.registerUniform('iPalette', 0)
         this.registerUniform('iGlow', 40)
+        this.registerUniform('iScene', 0)
     }
 
     protected updateUniforms(controls: CascadeControls): void {
@@ -92,6 +111,7 @@ class FrequencyCascade extends WebGLEffect<CascadeControls> {
         this.setUniform('iBarWidth', controls.barWidth)
         this.setUniform('iPalette', controls.palette)
         this.setUniform('iGlow', controls.glow)
+        this.setUniform('iScene', controls.scene)
     }
 }
 

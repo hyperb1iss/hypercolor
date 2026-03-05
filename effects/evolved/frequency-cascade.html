@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Frequency Cascade</title>
-  <meta description="Audio-reactive waterfall spectrogram with smooth band interpolation"/>
+  <meta description="Community-style spectrum cascade with scene modes and no-audio fallback motion"/>
   <meta publisher="Hypercolor"/>
   <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Scroll speed"/>
   <meta property="intensity" label="Intensity" type="number" min="0" max="100" default="75" tooltip="Brightness"/>
@@ -12,6 +12,7 @@
   <meta property="barWidth" label="Bar Width" type="number" min="0" max="100" default="40" tooltip="Frequency bar width"/>
   <meta property="palette" label="Palette" type="combobox" default="SilkCircuit" values="SilkCircuit,Aurora,Cyberpunk,Fire,Sunset,Ice" tooltip="Color palette"/>
   <meta property="glow" label="Glow" type="number" min="0" max="100" default="40" tooltip="Bloom intensity"/>
+  <meta property="scene" label="Scene" type="combobox" default="Cascade" values="Cascade,Pulse Grid,Spectrum Tunnel,Prism Skyline" tooltip="Visualizer composition mode"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1225,6 +1226,26 @@
     if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
     return Math.max(0.2, (speed / 5) ** 1.5);
   }
+  function comboboxValueToIndex(value, options, defaultIndex = 0) {
+    if (options.length === 0) return 0;
+    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
+    if (typeof value === "number" && Number.isFinite(value)) {
+      const rounded = Math.round(value);
+      if (rounded >= 0 && rounded < options.length) return rounded;
+      return safeDefault;
+    }
+    if (typeof value !== "string") return safeDefault;
+    const exactIndex = options.indexOf(value);
+    if (exactIndex >= 0) return exactIndex;
+    const normalized = value.trim().toLowerCase();
+    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
+    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
+    const parsedNumeric = Number.parseInt(normalized, 10);
+    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
+      return parsedNumeric;
+    }
+    return safeDefault;
+  }
 
   // packages/core/src/utils/debug.ts
   var COLORS = {
@@ -1580,13 +1601,41 @@ void main() {
     resolveLocations() {
       const gl = this.gl;
       const program = this.program;
-      const intTypes = /* @__PURE__ */ new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL]);
+      const intTypes = /* @__PURE__ */ new Set([
+        gl.INT,
+        gl.INT_VEC2,
+        gl.INT_VEC3,
+        gl.INT_VEC4,
+        gl.BOOL,
+        gl.BOOL_VEC2,
+        gl.BOOL_VEC3,
+        gl.BOOL_VEC4,
+        gl.UNSIGNED_INT,
+        gl.UNSIGNED_INT_VEC2,
+        gl.UNSIGNED_INT_VEC3,
+        gl.UNSIGNED_INT_VEC4,
+        gl.SAMPLER_2D,
+        gl.SAMPLER_CUBE,
+        gl.SAMPLER_3D,
+        gl.SAMPLER_2D_SHADOW,
+        gl.SAMPLER_2D_ARRAY,
+        gl.SAMPLER_2D_ARRAY_SHADOW,
+        gl.SAMPLER_CUBE_SHADOW,
+        gl.INT_SAMPLER_2D,
+        gl.INT_SAMPLER_3D,
+        gl.INT_SAMPLER_CUBE,
+        gl.INT_SAMPLER_2D_ARRAY,
+        gl.UNSIGNED_INT_SAMPLER_2D,
+        gl.UNSIGNED_INT_SAMPLER_3D,
+        gl.UNSIGNED_INT_SAMPLER_CUBE,
+        gl.UNSIGNED_INT_SAMPLER_2D_ARRAY
+      ]);
       const intUniforms = /* @__PURE__ */ new Set();
       const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
       for (let i = 0; i < numActive; i++) {
         const info = gl.getActiveUniform(program, i);
         if (info && intTypes.has(info.type)) {
-          intUniforms.add(info.name);
+          intUniforms.add(info.name.replace(/\[0\]$/, ""));
         }
       }
       for (const [name, entry] of this.uniforms) {
@@ -1694,10 +1743,11 @@ void main() {
   }
 
   // src/effects/frequency-cascade/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\n// Audio\nuniform float iAudioLevel;\nuniform float iAudioBass;\nuniform float iAudioMid;\nuniform float iAudioTreble;\nuniform float iAudioBeat;\nuniform float iAudioBeatPulse;\nuniform float iAudioSpectralFlux;\nuniform float iAudioBrightness;\nuniform float iAudioSwell;\nuniform vec3 iAudioFluxBands;\n\n// Controls\nuniform float iSpeed;\nuniform float iIntensity;\nuniform float iSmoothing;\nuniform float iBarWidth;\nuniform int iPalette;\nuniform float iGlow;\n\n// \u2500\u2500 Noise \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\n// \u2500\u2500 Palettes \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    if (id == 1) return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    if (id == 3) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    if (id == 4) return iqPalette(t, vec3(0.5, 0.5, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.1, 0.2));\n    if (id == 5) return iqPalette(t, vec3(0.5, 0.6, 0.8), vec3(0.2, 0.3, 0.2), vec3(0.6, 0.8, 1.0), vec3(0.0, 0.1, 0.3));\n    return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n}\n\n// \u2500\u2500 Waterfall \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    float time = iTime * iSpeed * 0.5;\n\n    // Frequency position (x-axis = frequency, logarithmic feel)\n    float freqPos = uv.x;\n\n    // Simulate mel-band energy for this horizontal position\n    // Map across bass \u2192 mid \u2192 treble\n    float bandEnergy;\n    if (freqPos < 0.33) {\n        bandEnergy = iAudioBass * (1.0 + iAudioFluxBands.x * 0.5);\n    } else if (freqPos < 0.66) {\n        bandEnergy = iAudioMid * (1.0 + iAudioFluxBands.y * 0.5);\n    } else {\n        bandEnergy = iAudioTreble * (1.0 + iAudioFluxBands.z * 0.5);\n    }\n\n    // Cross-fade between bands for smooth transitions\n    float bandMix = fract(freqPos * 3.0);\n    float smoothBand = smoothstep(0.0, 1.0, bandMix);\n\n    float bassContrib = iAudioBass * smoothstep(0.33, 0.0, freqPos);\n    float midContrib = iAudioMid * (1.0 - abs(freqPos - 0.5) * 2.5);\n    float trebleContrib = iAudioTreble * smoothstep(0.66, 1.0, freqPos);\n    bandEnergy = bassContrib + midContrib + trebleContrib;\n\n    // Add spectral flux for liveliness\n    bandEnergy += iAudioSpectralFlux * 0.3;\n\n    // Vertical waterfall: history scrolls downward\n    // Current energy at the top, fading history below\n    float historyPos = 1.0 - uv.y; // 0 at top, 1 at bottom\n    float decay = exp(-historyPos * (3.0 - iSmoothing * 0.025));\n    float energy = bandEnergy * decay;\n\n    // Add noise for texture variation in the waterfall\n    float noiseVal = hash21(vec2(floor(freqPos * 64.0), floor(uv.y * 200.0 + time * 30.0)));\n    energy += noiseVal * 0.05 * energy;\n\n    // Bar quantization\n    float barCount = 32.0 + iBarWidth * 0.6;\n    float barPos = floor(freqPos * barCount) / barCount;\n    float barFract = fract(freqPos * barCount);\n    float barGap = smoothstep(0.0, 0.08, barFract) * smoothstep(1.0, 0.92, barFract);\n\n    // Color: frequency position maps to palette, energy controls brightness\n    float colorT = barPos + time * 0.03;\n    vec3 col = paletteColor(colorT, iPalette);\n\n    // Intensity modulation\n    float brightness = energy * iIntensity * 0.015 * barGap;\n\n    // Beat pulse \u2014 flash on transients\n    float beatFlash = iAudioBeatPulse * 0.4 * decay;\n    brightness += beatFlash;\n\n    // Glow: soft bloom around bright areas\n    float glowRadius = iGlow * 0.003;\n    float glow = 0.0;\n    for (int i = -2; i <= 2; i++) {\n        float offset = float(i) * glowRadius;\n        float sampleEnergy = bandEnergy * exp(-(historyPos + offset * 2.0) * (3.0 - iSmoothing * 0.025));\n        glow += sampleEnergy * exp(-abs(offset) * 50.0);\n    }\n    glow *= 0.1 * iGlow * 0.01;\n\n    col *= brightness;\n    col += paletteColor(colorT + 0.1, iPalette) * glow;\n\n    // Subtle scan line for depth\n    float scanline = 0.95 + 0.05 * sin(uv.y * iResolution.y * 3.14159);\n    col *= scanline;\n\n    // Top edge highlight (current audio)\n    float topEdge = smoothstep(0.05, 0.0, historyPos) * bandEnergy * 2.0;\n    col += paletteColor(freqPos, iPalette) * topEdge * iIntensity * 0.01;\n\n    // Tonemapping\n    col = col / (1.0 + col * 0.5);\n\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
+  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\n// Audio\nuniform float iAudioLevel;\nuniform float iAudioBass;\nuniform float iAudioMid;\nuniform float iAudioTreble;\nuniform float iAudioBeatPulse;\nuniform float iAudioOnsetPulse;\nuniform float iAudioSpectralFlux;\nuniform float iAudioHarmonicHue;\nuniform float iAudioSwell;\nuniform vec3 iAudioFluxBands;\n\n// Controls\nuniform float iSpeed;\nuniform float iIntensity;\nuniform float iSmoothing;\nuniform float iBarWidth;\nuniform int iPalette;\nuniform float iGlow;\nuniform int iScene;\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return iqPalette(t, vec3(0.50, 0.28, 0.54), vec3(0.48, 0.45, 0.45), vec3(1.00, 0.85, 0.70), vec3(0.88, 0.18, 0.52));\n    if (id == 1) return iqPalette(t, vec3(0.18, 0.50, 0.40), vec3(0.35, 0.40, 0.45), vec3(0.75, 0.70, 0.85), vec3(0.62, 0.30, 0.72));\n    if (id == 2) return iqPalette(t, vec3(0.52, 0.18, 0.48), vec3(0.52, 0.45, 0.50), vec3(1.00, 1.00, 1.00), vec3(0.84, 0.10, 0.60));\n    if (id == 3) return iqPalette(t, vec3(0.50, 0.22, 0.02), vec3(0.50, 0.40, 0.20), vec3(1.00, 0.72, 0.38), vec3(0.02, 0.16, 0.24));\n    if (id == 4) return iqPalette(t, vec3(0.54, 0.38, 0.26), vec3(0.44, 0.32, 0.30), vec3(0.90, 0.75, 0.62), vec3(0.06, 0.22, 0.38));\n    if (id == 5) return iqPalette(t, vec3(0.52, 0.60, 0.78), vec3(0.22, 0.30, 0.22), vec3(0.62, 0.82, 1.00), vec3(0.00, 0.10, 0.32));\n    return iqPalette(t, vec3(0.50, 0.28, 0.54), vec3(0.48, 0.45, 0.45), vec3(1.00, 0.85, 0.70), vec3(0.88, 0.18, 0.52));\n}\n\nfloat audioPresence() {\n    float fluxMean = dot(iAudioFluxBands, vec3(0.3333));\n    float signal =\n        iAudioLevel * 1.15 +\n        iAudioBeatPulse * 0.95 +\n        iAudioOnsetPulse * 0.65 +\n        iAudioSpectralFlux * 0.70 +\n        fluxMean * 0.55;\n    return smoothstep(0.035, 0.16, signal);\n}\n\nfloat audioEnergy(float freq, float barId, float time) {\n    float bassWeight = 1.0 - smoothstep(0.05, 0.92, freq);\n    float trebleWeight = smoothstep(0.25, 0.98, freq);\n    float midWeight = exp(-pow((freq - 0.50) * 2.8, 2.0));\n\n    float lowMid = mix(iAudioBass, iAudioMid, smoothstep(0.10, 0.55, freq));\n    float midHigh = mix(iAudioMid, iAudioTreble, smoothstep(0.40, 0.92, freq));\n    float stitched = mix(lowMid, midHigh, smoothstep(0.35, 0.70, freq));\n\n    float flux = mix(iAudioFluxBands.x, iAudioFluxBands.y, smoothstep(0.05, 0.55, freq));\n    flux = mix(flux, iAudioFluxBands.z, smoothstep(0.45, 0.98, freq));\n\n    float sparkleSeed = hash21(vec2(barId * 0.123, floor(time * 12.0)));\n    float sparkle = iAudioSpectralFlux * (0.20 + 0.80 * sparkleSeed);\n\n    float energy =\n        stitched * 0.82 +\n        iAudioBass * bassWeight * 0.30 +\n        iAudioTreble * trebleWeight * 0.32 +\n        iAudioMid * midWeight * 0.42 +\n        flux * 0.55 +\n        sparkle +\n        iAudioSwell * 0.18;\n\n    return clamp(energy, 0.0, 1.6);\n}\n\nfloat fallbackEnergy(float barId, float freq, float time, int scene) {\n    float n = hash21(vec2(barId, floor(time * 2.4)));\n    float waveA = 0.5 + 0.5 * sin(time * 1.65 + barId * 0.24 + n * 6.28318);\n    float waveB = 0.5 + 0.5 * sin(time * 0.86 - barId * 0.19 + sin(time * 0.44 + barId * 0.08));\n    float pulse = pow(max(0.0, sin(time * (2.0 + float(scene) * 0.22) + barId * (0.10 + float(scene) * 0.01))), 2.4);\n\n    float contour = 0.35 + 0.65 * (1.0 - abs(freq - 0.5) * 1.35);\n    if (scene == 2) contour = 0.45 + 0.55 * smoothstep(0.0, 1.0, freq);\n    if (scene == 3) contour = 0.45 + 0.55 * (1.0 - smoothstep(0.0, 1.0, freq));\n\n    float energy = mix(waveA, waveB, 0.45) * (0.64 + pulse * 0.72) + contour * 0.20;\n    return clamp(energy, 0.0, 1.35);\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    float aspect = iResolution.x / max(iResolution.y, 1.0);\n\n    float speed = max(iSpeed, 0.05);\n    float time = iTime * (0.28 + speed * 0.44);\n    float intensity = clamp(iIntensity * 0.01, 0.0, 1.0);\n    float smoothness = clamp(iSmoothing * 0.01, 0.0, 1.0);\n    float glowAmount = clamp(iGlow * 0.01, 0.0, 1.0);\n\n    float barCount = mix(140.0, 20.0, clamp(iBarWidth * 0.01, 0.0, 1.0));\n    float barPos = uv.x * barCount;\n    float barId = floor(barPos);\n    float barCell = fract(barPos);\n\n    float barMask = smoothstep(0.02, 0.11, barCell) * smoothstep(0.02, 0.11, 1.0 - barCell);\n\n    float freq = barId / max(barCount - 1.0, 1.0);\n    float warpedFreq = freq;\n    if (iScene == 1) warpedFreq = pow(freq, 0.84);\n    if (iScene == 2) warpedFreq = abs(freq * 2.0 - 1.0);\n    if (iScene == 3) warpedFreq = fract(freq + 0.12 * sin(time * 0.38));\n\n    float audioActive = audioPresence();\n    float reactiveEnergy = audioEnergy(warpedFreq, barId, time);\n    float proceduralEnergy = fallbackEnergy(barId, warpedFreq, time, iScene);\n\n    float energy = mix(proceduralEnergy, reactiveEnergy, audioActive);\n    energy += iAudioBeatPulse * 0.25 * audioActive;\n\n    if (iScene == 1) {\n        energy *= 0.82 + 0.18 * sin(time * 5.6 + uv.y * 24.0 + barId * 0.14);\n    } else if (iScene == 2) {\n        float center = exp(-abs(uv.x - 0.5) * 7.0);\n        energy *= 0.74 + center * 0.56;\n    } else if (iScene == 3) {\n        float chop = 0.65 + 0.35 * step(0.56, fract(time * 1.05 + barId * 0.039));\n        energy *= chop;\n    }\n\n    energy = clamp(energy, 0.0, 1.8);\n\n    float barHeight = clamp(\n        mix(0.08, 0.02, audioActive) + energy * mix(0.36, 1.28, intensity),\n        0.02,\n        1.0\n    );\n\n    float barBody = 1.0 - smoothstep(barHeight - 0.010, barHeight + 0.010, uv.y);\n    float ledRows = mix(20.0, 8.0, smoothness);\n    float ledCell = fract(uv.y * ledRows - time * 0.22);\n    float ledMask = smoothstep(0.05, 0.20, ledCell) * smoothstep(0.05, 0.20, 1.0 - ledCell);\n    barBody *= mix(0.78, 1.0, ledMask);\n\n    float historyY = 1.0 - uv.y;\n    float trailDecay = mix(9.0, 2.4, smoothness);\n    float trailScan = 0.55 + 0.45 * sin(historyY * 72.0 + time * (4.2 + speed * 1.3) + barId * 0.35);\n    float waterfall = exp(-historyY * trailDecay) * trailScan * energy;\n    waterfall *= smoothstep(0.16, 0.96, uv.y);\n    waterfall *= 0.55 + 0.45 * barMask;\n\n    float rim = exp(-abs(uv.y - barHeight) * mix(115.0, 44.0, glowAmount));\n    float beam = exp(-abs(barCell - 0.5) * mix(28.0, 8.0, glowAmount));\n    float bloom = (rim + waterfall * 0.62 + barBody * 0.20) * beam * (0.22 + glowAmount * 1.30);\n\n    float paletteT = warpedFreq + time * (0.05 + float(iScene) * 0.008);\n    vec3 baseColor = paletteColor(paletteT, iPalette);\n    vec3 accentColor = paletteColor(paletteT + 0.17 + iAudioHarmonicHue * 0.0015, iPalette);\n\n    vec3 bgLow = paletteColor(0.08 + time * 0.01, iPalette) * 0.03;\n    vec3 bgHigh = paletteColor(0.46 + time * 0.01, iPalette) * 0.12;\n    vec3 color = mix(bgLow, bgHigh, pow(uv.y, 1.3));\n\n    float bodyLight = barBody * (0.34 + energy * 1.45);\n    color += baseColor * bodyLight * barMask * (0.30 + intensity * 1.75);\n    color += accentColor * rim * (0.16 + intensity * 1.10);\n    color += mix(baseColor, accentColor, 0.62) * waterfall * (0.12 + intensity * 0.86);\n    color += accentColor * bloom;\n\n    if (iScene == 1) {\n        float gridWave = abs(fract(uv.y * 17.0 - time * 1.3) - 0.5) - 0.44;\n        float grid = 1.0 - smoothstep(0.0, 0.02, gridWave);\n        color += accentColor * grid * 0.10 * (0.35 + energy);\n    } else if (iScene == 2) {\n        float tunnel = exp(-abs(uv.x - 0.5) * 8.0) * (0.5 + 0.5 * sin(uv.y * 30.0 - time * 3.0));\n        color += mix(baseColor, accentColor, 0.5) * tunnel * 0.14;\n    } else if (iScene == 3) {\n        float prism = pow(abs(sin((uv.x - 0.5) * aspect * 18.0 + uv.y * 7.0 + time * 2.9)), 18.0);\n        color += accentColor * prism * 0.16;\n    }\n\n    float scanline = 0.95 + 0.05 * sin(gl_FragCoord.y * 1.8 + time * 2.0);\n    color *= scanline;\n\n    vec2 centered = (uv - 0.5) * vec2(aspect, 1.0);\n    float vignette = 1.0 - smoothstep(0.28, 1.25, length(centered));\n    color *= vignette;\n\n    color = color / (1.0 + color * 0.34);\n    color = pow(max(color, 0.0), vec3(0.95));\n\n    fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);\n}\n";
 
   // src/effects/frequency-cascade/main.ts
   var PALETTES = ["SilkCircuit", "Aurora", "Cyberpunk", "Fire", "Sunset", "Ice"];
+  var SCENES = ["Cascade", "Pulse Grid", "Spectrum Tunnel", "Prism Skyline"];
   var FrequencyCascade = class extends WebGLEffect {
     speed;
     intensity;
@@ -1705,8 +1755,14 @@ void main() {
     barWidth;
     palette;
     glow;
+    scene;
     constructor() {
-      super({ fragmentShader: fragment_default, audioReactive: true });
+      super({
+        id: "frequency-cascade",
+        name: "Frequency Cascade",
+        fragmentShader: fragment_default,
+        audioReactive: true
+      });
     }
     initializeControls() {
       this.speed = getControlValue("speed", 5);
@@ -1715,6 +1771,7 @@ void main() {
       this.barWidth = getControlValue("barWidth", 40);
       this.palette = getControlValue("palette", "SilkCircuit");
       this.glow = getControlValue("glow", 40);
+      this.scene = getControlValue("scene", "Cascade");
     }
     getControlValues() {
       return {
@@ -1722,8 +1779,9 @@ void main() {
         intensity: getControlValue("intensity", 75),
         smoothing: getControlValue("smoothing", 50),
         barWidth: getControlValue("barWidth", 40),
-        palette: PALETTES.indexOf(getControlValue("palette", "SilkCircuit")),
-        glow: getControlValue("glow", 40)
+        palette: comboboxValueToIndex(getControlValue("palette", "SilkCircuit"), PALETTES, 0),
+        glow: getControlValue("glow", 40),
+        scene: comboboxValueToIndex(getControlValue("scene", "Cascade"), SCENES, 0)
       };
     }
     createUniforms() {
@@ -1733,6 +1791,7 @@ void main() {
       this.registerUniform("iBarWidth", 40);
       this.registerUniform("iPalette", 0);
       this.registerUniform("iGlow", 40);
+      this.registerUniform("iScene", 0);
     }
     updateUniforms(controls) {
       this.setUniform("iSpeed", controls.speed);
@@ -1741,6 +1800,7 @@ void main() {
       this.setUniform("iBarWidth", controls.barWidth);
       this.setUniform("iPalette", controls.palette);
       this.setUniform("iGlow", controls.glow);
+      this.setUniform("iScene", controls.scene);
     }
   };
   __decorateClass([
@@ -1766,10 +1826,18 @@ void main() {
   __decorateClass([
     NumberControl({ label: "Glow", min: 0, max: 100, default: 40, tooltip: "Bloom intensity" })
   ], FrequencyCascade.prototype, "glow", 2);
+  __decorateClass([
+    ComboboxControl({
+      label: "Scene",
+      values: SCENES,
+      default: "Cascade",
+      tooltip: "Visualizer composition mode"
+    })
+  ], FrequencyCascade.prototype, "scene", 2);
   FrequencyCascade = __decorateClass([
     Effect({
       name: "Frequency Cascade",
-      description: "Audio-reactive waterfall spectrogram with smooth band interpolation",
+      description: "Community-style spectrum cascade with scene modes and no-audio fallback motion",
       author: "Hypercolor",
       audioReactive: true
     })

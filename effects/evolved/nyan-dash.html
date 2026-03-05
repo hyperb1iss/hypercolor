@@ -3,15 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Frost Crystal</title>
-  <meta description="Sharp community-style crystal lattice with crisp geometric edge motifs"/>
+  <title>Nyan Dash</title>
+  <meta description="Playful stylized cat dash with rainbow trail variants, star pops, and smooth looping motion"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Animation speed"/>
-  <meta property="scale" label="Scale" type="number" min="10" max="100" default="56" tooltip="Crystal lattice density"/>
-  <meta property="edgeGlow" label="Edge Glow" type="number" min="0" max="100" default="74" tooltip="Edge brightness and bloom"/>
-  <meta property="growth" label="Growth" type="number" min="0" max="100" default="68" tooltip="Geometric growth pulse amount"/>
-  <meta property="palette" label="Palette" type="combobox" default="Ice" values="SilkCircuit,Ice,Frost,Aurora,Cyberpunk" tooltip="Color palette"/>
-  <meta property="scene" label="Scene" type="combobox" default="Lattice" values="Lattice,Shardfield,Prism,Signal" tooltip="Optional motif style"/>
+  <meta property="animationSpeed" label="Animation Speed" type="number" min="1" max="10" default="6" tooltip="Overall motion speed"/>
+  <meta property="scale" label="Scale" type="number" min="40" max="180" default="100" tooltip="Cat and trail size"/>
+  <meta property="positionX" label="Position X" type="number" min="-100" max="100" default="0" tooltip="Horizontal offset"/>
+  <meta property="positionY" label="Position Y" type="number" min="-100" max="100" default="0" tooltip="Vertical offset"/>
+  <meta property="trailMode" label="Trail Mode" type="combobox" default="Classic" values="Classic,Pulse,Comet" tooltip="Trail behavior style"/>
+  <meta property="colorCycle" label="Color Cycle" type="boolean" default="true" tooltip="Animate hues through the palette"/>
+  <meta property="cycleSpeed" label="Cycle Speed" type="number" min="0" max="100" default="34" tooltip="Hue cycle speed"/>
+  <meta property="starDensity" label="Star Density" type="number" min="0" max="100" default="58" tooltip="Twinkling star amount"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1137,7 +1139,7 @@
     }
   });
 
-  // src/effects/frost-crystal/main.ts
+  // src/effects/nyan-dash/main.ts
   var import_reflect_metadata2 = __toESM(require_Reflect());
 
   // packages/core/src/controls/decorators.ts
@@ -1224,26 +1226,6 @@
   function normalizeSpeed(speed) {
     if (typeof speed !== "number" || Number.isNaN(speed)) return 1;
     return Math.max(0.2, (speed / 5) ** 1.5);
-  }
-  function comboboxValueToIndex(value, options, defaultIndex = 0) {
-    if (options.length === 0) return 0;
-    const safeDefault = Math.max(0, Math.min(defaultIndex, options.length - 1));
-    if (typeof value === "number" && Number.isFinite(value)) {
-      const rounded = Math.round(value);
-      if (rounded >= 0 && rounded < options.length) return rounded;
-      return safeDefault;
-    }
-    if (typeof value !== "string") return safeDefault;
-    const exactIndex = options.indexOf(value);
-    if (exactIndex >= 0) return exactIndex;
-    const normalized = value.trim().toLowerCase();
-    const caseInsensitiveIndex = options.findIndex((option) => option.toLowerCase() === normalized);
-    if (caseInsensitiveIndex >= 0) return caseInsensitiveIndex;
-    const parsedNumeric = Number.parseInt(normalized, 10);
-    if (!Number.isNaN(parsedNumeric) && parsedNumeric >= 0 && parsedNumeric < options.length) {
-      return parsedNumeric;
-    }
-    return safeDefault;
   }
 
   // packages/core/src/utils/debug.ts
@@ -1389,328 +1371,41 @@
     }
   };
 
-  // packages/core/src/audio/analysis.ts
-  var FFT_SIZE = 200;
-  var MEL_BANDS = 24;
-  var PITCH_CLASSES = 12;
-  function getAudioData() {
-    const hasEngine = typeof engine !== "undefined" && engine?.audio;
-    if (!hasEngine) return createSilentAudioData();
-    const audio = engine.audio;
-    return {
-      // Legacy
-      bass: audio.bass ?? 0,
-      bassEnv: audio.bassEnv ?? 0,
-      beat: Number(audio.beat ?? 0),
-      beatConfidence: audio.beatConfidence ?? 0,
-      beatPhase: audio.beatPhase ?? 0,
-      beatPulse: audio.beatPulse ?? 0,
-      brightness: audio.brightness ?? 0.5,
-      chordMood: audio.chordMood ?? 0,
-      chromagram: audio.chromagram ?? new Float32Array(PITCH_CLASSES),
-      density: audio.density ?? 0,
-      dominantPitch: audio.dominantPitch ?? 0,
-      dominantPitchConfidence: audio.dominantPitchConfidence ?? 0,
-      frequency: audio.frequency ?? new Float32Array(FFT_SIZE),
-      frequencyRaw: audio.frequencyRaw ?? new Int8Array(FFT_SIZE),
-      frequencyWeighted: audio.frequencyWeighted ?? new Float32Array(FFT_SIZE),
-      harmonicHue: audio.harmonicHue ?? 0,
-      level: audio.level != null ? normalizeAudioLevel(audio.level) : 0,
-      levelLong: audio.levelLong ?? 0,
-      levelRaw: audio.level ?? -100,
-      levelShort: audio.levelShort ?? 0,
-      melBands: audio.melBands ?? new Float32Array(MEL_BANDS),
-      melBandsNormalized: audio.melBandsNormalized ?? new Float32Array(MEL_BANDS),
-      mid: audio.mid ?? 0,
-      midEnv: audio.midEnv ?? 0,
-      momentum: audio.momentum ?? 0,
-      onset: Number(audio.onset ?? 0),
-      onsetPulse: audio.onsetPulse ?? 0,
-      rolloff: audio.rolloff ?? 0.5,
-      roughness: audio.roughness ?? 0.2,
-      spectralFlux: audio.spectralFlux ?? 0,
-      spectralFluxBands: audio.spectralFluxBands ?? new Float32Array(3),
-      spread: audio.spread ?? 0.3,
-      swell: audio.swell ?? 0,
-      tempo: audio.tempo ?? 120,
-      treble: audio.treble ?? 0,
-      trebleEnv: audio.trebleEnv ?? 0,
-      width: audio.width ?? 0.5
-    };
-  }
-  function normalizeAudioLevel(levelDb) {
-    return Math.max(0, Math.min(1, (levelDb + 100) / 100));
-  }
-  function createSilentAudioData() {
-    return {
-      bass: 0,
-      bassEnv: 0,
-      beat: 0,
-      beatConfidence: 0,
-      beatPhase: 0,
-      beatPulse: 0,
-      brightness: 0.5,
-      chordMood: 0,
-      chromagram: new Float32Array(PITCH_CLASSES),
-      density: 0,
-      dominantPitch: 0,
-      dominantPitchConfidence: 0,
-      frequency: new Float32Array(FFT_SIZE),
-      frequencyRaw: new Int8Array(FFT_SIZE),
-      frequencyWeighted: new Float32Array(FFT_SIZE),
-      harmonicHue: 0,
-      level: 0,
-      levelLong: 0,
-      levelRaw: -100,
-      levelShort: 0,
-      melBands: new Float32Array(MEL_BANDS),
-      melBandsNormalized: new Float32Array(MEL_BANDS),
-      mid: 0,
-      midEnv: 0,
-      momentum: 0,
-      onset: 0,
-      onsetPulse: 0,
-      rolloff: 0.5,
-      roughness: 0.2,
-      spectralFlux: 0,
-      spectralFluxBands: new Float32Array(3),
-      spread: 0.3,
-      swell: 0,
-      tempo: 120,
-      treble: 0,
-      trebleEnv: 0,
-      width: 0.5
-    };
-  }
-
-  // packages/core/src/effects/webgl-effect.ts
-  var DEFAULT_VERTEX_SHADER = `#version 300 es
-precision highp float;
-in vec2 aPosition;
-void main() {
-    gl_Position = vec4(aPosition, 0.0, 1.0);
-}
-`;
-  var WebGLEffect = class extends BaseEffect {
-    gl = null;
-    program = null;
-    uniforms = /* @__PURE__ */ new Map();
-    fragmentShader;
-    vertexShader;
-    audioReactive;
-    currentAudioData = null;
+  // packages/core/src/effects/canvas-effect.ts
+  var CanvasEffect = class extends BaseEffect {
+    ctx = null;
+    backgroundColor;
+    lastFrameTime = 0;
+    deltaTime = 0;
     constructor(config) {
       super(config);
-      this.fragmentShader = config.fragmentShader;
-      this.vertexShader = config.vertexShader ?? DEFAULT_VERTEX_SHADER;
-      this.audioReactive = config.audioReactive ?? false;
+      this.backgroundColor = config.backgroundColor || "black";
     }
     async initializeRenderer() {
       if (!this.canvas) throw new Error("Canvas not available");
-      this.gl = this.canvas.getContext("webgl2", { preserveDrawingBuffer: true });
-      if (!this.gl) throw new Error("WebGL2 not supported");
-      this.program = this.createProgram(this.vertexShader, this.fragmentShader);
-      this.gl.useProgram(this.program);
-      this.createQuad();
-      this.registerUniform("iTime", 0);
-      this.registerUniform("iResolution", [this.canvas.width, this.canvas.height]);
-      this.registerUniform("iMouse", [0, 0]);
-      if (this.audioReactive) {
-        this.registerAudioUniforms();
-      }
-      this.createUniforms();
-      this.resolveLocations();
-      this.pushAllUniforms();
-      this.debug("success", "WebGL2 renderer initialized");
+      this.ctx = this.canvas.getContext("2d");
+      if (!this.ctx) throw new Error("Could not get 2D context");
+      this.ctx.imageSmoothingEnabled = true;
+      this.clearCanvas();
+      await this.loadResources();
+    }
+    /** Override to load images, fonts, etc. */
+    async loadResources() {
+    }
+    clearCanvas() {
+      if (!this.ctx || !this.canvas) return;
+      this.ctx.fillStyle = this.backgroundColor;
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
     render(time) {
-      if (!this.gl || !this.program) return;
-      this.setUniform("iTime", time);
-      if (this.audioReactive) {
-        this.currentAudioData = getAudioData();
-        this.pushAudioUniforms(this.currentAudioData);
-      }
-      this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
-    }
-    getAudio() {
-      return this.currentAudioData;
+      if (!this.ctx || !this.canvas) return;
+      this.deltaTime = this.lastFrameTime === 0 ? 0 : time - this.lastFrameTime;
+      this.lastFrameTime = time;
+      this.clearCanvas();
+      this.draw(time, this.deltaTime);
     }
     updateParameters(controls) {
-      if (!this.program) return;
-      this.updateUniforms(controls);
-    }
-    // ── Uniform API ─────────────────────────────────────────────────────
-    /** Register a uniform. Call in createUniforms(). */
-    registerUniform(name, value) {
-      this.uniforms.set(name, { location: null, value, isInt: false });
-    }
-    /** Set a uniform value (will be pushed on next draw). */
-    setUniform(name, value) {
-      const entry = this.uniforms.get(name);
-      if (entry) {
-        entry.value = value;
-        this.pushUniform(name, entry);
-      }
-    }
-    // ── Internal ────────────────────────────────────────────────────────
-    createProgram(vertSrc, fragSrc) {
-      const gl = this.gl;
-      const vert = this.compileShader(gl.VERTEX_SHADER, vertSrc);
-      const frag = this.compileShader(gl.FRAGMENT_SHADER, fragSrc);
-      const program = gl.createProgram();
-      gl.attachShader(program, vert);
-      gl.attachShader(program, frag);
-      gl.linkProgram(program);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        const info = gl.getProgramInfoLog(program);
-        gl.deleteProgram(program);
-        throw new Error(`Shader link failed: ${info}`);
-      }
-      gl.deleteShader(vert);
-      gl.deleteShader(frag);
-      return program;
-    }
-    compileShader(type, source) {
-      const gl = this.gl;
-      const shader = gl.createShader(type);
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        const info = gl.getShaderInfoLog(shader);
-        gl.deleteShader(shader);
-        throw new Error(`Shader compile failed: ${info}`);
-      }
-      return shader;
-    }
-    createQuad() {
-      const gl = this.gl;
-      const vertices = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
-      const buffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-      const posLoc = gl.getAttribLocation(this.program, "aPosition");
-      gl.enableVertexAttribArray(posLoc);
-      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-    }
-    pushAllUniforms() {
-      for (const [name, entry] of this.uniforms) {
-        this.pushUniform(name, entry);
-      }
-    }
-    resolveLocations() {
-      const gl = this.gl;
-      const program = this.program;
-      const intTypes = /* @__PURE__ */ new Set([
-        gl.INT,
-        gl.INT_VEC2,
-        gl.INT_VEC3,
-        gl.INT_VEC4,
-        gl.BOOL,
-        gl.BOOL_VEC2,
-        gl.BOOL_VEC3,
-        gl.BOOL_VEC4,
-        gl.UNSIGNED_INT,
-        gl.UNSIGNED_INT_VEC2,
-        gl.UNSIGNED_INT_VEC3,
-        gl.UNSIGNED_INT_VEC4,
-        gl.SAMPLER_2D,
-        gl.SAMPLER_CUBE,
-        gl.SAMPLER_3D,
-        gl.SAMPLER_2D_SHADOW,
-        gl.SAMPLER_2D_ARRAY,
-        gl.SAMPLER_2D_ARRAY_SHADOW,
-        gl.SAMPLER_CUBE_SHADOW,
-        gl.INT_SAMPLER_2D,
-        gl.INT_SAMPLER_3D,
-        gl.INT_SAMPLER_CUBE,
-        gl.INT_SAMPLER_2D_ARRAY,
-        gl.UNSIGNED_INT_SAMPLER_2D,
-        gl.UNSIGNED_INT_SAMPLER_3D,
-        gl.UNSIGNED_INT_SAMPLER_CUBE,
-        gl.UNSIGNED_INT_SAMPLER_2D_ARRAY
-      ]);
-      const intUniforms = /* @__PURE__ */ new Set();
-      const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
-      for (let i = 0; i < numActive; i++) {
-        const info = gl.getActiveUniform(program, i);
-        if (info && intTypes.has(info.type)) {
-          intUniforms.add(info.name.replace(/\[0\]$/, ""));
-        }
-      }
-      for (const [name, entry] of this.uniforms) {
-        entry.location = gl.getUniformLocation(program, name);
-        entry.isInt = intUniforms.has(name);
-      }
-    }
-    pushUniform(_name, entry) {
-      const gl = this.gl;
-      if (!gl || !entry.location) return;
-      const val = entry.value;
-      if (typeof val === "number") {
-        if (entry.isInt) {
-          gl.uniform1i(entry.location, val | 0);
-        } else {
-          gl.uniform1f(entry.location, val);
-        }
-      } else if (val.length === 2) {
-        if (entry.isInt) {
-          gl.uniform2iv(entry.location, val);
-        } else {
-          gl.uniform2fv(entry.location, val);
-        }
-      } else if (val.length === 3) {
-        if (entry.isInt) {
-          gl.uniform3iv(entry.location, val);
-        } else {
-          gl.uniform3fv(entry.location, val);
-        }
-      } else if (val.length === 4) {
-        if (entry.isInt) {
-          gl.uniform4iv(entry.location, val);
-        } else {
-          gl.uniform4fv(entry.location, val);
-        }
-      }
-    }
-    registerAudioUniforms() {
-      this.registerUniform("iAudioLevel", 0);
-      this.registerUniform("iAudioBass", 0);
-      this.registerUniform("iAudioMid", 0);
-      this.registerUniform("iAudioTreble", 0);
-      this.registerUniform("iAudioBeat", 0);
-      this.registerUniform("iAudioBeatPulse", 0);
-      this.registerUniform("iAudioBeatPhase", 0);
-      this.registerUniform("iAudioBeatConfidence", 0);
-      this.registerUniform("iAudioOnset", 0);
-      this.registerUniform("iAudioOnsetPulse", 0);
-      this.registerUniform("iAudioSpectralFlux", 0);
-      this.registerUniform("iAudioHarmonicHue", 0);
-      this.registerUniform("iAudioChordMood", 0);
-      this.registerUniform("iAudioBrightness", 0.5);
-      this.registerUniform("iAudioMomentum", 0);
-      this.registerUniform("iAudioSwell", 0);
-      this.registerUniform("iAudioTempo", 120);
-      this.registerUniform("iAudioFluxBands", [0, 0, 0]);
-    }
-    pushAudioUniforms(audio) {
-      this.setUniform("iAudioLevel", audio.level);
-      this.setUniform("iAudioBass", audio.bass);
-      this.setUniform("iAudioMid", audio.mid);
-      this.setUniform("iAudioTreble", audio.treble);
-      this.setUniform("iAudioBeat", audio.beat);
-      this.setUniform("iAudioBeatPulse", audio.beatPulse);
-      this.setUniform("iAudioBeatPhase", audio.beatPhase);
-      this.setUniform("iAudioBeatConfidence", audio.beatConfidence);
-      this.setUniform("iAudioOnset", audio.onset);
-      this.setUniform("iAudioOnsetPulse", audio.onsetPulse);
-      this.setUniform("iAudioSpectralFlux", audio.spectralFlux);
-      this.setUniform("iAudioHarmonicHue", audio.harmonicHue);
-      this.setUniform("iAudioChordMood", audio.chordMood);
-      this.setUniform("iAudioBrightness", audio.brightness);
-      this.setUniform("iAudioMomentum", audio.momentum);
-      this.setUniform("iAudioSwell", audio.swell);
-      this.setUniform("iAudioTempo", audio.tempo);
-      this.setUniform("iAudioFluxBands", Array.from(audio.spectralFluxBands));
+      this.applyControls(controls);
     }
   };
 
@@ -1741,84 +1436,375 @@ void main() {
     }, { once: true });
   }
 
-  // src/effects/frost-crystal/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iSpeed;\nuniform float iScale;\nuniform float iEdgeGlow;\nuniform float iGrowth;\nuniform int iPalette;\nuniform int iScene;\n\nfloat hash21(vec2 p) {\n    p = fract(p * vec2(443.897, 441.423));\n    p += dot(p, p + 19.19);\n    return fract(p.x * p.y);\n}\n\nfloat lineMask(float d, float width) {\n    float aa = max(fwidth(d) * 0.9, 0.0008);\n    return 1.0 - smoothstep(width, width + aa, d);\n}\n\nvec3 latticeCoords(vec2 p, float density) {\n    float u = dot(p, vec2(1.0, 0.0)) * density;\n    float v = dot(p, vec2(0.5, 0.8660254)) * density;\n    float w = dot(p, vec2(-0.5, 0.8660254)) * density;\n    return vec3(u, v, w);\n}\n\nvec3 paletteColor(int palette, int slot) {\n    if (palette == 0) {\n        if (slot == 0) return vec3(0.02, 0.01, 0.07);\n        if (slot == 1) return vec3(0.06, 0.02, 0.10);\n        if (slot == 2) return vec3(0.88, 0.20, 1.00);\n        if (slot == 3) return vec3(0.36, 0.80, 0.76);\n        return vec3(0.84, 0.72, 0.28);\n    }\n\n    if (palette == 1) {\n        if (slot == 0) return vec3(0.01, 0.04, 0.08);\n        if (slot == 1) return vec3(0.03, 0.10, 0.15);\n        if (slot == 2) return vec3(0.22, 0.78, 1.00);\n        if (slot == 3) return vec3(0.38, 0.82, 0.88);\n        return vec3(0.60, 0.88, 0.95);\n    }\n\n    if (palette == 2) {\n        if (slot == 0) return vec3(0.02, 0.05, 0.11);\n        if (slot == 1) return vec3(0.05, 0.14, 0.20);\n        if (slot == 2) return vec3(0.33, 0.62, 1.00);\n        if (slot == 3) return vec3(0.50, 0.74, 0.90);\n        return vec3(0.65, 0.84, 0.98);\n    }\n\n    if (palette == 3) {\n        if (slot == 0) return vec3(0.02, 0.03, 0.08);\n        if (slot == 1) return vec3(0.07, 0.04, 0.14);\n        if (slot == 2) return vec3(0.22, 1.00, 0.78);\n        if (slot == 3) return vec3(0.56, 0.26, 0.82);\n        return vec3(0.82, 0.56, 0.94);\n    }\n\n    if (slot == 0) return vec3(0.03, 0.01, 0.05);\n    if (slot == 1) return vec3(0.10, 0.02, 0.10);\n    if (slot == 2) return vec3(1.00, 0.22, 0.70);\n    if (slot == 3) return vec3(0.16, 0.78, 0.58);\n    return vec3(0.95, 0.72, 0.30);\n}\n\nvec4 sceneLattice(vec3 coords, vec3 axisDist, vec2 local, float width, float growth, float t) {\n    float a = lineMask(axisDist.x, width);\n    float b = lineMask(axisDist.y, width);\n    float c = lineMask(axisDist.z, width);\n    float grid = max(max(a, b), c);\n    float node = clamp(a * b + b * c + c * a, 0.0, 1.0);\n\n    float ringRadius = mix(0.16, 0.41, growth);\n    float ring = lineMask(abs((abs(local.x) + abs(local.y)) - ringRadius), width * 1.12);\n    float runner = lineMask(abs(fract((coords.x - coords.y) * 0.5 + t * 0.16) - 0.5), width * 0.9);\n\n    float primary = max(grid, ring * 0.56);\n    float accent = node * 0.82 + ring * 0.44;\n    float highlight = node * 0.70 + runner * 0.36;\n    float fill = 0.14 + 0.20 * node;\n\n    return vec4(primary, accent, highlight, fill);\n}\n\nvec4 sceneShardfield(vec3 coords, vec3 axisDist, vec2 local, float width, float growth, float t) {\n    float a = lineMask(axisDist.x, width);\n    float b = lineMask(axisDist.y, width);\n    float c = lineMask(axisDist.z, width);\n    float grid = max(max(a, b), c);\n    float node = clamp(a * b + b * c + c * a, 0.0, 1.0);\n\n    vec2 id = floor(coords.xy);\n    float seed = hash21(id);\n    float phase = (seed - 0.5) * 0.24 + sin(t + seed * 6.28318) * 0.02;\n\n    float slashA = lineMask(abs(local.x * 0.92 + local.y * 0.54 + phase), width * 0.72);\n    float slashB = lineMask(abs(local.x * 0.48 - local.y * 0.95 - phase * 0.7), width * 0.72);\n    float facetRadius = mix(0.14, 0.44, growth * 0.85 + seed * 0.15);\n    float facet = lineMask(abs(max(abs(local.x), abs(local.y)) - facetRadius), width * 1.2);\n    float seam = lineMask(abs(fract((coords.z + t * 0.22) * 0.65) - 0.5), width * 0.92);\n\n    float primary = max(grid * 0.66, slashA * 0.95);\n    float accent = max(facet * 0.72, slashB * 0.82);\n    float highlight = seam * 0.42 + slashA * slashB * 1.05 + node * 0.45;\n    float fill = 0.10 + 0.22 * facet;\n\n    return vec4(primary, accent, highlight, fill);\n}\n\nvec4 scenePrism(vec3 coords, vec3 axisDist, vec2 local, float width, float growth, float t) {\n    float a = lineMask(axisDist.x, width);\n    float b = lineMask(axisDist.y, width);\n    float c = lineMask(axisDist.z, width);\n    float grid = max(max(a, b), c);\n    float node = clamp(a * b + b * c + c * a, 0.0, 1.0);\n\n    float hex = max(abs(local.x) * 0.8660254 + abs(local.y) * 0.5, abs(local.y));\n    float outer = lineMask(abs(hex - mix(0.18, 0.45, growth)), width * 1.2);\n    float inner = lineMask(abs(hex - mix(0.08, 0.30, growth)), width * 0.95);\n    float spokes = max(lineMask(abs(local.x), width * 0.85), lineMask(abs(local.y), width * 0.85));\n    float runner = lineMask(abs(fract((coords.x + coords.y + t * 0.25) * 0.5) - 0.5), width * 0.95);\n\n    float primary = max(grid * 0.60, outer);\n    float accent = max(inner * 0.80, spokes * 0.45);\n    float highlight = node * 0.72 + runner * 0.30 + inner * 0.45;\n    float fill = 0.09 + 0.25 * outer;\n\n    return vec4(primary, accent, highlight, fill);\n}\n\nvec4 sceneSignal(vec3 coords, vec3 axisDist, vec2 local, float width, float growth, float t) {\n    float a = lineMask(axisDist.x, width);\n    float b = lineMask(axisDist.y, width);\n    float c = lineMask(axisDist.z, width);\n    float grid = max(max(a, b), c);\n    float node = clamp(a * b + b * c + c * a, 0.0, 1.0);\n\n    float offset = mix(0.05, 0.25, growth);\n    float chevronA = lineMask(abs(abs(local.x) - local.y - offset), width);\n    float chevronB = lineMask(abs(abs(local.x) + local.y - offset), width);\n    float bars = lineMask(abs(fract(coords.z * 0.5 + t * 0.24) - 0.5), width * 0.95);\n    float rail = lineMask(abs(local.y), width * 0.8);\n\n    float primary = max(grid * 0.55, max(chevronA, chevronB * 0.80));\n    float accent = max(bars * 0.62, rail * 0.55);\n    float highlight = node * 0.78 + max(chevronA, chevronB) * 0.38;\n    float fill = 0.11 + 0.16 * (chevronA + chevronB);\n\n    return vec4(primary, accent, highlight, fill);\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution.xy;\n    vec2 p = uv * 2.0 - 1.0;\n    p.x *= iResolution.x / iResolution.y;\n\n    float speed = max(iSpeed, 0.05);\n    float t = iTime * (0.40 + speed * 1.35);\n\n    float scaleMix = clamp(iScale / 100.0, 0.0, 1.0);\n    float growth = clamp(iGrowth / 100.0, 0.0, 1.0);\n    float glow = clamp(iEdgeGlow / 100.0, 0.0, 1.0);\n\n    float density = mix(3.2, 14.0, scaleMix);\n    float width = mix(0.090, 0.022, scaleMix);\n\n    float theta = 0.18 * sin(t * 0.08);\n    mat2 rot = mat2(cos(theta), -sin(theta), sin(theta), cos(theta));\n    vec2 rp = rot * p;\n    rp += vec2(sin(t * 0.17), cos(t * 0.13)) * 0.03;\n\n    vec3 coords = latticeCoords(rp, density);\n    vec3 axisDist = abs(fract(coords) - 0.5);\n    vec2 local = fract(coords.xy) - 0.5;\n\n    vec4 scene;\n    if (iScene == 1) {\n        scene = sceneShardfield(coords, axisDist, local, width, growth, t);\n    } else if (iScene == 2) {\n        scene = scenePrism(coords, axisDist, local, width, growth, t);\n    } else if (iScene == 3) {\n        scene = sceneSignal(coords, axisDist, local, width, growth, t);\n    } else {\n        scene = sceneLattice(coords, axisDist, local, width, growth, t);\n    }\n\n    float radial = length(p);\n    float sweep = fract(t * (0.11 + growth * 0.12));\n    float growthBand = 1.0 - smoothstep(0.02, 0.19, abs(radial * (1.2 + growth * 1.7) - sweep * 1.35));\n    float center = 1.0 - smoothstep(0.12, 0.95, radial * (1.0 + growth * 0.8));\n    float growthGain = (0.66 + growth * 0.45) + growthBand * (0.32 + growth * 0.34) + center * 0.12;\n    scene.xyz *= growthGain;\n\n    vec3 bgA = paletteColor(iPalette, 0);\n    vec3 bgB = paletteColor(iPalette, 1);\n    vec3 primaryColor = paletteColor(iPalette, 2);\n    vec3 accentColor = paletteColor(iPalette, 3);\n    vec3 highlightColor = paletteColor(iPalette, 4);\n\n    float baseMix = clamp(scene.w * 0.72 + uv.y * 0.35, 0.0, 1.0);\n    vec3 color = mix(bgA, bgB, baseMix);\n\n    float primaryMask = clamp(scene.x, 0.0, 1.35);\n    float accentMask = clamp(scene.y, 0.0, 1.35);\n    float highlightMask = clamp(scene.z, 0.0, 1.55);\n\n    float edgeGain = 0.42 + glow * 0.85;\n    color += primaryColor * primaryMask * (0.46 + edgeGain * 0.42);\n    color += accentColor * accentMask * (0.44 + edgeGain * 0.45);\n    color += highlightColor * highlightMask * (0.40 + edgeGain * 0.36);\n\n    float bloom = (\n        primaryMask * primaryMask * 0.55 +\n        accentMask * accentMask * 0.62 +\n        highlightMask * highlightMask * 0.84\n    ) * (0.16 + glow * 0.68);\n    color += highlightColor * bloom * 0.34;\n\n    float vignette = smoothstep(1.45, 0.18, radial);\n    color *= 0.82 + vignette * 0.42;\n\n    float scan = 0.95 + 0.05 * step(0.5, fract(gl_FragCoord.y * 0.5));\n    color *= scan;\n\n    color = color / (1.0 + color * 0.55);\n    color = pow(clamp(color, 0.0, 1.0), vec3(1.02));\n    fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);\n}\n";
-
-  // src/effects/frost-crystal/main.ts
-  var PALETTES = ["SilkCircuit", "Ice", "Frost", "Aurora", "Cyberpunk"];
-  var SCENES = ["Lattice", "Shardfield", "Prism", "Signal"];
-  var FrostCrystal = class extends WebGLEffect {
-    speed;
+  // src/effects/nyan-dash/main.ts
+  var TRAIL_MODES = ["Classic", "Pulse", "Comet"];
+  var NyanDash = class extends CanvasEffect {
+    animationSpeed;
     scale;
-    edgeGlow;
-    growth;
-    palette;
-    scene;
+    positionX;
+    positionY;
+    trailMode;
+    colorCycle;
+    cycleSpeed;
+    starDensity;
+    controls = {
+      animationSpeed: normalizeSpeed(6),
+      scale: 100,
+      positionX: 0,
+      positionY: 0,
+      trailMode: "Classic",
+      colorCycle: true,
+      cycleSpeed: 34,
+      starDensity: 58
+    };
+    stars = [];
+    starCount = 0;
+    canvasWidth = 0;
+    canvasHeight = 0;
     constructor() {
-      super({ id: "frost-crystal", name: "Frost Crystal", fragmentShader: fragment_default, audioReactive: false });
+      super({ id: "nyan-dash", name: "Nyan Dash", backgroundColor: "#040513" });
     }
     initializeControls() {
-      this.speed = getControlValue("speed", 5);
-      this.scale = getControlValue("scale", 56);
-      this.edgeGlow = getControlValue("edgeGlow", 74);
-      this.growth = getControlValue("growth", 68);
-      this.palette = getControlValue("palette", "Ice");
-      this.scene = getControlValue("scene", "Lattice");
+      this.animationSpeed = getControlValue("animationSpeed", 6);
+      this.scale = getControlValue("scale", 100);
+      this.positionX = getControlValue("positionX", 0);
+      this.positionY = getControlValue("positionY", 0);
+      this.trailMode = getControlValue("trailMode", "Classic");
+      this.colorCycle = getControlValue("colorCycle", true);
+      this.cycleSpeed = getControlValue("cycleSpeed", 34);
+      this.starDensity = getControlValue("starDensity", 58);
     }
     getControlValues() {
       return {
-        speed: normalizeSpeed(getControlValue("speed", 5)),
-        scale: getControlValue("scale", 56),
-        edgeGlow: getControlValue("edgeGlow", 74),
-        growth: getControlValue("growth", 68),
-        palette: comboboxValueToIndex(getControlValue("palette", "Ice"), PALETTES, 1),
-        scene: comboboxValueToIndex(getControlValue("scene", "Lattice"), SCENES, 0)
+        animationSpeed: normalizeSpeed(getControlValue("animationSpeed", 6)),
+        scale: getControlValue("scale", 100),
+        positionX: getControlValue("positionX", 0),
+        positionY: getControlValue("positionY", 0),
+        trailMode: getControlValue("trailMode", "Classic"),
+        colorCycle: this.coerceBoolean(getControlValue("colorCycle", true), true),
+        cycleSpeed: getControlValue("cycleSpeed", 34),
+        starDensity: getControlValue("starDensity", 58)
       };
     }
-    createUniforms() {
-      this.registerUniform("iSpeed", normalizeSpeed(5));
-      this.registerUniform("iScale", 56);
-      this.registerUniform("iEdgeGlow", 74);
-      this.registerUniform("iGrowth", 68);
-      this.registerUniform("iPalette", 1);
-      this.registerUniform("iScene", 0);
+    applyControls(controls) {
+      this.controls = {
+        ...controls,
+        trailMode: TRAIL_MODES.includes(controls.trailMode) ? controls.trailMode : "Classic",
+        scale: this.clamp(controls.scale, 40, 180),
+        positionX: this.clamp(controls.positionX, -100, 100),
+        positionY: this.clamp(controls.positionY, -100, 100),
+        cycleSpeed: this.clamp(controls.cycleSpeed, 0, 100),
+        starDensity: this.clamp(controls.starDensity, 0, 100)
+      };
+      this.syncStars(this.canvas?.width ?? 320, this.canvas?.height ?? 200);
     }
-    updateUniforms(c) {
-      this.setUniform("iSpeed", c.speed);
-      this.setUniform("iScale", c.scale);
-      this.setUniform("iEdgeGlow", c.edgeGlow);
-      this.setUniform("iGrowth", c.growth);
-      this.setUniform("iPalette", c.palette);
-      this.setUniform("iScene", c.scene);
+    async loadResources() {
+      this.syncStars(this.canvas?.width ?? 320, this.canvas?.height ?? 200, true);
+    }
+    draw(time, deltaTime) {
+      if (!this.ctx || !this.canvas) return;
+      const ctx = this.ctx;
+      const width = this.canvas.width;
+      const height = this.canvas.height;
+      const dt = deltaTime > 0 ? Math.min(deltaTime, 0.05) : 1 / 60;
+      this.syncStars(width, height);
+      const speed = this.controls.animationSpeed;
+      const scale = this.clamp(this.controls.scale / 100, 0.4, 1.8);
+      const unit = Math.max(1, Math.round(2 * scale));
+      const cycleHue = this.controls.colorCycle ? time * this.controls.cycleSpeed * 0.9 : 0;
+      this.drawBackdrop(ctx, width, height, cycleHue);
+      this.drawStars(ctx, width, height, time, speed, cycleHue);
+      const travelPadding = 70 * scale;
+      const travel = time * speed * 0.14 % 1;
+      const loopX = travel * (width + travelPadding * 2) - travelPadding;
+      const offsetX = this.controls.positionX / 100 * width * 0.36;
+      const offsetY = this.controls.positionY / 100 * height * 0.36;
+      const bob = Math.sin(time * (2.6 + speed * 0.5)) * 4 * scale;
+      const catX = loopX + offsetX;
+      const catY = this.clamp(height * 0.55 + offsetY + bob, 18 * scale, height - 18 * scale);
+      const bodyWidth = 20 * unit;
+      const catLeft = catX - bodyWidth * 0.5 - 2 * unit;
+      this.drawTrail(ctx, width, catLeft, catY, time, dt, unit, cycleHue);
+      this.drawCat(ctx, catX, catY, unit, time, cycleHue);
+    }
+    syncStars(width, height, force = false) {
+      const targetCount = Math.max(0, Math.floor(this.controls.starDensity * 1.8));
+      const sizeChanged = this.canvasWidth !== width || this.canvasHeight !== height;
+      if (!force && !sizeChanged && targetCount === this.starCount) return;
+      this.canvasWidth = width;
+      this.canvasHeight = height;
+      this.starCount = targetCount;
+      this.stars = [];
+      for (let i = 0; i < targetCount; i++) {
+        const s1 = this.hash(i * 1.87 + 2.17);
+        const s2 = this.hash(i * 2.93 + 6.11);
+        const s3 = this.hash(i * 4.77 + 9.41);
+        const s4 = this.hash(i * 8.13 + 1.29);
+        const s5 = this.hash(i * 12.41 + 4.83);
+        const s6 = this.hash(i * 16.53 + 5.09);
+        this.stars.push({
+          x: s1,
+          y: s2,
+          size: 1 + s3 * 2.3,
+          twinkle: 1.1 + s4 * 2.6,
+          drift: 4 + s5 * 28,
+          seed: s6,
+          hueOffset: s4 * 360
+        });
+      }
+    }
+    drawBackdrop(ctx, width, height, cycleHue) {
+      const top = this.controls.colorCycle ? this.hslToHex(cycleHue + 234, 72, 10) : "#080b24";
+      const bottom = this.controls.colorCycle ? this.hslToHex(cycleHue + 272, 68, 6) : "#03040e";
+      const bg = ctx.createLinearGradient(0, 0, 0, height);
+      bg.addColorStop(0, top);
+      bg.addColorStop(1, bottom);
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, width, height);
+      const haze = ctx.createLinearGradient(0, height * 0.4, 0, height);
+      haze.addColorStop(0, "rgba(255, 255, 255, 0.01)");
+      haze.addColorStop(1, "rgba(255, 255, 255, 0.08)");
+      ctx.fillStyle = haze;
+      ctx.fillRect(0, 0, width, height);
+    }
+    drawStars(ctx, width, height, time, speed, cycleHue) {
+      const driftScale = 0.35 + speed * 0.16;
+      for (let i = 0; i < this.stars.length; i++) {
+        const star = this.stars[i];
+        const x = (star.x * width + time * star.drift * driftScale) % width;
+        const y = star.y * height + Math.sin(time * (0.7 + star.seed) + star.seed * 11.3) * (2 + star.size);
+        const twinkle = 0.5 + 0.5 * Math.sin(time * star.twinkle + star.seed * 23.4);
+        const alpha = 0.16 + twinkle * 0.82;
+        const size = Math.max(1, Math.round(star.size + twinkle * 0.8));
+        const color = this.controls.colorCycle ? this.hslToHex(cycleHue + star.hueOffset, 92, 78) : "#ecf2ff";
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = color;
+        ctx.fillRect(this.snap(x), this.snap(y), size, size);
+        if (twinkle > 0.72) {
+          const arm = Math.max(2, Math.round(size * 1.6));
+          ctx.fillRect(this.snap(x - arm), this.snap(y), arm * 2 + 1, 1);
+          ctx.fillRect(this.snap(x), this.snap(y - arm), 1, arm * 2 + 1);
+        }
+        if (twinkle > 0.93) {
+          const pop = Math.max(2, Math.round(size * 2.2));
+          ctx.globalAlpha = 0.25 + alpha * 0.42;
+          ctx.fillRect(this.snap(x - pop), this.snap(y - pop), pop * 2 + 1, 1);
+          ctx.fillRect(this.snap(x - pop), this.snap(y + pop), pop * 2 + 1, 1);
+          ctx.fillRect(this.snap(x - pop), this.snap(y - pop), 1, pop * 2 + 1);
+          ctx.fillRect(this.snap(x + pop), this.snap(y - pop), 1, pop * 2 + 1);
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+    drawTrail(ctx, width, catLeft, catCenterY, time, deltaTime, unit, cycleHue) {
+      const trailLength = Math.max(0, catLeft + 4 * unit);
+      if (trailLength <= 0) return;
+      const baseBands = ["#ff3f8e", "#ff8656", "#ffe266", "#74f2a8", "#5dc9ff", "#9380ff"];
+      const bandHeight = Math.max(1, Math.round(unit * 2.35));
+      const top = catCenterY - bandHeight * 3;
+      const segment = Math.max(2, Math.round(unit * 3.4));
+      const mode = this.controls.trailMode;
+      const pulseClock = time * (6 + this.controls.animationSpeed * 0.7);
+      for (let bandIndex = 0; bandIndex < baseBands.length; bandIndex++) {
+        const color = this.controls.colorCycle ? this.hslToHex(cycleHue + bandIndex * 42, 96, 64) : baseBands[bandIndex];
+        const yBase = top + bandIndex * bandHeight;
+        for (let x = -segment * 2; x < trailLength + segment; x += segment) {
+          const wave = Math.sin(time * 4.2 + x * 0.048 + bandIndex * 0.72) * bandHeight * 0.2;
+          let modeWave = wave;
+          let stretch = 1;
+          if (mode === "Pulse") {
+            stretch = 0.7 + 0.32 * (0.5 + 0.5 * Math.sin(pulseClock + x * 0.035 + bandIndex));
+          } else if (mode === "Comet") {
+            modeWave += Math.sin(time * 8.2 + x * 0.11 + bandIndex * 1.4) * bandHeight * 0.42;
+            stretch = 0.84 + 0.18 * (0.5 + 0.5 * Math.sin(pulseClock + x * 0.04 + bandIndex * 0.6));
+          }
+          const h = Math.max(1, Math.round(bandHeight * stretch));
+          const y = yBase + modeWave + (bandHeight - h) * 0.5;
+          const alpha = mode === "Comet" ? 0.78 + 0.2 * (0.5 + 0.5 * Math.sin(pulseClock + x * 0.06)) : 0.92;
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = color;
+          ctx.fillRect(this.snap(x), this.snap(y), segment + 1, h);
+          if (mode === "Comet" && (bandIndex === 0 || bandIndex === 5)) {
+            const marker = Math.floor(x / segment) + Math.floor((time + deltaTime) * 15);
+            if (marker % 8 === 0) {
+              ctx.globalAlpha = 0.6;
+              const sparkleX = this.snap(x + segment * 0.5);
+              const sparkleY = this.snap(y + h * 0.5);
+              ctx.fillStyle = "#ffffff";
+              ctx.fillRect(sparkleX - 1, sparkleY, 3, 1);
+              ctx.fillRect(sparkleX, sparkleY - 1, 1, 3);
+            }
+          }
+        }
+      }
+      ctx.globalAlpha = 1;
+      const fade = ctx.createLinearGradient(Math.min(width, trailLength), 0, 0, 0);
+      fade.addColorStop(0, "rgba(0, 0, 0, 0)");
+      fade.addColorStop(1, "rgba(0, 0, 0, 0.22)");
+      ctx.fillStyle = fade;
+      ctx.fillRect(0, top - bandHeight, trailLength, bandHeight * 8);
+    }
+    drawCat(ctx, centerX, centerY, unit, time, cycleHue) {
+      const outline = "#1e1636";
+      const headColor = "#d6dcf8";
+      const bodyColor = "#f4d0a3";
+      const frosting = this.controls.colorCycle ? this.hslToHex(cycleHue + 332, 88, 70) : "#ff8ed4";
+      const frostingShade = this.controls.colorCycle ? this.hslToHex(cycleHue + 320, 84, 62) : "#ff6ec4";
+      const bodyW = 20 * unit;
+      const bodyH = 13 * unit;
+      const headSize = 10 * unit;
+      const bodyX = this.snap(centerX - bodyW * 0.5);
+      const bodyY = this.snap(centerY - bodyH * 0.5);
+      const tailWag = this.snap(Math.sin(time * (7 + this.controls.animationSpeed * 0.45)) * unit);
+      this.fillRect(ctx, bodyX - 7 * unit, bodyY + 4 * unit + tailWag, 6 * unit, 3 * unit, outline);
+      this.fillRect(ctx, bodyX - 6 * unit, bodyY + 5 * unit + tailWag, 4 * unit, unit, "#bcc2da");
+      const stride = Math.sin(time * (8 + this.controls.animationSpeed)) * unit * 0.8;
+      const legYs = [
+        this.snap(bodyY + bodyH - unit + stride * 0.3),
+        this.snap(bodyY + bodyH - unit - stride * 0.2),
+        this.snap(bodyY + bodyH - unit + stride * 0.15),
+        this.snap(bodyY + bodyH - unit - stride * 0.25)
+      ];
+      const legXs = [bodyX + 2 * unit, bodyX + 7 * unit, bodyX + 12 * unit, bodyX + 17 * unit];
+      for (let i = 0; i < legXs.length; i++) {
+        this.fillRect(ctx, legXs[i] - unit, legYs[i] - unit, 2 * unit + 1, 3 * unit, outline);
+        this.fillRect(ctx, legXs[i], legYs[i], unit, 2 * unit, "#c8cde0");
+      }
+      this.fillRect(ctx, bodyX - unit, bodyY - unit, bodyW + 2 * unit, bodyH + 2 * unit, outline);
+      this.fillRect(ctx, bodyX, bodyY, bodyW, bodyH, bodyColor);
+      this.fillRect(ctx, bodyX + 2 * unit, bodyY + unit, bodyW - 4 * unit, bodyH - 4 * unit, frosting);
+      this.fillRect(ctx, bodyX + 3 * unit, bodyY + 2 * unit, bodyW - 7 * unit, bodyH - 6 * unit, frostingShade);
+      const sprinklePalette = this.controls.colorCycle ? [
+        this.hslToHex(cycleHue + 22, 96, 72),
+        this.hslToHex(cycleHue + 120, 94, 70),
+        this.hslToHex(cycleHue + 190, 96, 72),
+        this.hslToHex(cycleHue + 276, 92, 74),
+        this.hslToHex(cycleHue + 340, 94, 72)
+      ] : ["#ffe065", "#74f3ff", "#7eff9a", "#b7a8ff", "#ffb4d9"];
+      const sprinkles = [
+        [4, 3, 0],
+        [8, 2, 1],
+        [12, 4, 2],
+        [6, 6, 3],
+        [10, 7, 4],
+        [14, 6, 0],
+        [16, 3, 2],
+        [5, 8, 1]
+      ];
+      for (let i = 0; i < sprinkles.length; i++) {
+        const [sx, sy, colorIndex] = sprinkles[i];
+        this.fillRect(
+          ctx,
+          bodyX + sx * unit,
+          bodyY + sy * unit,
+          2 * unit,
+          Math.max(1, unit),
+          sprinklePalette[colorIndex]
+        );
+      }
+      const headX = bodyX + bodyW - 2 * unit;
+      const headY = bodyY - unit;
+      this.fillRect(ctx, headX - unit, headY - unit, headSize + 2 * unit, headSize + 2 * unit, outline);
+      this.fillRect(ctx, headX, headY, headSize, headSize, headColor);
+      this.fillRect(ctx, headX + unit, headY - 4 * unit, 3 * unit, 3 * unit, outline);
+      this.fillRect(ctx, headX + 2 * unit, headY - 3 * unit, unit, unit, "#ffc0da");
+      this.fillRect(ctx, headX + 6 * unit, headY - 4 * unit, 3 * unit, 3 * unit, outline);
+      this.fillRect(ctx, headX + 7 * unit, headY - 3 * unit, unit, unit, "#ffc0da");
+      const blink = Math.sin(time * 2.8 + centerX * 0.01) > 0.94;
+      const eyeColor = "#1a1830";
+      if (blink) {
+        this.fillRect(ctx, headX + 2 * unit, headY + 4 * unit, 2 * unit, 1, eyeColor);
+        this.fillRect(ctx, headX + 6 * unit, headY + 4 * unit, 2 * unit, 1, eyeColor);
+      } else {
+        this.fillRect(ctx, headX + 2 * unit, headY + 3 * unit, unit, 2 * unit, eyeColor);
+        this.fillRect(ctx, headX + 7 * unit, headY + 3 * unit, unit, 2 * unit, eyeColor);
+      }
+      this.fillRect(ctx, headX + 4 * unit, headY + 5 * unit, 2 * unit, unit, "#ff7bb4");
+      this.fillRect(ctx, headX + 3 * unit, headY + 6 * unit, unit, 1, eyeColor);
+      this.fillRect(ctx, headX + 6 * unit, headY + 6 * unit, unit, 1, eyeColor);
+      this.fillRect(ctx, headX - unit, headY + 4 * unit, 2 * unit, 1, outline);
+      this.fillRect(ctx, headX - unit, headY + 6 * unit, 2 * unit, 1, outline);
+      this.fillRect(ctx, headX + headSize - 1, headY + 4 * unit, 2 * unit, 1, outline);
+      this.fillRect(ctx, headX + headSize - 1, headY + 6 * unit, 2 * unit, 1, outline);
+    }
+    fillRect(ctx, x, y, width, height, color) {
+      if (width <= 0 || height <= 0) return;
+      ctx.fillStyle = color;
+      ctx.fillRect(this.snap(x), this.snap(y), Math.max(1, Math.round(width)), Math.max(1, Math.round(height)));
+    }
+    coerceBoolean(value, fallback) {
+      if (typeof value === "boolean") return value;
+      if (typeof value === "number") return value !== 0;
+      if (typeof value === "string") {
+        const normalized = value.trim().toLowerCase();
+        if (["true", "1", "yes", "on"].includes(normalized)) return true;
+        if (["false", "0", "no", "off"].includes(normalized)) return false;
+      }
+      return fallback;
+    }
+    hslToHex(h, s, l) {
+      h = (h % 360 + 360) % 360;
+      s = this.clamp(s, 0, 100) / 100;
+      l = this.clamp(l, 0, 100) / 100;
+      const c = (1 - Math.abs(2 * l - 1)) * s;
+      const x = c * (1 - Math.abs(h / 60 % 2 - 1));
+      const m = l - c / 2;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      if (h < 60) [r, g, b] = [c, x, 0];
+      else if (h < 120) [r, g, b] = [x, c, 0];
+      else if (h < 180) [r, g, b] = [0, c, x];
+      else if (h < 240) [r, g, b] = [0, x, c];
+      else if (h < 300) [r, g, b] = [x, 0, c];
+      else [r, g, b] = [c, 0, x];
+      const toHex = (value) => Math.round((value + m) * 255).toString(16).padStart(2, "0");
+      return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+    }
+    clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+    snap(value) {
+      return Math.round(value);
+    }
+    hash(value) {
+      const seeded = Math.sin(value * 127.1 + 311.7) * 43758.5453123;
+      return seeded - Math.floor(seeded);
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Animation speed" })
-  ], FrostCrystal.prototype, "speed", 2);
+    NumberControl({ label: "Animation Speed", min: 1, max: 10, default: 6, tooltip: "Overall motion speed" })
+  ], NyanDash.prototype, "animationSpeed", 2);
   __decorateClass([
-    NumberControl({ label: "Scale", min: 10, max: 100, default: 56, tooltip: "Crystal lattice density" })
-  ], FrostCrystal.prototype, "scale", 2);
+    NumberControl({ label: "Scale", min: 40, max: 180, default: 100, tooltip: "Cat and trail size" })
+  ], NyanDash.prototype, "scale", 2);
   __decorateClass([
-    NumberControl({ label: "Edge Glow", min: 0, max: 100, default: 74, tooltip: "Edge brightness and bloom" })
-  ], FrostCrystal.prototype, "edgeGlow", 2);
+    NumberControl({ label: "Position X", min: -100, max: 100, default: 0, tooltip: "Horizontal offset" })
+  ], NyanDash.prototype, "positionX", 2);
   __decorateClass([
-    NumberControl({ label: "Growth", min: 0, max: 100, default: 68, tooltip: "Geometric growth pulse amount" })
-  ], FrostCrystal.prototype, "growth", 2);
+    NumberControl({ label: "Position Y", min: -100, max: 100, default: 0, tooltip: "Vertical offset" })
+  ], NyanDash.prototype, "positionY", 2);
   __decorateClass([
-    ComboboxControl({ label: "Palette", values: PALETTES, default: "Ice", tooltip: "Color palette" })
-  ], FrostCrystal.prototype, "palette", 2);
+    ComboboxControl({ label: "Trail Mode", values: TRAIL_MODES, default: "Classic", tooltip: "Trail behavior style" })
+  ], NyanDash.prototype, "trailMode", 2);
   __decorateClass([
-    ComboboxControl({ label: "Scene", values: SCENES, default: "Lattice", tooltip: "Optional motif style" })
-  ], FrostCrystal.prototype, "scene", 2);
-  FrostCrystal = __decorateClass([
+    BooleanControl({ label: "Color Cycle", default: true, tooltip: "Animate hues through the palette" })
+  ], NyanDash.prototype, "colorCycle", 2);
+  __decorateClass([
+    NumberControl({ label: "Cycle Speed", min: 0, max: 100, default: 34, tooltip: "Hue cycle speed" })
+  ], NyanDash.prototype, "cycleSpeed", 2);
+  __decorateClass([
+    NumberControl({ label: "Star Density", min: 0, max: 100, default: 58, tooltip: "Twinkling star amount" })
+  ], NyanDash.prototype, "starDensity", 2);
+  NyanDash = __decorateClass([
     Effect({
-      name: "Frost Crystal",
-      description: "Sharp community-style crystal lattice with crisp geometric edge motifs",
+      name: "Nyan Dash",
+      description: "Playful stylized cat dash with rainbow trail variants, star pops, and smooth looping motion",
       author: "Hypercolor",
       audioReactive: false
     })
-  ], FrostCrystal);
-  var effect = new FrostCrystal();
+  ], NyanDash);
+  var effect = new NyanDash();
   initializeEffect(() => effect.initialize(), { instance: effect });
 })();
 /*! Bundled license information:

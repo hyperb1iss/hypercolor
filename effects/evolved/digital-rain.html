@@ -4,13 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Digital Rain</title>
-  <meta description="Cascading code rain with depth layers and procedural glyphs"/>
+  <meta description="Community-style matrix rain with crisp block glyph columns and configurable palettes"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Rain speed"/>
-  <meta property="density" label="Density" type="number" min="10" max="100" default="60" tooltip="Column density"/>
-  <meta property="trailLength" label="Trail" type="number" min="5" max="100" default="50" tooltip="Trail length"/>
-  <meta property="charSize" label="Size" type="number" min="0" max="100" default="40" tooltip="Character size"/>
-  <meta property="palette" label="Palette" type="combobox" default="Matrix" values="Matrix,Phosphor,SilkCircuit,Cyberpunk,Ice" tooltip="Color palette"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Column fall speed"/>
+  <meta property="density" label="Density" type="number" min="10" max="100" default="62" tooltip="Active column density"/>
+  <meta property="trailLength" label="Trail" type="number" min="5" max="100" default="58" tooltip="Trail length behind each head"/>
+  <meta property="charSize" label="Size" type="number" min="0" max="100" default="42" tooltip="Character grid size"/>
+  <meta property="palette" label="Color Mode" type="combobox" default="Matrix" values="Matrix,Phosphor,SilkCircuit,Cyberpunk,Ice" tooltip="Palette preset"/>
+  <meta property="glitch" label="Glitch" type="boolean" default="false" tooltip="Adds occasional data tears and flicker"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1368,300 +1369,41 @@
     }
   };
 
-  // packages/core/src/audio/analysis.ts
-  var FFT_SIZE = 200;
-  var MEL_BANDS = 24;
-  var PITCH_CLASSES = 12;
-  function getAudioData() {
-    const hasEngine = typeof engine !== "undefined" && engine?.audio;
-    if (!hasEngine) return createSilentAudioData();
-    const audio = engine.audio;
-    return {
-      // Legacy
-      bass: audio.bass ?? 0,
-      bassEnv: audio.bassEnv ?? 0,
-      beat: Number(audio.beat ?? 0),
-      beatConfidence: audio.beatConfidence ?? 0,
-      beatPhase: audio.beatPhase ?? 0,
-      beatPulse: audio.beatPulse ?? 0,
-      brightness: audio.brightness ?? 0.5,
-      chordMood: audio.chordMood ?? 0,
-      chromagram: audio.chromagram ?? new Float32Array(PITCH_CLASSES),
-      density: audio.density ?? 0,
-      dominantPitch: audio.dominantPitch ?? 0,
-      dominantPitchConfidence: audio.dominantPitchConfidence ?? 0,
-      frequency: audio.frequency ?? new Float32Array(FFT_SIZE),
-      frequencyRaw: audio.frequencyRaw ?? new Int8Array(FFT_SIZE),
-      frequencyWeighted: audio.frequencyWeighted ?? new Float32Array(FFT_SIZE),
-      harmonicHue: audio.harmonicHue ?? 0,
-      level: audio.level != null ? normalizeAudioLevel(audio.level) : 0,
-      levelLong: audio.levelLong ?? 0,
-      levelRaw: audio.level ?? -100,
-      levelShort: audio.levelShort ?? 0,
-      melBands: audio.melBands ?? new Float32Array(MEL_BANDS),
-      melBandsNormalized: audio.melBandsNormalized ?? new Float32Array(MEL_BANDS),
-      mid: audio.mid ?? 0,
-      midEnv: audio.midEnv ?? 0,
-      momentum: audio.momentum ?? 0,
-      onset: Number(audio.onset ?? 0),
-      onsetPulse: audio.onsetPulse ?? 0,
-      rolloff: audio.rolloff ?? 0.5,
-      roughness: audio.roughness ?? 0.2,
-      spectralFlux: audio.spectralFlux ?? 0,
-      spectralFluxBands: audio.spectralFluxBands ?? new Float32Array(3),
-      spread: audio.spread ?? 0.3,
-      swell: audio.swell ?? 0,
-      tempo: audio.tempo ?? 120,
-      treble: audio.treble ?? 0,
-      trebleEnv: audio.trebleEnv ?? 0,
-      width: audio.width ?? 0.5
-    };
-  }
-  function normalizeAudioLevel(levelDb) {
-    return Math.max(0, Math.min(1, (levelDb + 100) / 100));
-  }
-  function createSilentAudioData() {
-    return {
-      bass: 0,
-      bassEnv: 0,
-      beat: 0,
-      beatConfidence: 0,
-      beatPhase: 0,
-      beatPulse: 0,
-      brightness: 0.5,
-      chordMood: 0,
-      chromagram: new Float32Array(PITCH_CLASSES),
-      density: 0,
-      dominantPitch: 0,
-      dominantPitchConfidence: 0,
-      frequency: new Float32Array(FFT_SIZE),
-      frequencyRaw: new Int8Array(FFT_SIZE),
-      frequencyWeighted: new Float32Array(FFT_SIZE),
-      harmonicHue: 0,
-      level: 0,
-      levelLong: 0,
-      levelRaw: -100,
-      levelShort: 0,
-      melBands: new Float32Array(MEL_BANDS),
-      melBandsNormalized: new Float32Array(MEL_BANDS),
-      mid: 0,
-      midEnv: 0,
-      momentum: 0,
-      onset: 0,
-      onsetPulse: 0,
-      rolloff: 0.5,
-      roughness: 0.2,
-      spectralFlux: 0,
-      spectralFluxBands: new Float32Array(3),
-      spread: 0.3,
-      swell: 0,
-      tempo: 120,
-      treble: 0,
-      trebleEnv: 0,
-      width: 0.5
-    };
-  }
-
-  // packages/core/src/effects/webgl-effect.ts
-  var DEFAULT_VERTEX_SHADER = `#version 300 es
-precision highp float;
-in vec2 aPosition;
-void main() {
-    gl_Position = vec4(aPosition, 0.0, 1.0);
-}
-`;
-  var WebGLEffect = class extends BaseEffect {
-    gl = null;
-    program = null;
-    uniforms = /* @__PURE__ */ new Map();
-    fragmentShader;
-    vertexShader;
-    audioReactive;
-    currentAudioData = null;
+  // packages/core/src/effects/canvas-effect.ts
+  var CanvasEffect = class extends BaseEffect {
+    ctx = null;
+    backgroundColor;
+    lastFrameTime = 0;
+    deltaTime = 0;
     constructor(config) {
       super(config);
-      this.fragmentShader = config.fragmentShader;
-      this.vertexShader = config.vertexShader ?? DEFAULT_VERTEX_SHADER;
-      this.audioReactive = config.audioReactive ?? false;
+      this.backgroundColor = config.backgroundColor || "black";
     }
     async initializeRenderer() {
       if (!this.canvas) throw new Error("Canvas not available");
-      this.gl = this.canvas.getContext("webgl2", { preserveDrawingBuffer: true });
-      if (!this.gl) throw new Error("WebGL2 not supported");
-      this.program = this.createProgram(this.vertexShader, this.fragmentShader);
-      this.gl.useProgram(this.program);
-      this.createQuad();
-      this.registerUniform("iTime", 0);
-      this.registerUniform("iResolution", [this.canvas.width, this.canvas.height]);
-      this.registerUniform("iMouse", [0, 0]);
-      if (this.audioReactive) {
-        this.registerAudioUniforms();
-      }
-      this.createUniforms();
-      this.resolveLocations();
-      this.pushAllUniforms();
-      this.debug("success", "WebGL2 renderer initialized");
+      this.ctx = this.canvas.getContext("2d");
+      if (!this.ctx) throw new Error("Could not get 2D context");
+      this.ctx.imageSmoothingEnabled = true;
+      this.clearCanvas();
+      await this.loadResources();
+    }
+    /** Override to load images, fonts, etc. */
+    async loadResources() {
+    }
+    clearCanvas() {
+      if (!this.ctx || !this.canvas) return;
+      this.ctx.fillStyle = this.backgroundColor;
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
     render(time) {
-      if (!this.gl || !this.program) return;
-      this.setUniform("iTime", time);
-      if (this.audioReactive) {
-        this.currentAudioData = getAudioData();
-        this.pushAudioUniforms(this.currentAudioData);
-      }
-      this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
-    }
-    getAudio() {
-      return this.currentAudioData;
+      if (!this.ctx || !this.canvas) return;
+      this.deltaTime = this.lastFrameTime === 0 ? 0 : time - this.lastFrameTime;
+      this.lastFrameTime = time;
+      this.clearCanvas();
+      this.draw(time, this.deltaTime);
     }
     updateParameters(controls) {
-      if (!this.program) return;
-      this.updateUniforms(controls);
-    }
-    // ── Uniform API ─────────────────────────────────────────────────────
-    /** Register a uniform. Call in createUniforms(). */
-    registerUniform(name, value) {
-      this.uniforms.set(name, { location: null, value, isInt: false });
-    }
-    /** Set a uniform value (will be pushed on next draw). */
-    setUniform(name, value) {
-      const entry = this.uniforms.get(name);
-      if (entry) {
-        entry.value = value;
-        this.pushUniform(name, entry);
-      }
-    }
-    // ── Internal ────────────────────────────────────────────────────────
-    createProgram(vertSrc, fragSrc) {
-      const gl = this.gl;
-      const vert = this.compileShader(gl.VERTEX_SHADER, vertSrc);
-      const frag = this.compileShader(gl.FRAGMENT_SHADER, fragSrc);
-      const program = gl.createProgram();
-      gl.attachShader(program, vert);
-      gl.attachShader(program, frag);
-      gl.linkProgram(program);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        const info = gl.getProgramInfoLog(program);
-        gl.deleteProgram(program);
-        throw new Error(`Shader link failed: ${info}`);
-      }
-      gl.deleteShader(vert);
-      gl.deleteShader(frag);
-      return program;
-    }
-    compileShader(type, source) {
-      const gl = this.gl;
-      const shader = gl.createShader(type);
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        const info = gl.getShaderInfoLog(shader);
-        gl.deleteShader(shader);
-        throw new Error(`Shader compile failed: ${info}`);
-      }
-      return shader;
-    }
-    createQuad() {
-      const gl = this.gl;
-      const vertices = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
-      const buffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-      const posLoc = gl.getAttribLocation(this.program, "aPosition");
-      gl.enableVertexAttribArray(posLoc);
-      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-    }
-    pushAllUniforms() {
-      for (const [name, entry] of this.uniforms) {
-        this.pushUniform(name, entry);
-      }
-    }
-    resolveLocations() {
-      const gl = this.gl;
-      const program = this.program;
-      const intTypes = /* @__PURE__ */ new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL]);
-      const intUniforms = /* @__PURE__ */ new Set();
-      const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
-      for (let i = 0; i < numActive; i++) {
-        const info = gl.getActiveUniform(program, i);
-        if (info && intTypes.has(info.type)) {
-          intUniforms.add(info.name);
-        }
-      }
-      for (const [name, entry] of this.uniforms) {
-        entry.location = gl.getUniformLocation(program, name);
-        entry.isInt = intUniforms.has(name);
-      }
-    }
-    pushUniform(_name, entry) {
-      const gl = this.gl;
-      if (!gl || !entry.location) return;
-      const val = entry.value;
-      if (typeof val === "number") {
-        if (entry.isInt) {
-          gl.uniform1i(entry.location, val | 0);
-        } else {
-          gl.uniform1f(entry.location, val);
-        }
-      } else if (val.length === 2) {
-        if (entry.isInt) {
-          gl.uniform2iv(entry.location, val);
-        } else {
-          gl.uniform2fv(entry.location, val);
-        }
-      } else if (val.length === 3) {
-        if (entry.isInt) {
-          gl.uniform3iv(entry.location, val);
-        } else {
-          gl.uniform3fv(entry.location, val);
-        }
-      } else if (val.length === 4) {
-        if (entry.isInt) {
-          gl.uniform4iv(entry.location, val);
-        } else {
-          gl.uniform4fv(entry.location, val);
-        }
-      }
-    }
-    registerAudioUniforms() {
-      this.registerUniform("iAudioLevel", 0);
-      this.registerUniform("iAudioBass", 0);
-      this.registerUniform("iAudioMid", 0);
-      this.registerUniform("iAudioTreble", 0);
-      this.registerUniform("iAudioBeat", 0);
-      this.registerUniform("iAudioBeatPulse", 0);
-      this.registerUniform("iAudioBeatPhase", 0);
-      this.registerUniform("iAudioBeatConfidence", 0);
-      this.registerUniform("iAudioOnset", 0);
-      this.registerUniform("iAudioOnsetPulse", 0);
-      this.registerUniform("iAudioSpectralFlux", 0);
-      this.registerUniform("iAudioHarmonicHue", 0);
-      this.registerUniform("iAudioChordMood", 0);
-      this.registerUniform("iAudioBrightness", 0.5);
-      this.registerUniform("iAudioMomentum", 0);
-      this.registerUniform("iAudioSwell", 0);
-      this.registerUniform("iAudioTempo", 120);
-      this.registerUniform("iAudioFluxBands", [0, 0, 0]);
-    }
-    pushAudioUniforms(audio) {
-      this.setUniform("iAudioLevel", audio.level);
-      this.setUniform("iAudioBass", audio.bass);
-      this.setUniform("iAudioMid", audio.mid);
-      this.setUniform("iAudioTreble", audio.treble);
-      this.setUniform("iAudioBeat", audio.beat);
-      this.setUniform("iAudioBeatPulse", audio.beatPulse);
-      this.setUniform("iAudioBeatPhase", audio.beatPhase);
-      this.setUniform("iAudioBeatConfidence", audio.beatConfidence);
-      this.setUniform("iAudioOnset", audio.onset);
-      this.setUniform("iAudioOnsetPulse", audio.onsetPulse);
-      this.setUniform("iAudioSpectralFlux", audio.spectralFlux);
-      this.setUniform("iAudioHarmonicHue", audio.harmonicHue);
-      this.setUniform("iAudioChordMood", audio.chordMood);
-      this.setUniform("iAudioBrightness", audio.brightness);
-      this.setUniform("iAudioMomentum", audio.momentum);
-      this.setUniform("iAudioSwell", audio.swell);
-      this.setUniform("iAudioTempo", audio.tempo);
-      this.setUniform("iAudioFluxBands", Array.from(audio.spectralFluxBands));
+      this.applyControls(controls);
     }
   };
 
@@ -1692,76 +1434,396 @@ void main() {
     }, { once: true });
   }
 
-  // src/effects/digital-rain/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\n// Controls\nuniform float iSpeed;\nuniform float iDensity;\nuniform float iTrailLength;\nuniform float iCharSize;\nuniform int iPalette;\n\n// \u2500\u2500 Hash \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat hash11(float p) {\n    p = fract(p * 0.1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n}\n\n// \u2500\u2500 Palettes \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    // Matrix green (default)\n    if (id == 0) return mix(vec3(0.0, 0.15, 0.0), vec3(0.2, 1.0, 0.3), t);\n    // Phosphor amber\n    if (id == 1) return mix(vec3(0.15, 0.08, 0.0), vec3(1.0, 0.7, 0.1), t);\n    // SilkCircuit\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    // Cyberpunk\n    if (id == 3) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    // Ice\n    if (id == 4) return mix(vec3(0.0, 0.05, 0.15), vec3(0.4, 0.8, 1.0), t);\n    return mix(vec3(0.0, 0.15, 0.0), vec3(0.2, 1.0, 0.3), t);\n}\n\n// \u2500\u2500 Character simulation \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n// Pseudo-glyph: creates a character-like pattern in a cell\nfloat glyphCell(vec2 uv, float seed) {\n    // 5x7 grid within the cell\n    vec2 grid = floor(uv * vec2(5.0, 7.0));\n    float cellHash = hash21(grid + seed * 100.0);\n\n    // Create character-like patterns with ~40% fill\n    float fill = step(0.6, cellHash);\n\n    // Add some structural patterns (vertical/horizontal bars)\n    float vertBar = step(0.7, hash11(grid.x + seed * 50.0));\n    float horizBar = step(0.8, hash11(grid.y + seed * 30.0));\n\n    return max(fill, max(vertBar * 0.5, horizBar * 0.3));\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    float time = iTime * iSpeed * 0.4;\n\n    // Character grid\n    float charScale = 8.0 + iCharSize * 0.4;\n    float columns = floor(iResolution.x / charScale);\n    float rows = floor(iResolution.y / charScale);\n\n    vec2 cellUV = uv * vec2(columns, rows);\n    vec2 cell = floor(cellUV);\n    vec2 local = fract(cellUV);\n\n    // Per-column properties\n    float colSeed = hash11(cell.x * 0.7);\n    float colSpeed = 0.5 + colSeed * 1.5;\n    float colOffset = colSeed * 100.0;\n\n    // Column active probability (density control)\n    float colActive = step(1.0 - iDensity * 0.01, hash11(cell.x * 1.3 + 7.0));\n\n    // Rain drop position (scrolling down)\n    float dropPos = fract(time * colSpeed * 0.15 + colOffset);\n    float dropY = dropPos * (rows + iTrailLength * 0.3);\n\n    // Distance from this cell to the drop head\n    float cellY = rows - cell.y; // flip so rain falls down\n    float distFromHead = cellY - dropY;\n\n    // Trail: bright at head, fading behind\n    float trailLen = 5.0 + iTrailLength * 0.25;\n    float inTrail = smoothstep(trailLen, 0.0, distFromHead) * step(0.0, distFromHead);\n\n    // Head glow (brightest point)\n    float headGlow = exp(-distFromHead * distFromHead * 2.0) * step(-0.5, distFromHead);\n\n    // Character changes periodically\n    float charSeed = hash21(cell) + floor(time * 2.0 + cell.y * 0.1) * 0.1;\n    float glyph = glyphCell(local, charSeed);\n\n    // \u2500\u2500 Compose \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n    // Character visibility\n    float charBrightness = glyph * inTrail * colActive;\n\n    // Head character is always bright and full\n    charBrightness = max(charBrightness, headGlow * colActive * 0.8);\n\n    // Color: head is white/bright, trail fades to palette color\n    float headAmount = headGlow / (headGlow + 0.1);\n    vec3 trailColor = paletteColor(inTrail * 0.8, iPalette);\n    vec3 headColor = paletteColor(1.0, iPalette) * 1.5 + vec3(0.5);\n\n    vec3 col = mix(trailColor, headColor, headAmount) * charBrightness;\n\n    // Multiple rain streams per column (depth layers)\n    for (int layer = 1; layer < 3; layer++) {\n        float fl = float(layer);\n        float layerSeed = hash11(cell.x * 0.7 + fl * 37.0);\n        float layerSpeed = 0.3 + layerSeed * 1.0;\n        float layerOffset = layerSeed * 100.0 + fl * 33.0;\n        float layerActive = step(1.0 - iDensity * 0.006, hash11(cell.x * 1.3 + fl * 17.0));\n\n        float lDropPos = fract(time * layerSpeed * 0.15 + layerOffset);\n        float lDropY = lDropPos * (rows + iTrailLength * 0.2);\n        float lDist = cellY - lDropY;\n\n        float lTrail = smoothstep(trailLen * 0.7, 0.0, lDist) * step(0.0, lDist);\n        float lGlyph = glyphCell(local, hash21(cell + fl * 50.0) + floor(time * 1.5) * 0.1);\n\n        // Dimmer background layers\n        float dimming = 0.3 - fl * 0.08;\n        col += paletteColor(lTrail * 0.6, iPalette) * lGlyph * lTrail * layerActive * dimming;\n    }\n\n    // Subtle background glow in active columns\n    float bgGlow = colActive * 0.015 * paletteColor(0.1, iPalette).g;\n    col += vec3(0.0, bgGlow, 0.0);\n\n    // Depth-of-field: slight blur on background layers\n    col = col / (1.0 + col * 0.3);\n\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
-
   // src/effects/digital-rain/main.ts
-  var PALETTES = ["Matrix", "Phosphor", "SilkCircuit", "Cyberpunk", "Ice"];
-  var DigitalRain = class extends WebGLEffect {
+  var COLOR_MODES = ["Matrix", "Phosphor", "SilkCircuit", "Cyberpunk", "Ice"];
+  var GLYPHS = [
+    "\u2588",
+    "\u2593",
+    "\u2592",
+    "\u2591",
+    "\u2589",
+    "\u258A",
+    "\u258B",
+    "\u258C",
+    "\u2590",
+    "\u2580",
+    "\u2584",
+    "\u25A0",
+    "\u25A3",
+    "\u25A4",
+    "\u25A5",
+    "\u25A6",
+    "\u25A7",
+    "\u25A8",
+    "\u25A9",
+    "\u256C",
+    "\u256B",
+    "\u256A",
+    "\u2573",
+    "\u2571",
+    "\u2572",
+    "\uFF71",
+    "\uFF72",
+    "\uFF77",
+    "\uFF7C",
+    "\uFF82",
+    "\uFF91",
+    "\uFF93",
+    "0",
+    "1"
+  ];
+  var PALETTES = {
+    Matrix: {
+      background: "#020903",
+      shadow: { r: 5, g: 28, b: 10 },
+      trail: { r: 42, g: 138, b: 56 },
+      bright: { r: 138, g: 248, b: 162 },
+      head: { r: 236, g: 255, b: 238 },
+      glitch: { r: 182, g: 255, b: 196 }
+    },
+    Phosphor: {
+      background: "#120903",
+      shadow: { r: 32, g: 18, b: 4 },
+      trail: { r: 156, g: 102, b: 32 },
+      bright: { r: 250, g: 185, b: 88 },
+      head: { r: 255, g: 245, b: 220 },
+      glitch: { r: 255, g: 212, b: 120 }
+    },
+    SilkCircuit: {
+      background: "#06060f",
+      shadow: { r: 20, g: 12, b: 40 },
+      trail: { r: 128, g: 255, b: 234 },
+      bright: { r: 225, g: 53, b: 255 },
+      head: { r: 242, g: 255, b: 252 },
+      glitch: { r: 255, g: 106, b: 193 }
+    },
+    Cyberpunk: {
+      background: "#08020f",
+      shadow: { r: 22, g: 8, b: 32 },
+      trail: { r: 255, g: 106, b: 193 },
+      bright: { r: 132, g: 245, b: 255 },
+      head: { r: 250, g: 240, b: 255 },
+      glitch: { r: 255, g: 235, b: 88 }
+    },
+    Ice: {
+      background: "#010917",
+      shadow: { r: 6, g: 22, b: 40 },
+      trail: { r: 62, g: 160, b: 232 },
+      bright: { r: 146, g: 228, b: 255 },
+      head: { r: 236, g: 252, b: 255 },
+      glitch: { r: 162, g: 252, b: 255 }
+    }
+  };
+  var DigitalRain = class extends CanvasEffect {
     speed;
     density;
     trailLength;
     charSize;
     palette;
+    glitch;
+    controlState = {
+      speed: normalizeSpeed(5),
+      density: 62,
+      trailLength: 58,
+      charSize: 42,
+      palette: "Matrix",
+      glitch: false
+    };
+    paletteState = PALETTES.Matrix;
+    columns = [];
+    rows = 0;
+    cols = 0;
+    cellWidth = 10;
+    cellHeight = 16;
+    lastCanvasWidth = 0;
+    lastCanvasHeight = 0;
+    needsGridSync = true;
     constructor() {
-      super({ fragmentShader: fragment_default });
+      super({ id: "digital-rain", name: "Digital Rain", backgroundColor: PALETTES.Matrix.background });
     }
     initializeControls() {
       this.speed = getControlValue("speed", 5);
-      this.density = getControlValue("density", 60);
-      this.trailLength = getControlValue("trailLength", 50);
-      this.charSize = getControlValue("charSize", 40);
+      this.density = getControlValue("density", 62);
+      this.trailLength = getControlValue("trailLength", 58);
+      this.charSize = getControlValue("charSize", 42);
       this.palette = getControlValue("palette", "Matrix");
+      this.glitch = getControlValue("glitch", false);
+      this.controlState = this.getControlValues();
+      this.paletteState = this.resolvePalette(this.controlState.palette);
+      this.backgroundColor = this.paletteState.background;
+      this.needsGridSync = true;
     }
     getControlValues() {
       return {
         speed: normalizeSpeed(getControlValue("speed", 5)),
-        density: getControlValue("density", 60),
-        trailLength: getControlValue("trailLength", 50),
-        charSize: getControlValue("charSize", 40),
-        palette: PALETTES.indexOf(getControlValue("palette", "Matrix"))
+        density: getControlValue("density", 62),
+        trailLength: getControlValue("trailLength", 58),
+        charSize: getControlValue("charSize", 42),
+        palette: getControlValue("palette", "Matrix"),
+        glitch: getControlValue("glitch", false)
       };
     }
-    createUniforms() {
-      this.registerUniform("iSpeed", 1);
-      this.registerUniform("iDensity", 60);
-      this.registerUniform("iTrailLength", 50);
-      this.registerUniform("iCharSize", 40);
-      this.registerUniform("iPalette", 0);
+    async loadResources() {
+      this.paletteState = this.resolvePalette(this.controlState.palette);
+      this.backgroundColor = this.paletteState.background;
+      if (this.ctx) this.ctx.imageSmoothingEnabled = false;
+      this.needsGridSync = true;
     }
-    updateUniforms(controls) {
-      this.setUniform("iSpeed", controls.speed);
-      this.setUniform("iDensity", controls.density);
-      this.setUniform("iTrailLength", controls.trailLength);
-      this.setUniform("iCharSize", controls.charSize);
-      this.setUniform("iPalette", controls.palette);
+    applyControls(controls) {
+      const sizeChanged = controls.charSize !== this.controlState.charSize;
+      const paletteChanged = controls.palette !== this.controlState.palette;
+      this.controlState = controls;
+      if (paletteChanged) {
+        this.paletteState = this.resolvePalette(controls.palette);
+        this.backgroundColor = this.paletteState.background;
+      }
+      if (sizeChanged) this.needsGridSync = true;
+    }
+    draw(time, deltaTime) {
+      if (!this.ctx || !this.canvas) return;
+      const ctx = this.ctx;
+      const w = this.canvas.width;
+      const h = this.canvas.height;
+      const dt = deltaTime > 0 ? Math.min(0.08, deltaTime) : 1 / 60;
+      this.syncGrid(w, h);
+      this.updateColumns(dt);
+      this.drawAtmosphere(ctx, w, h);
+      this.drawStreams(ctx, time);
+    }
+    syncGrid(w, h) {
+      const nextCellWidth = Math.max(6, Math.round(6 + this.controlState.charSize * 0.14));
+      const nextCellHeight = Math.max(nextCellWidth + 2, Math.round(nextCellWidth * 1.55));
+      const nextCols = Math.max(8, Math.floor(w / nextCellWidth));
+      const nextRows = Math.max(8, Math.floor(h / nextCellHeight));
+      const canvasChanged = this.lastCanvasWidth !== w || this.lastCanvasHeight !== h;
+      const gridChanged = this.cellWidth !== nextCellWidth || this.cellHeight !== nextCellHeight || this.cols !== nextCols || this.rows !== nextRows;
+      if (!this.needsGridSync && !canvasChanged && !gridChanged) return;
+      this.lastCanvasWidth = w;
+      this.lastCanvasHeight = h;
+      this.cellWidth = nextCellWidth;
+      this.cellHeight = nextCellHeight;
+      this.cols = nextCols;
+      this.rows = nextRows;
+      this.rebuildColumns();
+      this.needsGridSync = false;
+    }
+    rebuildColumns() {
+      this.columns = [];
+      for (let i = 0; i < this.cols; i++) {
+        this.columns.push(this.createColumn(true));
+      }
+    }
+    createColumn(seedHead) {
+      const glyphs = new Array(this.rows);
+      for (let i = 0; i < this.rows; i++) glyphs[i] = this.randomGlyphIndex();
+      return {
+        head: seedHead ? this.randomRange(-this.rows, this.rows) : -this.randomRange(2, this.rows * 1.2 + 2),
+        speedBias: this.randomRange(0.62, 1.52),
+        trailBias: this.randomRange(0.72, 1.28),
+        active: Math.random() < this.activeProbability(),
+        respawnGap: this.randomRange(2, 8),
+        glyphs,
+        mutateClock: Math.random() * 0.2,
+        mutateEvery: this.randomRange(0.03, 0.16)
+      };
+    }
+    updateColumns(dt) {
+      const rowsPerSecond = 3.5 + this.controlState.speed * 8.2;
+      const wakeChance = dt * (0.14 + this.controlState.density * 4e-3);
+      for (const column of this.columns) {
+        if (!column.active) {
+          if (Math.random() < wakeChance * (0.35 + this.activeProbability())) {
+            this.resetColumn(column, true);
+          }
+          continue;
+        }
+        column.head += rowsPerSecond * column.speedBias * dt;
+        const trailCells = this.columnTrailCells(column);
+        if (column.head - trailCells > this.rows + column.respawnGap) {
+          this.resetColumn(column, false);
+          continue;
+        }
+        column.mutateClock += dt;
+        if (column.mutateClock >= column.mutateEvery) {
+          column.mutateClock = 0;
+          this.mutateColumnGlyphs(column);
+        }
+      }
+    }
+    resetColumn(column, forceActive) {
+      column.active = forceActive || Math.random() < this.activeProbability();
+      column.head = -this.randomRange(2, this.rows * (0.4 + Math.random() * 0.9));
+      column.speedBias = this.randomRange(0.6, 1.58);
+      column.trailBias = this.randomRange(0.7, 1.35);
+      column.respawnGap = this.randomRange(2, 9);
+      column.mutateClock = Math.random() * 0.25;
+      column.mutateEvery = this.randomRange(0.03, 0.18);
+      if (column.glyphs.length !== this.rows) {
+        column.glyphs = new Array(this.rows);
+        for (let i = 0; i < this.rows; i++) column.glyphs[i] = this.randomGlyphIndex();
+        return;
+      }
+      for (let i = 0; i < this.rows; i++) {
+        if (Math.random() < 0.34) {
+          column.glyphs[i] = this.randomGlyphIndex();
+        }
+      }
+    }
+    mutateColumnGlyphs(column) {
+      const mutationCount = 1 + (Math.random() < 0.4 ? 1 : 0);
+      const headRow = Math.floor(column.head);
+      for (let i = 0; i < mutationCount; i++) {
+        const offset = Math.floor(Math.random() * this.columnTrailCells(column));
+        const jitter = Math.floor((Math.random() - 0.5) * 6);
+        const row = this.wrapRow(headRow - offset + jitter);
+        column.glyphs[row] = this.randomGlyphIndex();
+      }
+      if (Math.random() < 0.12) {
+        const randomRow = Math.floor(Math.random() * this.rows);
+        column.glyphs[randomRow] = this.randomGlyphIndex();
+      }
+    }
+    drawAtmosphere(ctx, w, h) {
+      const haze = ctx.createLinearGradient(0, 0, 0, h);
+      haze.addColorStop(0, this.rgba(this.paletteState.shadow, 0.28));
+      haze.addColorStop(0.58, this.rgba(this.paletteState.shadow, 0.1));
+      haze.addColorStop(1, this.rgba(this.paletteState.shadow, 0.02));
+      ctx.fillStyle = haze;
+      ctx.fillRect(0, 0, w, h);
+      const scanlineAlpha = 0.02 + this.controlState.trailLength / 100 * 0.05;
+      ctx.fillStyle = this.rgba(this.paletteState.trail, scanlineAlpha);
+      for (let y = 1; y < h; y += 3) {
+        ctx.fillRect(0, y, w, 1);
+      }
+      if (!this.controlState.glitch || Math.random() >= 0.14) return;
+      const bandY = Math.floor(Math.random() * h);
+      const bandHeight = 1 + Math.floor(Math.random() * 3);
+      ctx.fillStyle = this.rgba(this.paletteState.glitch, 0.08 + Math.random() * 0.2);
+      ctx.fillRect(0, bandY, w, bandHeight);
+    }
+    drawStreams(ctx, time) {
+      const fontSize = Math.max(8, Math.round(this.cellHeight * 0.9));
+      const glitchPulse = this.controlState.glitch ? 0.5 + 0.5 * Math.sin(time * 18) : 0;
+      ctx.save();
+      ctx.imageSmoothingEnabled = false;
+      ctx.textBaseline = "top";
+      ctx.textAlign = "left";
+      ctx.font = `700 ${fontSize}px "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace`;
+      for (let columnIndex = 0; columnIndex < this.columns.length; columnIndex++) {
+        const column = this.columns[columnIndex];
+        if (!column.active) {
+          this.drawDormantGlyph(ctx, columnIndex);
+          continue;
+        }
+        this.drawColumnTrail(ctx, column, columnIndex, glitchPulse);
+      }
+      ctx.restore();
+    }
+    drawDormantGlyph(ctx, columnIndex) {
+      if (Math.random() >= 0.01 + this.controlState.density / 100 * 0.02) return;
+      const row = Math.floor(Math.random() * this.rows);
+      const glyph = GLYPHS[this.randomGlyphIndex()];
+      const x = columnIndex * this.cellWidth;
+      const y = row * this.cellHeight;
+      ctx.fillStyle = this.rgba(this.paletteState.trail, 0.05);
+      ctx.fillText(glyph, x, y);
+    }
+    drawColumnTrail(ctx, column, columnIndex, glitchPulse) {
+      const trailCells = this.columnTrailCells(column);
+      const headRow = Math.floor(column.head);
+      const x = columnIndex * this.cellWidth;
+      for (let step = 0; step < trailCells; step++) {
+        const row = headRow - step;
+        if (row < 0 || row >= this.rows) continue;
+        const energy = 1 - step / trailCells;
+        const fade = Math.pow(energy, 1.6);
+        if (fade < 0.02) continue;
+        const glyph = GLYPHS[column.glyphs[row] ?? 0];
+        const y = row * this.cellHeight;
+        let color = this.mixRgb(this.paletteState.trail, this.paletteState.bright, Math.pow(energy, 0.58));
+        let alpha = (0.12 + this.controlState.trailLength / 135) * fade;
+        if (step === 0) {
+          alpha = 0.98;
+          color = this.paletteState.head;
+          column.glyphs[row] = this.randomGlyphIndex();
+          ctx.fillStyle = this.rgba(this.paletteState.bright, 0.18);
+          ctx.fillRect(x, y, this.cellWidth - 1, this.cellHeight - 1);
+        }
+        if (this.controlState.glitch && Math.random() < 0.012 + glitchPulse * 0.02) {
+          const jitter = Math.random() < 0.5 ? -1 : 1;
+          ctx.fillStyle = this.rgba(this.paletteState.glitch, Math.min(1, alpha * 0.65));
+          ctx.fillText(glyph, x + jitter, y);
+          color = this.mixRgb(color, this.paletteState.glitch, 0.55);
+          alpha = Math.min(1, alpha + 0.12);
+        }
+        ctx.fillStyle = this.rgba(color, alpha);
+        ctx.fillText(glyph, x, y);
+      }
+    }
+    columnTrailCells(column) {
+      const baseTrail = 4 + this.controlState.trailLength * 0.26;
+      const densityBoost = 0.86 + this.activeProbability() * 0.24;
+      return Math.max(4, Math.round(baseTrail * column.trailBias * densityBoost));
+    }
+    activeProbability() {
+      const normalized = this.clamp((this.controlState.density - 10) / 90, 0, 1);
+      return 0.14 + normalized * 0.84;
+    }
+    resolvePalette(mode) {
+      return PALETTES[mode] ?? PALETTES.Matrix;
+    }
+    wrapRow(row) {
+      if (this.rows <= 0) return 0;
+      const wrapped = row % this.rows;
+      return wrapped < 0 ? wrapped + this.rows : wrapped;
+    }
+    mixRgb(a, b, t) {
+      const blend = this.clamp(t, 0, 1);
+      return {
+        r: Math.round(a.r + (b.r - a.r) * blend),
+        g: Math.round(a.g + (b.g - a.g) * blend),
+        b: Math.round(a.b + (b.b - a.b) * blend)
+      };
+    }
+    rgba(color, alpha) {
+      return `rgba(${color.r}, ${color.g}, ${color.b}, ${this.clamp(alpha, 0, 1).toFixed(3)})`;
+    }
+    randomGlyphIndex() {
+      return Math.floor(Math.random() * GLYPHS.length);
+    }
+    randomRange(min, max) {
+      return min + Math.random() * (max - min);
+    }
+    clamp(value, min, max) {
+      if (value < min) return min;
+      if (value > max) return max;
+      return value;
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Rain speed" })
+    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Column fall speed" })
   ], DigitalRain.prototype, "speed", 2);
   __decorateClass([
-    NumberControl({ label: "Density", min: 10, max: 100, default: 60, tooltip: "Column density" })
+    NumberControl({ label: "Density", min: 10, max: 100, default: 62, tooltip: "Active column density" })
   ], DigitalRain.prototype, "density", 2);
   __decorateClass([
-    NumberControl({ label: "Trail", min: 5, max: 100, default: 50, tooltip: "Trail length" })
+    NumberControl({ label: "Trail", min: 5, max: 100, default: 58, tooltip: "Trail length behind each head" })
   ], DigitalRain.prototype, "trailLength", 2);
   __decorateClass([
-    NumberControl({ label: "Size", min: 0, max: 100, default: 40, tooltip: "Character size" })
+    NumberControl({ label: "Size", min: 0, max: 100, default: 42, tooltip: "Character grid size" })
   ], DigitalRain.prototype, "charSize", 2);
   __decorateClass([
-    ComboboxControl({
-      label: "Palette",
-      values: PALETTES,
-      default: "Matrix",
-      tooltip: "Color palette"
-    })
+    ComboboxControl({ label: "Color Mode", values: COLOR_MODES, default: "Matrix", tooltip: "Palette preset" })
   ], DigitalRain.prototype, "palette", 2);
+  __decorateClass([
+    BooleanControl({ label: "Glitch", default: false, tooltip: "Adds occasional data tears and flicker" })
+  ], DigitalRain.prototype, "glitch", 2);
   DigitalRain = __decorateClass([
     Effect({
       name: "Digital Rain",
-      description: "Cascading code rain with depth layers and procedural glyphs",
-      author: "Hypercolor"
+      description: "Community-style matrix rain with crisp block glyph columns and configurable palettes",
+      author: "Hypercolor",
+      audioReactive: false
     })
   ], DigitalRain);
   var effect = new DigitalRain();

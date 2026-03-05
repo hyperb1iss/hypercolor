@@ -4,13 +4,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Flow Field</title>
-  <meta description="Perlin noise vector field with streaming particle trails"/>
+  <meta description="Poison-glow firefly garden with crisp trails and scene moods"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Flow speed"/>
-  <meta property="particles" label="Particles" type="number" min="10" max="100" default="60" tooltip="Particle count"/>
-  <meta property="trailFade" label="Trail" type="number" min="10" max="100" default="50" tooltip="Trail length"/>
-  <meta property="noiseScale" label="Scale" type="number" min="10" max="100" default="50" tooltip="Noise scale"/>
-  <meta property="palette" label="Palette" type="combobox" default="SilkCircuit" values="SilkCircuit,Cyberpunk,Aurora,Fire,Ice" tooltip="Color palette"/>
+  <meta property="scene" label="Scene" type="combobox" default="Calm" values="Calm,Swarm,Pulse" tooltip="Movement behavior preset"/>
+  <meta property="colorMode" label="Color Mode" type="combobox" default="Single" values="Single,Random,Rainbow" tooltip="Single hue, random fireflies, or animated rainbow"/>
+  <meta property="baseColor" label="Base Color" type="color" default="#b8ff4f" tooltip="Primary firefly color"/>
+  <meta property="count" label="Count" type="number" min="8" max="220" default="88" tooltip="Number of fireflies"/>
+  <meta property="size" label="Size" type="number" min="1" max="10" default="3" tooltip="Firefly body size"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Swarm movement speed"/>
+  <meta property="wander" label="Wander" type="number" min="0" max="100" default="62" tooltip="Random drift amount"/>
+  <meta property="glow" label="Glow" type="number" min="0" max="100" default="72" tooltip="Glow and trail intensity"/>
+  <meta property="bgColor" label="Background Color" type="color" default="#05060a" tooltip="Garden background color"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1368,300 +1372,41 @@
     }
   };
 
-  // packages/core/src/audio/analysis.ts
-  var FFT_SIZE = 200;
-  var MEL_BANDS = 24;
-  var PITCH_CLASSES = 12;
-  function getAudioData() {
-    const hasEngine = typeof engine !== "undefined" && engine?.audio;
-    if (!hasEngine) return createSilentAudioData();
-    const audio = engine.audio;
-    return {
-      // Legacy
-      bass: audio.bass ?? 0,
-      bassEnv: audio.bassEnv ?? 0,
-      beat: Number(audio.beat ?? 0),
-      beatConfidence: audio.beatConfidence ?? 0,
-      beatPhase: audio.beatPhase ?? 0,
-      beatPulse: audio.beatPulse ?? 0,
-      brightness: audio.brightness ?? 0.5,
-      chordMood: audio.chordMood ?? 0,
-      chromagram: audio.chromagram ?? new Float32Array(PITCH_CLASSES),
-      density: audio.density ?? 0,
-      dominantPitch: audio.dominantPitch ?? 0,
-      dominantPitchConfidence: audio.dominantPitchConfidence ?? 0,
-      frequency: audio.frequency ?? new Float32Array(FFT_SIZE),
-      frequencyRaw: audio.frequencyRaw ?? new Int8Array(FFT_SIZE),
-      frequencyWeighted: audio.frequencyWeighted ?? new Float32Array(FFT_SIZE),
-      harmonicHue: audio.harmonicHue ?? 0,
-      level: audio.level != null ? normalizeAudioLevel(audio.level) : 0,
-      levelLong: audio.levelLong ?? 0,
-      levelRaw: audio.level ?? -100,
-      levelShort: audio.levelShort ?? 0,
-      melBands: audio.melBands ?? new Float32Array(MEL_BANDS),
-      melBandsNormalized: audio.melBandsNormalized ?? new Float32Array(MEL_BANDS),
-      mid: audio.mid ?? 0,
-      midEnv: audio.midEnv ?? 0,
-      momentum: audio.momentum ?? 0,
-      onset: Number(audio.onset ?? 0),
-      onsetPulse: audio.onsetPulse ?? 0,
-      rolloff: audio.rolloff ?? 0.5,
-      roughness: audio.roughness ?? 0.2,
-      spectralFlux: audio.spectralFlux ?? 0,
-      spectralFluxBands: audio.spectralFluxBands ?? new Float32Array(3),
-      spread: audio.spread ?? 0.3,
-      swell: audio.swell ?? 0,
-      tempo: audio.tempo ?? 120,
-      treble: audio.treble ?? 0,
-      trebleEnv: audio.trebleEnv ?? 0,
-      width: audio.width ?? 0.5
-    };
-  }
-  function normalizeAudioLevel(levelDb) {
-    return Math.max(0, Math.min(1, (levelDb + 100) / 100));
-  }
-  function createSilentAudioData() {
-    return {
-      bass: 0,
-      bassEnv: 0,
-      beat: 0,
-      beatConfidence: 0,
-      beatPhase: 0,
-      beatPulse: 0,
-      brightness: 0.5,
-      chordMood: 0,
-      chromagram: new Float32Array(PITCH_CLASSES),
-      density: 0,
-      dominantPitch: 0,
-      dominantPitchConfidence: 0,
-      frequency: new Float32Array(FFT_SIZE),
-      frequencyRaw: new Int8Array(FFT_SIZE),
-      frequencyWeighted: new Float32Array(FFT_SIZE),
-      harmonicHue: 0,
-      level: 0,
-      levelLong: 0,
-      levelRaw: -100,
-      levelShort: 0,
-      melBands: new Float32Array(MEL_BANDS),
-      melBandsNormalized: new Float32Array(MEL_BANDS),
-      mid: 0,
-      midEnv: 0,
-      momentum: 0,
-      onset: 0,
-      onsetPulse: 0,
-      rolloff: 0.5,
-      roughness: 0.2,
-      spectralFlux: 0,
-      spectralFluxBands: new Float32Array(3),
-      spread: 0.3,
-      swell: 0,
-      tempo: 120,
-      treble: 0,
-      trebleEnv: 0,
-      width: 0.5
-    };
-  }
-
-  // packages/core/src/effects/webgl-effect.ts
-  var DEFAULT_VERTEX_SHADER = `#version 300 es
-precision highp float;
-in vec2 aPosition;
-void main() {
-    gl_Position = vec4(aPosition, 0.0, 1.0);
-}
-`;
-  var WebGLEffect = class extends BaseEffect {
-    gl = null;
-    program = null;
-    uniforms = /* @__PURE__ */ new Map();
-    fragmentShader;
-    vertexShader;
-    audioReactive;
-    currentAudioData = null;
+  // packages/core/src/effects/canvas-effect.ts
+  var CanvasEffect = class extends BaseEffect {
+    ctx = null;
+    backgroundColor;
+    lastFrameTime = 0;
+    deltaTime = 0;
     constructor(config) {
       super(config);
-      this.fragmentShader = config.fragmentShader;
-      this.vertexShader = config.vertexShader ?? DEFAULT_VERTEX_SHADER;
-      this.audioReactive = config.audioReactive ?? false;
+      this.backgroundColor = config.backgroundColor || "black";
     }
     async initializeRenderer() {
       if (!this.canvas) throw new Error("Canvas not available");
-      this.gl = this.canvas.getContext("webgl2", { preserveDrawingBuffer: true });
-      if (!this.gl) throw new Error("WebGL2 not supported");
-      this.program = this.createProgram(this.vertexShader, this.fragmentShader);
-      this.gl.useProgram(this.program);
-      this.createQuad();
-      this.registerUniform("iTime", 0);
-      this.registerUniform("iResolution", [this.canvas.width, this.canvas.height]);
-      this.registerUniform("iMouse", [0, 0]);
-      if (this.audioReactive) {
-        this.registerAudioUniforms();
-      }
-      this.createUniforms();
-      this.resolveLocations();
-      this.pushAllUniforms();
-      this.debug("success", "WebGL2 renderer initialized");
+      this.ctx = this.canvas.getContext("2d");
+      if (!this.ctx) throw new Error("Could not get 2D context");
+      this.ctx.imageSmoothingEnabled = true;
+      this.clearCanvas();
+      await this.loadResources();
+    }
+    /** Override to load images, fonts, etc. */
+    async loadResources() {
+    }
+    clearCanvas() {
+      if (!this.ctx || !this.canvas) return;
+      this.ctx.fillStyle = this.backgroundColor;
+      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
     render(time) {
-      if (!this.gl || !this.program) return;
-      this.setUniform("iTime", time);
-      if (this.audioReactive) {
-        this.currentAudioData = getAudioData();
-        this.pushAudioUniforms(this.currentAudioData);
-      }
-      this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
-    }
-    getAudio() {
-      return this.currentAudioData;
+      if (!this.ctx || !this.canvas) return;
+      this.deltaTime = this.lastFrameTime === 0 ? 0 : time - this.lastFrameTime;
+      this.lastFrameTime = time;
+      this.clearCanvas();
+      this.draw(time, this.deltaTime);
     }
     updateParameters(controls) {
-      if (!this.program) return;
-      this.updateUniforms(controls);
-    }
-    // ── Uniform API ─────────────────────────────────────────────────────
-    /** Register a uniform. Call in createUniforms(). */
-    registerUniform(name, value) {
-      this.uniforms.set(name, { location: null, value, isInt: false });
-    }
-    /** Set a uniform value (will be pushed on next draw). */
-    setUniform(name, value) {
-      const entry = this.uniforms.get(name);
-      if (entry) {
-        entry.value = value;
-        this.pushUniform(name, entry);
-      }
-    }
-    // ── Internal ────────────────────────────────────────────────────────
-    createProgram(vertSrc, fragSrc) {
-      const gl = this.gl;
-      const vert = this.compileShader(gl.VERTEX_SHADER, vertSrc);
-      const frag = this.compileShader(gl.FRAGMENT_SHADER, fragSrc);
-      const program = gl.createProgram();
-      gl.attachShader(program, vert);
-      gl.attachShader(program, frag);
-      gl.linkProgram(program);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        const info = gl.getProgramInfoLog(program);
-        gl.deleteProgram(program);
-        throw new Error(`Shader link failed: ${info}`);
-      }
-      gl.deleteShader(vert);
-      gl.deleteShader(frag);
-      return program;
-    }
-    compileShader(type, source) {
-      const gl = this.gl;
-      const shader = gl.createShader(type);
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        const info = gl.getShaderInfoLog(shader);
-        gl.deleteShader(shader);
-        throw new Error(`Shader compile failed: ${info}`);
-      }
-      return shader;
-    }
-    createQuad() {
-      const gl = this.gl;
-      const vertices = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
-      const buffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-      const posLoc = gl.getAttribLocation(this.program, "aPosition");
-      gl.enableVertexAttribArray(posLoc);
-      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-    }
-    pushAllUniforms() {
-      for (const [name, entry] of this.uniforms) {
-        this.pushUniform(name, entry);
-      }
-    }
-    resolveLocations() {
-      const gl = this.gl;
-      const program = this.program;
-      const intTypes = /* @__PURE__ */ new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL]);
-      const intUniforms = /* @__PURE__ */ new Set();
-      const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
-      for (let i = 0; i < numActive; i++) {
-        const info = gl.getActiveUniform(program, i);
-        if (info && intTypes.has(info.type)) {
-          intUniforms.add(info.name);
-        }
-      }
-      for (const [name, entry] of this.uniforms) {
-        entry.location = gl.getUniformLocation(program, name);
-        entry.isInt = intUniforms.has(name);
-      }
-    }
-    pushUniform(_name, entry) {
-      const gl = this.gl;
-      if (!gl || !entry.location) return;
-      const val = entry.value;
-      if (typeof val === "number") {
-        if (entry.isInt) {
-          gl.uniform1i(entry.location, val | 0);
-        } else {
-          gl.uniform1f(entry.location, val);
-        }
-      } else if (val.length === 2) {
-        if (entry.isInt) {
-          gl.uniform2iv(entry.location, val);
-        } else {
-          gl.uniform2fv(entry.location, val);
-        }
-      } else if (val.length === 3) {
-        if (entry.isInt) {
-          gl.uniform3iv(entry.location, val);
-        } else {
-          gl.uniform3fv(entry.location, val);
-        }
-      } else if (val.length === 4) {
-        if (entry.isInt) {
-          gl.uniform4iv(entry.location, val);
-        } else {
-          gl.uniform4fv(entry.location, val);
-        }
-      }
-    }
-    registerAudioUniforms() {
-      this.registerUniform("iAudioLevel", 0);
-      this.registerUniform("iAudioBass", 0);
-      this.registerUniform("iAudioMid", 0);
-      this.registerUniform("iAudioTreble", 0);
-      this.registerUniform("iAudioBeat", 0);
-      this.registerUniform("iAudioBeatPulse", 0);
-      this.registerUniform("iAudioBeatPhase", 0);
-      this.registerUniform("iAudioBeatConfidence", 0);
-      this.registerUniform("iAudioOnset", 0);
-      this.registerUniform("iAudioOnsetPulse", 0);
-      this.registerUniform("iAudioSpectralFlux", 0);
-      this.registerUniform("iAudioHarmonicHue", 0);
-      this.registerUniform("iAudioChordMood", 0);
-      this.registerUniform("iAudioBrightness", 0.5);
-      this.registerUniform("iAudioMomentum", 0);
-      this.registerUniform("iAudioSwell", 0);
-      this.registerUniform("iAudioTempo", 120);
-      this.registerUniform("iAudioFluxBands", [0, 0, 0]);
-    }
-    pushAudioUniforms(audio) {
-      this.setUniform("iAudioLevel", audio.level);
-      this.setUniform("iAudioBass", audio.bass);
-      this.setUniform("iAudioMid", audio.mid);
-      this.setUniform("iAudioTreble", audio.treble);
-      this.setUniform("iAudioBeat", audio.beat);
-      this.setUniform("iAudioBeatPulse", audio.beatPulse);
-      this.setUniform("iAudioBeatPhase", audio.beatPhase);
-      this.setUniform("iAudioBeatConfidence", audio.beatConfidence);
-      this.setUniform("iAudioOnset", audio.onset);
-      this.setUniform("iAudioOnsetPulse", audio.onsetPulse);
-      this.setUniform("iAudioSpectralFlux", audio.spectralFlux);
-      this.setUniform("iAudioHarmonicHue", audio.harmonicHue);
-      this.setUniform("iAudioChordMood", audio.chordMood);
-      this.setUniform("iAudioBrightness", audio.brightness);
-      this.setUniform("iAudioMomentum", audio.momentum);
-      this.setUniform("iAudioSwell", audio.swell);
-      this.setUniform("iAudioTempo", audio.tempo);
-      this.setUniform("iAudioFluxBands", Array.from(audio.spectralFluxBands));
+      this.applyControls(controls);
     }
   };
 
@@ -1692,71 +1437,425 @@ void main() {
     }, { once: true });
   }
 
-  // src/effects/flow-field/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iSpeed;\nuniform float iParticles;\nuniform float iTrailFade;\nuniform float iNoiseScale;\nuniform int iPalette;\n\nfloat hash11(float p) {\n    p = fract(p * 0.1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n}\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\n// Simplex-like noise for flow field\nfloat noise(vec2 p) {\n    vec2 i = floor(p);\n    vec2 f = fract(p);\n    f = f * f * (3.0 - 2.0 * f);\n\n    float a = hash21(i);\n    float b = hash21(i + vec2(1.0, 0.0));\n    float c = hash21(i + vec2(0.0, 1.0));\n    float d = hash21(i + vec2(1.0, 1.0));\n\n    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n}\n\n// Flow field angle at a point\nfloat flowAngle(vec2 p, float time) {\n    float scale = 1.0 + iNoiseScale * 0.04;\n    float n1 = noise(p * scale + time * 0.2);\n    float n2 = noise(p * scale * 1.5 + vec2(5.0, 3.0) + time * 0.15);\n    return (n1 + n2 * 0.5) * 6.28318;\n}\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    if (id == 1) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    if (id == 2) return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n    if (id == 3) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    if (id == 4) return iqPalette(t, vec3(0.5, 0.6, 0.8), vec3(0.2, 0.3, 0.2), vec3(0.6, 0.8, 1.0), vec3(0.0, 0.1, 0.3));\n    return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    vec2 aspect = vec2(iResolution.x / iResolution.y, 1.0);\n    vec2 p = (uv - 0.5) * aspect;\n\n    float time = iTime * iSpeed * 0.2;\n\n    vec3 col = vec3(0.0);\n\n    // Simulate particles following the flow field\n    int numParticles = 20 + int(iParticles * 0.8);\n    float trailLen = 8.0 + iTrailFade * 0.2;\n\n    for (int i = 0; i < 100; i++) {\n        if (i >= numParticles) break;\n        float fi = float(i);\n\n        // Particle seed position (wraps around)\n        float seed = hash11(fi * 7.13);\n        float seed2 = hash11(fi * 13.37 + 100.0);\n        vec2 particleStart = vec2(\n            (seed - 0.5) * aspect.x,\n            (seed2 - 0.5)\n        );\n\n        // Advect particle through flow field\n        vec2 pos = particleStart;\n        float stepSize = 0.02;\n\n        // Use time to cycle particle through its trail\n        float particleTime = fract(time * 0.1 + fi * 0.0618);\n        int totalSteps = int(trailLen);\n\n        for (int step = 0; step < 30; step++) {\n            if (step >= totalSteps) break;\n            float fStep = float(step);\n\n            float angle = flowAngle(pos * 3.0, time);\n            vec2 dir = vec2(cos(angle), sin(angle));\n\n            // Check proximity to this trail segment\n            float dist = length(p - pos);\n            float trailFade = 1.0 - fStep / trailLen;\n            float width = 0.003 + 0.002 * trailFade;\n            float contrib = smoothstep(width, width * 0.3, dist) * trailFade;\n\n            // Color varies along the trail\n            float colorT = fi * 0.1 + fStep * 0.03 + time * 0.02;\n            col += paletteColor(colorT, iPalette) * contrib * 0.15;\n\n            // Advect\n            pos += dir * stepSize;\n\n            // Wrap around edges\n            pos = mod(pos + aspect * 0.5, aspect) - aspect * 0.5;\n        }\n    }\n\n    // Background flow visualization (subtle)\n    float bgAngle = flowAngle(p * 3.0, time);\n    float bgLines = abs(sin(bgAngle * 3.0 + length(p) * 10.0));\n    col += paletteColor(bgAngle / 6.28, iPalette) * smoothstep(0.9, 1.0, bgLines) * 0.02;\n\n    col = col / (1.0 + col * 0.4);\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
-
   // src/effects/flow-field/main.ts
-  var PALETTES = ["SilkCircuit", "Cyberpunk", "Aurora", "Fire", "Ice"];
-  var FlowField = class extends WebGLEffect {
+  var SCENES = ["Calm", "Swarm", "Pulse"];
+  var COLOR_MODES = ["Single", "Random", "Rainbow"];
+  var SCENE_TUNING = {
+    Calm: {
+      speed: 0.72,
+      wander: 0.55,
+      swirl: 0.35,
+      cohesion: 0.072,
+      pulse: 0.2,
+      trail: 10,
+      sparkle: 0.7
+    },
+    Swarm: {
+      speed: 1.12,
+      wander: 1.12,
+      swirl: 0.8,
+      cohesion: 0.096,
+      pulse: 0.35,
+      trail: 7,
+      sparkle: 1
+    },
+    Pulse: {
+      speed: 0.9,
+      wander: 0.74,
+      swirl: 0.58,
+      cohesion: 0.082,
+      pulse: 1,
+      trail: 9,
+      sparkle: 1.22
+    }
+  };
+  var FlowField = class extends CanvasEffect {
+    scene;
+    colorMode;
+    baseColor;
+    count;
+    size;
     speed;
-    particles;
-    trailFade;
-    noiseScale;
-    palette;
+    wander;
+    glow;
+    bgColor;
+    controlState = {
+      scene: "Calm",
+      colorMode: "Single",
+      baseColor: "#b8ff4f",
+      count: 88,
+      size: 3,
+      speed: normalizeSpeed(5),
+      wander: 62,
+      glow: 72,
+      bgColor: "#05060a"
+    };
+    fireflies = [];
+    cachedBaseColor = "#b8ff4f";
+    cachedBaseHsl = { h: 90, s: 0.9, l: 0.64 };
     constructor() {
-      super({ fragmentShader: fragment_default });
+      super({ id: "flow-field", name: "Flow Field", backgroundColor: "#05060a" });
     }
     initializeControls() {
+      this.scene = getControlValue("scene", "Calm");
+      this.colorMode = getControlValue("colorMode", "Single");
+      this.baseColor = getControlValue("baseColor", "#b8ff4f");
+      this.count = getControlValue("count", 88);
+      this.size = getControlValue("size", 3);
       this.speed = getControlValue("speed", 5);
-      this.particles = getControlValue("particles", 60);
-      this.trailFade = getControlValue("trailFade", 50);
-      this.noiseScale = getControlValue("noiseScale", 50);
-      this.palette = getControlValue("palette", "SilkCircuit");
+      this.wander = getControlValue("wander", 62);
+      this.glow = getControlValue("glow", 72);
+      this.bgColor = getControlValue("bgColor", "#05060a");
     }
     getControlValues() {
       return {
+        scene: getControlValue("scene", "Calm"),
+        colorMode: getControlValue("colorMode", "Single"),
+        baseColor: getControlValue("baseColor", "#b8ff4f"),
+        count: getControlValue("count", 88),
+        size: getControlValue("size", 3),
         speed: normalizeSpeed(getControlValue("speed", 5)),
-        particles: getControlValue("particles", 60),
-        trailFade: getControlValue("trailFade", 50),
-        noiseScale: getControlValue("noiseScale", 50),
-        palette: PALETTES.indexOf(getControlValue("palette", "SilkCircuit"))
+        wander: getControlValue("wander", 62),
+        glow: getControlValue("glow", 72),
+        bgColor: getControlValue("bgColor", "#05060a")
       };
     }
-    createUniforms() {
-      this.registerUniform("iSpeed", 1);
-      this.registerUniform("iParticles", 60);
-      this.registerUniform("iTrailFade", 50);
-      this.registerUniform("iNoiseScale", 50);
-      this.registerUniform("iPalette", 0);
+    applyControls(controls) {
+      this.controlState = controls;
+      this.backgroundColor = controls.bgColor;
+      this.updateBaseColorCache(controls.baseColor);
+      this.ensureFireflyCount(Math.floor(controls.count));
     }
-    updateUniforms(c) {
-      this.setUniform("iSpeed", c.speed);
-      this.setUniform("iParticles", c.particles);
-      this.setUniform("iTrailFade", c.trailFade);
-      this.setUniform("iNoiseScale", c.noiseScale);
-      this.setUniform("iPalette", c.palette);
+    async loadResources() {
+      this.updateBaseColorCache(this.controlState.baseColor);
+      this.ensureFireflyCount(Math.floor(this.controlState.count));
+    }
+    draw(time, deltaTime) {
+      if (!this.ctx || !this.canvas) return;
+      const ctx = this.ctx;
+      const w = this.canvas.width;
+      const h = this.canvas.height;
+      const dt = deltaTime > 0 ? this.clamp(deltaTime * 60, 0.55, 2.4) : 1;
+      const scene = SCENE_TUNING[this.controlState.scene] ?? SCENE_TUNING.Calm;
+      const glowMix = this.clamp(this.controlState.glow / 100, 0, 1);
+      const wanderMix = this.clamp(this.controlState.wander / 100, 0, 1);
+      const baseSize = this.clamp(this.controlState.size, 1, 10);
+      this.drawAtmosphere(ctx, w, h, time, scene, glowMix);
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      const particleCount = this.fireflies.length;
+      for (let i = 0; i < particleCount; i++) {
+        const firefly = this.fireflies[i];
+        this.updateFirefly(firefly, w, h, time, dt, scene, wanderMix, glowMix);
+        const twinkle = this.getTwinkle(firefly, time, scene);
+        const color = this.resolveColor(firefly, i, time, twinkle, particleCount);
+        const radius = Math.max(0.8, baseSize * (0.42 + twinkle * 0.58) * firefly.sizeJitter);
+        this.drawTrail(ctx, firefly, color, radius, glowMix, scene, twinkle);
+        this.drawBody(ctx, firefly, color, radius, glowMix, twinkle);
+      }
+      ctx.restore();
+    }
+    drawAtmosphere(ctx, w, h, time, scene, glowMix) {
+      const hueShift = Math.sin(time * 0.08) * 6;
+      const mistColor = this.hslToRgb((this.cachedBaseHsl.h + 12 + hueShift + 360) % 360, 82, 48);
+      const mist = ctx.createRadialGradient(
+        w * (0.5 + Math.sin(time * 0.04) * 0.08),
+        h * (0.55 + Math.cos(time * 0.05) * 0.08),
+        0,
+        w * 0.5,
+        h * 0.5,
+        Math.max(w, h) * 0.9
+      );
+      mist.addColorStop(0, this.rgba(mistColor, 0.08 + glowMix * 0.18));
+      mist.addColorStop(0.58, this.rgba(mistColor, 0.03 + glowMix * 0.06));
+      mist.addColorStop(1, this.rgba(mistColor, 0));
+      ctx.fillStyle = mist;
+      ctx.fillRect(0, 0, w, h);
+      const pulse = 0.035 + scene.pulse * 0.018 * (0.5 + 0.5 * Math.sin(time * 2.2));
+      const veil = this.hslToRgb((this.cachedBaseHsl.h + 300) % 360, 70, 38);
+      const gradient = ctx.createLinearGradient(0, 0, 0, h);
+      gradient.addColorStop(0, this.rgba(veil, pulse));
+      gradient.addColorStop(1, this.rgba(veil, 0));
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, w, h);
+      const vignette = ctx.createRadialGradient(w * 0.5, h * 0.5, 20, w * 0.5, h * 0.5, Math.max(w, h) * 0.8);
+      vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
+      vignette.addColorStop(1, "rgba(0, 0, 0, 0.42)");
+      ctx.fillStyle = vignette;
+      ctx.fillRect(0, 0, w, h);
+    }
+    updateFirefly(firefly, w, h, time, dt, scene, wanderMix, glowMix) {
+      const centerX = w * 0.5 + Math.sin(time * 0.24) * w * 0.2;
+      const centerY = h * 0.5 + Math.cos(time * 0.19) * h * 0.16;
+      const dx = centerX - firefly.x;
+      const dy = centerY - firefly.y;
+      const distance = Math.max(1, Math.hypot(dx, dy));
+      const dirX = dx / distance;
+      const dirY = dy / distance;
+      const swirlX = -dirY;
+      const swirlY = dirX;
+      const jitterA = Math.sin(time * 1.7 + firefly.phase * 8.3 + firefly.x * 0.03);
+      const jitterB = Math.cos(time * 1.33 + firefly.phase * 6.1 + firefly.y * 0.027);
+      const wanderForce = (0.02 + wanderMix * 0.12) * scene.wander * firefly.wanderBias;
+      firefly.vx += (jitterA * 0.8 + jitterB * 0.5) * wanderForce * dt;
+      firefly.vy += (jitterB * 0.9 - jitterA * 0.45) * wanderForce * dt;
+      const centerPull = scene.cohesion * (0.85 + distance / Math.max(w, h) * 0.3);
+      firefly.vx += dirX * centerPull * dt;
+      firefly.vy += dirY * centerPull * dt;
+      const swirlForce = scene.swirl * (0.035 + glowMix * 0.02);
+      firefly.vx += swirlX * swirlForce * dt;
+      firefly.vy += swirlY * swirlForce * dt;
+      if (this.controlState.scene === "Pulse") {
+        const pulse = Math.sin(time * 4.1 + firefly.phase * 7.2);
+        const pulseForce = scene.pulse * (0.11 + firefly.speedBias * 0.05);
+        firefly.vx += dirX * pulse * pulseForce * dt;
+        firefly.vy += dirY * pulse * pulseForce * dt;
+      }
+      firefly.vx *= 0.93;
+      firefly.vy *= 0.93;
+      const speedScale = this.controlState.speed * scene.speed * (0.55 + firefly.speedBias * 0.6);
+      const maxVelocity = Math.max(0.75, speedScale * 1.5);
+      const velocity = Math.hypot(firefly.vx, firefly.vy);
+      if (velocity > maxVelocity) {
+        const scale = maxVelocity / velocity;
+        firefly.vx *= scale;
+        firefly.vy *= scale;
+      }
+      firefly.x += firefly.vx * speedScale * dt;
+      firefly.y += firefly.vy * speedScale * dt;
+      const wrapped = this.wrapFirefly(firefly, w, h);
+      if (wrapped) {
+        firefly.trail = [{ x: firefly.x, y: firefly.y }];
+        return;
+      }
+      firefly.trail.unshift({ x: firefly.x, y: firefly.y });
+      const trailLength = Math.max(6, Math.floor(scene.trail + glowMix * 5));
+      if (firefly.trail.length > trailLength) {
+        firefly.trail.length = trailLength;
+      }
+    }
+    drawTrail(ctx, firefly, color, radius, glowMix, scene, twinkle) {
+      const trail = firefly.trail;
+      if (trail.length < 2) return;
+      for (let i = 1; i < trail.length; i++) {
+        const head = trail[i - 1];
+        const tail = trail[i];
+        const depth = 1 - i / trail.length;
+        const alpha = depth * depth * (0.07 + glowMix * 0.2) * (0.65 + twinkle * 0.7);
+        const width = Math.max(0.45, radius * (0.28 + depth * (0.9 + scene.pulse * 0.16)));
+        ctx.strokeStyle = this.rgba(color, alpha);
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.moveTo(head.x, head.y);
+        ctx.lineTo(tail.x, tail.y);
+        ctx.stroke();
+      }
+    }
+    drawBody(ctx, firefly, color, radius, glowMix, twinkle) {
+      const haloRadius = radius * (1.7 + glowMix * 4.3);
+      if (glowMix > 0.01) {
+        const glow = ctx.createRadialGradient(firefly.x, firefly.y, 0, firefly.x, firefly.y, haloRadius);
+        glow.addColorStop(0, this.rgba(color, (0.2 + glowMix * 0.4) * (0.55 + twinkle * 0.75)));
+        glow.addColorStop(0.6, this.rgba(color, 0.08 + glowMix * 0.12));
+        glow.addColorStop(1, this.rgba(color, 0));
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(firefly.x, firefly.y, haloRadius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = this.rgba(color, 0.82 + twinkle * 0.18);
+      ctx.beginPath();
+      ctx.arc(firefly.x, firefly.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = `rgba(255, 255, 236, ${Math.min(1, 0.24 + twinkle * 0.55).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(firefly.x - radius * 0.24, firefly.y - radius * 0.28, radius * 0.38, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    resolveColor(firefly, index, time, twinkle, count) {
+      const mode = this.controlState.colorMode;
+      const base = this.cachedBaseHsl;
+      if (mode === "Random") {
+        const hue2 = (base.h + firefly.hueOffset * 260 + Math.sin(time * 0.24 + firefly.phase * 5.3) * 22 + 360) % 360;
+        const sat2 = this.clamp(72 + firefly.satOffset * 22, 48, 100);
+        const light2 = this.clamp(43 + twinkle * 22 + firefly.lightOffset * 9, 30, 88);
+        return this.hslToRgb(hue2, sat2, light2);
+      }
+      if (mode === "Rainbow") {
+        const hue2 = (time * 36 + index * (360 / Math.max(count, 1)) + firefly.hueOffset * 40 + 360) % 360;
+        const sat2 = this.clamp(80 + firefly.satOffset * 16, 58, 100);
+        const light2 = this.clamp(48 + twinkle * 20 + firefly.lightOffset * 6, 34, 90);
+        return this.hslToRgb(hue2, sat2, light2);
+      }
+      const hue = (base.h + firefly.hueOffset * 20 + Math.sin(time * 0.4 + firefly.phase * 3.7) * 8 + 360) % 360;
+      const sat = this.clamp(base.s * 100 + 10 + firefly.satOffset * 6, 42, 100);
+      const light = this.clamp(base.l * 100 + twinkle * 16 + 4, 24, 88);
+      return this.hslToRgb(hue, sat, light);
+    }
+    getTwinkle(firefly, time, scene) {
+      const pulse = Math.sin(time * (1.4 + scene.sparkle) + firefly.phase * 1.9);
+      const shimmer = Math.sin(time * 3.4 + firefly.phase * 6.7) * 0.5;
+      return this.clamp(0.54 + pulse * 0.3 + shimmer * 0.2, 0.12, 1);
+    }
+    ensureFireflyCount(count) {
+      const target = Math.max(8, Math.min(220, count));
+      const w = this.canvas?.width ?? 320;
+      const h = this.canvas?.height ?? 200;
+      if (this.fireflies.length < target) {
+        while (this.fireflies.length < target) {
+          this.fireflies.push(this.createFirefly(w, h));
+        }
+        return;
+      }
+      if (this.fireflies.length > target) {
+        this.fireflies.length = target;
+      }
+    }
+    createFirefly(w, h) {
+      const x = Math.random() * w;
+      const y = Math.random() * h;
+      return {
+        x,
+        y,
+        vx: (Math.random() - 0.5) * 0.8,
+        vy: (Math.random() - 0.5) * 0.8,
+        phase: Math.random() * Math.PI * 2,
+        hueOffset: Math.random() * 2 - 1,
+        satOffset: Math.random() * 2 - 1,
+        lightOffset: Math.random() * 2 - 1,
+        sizeJitter: 0.68 + Math.random() * 0.72,
+        speedBias: 0.75 + Math.random() * 0.55,
+        wanderBias: 0.8 + Math.random() * 0.45,
+        trail: [{ x, y }]
+      };
+    }
+    wrapFirefly(firefly, w, h) {
+      const margin = 12;
+      let wrapped = false;
+      if (firefly.x < -margin) {
+        firefly.x = w + margin;
+        wrapped = true;
+      } else if (firefly.x > w + margin) {
+        firefly.x = -margin;
+        wrapped = true;
+      }
+      if (firefly.y < -margin) {
+        firefly.y = h + margin;
+        wrapped = true;
+      } else if (firefly.y > h + margin) {
+        firefly.y = -margin;
+        wrapped = true;
+      }
+      return wrapped;
+    }
+    updateBaseColorCache(color) {
+      if (color === this.cachedBaseColor) return;
+      const rgb = this.hexToRgb(color);
+      this.cachedBaseColor = color;
+      this.cachedBaseHsl = this.rgbToHsl(rgb);
+    }
+    rgba(color, alpha) {
+      return `rgba(${color.r}, ${color.g}, ${color.b}, ${this.clamp(alpha, 0, 1).toFixed(3)})`;
+    }
+    clamp(value, min, max) {
+      if (Number.isNaN(value)) return min;
+      return Math.max(min, Math.min(max, value));
+    }
+    hexToRgb(hex) {
+      const normalized = hex.replace("#", "");
+      const full = normalized.length === 3 ? `${normalized[0]}${normalized[0]}${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}` : normalized;
+      const parsed = parseInt(full, 16);
+      if (Number.isNaN(parsed)) {
+        return { r: 184, g: 255, b: 79 };
+      }
+      return {
+        r: parsed >> 16 & 255,
+        g: parsed >> 8 & 255,
+        b: parsed & 255
+      };
+    }
+    rgbToHsl(color) {
+      const r = color.r / 255;
+      const g = color.g / 255;
+      const b = color.b / 255;
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const delta = max - min;
+      const l = (max + min) / 2;
+      if (delta === 0) {
+        return { h: 0, s: 0, l };
+      }
+      const s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+      let h;
+      if (max === r) h = (g - b) / delta + (g < b ? 6 : 0);
+      else if (max === g) h = (b - r) / delta + 2;
+      else h = (r - g) / delta + 4;
+      h *= 60;
+      return { h, s, l };
+    }
+    hslToRgb(h, sPercent, lPercent) {
+      const s = this.clamp(sPercent, 0, 100) / 100;
+      const l = this.clamp(lPercent, 0, 100) / 100;
+      const c = (1 - Math.abs(2 * l - 1)) * s;
+      const hPrime = (h % 360 + 360) % 360 / 60;
+      const x = c * (1 - Math.abs(hPrime % 2 - 1));
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      if (hPrime < 1) [r, g, b] = [c, x, 0];
+      else if (hPrime < 2) [r, g, b] = [x, c, 0];
+      else if (hPrime < 3) [r, g, b] = [0, c, x];
+      else if (hPrime < 4) [r, g, b] = [0, x, c];
+      else if (hPrime < 5) [r, g, b] = [x, 0, c];
+      else [r, g, b] = [c, 0, x];
+      const m = l - c / 2;
+      return {
+        r: Math.round((r + m) * 255),
+        g: Math.round((g + m) * 255),
+        b: Math.round((b + m) * 255)
+      };
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Flow speed" })
+    ComboboxControl({ label: "Scene", values: SCENES, default: "Calm", tooltip: "Movement behavior preset" })
+  ], FlowField.prototype, "scene", 2);
+  __decorateClass([
+    ComboboxControl({
+      label: "Color Mode",
+      values: COLOR_MODES,
+      default: "Single",
+      tooltip: "Single hue, random fireflies, or animated rainbow"
+    })
+  ], FlowField.prototype, "colorMode", 2);
+  __decorateClass([
+    ColorControl({ label: "Base Color", default: "#b8ff4f", tooltip: "Primary firefly color" })
+  ], FlowField.prototype, "baseColor", 2);
+  __decorateClass([
+    NumberControl({ label: "Count", min: 8, max: 220, default: 88, tooltip: "Number of fireflies" })
+  ], FlowField.prototype, "count", 2);
+  __decorateClass([
+    NumberControl({ label: "Size", min: 1, max: 10, default: 3, tooltip: "Firefly body size" })
+  ], FlowField.prototype, "size", 2);
+  __decorateClass([
+    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Swarm movement speed" })
   ], FlowField.prototype, "speed", 2);
   __decorateClass([
-    NumberControl({ label: "Particles", min: 10, max: 100, default: 60, tooltip: "Particle count" })
-  ], FlowField.prototype, "particles", 2);
+    NumberControl({ label: "Wander", min: 0, max: 100, default: 62, tooltip: "Random drift amount" })
+  ], FlowField.prototype, "wander", 2);
   __decorateClass([
-    NumberControl({ label: "Trail", min: 10, max: 100, default: 50, tooltip: "Trail length" })
-  ], FlowField.prototype, "trailFade", 2);
+    NumberControl({ label: "Glow", min: 0, max: 100, default: 72, tooltip: "Glow and trail intensity" })
+  ], FlowField.prototype, "glow", 2);
   __decorateClass([
-    NumberControl({ label: "Scale", min: 10, max: 100, default: 50, tooltip: "Noise scale" })
-  ], FlowField.prototype, "noiseScale", 2);
-  __decorateClass([
-    ComboboxControl({ label: "Palette", values: PALETTES, default: "SilkCircuit", tooltip: "Color palette" })
-  ], FlowField.prototype, "palette", 2);
+    ColorControl({ label: "Background Color", default: "#05060a", tooltip: "Garden background color" })
+  ], FlowField.prototype, "bgColor", 2);
   FlowField = __decorateClass([
     Effect({
       name: "Flow Field",
-      description: "Perlin noise vector field with streaming particle trails",
-      author: "Hypercolor"
+      description: "Poison-glow firefly garden with crisp trails and scene moods",
+      author: "Hypercolor",
+      audioReactive: false
     })
   ], FlowField);
   var effect = new FlowField();
