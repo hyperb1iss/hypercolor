@@ -1522,7 +1522,7 @@ void main() {
     // ── Uniform API ─────────────────────────────────────────────────────
     /** Register a uniform. Call in createUniforms(). */
     registerUniform(name, value) {
-      this.uniforms.set(name, { location: null, value });
+      this.uniforms.set(name, { location: null, value, isInt: false });
     }
     /** Set a uniform value (will be pushed on next draw). */
     setUniform(name, value) {
@@ -1579,8 +1579,19 @@ void main() {
     }
     resolveLocations() {
       const gl = this.gl;
+      const program = this.program;
+      const intTypes = /* @__PURE__ */ new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL]);
+      const intUniforms = /* @__PURE__ */ new Set();
+      const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS);
+      for (let i = 0; i < numActive; i++) {
+        const info = gl.getActiveUniform(program, i);
+        if (info && intTypes.has(info.type)) {
+          intUniforms.add(info.name);
+        }
+      }
       for (const [name, entry] of this.uniforms) {
-        entry.location = gl.getUniformLocation(this.program, name);
+        entry.location = gl.getUniformLocation(program, name);
+        entry.isInt = intUniforms.has(name);
       }
     }
     pushUniform(_name, entry) {
@@ -1588,13 +1599,29 @@ void main() {
       if (!gl || !entry.location) return;
       const val = entry.value;
       if (typeof val === "number") {
-        gl.uniform1f(entry.location, val);
+        if (entry.isInt) {
+          gl.uniform1i(entry.location, val | 0);
+        } else {
+          gl.uniform1f(entry.location, val);
+        }
       } else if (val.length === 2) {
-        gl.uniform2fv(entry.location, val);
+        if (entry.isInt) {
+          gl.uniform2iv(entry.location, val);
+        } else {
+          gl.uniform2fv(entry.location, val);
+        }
       } else if (val.length === 3) {
-        gl.uniform3fv(entry.location, val);
+        if (entry.isInt) {
+          gl.uniform3iv(entry.location, val);
+        } else {
+          gl.uniform3fv(entry.location, val);
+        }
       } else if (val.length === 4) {
-        gl.uniform4fv(entry.location, val);
+        if (entry.isInt) {
+          gl.uniform4iv(entry.location, val);
+        } else {
+          gl.uniform4fv(entry.location, val);
+        }
       }
     }
     registerAudioUniforms() {

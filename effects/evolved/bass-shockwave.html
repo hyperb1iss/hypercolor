@@ -3,15 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Borealis</title>
-  <meta description="Aurora borealis — layered curtains of light with domain-warped fBm noise"/>
+  <title>Bass Shockwave</title>
+  <meta description="Radial shockwave rings expanding on beat with particle bursts"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="4" tooltip="Animation speed"/>
-  <meta property="intensity" label="Intensity" type="number" min="0" max="100" default="70" tooltip="Aurora brightness"/>
-  <meta property="warpStrength" label="Warp" type="number" min="0" max="100" default="50" tooltip="Domain warping strength"/>
-  <meta property="starBrightness" label="Stars" type="number" min="0" max="100" default="50" tooltip="Star brightness"/>
-  <meta property="curtainHeight" label="Height" type="number" min="20" max="90" default="65" tooltip="Aurora vertical position"/>
-  <meta property="palette" label="Palette" type="combobox" default="Aurora" values="Aurora,SilkCircuit,Cyberpunk,Sunset,Ice,Fire,Vaporwave,Phosphor" tooltip="Color palette"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Animation speed"/>
+  <meta property="intensity" label="Intensity" type="number" min="0" max="100" default="75" tooltip="Brightness"/>
+  <meta property="ringCount" label="Rings" type="number" min="0" max="100" default="50" tooltip="Ring count"/>
+  <meta property="decay" label="Decay" type="number" min="0" max="100" default="50" tooltip="Ring fade speed"/>
+  <meta property="palette" label="Palette" type="combobox" default="SilkCircuit" values="SilkCircuit,Cyberpunk,Fire,Aurora,Ice" tooltip="Color palette"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1137,7 +1136,7 @@
     }
   });
 
-  // src/effects/borealis/main.ts
+  // src/effects/bass-shockwave/main.ts
   var import_reflect_metadata2 = __toESM(require_Reflect());
 
   // packages/core/src/controls/decorators.ts
@@ -1693,87 +1692,75 @@ void main() {
     }, { once: true });
   }
 
-  // src/effects/borealis/fragment.glsl
-  var fragment_default = '#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\n// Controls\nuniform float iSpeed;\nuniform float iIntensity;\nuniform float iWarpStrength;\nuniform float iStarBrightness;\nuniform float iCurtainHeight;\nuniform int iPalette;\n\n// \u2500\u2500 Noise \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec2 hash22(vec2 p) {\n    p = fract(p * vec2(443.8975, 397.2973));\n    p += dot(p, p.yx + 19.19);\n    return fract(vec2(p.x * p.y, p.y * p.x));\n}\n\nfloat vnoise(vec2 x) {\n    vec2 i = floor(x);\n    vec2 f = fract(x);\n    f = f * f * (3.0 - 2.0 * f);\n    float a = hash21(i);\n    float b = hash21(i + vec2(1.0, 0.0));\n    float c = hash21(i + vec2(0.0, 1.0));\n    float d = hash21(i + vec2(1.0, 1.0));\n    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n}\n\nfloat fbm(vec2 p, int octaves) {\n    float sum = 0.0;\n    float amp = 0.5;\n    float freq = 1.0;\n    for (int i = 0; i < 8; i++) {\n        if (i >= octaves) break;\n        sum += amp * vnoise(p * freq);\n        freq *= 2.0;\n        amp *= 0.5;\n    }\n    return sum;\n}\n\nvec2 domainWarp(vec2 p, float strength, float scale) {\n    float n1 = vnoise(p * scale);\n    float n2 = vnoise(p * scale + vec2(5.2, 1.3));\n    return p + vec2(n1, n2) * strength;\n}\n\n// \u2500\u2500 Palettes \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    // Aurora (default)\n    if (id == 0) return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n    // SilkCircuit\n    if (id == 1) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    // Cyberpunk\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    // Sunset\n    if (id == 3) return iqPalette(t, vec3(0.5, 0.5, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.1, 0.2));\n    // Ice\n    if (id == 4) return iqPalette(t, vec3(0.5, 0.6, 0.8), vec3(0.2, 0.3, 0.2), vec3(0.6, 0.8, 1.0), vec3(0.0, 0.1, 0.3));\n    // Fire\n    if (id == 5) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    // Vaporwave\n    if (id == 6) return iqPalette(t, vec3(0.6, 0.4, 0.7), vec3(0.3, 0.3, 0.3), vec3(0.6, 0.8, 1.0), vec3(0.7, 0.3, 0.6));\n    // Phosphor\n    if (id == 7) return iqPalette(t, vec3(0.0, 0.3, 0.0), vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.0, 0.0));\n    return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n}\n\n// \u2500\u2500 Stars \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nfloat starField(vec2 uv, float time) {\n    // Grid of potential star positions\n    vec2 cell = floor(uv * 120.0);\n    vec2 local = fract(uv * 120.0) - 0.5;\n\n    // Deterministic placement per cell\n    float rng = hash21(cell);\n    if (rng > 0.06) return 0.0; // sparse\n\n    // Star position within cell\n    vec2 starPos = hash22(cell) - 0.5;\n    float dist = length(local - starPos * 0.6);\n\n    // Point brightness with twinkle\n    float twinkle = 0.6 + 0.4 * sin(time * (1.5 + rng * 4.0) + rng * 6.28);\n    float brightness = smoothstep(0.04, 0.0, dist) * twinkle;\n\n    // Some stars are brighter/dimmer\n    brightness *= 0.4 + rng * 10.0;\n\n    return clamp(brightness, 0.0, 1.0);\n}\n\n// \u2500\u2500 Aurora \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\nvec3 auroraCurtain(vec2 uv, float time, float layerIdx, float totalLayers) {\n    float fi = layerIdx;\n    float layerOffset = fi / totalLayers;\n\n    // Slow horizontal drift per layer\n    float drift = time * (0.08 + fi * 0.02);\n\n    // Domain warp for organic flowing shapes\n    float warpAmt = iWarpStrength * 0.006;\n    vec2 warped = domainWarp(\n        vec2(uv.x + drift, uv.y * 0.5 + fi * 3.7),\n        warpAmt * (1.0 + fi * 0.3),\n        1.5 + fi * 0.4\n    );\n\n    // Curtain shape: tall vertical bands that sway\n    float curtainX = fbm(vec2(warped.x * 2.5 + fi * 7.3, time * 0.15 + fi * 2.1), 5);\n\n    // Vertical envelope \u2014 curtain hangs from above\n    float curtainBase = iCurtainHeight * 0.01;\n    float curtainTop = curtainBase + 0.15 + curtainX * 0.25;\n    float curtainBottom = curtainBase - 0.1 - curtainX * 0.15;\n\n    // Soft vertical falloff (bright at top, fading down like real aurora)\n    float vertFade = smoothstep(curtainBottom, curtainBase, uv.y)\n                   * smoothstep(curtainTop + 0.15, curtainTop - 0.05, uv.y);\n\n    // Fine vertical structure (the characteristic "rays")\n    float rays = fbm(vec2(warped.x * 12.0 + fi * 5.0, uv.y * 8.0 + time * 0.3), 4);\n    rays = 0.4 + rays * 0.6;\n\n    // Horizontal brightness variation\n    float horizBright = fbm(vec2(warped.x * 4.0 + drift * 2.0, fi * 11.0), 3);\n    horizBright = 0.3 + horizBright * 0.7;\n\n    // Color \u2014 shift along the palette per layer and position\n    float colorT = layerOffset + warped.x * 0.15 + time * 0.02;\n    vec3 color = paletteColor(colorT, iPalette);\n\n    // Combine\n    float intensity = vertFade * rays * horizBright * iIntensity * 0.014;\n\n    // Deeper layers are dimmer\n    intensity *= 1.0 - fi * 0.12;\n\n    return color * intensity;\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    float time = iTime * iSpeed * 0.3;\n\n    // Night sky gradient \u2014 very dark\n    vec3 skyLow = vec3(0.0, 0.005, 0.015);\n    vec3 skyHigh = vec3(0.005, 0.015, 0.04);\n    vec3 col = mix(skyLow, skyHigh, uv.y);\n\n    // Stars (behind aurora)\n    float stars = starField(uv, iTime) * iStarBrightness * 0.012;\n    col += vec3(0.8, 0.85, 1.0) * stars;\n\n    // Aurora curtain layers\n    int layers = 5;\n    float totalLayers = float(layers);\n    for (int i = 0; i < 5; i++) {\n        col += auroraCurtain(uv, time, float(i), totalLayers);\n    }\n\n    // Subtle ground reflection at bottom\n    float reflection = smoothstep(0.15, 0.0, uv.y);\n    vec3 reflected = auroraCurtain(vec2(uv.x, 0.3), time, 0.0, totalLayers) * 0.3;\n    col += reflected * reflection;\n\n    // Tonemapping \u2014 gentle S-curve\n    col = col / (1.0 + col * 0.6);\n    col = pow(col, vec3(0.95)); // slight gamma lift\n\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n';
+  // src/effects/bass-shockwave/fragment.glsl
+  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iAudioBass;\nuniform float iAudioMid;\nuniform float iAudioTreble;\nuniform float iAudioBeat;\nuniform float iAudioBeatPulse;\nuniform float iAudioLevel;\nuniform float iAudioSwell;\nuniform float iAudioSpectralFlux;\n\nuniform float iSpeed;\nuniform float iIntensity;\nuniform float iRingCount;\nuniform float iDecay;\nuniform int iPalette;\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    if (id == 1) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    if (id == 3) return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n    if (id == 4) return iqPalette(t, vec3(0.5, 0.6, 0.8), vec3(0.2, 0.3, 0.2), vec3(0.6, 0.8, 1.0), vec3(0.0, 0.1, 0.3));\n    return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n}\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvoid main() {\n    vec2 uv = (gl_FragCoord.xy - 0.5 * iResolution) / iResolution.y;\n    float time = iTime * iSpeed * 0.3;\n\n    float r = length(uv);\n    float angle = atan(uv.y, uv.x);\n\n    float bass = iAudioBass;\n    float beatPulse = iAudioBeatPulse;\n    float level = iAudioLevel;\n\n    vec3 col = vec3(0.0);\n\n    // Expanding shockwave rings on beat\n    float ringCount = 3.0 + iRingCount * 0.09;\n    float decayRate = 2.0 + iDecay * 0.06;\n\n    for (int i = 0; i < 12; i++) {\n        if (float(i) >= ringCount) break;\n        float fi = float(i);\n\n        // Each ring expands outward from center\n        float ringPhase = fract(time * 0.2 + fi / ringCount);\n        float ringRadius = ringPhase * 1.2;\n\n        // Ring fades as it expands\n        float ringFade = exp(-ringPhase * decayRate);\n\n        // Ring width modulated by bass\n        float ringWidth = 0.015 + bass * 0.02 + beatPulse * 0.01;\n\n        // Distance from this pixel to the ring\n        float ringDist = abs(r - ringRadius);\n        float ring = smoothstep(ringWidth, ringWidth * 0.2, ringDist) * ringFade;\n\n        // Angular variation \u2014 ring isn't perfectly circular\n        float angularWarp = sin(angle * 3.0 + fi * 2.0 + time) * 0.02 * bass;\n        ring *= 1.0 + angularWarp;\n\n        // Beat pulse makes the newest ring flash bright\n        float isBeatRing = smoothstep(0.1, 0.0, ringPhase);\n        ring += isBeatRing * beatPulse * 0.5 * smoothstep(ringWidth * 2.0, 0.0, ringDist);\n\n        // Color shifts per ring\n        float colorT = fi / ringCount + ringPhase * 0.3;\n        vec3 ringColor = paletteColor(colorT, iPalette);\n\n        col += ringColor * ring * iIntensity * 0.015;\n    }\n\n    // Central glow \u2014 pulses with bass\n    float centerGlow = exp(-r * (4.0 - bass * 2.0)) * (0.3 + bass * 0.5 + beatPulse * 0.3);\n    col += paletteColor(time * 0.05, iPalette) * centerGlow * iIntensity * 0.01;\n\n    // Radial displacement lines on beat\n    float radialLines = sin(angle * 8.0 + time * 2.0) * 0.5 + 0.5;\n    radialLines *= exp(-r * 3.0) * beatPulse * 0.3;\n    col += paletteColor(angle / 6.28 + 0.5, iPalette) * radialLines;\n\n    // Particle burst on strong beats\n    float particleSeed = floor(time * 4.0);\n    for (int p = 0; p < 8; p++) {\n        float fp = float(p);\n        float pAngle = hash21(vec2(fp, particleSeed)) * 6.28318;\n        float pSpeed = 0.3 + hash21(vec2(fp + 10.0, particleSeed)) * 0.7;\n        float pPhase = fract(time * 0.5 - particleSeed * 0.25);\n        float pRadius = pPhase * pSpeed;\n        float pFade = exp(-pPhase * 3.0) * beatPulse;\n\n        vec2 pPos = vec2(cos(pAngle), sin(pAngle)) * pRadius;\n        float pDist = length(uv - pPos);\n        float particle = smoothstep(0.02, 0.005, pDist) * pFade;\n\n        col += paletteColor(fp * 0.125, iPalette) * particle * 0.5;\n    }\n\n    col = col / (1.0 + col * 0.5);\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
 
-  // src/effects/borealis/main.ts
-  var PALETTES = ["Aurora", "SilkCircuit", "Cyberpunk", "Sunset", "Ice", "Fire", "Vaporwave", "Phosphor"];
-  var Borealis = class extends WebGLEffect {
+  // src/effects/bass-shockwave/main.ts
+  var PALETTES = ["SilkCircuit", "Cyberpunk", "Fire", "Aurora", "Ice"];
+  var BassShockwave = class extends WebGLEffect {
     speed;
     intensity;
-    warpStrength;
-    starBrightness;
-    curtainHeight;
+    ringCount;
+    decay;
     palette;
     constructor() {
-      super({ fragmentShader: fragment_default });
+      super({ fragmentShader: fragment_default, audioReactive: true });
     }
     initializeControls() {
-      this.speed = getControlValue("speed", 4);
-      this.intensity = getControlValue("intensity", 70);
-      this.warpStrength = getControlValue("warpStrength", 50);
-      this.starBrightness = getControlValue("starBrightness", 50);
-      this.curtainHeight = getControlValue("curtainHeight", 65);
-      this.palette = getControlValue("palette", "Aurora");
+      this.speed = getControlValue("speed", 5);
+      this.intensity = getControlValue("intensity", 75);
+      this.ringCount = getControlValue("ringCount", 50);
+      this.decay = getControlValue("decay", 50);
+      this.palette = getControlValue("palette", "SilkCircuit");
     }
     getControlValues() {
       return {
-        speed: normalizeSpeed(getControlValue("speed", 4)),
-        intensity: getControlValue("intensity", 70),
-        warpStrength: getControlValue("warpStrength", 50),
-        starBrightness: getControlValue("starBrightness", 50),
-        curtainHeight: getControlValue("curtainHeight", 65),
-        palette: PALETTES.indexOf(getControlValue("palette", "Aurora"))
+        speed: normalizeSpeed(getControlValue("speed", 5)),
+        intensity: getControlValue("intensity", 75),
+        ringCount: getControlValue("ringCount", 50),
+        decay: getControlValue("decay", 50),
+        palette: PALETTES.indexOf(getControlValue("palette", "SilkCircuit"))
       };
     }
     createUniforms() {
       this.registerUniform("iSpeed", 1);
-      this.registerUniform("iIntensity", 70);
-      this.registerUniform("iWarpStrength", 50);
-      this.registerUniform("iStarBrightness", 50);
-      this.registerUniform("iCurtainHeight", 65);
+      this.registerUniform("iIntensity", 75);
+      this.registerUniform("iRingCount", 50);
+      this.registerUniform("iDecay", 50);
       this.registerUniform("iPalette", 0);
     }
-    updateUniforms(controls) {
-      this.setUniform("iSpeed", controls.speed);
-      this.setUniform("iIntensity", controls.intensity);
-      this.setUniform("iWarpStrength", controls.warpStrength);
-      this.setUniform("iStarBrightness", controls.starBrightness);
-      this.setUniform("iCurtainHeight", controls.curtainHeight);
-      this.setUniform("iPalette", controls.palette);
+    updateUniforms(c) {
+      this.setUniform("iSpeed", c.speed);
+      this.setUniform("iIntensity", c.intensity);
+      this.setUniform("iRingCount", c.ringCount);
+      this.setUniform("iDecay", c.decay);
+      this.setUniform("iPalette", c.palette);
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 4, tooltip: "Animation speed" })
-  ], Borealis.prototype, "speed", 2);
+    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Animation speed" })
+  ], BassShockwave.prototype, "speed", 2);
   __decorateClass([
-    NumberControl({ label: "Intensity", min: 0, max: 100, default: 70, tooltip: "Aurora brightness" })
-  ], Borealis.prototype, "intensity", 2);
+    NumberControl({ label: "Intensity", min: 0, max: 100, default: 75, tooltip: "Brightness" })
+  ], BassShockwave.prototype, "intensity", 2);
   __decorateClass([
-    NumberControl({ label: "Warp", min: 0, max: 100, default: 50, tooltip: "Domain warping strength" })
-  ], Borealis.prototype, "warpStrength", 2);
+    NumberControl({ label: "Rings", min: 0, max: 100, default: 50, tooltip: "Ring count" })
+  ], BassShockwave.prototype, "ringCount", 2);
   __decorateClass([
-    NumberControl({ label: "Stars", min: 0, max: 100, default: 50, tooltip: "Star brightness" })
-  ], Borealis.prototype, "starBrightness", 2);
+    NumberControl({ label: "Decay", min: 0, max: 100, default: 50, tooltip: "Ring fade speed" })
+  ], BassShockwave.prototype, "decay", 2);
   __decorateClass([
-    NumberControl({ label: "Height", min: 20, max: 90, default: 65, tooltip: "Aurora vertical position" })
-  ], Borealis.prototype, "curtainHeight", 2);
-  __decorateClass([
-    ComboboxControl({
-      label: "Palette",
-      values: PALETTES,
-      default: "Aurora",
-      tooltip: "Color palette"
-    })
-  ], Borealis.prototype, "palette", 2);
-  Borealis = __decorateClass([
+    ComboboxControl({ label: "Palette", values: PALETTES, default: "SilkCircuit", tooltip: "Color palette" })
+  ], BassShockwave.prototype, "palette", 2);
+  BassShockwave = __decorateClass([
     Effect({
-      name: "Borealis",
-      description: "Aurora borealis \u2014 layered curtains of light with domain-warped fBm noise",
-      author: "Hypercolor"
+      name: "Bass Shockwave",
+      description: "Radial shockwave rings expanding on beat with particle bursts",
+      author: "Hypercolor",
+      audioReactive: true
     })
-  ], Borealis);
-  var effect = new Borealis();
+  ], BassShockwave);
+  var effect = new BassShockwave();
   initializeEffect(() => effect.initialize(), { instance: effect });
 })();
 /*! Bundled license information:
