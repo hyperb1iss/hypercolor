@@ -11,7 +11,6 @@ use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
 use crate::components::preset_panel::PresetToolbar;
 use crate::icons::*;
-use crate::toasts;
 use hypercolor_types::effect::ControlValue;
 
 /// Category → accent RGB string for inline styles.
@@ -93,14 +92,6 @@ pub fn EffectsPage() -> impl IntoView {
 
     // Apply effect handler — delegates to shared context
     let on_apply = Callback::new(move |id: String| {
-        let effect_name = fx
-            .effects_resource
-            .get()
-            .and_then(|r| r.ok())
-            .and_then(|effects| effects.into_iter().find(|e| e.id == id).map(|e| e.name));
-        if let Some(name) = effect_name {
-            toasts::toast_success(&format!("Applied: {name}"));
-        }
         fx.apply_effect(id);
     });
 
@@ -188,8 +179,8 @@ pub fn EffectsPage() -> impl IntoView {
             // Scrollable content: grid + pinned detail panel
             <div class="flex-1 overflow-y-auto px-6 pb-6">
                 <div class="flex gap-5 items-start">
-                    // Effect grid
-                    <div class="flex-1 min-w-0">
+                    // Effect grid — z-[2] ensures cards stay above the sticky aside for click targeting
+                    <div class="flex-1 min-w-0 relative z-[2]">
                         <Suspense fallback=move || view! { <LoadingSkeleton /> }>
                             {move || {
                                 let effects = filtered_effects.get();
@@ -237,7 +228,7 @@ pub fn EffectsPage() -> impl IntoView {
                             let controls_accent = format!("border-top: 2px solid rgba({}, 0.15)", rgb);
                             view! {
                                 <aside
-                                    class="w-[420px] shrink-0 sticky top-0 self-start space-y-3 animate-slide-in-right scrollbar-none will-change-transform"
+                                    class="w-[420px] shrink-0 sticky top-0 self-start space-y-3 animate-slide-in-right scrollbar-none z-[1]"
                                     style="max-height: calc(100vh - 10rem); overflow-y: auto"
                                 >
                                     // Active effect name with category-colored dot
