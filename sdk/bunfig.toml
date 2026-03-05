@@ -1,3 +1,7 @@
 [install]
 # Use hardlinks for fast installs
 link = "hardlink"
+
+[loader]
+# Import .glsl files as text strings
+".glsl" = "text"

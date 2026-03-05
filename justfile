@@ -143,6 +143,14 @@ sdk-check:
 sdk-lint:
     cd sdk && bun run check
 
+# Build all SDK effects → effects/evolved/*.html
+effects-build:
+    cd sdk && bun run build:effects
+
+# Build a single SDK effect (e.g., just effect-build borealis)
+effect-build name:
+    cd sdk && bun scripts/build-effect.ts src/effects/{{ name }}/main.ts
+
 # ─── Housekeeping ─────────────────────────────────────────
 
 # Clean build artifacts
