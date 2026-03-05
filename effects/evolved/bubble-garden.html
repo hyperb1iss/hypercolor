@@ -3,15 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Borealis</title>
-  <meta description="Aurora borealis — layered curtains of light with domain-warped fBm noise"/>
+  <title>Bubble Garden</title>
+  <meta description="Layered bubble field with depth, refraction tint, and scene-based motion"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Animation speed"/>
-  <meta property="intensity" label="Intensity" type="number" min="0" max="100" default="82" tooltip="Aurora brightness"/>
-  <meta property="warpStrength" label="Warp" type="number" min="0" max="100" default="62" tooltip="Domain warping strength"/>
-  <meta property="starBrightness" label="Stars" type="number" min="0" max="100" default="40" tooltip="Star brightness"/>
-  <meta property="curtainHeight" label="Height" type="number" min="20" max="90" default="55" tooltip="Aurora vertical position"/>
-  <meta property="palette" label="Palette" type="combobox" default="Aurora" values="Aurora,SilkCircuit,Cyberpunk,Sunset,Ice,Fire,Vaporwave,Phosphor" tooltip="Color palette"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" tooltip="Overall motion speed"/>
+  <meta property="density" label="Density" type="number" min="0" max="100" default="58" tooltip="Bubble amount"/>
+  <meta property="size" label="Size" type="number" min="0" max="100" default="48" tooltip="Bubble size range"/>
+  <meta property="drift" label="Drift" type="number" min="0" max="100" default="42" tooltip="Horizontal sway"/>
+  <meta property="refraction" label="Refraction" type="number" min="0" max="100" default="60" tooltip="Inner bubble distortion"/>
+  <meta property="glow" label="Glow" type="number" min="0" max="100" default="52" tooltip="Bloom and highlights"/>
+  <meta property="scene" label="Scene" type="combobox" default="Fizz" values="Calm,Fizz,Storm" tooltip="Motion style"/>
+  <meta property="palette" label="Palette" type="combobox" default="Ocean" values="Ocean,Soda Pop,Neon,Pastel,Twilight" tooltip="Color scene"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1137,7 +1139,7 @@
     }
   });
 
-  // src/effects/borealis/main.ts
+  // src/effects/bubble-garden/main.ts
   var import_reflect_metadata2 = __toESM(require_Reflect());
 
   // packages/core/src/controls/decorators.ts
@@ -1741,88 +1743,100 @@ void main() {
     }, { once: true });
   }
 
-  // src/effects/borealis/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iSpeed;\nuniform float iIntensity;\nuniform float iWarpStrength;\nuniform float iStarBrightness;\nuniform float iCurtainHeight;\nuniform int iPalette;\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat vnoise(vec2 p) {\n    vec2 i = floor(p);\n    vec2 f = fract(p);\n    f = f * f * (3.0 - 2.0 * f);\n\n    float a = hash21(i);\n    float b = hash21(i + vec2(1.0, 0.0));\n    float c = hash21(i + vec2(0.0, 1.0));\n    float d = hash21(i + vec2(1.0, 1.0));\n    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n}\n\nfloat fbm(vec2 p, int octaves) {\n    float sum = 0.0;\n    float amp = 0.5;\n    float freq = 1.0;\n    for (int i = 0; i < 8; i++) {\n        if (i >= octaves) break;\n        sum += amp * vnoise(p * freq);\n        freq *= 2.0;\n        amp *= 0.5;\n    }\n    return sum;\n}\n\nvec2 domainWarp(vec2 p, float strength, float scale) {\n    float nx = fbm(p * scale + vec2(1.7, 9.2), 4);\n    float ny = fbm(p * scale + vec2(8.3, 2.8), 4);\n    return p + vec2(nx - 0.5, ny - 0.5) * strength;\n}\n\nmat2 rot(float a) {\n    float c = cos(a);\n    float s = sin(a);\n    return mat2(c, -s, s, c);\n}\n\nfloat tri(float x) {\n    return clamp(abs(fract(x) - 0.5), 0.01, 0.49);\n}\n\nvec2 tri2(vec2 p) {\n    return vec2(tri(p.x) + tri(p.y), tri(p.y + tri(p.x)));\n}\n\nfloat triNoise2d(vec2 p, float speed, float time) {\n    float z = 1.7;\n    float z2 = 2.5;\n    float rz = 0.0;\n\n    p *= rot(p.x * 0.06);\n    vec2 bp = p;\n    const mat2 m2 = mat2(0.95534, -0.29552, 0.29552, 0.95534);\n\n    for (int i = 0; i < 5; i++) {\n        vec2 dg = tri2(bp * 1.85) * 0.75;\n        dg *= rot(time * speed);\n\n        p -= dg / z2;\n        bp *= 1.3;\n        z2 *= 0.52;\n        z *= 0.47;\n        p *= 1.22;\n        p = m2 * p;\n\n        rz += tri(p.x + tri(p.y)) * z;\n    }\n\n    return clamp(1.0 / pow(rz * 30.0, 1.25), 0.0, 1.0);\n}\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) {\n        // Signature aurora tones: emerald green <-> violet purple.\n        float band = 0.5 + 0.5 * sin(6.28318 * (t * 0.82));\n        float alt = 0.5 + 0.5 * sin(6.28318 * (t * 0.47 + 0.31));\n        vec3 emerald = vec3(0.08, 0.95, 0.46);\n        vec3 violet = vec3(0.64, 0.28, 0.98);\n        vec3 gp = mix(emerald, violet, 0.18 + band * 0.58);\n        return mix(gp, emerald, 0.1 + 0.08 * alt);\n    }\n    if (id == 1) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));\n    if (id == 2) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));\n    if (id == 3) return iqPalette(t, vec3(0.5, 0.5, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.1, 0.2));\n    if (id == 4) return iqPalette(t, vec3(0.5, 0.6, 0.8), vec3(0.2, 0.3, 0.2), vec3(0.6, 0.8, 1.0), vec3(0.0, 0.1, 0.3));\n    if (id == 5) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));\n    if (id == 6) return iqPalette(t, vec3(0.6, 0.4, 0.7), vec3(0.3, 0.3, 0.3), vec3(0.6, 0.8, 1.0), vec3(0.7, 0.3, 0.6));\n    if (id == 7) return iqPalette(t, vec3(0.0, 0.3, 0.0), vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.0, 0.0));\n    return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));\n}\n\nfloat starField(vec2 uv, float time) {\n    vec2 denseUV = uv * vec2(180.0, 130.0);\n    vec2 cell = floor(denseUV);\n    float rng = hash21(cell);\n    if (rng > 0.035) return 0.0;\n\n    vec2 local = fract(denseUV) - 0.5;\n    vec2 jitter = vec2(hash21(cell + 1.3), hash21(cell + 7.9)) - 0.5;\n    float dist = length(local - jitter * 0.45);\n\n    float twinkle = 0.55 + 0.45 * sin(time * (1.2 + rng * 3.5) + rng * 15.0);\n    float size = mix(0.02, 0.045, rng * 18.0);\n    return smoothstep(size, 0.0, dist) * twinkle;\n}\n\nvec3 auroraLayer(vec2 p, float time, float layer, float baseHeight) {\n    float depth = layer / 5.0;\n    float warp = (0.06 + iWarpStrength * 0.0038) * (1.0 + depth * 0.65);\n\n    vec2 q = p;\n    q.x *= 1.2 + depth * 0.6;\n    q.y *= 0.75 + depth * 0.16;\n    q.x += time * (0.05 + depth * 0.05);\n    q = domainWarp(q + vec2(depth * 2.7, 0.0), warp, 1.0 + depth * 0.8);\n\n    float ridgeNoise = fbm(vec2(q.x * 1.35 + depth * 4.1, time * 0.04 + depth * 2.3), 5) - 0.5;\n    float ridge = baseHeight + ridgeNoise * (0.38 - depth * 0.08);\n    float drop = ridge - p.y;\n\n    float curtain = smoothstep(-0.04, 0.14, drop) * smoothstep(0.92, 0.08, drop);\n    float rays = triNoise2d(vec2(q.x * 2.3 + depth * 6.0, p.y * 0.95 - depth * 1.9), 0.08 + depth * 0.04, time);\n    float filament = pow(rays, 1.35);\n    float shimmer = 0.68 + 0.32 * sin(time * 1.3 + q.x * 4.5 + depth * 5.7);\n    float glow = exp(-abs(drop - 0.16) * 7.0);\n\n    float intensity = curtain * filament * shimmer * (1.0 - depth * 0.12);\n    intensity += glow * filament * 0.15;\n\n    float colorT = depth * 0.18 + q.x * 0.08 + filament * 0.14 + time * 0.02;\n    vec3 col = paletteColor(colorT, iPalette);\n    if (iPalette == 0) {\n        // Northern-lights style distribution: green body + purple upper fringe/ribbons.\n        float fringe = smoothstep(0.02, 0.16, drop) * (1.0 - smoothstep(0.16, 0.34, drop));\n        float body = smoothstep(0.12, 0.58, drop) * (1.0 - smoothstep(0.58, 0.92, drop));\n        float sweep = 0.5 + 0.5 * sin(q.x * 5.2 + time * 0.7 + layer * 1.1);\n\n        vec3 greenCore = vec3(0.08, 0.96, 0.45);\n        vec3 purpleTop = vec3(0.66, 0.30, 0.98);\n        vec3 physical = greenCore * (0.55 + 0.45 * body);\n        physical += purpleTop * (0.12 + 0.62 * fringe * sweep);\n\n        col = mix(col, physical, 0.9);\n\n        float striation = smoothstep(0.55, 0.95, 0.5 + 0.5 * sin(q.x * 9.0 + time * 1.1 + layer * 2.3));\n        col = mix(col, purpleTop, 0.18 * striation * fringe);\n    }\n    vec3 highlight = (iPalette == 0) ? vec3(0.74, 1.0, 0.88) : vec3(0.88, 0.98, 0.95);\n    col = mix(col, highlight, pow(filament, 3.0) * 0.22);\n\n    return col * intensity * (0.04 + iIntensity * 0.014);\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    vec2 p = (uv - 0.5) * vec2(iResolution.x / iResolution.y, 1.0);\n    float time = iTime * iSpeed * 0.32;\n\n    vec3 skyZenith = vec3(0.005, 0.012, 0.03);\n    vec3 skyBase = (iPalette == 0) ? vec3(0.02, 0.06, 0.08) : vec3(0.02, 0.05, 0.12);\n    vec3 skyHorizon = mix(skyBase, paletteColor(0.18 + time * 0.02, iPalette) * 0.24, 0.6);\n    float skyMix = smoothstep(-0.45, 0.7, p.y);\n    vec3 col = mix(skyHorizon, skyZenith, skyMix);\n\n    float stars = starField(uv, iTime) * (iStarBrightness * 0.012);\n    col += vec3(0.8, 0.9, 1.0) * stars;\n\n    float baseHeight = mix(-0.08, 0.3, clamp(iCurtainHeight * 0.01, 0.0, 1.0));\n    vec3 aur = vec3(0.0);\n    for (int i = 0; i < 6; i++) {\n        aur += auroraLayer(p, time, float(i), baseHeight);\n    }\n\n    // Horizon haze + volumetric bloom where curtains meet atmosphere.\n    float horizonHaze = exp(-abs(p.y + 0.2) * 8.5);\n    aur += paletteColor(0.52 + time * 0.01, iPalette) * horizonHaze * 0.06 * (iIntensity * 0.008);\n\n    col += aur;\n\n    // Subtle reflection to avoid a dead lower half.\n    vec2 rp = vec2(p.x, -p.y - 0.16);\n    vec3 reflection = vec3(0.0);\n    for (int i = 0; i < 3; i++) {\n        reflection += auroraLayer(rp, time * 0.86, float(i), baseHeight - 0.12);\n    }\n    float waterMask = smoothstep(-0.22, -0.48, p.y);\n    col += reflection * waterMask * 0.42;\n\n    // Filmic tone mapping tuned to preserve colored highlights.\n    col = 1.0 - exp(-col * (1.08 + iIntensity * 0.004));\n    col = pow(clamp(col, 0.0, 1.0), vec3(0.95));\n\n    fragColor = vec4(col, 1.0);\n}\n";
+  // src/effects/bubble-garden/fragment.glsl
+  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iSpeed;\nuniform float iDensity;\nuniform float iSize;\nuniform float iDrift;\nuniform float iRefraction;\nuniform float iGlow;\nuniform int iScene;\nuniform int iPalette;\n\nfloat hash11(float p) {\n    p = fract(p * 0.1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n}\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nfloat noise(vec2 p) {\n    vec2 i = floor(p);\n    vec2 f = fract(p);\n    f = f * f * (3.0 - 2.0 * f);\n    float a = hash21(i);\n    float b = hash21(i + vec2(1.0, 0.0));\n    float c = hash21(i + vec2(0.0, 1.0));\n    float d = hash21(i + vec2(1.0, 1.0));\n    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n}\n\nvoid palette(int id, out vec3 bg0, out vec3 bg1, out vec3 tint, out vec3 rim) {\n    if (id == 0) {\n        bg0 = vec3(0.02, 0.14, 0.22);\n        bg1 = vec3(0.01, 0.03, 0.09);\n        tint = vec3(0.38, 0.82, 1.0);\n        rim = vec3(0.82, 0.96, 1.0);\n        return;\n    }\n    if (id == 1) {\n        bg0 = vec3(0.20, 0.03, 0.11);\n        bg1 = vec3(0.04, 0.01, 0.08);\n        tint = vec3(1.0, 0.35, 0.72);\n        rim = vec3(1.0, 0.88, 0.62);\n        return;\n    }\n    if (id == 2) {\n        bg0 = vec3(0.05, 0.02, 0.16);\n        bg1 = vec3(0.01, 0.0, 0.05);\n        tint = vec3(0.62, 0.34, 1.0);\n        rim = vec3(0.78, 1.0, 0.95);\n        return;\n    }\n    if (id == 3) {\n        bg0 = vec3(0.18, 0.12, 0.22);\n        bg1 = vec3(0.06, 0.04, 0.12);\n        tint = vec3(0.74, 0.76, 1.0);\n        rim = vec3(1.0, 0.92, 0.96);\n        return;\n    }\n    bg0 = vec3(0.05, 0.08, 0.20);\n    bg1 = vec3(0.02, 0.02, 0.10);\n    tint = vec3(0.66, 0.66, 1.0);\n    rim = vec3(0.92, 0.90, 1.0);\n}\n\nvoid sceneParams(int scene, out float riseMul, out float driftMul, out float popMul) {\n    if (scene == 0) {\n        riseMul = 0.65;\n        driftMul = 0.45;\n        popMul = 0.35;\n        return;\n    }\n    if (scene == 2) {\n        riseMul = 1.45;\n        driftMul = 1.25;\n        popMul = 1.25;\n        return;\n    }\n    riseMul = 1.0;\n    driftMul = 0.95;\n    popMul = 0.75;\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    vec2 ap = vec2(iResolution.x / iResolution.y, 1.0);\n    vec2 p = (uv - 0.5) * ap;\n\n    vec3 bg0;\n    vec3 bg1;\n    vec3 tint;\n    vec3 rimCol;\n    palette(iPalette, bg0, bg1, tint, rimCol);\n\n    float riseMul;\n    float driftMul;\n    float popMul;\n    sceneParams(iScene, riseMul, driftMul, popMul);\n\n    float t = iTime * (0.35 + iSpeed * 0.2);\n    vec3 col = mix(bg0, bg1, smoothstep(-0.55, 0.8, p.y));\n\n    // Add soft underwater/soda turbulence in the background.\n    float bgNoise = noise(uv * vec2(5.0, 3.0) + vec2(t * 0.07, -t * 0.05));\n    col += tint * (bgNoise * 0.04);\n\n    int bubbleCount = 8 + int(iDensity * 0.34);\n    float baseSize = mix(0.02, 0.09, iSize * 0.01);\n    float drift = iDrift * 0.01 * driftMul;\n    float refract = iRefraction * 0.01;\n\n    for (int i = 0; i < 48; i++) {\n        if (i >= bubbleCount) break;\n        float fi = float(i);\n\n        float s1 = hash11(fi * 17.7);\n        float s2 = hash11(fi * 31.9 + 2.0);\n        float s3 = hash11(fi * 9.3 + 6.0);\n\n        float depth = mix(0.35, 1.0, s3);\n        float radius = baseSize * mix(0.55, 1.45, s2) * depth;\n\n        float rise = fract(s1 + t * (0.045 + s2 * 0.09) * riseMul);\n        float y = 1.15 - rise * 1.45;\n\n        float xBase = s2 * 1.1 - 0.05;\n        float sway = sin(t * (0.55 + s3) + fi * 3.4) * (0.02 + drift * 0.22);\n        float swirl = sin(t * (0.2 + s1 * 0.5) + y * 14.0) * (0.01 + drift * 0.08);\n        float x = xBase + sway + swirl;\n\n        vec2 center = vec2(x, y);\n        vec2 d = (uv - center) * ap;\n        float dist = length(d);\n\n        float bubble = smoothstep(radius, radius * 0.92, dist);\n        float inner = smoothstep(radius * 0.78, radius * 0.35, dist);\n        float rim = clamp(bubble - inner, 0.0, 1.0);\n\n        // Refraction-like inner variation.\n        vec2 n = d / max(dist, 0.001);\n        float refr = noise((uv + n * refract * 0.03) * vec2(8.0, 6.0) + vec2(t * 0.1, -t * 0.07));\n        float iridescence = 0.4 + 0.6 * sin(fi + refr * 6.28318 + t * 0.4);\n        vec3 bubbleTint = mix(tint * 0.45, tint * (0.75 + iridescence * 0.35), inner * 0.7);\n\n        // Specular highlight near upper-left.\n        vec2 hPos = center + vec2(-radius * 0.25, -radius * 0.28);\n        float spec = smoothstep(radius * 0.26, 0.0, length((uv - hPos) * ap));\n\n        col += bubbleTint * inner * 0.55 * depth;\n        col += rimCol * rim * (0.45 + iGlow * 0.006);\n        col += vec3(1.0) * spec * 0.6 * depth;\n\n        // Tiny pop flashes near top.\n        if (y < 0.02 && hash11(fi + floor(t * 7.0)) > 0.92 - popMul * 0.12) {\n            col += rimCol * (0.08 + iGlow * 0.002);\n        }\n    }\n\n    // Atmosphere bloom.\n    float bloom = smoothstep(0.4, -0.65, p.y) * (0.05 + iGlow * 0.002);\n    col += tint * bloom * 0.4;\n\n    col = 1.0 - exp(-col * 1.22);\n    col = pow(clamp(col, 0.0, 1.0), vec3(0.94));\n\n    fragColor = vec4(col, 1.0);\n}\n";
 
-  // src/effects/borealis/main.ts
-  var PALETTES = ["Aurora", "SilkCircuit", "Cyberpunk", "Sunset", "Ice", "Fire", "Vaporwave", "Phosphor"];
-  var Borealis = class extends WebGLEffect {
+  // src/effects/bubble-garden/main.ts
+  var SCENES = ["Calm", "Fizz", "Storm"];
+  var PALETTES = ["Ocean", "Soda Pop", "Neon", "Pastel", "Twilight"];
+  var BubbleGarden = class extends WebGLEffect {
     speed;
-    intensity;
-    warpStrength;
-    starBrightness;
-    curtainHeight;
+    density;
+    size;
+    drift;
+    refraction;
+    glow;
+    scene;
     palette;
     constructor() {
-      super({ fragmentShader: fragment_default });
+      super({ fragmentShader: fragment_default, audioReactive: false });
     }
     initializeControls() {
       this.speed = getControlValue("speed", 5);
-      this.intensity = getControlValue("intensity", 82);
-      this.warpStrength = getControlValue("warpStrength", 62);
-      this.starBrightness = getControlValue("starBrightness", 40);
-      this.curtainHeight = getControlValue("curtainHeight", 55);
-      this.palette = getControlValue("palette", "Aurora");
+      this.density = getControlValue("density", 58);
+      this.size = getControlValue("size", 48);
+      this.drift = getControlValue("drift", 42);
+      this.refraction = getControlValue("refraction", 60);
+      this.glow = getControlValue("glow", 52);
+      this.scene = getControlValue("scene", "Fizz");
+      this.palette = getControlValue("palette", "Ocean");
     }
     getControlValues() {
       return {
         speed: normalizeSpeed(getControlValue("speed", 5)),
-        intensity: getControlValue("intensity", 82),
-        warpStrength: getControlValue("warpStrength", 62),
-        starBrightness: getControlValue("starBrightness", 40),
-        curtainHeight: getControlValue("curtainHeight", 55),
-        palette: comboboxValueToIndex(getControlValue("palette", "Aurora"), PALETTES, 0)
+        density: getControlValue("density", 58),
+        size: getControlValue("size", 48),
+        drift: getControlValue("drift", 42),
+        refraction: getControlValue("refraction", 60),
+        glow: getControlValue("glow", 52),
+        scene: comboboxValueToIndex(getControlValue("scene", "Fizz"), SCENES, 1),
+        palette: comboboxValueToIndex(getControlValue("palette", "Ocean"), PALETTES, 0)
       };
     }
     createUniforms() {
-      this.registerUniform("iSpeed", 1);
-      this.registerUniform("iIntensity", 82);
-      this.registerUniform("iWarpStrength", 62);
-      this.registerUniform("iStarBrightness", 40);
-      this.registerUniform("iCurtainHeight", 55);
+      this.registerUniform("iSpeed", normalizeSpeed(5));
+      this.registerUniform("iDensity", 58);
+      this.registerUniform("iSize", 48);
+      this.registerUniform("iDrift", 42);
+      this.registerUniform("iRefraction", 60);
+      this.registerUniform("iGlow", 52);
+      this.registerUniform("iScene", 1);
       this.registerUniform("iPalette", 0);
     }
-    updateUniforms(controls) {
-      this.setUniform("iSpeed", controls.speed);
-      this.setUniform("iIntensity", controls.intensity);
-      this.setUniform("iWarpStrength", controls.warpStrength);
-      this.setUniform("iStarBrightness", controls.starBrightness);
-      this.setUniform("iCurtainHeight", controls.curtainHeight);
-      this.setUniform("iPalette", controls.palette);
+    updateUniforms(c) {
+      this.setUniform("iSpeed", c.speed);
+      this.setUniform("iDensity", c.density);
+      this.setUniform("iSize", c.size);
+      this.setUniform("iDrift", c.drift);
+      this.setUniform("iRefraction", c.refraction);
+      this.setUniform("iGlow", c.glow);
+      this.setUniform("iScene", c.scene);
+      this.setUniform("iPalette", c.palette);
     }
   };
   __decorateClass([
-    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Animation speed" })
-  ], Borealis.prototype, "speed", 2);
+    NumberControl({ label: "Speed", min: 1, max: 10, default: 5, tooltip: "Overall motion speed" })
+  ], BubbleGarden.prototype, "speed", 2);
   __decorateClass([
-    NumberControl({ label: "Intensity", min: 0, max: 100, default: 82, tooltip: "Aurora brightness" })
-  ], Borealis.prototype, "intensity", 2);
+    NumberControl({ label: "Density", min: 0, max: 100, default: 58, tooltip: "Bubble amount" })
+  ], BubbleGarden.prototype, "density", 2);
   __decorateClass([
-    NumberControl({ label: "Warp", min: 0, max: 100, default: 62, tooltip: "Domain warping strength" })
-  ], Borealis.prototype, "warpStrength", 2);
+    NumberControl({ label: "Size", min: 0, max: 100, default: 48, tooltip: "Bubble size range" })
+  ], BubbleGarden.prototype, "size", 2);
   __decorateClass([
-    NumberControl({ label: "Stars", min: 0, max: 100, default: 40, tooltip: "Star brightness" })
-  ], Borealis.prototype, "starBrightness", 2);
+    NumberControl({ label: "Drift", min: 0, max: 100, default: 42, tooltip: "Horizontal sway" })
+  ], BubbleGarden.prototype, "drift", 2);
   __decorateClass([
-    NumberControl({ label: "Height", min: 20, max: 90, default: 55, tooltip: "Aurora vertical position" })
-  ], Borealis.prototype, "curtainHeight", 2);
+    NumberControl({ label: "Refraction", min: 0, max: 100, default: 60, tooltip: "Inner bubble distortion" })
+  ], BubbleGarden.prototype, "refraction", 2);
   __decorateClass([
-    ComboboxControl({
-      label: "Palette",
-      values: PALETTES,
-      default: "Aurora",
-      tooltip: "Color palette"
-    })
-  ], Borealis.prototype, "palette", 2);
-  Borealis = __decorateClass([
+    NumberControl({ label: "Glow", min: 0, max: 100, default: 52, tooltip: "Bloom and highlights" })
+  ], BubbleGarden.prototype, "glow", 2);
+  __decorateClass([
+    ComboboxControl({ label: "Scene", values: SCENES, default: "Fizz", tooltip: "Motion style" })
+  ], BubbleGarden.prototype, "scene", 2);
+  __decorateClass([
+    ComboboxControl({ label: "Palette", values: PALETTES, default: "Ocean", tooltip: "Color scene" })
+  ], BubbleGarden.prototype, "palette", 2);
+  BubbleGarden = __decorateClass([
     Effect({
-      name: "Borealis",
-      description: "Aurora borealis \u2014 layered curtains of light with domain-warped fBm noise",
+      name: "Bubble Garden",
+      description: "Layered bubble field with depth, refraction tint, and scene-based motion",
       author: "Hypercolor",
       audioReactive: false
     })
-  ], Borealis);
-  var effect = new Borealis();
+  ], BubbleGarden);
+  var effect = new BubbleGarden();
   initializeEffect(() => effect.initialize(), { instance: effect });
 })();
 /*! Bundled license information:

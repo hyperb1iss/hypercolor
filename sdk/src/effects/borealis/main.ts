@@ -4,6 +4,7 @@ import {
     Effect,
     NumberControl,
     WebGLEffect,
+    comboboxValueToIndex,
     getControlValue,
     initializeEffect,
     normalizeSpeed,
@@ -26,21 +27,22 @@ const PALETTES = ['Aurora', 'SilkCircuit', 'Cyberpunk', 'Sunset', 'Ice', 'Fire',
     name: 'Borealis',
     description: 'Aurora borealis — layered curtains of light with domain-warped fBm noise',
     author: 'Hypercolor',
+    audioReactive: false,
 })
 class Borealis extends WebGLEffect<BorealisControls> {
-    @NumberControl({ label: 'Speed', min: 1, max: 10, default: 4, tooltip: 'Animation speed' })
+    @NumberControl({ label: 'Speed', min: 1, max: 10, default: 5, tooltip: 'Animation speed' })
     speed!: number
 
-    @NumberControl({ label: 'Intensity', min: 0, max: 100, default: 70, tooltip: 'Aurora brightness' })
+    @NumberControl({ label: 'Intensity', min: 0, max: 100, default: 82, tooltip: 'Aurora brightness' })
     intensity!: number
 
-    @NumberControl({ label: 'Warp', min: 0, max: 100, default: 50, tooltip: 'Domain warping strength' })
+    @NumberControl({ label: 'Warp', min: 0, max: 100, default: 62, tooltip: 'Domain warping strength' })
     warpStrength!: number
 
-    @NumberControl({ label: 'Stars', min: 0, max: 100, default: 50, tooltip: 'Star brightness' })
+    @NumberControl({ label: 'Stars', min: 0, max: 100, default: 40, tooltip: 'Star brightness' })
     starBrightness!: number
 
-    @NumberControl({ label: 'Height', min: 20, max: 90, default: 65, tooltip: 'Aurora vertical position' })
+    @NumberControl({ label: 'Height', min: 20, max: 90, default: 55, tooltip: 'Aurora vertical position' })
     curtainHeight!: number
 
     @ComboboxControl({
@@ -56,31 +58,31 @@ class Borealis extends WebGLEffect<BorealisControls> {
     }
 
     protected initializeControls(): void {
-        this.speed = getControlValue('speed', 4)
-        this.intensity = getControlValue('intensity', 70)
-        this.warpStrength = getControlValue('warpStrength', 50)
-        this.starBrightness = getControlValue('starBrightness', 50)
-        this.curtainHeight = getControlValue('curtainHeight', 65)
+        this.speed = getControlValue('speed', 5)
+        this.intensity = getControlValue('intensity', 82)
+        this.warpStrength = getControlValue('warpStrength', 62)
+        this.starBrightness = getControlValue('starBrightness', 40)
+        this.curtainHeight = getControlValue('curtainHeight', 55)
         this.palette = getControlValue('palette', 'Aurora')
     }
 
     protected getControlValues(): BorealisControls {
         return {
-            speed: normalizeSpeed(getControlValue('speed', 4)),
-            intensity: getControlValue('intensity', 70),
-            warpStrength: getControlValue('warpStrength', 50),
-            starBrightness: getControlValue('starBrightness', 50),
-            curtainHeight: getControlValue('curtainHeight', 65),
-            palette: PALETTES.indexOf(getControlValue('palette', 'Aurora')),
+            speed: normalizeSpeed(getControlValue('speed', 5)),
+            intensity: getControlValue('intensity', 82),
+            warpStrength: getControlValue('warpStrength', 62),
+            starBrightness: getControlValue('starBrightness', 40),
+            curtainHeight: getControlValue('curtainHeight', 55),
+            palette: comboboxValueToIndex(getControlValue('palette', 'Aurora'), PALETTES, 0),
         }
     }
 
     protected createUniforms(): void {
         this.registerUniform('iSpeed', 1.0)
-        this.registerUniform('iIntensity', 70)
-        this.registerUniform('iWarpStrength', 50)
-        this.registerUniform('iStarBrightness', 50)
-        this.registerUniform('iCurtainHeight', 65)
+        this.registerUniform('iIntensity', 82)
+        this.registerUniform('iWarpStrength', 62)
+        this.registerUniform('iStarBrightness', 40)
+        this.registerUniform('iCurtainHeight', 55)
         this.registerUniform('iPalette', 0)
     }
 
