@@ -1,0 +1,254 @@
+[
+  {
+    "id": "silkcircuit",
+    "name": "SilkCircuit",
+    "mood": ["electric", "dark", "vibrant"],
+    "stops": ["#e135ff", "#80ffea", "#ff6ac1", "#f1fa8c", "#50fa7b"],
+    "iq": { "a": [0.5, 0.3, 0.5], "b": [0.5, 0.5, 0.5], "c": [1.0, 0.8, 0.6], "d": [0.85, 0.2, 0.5] },
+    "accent": "#e135ff",
+    "background": "#0d0221"
+  },
+  {
+    "id": "cyberpunk",
+    "name": "Cyberpunk",
+    "mood": ["dark", "neon", "futuristic"],
+    "stops": ["#ff00ff", "#00ffff", "#ff0066", "#6600ff"],
+    "iq": { "a": [0.5, 0.2, 0.5], "b": [0.5, 0.5, 0.5], "c": [1.0, 1.0, 1.0], "d": [0.8, 0.1, 0.6] },
+    "accent": "#ff00ff",
+    "background": "#0a0014"
+  },
+  {
+    "id": "vaporwave",
+    "name": "Vaporwave",
+    "mood": ["retro", "dreamy", "pastel-neon"],
+    "stops": ["#c4b5fd", "#f472b6", "#67e8f9", "#fda4af"],
+    "iq": { "a": [0.6, 0.4, 0.7], "b": [0.3, 0.3, 0.3], "c": [0.6, 0.8, 1.0], "d": [0.7, 0.3, 0.6] },
+    "accent": "#c4b5fd",
+    "background": "#1a0030"
+  },
+  {
+    "id": "synthwave",
+    "name": "Synthwave",
+    "mood": ["retro", "warm", "80s"],
+    "stops": ["#4a0080", "#ff006a", "#ff6600", "#ffcc00"],
+    "iq": { "a": [0.5, 0.2, 0.3], "b": [0.5, 0.5, 0.5], "c": [1.0, 0.7, 0.4], "d": [0.0, 0.15, 0.2] },
+    "accent": "#ff006a",
+    "background": "#0f0020"
+  },
+  {
+    "id": "neon-flux",
+    "name": "Neon Flux",
+    "mood": ["energetic", "vibrant"],
+    "stops": ["#ff00aa", "#00ffcc", "#ffaa00", "#aa00ff"],
+    "iq": { "a": [0.5, 0.5, 0.5], "b": [0.5, 0.5, 0.5], "c": [1.0, 1.0, 0.5], "d": [0.8, 0.9, 0.3] },
+    "accent": "#ff00aa",
+    "background": "#050510"
+  },
+  {
+    "id": "matrix",
+    "name": "Matrix",
+    "mood": ["dark", "digital", "monochrome"],
+    "stops": ["#001100", "#003300", "#00ff00", "#66ff66"],
+    "iq": { "a": [0.0, 0.3, 0.0], "b": [0.0, 0.5, 0.0], "c": [0.0, 1.0, 0.0], "d": [0.0, 0.3, 0.0] },
+    "accent": "#00ff00",
+    "background": "#000800"
+  },
+  {
+    "id": "aurora",
+    "name": "Aurora",
+    "mood": ["cool", "ethereal", "northern"],
+    "stops": ["#00bcd4", "#4caf50", "#7c4dff", "#00e5ff"],
+    "iq": { "a": [0.2, 0.5, 0.4], "b": [0.3, 0.4, 0.4], "c": [0.8, 0.7, 0.9], "d": [0.6, 0.3, 0.7] },
+    "accent": "#00e5ff",
+    "background": "#020810"
+  },
+  {
+    "id": "ocean",
+    "name": "Ocean",
+    "mood": ["calm", "deep", "aquatic"],
+    "stops": ["#001f3f", "#0074d9", "#39cccc", "#7fdbff"],
+    "iq": { "a": [0.1, 0.3, 0.5], "b": [0.2, 0.3, 0.4], "c": [0.5, 0.7, 1.0], "d": [0.4, 0.5, 0.6] },
+    "accent": "#0074d9",
+    "background": "#000a1a"
+  },
+  {
+    "id": "forest",
+    "name": "Forest",
+    "mood": ["earthy", "organic", "lush"],
+    "stops": ["#1b3a1a", "#2e7d32", "#4caf50", "#81c784", "#c6ff00"],
+    "iq": { "a": [0.1, 0.3, 0.1], "b": [0.2, 0.4, 0.2], "c": [0.5, 0.8, 0.4], "d": [0.3, 0.4, 0.2] },
+    "accent": "#4caf50",
+    "background": "#0a1a0a"
+  },
+  {
+    "id": "sunset",
+    "name": "Sunset",
+    "mood": ["warm", "romantic", "dusk"],
+    "stops": ["#ff6f00", "#ff8a65", "#ff5252", "#ffd740"],
+    "iq": { "a": [0.5, 0.3, 0.2], "b": [0.5, 0.4, 0.3], "c": [1.0, 0.6, 0.4], "d": [0.0, 0.1, 0.2] },
+    "accent": "#ff6f00",
+    "background": "#1a0800"
+  },
+  {
+    "id": "cherry-blossom",
+    "name": "Cherry Blossom",
+    "mood": ["gentle", "spring", "delicate"],
+    "stops": ["#ffffff", "#ffc0cb", "#ff69b4", "#db7093"],
+    "iq": { "a": [0.8, 0.6, 0.7], "b": [0.2, 0.2, 0.2], "c": [0.5, 0.3, 0.4], "d": [0.0, 0.3, 0.4] },
+    "accent": "#ff69b4",
+    "background": "#1a0810"
+  },
+  {
+    "id": "fire",
+    "name": "Fire",
+    "mood": ["hot", "intense", "primal"],
+    "stops": ["#000000", "#8b0000", "#ff4500", "#ffa500", "#ffff00"],
+    "iq": { "a": [0.5, 0.2, 0.0], "b": [0.5, 0.3, 0.1], "c": [1.0, 0.7, 0.4], "d": [0.0, 0.05, 0.1] },
+    "accent": "#ff4500",
+    "background": "#0a0000"
+  },
+  {
+    "id": "lava",
+    "name": "Lava",
+    "mood": ["volcanic", "extreme"],
+    "stops": ["#000000", "#8b0000", "#ff2200", "#ff6600", "#ffffff"],
+    "iq": { "a": [0.4, 0.1, 0.0], "b": [0.5, 0.3, 0.2], "c": [1.0, 0.5, 0.3], "d": [0.0, 0.0, 0.1] },
+    "accent": "#ff2200",
+    "background": "#0a0000"
+  },
+  {
+    "id": "ember",
+    "name": "Ember",
+    "mood": ["warm", "cozy", "glowing"],
+    "stops": ["#3e2723", "#bf360c", "#ff9800", "#ffc107"],
+    "iq": { "a": [0.4, 0.2, 0.1], "b": [0.3, 0.2, 0.1], "c": [0.8, 0.6, 0.3], "d": [0.1, 0.1, 0.05] },
+    "accent": "#ff9800",
+    "background": "#1a0a00"
+  },
+  {
+    "id": "solar",
+    "name": "Solar",
+    "mood": ["bright", "radiant", "powerful"],
+    "stops": ["#b8860b", "#ffd700", "#ffffff", "#fff59d"],
+    "iq": { "a": [0.6, 0.5, 0.2], "b": [0.4, 0.4, 0.3], "c": [0.8, 0.7, 0.5], "d": [0.0, 0.1, 0.2] },
+    "accent": "#ffd700",
+    "background": "#1a1000"
+  },
+  {
+    "id": "ice",
+    "name": "Ice",
+    "mood": ["cold", "crisp", "frozen"],
+    "stops": ["#0d47a1", "#e1f5fe", "#00e5ff", "#b3e5fc"],
+    "iq": { "a": [0.3, 0.5, 0.7], "b": [0.3, 0.4, 0.3], "c": [0.6, 0.7, 0.8], "d": [0.5, 0.6, 0.7] },
+    "accent": "#00e5ff",
+    "background": "#000a1a"
+  },
+  {
+    "id": "deep-sea",
+    "name": "Deep Sea",
+    "mood": ["dark", "mysterious", "abyssal"],
+    "stops": ["#020024", "#1a237e", "#00695c", "#00bfa5"],
+    "iq": { "a": [0.1, 0.1, 0.3], "b": [0.2, 0.2, 0.3], "c": [0.3, 0.5, 0.7], "d": [0.6, 0.5, 0.6] },
+    "accent": "#00bfa5",
+    "background": "#000510"
+  },
+  {
+    "id": "midnight",
+    "name": "Midnight",
+    "mood": ["dark", "contemplative", "elegant"],
+    "stops": ["#0d0033", "#1a0066", "#4a148c", "#7b1fa2"],
+    "iq": { "a": [0.2, 0.1, 0.3], "b": [0.2, 0.1, 0.3], "c": [0.5, 0.3, 0.7], "d": [0.7, 0.5, 0.7] },
+    "accent": "#7b1fa2",
+    "background": "#050010"
+  },
+  {
+    "id": "frost",
+    "name": "Frost",
+    "mood": ["light", "winter", "clean"],
+    "stops": ["#b3e5fc", "#e1f5fe", "#f5f5f5", "#cfd8dc"],
+    "iq": { "a": [0.7, 0.8, 0.9], "b": [0.2, 0.2, 0.1], "c": [0.3, 0.3, 0.3], "d": [0.5, 0.6, 0.7] },
+    "accent": "#b3e5fc",
+    "background": "#0a1520"
+  },
+  {
+    "id": "viridis",
+    "name": "Viridis",
+    "mood": ["perceptually-uniform", "data"],
+    "stops": ["#440154", "#31688e", "#35b779", "#fde725"],
+    "iq": { "a": [0.3, 0.3, 0.3], "b": [0.3, 0.3, 0.3], "c": [0.8, 0.8, 0.5], "d": [0.7, 0.1, 0.2] },
+    "accent": "#35b779",
+    "background": "#0a0020"
+  },
+  {
+    "id": "inferno",
+    "name": "Inferno",
+    "mood": ["perceptually-uniform", "heat"],
+    "stops": ["#000004", "#420a68", "#dd513a", "#fcffa4"],
+    "iq": { "a": [0.3, 0.15, 0.2], "b": [0.4, 0.3, 0.3], "c": [0.8, 0.5, 0.4], "d": [0.0, 0.1, 0.2] },
+    "accent": "#dd513a",
+    "background": "#000004"
+  },
+  {
+    "id": "plasma",
+    "name": "Plasma",
+    "mood": ["perceptually-uniform", "vivid"],
+    "stops": ["#0d0887", "#7e03a8", "#cc4778", "#f89540", "#f0f921"],
+    "iq": { "a": [0.3, 0.2, 0.4], "b": [0.4, 0.3, 0.4], "c": [0.8, 0.6, 0.6], "d": [0.6, 0.2, 0.4] },
+    "accent": "#cc4778",
+    "background": "#050020"
+  },
+  {
+    "id": "magma",
+    "name": "Magma",
+    "mood": ["perceptually-uniform", "warm"],
+    "stops": ["#000004", "#3b0f70", "#b63679", "#fb8861", "#fcfdbf"],
+    "iq": { "a": [0.3, 0.15, 0.25], "b": [0.4, 0.3, 0.35], "c": [0.7, 0.5, 0.5], "d": [0.1, 0.15, 0.2] },
+    "accent": "#fb8861",
+    "background": "#000004"
+  },
+  {
+    "id": "candy",
+    "name": "Candy",
+    "mood": ["sweet", "playful", "soft"],
+    "stops": ["#f48fb1", "#ce93d8", "#80cbc4", "#ffcc80"],
+    "iq": { "a": [0.7, 0.6, 0.7], "b": [0.3, 0.3, 0.3], "c": [0.5, 0.5, 0.5], "d": [0.8, 0.3, 0.5] },
+    "accent": "#f48fb1",
+    "background": "#1a0810"
+  },
+  {
+    "id": "pastel",
+    "name": "Pastel",
+    "mood": ["gentle", "calm", "muted"],
+    "stops": ["#c5cae9", "#b2dfdb", "#f8bbd0", "#fff9c4"],
+    "iq": { "a": [0.7, 0.7, 0.8], "b": [0.2, 0.2, 0.2], "c": [0.3, 0.4, 0.3], "d": [0.5, 0.3, 0.5] },
+    "accent": "#c5cae9",
+    "background": "#101015"
+  },
+  {
+    "id": "cotton-candy",
+    "name": "Cotton Candy",
+    "mood": ["whimsical", "light"],
+    "stops": ["#ffb6c1", "#b0e0e6", "#ffc0cb", "#add8e6"],
+    "iq": { "a": [0.8, 0.7, 0.8], "b": [0.2, 0.2, 0.2], "c": [0.3, 0.3, 0.3], "d": [0.0, 0.5, 0.7] },
+    "accent": "#ffb6c1",
+    "background": "#100810"
+  },
+  {
+    "id": "mono",
+    "name": "Mono",
+    "mood": ["neutral", "classic"],
+    "stops": ["#000000", "#555555", "#aaaaaa", "#ffffff"],
+    "iq": { "a": [0.5, 0.5, 0.5], "b": [0.5, 0.5, 0.5], "c": [0.0, 0.0, 0.0], "d": [0.0, 0.0, 0.0] },
+    "accent": "#ffffff",
+    "background": "#000000"
+  },
+  {
+    "id": "phosphor",
+    "name": "Phosphor",
+    "mood": ["retro", "terminal", "hacker"],
+    "stops": ["#001100", "#003300", "#00aa00", "#00ff00"],
+    "iq": { "a": [0.0, 0.25, 0.0], "b": [0.0, 0.25, 0.0], "c": [0.0, 1.0, 0.0], "d": [0.0, 0.5, 0.0] },
+    "accent": "#00ff00",
+    "background": "#000800"
+  }
+]

@@ -395,7 +395,7 @@ fn detect_canvas2d(lower: &str) -> bool {
 
 fn infer_category(
     lower: &str,
-    controls: &[HtmlControlMetadata],
+    _controls: &[HtmlControlMetadata],
     audio_reactive: bool,
 ) -> EffectCategory {
     if audio_reactive {
@@ -409,25 +409,50 @@ fn infer_category(
         return EffectCategory::Interactive;
     }
 
-    if contains_any(lower, &["game", "gaming", "tetris", "mario", "cyberpunk"]) {
-        return EffectCategory::Gaming;
+    if contains_any(
+        lower,
+        &[
+            "firework",
+            "meteor",
+            "bubble",
+            "fire",
+            "ember",
+            "particle",
+            "spark",
+            "trail",
+            "confetti",
+            "explosion",
+        ],
+    ) {
+        return EffectCategory::Particle;
+    }
+
+    if contains_any(lower, &["city", "landscape", "underwater", "scenic", "sky"]) {
+        return EffectCategory::Scenic;
+    }
+
+    if contains_any(
+        lower,
+        &["game", "gaming", "fun", "holiday", "snow", "tetris"],
+    ) {
+        return EffectCategory::Fun;
     }
 
     if contains_any(
         lower,
         &[
-            "fractal", "voronoi", "plasma", "particle", "noise", "kaleido", "quantum", "neural",
+            "fractal",
+            "voronoi",
+            "plasma",
+            "noise",
+            "kaleido",
+            "quantum",
+            "neural",
             "cellular",
+            "automaton",
         ],
     ) {
         return EffectCategory::Generative;
-    }
-
-    if controls
-        .iter()
-        .any(|control| matches!(control.kind, HtmlControlKind::Sensor))
-    {
-        return EffectCategory::Reactive;
     }
 
     if contains_any(

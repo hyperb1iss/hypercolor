@@ -73,20 +73,20 @@ fn effect_category_default_is_ambient() {
 fn effect_category_all_variants_exist() {
     let categories = [
         EffectCategory::Ambient,
-        EffectCategory::Reactive,
         EffectCategory::Audio,
-        EffectCategory::Gaming,
-        EffectCategory::Productivity,
-        EffectCategory::Utility,
-        EffectCategory::Interactive,
         EffectCategory::Generative,
+        EffectCategory::Particle,
+        EffectCategory::Scenic,
+        EffectCategory::Interactive,
+        EffectCategory::Fun,
+        EffectCategory::Utility,
     ];
     assert_eq!(categories.len(), 8);
 }
 
 #[test]
 fn effect_category_is_copy() {
-    let cat = EffectCategory::Gaming;
+    let cat = EffectCategory::Particle;
     let cat2 = cat; // Copy
     assert_eq!(cat, cat2);
 }
@@ -94,13 +94,13 @@ fn effect_category_is_copy() {
 #[test]
 fn effect_category_display_via_strum() {
     assert_eq!(EffectCategory::Ambient.to_string(), "ambient");
-    assert_eq!(EffectCategory::Reactive.to_string(), "reactive");
     assert_eq!(EffectCategory::Audio.to_string(), "audio");
-    assert_eq!(EffectCategory::Gaming.to_string(), "gaming");
-    assert_eq!(EffectCategory::Productivity.to_string(), "productivity");
-    assert_eq!(EffectCategory::Utility.to_string(), "utility");
-    assert_eq!(EffectCategory::Interactive.to_string(), "interactive");
     assert_eq!(EffectCategory::Generative.to_string(), "generative");
+    assert_eq!(EffectCategory::Particle.to_string(), "particle");
+    assert_eq!(EffectCategory::Scenic.to_string(), "scenic");
+    assert_eq!(EffectCategory::Interactive.to_string(), "interactive");
+    assert_eq!(EffectCategory::Fun.to_string(), "fun");
+    assert_eq!(EffectCategory::Utility.to_string(), "utility");
 }
 
 #[test]
@@ -110,8 +110,16 @@ fn effect_category_from_str_via_strum() {
         EffectCategory::Ambient
     );
     assert_eq!(
-        EffectCategory::from_str("reactive").expect("parse"),
-        EffectCategory::Reactive
+        EffectCategory::from_str("particle").expect("parse"),
+        EffectCategory::Particle
+    );
+    assert_eq!(
+        EffectCategory::from_str("scenic").expect("parse"),
+        EffectCategory::Scenic
+    );
+    assert_eq!(
+        EffectCategory::from_str("fun").expect("parse"),
+        EffectCategory::Fun
     );
     assert_eq!(
         EffectCategory::from_str("generative").expect("parse"),
@@ -128,13 +136,13 @@ fn effect_category_from_str_invalid() {
 fn effect_category_serde_round_trip() {
     for cat in [
         EffectCategory::Ambient,
-        EffectCategory::Reactive,
         EffectCategory::Audio,
-        EffectCategory::Gaming,
-        EffectCategory::Productivity,
-        EffectCategory::Utility,
-        EffectCategory::Interactive,
         EffectCategory::Generative,
+        EffectCategory::Particle,
+        EffectCategory::Scenic,
+        EffectCategory::Interactive,
+        EffectCategory::Fun,
+        EffectCategory::Utility,
     ] {
         let json = serde_json::to_string(&cat).expect("serialize");
         let back: EffectCategory = serde_json::from_str(&json).expect("deserialize");

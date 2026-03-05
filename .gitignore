@@ -23,5 +23,8 @@ web/.svelte-kit/
 .env
 .env.local
 
+# Effects — community imports are reference-only, not shipped
+effects/community/
+
 # Debug
 *.pdb

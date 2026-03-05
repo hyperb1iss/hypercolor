@@ -121,6 +121,20 @@ ui-build:
 ui-dist: ui-build
     @echo '✅ UI built at crates/hypercolor-ui/dist/'
 
+# ─── SDK ─────────────────────────────────────────────────
+
+# Install SDK dependencies
+sdk-install:
+    cd sdk && npm install
+
+# Build SDK packages
+sdk-build:
+    cd sdk && npm run build
+
+# Start SDK dev server with HMR
+sdk-dev:
+    cd sdk && npm run dev
+
 # ─── Housekeeping ─────────────────────────────────────────
 
 # Clean build artifacts

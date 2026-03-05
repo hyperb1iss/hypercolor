@@ -9,5 +9,6 @@ pub mod device;
 pub mod effect;
 pub mod event;
 pub mod library;
+pub mod palette;
 pub mod scene;
 pub mod spatial;

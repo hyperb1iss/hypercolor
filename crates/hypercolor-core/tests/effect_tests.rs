@@ -634,8 +634,8 @@ fn registry_by_category() {
     let utility = registry.by_category(EffectCategory::Utility);
     assert_eq!(utility.len(), 1);
 
-    let gaming = registry.by_category(EffectCategory::Gaming);
-    assert!(gaming.is_empty());
+    let particle = registry.by_category(EffectCategory::Particle);
+    assert!(particle.is_empty());
 }
 
 #[test]

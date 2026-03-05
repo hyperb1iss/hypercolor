@@ -54,23 +54,23 @@ impl From<Uuid> for EffectId {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum EffectCategory {
-    /// Ambient lighting: calm, atmospheric visuals.
+    /// Slow, set-and-forget (aurora, breathing, gradient).
     #[default]
     Ambient,
-    /// Reactive effects that respond to system or device events.
-    Reactive,
-    /// Audio-reactive effects driven by music or microphone input.
+    /// Music-reactive (spectrum, beat pulse, waveform).
     Audio,
-    /// Gaming-oriented effects (flash, health bars, cooldown indicators).
-    Gaming,
-    /// Productivity effects (notification pulses, focus timers, pomodoro).
-    Productivity,
-    /// Utility effects (solid color, temperature display, battery level).
-    Utility,
-    /// Interactive effects that respond to user input (mouse, keyboard).
-    Interactive,
-    /// Generative art: procedural patterns, fractals, noise fields.
+    /// Algorithmic/mathematical (voronoi, fractals, CA).
     Generative,
+    /// Physics simulations (fire, meteors, bubbles).
+    Particle,
+    /// Environmental compositions (cyberpunk city, underwater).
+    Scenic,
+    /// Input-responsive (keystroke ripple, heatmap).
+    Interactive,
+    /// Playful/seasonal (corner hunt, snowfall, dragonfire).
+    Fun,
+    /// Functional (solid color, off, system monitor).
+    Utility,
 }
 
 // ── EffectSource ──────────────────────────────────────────────────────────────
