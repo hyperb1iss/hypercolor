@@ -2,26 +2,21 @@
  * @hypercolor/sdk
  *
  * TypeScript SDK for creating Hypercolor RGB lighting effects.
- * Provides decorators for control definitions, base effect classes,
- * and audio-reactive utilities.
  *
- * @example
+ * Two APIs:
+ *
+ * **New (recommended):** `effect()` and `canvas()` — declarative, zero boilerplate.
  * ```typescript
- * import {
- *   CanvasEffect,
- *   NumberControl,
- *   Effect,
- *   initializeEffect
- * } from '@hypercolor/sdk'
+ * import { effect } from '@hypercolor/sdk'
+ * import shader from './fragment.glsl'
  *
- * @Effect({ name: 'My Effect', description: 'A demo', author: 'me' })
- * class MyEffect extends CanvasEffect<MyControls> {
- *   @NumberControl({ label: 'Speed', min: 0, max: 10, default: 1 })
- *   speed!: number
- * }
- *
- * initializeEffect(() => new MyEffect({ id: 'demo', name: 'Demo' }).initialize())
+ * export default effect('Meteor Storm', shader, {
+ *     speed:       [1, 10, 5],
+ *     palette:     ['SilkCircuit', 'Fire', 'Ice'],
+ * })
  * ```
+ *
+ * **Legacy:** Decorators + class inheritance (still supported, not recommended for new effects).
  *
  * @packageDocumentation
  */
@@ -29,7 +24,26 @@
 // Runtime type declarations (side-effect import)
 import './runtime'
 
-// ── Controls ────────────────────────────────────────────────────────────
+// ── New Declarative API ──────────────────────────────────────────────────
+
+// Effect functions
+export { effect } from './effects'
+export type { EffectFnOptions, ShaderContext } from './effects'
+export { canvas } from './effects'
+export type { CanvasFnOptions, DrawFn, FactoryFn } from './effects'
+
+// Control factories
+export { num, combo, toggle, color, hue, text } from './controls'
+export type { ControlSpec, ControlMap, ControlShorthand } from './controls'
+
+// Palette runtime
+export { createPaletteFn, getPalette, paletteNames, samplePalette, samplePaletteCSS } from './palette'
+export type { PaletteEntry, PaletteFn } from './palette'
+
+// Audio (pull model for canvas effects)
+export { getAudioData as audio } from './audio'
+
+// ── Legacy API (decorator-based) ────────────────────────────────────────
 
 export type {
     BaseControls,
@@ -72,7 +86,7 @@ export {
     TextFieldControl,
 } from './controls'
 
-// ── Effects ─────────────────────────────────────────────────────────────
+// ── Base Classes ─────────────────────────────────────────────────────────
 
 export type { EffectConfig } from './effects'
 export { BaseEffect } from './effects'
@@ -116,45 +130,5 @@ export type { HSLColor, RGBColor, UpdateFunction } from './utils'
 
 // ── Initialization ──────────────────────────────────────────────────────
 
-export type InitializationMode = 'immediate' | 'deferred' | 'metadata-only'
-
-export interface InitOptions {
-    mode?: InitializationMode
-    onReady?: () => void
-}
-
-function detectInitMode(): InitializationMode {
-    if (typeof window === 'undefined') return 'metadata-only'
-    if ((window as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__) return 'metadata-only'
-    return 'immediate'
-}
-
-/**
- * Initialize a Hypercolor effect with proper lifecycle handling.
- * In metadata-only mode, stores the effect instance for build-time extraction.
- */
-export function initializeEffect(
-    initFunction: () => void,
-    options: InitOptions & { instance?: object } = {},
-): void {
-    const mode = options.mode ?? detectInitMode()
-    if (mode === 'metadata-only') {
-        // Store instance for metadata extraction by build tools
-        if (options.instance) {
-            ;(globalThis as any).__hypercolorEffectInstance__ = options.instance
-        }
-        return
-    }
-
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        initFunction()
-        options.onReady?.()
-        return
-    }
-
-    window.addEventListener('DOMContentLoaded', () => {
-        if ((window as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__) return
-        initFunction()
-        options.onReady?.()
-    }, { once: true })
-}
+export { initializeEffect } from './init'
+export type { InitializationMode, InitOptions } from './init'

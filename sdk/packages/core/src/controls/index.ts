@@ -44,3 +44,10 @@ export {
     normalizePercentage,
     normalizeSpeed,
 } from './helpers'
+
+// ── New declarative control API ──────────────────────────────────────────
+export { num, combo, toggle, color, hue, text, isControlSpec } from './specs'
+export type { ControlSpec, ControlTypeName, NormalizeHint } from './specs'
+export { inferControl } from './infer'
+export type { ControlMap, ControlMapValue, ControlShorthand } from './infer'
+export { deriveLabel, deriveUniformName } from './names'
