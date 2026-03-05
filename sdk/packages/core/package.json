@@ -10,16 +10,10 @@
         ".": {
             "types": "./dist/index.d.ts",
             "import": "./dist/index.js"
-        },
-        "./shaders": {
-            "types": "./dist/shaders.d.ts",
-            "import": "./dist/shaders.js"
-        },
-        "./shaders/*": "./src/shaders/*"
+        }
     },
     "files": [
-        "dist",
-        "src/shaders"
+        "dist"
     ],
     "scripts": {
         "build": "tsup",

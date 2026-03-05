@@ -74,8 +74,9 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
         // Let subclass register custom uniforms
         this.createUniforms()
 
-        // Resolve all uniform locations
+        // Resolve all uniform locations and push initial values
         this.resolveLocations()
+        this.pushAllUniforms()
 
         this.debug('success', 'WebGL2 renderer initialized')
     }
@@ -166,6 +167,12 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
         const posLoc = gl.getAttribLocation(this.program!, 'aPosition')
         gl.enableVertexAttribArray(posLoc)
         gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0)
+    }
+
+    private pushAllUniforms(): void {
+        for (const [name, entry] of this.uniforms) {
+            this.pushUniform(name, entry)
+        }
     }
 
     private resolveLocations(): void {

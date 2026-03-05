@@ -31,7 +31,7 @@ export function getAudioData(): AudioData {
         // Legacy
         bass: audio.bass ?? 0,
         bassEnv: audio.bassEnv ?? 0,
-        beat: audio.beat ?? 0,
+        beat: Number(audio.beat ?? 0),
         beatConfidence: audio.beatConfidence ?? 0,
         beatPhase: audio.beatPhase ?? 0,
         beatPulse: audio.beatPulse ?? 0,
@@ -54,7 +54,7 @@ export function getAudioData(): AudioData {
         mid: audio.mid ?? 0,
         midEnv: audio.midEnv ?? 0,
         momentum: audio.momentum ?? 0,
-        onset: audio.onset ?? 0,
+        onset: Number(audio.onset ?? 0),
         onsetPulse: audio.onsetPulse ?? 0,
         rolloff: audio.rolloff ?? 0.5,
         roughness: audio.roughness ?? 0.2,
