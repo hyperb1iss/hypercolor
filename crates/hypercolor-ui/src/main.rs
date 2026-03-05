@@ -1,7 +1,9 @@
 mod api;
 mod app;
 mod components;
+mod icons;
 mod pages;
+mod toasts;
 mod ws;
 
 use app::App;

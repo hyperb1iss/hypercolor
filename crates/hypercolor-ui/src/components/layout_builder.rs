@@ -1,10 +1,13 @@
 //! Layout builder wrapper — toolbar + three-column layout editor.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::DevicesContext;
+use crate::icons::*;
+use crate::toasts;
 use crate::components::layout_canvas::LayoutCanvas;
 use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
@@ -96,7 +99,9 @@ pub fn LayoutBuilder() -> impl IntoView {
                 canvas_height: None,
                 zones: Some(zones),
             };
-            let _ = api::update_layout(&id, &req).await;
+            if api::update_layout(&id, &req).await.is_ok() {
+                toasts::toast_success("Layout saved");
+            }
             layouts_resource.refetch();
         });
     };
@@ -106,7 +111,9 @@ pub fn LayoutBuilder() -> impl IntoView {
         let Some(l) = layout.get() else { return };
         let id = l.id.clone();
         leptos::task::spawn_local(async move {
-            let _ = api::apply_layout(&id).await;
+            if api::apply_layout(&id).await.is_ok() {
+                toasts::toast_success("Layout applied");
+            }
         });
     };
 
@@ -118,7 +125,9 @@ pub fn LayoutBuilder() -> impl IntoView {
         set_selected_layout_id.set(None);
         set_layout.set(None);
         leptos::task::spawn_local(async move {
-            let _ = api::delete_layout(&id).await;
+            if api::delete_layout(&id).await.is_ok() {
+                toasts::toast_info("Layout deleted");
+            }
             layouts_resource.refetch();
         });
     };
@@ -141,6 +150,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                 canvas_height: None,
             };
             if let Ok(summary) = api::create_layout(&req).await {
+                toasts::toast_success("Layout created");
                 layouts_resource.refetch();
                 set_id.set(Some(summary.id));
             }
@@ -228,7 +238,10 @@ pub fn LayoutBuilder() -> impl IntoView {
                             class="px-3 py-1.5 rounded-lg text-xs font-medium bg-electric-purple/[0.08] border border-electric-purple/20
                                    text-electric-purple hover:bg-electric-purple/[0.15] transition-all btn-press"
                             on:click=move |_| set_creating.set(true)
-                        >"+ New Layout"</button>
+                        >
+                            <Icon icon=LuPlus width="14px" height="14px" />
+                            " New Layout"
+                        </button>
                     }.into_any()
                 }}
 
@@ -244,22 +257,29 @@ pub fn LayoutBuilder() -> impl IntoView {
                     view! {
                         <div class="flex items-center gap-2">
                             <button
-                                class="px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
                                 style=save_style
                                 on:click=move |_| save_layout()
                             >
+                                <Icon icon=LuSave width="14px" height="14px" />
                                 {move || if is_dirty.get() { "Save *" } else { "Save" }}
                             </button>
                             <button
-                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-neon-cyan/[0.08] border border-neon-cyan/20
+                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-neon-cyan/[0.08] border border-neon-cyan/20
                                        text-neon-cyan hover:bg-neon-cyan/[0.15] transition-all btn-press"
                                 on:click=move |_| apply_layout()
-                            >"Apply"</button>
+                            >
+                                <Icon icon=LuPlay width="14px" height="14px" />
+                                "Apply"
+                            </button>
                             <button
-                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-error-red/[0.08] border border-error-red/20
+                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-error-red/[0.08] border border-error-red/20
                                        text-error-red hover:bg-error-red/[0.15] transition-all btn-press"
                                 on:click=move |_| delete_layout()
-                            >"Delete"</button>
+                            >
+                                <Icon icon=LuTrash2 width="14px" height="14px" />
+                                "Delete"
+                            </button>
                         </div>
                     }
                 })}

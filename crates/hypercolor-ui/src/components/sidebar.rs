@@ -1,10 +1,12 @@
 //! Fixed navigation sidebar — nav + now-playing section with player controls.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 use leptos_router::components::A;
 use leptos_router::hooks::use_location;
 
 use crate::app::EffectsContext;
+use crate::icons::*;
 
 /// Sidebar collapsed state, shared via context so the shell can react.
 #[derive(Clone, Copy)]
@@ -46,17 +48,17 @@ pub fn Sidebar() -> impl IntoView {
         NavItem {
             path: "/",
             label: "Dashboard",
-            icon: icon_dashboard(),
+            icon: LuLayoutDashboard,
         },
         NavItem {
             path: "/effects",
             label: "Effects",
-            icon: icon_effects(),
+            icon: LuLayers,
         },
         NavItem {
             path: "/devices",
             label: "Devices",
-            icon: icon_devices(),
+            icon: LuCpu,
         },
     ];
 
@@ -162,8 +164,9 @@ pub fn Sidebar() -> impl IntoView {
                             <span
                                 class="w-[18px] h-[18px] flex items-center justify-center shrink-0"
                                 class:text-electric-purple=move || is_active.get()
-                                inner_html=item.icon
-                            />
+                            >
+                                <Icon icon=item.icon width="18px" height="18px" />
+                            </span>
                             <span
                                 class="ml-3 text-sm whitespace-nowrap overflow-hidden transition-all duration-200"
                                 class:opacity-0=move || collapsed.get()
@@ -215,9 +218,7 @@ pub fn Sidebar() -> impl IntoView {
                                 title="Previous effect"
                                 on:click=move |_| navigate_effect(-1)
                             >
-                                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
-                                    <path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/>
-                                </svg>
+                                <Icon icon=LuSkipBack width="14px" height="14px" />
                             </button>
                             // Stop
                             <button
@@ -225,9 +226,7 @@ pub fn Sidebar() -> impl IntoView {
                                 title="Stop effect"
                                 on:click=move |_| fx.stop_effect()
                             >
-                                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
-                                    <rect x="6" y="6" width="12" height="12" rx="1"/>
-                                </svg>
+                                <Icon icon=LuSquare width="14px" height="14px" />
                             </button>
                             // Next
                             <button
@@ -235,9 +234,7 @@ pub fn Sidebar() -> impl IntoView {
                                 title="Next effect"
                                 on:click=move |_| navigate_effect(1)
                             >
-                                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor">
-                                    <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
-                                </svg>
+                                <Icon icon=LuSkipForward width="14px" height="14px" />
                             </button>
                             // Shuffle
                             <button
@@ -245,13 +242,7 @@ pub fn Sidebar() -> impl IntoView {
                                 title="Random effect"
                                 on:click=move |_| random_effect()
                             >
-                                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                                    <polyline points="16 3 21 3 21 8"/>
-                                    <line x1="4" y1="20" x2="21" y2="3"/>
-                                    <polyline points="21 16 21 21 16 21"/>
-                                    <line x1="15" y1="15" x2="21" y2="21"/>
-                                    <line x1="4" y1="4" x2="9" y2="9"/>
-                                </svg>
+                                <Icon icon=LuShuffle width="14px" height="14px" />
                             </button>
                         </div>
                     </div>
@@ -269,8 +260,9 @@ pub fn Sidebar() -> impl IntoView {
                     <span
                         class="w-4 h-4 flex items-center justify-center transition-transform duration-200"
                         class:rotate-180=move || collapsed.get()
-                        inner_html=icon_chevron_left()
-                    />
+                    >
+                        <Icon icon=LuChevronLeft width="16px" height="16px" />
+                    </span>
                 </button>
             </div>
         </nav>
@@ -280,21 +272,5 @@ pub fn Sidebar() -> impl IntoView {
 struct NavItem {
     path: &'static str,
     label: &'static str,
-    icon: String,
-}
-
-fn icon_dashboard() -> String {
-    r#"<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>"#.to_string()
-}
-
-fn icon_effects() -> String {
-    r#"<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>"#.to_string()
-}
-
-fn icon_devices() -> String {
-    r#"<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>"#.to_string()
-}
-
-fn icon_chevron_left() -> String {
-    r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>"#.to_string()
+    icon: icondata_core::Icon,
 }

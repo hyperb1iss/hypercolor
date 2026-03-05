@@ -3,10 +3,12 @@
 use std::f32::consts::FRAC_PI_2;
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 
 use crate::api::{self, ZoneTopologySummary};
 use crate::app::DevicesContext;
 use crate::components::device_card::backend_accent_rgb;
+use crate::icons::*;
 use hypercolor_types::spatial::{
     Corner, DeviceZone, LedTopology, NormalizedPosition, Orientation, SpatialLayout,
     StripDirection, Winding, ZoneShape,
@@ -130,10 +132,7 @@ pub fn LayoutPalette(
                                                                     {move || {
                                                                         if in_layout.get() {
                                                                             view! {
-                                                                                <svg class="w-3.5 h-3.5 text-success-green/60 shrink-0" viewBox="0 0 24 24" fill="none"
-                                                                                     stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                                                                                    <polyline points="20 6 9 17 4 12" />
-                                                                                </svg>
+                                                                                <Icon icon=LuCheck width="14px" height="14px" style="color: rgba(80, 250, 123, 0.6); flex-shrink: 0" />
                                                                             }.into_any()
                                                                         } else {
                                                                             let zone_entry = zone_for_add.clone();

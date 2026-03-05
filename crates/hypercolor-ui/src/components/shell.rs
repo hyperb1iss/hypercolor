@@ -1,12 +1,14 @@
 //! App shell — sidebar + header + content area + command palette.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 use leptos_router::hooks::use_navigate;
 use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::components::sidebar::Sidebar;
 use crate::components::status_bar::StatusBar;
+use crate::icons::*;
 
 /// Top-level layout shell. Sidebar left, header + content right.
 #[component]
@@ -61,10 +63,7 @@ pub fn Shell(children: Children) -> impl IntoView {
                                    btn-press cursor-pointer group"
                             on:click=move |_| set_palette_open.set(true)
                         >
-                            <svg class="w-3.5 h-3.5 text-zinc-600 group-hover:text-zinc-400 transition-colors" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <circle cx="11" cy="11" r="8"/>
-                                <path d="m21 21-4.3-4.3"/>
-                            </svg>
+                            <Icon icon=LuSearch width="14px" height="14px" style="color: inherit" />
                             <span class="text-zinc-600">"Search effects..."</span>
                             <kbd class="text-[9px] font-mono text-zinc-700 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.04]">"⌘K"</kbd>
                         </button>
@@ -142,10 +141,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                         overflow-hidden animate-scale-in">
                 // Search input
                 <div class="flex items-center gap-3 px-4 py-3.5 border-b border-white/[0.05]">
-                    <svg class="w-4 h-4 text-electric-purple/60 shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="11" cy="11" r="8"/>
-                        <path d="m21 21-4.3-4.3"/>
-                    </svg>
+                    <Icon icon=LuSearch width="16px" height="16px" style="color: rgba(225, 53, 255, 0.6); flex-shrink: 0" />
                     <input
                         node_ref=input_ref
                         type="text"

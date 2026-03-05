@@ -1,12 +1,15 @@
 //! Preset toolbar — compact single-line preset selector with save/create/edit/delete.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 use std::collections::HashMap;
 use wasm_bindgen::JsCast;
 
 use hypercolor_types::effect::ControlValue;
 
 use crate::api;
+use crate::icons::*;
+use crate::toasts;
 
 /// Compact preset toolbar for the effect detail sidebar.
 ///
@@ -128,6 +131,7 @@ pub fn PresetToolbar(
                 tags: None,
             };
             if api::update_preset(&pid, &req).await.is_ok() {
+                toasts::toast_success("Preset saved");
                 refresh();
             }
         });
@@ -150,6 +154,7 @@ pub fn PresetToolbar(
             };
             if let Ok(created) = api::create_preset(&req).await {
                 set_selected_id.set(Some(created.id));
+                toasts::toast_success("Preset created");
                 refresh();
             }
         });
@@ -179,6 +184,7 @@ pub fn PresetToolbar(
                 tags: None,
             };
             if api::update_preset(&pid, &req).await.is_ok() {
+                toasts::toast_success("Preset renamed");
                 refresh();
             }
         });
@@ -195,6 +201,7 @@ pub fn PresetToolbar(
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
             if api::delete_preset(&pid).await.is_ok() {
+                toasts::toast_info("Preset deleted");
                 refresh();
             }
         });
@@ -341,12 +348,7 @@ fn PresetActionButtons(
                 disabled=move || !has_selection.get()
                 on:click=on_save
             >
-                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"
-                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-                    <polyline points="17 21 17 13 7 13 7 21" />
-                    <polyline points="7 3 7 8 15 8" />
-                </svg>
+                <Icon icon=LuSave width="14px" height="14px" />
             </button>
 
             // New preset
@@ -356,11 +358,7 @@ fn PresetActionButtons(
                 title="Create new preset"
                 on:click=on_new
             >
-                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"
-                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="12" y1="5" x2="12" y2="19" />
-                    <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
+                <Icon icon=LuPlus width="14px" height="14px" />
             </button>
 
             // Edit name
@@ -372,11 +370,7 @@ fn PresetActionButtons(
                 disabled=move || !has_selection.get()
                 on:click=on_edit
             >
-                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"
-                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                </svg>
+                <Icon icon=LuSquarePen width="14px" height="14px" />
             </button>
 
             // Delete
@@ -388,11 +382,7 @@ fn PresetActionButtons(
                 disabled=move || !has_selection.get()
                 on:click=on_delete
             >
-                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"
-                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="3 6 5 6 21 6" />
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                </svg>
+                <Icon icon=LuTrash2 width="14px" height="14px" />
             </button>
         </div>
     }
@@ -465,10 +455,7 @@ fn InlineNameButtons(
                 }
             }
         >
-            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="20 6 9 17 4 12" />
-            </svg>
+            <Icon icon=LuCheck width="14px" height="14px" />
         </button>
         <button
             class="p-1.5 rounded-md text-fg-dim/50 transition-colors duration-150
@@ -476,11 +463,7 @@ fn InlineNameButtons(
             title="Cancel"
             on:click=move |_| on_cancel.run(())
         >
-            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
+            <Icon icon=LuX width="14px" height="14px" />
         </button>
     }
 }

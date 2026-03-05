@@ -1,12 +1,15 @@
 //! Devices page — device management grid with detail sidebar + layout builder tab.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use crate::app::DevicesContext;
 use crate::components::device_card::DeviceCard;
 use crate::components::device_detail::DeviceDetail;
 use crate::components::layout_builder::LayoutBuilder;
+use crate::icons::*;
+use crate::toasts;
 
 /// Status filter options.
 const STATUSES: &[&str] = &["all", "active", "connected", "known", "disabled"];
@@ -100,7 +103,7 @@ pub fn DevicesPage() -> impl IntoView {
                             let tab = tab.to_string();
                             Memo::new(move |_| active_tab.get() == tab)
                         };
-                        let icon = if tab == "devices" { icon_grid().into_any() } else { icon_layout().into_any() };
+                        let icon = if tab == "devices" { view! { <Icon icon=LuGrid2x2 width="16px" height="16px" /> }.into_any() } else { view! { <Icon icon=LuLayoutTemplate width="16px" height="16px" /> }.into_any() };
                         view! {
                             <button
                                 class="px-4 py-2.5 text-sm font-medium transition-colors relative capitalize flex items-center gap-2"
@@ -144,25 +147,21 @@ pub fn DevicesPage() -> impl IntoView {
                                         let devices_resource = ctx.devices_resource;
                                         leptos::task::spawn_local(async move {
                                             let _ = crate::api::discover_devices().await;
+                                            toasts::toast_info("Scanning for devices…");
                                             devices_resource.refetch();
                                         });
                                     }
                                 >
-                                    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                        <path d="M21 12a9 9 0 11-6.22-8.56"/>
-                                        <path d="M21 3v6h-6"/>
-                                    </svg>
+                                    <Icon icon=LuRefreshCw width="14px" height="14px" />
                                     "Scan"
                                 </button>
                             </div>
 
                             // Search bar
                             <div class="relative">
-                                <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-dim pointer-events-none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <circle cx="11" cy="11" r="8"/>
-                                    <path d="m21 21-4.3-4.3"/>
-                                </svg>
+                                <span class="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-fg-dim">
+                                    <Icon icon=LuSearch width="14px" height="14px" />
+                                </span>
                                 <input
                                     type="text"
                                     placeholder="Search devices..."
@@ -260,13 +259,7 @@ pub fn DevicesPage() -> impl IntoView {
                                             if devices.is_empty() {
                                                 view! {
                                                     <div class="flex flex-col items-center justify-center py-24 space-y-3">
-                                                        <svg class="w-12 h-12 text-fg-dim/20" viewBox="0 0 24 24" fill="none"
-                                                             stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
-                                                            <rect x="4" y="4" width="16" height="16" rx="2"/>
-                                                            <rect x="9" y="9" width="6" height="6" rx="1"/>
-                                                            <line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/>
-                                                            <line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/>
-                                                        </svg>
+                                                        <Icon icon=LuCpu width="48px" height="48px" style="color: rgba(139, 133, 160, 0.2)" />
                                                         <div class="text-fg-dim text-sm">"No devices found"</div>
                                                         <div class="text-fg-dim/40 text-xs">"Try a different search or filter"</div>
                                                     </div>
@@ -348,25 +341,3 @@ fn DevicesLoadingSkeleton() -> impl IntoView {
     }
 }
 
-/// Grid icon for Devices tab.
-fn icon_grid() -> impl IntoView {
-    view! {
-        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
-            <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
-        </svg>
-    }
-}
-
-/// Layout icon for Layout tab.
-fn icon_layout() -> impl IntoView {
-    view! {
-        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2"/>
-            <line x1="3" y1="9" x2="21" y2="9"/>
-            <line x1="9" y1="21" x2="9" y2="9"/>
-        </svg>
-    }
-}

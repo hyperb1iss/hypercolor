@@ -43,6 +43,33 @@
     --ease-out: cubic-bezier(0, 0, 0.2, 1);
 }
 
+/* ── Leptoaster — SilkCircuit Theme ─────────────────────────────────────── */
+
+:root {
+    --leptoaster-font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    --leptoaster-font-size: 13px;
+    --leptoaster-line-height: 1.4;
+    --leptoaster-font-weight: 500;
+    --leptoaster-progress-height: 2px;
+    --leptoaster-z-index: 9990;
+
+    --leptoaster-success-background-color: rgba(80, 250, 123, 0.08);
+    --leptoaster-success-border-color: rgba(80, 250, 123, 0.25);
+    --leptoaster-success-text-color: #50fa7b;
+
+    --leptoaster-error-background-color: rgba(255, 99, 99, 0.08);
+    --leptoaster-error-border-color: rgba(255, 99, 99, 0.25);
+    --leptoaster-error-text-color: #ff6363;
+
+    --leptoaster-info-background-color: rgba(130, 170, 255, 0.08);
+    --leptoaster-info-border-color: rgba(130, 170, 255, 0.25);
+    --leptoaster-info-text-color: #82AAFF;
+
+    --leptoaster-warn-background-color: rgba(241, 250, 140, 0.08);
+    --leptoaster-warn-border-color: rgba(241, 250, 140, 0.25);
+    --leptoaster-warn-text-color: #f1fa8c;
+}
+
 /* ── Base Resets ─────────────────────────────────────────────────────────── */
 
 html {

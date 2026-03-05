@@ -1,6 +1,7 @@
 //! Effects browse page — grid of effect cards with filtering and detail panel.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use crate::api;
@@ -9,6 +10,8 @@ use crate::components::canvas_preview::CanvasPreview;
 use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
 use crate::components::preset_panel::PresetToolbar;
+use crate::icons::*;
+use crate::toasts;
 use hypercolor_types::effect::ControlValue;
 
 /// Category → accent RGB string for inline styles.
@@ -90,6 +93,14 @@ pub fn EffectsPage() -> impl IntoView {
 
     // Apply effect handler — delegates to shared context
     let on_apply = Callback::new(move |id: String| {
+        let effect_name = fx
+            .effects_resource
+            .get()
+            .and_then(|r| r.ok())
+            .and_then(|effects| effects.into_iter().find(|e| e.id == id).map(|e| e.name));
+        if let Some(name) = effect_name {
+            toasts::toast_success(&format!("Applied: {name}"));
+        }
         fx.apply_effect(id);
     });
 
@@ -124,10 +135,9 @@ pub fn EffectsPage() -> impl IntoView {
 
                 // Search bar
                 <div class="relative">
-                    <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-dim pointer-events-none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="11" cy="11" r="8"/>
-                        <path d="m21 21-4.3-4.3"/>
-                    </svg>
+                    <span class="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-fg-dim">
+                        <Icon icon=LuSearch width="14px" height="14px" />
+                    </span>
                     <input
                         type="text"
                         placeholder="Search effects..."
@@ -280,11 +290,7 @@ pub fn EffectsPage() -> impl IntoView {
                                         style=controls_accent.clone()
                                     >
                                         <div class="flex items-center gap-2 mb-4">
-                                            <svg class="w-4 h-4 text-fg-dim" viewBox="0 0 24 24" fill="none"
-                                                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                                <circle cx="12" cy="12" r="3" />
-                                                <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
-                                            </svg>
+                                            <Icon icon=LuSettings width="16px" height="16px" style="color: rgba(139, 133, 160, 1)" />
                                             <h3 class="text-xs font-mono uppercase tracking-[0.12em] text-fg-dim">
                                                 "Controls"
                                             </h3>

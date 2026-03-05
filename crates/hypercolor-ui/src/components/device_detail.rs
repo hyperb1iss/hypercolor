@@ -1,11 +1,14 @@
 //! Device detail sidebar — cinematic device info, actions, and logical device management.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::DevicesContext;
 use crate::components::device_card::backend_accent_rgb;
+use crate::icons::*;
+use crate::toasts;
 
 /// Device detail sidebar.
 #[component]
@@ -74,6 +77,11 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
             };
             let _ = api::update_device(&id, &req).await;
             devices_resource.refetch();
+            if currently_active {
+                toasts::toast_info("Device disabled");
+            } else {
+                toasts::toast_success("Device enabled");
+            }
         });
     };
 
@@ -81,6 +89,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
     let identify = move || {
         let id = device_id.get();
         set_identify_active.set(true);
+        toasts::toast_info("Identifying device...");
         leptos::task::spawn_local(async move {
             let _ = api::identify_device(&id).await;
             // Flash indicator for 3s then reset
@@ -172,10 +181,9 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                     }
                                 >
                                     {dev.name.clone()}
-                                    <svg class="w-3 h-3 text-fg-dim opacity-0 group-hover:opacity-100 transition-opacity" viewBox="0 0 24 24" fill="none"
-                                         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                        <path d="M17 3a2.85 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5Z"/>
-                                    </svg>
+                                    <span class="w-3 h-3 text-fg-dim opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <Icon icon=LuPencil width="12px" height="12px" />
+                                    </span>
                                 </span>
                             }.into_any()
                         }}
@@ -238,19 +246,9 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                     on:click=move |_| toggle_enabled()
                                 >
                                     {if enabled {
-                                        view! {
-                                            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                 stroke-width="2" stroke-linecap="round">
-                                                <circle cx="12" cy="12" r="10"/><line x1="4" y1="4" x2="20" y2="20"/>
-                                            </svg>
-                                        }.into_any()
+                                        view! { <Icon icon=LuBan width="14px" height="14px" /> }.into_any()
                                     } else {
-                                        view! {
-                                            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                                 stroke-width="2" stroke-linecap="round">
-                                                <path d="M5 12l5 5L20 7"/>
-                                            </svg>
-                                        }.into_any()
+                                        view! { <Icon icon=LuPower width="14px" height="14px" /> }.into_any()
                                     }}
                                     {if enabled { "Disable" } else { "Enable" }}
                                 </button>
@@ -268,12 +266,9 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                     }
                                     on:click=move |_| identify()
                                 >
-                                    <svg class=move || {
-                                        if identify_active.get() { "w-3.5 h-3.5 animate-pulse" } else { "w-3.5 h-3.5" }
-                                    } viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                        <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-                                    </svg>
+                                    <span class=move || if identify_active.get() { "animate-pulse" } else { "" }>
+                                        <Icon icon=LuZap width="14px" height="14px" />
+                                    </span>
                                     {move || if identify_active.get() { "Flashing..." } else { "Identify" }}
                                 </button>
 
@@ -286,12 +281,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                 shadow-[0_2px_12px_rgba(0,0,0,0.2)]">
                         <div class="flex items-center justify-between px-4 py-3">
                             <div class="flex items-center gap-2">
-                                <svg class="w-3.5 h-3.5 text-fg-dim" viewBox="0 0 24 24" fill="none"
-                                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <rect x="1" y="6" width="22" height="12" rx="2"/>
-                                    <line x1="8" y1="6" x2="8" y2="18"/>
-                                    <line x1="16" y1="6" x2="16" y2="18"/>
-                                </svg>
+                                <Icon icon=LuCable width="14px" height="14px" style="color: rgba(139, 133, 160, 1)" />
                                 <h3 class="text-xs font-mono uppercase tracking-[0.12em] text-fg-dim">"Segments"</h3>
                             </div>
                             <button
@@ -398,11 +388,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                                                                         title="Delete segment"
                                                                                         on:click=move |_| delete_logical(sid.clone())
                                                                                     >
-                                                                                        <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none"
-                                                                                             stroke="currentColor" stroke-width="2">
-                                                                                            <line x1="18" y1="6" x2="6" y2="18"/>
-                                                                                            <line x1="6" y1="6" x2="18" y2="18"/>
-                                                                                        </svg>
+                                                                                        <Icon icon=LuX width="12px" height="12px" />
                                                                                     </button>
                                                                                 }
                                                                             })}

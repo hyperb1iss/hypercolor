@@ -105,6 +105,7 @@ impl EffectsContext {
 #[component]
 pub fn App() -> impl IntoView {
     provide_meta_context();
+    leptoaster::provide_toaster();
 
     // Global WebSocket connection
     let ws = WsManager::new();
@@ -191,5 +192,7 @@ pub fn App() -> impl IntoView {
                 </Routes>
             </Shell>
         </Router>
+
+        <leptoaster::Toaster />
     }
 }

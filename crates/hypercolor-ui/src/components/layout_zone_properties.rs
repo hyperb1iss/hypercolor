@@ -1,8 +1,10 @@
 //! Layout zone properties panel — edit selected zone placement and topology.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
+use crate::icons::*;
 use hypercolor_types::spatial::SpatialLayout;
 
 /// Zone properties editor (right sidebar of layout builder).
@@ -203,7 +205,8 @@ pub fn LayoutZoneProperties(
                                 set_is_dirty.set(true);
                             }
                         >
-                            "Remove from Layout"
+                            <Icon icon=LuTrash2 width="14px" height="14px" />
+                            " Remove from Layout"
                         </button>
                     </div>
                 }.into_any()

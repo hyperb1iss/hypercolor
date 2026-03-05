@@ -1,8 +1,10 @@
 //! Device card — cinematic card with backend accent, hover glow, and selected state.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 
 use crate::api::DeviceSummary;
+use crate::icons::*;
 
 /// Backend → accent RGB string for inline styles (case-insensitive).
 pub fn backend_accent_rgb(backend: &str) -> &'static str {
@@ -38,21 +40,15 @@ fn status_label(status: &str) -> &'static str {
     }
 }
 
-/// Backend SVG icon path — returns an inline icon per backend type.
-fn backend_icon_svg(backend: &str) -> &'static str {
+/// Backend → Lucide icon for the device type.
+fn backend_icon(backend: &str) -> icondata_core::Icon {
     match backend.to_lowercase().as_str() {
-        // Razer: diamond/gaming shape
-        "razer" => r#"<path d="M12 2L2 12l10 10 10-10L12 2z" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M12 8v8M8 12h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>"#,
-        // WLED: wifi/signal shape
-        "wled" => r#"<path d="M12 20h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M8.5 16.5a5 5 0 017 0" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M5 13a10 10 0 0114 0" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>"#,
-        // OpenRGB: lightbulb
-        "openrgb" => r#"<path d="M9 18h6M10 22h4M12 2a7 7 0 00-4 12.7V17h8v-2.3A7 7 0 0012 2z" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>"#,
-        // Corsair: sail/flag
-        "corsair" | "corsair-bridge" => r#"<path d="M4 21V4a1 1 0 011-1h14l-4 6 4 6H5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>"#,
-        // Hue: bridge/circle
-        "hue" => r#"<circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5" fill="none"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5" fill="none"/><line x1="12" y1="3" x2="12" y2="9" stroke="currentColor" stroke-width="1.5"/><line x1="12" y1="15" x2="12" y2="21" stroke="currentColor" stroke-width="1.5"/>"#,
-        // Generic: CPU/chip
-        _ => r#"<rect x="4" y="4" width="16" height="16" rx="2" stroke="currentColor" stroke-width="1.5" fill="none"/><rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/><line x1="9" y1="2" x2="9" y2="4" stroke="currentColor" stroke-width="1.5"/><line x1="15" y1="2" x2="15" y2="4" stroke="currentColor" stroke-width="1.5"/><line x1="9" y1="20" x2="9" y2="22" stroke="currentColor" stroke-width="1.5"/><line x1="15" y1="20" x2="15" y2="22" stroke="currentColor" stroke-width="1.5"/>"#,
+        "razer" => LuDiamond,
+        "wled" => LuWifi,
+        "openrgb" => LuLightbulb,
+        "corsair" | "corsair-bridge" => LuFlag,
+        "hue" => LuSun,
+        _ => LuCpu,
     }
 }
 
@@ -72,7 +68,7 @@ pub fn DeviceCard(
     let backend_label = device.backend.clone();
     let device_name = device.name.clone();
     let status = status_label(&device.status);
-    let icon_svg = backend_icon_svg(&device.backend);
+    let icon = backend_icon(&device.backend);
 
     // Backend-colored top accent gradient
     let accent_gradient = format!(
@@ -130,7 +126,7 @@ pub fn DeviceCard(
                 <div class="flex items-start justify-between gap-2">
                     <div class="flex items-center gap-2.5 min-w-0 flex-1">
                         <div class="w-5 h-5 shrink-0" style=icon_style>
-                            <svg viewBox="0 0 24 24" class="w-full h-full" inner_html=icon_svg />
+                            <Icon icon=icon width="20px" height="20px" />
                         </div>
                         <h3 class="text-sm font-medium text-zinc-200 group-hover:text-fg truncate transition-colors duration-200">
                             {device_name}
@@ -147,17 +143,12 @@ pub fn DeviceCard(
                 // Metrics row
                 <div class="flex items-center gap-4 text-[11px] font-mono tabular-nums text-fg-dim">
                     <div class="flex items-center gap-1.5">
-                        <svg class="w-3 h-3 opacity-40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="3"/>
-                        </svg>
+                        <Icon icon=LuCircleDot width="12px" height="12px" style="opacity: 0.4" />
                         <span>{total_leds} " LEDs"</span>
                     </div>
                     {(zone_count > 0).then(|| view! {
                         <div class="flex items-center gap-1.5">
-                            <svg class="w-3 h-3 opacity-40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
-                                <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
-                            </svg>
+                            <Icon icon=LuGrid2x2 width="12px" height="12px" style="opacity: 0.4" />
                             <span>{zone_count} " zones"</span>
                         </div>
                     })}
