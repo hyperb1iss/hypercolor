@@ -6,6 +6,7 @@ pub fn toast_success(msg: &str) {
     expect_toaster().success(msg);
 }
 
+#[allow(dead_code)]
 pub fn toast_error(msg: &str) {
     expect_toaster().error(msg);
 }

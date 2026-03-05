@@ -841,8 +841,7 @@ async fn ensure_default_logical_entry(
         let lifecycle = state.lifecycle_manager.lock().await;
         lifecycle
             .layout_device_id_for(physical_id)
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| format!("device:{physical_id}"))
+            .map_or_else(|| format!("device:{physical_id}"), ToOwned::to_owned)
     };
 
     let mut store = state.logical_devices.write().await;

@@ -1932,7 +1932,7 @@ async fn applying_effect_auto_applies_associated_layout() {
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
-    let create_a_response = app
+    let resp_layout_a = app
         .clone()
         .oneshot(
             Request::builder()
@@ -1944,14 +1944,14 @@ async fn applying_effect_auto_applies_associated_layout() {
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(create_a_response.status(), StatusCode::CREATED);
-    let create_a_json = body_json(create_a_response).await;
-    let layout_a_id = create_a_json["data"]["id"]
+    assert_eq!(resp_layout_a.status(), StatusCode::CREATED);
+    let json_layout_a = body_json(resp_layout_a).await;
+    let first_layout_id = json_layout_a["data"]["id"]
         .as_str()
         .expect("layout A id should be string")
         .to_owned();
 
-    let create_b_response = app
+    let resp_layout_b = app
         .clone()
         .oneshot(
             Request::builder()
@@ -1963,9 +1963,9 @@ async fn applying_effect_auto_applies_associated_layout() {
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(create_b_response.status(), StatusCode::CREATED);
-    let create_b_json = body_json(create_b_response).await;
-    let layout_b_id = create_b_json["data"]["id"]
+    assert_eq!(resp_layout_b.status(), StatusCode::CREATED);
+    let json_layout_b = body_json(resp_layout_b).await;
+    let layout_b_id = json_layout_b["data"]["id"]
         .as_str()
         .expect("layout B id should be string")
         .to_owned();
@@ -1988,7 +1988,7 @@ async fn applying_effect_auto_applies_associated_layout() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/layouts/{layout_a_id}/apply"))
+                .uri(format!("/api/v1/layouts/{first_layout_id}/apply"))
                 .body(Body::empty())
                 .expect("failed to build request"),
         )

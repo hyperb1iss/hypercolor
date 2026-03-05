@@ -10,6 +10,7 @@ use crate::icons::*;
 
 /// Sidebar collapsed state, shared via context so the shell can react.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub struct SidebarState {
     pub collapsed: ReadSignal<bool>,
     pub set_collapsed: WriteSignal<bool>,

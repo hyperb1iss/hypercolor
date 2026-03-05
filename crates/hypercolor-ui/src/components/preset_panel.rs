@@ -121,7 +121,7 @@ pub fn PresetToolbar(
         let controls_json = controls_to_json(&values);
         let name = preset.name.clone();
         let pid = preset.id.clone();
-        let refresh = refresh_presets.clone();
+        let refresh = refresh_presets;
         leptos::task::spawn_local(async move {
             let req = api::CreatePresetRequest {
                 name,
@@ -142,7 +142,7 @@ pub fn PresetToolbar(
         let eid = effect_id.get().unwrap_or_default();
         let values = control_values.get();
         let controls_json = controls_to_json(&values);
-        let refresh = refresh_presets.clone();
+        let refresh = refresh_presets;
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
             let req = api::CreatePresetRequest {
@@ -167,7 +167,7 @@ pub fn PresetToolbar(
         };
         let eid = effect_id.get().unwrap_or_default();
         let pid = preset.id.clone();
-        let refresh = refresh_presets.clone();
+        let refresh = refresh_presets;
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
             let req = api::CreatePresetRequest {
@@ -196,7 +196,7 @@ pub fn PresetToolbar(
             return;
         };
         let pid = preset.id.clone();
-        let refresh = refresh_presets.clone();
+        let refresh = refresh_presets;
         set_selected_id.set(None);
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
@@ -221,14 +221,14 @@ pub fn PresetToolbar(
             {move || {
                 match mode.get() {
                     ToolbarMode::Idle => {
-                        let on_save = on_save.clone();
-                        let on_delete = on_delete.clone();
+                        let on_save = on_save;
+                        let on_delete = on_delete;
                         view! {
                             <PresetSelectorRow
                                 effect_presets=effect_presets
                                 selected_id=selected_id
                                 has_selection=has_selection
-                                on_select=on_select.clone()
+                                on_select=on_select
                                 on_save=on_save
                                 on_new=move |_| set_mode.set(ToolbarMode::Creating)
                                 on_edit=move |_| set_mode.set(ToolbarMode::Renaming)
@@ -237,7 +237,7 @@ pub fn PresetToolbar(
                         }.into_any()
                     }
                     ToolbarMode::Creating => {
-                        let on_create = on_create.clone();
+                        let on_create = on_create;
                         view! {
                             <InlineNameInput
                                 placeholder="New preset name..."
@@ -252,7 +252,7 @@ pub fn PresetToolbar(
                             .get()
                             .map(|p| p.name.clone())
                             .unwrap_or_default();
-                        let on_rename = on_rename.clone();
+                        let on_rename = on_rename;
                         view! {
                             <InlineNameInput
                                 placeholder="Rename preset..."

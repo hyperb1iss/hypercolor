@@ -706,8 +706,7 @@ async fn ensure_default_logical_for_device(
         let lifecycle = runtime.lifecycle_manager.lock().await;
         lifecycle
             .layout_device_id_for(device_id)
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| format!("device:{device_id}"))
+            .map_or_else(|| format!("device:{device_id}"), ToOwned::to_owned)
     };
 
     let mut logical_store = runtime.logical_devices.write().await;

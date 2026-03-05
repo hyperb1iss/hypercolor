@@ -26,6 +26,7 @@ missing_safety_doc = { level = "allow", priority = 20 }
 module_name_repetitions = { level = "allow", priority = 21 }
 significant_drop_tightening = { level = "allow", priority = 21 }
 must_use_candidate = { level = "allow", priority = 21 }
+implicit_hasher = { level = "allow", priority = 21 }
 cast_precision_loss = { level = "warn", priority = 22 }
 cast_possible_truncation = { level = "warn", priority = 22 }
 cast_sign_loss = { level = "warn", priority = 22 }

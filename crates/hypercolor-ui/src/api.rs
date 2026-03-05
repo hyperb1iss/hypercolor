@@ -1,4 +1,5 @@
 //! REST API client — thin wrappers around the daemon's HTTP endpoints.
+#![allow(dead_code)] // API surface is pre-built for upcoming features
 
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
