@@ -294,9 +294,19 @@ export default canvas('Firefly Meadow', {
 })
 ```
 
-The detection is automatic:
-- 3rd argument is a function with 3+ params → **stateless** draw function (called every frame)
-- 3rd argument is a function with 0 params that returns a function → **stateful** factory (setup returns draw)
+**Detection:** The runtime checks `fn.length` (number of declared parameters):
+- `fn.length >= 1` → **stateless** draw function (called every frame)
+- `fn.length === 0` → **stateful** factory (invoked once, must return a draw function)
+
+This works for the overwhelmingly common case. However, `Function.length` can be 0 for functions using rest params (`...args`) or default values. For edge cases where the runtime can't distinguish, use `canvas.stateful()`:
+
+```typescript
+// Explicit factory — no ambiguity
+export default canvas.stateful('Fireflies', controls, () => {
+    const state = initState()
+    return (ctx, time, { count, speed }) => { /* draw */ }
+})
+```
 
 This is the p5.js `setup/draw` split — but it's just functions. No classes, no `this`, no lifecycle methods. State lives in closures.
 
@@ -332,19 +342,30 @@ No `audioReactive: true` flag. No uniform registration. Call `audio()` when you 
 ### 5.4 Function Signature
 
 ```typescript
+type DrawFn = (ctx: CanvasRenderingContext2D, time: number, controls: ResolvedControls) => void
+type FactoryFn = () => DrawFn
+
 // Stateless: draw function called every frame
 function canvas(
     name: string,
     controls: ControlMap,
-    draw: (ctx: CanvasRenderingContext2D, time: number, controls: ResolvedControls) => void,
+    draw: DrawFn,
     options?: CanvasOptions
 ): Effect
 
-// Stateful: factory returns draw function
+// Stateful: factory returns draw function (detected via fn.length === 0)
 function canvas(
     name: string,
     controls: ControlMap,
-    factory: () => (ctx: CanvasRenderingContext2D, time: number, controls: ResolvedControls) => void,
+    factory: FactoryFn,
+    options?: CanvasOptions
+): Effect
+
+// Explicit stateful: bypasses arity detection entirely
+canvas.stateful(
+    name: string,
+    controls: ControlMap,
+    factory: FactoryFn,
     options?: CanvasOptions
 ): Effect
 
@@ -415,11 +436,25 @@ void main() {
 ### 6.2 Build Processing
 
 The build tool:
-1. Parses `#pragma hypercolor` and `#pragma control` lines (regex, no AST needed)
-2. Strips pragmas from the GLSL source
-3. Prepends auto-generated `uniform` declarations
+1. Tokenizes lines, extracting `#pragma hypercolor` and `#pragma control` directives (line-by-line tokenizer, not raw regex — handles quoted strings with spaces, escaped characters, and multi-value enum lists correctly)
+2. Strips pragma lines from the GLSL source
+3. Injects auto-generated `uniform` declarations **after** the `#version` and `precision` lines (critical: `#version` must remain the absolute first line in GLSL ES 3.0 — injecting before it causes a compile error)
 4. Wraps in a TypeScript shim that calls `effect()` internally
 5. Bundles and emits HTML
+
+**Injection point example:**
+
+```glsl
+#version 300 es                    ← stays first (required by spec)
+precision highp float;             ← stays second
+                                   ← uniforms injected HERE
+uniform float iSpeed;              ← auto-generated from #pragma control
+uniform int iPalette;              ← auto-generated from #pragma control
+uniform float iTime;               ← always present
+uniform vec2 iResolution;          ← always present
+out vec4 fragColor;
+// ... rest of shader ...
+```
 
 This means a `.glsl` file can be a complete, shippable effect with zero TypeScript. Inspired by ISF's JSON-in-comments pattern, but using `#pragma` because it's valid GLSL (preprocessor ignores unknown pragmas).
 
@@ -431,7 +466,7 @@ The `#pragma control` line generates a corresponding `uniform` declaration:
 |-------------|-------------|-------|
 | `float(min, max) = default` | `uniform float iKey;` | |
 | `int(min, max) = default` | `uniform int iKey;` | |
-| `bool = true` | `uniform int iKey;` | GLSL has no `uniform bool` — uses 0/1 int |
+| `bool = true` | `uniform int iKey;` | GLSL supports `uniform bool` but int is more portable — uses 0/1 |
 | `enum(...)` | `uniform int iKey;` | Index into values array |
 | `color = #hex` | `uniform vec3 iKey;` | RGB floats 0.0-1.0 |
 
@@ -471,10 +506,29 @@ Both forms can be mixed in the same controls object.
 |------------|---------------|--------|-------|
 | `[number, number, number]` | `number` | Slider | `[min, max, default]` |
 | `[number, number, number, number]` | `number` | Slider with step | `[min, max, default, step]` |
-| `string[]` | `combobox` | Dropdown | First value is default |
+| `string[]` | `combobox` | Dropdown | First value is default (use `combo()` for non-first default) |
 | `boolean` | `boolean` | Toggle | |
 | `'#rrggbb'` or `'#rrggbbaa'` | `color` | Color picker | Hex string starting with `#` |
+| `string` | `text` | Text field | Non-hex string value is default |
 | `number` | `number` | Slider | Range 0-100, value is default. Escape hatch for simple cases. |
+
+**TypeScript type narrowing:** Shorthand tuples use `as const` to preserve literal tuple types, ensuring the inference engine distinguishes `[1, 10, 5]` (3-tuple → slider) from `number[]`:
+
+```typescript
+export default effect('Aurora', shader, {
+    speed:   [1, 10, 5] as const,       // readonly [1, 10, 5] — unambiguous 3-tuple
+    palette: ['Fire', 'Ice'] as const,   // readonly ["Fire", "Ice"] — unambiguous string tuple
+} as const)
+```
+
+In practice, `as const` is optional — the `effect()` function signature uses overloads and conditional types to infer correctly from plain array literals in most cases. But `as const` is the escape hatch when inference fails.
+
+**Combobox default behavior:** The first string in the array is always the default. If your default isn't the first item, either reorder the array or use the explicit `combo()` factory:
+
+```typescript
+// Default is 'Synthwave' (2nd in the list) — use combo()
+palette: combo('Palette', ['SilkCircuit', 'Synthwave', 'Fire'], { default: 'Synthwave' })
+```
 
 ### 7.3 Explicit Factory Functions
 
@@ -505,6 +559,11 @@ color(label: string, defaultValue: string, opts?: {
 hue(label: string, range: [number, number], defaultValue: number, opts?: {
     tooltip?: string
     uniform?: string
+}): ControlSpec
+
+text(label: string, defaultValue: string, opts?: {
+    tooltip?: string
+    uniform?: string            // note: text controls map to a uniform only if explicitly set
 }): ControlSpec
 ```
 
@@ -719,8 +778,9 @@ The build script currently fakes a DOM, executes the effect module, and reads `r
 ```typescript
 function effect(name, shader, controls, options?) {
     if (globalThis.__HYPERCOLOR_METADATA_ONLY__) {
-        // Store raw config — no WebGL, no DOM, no side effects
-        globalThis.__hypercolorEffectDef__ = { name, shader, controls, ...options }
+        // Append to registry — supports multi-effect files (rare but valid)
+        globalThis.__hypercolorEffectDefs__ ??= []
+        globalThis.__hypercolorEffectDefs__.push({ name, shader, controls, ...options })
         return
     }
     // Runtime: construct and wire the real effect
@@ -728,15 +788,15 @@ function effect(name, shader, controls, options?) {
 }
 ```
 
-The build script reads `__hypercolorEffectDef__` — a plain object with `name`, `controls` (inert `ControlSpec` objects), and metadata. No `reflect-metadata`, no class instantiation, no DOM.
+The build script reads `__hypercolorEffectDefs__` — an array of plain objects with `name`, `controls` (inert `ControlSpec` objects), and metadata. Uses the last entry for single-effect files (the common case), supports multi-effect files as a forward-compatible escape hatch. No `reflect-metadata`, no class instantiation, no DOM.
 
 ### 11.3 Pragma Effects
 
 For Tier 0 `.glsl` files, the build script:
-1. Parses `#pragma` lines with regex (no GLSL AST needed)
-2. Extracts effect name, author, controls, audio flag
-3. Strips pragmas from shader source
-4. Generates `uniform` declarations and prepends to shader
+1. Tokenizes `#pragma` lines (line-by-line tokenizer — handles quoted strings with spaces, enum value lists, and `=` default assignments)
+2. Extracts effect name, author, description, controls, audio flag
+3. Strips pragma lines from shader source
+4. Injects `uniform` declarations after `#version`/`precision` block (see 6.2)
 5. Wraps in a TypeScript shim calling `effect()` internally
 6. Bundles and emits HTML
 
@@ -745,12 +805,13 @@ For Tier 0 `.glsl` files, the build script:
 Both paths generate identical `<meta>` tags:
 
 ```html
-<meta property="speed" label="Speed" type="number" min="1" max="10" default="5"/>
+<meta property="speed" label="Speed" type="number" min="1" max="10" default="5"
+      tooltip="Meteor animation speed"/>
 <meta property="palette" label="Palette" type="combobox" default="SilkCircuit"
-      values="SilkCircuit,Fire,Ice,Aurora,Cyberpunk"/>
+      values="SilkCircuit,Fire,Ice,Aurora,Cyberpunk" tooltip="Color palette"/>
 ```
 
-The `property` attribute comes from the control key. All other attributes from the `ControlSpec`.
+The `property` attribute comes from the control key. All other attributes from the `ControlSpec`. The `tooltip` attribute is optional and maps to the `tooltip` field in factory functions. When using shorthand (no factory), tooltips are omitted from meta tags — use explicit factories to add them.
 
 ---
 
@@ -853,11 +914,12 @@ const eff = canvas('Test', {
 ```typescript
 // What the user provides
 type ControlShorthand =
-    | [number, number, number]              // num slider
-    | [number, number, number, number]      // num slider with step
-    | readonly string[]                      // combobox
+    | readonly [number, number, number]      // num slider (strict 3-tuple)
+    | readonly [number, number, number, number]  // num slider with step (strict 4-tuple)
+    | readonly string[]                      // combobox (2+ strings)
     | boolean                                // toggle
-    | `#${string}`                           // color
+    | `#${string}`                           // color (hex string)
+    | string                                 // text (non-hex string)
 
 // What the factory functions return
 interface ControlSpec<T extends ControlTypeName = ControlTypeName> {
@@ -889,12 +951,16 @@ The compiled HTML is identical regardless of which API or tier authored the effe
   <title>Meteor Storm</title>
   <meta description="Streaking meteors with physics trails and atmospheric glow"/>
   <meta publisher="Hypercolor"/>
-  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5"/>
-  <meta property="density" label="Density" type="number" min="10" max="100" default="50"/>
-  <meta property="trailLength" label="Trail" type="number" min="10" max="100" default="60"/>
-  <meta property="glow" label="Glow" type="number" min="10" max="100" default="65"/>
+  <meta property="speed" label="Speed" type="number" min="1" max="10" default="5"
+        tooltip="Meteor speed"/>
+  <meta property="density" label="Density" type="number" min="10" max="100" default="50"
+        tooltip="Meteor count"/>
+  <meta property="trailLength" label="Trail" type="number" min="10" max="100" default="60"
+        tooltip="Trail length"/>
+  <meta property="glow" label="Glow" type="number" min="10" max="100" default="65"
+        tooltip="Glow intensity"/>
   <meta property="palette" label="Palette" type="combobox" default="SilkCircuit"
-        values="SilkCircuit,Fire,Ice,Aurora,Cyberpunk"/>
+        values="SilkCircuit,Fire,Ice,Aurora,Cyberpunk" tooltip="Color palette"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -1041,7 +1107,7 @@ Edge cases requiring manual intervention:
 | Step | File | Description |
 |------|------|-------------|
 | B1 | `scripts/build-effect.ts` | Support `effect()`/`canvas()` metadata via `__hypercolorEffectDef__` |
-| B2 | `scripts/pragma-parser.ts` | Parse `#pragma hypercolor` / `#pragma control` from `.glsl` files |
+| B2 | `scripts/pragma-parser.ts` | Line tokenizer for `#pragma hypercolor` / `#pragma control` (handles quoted strings, commas in enum lists) |
 | B3 | `scripts/build-effect.ts` | Support `.glsl` as direct effect entry (Tier 0) |
 | B4 | `scripts/build-effect.ts` | Backward compat with decorator-based extraction |
 
