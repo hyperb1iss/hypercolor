@@ -17,10 +17,12 @@ export interface WebGLEffectConfig extends EffectConfig {
 /** Uniform value types supported by the WebGL effect. */
 export type UniformValue = number | number[] | Float32Array
 
-/** Uniform descriptor with location cache. */
+/** Uniform descriptor with location cache and type info. */
 interface UniformEntry {
     value: UniformValue
     location: WebGLUniformLocation | null
+    /** True if the shader uniform is an integer type (int, ivec*, bool). */
+    isInt: boolean
 }
 
 // Default fullscreen quad vertex shader
@@ -107,7 +109,7 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
 
     /** Register a uniform. Call in createUniforms(). */
     protected registerUniform(name: string, value: UniformValue): void {
-        this.uniforms.set(name, { location: null, value })
+        this.uniforms.set(name, { location: null, value, isInt: false })
     }
 
     /** Set a uniform value (will be pushed on next draw). */
@@ -177,8 +179,22 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
 
     private resolveLocations(): void {
         const gl = this.gl!
+        const program = this.program!
+
+        // Build a set of integer uniform names by querying active uniforms
+        const intTypes: Set<number> = new Set([gl.INT, gl.INT_VEC2, gl.INT_VEC3, gl.INT_VEC4, gl.BOOL])
+        const intUniforms = new Set<string>()
+        const numActive = gl.getProgramParameter(program, gl.ACTIVE_UNIFORMS) as number
+        for (let i = 0; i < numActive; i++) {
+            const info = gl.getActiveUniform(program, i)
+            if (info && intTypes.has(info.type)) {
+                intUniforms.add(info.name)
+            }
+        }
+
         for (const [name, entry] of this.uniforms) {
-            entry.location = gl.getUniformLocation(this.program!, name)
+            entry.location = gl.getUniformLocation(program, name)
+            entry.isInt = intUniforms.has(name)
         }
     }
 
@@ -188,13 +204,29 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
 
         const val = entry.value
         if (typeof val === 'number') {
-            gl.uniform1f(entry.location, val)
+            if (entry.isInt) {
+                gl.uniform1i(entry.location, val | 0)
+            } else {
+                gl.uniform1f(entry.location, val)
+            }
         } else if (val.length === 2) {
-            gl.uniform2fv(entry.location, val)
+            if (entry.isInt) {
+                gl.uniform2iv(entry.location, val as number[])
+            } else {
+                gl.uniform2fv(entry.location, val)
+            }
         } else if (val.length === 3) {
-            gl.uniform3fv(entry.location, val)
+            if (entry.isInt) {
+                gl.uniform3iv(entry.location, val as number[])
+            } else {
+                gl.uniform3fv(entry.location, val)
+            }
         } else if (val.length === 4) {
-            gl.uniform4fv(entry.location, val)
+            if (entry.isInt) {
+                gl.uniform4iv(entry.location, val as number[])
+            } else {
+                gl.uniform4fv(entry.location, val)
+            }
         }
     }
 
