@@ -317,10 +317,11 @@ impl DaemonState {
                 HashMap::new()
             }
         };
+        let layout_count = persisted_layouts.len();
         let layouts = Arc::new(RwLock::new(persisted_layouts));
         info!(
             path = %layouts_path.display(),
-            count = layouts.blocking_read().len(),
+            count = layout_count,
             "Layout store ready"
         );
 
