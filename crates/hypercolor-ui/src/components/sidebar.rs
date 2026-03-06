@@ -351,44 +351,39 @@ pub fn Sidebar() -> impl IntoView {
             </div>
 
             // Now Playing — live thumbnail + palette-styled panel
+            //
+            // IMPORTANT: The outer closure ONLY reads has_active + collapsed so that
+            // palette/name/category updates don't rebuild the DOM (which would destroy
+            // the canvas element and cause flicker). All dynamic values use fine-grained
+            // reactive style:/class: bindings or inner {move || ...} text nodes.
             {move || {
                 if !has_active.get() || collapsed.get() {
                     return None;
                 }
-                let name = fx.active_effect_name.get().unwrap_or_default();
-                let cat = fx.active_effect_category.get();
-                let fallback_rgb = category_accent_rgb(&cat).to_string();
 
-                // Live palette colors with category fallback
-                let palette = live_palette.get();
-                let primary = palette.map_or_else(
-                    || fallback_rgb.clone(),
-                    |p| rgb_string(p.primary),
-                );
-                let secondary = palette.map_or_else(
-                    || fallback_rgb.clone(),
-                    |p| rgb_string(p.secondary),
-                );
-
-                // Panel: left edge glow from primary color
-                let panel_style = format!(
-                    "box-shadow: inset 3px 0 0 rgb({primary}), inset 4px 0 12px rgba({primary}, 0.15)"
-                );
-
-                // Canvas thumbnail glow — the thumbnail radiates the effect's colors
-                let thumb_glow = format!(
-                    "box-shadow: 0 4px 20px rgba({primary}, 0.25), 0 0 40px rgba({secondary}, 0.08)"
-                );
-
-                // Status dot
-                let dot_style = format!(
-                    "background: rgb({primary}); box-shadow: 0 0 8px rgba({primary}, 0.7)"
-                );
+                // Derived signals for palette RGB — read inside style: closures, not here
+                let primary_rgb = move || {
+                    let cat = fx.active_effect_category.get();
+                    live_palette.get().map_or_else(
+                        || category_accent_rgb(&cat).to_string(),
+                        |p| rgb_string(p.primary),
+                    )
+                };
+                let secondary_rgb = move || {
+                    let cat = fx.active_effect_category.get();
+                    live_palette.get().map_or_else(
+                        || category_accent_rgb(&cat).to_string(),
+                        |p| rgb_string(p.secondary),
+                    )
+                };
 
                 Some(view! {
                     <div
                         class="border-t border-edge-subtle py-3 space-y-3 animate-fade-in"
-                        style=panel_style
+                        style:box-shadow=move || {
+                            let p = primary_rgb();
+                            format!("inset 3px 0 0 rgb({p}), inset 4px 0 12px rgba({p}, 0.15)")
+                        }
                     >
                         // Now Playing label
                         <div class="px-4 text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary/60">
@@ -403,7 +398,11 @@ pub fn Sidebar() -> impl IntoView {
                                 <div class="px-3 animate-fade-in">
                                     <div
                                         class="relative rounded-lg overflow-hidden bg-black/40"
-                                        style=thumb_glow.clone()
+                                        style:box-shadow=move || {
+                                            let p = primary_rgb();
+                                            let s = secondary_rgb();
+                                            format!("0 4px 20px rgba({p}, 0.25), 0 0 40px rgba({s}, 0.08)")
+                                        }
                                     >
                                         <canvas
                                             node_ref=np_canvas_ref
@@ -417,10 +416,18 @@ pub fn Sidebar() -> impl IntoView {
 
                         // Effect name + category
                         <div class="px-4 flex items-center gap-2.5 min-w-0">
-                            <div class="w-2 h-2 rounded-full dot-alive shrink-0" style=dot_style />
+                            <div
+                                class="w-2 h-2 rounded-full dot-alive shrink-0"
+                                style:background=move || format!("rgb({})", primary_rgb())
+                                style:box-shadow=move || format!("0 0 8px rgba({}, 0.7)", primary_rgb())
+                            />
                             <div class="min-w-0 flex-1">
-                                <div class="text-[13px] font-medium text-fg-primary truncate leading-tight">{name}</div>
-                                <div class="text-[10px] text-fg-tertiary capitalize mt-0.5">{cat}</div>
+                                <div class="text-[13px] font-medium text-fg-primary truncate leading-tight">
+                                    {move || fx.active_effect_name.get().unwrap_or_default()}
+                                </div>
+                                <div class="text-[10px] text-fg-tertiary capitalize mt-0.5">
+                                    {move || fx.active_effect_category.get()}
+                                </div>
                             </div>
                         </div>
 

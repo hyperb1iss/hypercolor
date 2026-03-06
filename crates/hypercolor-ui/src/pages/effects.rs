@@ -438,26 +438,28 @@ pub fn EffectsPage() -> impl IntoView {
                     </div>
 
                     // Detail panel — sticky, scrolls with cards until bottom pins
+                    //
+                    // IMPORTANT: Only read active_effect_id here so that accent color
+                    // changes don't rebuild the DOM (which destroys CanvasPreview and
+                    // causes a burst of re-paints). All dynamic styles use reactive bindings.
                     {move || {
                         fx.active_effect_id.get().map(|_| {
-                            let rgb = accent_rgb.get();
-                            let dot_style = format!("background: rgb({}); box-shadow: 0 0 8px rgba({}, 0.6)", rgb, rgb);
-                            let controls_accent = format!("border-top: 2px solid rgba({}, 0.15)", rgb);
                             view! {
                                 <aside
                                     class="w-[420px] shrink-0 sticky top-0 self-start space-y-3 pb-4 animate-slide-in-right scrollbar-none z-[1]"
                                     style="max-height: calc(100vh - 10rem); overflow-y: auto; overscroll-behavior: contain"
                                 >
                                     // Active effect name with category-colored dot
-                                    {move || fx.active_effect_name.get().map(|name| {
-                                        let dot_s = dot_style.clone();
-                                        view! {
-                                            <div class="flex items-center gap-2.5 px-1">
-                                                <div class="w-2.5 h-2.5 rounded-full dot-alive shrink-0" style=dot_s />
-                                                <span class="text-base font-medium text-fg-primary">{name}</span>
-                                            </div>
-                                        }
-                                    })}
+                                    <div class="flex items-center gap-2.5 px-1">
+                                        <div
+                                            class="w-2.5 h-2.5 rounded-full dot-alive shrink-0"
+                                            style:background=move || format!("rgb({})", accent_rgb.get())
+                                            style:box-shadow=move || format!("0 0 8px rgba({}, 0.6)", accent_rgb.get())
+                                        />
+                                        <span class="text-base font-medium text-fg-primary">
+                                            {move || fx.active_effect_name.get().unwrap_or_default()}
+                                        </span>
+                                    </div>
 
                                     // Preset toolbar — select, save, create, edit, delete
                                     <PresetToolbar
@@ -483,7 +485,6 @@ pub fn EffectsPage() -> impl IntoView {
 
                                     // Live preview — no border, black bleeds to edge
                                     <div class="rounded-xl bg-black overflow-hidden edge-glow">
-
                                         <CanvasPreview
                                             frame=canvas_frame
                                             fps=ws_fps
@@ -494,7 +495,7 @@ pub fn EffectsPage() -> impl IntoView {
                                     // Controls panel with category accent line
                                     <div
                                         class="rounded-xl bg-surface-raised border border-edge-subtle p-5 edge-glow"
-                                        style=controls_accent.clone()
+                                        style:border-top=move || format!("2px solid rgba({}, 0.15)", accent_rgb.get())
                                     >
                                         <div class="flex items-center gap-2 mb-4">
                                             <Icon icon=LuSettings width="16px" height="16px" style="color: rgba(139, 133, 160, 1)" />
