@@ -4,13 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Poisonous</title>
-  <meta description="A rolling brew of neon poison with layered vapor bands and glowing toxic orbs"/>
+  <meta description="A denser concentric-ring poison variant with faster motion and cleaner double-circle detail"/>
   <meta publisher="Hypercolor"/>
   <meta property="bgColor" label="Background Color" type="color" default="#130032"/>
   <meta property="color1" label="Color 1" type="color" default="#6000fc"/>
   <meta property="color2" label="Color 2" type="color" default="#b300ff"/>
   <meta property="color3" label="Color 3" type="color" default="#8a42ff"/>
-  <meta property="speedRaw" label="Speed" type="number" min="0" max="100" default="10"/>
+  <meta property="speedRaw" label="Speed" type="number" min="0" max="100" default="14"/>
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -2070,15 +2070,9 @@
   }));
 
   // src/effects/poisonous/main.ts
+  var PARTICLES_PER_DIRECTION = 22;
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
-  }
-  function fract(value) {
-    return value - Math.floor(value);
-  }
-  function hash(value) {
-    const s = Math.sin(value * 91.73 + 12.91) * 43758.5453123;
-    return s - Math.floor(s);
   }
   function hexToRgb2(hex) {
     const normalized = hex.trim().replace("#", "");
@@ -2093,43 +2087,8 @@
       b: value & 255
     };
   }
-  function rgbToHsl(color2) {
-    const r = color2.r / 255;
-    const g = color2.g / 255;
-    const b = color2.b / 255;
-    const max = Math.max(r, g, b);
-    const min = Math.min(r, g, b);
-    const delta = max - min;
-    const l = (max + min) * 0.5;
-    if (delta === 0) return { h: 0, s: 0, l };
-    const s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
-    let h = 0;
-    if (max === r) h = (g - b) / delta + (g < b ? 6 : 0);
-    else if (max === g) h = (b - r) / delta + 2;
-    else h = (r - g) / delta + 4;
-    return { h: h * 60, s, l };
-  }
-  function hslToRgb2(h, s, l) {
-    const hue2 = (h % 360 + 360) % 360;
-    const sat = clamp(s, 0, 1);
-    const light = clamp(l, 0, 1);
-    const c = (1 - Math.abs(2 * light - 1)) * sat;
-    const x = c * (1 - Math.abs(hue2 / 60 % 2 - 1));
-    const m = light - c * 0.5;
-    let r = 0;
-    let g = 0;
-    let b = 0;
-    if (hue2 < 60) [r, g, b] = [c, x, 0];
-    else if (hue2 < 120) [r, g, b] = [x, c, 0];
-    else if (hue2 < 180) [r, g, b] = [0, c, x];
-    else if (hue2 < 240) [r, g, b] = [0, x, c];
-    else if (hue2 < 300) [r, g, b] = [x, 0, c];
-    else [r, g, b] = [c, 0, x];
-    return {
-      r: Math.round((r + m) * 255),
-      g: Math.round((g + m) * 255),
-      b: Math.round((b + m) * 255)
-    };
+  function rgba(color2, alpha) {
+    return `rgba(${color2.r}, ${color2.g}, ${color2.b}, ${clamp(alpha, 0, 1).toFixed(3)})`;
   }
   function mixRgb(a, b, t) {
     const ratio = clamp(t, 0, 1);
@@ -2139,145 +2098,96 @@
       b: Math.round(a.b + (b.b - a.b) * ratio)
     };
   }
-  function enrichRgb(color2, saturationBoost, lightnessOffset = 0) {
-    const hsl = rgbToHsl(color2);
-    return hslToRgb2(
-      hsl.h,
-      clamp(hsl.s + saturationBoost, 0, 1),
-      clamp(hsl.l + lightnessOffset, 0, 1)
-    );
-  }
-  function rgba(color2, alpha) {
-    return `rgba(${color2.r}, ${color2.g}, ${color2.b}, ${clamp(alpha, 0, 1).toFixed(3)})`;
+  function createParticle(width, height, paletteSize, direction, initial = false) {
+    const offscreenMargin = 120;
+    const radius = Math.random() * 6 + 2;
+    return {
+      x: Math.random() * width,
+      y: initial ? Math.random() * height : direction > 0 ? -Math.random() * offscreenMargin : height + Math.random() * offscreenMargin,
+      speedX: (Math.random() - 0.5) * (Math.random() * 0.8 + 0.2),
+      speedY: Math.random() * 2.4 + 0.7,
+      lineWidth: Math.round(Math.random() * 8) + 2,
+      radius,
+      innerRadius: radius * 0.45,
+      colorIndex: Math.floor(Math.random() * paletteSize),
+      direction
+    };
   }
   var main_default = canvas.stateful("Poisonous", {
     bgColor: color("Background Color", "#130032"),
     color1: color("Color 1", "#6000fc"),
     color2: color("Color 2", "#b300ff"),
     color3: color("Color 3", "#8a42ff"),
-    speedRaw: num("Speed", [0, 100], 10)
+    speedRaw: num("Speed", [0, 100], 14)
   }, () => {
-    let seeds = [];
+    let particles = [];
     let lastWidth = 0;
     let lastHeight = 0;
-    function seedOrbs(width, height) {
-      if (width === lastWidth && height === lastHeight) return;
+    function reset(width, height, paletteSize) {
+      particles = [];
+      for (let i = 0; i < PARTICLES_PER_DIRECTION; i++) {
+        particles.push(createParticle(width, height, paletteSize, 1, true));
+        particles.push(createParticle(width, height, paletteSize, -1, true));
+      }
       lastWidth = width;
       lastHeight = height;
-      seeds = Array.from({ length: 22 }, (_, index) => ({
-        lane: 0.1 + hash(index * 1.13 + 0.9) * 0.8,
-        offset: hash(index * 2.71 + 7.2),
-        drift: hash(index * 3.91 + 4.8),
-        radius: 0.75 + hash(index * 5.17 + 2.1) * 1.2,
-        phase: hash(index * 6.13 + 1.7) * Math.PI * 2,
-        direction: index % 2 === 0 ? 1 : -1,
-        paletteIndex: index % 3
-      }));
     }
-    function drawBackdrop(ctx, width, height, bg, palette, speedMix) {
-      const top = enrichRgb(bg, 0.08, -0.12);
-      const bottom = enrichRgb(bg, 0.04, -0.02);
-      const gradient = ctx.createLinearGradient(0, 0, 0, height);
-      gradient.addColorStop(0, rgba(top, 0.24 + speedMix * 0.1));
-      gradient.addColorStop(1, rgba(bottom, 0.24 + speedMix * 0.1));
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, width, height);
-      const bloom = ctx.createRadialGradient(
-        width * 0.52,
-        height * 0.52,
-        0,
-        width * 0.52,
-        height * 0.52,
-        Math.max(width, height) * 0.9
-      );
-      bloom.addColorStop(0, rgba(mixRgb(palette[0], palette[1], 0.42), 0.18));
-      bloom.addColorStop(0.55, rgba(palette[2], 0.08));
-      bloom.addColorStop(1, "rgba(0, 0, 0, 0)");
-      ctx.fillStyle = bloom;
-      ctx.fillRect(0, 0, width, height);
-    }
-    function drawBands(ctx, width, height, time, speedMix, palette) {
-      ctx.save();
-      ctx.globalCompositeOperation = "screen";
-      for (let i = 0; i < 3; i++) {
-        const color2 = palette[i];
-        const centerY = height * (0.2 + i * 0.3);
-        const amplitude = 12 + i * 6 + speedMix * 10;
-        const gradient = ctx.createLinearGradient(0, centerY - amplitude, 0, centerY + amplitude);
-        gradient.addColorStop(0, rgba(color2, 0));
-        gradient.addColorStop(0.5, rgba(color2, 0.12 + speedMix * 0.08));
-        gradient.addColorStop(1, rgba(color2, 0));
-        ctx.fillStyle = gradient;
-        ctx.beginPath();
-        ctx.moveTo(0, centerY);
-        for (let x = 0; x <= width; x += 18) {
-          const xf = x / Math.max(width, 1);
-          const y = centerY + Math.sin(xf * Math.PI * (2.8 + i * 0.7) + time * (0.8 + speedMix * 1.8) + i) * amplitude + Math.cos(xf * Math.PI * 6.2 - time * (0.46 + i * 0.12)) * amplitude * 0.22;
-          ctx.lineTo(x, y);
-        }
-        ctx.lineTo(width, height + 20);
-        ctx.lineTo(0, height + 20);
-        ctx.closePath();
-        ctx.fill();
+    function ensureParticleCount(width, height, paletteSize) {
+      const upward = particles.filter((particle) => particle.direction === -1).length;
+      const downward = particles.filter((particle) => particle.direction === 1).length;
+      for (let i = downward; i < PARTICLES_PER_DIRECTION; i++) {
+        particles.push(createParticle(width, height, paletteSize, 1));
       }
-      ctx.restore();
-    }
-    function drawOrbs(ctx, width, height, time, speedMix, palette) {
-      ctx.save();
-      ctx.globalCompositeOperation = "screen";
-      for (const seed of seeds) {
-        const travel = fract(seed.offset + time * (0.04 + speedMix * 0.22) * seed.direction);
-        const y = seed.direction > 0 ? -height * 0.16 + travel * height * 1.34 : height * 1.16 - travel * height * 1.34;
-        const x = width * seed.lane + Math.sin(time * (1.2 + seed.drift) + seed.phase) * (18 + seed.drift * 16) + Math.cos(time * (0.6 + seed.drift * 0.5) + seed.phase * 0.8) * 8;
-        const color2 = palette[seed.paletteIndex];
-        const pulse = 0.72 + 0.28 * Math.sin(time * (2.4 + seed.drift) + seed.phase);
-        const radius = (14 + seed.radius * 20) * pulse;
-        const glowRadius = radius * (1.8 + speedMix * 0.5);
-        const ringRadius = radius * (1.12 + 0.08 * Math.sin(time * 2.8 + seed.phase));
-        const glow = ctx.createRadialGradient(x, y, 0, x, y, glowRadius);
-        glow.addColorStop(0, rgba(color2, 0.32));
-        glow.addColorStop(0.4, rgba(color2, 0.16));
-        glow.addColorStop(1, "rgba(0, 0, 0, 0)");
-        ctx.fillStyle = glow;
-        ctx.beginPath();
-        ctx.arc(x, y, glowRadius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = rgba(enrichRgb(color2, 0.16, 0.04), 0.8);
-        ctx.lineWidth = Math.max(2, radius * 0.12);
-        ctx.beginPath();
-        ctx.arc(x, y, ringRadius, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.fillStyle = rgba(enrichRgb(color2, 0.18, 0.02), 0.54);
-        ctx.beginPath();
-        ctx.arc(x, y, radius * 0.84, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = rgba(mixRgb(color2, { r: 255, g: 255, b: 255 }, 0.2), 0.36);
-        ctx.beginPath();
-        ctx.arc(x - radius * 0.2, y - radius * 0.18, radius * 0.26, 0, Math.PI * 2);
-        ctx.fill();
+      for (let i = upward; i < PARTICLES_PER_DIRECTION; i++) {
+        particles.push(createParticle(width, height, paletteSize, -1));
       }
-      ctx.restore();
     }
-    return (ctx, time, controls) => {
+    return (ctx, _time, controls) => {
       const width = ctx.canvas.width;
       const height = ctx.canvas.height;
-      seedOrbs(width, height);
-      const speedRaw = controls.speedRaw;
-      const speedMix = speedRaw / 100;
-      const bg = enrichRgb(hexToRgb2(controls.bgColor), 0.08, -0.14);
       const palette = [
-        enrichRgb(hexToRgb2(controls.color1), 0.2, -0.02),
-        enrichRgb(hexToRgb2(controls.color2), 0.24, -0.01),
-        enrichRgb(hexToRgb2(controls.color3), 0.18, 0.02)
+        hexToRgb2(controls.color1),
+        hexToRgb2(controls.color2),
+        hexToRgb2(controls.color3)
       ];
-      ctx.fillStyle = rgba(bg, speedRaw > 0 ? 0.22 : 1);
+      const background = hexToRgb2(controls.bgColor);
+      const speedRaw = controls.speedRaw;
+      const speedScale = speedRaw / 50;
+      if (width !== lastWidth || height !== lastHeight || particles.length === 0) {
+        reset(width, height, palette.length);
+      } else {
+        ensureParticleCount(width, height, palette.length);
+      }
+      ctx.fillStyle = speedRaw > 0 ? rgba(background, 0.16) : rgba(background, 1);
       ctx.fillRect(0, 0, width, height);
-      drawBackdrop(ctx, width, height, bg, palette, speedMix);
-      drawBands(ctx, width, height, time, speedMix, palette);
-      drawOrbs(ctx, width, height, time, speedMix, palette);
+      for (const particle of particles) {
+        const base = palette[particle.colorIndex] ?? palette[0];
+        const accent = mixRgb(base, { r: 255, g: 255, b: 255 }, 0.18);
+        ctx.strokeStyle = rgba(base, 0.62);
+        ctx.lineWidth = particle.lineWidth;
+        ctx.beginPath();
+        ctx.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = rgba(accent, 0.46);
+        ctx.lineWidth = Math.max(1, particle.lineWidth * 0.45);
+        ctx.beginPath();
+        ctx.arc(particle.x, particle.y, particle.innerRadius, 0, Math.PI * 2);
+        ctx.stroke();
+        particle.x += particle.speedX * speedScale;
+        particle.y += particle.speedY * speedScale * particle.direction;
+        if (speedRaw > 0) {
+          const growth = Math.random() / 1.4 * speedScale;
+          particle.radius += growth;
+          particle.innerRadius += growth * 0.72;
+        }
+      }
+      particles = particles.filter((particle) => {
+        if (particle.direction > 0) return particle.y <= height + 60;
+        return particle.y >= -60;
+      });
     };
   }, {
-    description: "A rolling brew of neon poison with layered vapor bands and glowing toxic orbs",
+    description: "A denser concentric-ring poison variant with faster motion and cleaner double-circle detail",
     author: "Hypercolor"
   });
 })();
@@ -2289,12 +2199,12 @@ reflect-metadata/Reflect.js:
   Licensed under the Apache License, Version 2.0 (the "License"); you may not use
   this file except in compliance with the License. You may obtain a copy of the
   License at http://www.apache.org/licenses/LICENSE-2.0
-
+  
   THIS CODE IS PROVIDED ON AN *AS IS* BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
   KIND, EITHER EXPRESS OR IMPLIED, INCLUDING WITHOUT LIMITATION ANY IMPLIED
   WARRANTIES OR CONDITIONS OF TITLE, FITNESS FOR A PARTICULAR PURPOSE,
   MERCHANTABLITY OR NON-INFRINGEMENT.
-
+  
   See the Apache Version 2.0 License for specific language governing permissions
   and limitations under the License.
   ***************************************************************************** *)
