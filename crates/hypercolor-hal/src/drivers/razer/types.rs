@@ -14,6 +14,12 @@ pub enum RazerProtocolVersion {
 
     /// Wireless keyboard protocol (`transaction_id = 0x9F`).
     WirelessKb,
+
+    /// Special modern devices using `transaction_id = 0x08`.
+    Special08,
+
+    /// Kraken V4 family devices using `transaction_id = 0x60`.
+    KrakenV4,
 }
 
 impl RazerProtocolVersion {
@@ -25,6 +31,8 @@ impl RazerProtocolVersion {
             Self::Extended => 0x3F,
             Self::Modern => 0x1F,
             Self::WirelessKb => 0x9F,
+            Self::Special08 => 0x08,
+            Self::KrakenV4 => 0x60,
         }
     }
 }

@@ -1,6 +1,7 @@
 use hypercolor_hal::drivers::razer::{
-    LED_ID_BACKLIGHT, RAZER_REPORT_LEN, RazerLightingCommandSet, RazerMatrixType, RazerProtocol,
-    RazerProtocolVersion, build_blade_15_late_2021_advanced_protocol, razer_crc,
+    LED_ID_BACKLIGHT, LED_ID_LOGO, RAZER_REPORT_LEN, RazerLightingCommandSet, RazerMatrixType,
+    RazerProtocol, RazerProtocolVersion, build_blade_14_2021_protocol,
+    build_blade_15_late_2021_advanced_protocol, razer_crc,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolError, ResponseStatus};
 use hypercolor_types::device::DeviceTopologyHint;
@@ -21,6 +22,8 @@ fn protocol_version_transaction_id_mapping() {
     assert_eq!(RazerProtocolVersion::Extended.transaction_id(), 0x3F);
     assert_eq!(RazerProtocolVersion::Modern.transaction_id(), 0x1F);
     assert_eq!(RazerProtocolVersion::WirelessKb.transaction_id(), 0x9F);
+    assert_eq!(RazerProtocolVersion::Special08.transaction_id(), 0x08);
+    assert_eq!(RazerProtocolVersion::KrakenV4.transaction_id(), 0x60);
 }
 
 #[test]
@@ -121,6 +124,29 @@ fn encode_brightness_uses_command_family_specific_packets() {
 }
 
 #[test]
+fn encode_brightness_can_target_a_different_led_id() {
+    let protocol = RazerProtocol::new(
+        RazerProtocolVersion::Legacy,
+        RazerLightingCommandSet::Standard,
+        RazerMatrixType::Standard,
+        (6, 22),
+        LED_ID_BACKLIGHT,
+    )
+    .with_brightness_led_id(LED_ID_LOGO);
+
+    let commands = protocol
+        .encode_brightness(0x33)
+        .expect("brightness should encode");
+
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].data[1], 0xFF);
+    assert_eq!(commands[0].data[6], 0x03);
+    assert_eq!(commands[0].data[7], 0x03);
+    assert_eq!(commands[0].data[9], LED_ID_LOGO);
+    assert_eq!(commands[0].data[10], 0x33);
+}
+
+#[test]
 fn blade_protocol_matches_uchroma_laptop_path() {
     let protocol = build_blade_15_late_2021_advanced_protocol();
 
@@ -158,6 +184,24 @@ fn blade_protocol_matches_uchroma_laptop_path() {
     assert_eq!(brightness[0].data[8], 0x01);
     assert_eq!(brightness[0].data[9], 0x05);
     assert_eq!(brightness[0].data[10], 0x7F);
+}
+
+#[test]
+fn blade_14_2021_protocol_emits_keepalive_device_mode_query() {
+    let protocol = build_blade_14_2021_protocol();
+    let keepalive = protocol
+        .keepalive()
+        .expect("Blade 14 keepalive should exist");
+
+    assert_eq!(keepalive.interval, std::time::Duration::from_millis(2_500));
+    assert_eq!(keepalive.commands.len(), 1);
+
+    let command = &keepalive.commands[0];
+    assert!(command.expects_response);
+    assert_eq!(command.data[1], 0x3F);
+    assert_eq!(command.data[5], 0x02);
+    assert_eq!(command.data[6], 0x00);
+    assert_eq!(command.data[7], 0x84);
 }
 
 #[test]

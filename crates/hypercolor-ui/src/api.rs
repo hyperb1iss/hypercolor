@@ -107,6 +107,7 @@ pub enum ZoneTopologySummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeviceSummary {
     pub id: String,
+    pub layout_device_id: String,
     pub name: String,
     pub backend: String,
     pub status: String,

@@ -5,7 +5,7 @@ use leptos::prelude::*;
 use crate::app::WsContext;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::components::device_card::backend_accent_rgb;
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout};
 
 /// Canvas viewport with zone overlay divs.
 #[component]
@@ -23,15 +23,17 @@ pub fn LayoutCanvas(
     let container_ref = NodeRef::<leptos::html::Div>::new();
 
     // Drag state
-    let (dragging, set_dragging) = signal(None::<DragState>);
+    let (interaction, set_interaction) = signal(None::<InteractionState>);
 
     // Derive just the zone IDs — only re-renders the zone list when zones are added/removed,
     // NOT when positions change during drag.
     let zone_ids = Memo::new(move |_| {
-        layout
-            .get()
-            .map(|l| l.zones.iter().map(|z| z.id.clone()).collect::<Vec<_>>())
-            .unwrap_or_default()
+        layout.with(|current| {
+            current
+                .as_ref()
+                .map(|l| l.zones.iter().map(|z| z.id.clone()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        })
     });
 
     view! {
@@ -39,13 +41,13 @@ pub fn LayoutCanvas(
             class="relative w-full h-full bg-black"
             node_ref=container_ref
             on:mouseup=move |_| {
-                set_dragging.set(None);
+                set_interaction.set(None);
             }
             on:mouseleave=move |_| {
-                set_dragging.set(None);
+                set_interaction.set(None);
             }
             on:mousemove=move |ev| {
-                let Some(drag) = dragging.get() else { return };
+                let Some(interaction_state) = interaction.get() else { return };
                 let Some(container) = container_ref.get() else { return };
                 let rect = container.get_bounding_client_rect();
                 let cw = rect.width();
@@ -56,19 +58,33 @@ pub fn LayoutCanvas(
                 let mouse_y = f64::from(ev.client_y()) - rect.top();
 
                 #[allow(clippy::cast_possible_truncation)]
-                let norm_x = ((mouse_x / cw) as f32 - drag.offset_x).clamp(0.0, 1.0);
-                #[allow(clippy::cast_possible_truncation)]
-                let norm_y = ((mouse_y / ch) as f32 - drag.offset_y).clamp(0.0, 1.0);
+                let mouse_norm = NormalizedPosition::new((mouse_x / cw) as f32, (mouse_y / ch) as f32);
 
-                let zone_id = drag.zone_id.clone();
-                set_layout.update(|l| {
-                    if let Some(layout) = l {
-                        if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
-                            zone.position.x = norm_x;
-                            zone.position.y = norm_y;
-                        }
+                match interaction_state {
+                    InteractionState::Drag(drag) => {
+                        let norm_x = (mouse_norm.x - drag.offset_x).clamp(0.0, 1.0);
+                        let norm_y = (mouse_norm.y - drag.offset_y).clamp(0.0, 1.0);
+                        let zone_id = drag.zone_id.clone();
+                        set_layout.update(|l| {
+                            if let Some(layout) = l {
+                                if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                                    zone.position.x = norm_x;
+                                    zone.position.y = norm_y;
+                                }
+                            }
+                        });
                     }
-                });
+                    InteractionState::Resize(resize) => {
+                        let zone_id = resize.zone_id.clone();
+                        set_layout.update(|l| {
+                            if let Some(layout) = l {
+                                if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                                    resize_zone(zone, &resize, mouse_norm);
+                                }
+                            }
+                        });
+                    }
+                }
                 set_is_dirty.set(true);
             }
             on:click=move |ev| {
@@ -94,29 +110,34 @@ pub fn LayoutCanvas(
                     let zid_select = zone_id.clone();
                     let zid_drag = zone_id.clone();
                     let zid_drag2 = zone_id.clone();
+                    let zid_resize_nw = zone_id.clone();
+                    let zid_resize_ne = zone_id.clone();
+                    let zid_resize_sw = zone_id.clone();
+                    let zid_resize_se = zone_id.clone();
 
                     // Derive per-zone position/style reactively from the layout signal
                     let zone_style = Signal::derive({
                         let zid = zid.clone();
                         move || {
-                            let l = layout.get()?;
-                            let zone = l.zones.iter().find(|z| z.id == zid)?;
-                            let x_pct = zone.position.x * 100.0;
-                            let y_pct = zone.position.y * 100.0;
-                            let w_pct = zone.size.x * 100.0;
-                            let h_pct = zone.size.y * 100.0;
-                            let rotation = zone.rotation.to_degrees();
-                            let backend = zone.device_id.split(':').next().unwrap_or("");
-                            let rgb = backend_accent_rgb(backend).to_string();
-                            Some((
-                                format!(
-                                    "left: {x_pct:.2}%; top: {y_pct:.2}%; width: {w_pct:.2}%; height: {h_pct:.2}%; \
-                                     transform: translate(-50%, -50%) rotate({rotation:.1}deg)"
-                                ),
-                                rgb,
-                                zone.name.clone(),
-                                zone.topology.led_count(),
-                            ))
+                            layout.with(|current| {
+                                let zone = current.as_ref()?.zones.iter().find(|z| z.id == zid)?;
+                                let x_pct = zone.position.x * 100.0;
+                                let y_pct = zone.position.y * 100.0;
+                                let w_pct = zone.size.x * 100.0;
+                                let h_pct = zone.size.y * 100.0;
+                                let rotation = zone.rotation.to_degrees();
+                                let backend = zone.device_id.split(':').next().unwrap_or("");
+                                let rgb = backend_accent_rgb(backend).to_string();
+                                Some((
+                                    format!(
+                                        "left: {x_pct:.2}%; top: {y_pct:.2}%; width: {w_pct:.2}%; height: {h_pct:.2}%; \
+                                         transform: translate(-50%, -50%) rotate({rotation:.1}deg)"
+                                    ),
+                                    rgb,
+                                    zone.name.clone(),
+                                    zone.topology.led_count(),
+                                ))
+                            })
                         }
                     });
 
@@ -162,11 +183,11 @@ pub fn LayoutCanvas(
                                     .and_then(|l| l.zones.iter().find(|z| z.id == zid_drag).map(|z| (z.position.x, z.position.y)));
 
                                 if let Some((zx, zy)) = zone_pos {
-                                    set_dragging.set(Some(DragState {
+                                    set_interaction.set(Some(InteractionState::Drag(DragState {
                                         zone_id: zid_drag2.clone(),
                                         offset_x: mouse_norm_x - zx,
                                         offset_y: mouse_norm_y - zy,
-                                    }));
+                                    })));
                                 }
                             }
                             on:click=move |ev| {
@@ -181,11 +202,86 @@ pub fn LayoutCanvas(
                             </div>
 
                             // Resize handles (selected only)
-                            {move || is_selected.get().then(|| view! {
-                                <div class="absolute -top-1 -left-1 w-2.5 h-2.5 bg-white/80 rounded-sm border border-white/40 cursor-nw-resize" />
-                                <div class="absolute -top-1 -right-1 w-2.5 h-2.5 bg-white/80 rounded-sm border border-white/40 cursor-ne-resize" />
-                                <div class="absolute -bottom-1 -left-1 w-2.5 h-2.5 bg-white/80 rounded-sm border border-white/40 cursor-sw-resize" />
-                                <div class="absolute -bottom-1 -right-1 w-2.5 h-2.5 bg-white/80 rounded-sm border border-white/40 cursor-se-resize" />
+                            {move || is_selected.get().then(|| {
+                                let zid_resize_nw = zid_resize_nw.clone();
+                                let zid_resize_ne = zid_resize_ne.clone();
+                                let zid_resize_sw = zid_resize_sw.clone();
+                                let zid_resize_se = zid_resize_se.clone();
+
+                                view! {
+                                    <div
+                                        class="absolute -top-1 -left-1 w-2.5 h-2.5 bg-white/80 rounded-sm border border-white/40 cursor-nw-resize"
+                                        on:mousedown=move |ev| {
+                                            ev.stop_propagation();
+                                            ev.prevent_default();
+                                            let zone_id = zid_resize_nw.clone();
+                                            begin_resize(
+                                                &container_ref,
+                                                &layout,
+                                                &set_selected_zone_id,
+                                                &set_interaction,
+                                                &zone_id,
+                                                ResizeHandle::NorthWest,
+                                                ev.client_x(),
+                                                ev.client_y(),
+                                            );
+                                        }
+                                    />
+                                    <div
+                                        class="absolute -top-1 -right-1 w-2.5 h-2.5 bg-white/80 rounded-sm border border-white/40 cursor-ne-resize"
+                                        on:mousedown=move |ev| {
+                                            ev.stop_propagation();
+                                            ev.prevent_default();
+                                            let zone_id = zid_resize_ne.clone();
+                                            begin_resize(
+                                                &container_ref,
+                                                &layout,
+                                                &set_selected_zone_id,
+                                                &set_interaction,
+                                                &zone_id,
+                                                ResizeHandle::NorthEast,
+                                                ev.client_x(),
+                                                ev.client_y(),
+                                            );
+                                        }
+                                    />
+                                    <div
+                                        class="absolute -bottom-1 -left-1 w-2.5 h-2.5 bg-white/80 rounded-sm border border-white/40 cursor-sw-resize"
+                                        on:mousedown=move |ev| {
+                                            ev.stop_propagation();
+                                            ev.prevent_default();
+                                            let zone_id = zid_resize_sw.clone();
+                                            begin_resize(
+                                                &container_ref,
+                                                &layout,
+                                                &set_selected_zone_id,
+                                                &set_interaction,
+                                                &zone_id,
+                                                ResizeHandle::SouthWest,
+                                                ev.client_x(),
+                                                ev.client_y(),
+                                            );
+                                        }
+                                    />
+                                    <div
+                                        class="absolute -bottom-1 -right-1 w-2.5 h-2.5 bg-white/80 rounded-sm border border-white/40 cursor-se-resize"
+                                        on:mousedown=move |ev| {
+                                            ev.stop_propagation();
+                                            ev.prevent_default();
+                                            let zone_id = zid_resize_se.clone();
+                                            begin_resize(
+                                                &container_ref,
+                                                &layout,
+                                                &set_selected_zone_id,
+                                                &set_interaction,
+                                                &zone_id,
+                                                ResizeHandle::SouthEast,
+                                                ev.client_x(),
+                                                ev.client_y(),
+                                            );
+                                        }
+                                    />
+                                }
                             })}
 
                             // LED count indicator
@@ -207,4 +303,116 @@ struct DragState {
     zone_id: String,
     offset_x: f32,
     offset_y: f32,
+}
+
+#[derive(Clone, Debug)]
+struct ResizeState {
+    zone_id: String,
+    handle: ResizeHandle,
+    start_mouse: NormalizedPosition,
+    start_center: NormalizedPosition,
+    start_size: NormalizedPosition,
+}
+
+#[derive(Clone, Debug)]
+enum InteractionState {
+    Drag(DragState),
+    Resize(ResizeState),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ResizeHandle {
+    NorthWest,
+    NorthEast,
+    SouthWest,
+    SouthEast,
+}
+
+fn begin_resize(
+    container_ref: &NodeRef<leptos::html::Div>,
+    layout: &Signal<Option<SpatialLayout>>,
+    set_selected_zone_id: &WriteSignal<Option<String>>,
+    set_interaction: &WriteSignal<Option<InteractionState>>,
+    zone_id: &str,
+    handle: ResizeHandle,
+    client_x: i32,
+    client_y: i32,
+) {
+    let Some(container) = container_ref.get() else { return };
+    let rect = container.get_bounding_client_rect();
+    let cw = rect.width();
+    let ch = rect.height();
+    if cw <= 0.0 || ch <= 0.0 {
+        return;
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    let mouse = NormalizedPosition::new(
+        ((f64::from(client_x) - rect.left()) / cw) as f32,
+        ((f64::from(client_y) - rect.top()) / ch) as f32,
+    );
+
+    let zone_snapshot = layout.get_untracked().and_then(|current| {
+        current
+            .zones
+            .iter()
+            .find(|z| z.id == zone_id)
+            .map(|zone| (zone.position, zone.size))
+    });
+
+    let Some((start_center, start_size)) = zone_snapshot else {
+        return;
+    };
+
+    set_selected_zone_id.set(Some(zone_id.to_owned()));
+    set_interaction.set(Some(InteractionState::Resize(ResizeState {
+        zone_id: zone_id.to_owned(),
+        handle,
+        start_mouse: mouse,
+        start_center,
+        start_size,
+    })));
+}
+
+fn resize_zone(
+    zone: &mut hypercolor_types::spatial::DeviceZone,
+    resize: &ResizeState,
+    current_mouse: NormalizedPosition,
+) {
+    const MIN_SIZE: f32 = 0.04;
+
+    let start_left = resize.start_center.x - resize.start_size.x * 0.5;
+    let start_right = resize.start_center.x + resize.start_size.x * 0.5;
+    let start_top = resize.start_center.y - resize.start_size.y * 0.5;
+    let start_bottom = resize.start_center.y + resize.start_size.y * 0.5;
+
+    let dx = current_mouse.x - resize.start_mouse.x;
+    let dy = current_mouse.y - resize.start_mouse.y;
+
+    let (mut left, mut right, mut top, mut bottom) =
+        (start_left, start_right, start_top, start_bottom);
+
+    match resize.handle {
+        ResizeHandle::NorthWest => {
+            left = (start_left + dx).clamp(0.0, start_right - MIN_SIZE);
+            top = (start_top + dy).clamp(0.0, start_bottom - MIN_SIZE);
+        }
+        ResizeHandle::NorthEast => {
+            right = (start_right + dx).clamp(start_left + MIN_SIZE, 1.0);
+            top = (start_top + dy).clamp(0.0, start_bottom - MIN_SIZE);
+        }
+        ResizeHandle::SouthWest => {
+            left = (start_left + dx).clamp(0.0, start_right - MIN_SIZE);
+            bottom = (start_bottom + dy).clamp(start_top + MIN_SIZE, 1.0);
+        }
+        ResizeHandle::SouthEast => {
+            right = (start_right + dx).clamp(start_left + MIN_SIZE, 1.0);
+            bottom = (start_bottom + dy).clamp(start_top + MIN_SIZE, 1.0);
+        }
+    }
+
+    zone.position.x = ((left + right) * 0.5).clamp(0.0, 1.0);
+    zone.position.y = ((top + bottom) * 0.5).clamp(0.0, 1.0);
+    zone.size.x = (right - left).max(MIN_SIZE);
+    zone.size.y = (bottom - top).max(MIN_SIZE);
 }

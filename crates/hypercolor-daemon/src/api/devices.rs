@@ -52,6 +52,7 @@ pub struct DeviceListResponse {
 #[derive(Debug, Serialize)]
 pub struct DeviceSummary {
     pub id: String,
+    pub layout_device_id: String,
     pub name: String,
     pub backend: String,
     pub status: String,
@@ -180,7 +181,7 @@ pub async fn list_devices(
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_lowercase);
 
-    let mut items: Vec<DeviceSummary> = devices
+    let filtered_devices: Vec<_> = devices
         .iter()
         .filter(|tracked| {
             status_filter
@@ -199,8 +200,22 @@ pub async fn list_devices(
                 name.contains(needle) || vendor.contains(needle)
             })
         })
-        .map(|tracked| summarize_device(&tracked.info, &tracked.state))
         .collect();
+    let mut items: Vec<DeviceSummary> = Vec::with_capacity(filtered_devices.len());
+    for tracked in filtered_devices {
+        let layout_device_id = ensure_default_logical_entry(
+            &state,
+            tracked.info.id,
+            &tracked.info.name,
+            tracked.info.total_led_count(),
+        )
+        .await;
+        items.push(summarize_device(
+            &tracked.info,
+            &tracked.state,
+            layout_device_id,
+        ));
+    }
     items.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
 
     let total = items.len();
@@ -240,7 +255,19 @@ pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         return ApiError::not_found(format!("Device not found: {id}"));
     };
 
-    ApiResponse::ok(summarize_device(&tracked.info, &tracked.state))
+    let layout_device_id = ensure_default_logical_entry(
+        &state,
+        tracked.info.id,
+        &tracked.info.name,
+        tracked.info.total_led_count(),
+    )
+    .await;
+
+    ApiResponse::ok(summarize_device(
+        &tracked.info,
+        &tracked.state,
+        layout_device_id,
+    ))
 }
 
 /// `PUT /api/v1/devices/:id` — Update a device's metadata.
@@ -277,7 +304,19 @@ pub async fn update_device(
         return ApiError::not_found(format!("Device not found: {id}"));
     };
 
-    ApiResponse::ok(summarize_device(&updated.info, &updated.state))
+    let layout_device_id = ensure_default_logical_entry(
+        &state,
+        updated.info.id,
+        &updated.info.name,
+        updated.info.total_led_count(),
+    )
+    .await;
+
+    ApiResponse::ok(summarize_device(
+        &updated.info,
+        &updated.state,
+        layout_device_id,
+    ))
 }
 
 /// `DELETE /api/v1/devices/:id` — Remove a device from tracking.
@@ -915,25 +954,52 @@ async fn sync_live_logical_mappings_for_device(state: &AppState, physical_id: De
 
     if logical_entries.is_empty() {
         manager.map_device_with_segment(
-            fallback_layout_id,
-            backend_id,
+            fallback_layout_id.clone(),
+            backend_id.clone(),
             physical_id,
             Some(SegmentRange::new(
                 0,
                 usize::try_from(tracked.info.total_led_count()).unwrap_or_default(),
             )),
         );
+        map_physical_device_alias(
+            &mut manager,
+            backend_id,
+            physical_id,
+            &fallback_layout_id,
+            SegmentRange::new(
+                0,
+                usize::try_from(tracked.info.total_led_count()).unwrap_or_default(),
+            ),
+        );
         return;
     }
 
+    let mut default_enabled = false;
     for entry in logical_entries {
         let start = usize::try_from(entry.led_start).unwrap_or_default();
         let length = usize::try_from(entry.led_count).unwrap_or_default();
+        if entry.id == fallback_layout_id {
+            default_enabled = true;
+        }
         manager.map_device_with_segment(
             entry.id,
             backend_id.clone(),
             physical_id,
             Some(SegmentRange::new(start, length)),
+        );
+    }
+
+    if default_enabled {
+        map_physical_device_alias(
+            &mut manager,
+            backend_id,
+            physical_id,
+            &fallback_layout_id,
+            SegmentRange::new(
+                0,
+                usize::try_from(tracked.info.total_led_count()).unwrap_or_default(),
+            ),
         );
     }
 }
@@ -955,9 +1021,14 @@ async fn persist_logical_segments(state: &AppState) -> Result<(), String> {
         .map_err(|error| format!("{} ({})", error, state.logical_devices_path.display()))
 }
 
-fn summarize_device(info: &DeviceInfo, state: &DeviceState) -> DeviceSummary {
+fn summarize_device(
+    info: &DeviceInfo,
+    state: &DeviceState,
+    layout_device_id: String,
+) -> DeviceSummary {
     DeviceSummary {
         id: info.id.to_string(),
+        layout_device_id,
         name: info.name.clone(),
         backend: format!("{}", info.family),
         status: state.variant_name().to_lowercase(),
@@ -976,6 +1047,21 @@ fn summarize_device(info: &DeviceInfo, state: &DeviceState) -> DeviceSummary {
             })
             .collect(),
     }
+}
+
+fn map_physical_device_alias(
+    manager: &mut BackendManager,
+    backend_id: String,
+    physical_id: DeviceId,
+    layout_device_id: &str,
+    segment: SegmentRange,
+) {
+    let physical_alias = physical_id.to_string();
+    if physical_alias == layout_device_id {
+        return;
+    }
+
+    manager.map_device_with_segment(physical_alias, backend_id, physical_id, Some(segment));
 }
 
 fn summarize_zone_topology(topology: &DeviceTopologyHint) -> ZoneTopologySummary {

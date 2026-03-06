@@ -25,6 +25,9 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (creating, set_creating) = signal(false);
     let (new_layout_name, set_new_layout_name) = signal(String::new());
     let (initialized, set_initialized) = signal(false);
+    let layout_signal = Signal::derive(move || layout.get());
+    let zone_id_signal = Signal::derive(move || selected_zone_id.get());
+    let has_layout = Signal::derive(move || layout.with(|current| current.is_some()));
 
     // Auto-select the active layout (or first available, or create a default) on mount
     Effect::new(move |_| {
@@ -86,11 +89,10 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     // Save handler
     let save_layout = move || {
-        let Some(l) = layout.get() else { return };
+        let Some(l) = layout.get_untracked() else { return };
         let id = l.id.clone();
         let zones = l.zones.clone();
         let layouts_resource = ctx.layouts_resource;
-        set_is_dirty.set(false);
         leptos::task::spawn_local(async move {
             let req = api::UpdateLayoutApiRequest {
                 name: None,
@@ -101,6 +103,9 @@ pub fn LayoutBuilder() -> impl IntoView {
             };
             if api::update_layout(&id, &req).await.is_ok() {
                 toasts::toast_success("Layout saved");
+                set_is_dirty.set(false);
+            } else {
+                toasts::toast_error("Failed to save layout");
             }
             layouts_resource.refetch();
         });
@@ -108,12 +113,31 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     // Apply handler
     let apply_layout = move || {
-        let Some(l) = layout.get() else { return };
+        let Some(l) = layout.get_untracked() else { return };
         let id = l.id.clone();
+        let zones = l.zones.clone();
+        let layouts_resource = ctx.layouts_resource;
         leptos::task::spawn_local(async move {
+            let req = api::UpdateLayoutApiRequest {
+                name: None,
+                description: None,
+                canvas_width: None,
+                canvas_height: None,
+                zones: Some(zones),
+            };
+
+            if api::update_layout(&id, &req).await.is_err() {
+                toasts::toast_error("Failed to save layout before apply");
+                return;
+            }
+
             if api::apply_layout(&id).await.is_ok() {
                 toasts::toast_success("Layout applied");
+                set_is_dirty.set(false);
+            } else {
+                toasts::toast_error("Failed to apply layout");
             }
+            layouts_resource.refetch();
         });
     };
 
@@ -286,45 +310,9 @@ pub fn LayoutBuilder() -> impl IntoView {
             </div>
 
             // Three-column layout
-            {move || {
-                if layout.get().is_some() {
-                    let layout_signal = Signal::derive(move || layout.get());
-                    let zone_id_signal = Signal::derive(move || selected_zone_id.get());
-                    view! {
-                        <div class="flex flex-1 overflow-hidden">
-                            // Left palette
-                            <div class="w-[200px] shrink-0 border-r border-white/[0.04] overflow-y-auto">
-                                <LayoutPalette
-                                    layout=layout_signal
-                                    set_layout=set_layout
-                                    set_is_dirty=set_is_dirty
-                                />
-                            </div>
-
-                            // Center canvas
-                            <div class="flex-1 overflow-hidden relative">
-                                <LayoutCanvas
-                                    layout=layout_signal
-                                    selected_zone_id=zone_id_signal
-                                    set_selected_zone_id=set_selected_zone_id
-                                    set_layout=set_layout
-                                    set_is_dirty=set_is_dirty
-                                />
-                            </div>
-
-                            // Right properties
-                            <div class="w-[280px] shrink-0 border-l border-white/[0.04] overflow-y-auto">
-                                <LayoutZoneProperties
-                                    layout=layout_signal
-                                    selected_zone_id=zone_id_signal
-                                    set_layout=set_layout
-                                    set_selected_zone_id=set_selected_zone_id
-                                    set_is_dirty=set_is_dirty
-                                />
-                            </div>
-                        </div>
-                    }.into_any()
-                } else {
+            <Show
+                when=move || has_layout.get()
+                fallback=move || {
                     view! {
                         <div class="flex-1 flex items-center justify-center">
                             <div class="text-center space-y-2">
@@ -332,9 +320,43 @@ pub fn LayoutBuilder() -> impl IntoView {
                                 <div class="text-fg-dim/50 text-xs">"Drag devices onto the canvas to build your spatial mapping"</div>
                             </div>
                         </div>
-                    }.into_any()
+                    }
                 }
-            }}
+            >
+                <div class="flex flex-1 overflow-hidden">
+                    // Left palette
+                    <div class="w-[200px] shrink-0 border-r border-white/[0.04] overflow-y-auto">
+                        <LayoutPalette
+                            layout=layout_signal
+                            set_layout=set_layout
+                            set_selected_zone_id=set_selected_zone_id
+                            set_is_dirty=set_is_dirty
+                        />
+                    </div>
+
+                    // Center canvas
+                    <div class="flex-1 overflow-hidden relative">
+                        <LayoutCanvas
+                            layout=layout_signal
+                            selected_zone_id=zone_id_signal
+                            set_selected_zone_id=set_selected_zone_id
+                            set_layout=set_layout
+                            set_is_dirty=set_is_dirty
+                        />
+                    </div>
+
+                    // Right properties
+                    <div class="w-[280px] shrink-0 border-l border-white/[0.04] overflow-y-auto">
+                        <LayoutZoneProperties
+                            layout=layout_signal
+                            selected_zone_id=zone_id_signal
+                            set_layout=set_layout
+                            set_selected_zone_id=set_selected_zone_id
+                            set_is_dirty=set_is_dirty
+                        />
+                    </div>
+                </div>
+            </Show>
         </div>
     }
 }

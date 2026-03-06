@@ -2,11 +2,14 @@
 
 use std::cmp::min;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use hypercolor_hal::database::{DeviceDescriptor, TransportType};
-use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, ResponseStatus};
+use hypercolor_hal::protocol::{
+    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ResponseStatus,
+};
 use hypercolor_hal::transport::control::UsbControlTransport;
 use hypercolor_hal::transport::hid::UsbHidTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
@@ -35,8 +38,9 @@ struct PendingUsbDevice {
 }
 
 struct UsbDevice {
-    protocol: Box<dyn Protocol>,
-    transport: Box<dyn Transport>,
+    protocol: Arc<dyn Protocol>,
+    transport: Arc<dyn Transport>,
+    keepalive_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Core USB backend for HAL-managed device families.
@@ -256,6 +260,46 @@ impl UsbBackend {
 
         Ok(())
     }
+
+    fn spawn_keepalive(
+        device_id: DeviceId,
+        device_name: &'static str,
+        protocol: Arc<dyn Protocol>,
+        transport: Arc<dyn Transport>,
+        keepalive: ProtocolKeepalive,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(keepalive.interval).await;
+                debug!(
+                    device_id = %device_id,
+                    device = device_name,
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    interval_ms = keepalive.interval.as_millis(),
+                    command_count = keepalive.commands.len(),
+                    "usb keepalive tick"
+                );
+
+                if let Err(error) = Self::run_commands(
+                    protocol.as_ref(),
+                    transport.as_ref(),
+                    keepalive.commands.clone(),
+                )
+                .await
+                {
+                    warn!(
+                        device_id = %device_id,
+                        device = device_name,
+                        protocol = protocol.name(),
+                        transport = transport.name(),
+                        error = %error,
+                        "usb keepalive failed"
+                    );
+                }
+            }
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -325,8 +369,8 @@ impl DeviceBackend for UsbBackend {
                 )
             })?;
 
-        let protocol = (pending.descriptor.protocol.build)();
-        let transport = Self::build_transport(&pending, &usb).await?;
+        let protocol: Arc<dyn Protocol> = Arc::from((pending.descriptor.protocol.build)());
+        let transport: Arc<dyn Transport> = Arc::from(Self::build_transport(&pending, &usb).await?);
         let init_sequence = protocol.init_sequence();
         let first_init_packet = init_sequence
             .first()
@@ -351,11 +395,30 @@ impl DeviceBackend for UsbBackend {
                 )
             })?;
 
+        let keepalive_task = protocol.keepalive().map(|keepalive| {
+            debug!(
+                device_id = %id,
+                protocol = protocol.name(),
+                transport = transport.name(),
+                interval_ms = keepalive.interval.as_millis(),
+                command_count = keepalive.commands.len(),
+                "starting USB keepalive task"
+            );
+            Self::spawn_keepalive(
+                *id,
+                pending.descriptor.name,
+                protocol.clone(),
+                transport.clone(),
+                keepalive,
+            )
+        });
+
         self.connected.insert(
             *id,
             UsbDevice {
                 protocol,
                 transport,
+                keepalive_task,
             },
         );
 
@@ -363,10 +426,15 @@ impl DeviceBackend for UsbBackend {
     }
 
     async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        let Some(device) = self.connected.remove(id) else {
+        let Some(mut device) = self.connected.remove(id) else {
             self.pending.remove(id);
             return Ok(());
         };
+
+        if let Some(task) = device.keepalive_task.take() {
+            task.abort();
+            let _ = task.await;
+        }
 
         let shutdown = device.protocol.shutdown_sequence();
         if !shutdown.is_empty()
@@ -382,6 +450,7 @@ impl DeviceBackend for UsbBackend {
 
         device
             .transport
+            .as_ref()
             .close()
             .await
             .map_err(map_transport_error)

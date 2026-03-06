@@ -755,12 +755,23 @@ async fn sync_logical_mappings_for_device(
             device_id,
             Some(fallback),
         );
+        map_physical_device_alias(
+            &mut manager,
+            backend_id,
+            device_id,
+            fallback_layout_id,
+            fallback,
+        );
         return;
     }
 
+    let mut default_enabled = false;
     for logical in logical_entries {
         let start = usize::try_from(logical.led_start).unwrap_or_default();
         let length = usize::try_from(logical.led_count).unwrap_or_default();
+        if logical.id == fallback_layout_id {
+            default_enabled = true;
+        }
         manager.map_device_with_segment(
             logical.id,
             backend_id.to_owned(),
@@ -768,6 +779,36 @@ async fn sync_logical_mappings_for_device(
             Some(hypercolor_core::device::SegmentRange::new(start, length)),
         );
     }
+
+    if default_enabled {
+        map_physical_device_alias(
+            &mut manager,
+            backend_id,
+            device_id,
+            fallback_layout_id,
+            fallback,
+        );
+    }
+}
+
+fn map_physical_device_alias(
+    manager: &mut BackendManager,
+    backend_id: &str,
+    device_id: DeviceId,
+    layout_device_id: &str,
+    segment: hypercolor_core::device::SegmentRange,
+) {
+    let physical_alias = device_id.to_string();
+    if physical_alias == layout_device_id {
+        return;
+    }
+
+    manager.map_device_with_segment(
+        physical_alias,
+        backend_id.to_owned(),
+        device_id,
+        Some(segment),
+    );
 }
 
 async fn device_log_label(runtime: &DiscoveryRuntime, device_id: DeviceId) -> String {

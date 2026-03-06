@@ -7,7 +7,7 @@ use hypercolor_hal::database::{ProtocolDatabase, TransportType};
 use hypercolor_hal::drivers::razer::{PID_BLADE_15_LATE_2021_ADVANCED, RAZER_VENDOR_ID};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus};
 use hypercolor_hal::transport::Transport;
-use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
+use hypercolor_hal::transport::control::UsbControlTransport;
 
 const HARDWARE_TEST_ENV: &str = "HYPERCOLOR_TEST_RAZER_HARDWARE";
 const RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_000);
@@ -62,21 +62,21 @@ async fn blade_identify_sequence_writes_without_protocol_errors() -> Result<(), 
     let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BLADE_15_LATE_2021_ADVANCED)
         .expect("Blade 15 descriptor should exist");
     let (interface, report_id) = match descriptor.transport {
-        TransportType::UsbHidRaw {
+        TransportType::UsbControl {
             interface,
             report_id,
         } => (interface, report_id),
-        other => panic!("expected hidraw transport for Blade 15, got {other:?}"),
+        other => panic!("expected control transport for Blade 15, got {other:?}"),
     };
 
-    let transport = UsbHidRawTransport::open(
-        RAZER_VENDOR_ID,
-        PID_BLADE_15_LATE_2021_ADVANCED,
-        interface,
-        report_id,
-        None,
-        None,
-    )?;
+    let usb = nusb::list_devices()
+        .await?
+        .find(|device| {
+            device.vendor_id() == RAZER_VENDOR_ID
+                && device.product_id() == PID_BLADE_15_LATE_2021_ADVANCED
+        })
+        .expect("Blade 15 USB device should be present");
+    let transport = UsbControlTransport::new(usb.open().await?, interface, report_id).await?;
     let protocol = (descriptor.protocol.build)();
     let total_leds = usize::try_from(protocol.total_leds()).expect("LED count should fit usize");
     let white = vec![[255, 255, 255]; total_leds];

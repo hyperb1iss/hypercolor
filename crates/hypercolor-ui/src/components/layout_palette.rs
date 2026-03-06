@@ -19,6 +19,7 @@ use hypercolor_types::spatial::{
 pub fn LayoutPalette(
     #[prop(into)] layout: Signal<Option<SpatialLayout>>,
     set_layout: WriteSignal<Option<SpatialLayout>>,
+    set_selected_zone_id: WriteSignal<Option<String>>,
     set_is_dirty: WriteSignal<bool>,
 ) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
@@ -62,7 +63,7 @@ pub fn LayoutPalette(
                                             </div>
                                             <div class="space-y-1">
                                                 {devs.into_iter().map(|dev| {
-                                                    let device_id = dev.id.clone();
+                                                    let device_id = dev.layout_device_id.clone();
                                                     let device_name = dev.name.clone();
                                                     let fallback_leds = dev.total_leds;
                                                     let mut entries: Vec<(Option<api::ZoneSummary>, String, usize)> = if dev.zones.is_empty() {
@@ -88,26 +89,28 @@ pub fn LayoutPalette(
                                                         .into_iter()
                                                         .map(|(zone_summary, display_name, led_count)| {
                                                             let zone_name_key = zone_summary.as_ref().map(|z| z.name.clone());
-                                                            let in_layout = {
-                                                                let did = device_id.clone();
-                                                                let zone_name = zone_name_key.clone();
-                                                                Signal::derive(move || {
-                                                                    layout
-                                                                        .get()
-                                                                        .map(|l| {
-                                                                            l.zones.iter().any(|z| {
-                                                                                if z.device_id != did {
-                                                                                    return false;
-                                                                                }
-                                                                                match zone_name.as_deref() {
-                                                                                    Some(name) => z.zone_name.as_deref() == Some(name),
-                                                                                    None => z.zone_name.is_none(),
-                                                                                }
-                                                                            })
+                                                                let in_layout = {
+                                                                    let did = device_id.clone();
+                                                                    let zone_name = zone_name_key.clone();
+                                                                    Signal::derive(move || {
+                                                                        layout.with(|current| {
+                                                                            current
+                                                                                .as_ref()
+                                                                                .map(|l| {
+                                                                                    l.zones.iter().any(|z| {
+                                                                                        if z.device_id != did {
+                                                                                            return false;
+                                                                                        }
+                                                                                        match zone_name.as_deref() {
+                                                                                            Some(name) => z.zone_name.as_deref() == Some(name),
+                                                                                            None => z.zone_name.is_none(),
+                                                                                        }
+                                                                                    })
+                                                                                })
+                                                                                .unwrap_or(false)
                                                                         })
-                                                                        .unwrap_or(false)
-                                                                })
-                                                            };
+                                                                    })
+                                                                };
 
                                                             let topology_chip = zone_summary
                                                                 .as_ref()
@@ -151,11 +154,13 @@ pub fn LayoutPalette(
                                                                                             zone_entry.as_ref(),
                                                                                             fallback_leds,
                                                                                         );
+                                                                                        let zone_id = zone.id.clone();
                                                                                         set_layout.update(|l| {
                                                                                             if let Some(layout) = l {
                                                                                                 layout.zones.push(zone);
                                                                                             }
                                                                                         });
+                                                                                        set_selected_zone_id.set(Some(zone_id));
                                                                                         set_is_dirty.set(true);
                                                                                     }
                                                                                 >"Add"</button>

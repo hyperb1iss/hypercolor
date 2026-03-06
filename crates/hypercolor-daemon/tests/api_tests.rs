@@ -276,6 +276,10 @@ async fn list_devices_includes_structured_zone_topology_hints() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
+    assert_eq!(
+        json["data"]["items"][0]["layout_device_id"],
+        format!("device:{id}")
+    );
     let zone = &json["data"]["items"][0]["zones"][0];
     assert_eq!(zone["name"], "Panel");
     assert_eq!(zone["topology_hint"]["type"], "matrix");

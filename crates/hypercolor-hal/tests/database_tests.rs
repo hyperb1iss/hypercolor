@@ -1,7 +1,7 @@
 use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::drivers::razer::{
-    PID_BASILISK_V3, PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, PID_SEIREN_EMOTE,
-    RAZER_VENDOR_ID,
+    PID_BASILISK_V3, PID_BLADE_14_2021, PID_BLADE_14_2023, PID_BLADE_15_2022,
+    PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, PID_SEIREN_EMOTE, RAZER_VENDOR_ID,
 };
 use hypercolor_hal::registry::TransportType;
 use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};
@@ -54,6 +54,47 @@ fn lookup_returns_blade_15_late_2021_advanced_descriptor() {
 }
 
 #[test]
+fn lookup_returns_blade_14_2021_descriptor_with_keepalive() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BLADE_14_2021)
+        .expect("Blade 14 (2021) descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Blade 14 (2021)");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbControl {
+            interface: 2,
+            report_id: 0x00
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Razer 0x3F Standard");
+    assert!(protocol.keepalive().is_some());
+}
+
+#[test]
+fn lookup_returns_blade_15_2022_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BLADE_15_2022)
+        .expect("Blade 15 (2022) descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Blade 15 (2022)");
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Razer 0x1F Standard");
+    assert_eq!(protocol.total_leds(), 96);
+}
+
+#[test]
+fn lookup_returns_blade_14_2023_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BLADE_14_2023)
+        .expect("Blade 14 (2023) descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Blade 14 (2023)");
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Razer 0x1F Standard");
+    assert_eq!(protocol.total_leds(), 96);
+}
+
+#[test]
 fn lookup_returns_seiren_emote_with_8x8_zone_topology() {
     let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_SEIREN_EMOTE)
         .expect("Seiren Emote descriptor should exist");
@@ -77,6 +118,7 @@ fn known_vid_pid_contains_razer_entries() {
     let pairs = ProtocolDatabase::known_vid_pids();
     assert!(pairs.contains(&(RAZER_VENDOR_ID, PID_HUNTSMAN_V2)));
     assert!(pairs.contains(&(RAZER_VENDOR_ID, PID_BASILISK_V3)));
+    assert!(pairs.contains(&(RAZER_VENDOR_ID, PID_BLADE_14_2021)));
     assert!(pairs.contains(&(RAZER_VENDOR_ID, PID_BLADE_15_LATE_2021_ADVANCED)));
 }
 
@@ -94,5 +136,5 @@ fn by_vendor_returns_only_razer_entries() {
 #[test]
 fn count_matches_static_descriptor_count() {
     assert_eq!(ProtocolDatabase::count(), ProtocolDatabase::all().len());
-    assert!(ProtocolDatabase::count() >= 4);
+    assert!(ProtocolDatabase::count() >= 7);
 }

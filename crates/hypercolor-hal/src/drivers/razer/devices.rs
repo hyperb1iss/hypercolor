@@ -23,8 +23,17 @@ pub const PID_BASILISK_V3: u16 = 0x0099;
 /// Razer Seiren Emote.
 pub const PID_SEIREN_EMOTE: u16 = 0x0F1B;
 
+/// Razer Blade 14 (2021).
+pub const PID_BLADE_14_2021: u16 = 0x0270;
+
 /// Razer Blade 15 (Late 2021 Advanced).
 pub const PID_BLADE_15_LATE_2021_ADVANCED: u16 = 0x0276;
+
+/// Razer Blade 15 (2022).
+pub const PID_BLADE_15_2022: u16 = 0x028A;
+
+/// Razer Blade 14 (2023).
+pub const PID_BLADE_14_2023: u16 = 0x029D;
 
 /// Build a Huntsman V2 protocol instance.
 pub fn build_huntsman_v2_protocol() -> Box<dyn Protocol> {
@@ -64,6 +73,55 @@ pub fn build_seiren_emote_protocol() -> Box<dyn Protocol> {
 
 /// Build a Blade 15 (Late 2021 Advanced) protocol instance.
 pub fn build_blade_15_late_2021_advanced_protocol() -> Box<dyn Protocol> {
+    Box::new(
+        RazerProtocol::new(
+            RazerProtocolVersion::Modern,
+            RazerLightingCommandSet::Standard,
+            RazerMatrixType::Standard,
+            (6, 16),
+            LED_ID_BACKLIGHT,
+        )
+        .without_device_mode_commands()
+        .with_standard_storage(VARSTORE)
+        .with_frame_transaction_id(0xFF),
+    )
+}
+
+/// Build a Blade 14 (2021) protocol instance.
+pub fn build_blade_14_2021_protocol() -> Box<dyn Protocol> {
+    Box::new(
+        RazerProtocol::new(
+            RazerProtocolVersion::Extended,
+            RazerLightingCommandSet::Standard,
+            RazerMatrixType::Standard,
+            (6, 16),
+            LED_ID_BACKLIGHT,
+        )
+        .without_device_mode_commands()
+        .with_standard_storage(VARSTORE)
+        .with_frame_transaction_id(0xFF)
+        .with_device_mode_keepalive(std::time::Duration::from_millis(2_500)),
+    )
+}
+
+/// Build a Blade 15 (2022) protocol instance.
+pub fn build_blade_15_2022_protocol() -> Box<dyn Protocol> {
+    Box::new(
+        RazerProtocol::new(
+            RazerProtocolVersion::Modern,
+            RazerLightingCommandSet::Standard,
+            RazerMatrixType::Standard,
+            (6, 16),
+            LED_ID_BACKLIGHT,
+        )
+        .without_device_mode_commands()
+        .with_standard_storage(VARSTORE)
+        .with_frame_transaction_id(0xFF),
+    )
+}
+
+/// Build a Blade 14 (2023) protocol instance.
+pub fn build_blade_14_2023_protocol() -> Box<dyn Protocol> {
     Box::new(
         RazerProtocol::new(
             RazerProtocolVersion::Modern,
@@ -128,6 +186,21 @@ static RAZER_DESCRIPTORS: &[DeviceDescriptor] = &[
     ),
     DeviceDescriptor {
         vendor_id: RAZER_VENDOR_ID,
+        product_id: PID_BLADE_14_2021,
+        name: "Razer Blade 14 (2021)",
+        family: DeviceFamily::Razer,
+        transport: TransportType::UsbControl {
+            interface: 2,
+            report_id: 0x00,
+        },
+        protocol: ProtocolBinding {
+            id: "razer/blade-14-2021",
+            build: build_blade_14_2021_protocol,
+        },
+        firmware_predicate: None,
+    },
+    DeviceDescriptor {
+        vendor_id: RAZER_VENDOR_ID,
         product_id: PID_BLADE_15_LATE_2021_ADVANCED,
         name: "Razer Blade 15 (Late 2021 Advanced)",
         family: DeviceFamily::Razer,
@@ -138,6 +211,36 @@ static RAZER_DESCRIPTORS: &[DeviceDescriptor] = &[
         protocol: ProtocolBinding {
             id: "razer/blade-15-late-2021-advanced",
             build: build_blade_15_late_2021_advanced_protocol,
+        },
+        firmware_predicate: None,
+    },
+    DeviceDescriptor {
+        vendor_id: RAZER_VENDOR_ID,
+        product_id: PID_BLADE_15_2022,
+        name: "Razer Blade 15 (2022)",
+        family: DeviceFamily::Razer,
+        transport: TransportType::UsbControl {
+            interface: 2,
+            report_id: 0x00,
+        },
+        protocol: ProtocolBinding {
+            id: "razer/blade-15-2022",
+            build: build_blade_15_2022_protocol,
+        },
+        firmware_predicate: None,
+    },
+    DeviceDescriptor {
+        vendor_id: RAZER_VENDOR_ID,
+        product_id: PID_BLADE_14_2023,
+        name: "Razer Blade 14 (2023)",
+        family: DeviceFamily::Razer,
+        transport: TransportType::UsbControl {
+            interface: 2,
+            report_id: 0x00,
+        },
+        protocol: ProtocolBinding {
+            id: "razer/blade-14-2023",
+            build: build_blade_14_2023_protocol,
         },
         firmware_predicate: None,
     },

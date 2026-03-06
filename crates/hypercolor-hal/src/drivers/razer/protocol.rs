@@ -7,7 +7,8 @@ use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopo
 use tracing::warn;
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
+    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ProtocolZone,
+    ResponseStatus,
 };
 
 use super::crc::{RAZER_REPORT_LEN, razer_crc};
@@ -33,9 +34,11 @@ pub struct RazerProtocol {
     matrix_size: (u8, u8),
     reported_matrix_size: Option<(u8, u8)>,
     led_id: u8,
+    brightness_led_id: u8,
     sends_device_mode_commands: bool,
     standard_storage: u8,
     frame_transaction_id: Option<u8>,
+    keepalive_interval: Option<Duration>,
 }
 
 impl RazerProtocol {
@@ -55,9 +58,11 @@ impl RazerProtocol {
             matrix_size,
             reported_matrix_size: None,
             led_id,
+            brightness_led_id: led_id,
             sends_device_mode_commands: true,
             standard_storage: NOSTORE,
             frame_transaction_id: None,
+            keepalive_interval: None,
         }
     }
 
@@ -82,10 +87,25 @@ impl RazerProtocol {
         self
     }
 
+    /// Override the LED ID used specifically for brightness commands.
+    #[must_use]
+    pub const fn with_brightness_led_id(mut self, brightness_led_id: u8) -> Self {
+        self.brightness_led_id = brightness_led_id;
+        self
+    }
+
     /// Override the transaction ID used for frame upload packets only.
     #[must_use]
     pub const fn with_frame_transaction_id(mut self, frame_transaction_id: u8) -> Self {
         self.frame_transaction_id = Some(frame_transaction_id);
+        self
+    }
+
+    /// Enable a periodic `GET_DEVICE_MODE` keepalive for devices whose RGB
+    /// session times out while idle.
+    #[must_use]
+    pub const fn with_device_mode_keepalive(mut self, interval: Duration) -> Self {
+        self.keepalive_interval = Some(interval);
         self
     }
 
@@ -135,6 +155,18 @@ impl RazerProtocol {
             }
             (RazerProtocolVersion::WirelessKb, RazerLightingCommandSet::Standard) => {
                 "Razer 0x9F Standard"
+            }
+            (RazerProtocolVersion::Special08, RazerLightingCommandSet::Extended) => {
+                "Razer 0x08 Extended"
+            }
+            (RazerProtocolVersion::Special08, RazerLightingCommandSet::Standard) => {
+                "Razer 0x08 Standard"
+            }
+            (RazerProtocolVersion::KrakenV4, RazerLightingCommandSet::Extended) => {
+                "Razer 0x60 Extended"
+            }
+            (RazerProtocolVersion::KrakenV4, RazerLightingCommandSet::Standard) => {
+                "Razer 0x60 Standard"
             }
         }
     }
@@ -198,11 +230,12 @@ impl RazerProtocol {
         expects_response: bool,
         post_delay: Duration,
     ) -> Option<ProtocolCommand> {
-        self.build_packet_with_transaction(
+        self.build_packet_with_options(
             self.version.transaction_id(),
             command_class,
             command_id,
             args,
+            None,
             expects_response,
             post_delay,
         )
@@ -217,6 +250,47 @@ impl RazerProtocol {
         expects_response: bool,
         post_delay: Duration,
     ) -> Option<ProtocolCommand> {
+        self.build_packet_with_options(
+            transaction_id,
+            command_class,
+            command_id,
+            args,
+            None,
+            expects_response,
+            post_delay,
+        )
+    }
+
+    fn build_packet_with_declared_size(
+        &self,
+        command_class: u8,
+        command_id: u8,
+        args: &[u8],
+        declared_data_size: u8,
+        expects_response: bool,
+        post_delay: Duration,
+    ) -> Option<ProtocolCommand> {
+        self.build_packet_with_options(
+            self.version.transaction_id(),
+            command_class,
+            command_id,
+            args,
+            Some(declared_data_size),
+            expects_response,
+            post_delay,
+        )
+    }
+
+    fn build_packet_with_options(
+        &self,
+        transaction_id: u8,
+        command_class: u8,
+        command_id: u8,
+        args: &[u8],
+        declared_data_size: Option<u8>,
+        expects_response: bool,
+        post_delay: Duration,
+    ) -> Option<ProtocolCommand> {
         if args.len() > ARGS_LEN {
             warn!(
                 args_len = args.len(),
@@ -225,9 +299,26 @@ impl RazerProtocol {
             return None;
         }
 
+        let data_size = declared_data_size.unwrap_or_else(|| u8::try_from(args.len()).unwrap_or(0));
+        if usize::from(data_size) > ARGS_LEN {
+            warn!(
+                data_size,
+                "razer command declared data size exceeds argument field, dropping packet"
+            );
+            return None;
+        }
+
+        if args.len() > usize::from(data_size) {
+            warn!(
+                args_len = args.len(),
+                data_size, "razer command arguments exceed declared data size, dropping packet"
+            );
+            return None;
+        }
+
         let mut packet = [0_u8; RAZER_REPORT_LEN];
         packet[1] = transaction_id;
-        packet[DATA_SIZE_OFFSET] = u8::try_from(args.len()).unwrap_or(0);
+        packet[DATA_SIZE_OFFSET] = data_size;
         packet[COMMAND_CLASS_OFFSET] = command_class;
         packet[COMMAND_ID_OFFSET] = command_id;
         packet[ARGS_OFFSET..ARGS_OFFSET + args.len()].copy_from_slice(args);
@@ -238,6 +329,10 @@ impl RazerProtocol {
             expects_response,
             post_delay,
         })
+    }
+
+    fn get_device_mode_command(&self) -> Option<ProtocolCommand> {
+        self.build_packet_with_declared_size(0x00, 0x84, &[], 0x02, true, Duration::ZERO)
     }
 
     fn activation_command(&self) -> Option<ProtocolCommand> {
@@ -469,11 +564,21 @@ impl Protocol for RazerProtocol {
         self.build_packet(
             command_class,
             command_id,
-            &[storage, self.led_id, brightness],
+            &[storage, self.brightness_led_id, brightness],
             false,
             Duration::ZERO,
         )
         .map(|command| vec![command])
+    }
+
+    fn keepalive(&self) -> Option<ProtocolKeepalive> {
+        let interval = self.keepalive_interval?;
+        let command = self.get_device_mode_command()?;
+
+        Some(ProtocolKeepalive {
+            commands: vec![command],
+            interval,
+        })
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {

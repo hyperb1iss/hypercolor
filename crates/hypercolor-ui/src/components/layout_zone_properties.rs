@@ -19,8 +19,11 @@ pub fn LayoutZoneProperties(
     // Derive selected zone snapshot for display
     let zone_snapshot = Signal::derive(move || {
         let id = selected_zone_id.get()?;
-        let l = layout.get()?;
-        l.zones.into_iter().find(|z| z.id == id)
+        layout.with(|current| {
+            current
+                .as_ref()
+                .and_then(|l| l.zones.iter().find(|z| z.id == id).cloned())
+        })
     });
 
     // Helper to update a zone field

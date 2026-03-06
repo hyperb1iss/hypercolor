@@ -26,6 +26,14 @@ pub trait Protocol: Send + Sync {
         None
     }
 
+    /// Background keepalive traffic required to keep the device in direct mode.
+    ///
+    /// Most devices do not need this. Protocols that do can return a command
+    /// sequence and polling interval for the backend to run while connected.
+    fn keepalive(&self) -> Option<ProtocolKeepalive> {
+        None
+    }
+
     /// Parse a raw device response payload.
     ///
     /// # Errors
@@ -57,6 +65,17 @@ pub struct ProtocolCommand {
 
     /// Minimum delay after sending this command.
     pub post_delay: Duration,
+}
+
+/// A low-frequency protocol command sequence that should be run periodically
+/// while a device remains connected.
+#[derive(Debug, Clone)]
+pub struct ProtocolKeepalive {
+    /// Wire-level commands to execute for each keepalive tick.
+    pub commands: Vec<ProtocolCommand>,
+
+    /// Delay between keepalive ticks.
+    pub interval: Duration,
 }
 
 /// Parsed response from a device.
