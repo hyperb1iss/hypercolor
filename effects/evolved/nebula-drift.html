@@ -1189,6 +1189,7 @@
     canvasHeight;
     canvas = null;
     fpsCapLastFrameTime = 0;
+    lastControlPollTime = Number.NEGATIVE_INFINITY;
     constructor(config) {
       this.id = config.id;
       this.name = config.name;
@@ -1245,7 +1246,10 @@
       }
     }
     onFrame(time) {
-      if (time % 0.1 < 0.02) this.update();
+      if (time - this.lastControlPollTime >= 0.1) {
+        this.lastControlPollTime = time;
+        this.update();
+      }
     }
     update(force = false) {
       const controls = this.getControlValues();
@@ -1754,6 +1758,10 @@ void main() {
     }
     return safeDefault;
   }
+  function normalizePercentage(value, defaultValue = 100, minValue = 0.01) {
+    const rawValue = typeof value === "number" && !Number.isNaN(value) ? value : defaultValue;
+    return Math.max(minValue, rawValue / 100);
+  }
 
   // packages/core/src/init.ts
   function detectInitMode() {
@@ -1828,8 +1836,12 @@ void main() {
       const values = {};
       for (const ctrl of this.resolvedControls) {
         let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
-        if (ctrl.normalize === "speed" && typeof val === "number") {
-          val = normalizeSpeed(val);
+        if (typeof val === "number") {
+          if (ctrl.normalize === "speed") {
+            val = normalizeSpeed(val);
+          } else if (ctrl.normalize === "percentage") {
+            val = normalizePercentage(val);
+          }
         }
         if (ctrl.isMagicTransform && ctrl.values) {
           val = comboboxValueToIndex(
@@ -1860,7 +1872,7 @@ void main() {
       for (const ctrl of this.resolvedControls) {
         const raw = controls[ctrl.key];
         if (raw !== void 0) {
-          this.setUniform(ctrl.uniformName, this.toUniformValue(ctrl, raw));
+          this.setUniform(ctrl.uniformName, this.toUniformValue(ctrl, raw, true));
         }
       }
     }
@@ -1877,12 +1889,13 @@ void main() {
       this.pushAllUniforms();
     }
     /** Convert a raw control value to a GPU-compatible uniform value. */
-    toUniformValue(ctrl, raw) {
+    toUniformValue(ctrl, raw, skipNormalization = false) {
       if (ctrl.spec.__type === "combobox" && ctrl.values) {
         return comboboxValueToIndex(raw, ctrl.values, 0);
       }
-      if (ctrl.normalize === "speed" && typeof raw === "number") {
-        return normalizeSpeed(raw);
+      if (!skipNormalization && typeof raw === "number") {
+        if (ctrl.normalize === "speed") return normalizeSpeed(raw);
+        if (ctrl.normalize === "percentage") return normalizePercentage(raw);
       }
       if (typeof raw === "boolean") {
         return raw ? 1 : 0;
@@ -1940,6 +1953,7 @@ void main() {
     if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
       storeMetadata({
         name,
+        shader,
         controls,
         resolvedControls: resolved,
         description: opts.description,
@@ -2326,8 +2340,12 @@ void main() {
     const result = {};
     for (const ctrl of controls) {
       let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
-      if (ctrl.normalize === "speed" && typeof val === "number") {
-        val = normalizeSpeed(val);
+      if (typeof val === "number") {
+        if (ctrl.normalize === "speed") {
+          val = normalizeSpeed(val);
+        } else if (ctrl.normalize === "percentage") {
+          val = normalizePercentage(val);
+        }
       }
       if (ctrl.isPalette && ctrl.values) {
         const paletteName = typeof val === "string" ? val : ctrl.values[0] ?? "SilkCircuit";
@@ -2510,7 +2528,7 @@ void main() {
   }));
 
   // src/effects/nebula-drift/fragment.glsl
-  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iSpeed;\nuniform float iDensity;\nuniform float iStarSize;\nuniform float iGlow;\nuniform int iDirection;\nuniform int iBackground;\nuniform int iStarMode;\nuniform int iPalette;\n\nfloat hash11(float p) {\n    p = fract(p * 0.1031);\n    p *= p + 33.33;\n    p *= p + p;\n    return fract(p);\n}\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec2 hash22(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.xx + p3.yz) * p3.zy);\n}\n\nvec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {\n    return a + b * cos(6.28318 * (c * t + d));\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return iqPalette(t, vec3(0.44, 0.20, 0.55), vec3(0.56, 0.55, 0.48), vec3(1.0, 0.9, 0.7), vec3(0.84, 0.16, 0.52));\n    if (id == 1) return iqPalette(t, vec3(0.18, 0.28, 0.54), vec3(0.32, 0.44, 0.52), vec3(0.86, 0.95, 1.0), vec3(0.72, 0.08, 0.22));\n    if (id == 2) return iqPalette(t, vec3(0.48, 0.28, 0.08), vec3(0.52, 0.42, 0.28), vec3(1.0, 0.9, 0.6), vec3(0.06, 0.20, 0.28));\n    if (id == 3) return iqPalette(t, vec3(0.18, 0.42, 0.35), vec3(0.30, 0.34, 0.40), vec3(0.78, 0.82, 0.95), vec3(0.52, 0.24, 0.65));\n    if (id == 4) {\n        float m = 0.65 + 0.35 * sin(6.28318 * t);\n        return vec3(m);\n    }\n    return iqPalette(t, vec3(0.44, 0.20, 0.55), vec3(0.56, 0.55, 0.48), vec3(1.0, 0.9, 0.7), vec3(0.84, 0.16, 0.52));\n}\n\nvec2 flowDirection(vec2 p, int mode) {\n    if (mode == 0 || mode == 1) {\n        vec2 radial = normalize(p + vec2(0.0001, 0.0));\n        vec2 tangent = vec2(-radial.y, radial.x);\n        float signDir = (mode == 0) ? 1.0 : -1.0;\n        float swirl = 0.08 + smoothstep(0.0, 1.25, length(p)) * 0.16;\n        return normalize(radial * signDir + tangent * swirl * signDir);\n    }\n    if (mode == 2) return vec2(-1.0, 0.0);\n    if (mode == 3) return vec2(1.0, 0.0);\n    if (mode == 4) return vec2(0.0, 1.0);\n    return vec2(0.0, -1.0);\n}\n\nvec3 backgroundColor(vec2 uv, vec2 p, float time, int mode, int paletteId) {\n    float r = length(p);\n    float horizon = smoothstep(-0.65, 0.85, uv.y);\n\n    vec3 low = paletteColor(0.08 + uv.x * 0.05 + time * 0.012, paletteId) * 0.045;\n    vec3 high = paletteColor(0.38 + uv.y * 0.06 - time * 0.010, paletteId) * 0.085;\n    vec3 col = mix(low, high, horizon);\n\n    if (mode == 1) {\n        // Cockpit: subtle forward glow with lower rim.\n        float rim = smoothstep(0.05, 1.10, r);\n        float lane = exp(-pow((uv.y + 0.35) * 2.2, 2.0));\n        col += paletteColor(0.62 + uv.x * 0.09, paletteId) * rim * 0.040;\n        col += paletteColor(0.22 + uv.x * 0.03, paletteId) * lane * 0.035;\n    } else if (mode == 2) {\n        // Wormhole: radial bands and angular lane hints.\n        float angle = atan(p.y, p.x) / 6.28318;\n        float rings = sin(r * 40.0 - time * 5.2);\n        float lanes = sin(angle * 36.0 + time * 1.6);\n        col += paletteColor(0.18 + r * 0.24, paletteId) * smoothstep(0.72, 1.0, rings) * exp(-r * 1.4) * 0.095;\n        col += paletteColor(0.72 + angle * 0.30, paletteId) * smoothstep(0.82, 1.0, lanes) * exp(-r * 1.0) * 0.042;\n    } else if (mode == 3) {\n        // Grid void: faint moving lattice.\n        vec2 g = abs(fract((p + vec2(time * 0.06, 0.0)) * 8.2) - 0.5);\n        float grid = smoothstep(0.495, 0.445, max(g.x, g.y));\n        col += paletteColor(0.54 + uv.x * 0.10, paletteId) * grid * 0.040;\n    }\n\n    float vignette = smoothstep(1.45, 0.20, r);\n    col *= 0.42 + vignette * 0.68;\n    return col;\n}\n\nvec2 streakProfile(vec2 q, vec2 flow, float sizeNorm, float speedNorm, int shape) {\n    vec2 dir = normalize(flow + vec2(0.0001, 0.0));\n    vec2 side = vec2(-dir.y, dir.x);\n\n    float along = dot(q, dir);\n    float across = dot(q, side);\n\n    float width = mix(0.006, 0.030, sizeNorm);\n    float length = mix(0.12, 0.62, sizeNorm) * (0.65 + speedNorm * 1.25);\n\n    if (shape == 0) {\n        // Needles\n        length *= 1.35;\n        width *= 0.58;\n    } else if (shape == 1) {\n        // Comets\n        length *= 0.92;\n        width *= 1.15;\n    } else {\n        // Shards\n        length *= 1.08;\n        width *= 0.82;\n    }\n\n    float tail = exp(-max(-along, 0.0) * (6.0 / max(length, 0.04)));\n    tail *= smoothstep(width * 1.1, 0.0, abs(across));\n    tail *= smoothstep(-length, 0.0, along);\n\n    float head = exp(\n        -(along * along) * (900.0 / (1.0 + sizeNorm * 4.0)) -\n        (across * across) * (1900.0 / (1.0 + sizeNorm * 5.0))\n    );\n\n    float core = head * 1.65 + tail;\n\n    if (shape == 2) {\n        float shardA = exp(-abs(across) * (44.0 - sizeNorm * 22.0)) * exp(-abs(along) * (11.0 + (1.0 - speedNorm) * 8.0));\n        float shardB = exp(-abs(across + along * 0.62) * 33.0) * exp(-abs(along) * 10.0);\n        core += shardA * 0.62 + shardB * 0.32;\n    }\n\n    float bloom = exp(\n        -(along * along) * (90.0 / (1.0 + sizeNorm * 2.5)) -\n        (across * across) * (130.0 / (1.0 + sizeNorm * 3.0))\n    );\n\n    if (shape == 0) bloom *= 0.55;\n    if (shape == 2) bloom *= 0.75;\n\n    return vec2(core, bloom);\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution;\n    vec2 p = uv * 2.0 - 1.0;\n    p.x *= iResolution.x / iResolution.y;\n\n    float speedNorm = clamp(iSpeed / 2.8, 0.0, 1.0);\n    float densityNorm = clamp(iDensity * 0.01, 0.10, 1.0);\n    float sizeNorm = clamp(iStarSize * 0.01, 0.05, 1.0);\n    float glowNorm = clamp(iGlow * 0.01, 0.0, 1.0);\n\n    int directionMode = clamp(iDirection, 0, 5);\n    int backgroundMode = clamp(iBackground, 0, 3);\n    int starMode = clamp(iStarMode, 0, 3);\n\n    float time = iTime * (0.35 + iSpeed * 0.90);\n    vec3 col = backgroundColor(uv, p, time, backgroundMode, iPalette);\n\n    float spawnBase = mix(0.996, 0.84, densityNorm);\n    float sparkleTime = iTime * (1.3 + speedNorm * 2.4);\n\n    for (int layer = 0; layer < 3; layer++) {\n        float fl = float(layer);\n        vec2 layerP = p * (1.0 + fl * 0.30);\n        vec2 flow = flowDirection(layerP, directionMode);\n\n        float cellScale = (20.0 + fl * 18.0) + densityNorm * (16.0 + fl * 12.0);\n        float layerSpeed = (0.55 + fl * 0.50) * (0.70 + speedNorm * 2.0);\n\n        vec2 grid = layerP * cellScale + flow * time * layerSpeed;\n        vec2 baseCell = floor(grid);\n        vec2 local = fract(grid) - 0.5;\n\n        float spawn = spawnBase - fl * 0.018;\n\n        for (int oy = -1; oy <= 1; oy++) {\n            for (int ox = -1; ox <= 1; ox++) {\n                vec2 neighbor = vec2(float(ox), float(oy));\n                vec2 cell = baseCell + neighbor;\n\n                float seed = hash21(cell + vec2(17.0 * fl + 3.7, 51.0));\n                if (seed <= spawn) continue;\n\n                vec2 jitter = (hash22(cell + seed * 41.7) - 0.5) * 0.76;\n                vec2 q = local - neighbor - jitter;\n\n                int shape = starMode;\n                if (starMode == 3) {\n                    float pick = hash21(cell + vec2(31.0 + fl * 13.0, 9.0));\n                    if (pick < 0.34) shape = 0;\n                    else if (pick < 0.68) shape = 1;\n                    else shape = 2;\n                }\n\n                vec2 streak = streakProfile(q, flow, sizeNorm, speedNorm, shape);\n\n                float twinkle = 0.55 + 0.45 * sin(sparkleTime * (1.0 + seed * 1.4) + seed * 70.0 + fl * 3.2);\n                float core = streak.x * (0.30 + twinkle * 0.90) * (0.55 + fl * 0.28);\n                float bloom = streak.y * glowNorm * (0.16 + fl * 0.12);\n\n                float tone = fract(seed * 1.73 + fl * 0.21 + time * 0.02);\n                vec3 tint = paletteColor(0.12 + tone, iPalette);\n                vec3 hot = mix(vec3(1.0, 0.98, 0.92), tint, 0.55);\n\n                col += hot * core;\n                col += tint * bloom;\n            }\n        }\n    }\n\n    if (directionMode <= 1) {\n        // Radial tunnel emphasis for forward/reverse modes.\n        float r = length(p);\n        float centerPulse = exp(-r * (4.5 - speedNorm * 1.8));\n        float rings = sin(r * (58.0 + speedNorm * 28.0) - time * (8.0 + speedNorm * 6.0));\n        float ringMask = smoothstep(0.70, 1.0, rings);\n        vec3 tunnelTint = paletteColor(0.74 + r * 0.25 - time * 0.03, iPalette);\n\n        col += tunnelTint * centerPulse * (0.08 + glowNorm * 0.20);\n        col += tunnelTint * ringMask * centerPulse * glowNorm * 0.08;\n    } else {\n        // Lateral flight lanes for non-radial modes.\n        vec2 flow = flowDirection(p, directionMode);\n        float lane = dot(p, vec2(-flow.y, flow.x));\n        float laneGlow = exp(-lane * lane * 8.0) * (0.03 + glowNorm * 0.06);\n        col += paletteColor(0.42 + p.x * 0.08 - p.y * 0.05, iPalette) * laneGlow;\n    }\n\n    float vignette = smoothstep(1.45, 0.16, length(p));\n    col *= 0.36 + 0.74 * vignette;\n\n    col = col / (1.0 + col * 0.38);\n    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n}\n";
+  var fragment_default = "#version 300 es\nprecision highp float;\n\nout vec4 fragColor;\n\nuniform float iTime;\nuniform vec2 iResolution;\n\nuniform float iSpeed;\nuniform float iCloudDensity;\nuniform float iWarpStrength;\nuniform float iStarField;\nuniform int iPalette;\n\nfloat hash21(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.x + p3.y) * p3.z);\n}\n\nvec2 hash22(vec2 p) {\n    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));\n    p3 += dot(p3, p3.yzx + 33.33);\n    return fract((p3.xx + p3.yz) * p3.zy);\n}\n\nfloat vnoise(vec2 p) {\n    vec2 i = floor(p);\n    vec2 f = fract(p);\n    f = f * f * (3.0 - 2.0 * f);\n\n    float a = hash21(i);\n    float b = hash21(i + vec2(1.0, 0.0));\n    float c = hash21(i + vec2(0.0, 1.0));\n    float d = hash21(i + vec2(1.0, 1.0));\n    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);\n}\n\nfloat fbm4(vec2 p) {\n    float sum = 0.0;\n    float amp = 0.5;\n    for (int i = 0; i < 4; i++) {\n        sum += amp * vnoise(p);\n        p = p * 2.02 + vec2(13.1, 7.7);\n        amp *= 0.5;\n    }\n    return sum;\n}\n\nvec3 triGradient(float t, vec3 a, vec3 b, vec3 c) {\n    t = fract(t);\n    if (t < 0.5) return mix(a, b, t * 2.0);\n    return mix(b, c, (t - 0.5) * 2.0);\n}\n\nvec3 paletteColor(float t, int id) {\n    if (id == 0) return triGradient(t, vec3(0.20, 0.05, 0.28), vec3(0.86, 0.18, 0.72), vec3(0.22, 0.84, 0.88));\n    if (id == 1) return triGradient(t, vec3(0.04, 0.10, 0.26), vec3(0.16, 0.66, 0.90), vec3(0.92, 0.26, 0.74));\n    if (id == 2) return triGradient(t, vec3(0.04, 0.14, 0.08), vec3(0.10, 0.82, 0.46), vec3(0.54, 0.28, 0.90));\n    if (id == 3) return triGradient(t, vec3(0.16, 0.04, 0.02), vec3(0.88, 0.18, 0.08), vec3(0.94, 0.48, 0.18));\n    return triGradient(t, vec3(0.12, 0.04, 0.16), vec3(0.86, 0.18, 0.70), vec3(0.42, 0.74, 0.90));\n}\n\nfloat starField(vec2 uv, float time, float amount) {\n    vec2 grid = uv * mix(vec2(110.0, 70.0), vec2(170.0, 110.0), amount);\n    vec2 cell = floor(grid);\n    float seed = hash21(cell);\n    if (seed > mix(0.028, 0.012, amount)) return 0.0;\n\n    vec2 local = fract(grid) - 0.5;\n    vec2 jitter = hash22(cell + seed * 17.0) - 0.5;\n    float dist = length(local - jitter * 0.46);\n    float twinkle = 0.60 + 0.40 * sin(time * (1.1 + seed * 2.8) + seed * 80.0);\n    return smoothstep(0.06, 0.0, dist) * twinkle;\n}\n\nvec3 nebulaField(vec2 p, float time, float density, float warp, int paletteId) {\n    vec2 q = p * mix(1.4, 2.6, density);\n    vec2 flow = vec2(time * 0.05, -time * 0.03);\n\n    float warpA = fbm4(q * 0.95 + vec2(2.4, -1.9) + flow);\n    float warpB = fbm4(q * 1.25 + vec2(-3.2, 4.7) - flow * 1.2);\n    q += (vec2(warpA, warpB) - 0.5) * (0.35 + warp * 1.35);\n\n    float cloudA = fbm4(q * 0.95 + vec2(0.0, -time * 0.05));\n    float cloudB = fbm4(q * 1.85 - vec2(time * 0.08, time * 0.05));\n    float wisps = 1.0 - abs(vnoise(q * 4.0 + vec2(time * 0.16, -time * 0.09)) * 2.0 - 1.0);\n\n    float mass = smoothstep(0.42 - density * 0.12, 0.90, cloudA * 0.78 + cloudB * 0.34 + wisps * 0.18);\n    float veil = smoothstep(0.28, 0.82, cloudA * 0.55 + wisps * 0.45);\n    float accent = smoothstep(0.52, 0.96, cloudB * 0.66 + wisps * 0.38);\n\n    vec3 base = paletteColor(0.18 + cloudA * 0.36 + warpB * 0.18, paletteId);\n    vec3 accentCol = paletteColor(0.58 + cloudB * 0.32, paletteId);\n    vec3 rim = paletteColor(0.84 + wisps * 0.12, paletteId);\n\n    vec3 col = base * mass * (0.28 + density * 0.54);\n    col += accentCol * veil * 0.16;\n    col += rim * accent * (0.06 + warp * 0.10);\n    return col;\n}\n\nvoid main() {\n    vec2 uv = gl_FragCoord.xy / iResolution.xy;\n    vec2 p = uv * 2.0 - 1.0;\n    p.x *= iResolution.x / iResolution.y;\n\n    float density = clamp(iCloudDensity * 0.01, 0.10, 1.0);\n    float warp = clamp(iWarpStrength * 0.01, 0.0, 1.0);\n    float starsAmount = clamp(iStarField * 0.01, 0.0, 1.0);\n    float time = iTime * (0.16 + iSpeed * 0.18);\n\n    vec3 bgLow = paletteColor(0.08 + uv.x * 0.05 + time * 0.01, iPalette) * 0.05;\n    vec3 bgHigh = paletteColor(0.44 + uv.y * 0.08 - time * 0.008, iPalette) * 0.10;\n    vec3 col = mix(bgLow, bgHigh, smoothstep(-0.70, 0.85, uv.y));\n\n    vec3 backLayer = nebulaField(p * 0.82 + vec2(1.9, -1.1), time * 0.70, density * 0.92, warp * 0.75, iPalette);\n    vec3 frontLayer = nebulaField(p, time, density, warp, iPalette);\n    col += backLayer * 0.56;\n    col += frontLayer;\n\n    float dust = vnoise((p + vec2(time * 0.03, -time * 0.02)) * 8.0);\n    col += paletteColor(0.44 + dust * 0.20, iPalette) * dust * 0.018 * density;\n\n    float stars = starField(uv, iTime, starsAmount);\n    col += vec3(0.54, 0.72, 0.92) * stars * (0.08 + starsAmount * 0.16);\n\n    float vignette = smoothstep(1.55, 0.18, length(p));\n    col *= 0.34 + 0.76 * vignette;\n\n    col = max(col, vec3(0.0));\n    col = 1.0 - exp(-col * (1.04 + warp * 0.22));\n    col = pow(clamp(col, 0.0, 1.0), vec3(0.96));\n    fragColor = vec4(col, 1.0);\n}\n";
 
   // src/effects/nebula-drift/main.ts
   var main_default = effect("Nebula Drift", fragment_default, {

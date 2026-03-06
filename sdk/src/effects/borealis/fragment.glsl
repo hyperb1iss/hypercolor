@@ -31,203 +31,139 @@ float vnoise(vec2 p) {
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-float fbm(vec2 p, int octaves) {
+float fbm3(vec2 p) {
     float sum = 0.0;
     float amp = 0.5;
-    float freq = 1.0;
-    for (int i = 0; i < 8; i++) {
-        if (i >= octaves) break;
-        sum += amp * vnoise(p * freq);
-        freq *= 2.0;
+    for (int i = 0; i < 3; i++) {
+        sum += amp * vnoise(p);
+        p = p * 2.02 + vec2(11.7, 6.3);
         amp *= 0.5;
     }
     return sum;
 }
 
-vec2 domainWarp(vec2 p, float strength, float scale) {
-    float nx = fbm(p * scale + vec2(1.7, 9.2), 4);
-    float ny = fbm(p * scale + vec2(8.3, 2.8), 4);
-    return p + vec2(nx - 0.5, ny - 0.5) * strength;
-}
-
-mat2 rot(float a) {
-    float c = cos(a);
-    float s = sin(a);
-    return mat2(c, -s, s, c);
-}
-
-float tri(float x) {
-    return clamp(abs(fract(x) - 0.5), 0.01, 0.49);
-}
-
-vec2 tri2(vec2 p) {
-    return vec2(tri(p.x) + tri(p.y), tri(p.y + tri(p.x)));
-}
-
-float triNoise2d(vec2 p, float speed, float time) {
-    float z = 1.7;
-    float z2 = 2.5;
-    float rz = 0.0;
-
-    p *= rot(p.x * 0.06);
-    vec2 bp = p;
-    const mat2 m2 = mat2(0.95534, -0.29552, 0.29552, 0.95534);
-
-    for (int i = 0; i < 5; i++) {
-        vec2 dg = tri2(bp * 1.85) * 0.75;
-        dg *= rot(time * speed);
-
-        p -= dg / z2;
-        bp *= 1.3;
-        z2 *= 0.52;
-        z *= 0.47;
-        p *= 1.22;
-        p = m2 * p;
-
-        rz += tri(p.x + tri(p.y)) * z;
-    }
-
-    return clamp(1.0 / pow(rz * 30.0, 1.25), 0.0, 1.0);
-}
-
-vec3 iqPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
-    return a + b * cos(6.28318 * (c * t + d));
+vec3 triGradient(float t, vec3 a, vec3 b, vec3 c) {
+    t = fract(t);
+    if (t < 0.5) return mix(a, b, t * 2.0);
+    return mix(b, c, (t - 0.5) * 2.0);
 }
 
 vec3 paletteColor(float t, int id) {
-    if (id == 0) {
-        // Physically inspired northern lights: green dominant with magenta/purple accents.
-        float primary = 0.5 + 0.5 * sin(6.28318 * (t * 0.55));
-        float secondary = 0.5 + 0.5 * sin(6.28318 * (t * 0.87 + 0.22));
-        vec3 emerald = vec3(0.08, 0.96, 0.47);
-        vec3 magenta = vec3(0.93, 0.32, 0.84);
-        vec3 violet = vec3(0.60, 0.27, 0.97);
-        vec3 base = mix(emerald, magenta, 0.18 + primary * 0.34);
-        return mix(base, violet, 0.14 + secondary * 0.30);
-    }
-    if (id == 1) return iqPalette(t, vec3(0.5, 0.3, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 0.8, 0.6), vec3(0.85, 0.2, 0.5));
-    if (id == 2) return iqPalette(t, vec3(0.5, 0.2, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.8, 0.1, 0.6));
-    if (id == 3) return iqPalette(t, vec3(0.5, 0.5, 0.5), vec3(0.5, 0.5, 0.5), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.1, 0.2));
-    if (id == 4) return iqPalette(t, vec3(0.5, 0.6, 0.8), vec3(0.2, 0.3, 0.2), vec3(0.6, 0.8, 1.0), vec3(0.0, 0.1, 0.3));
-    if (id == 5) return iqPalette(t, vec3(0.5, 0.2, 0.0), vec3(0.5, 0.4, 0.2), vec3(1.0, 0.7, 0.4), vec3(0.0, 0.15, 0.2));
-    if (id == 6) return iqPalette(t, vec3(0.6, 0.4, 0.7), vec3(0.3, 0.3, 0.3), vec3(0.6, 0.8, 1.0), vec3(0.7, 0.3, 0.6));
-    if (id == 7) return iqPalette(t, vec3(0.0, 0.3, 0.0), vec3(0.0, 0.5, 0.0), vec3(1.0, 1.0, 1.0), vec3(0.0, 0.0, 0.0));
-    return iqPalette(t, vec3(0.2, 0.5, 0.4), vec3(0.3, 0.4, 0.4), vec3(0.8, 0.7, 0.9), vec3(0.6, 0.3, 0.7));
+    if (id == 0) return triGradient(t, vec3(0.03, 0.16, 0.08), vec3(0.08, 0.86, 0.38), vec3(0.50, 0.20, 0.88));
+    if (id == 1) return triGradient(t, vec3(0.10, 0.04, 0.16), vec3(0.86, 0.16, 0.82), vec3(0.18, 0.92, 0.82));
+    if (id == 2) return triGradient(t, vec3(0.04, 0.10, 0.22), vec3(0.12, 0.88, 0.70), vec3(0.94, 0.22, 0.72));
+    if (id == 3) return triGradient(t, vec3(0.10, 0.04, 0.12), vec3(0.94, 0.34, 0.22), vec3(0.78, 0.16, 0.54));
+    if (id == 4) return triGradient(t, vec3(0.03, 0.10, 0.20), vec3(0.18, 0.80, 0.84), vec3(0.40, 0.40, 0.90));
+    if (id == 5) return triGradient(t, vec3(0.12, 0.03, 0.02), vec3(0.82, 0.18, 0.05), vec3(0.96, 0.56, 0.08));
+    if (id == 6) return triGradient(t, vec3(0.08, 0.04, 0.16), vec3(0.94, 0.24, 0.72), vec3(0.34, 0.84, 0.92));
+    return triGradient(t, vec3(0.00, 0.08, 0.02), vec3(0.10, 0.72, 0.24), vec3(0.52, 0.94, 0.34));
 }
 
 float starField(vec2 uv, float time) {
-    vec2 denseUV = uv * vec2(180.0, 130.0);
-    vec2 cell = floor(denseUV);
-    float rng = hash21(cell);
-    if (rng > 0.035) return 0.0;
+    vec2 grid = uv * vec2(150.0, 95.0);
+    vec2 cell = floor(grid);
+    float seed = hash21(cell);
+    if (seed > 0.024) return 0.0;
 
-    vec2 local = fract(denseUV) - 0.5;
-    vec2 jitter = vec2(hash21(cell + 1.3), hash21(cell + 7.9)) - 0.5;
-    float dist = length(local - jitter * 0.45);
-
-    float twinkle = 0.55 + 0.45 * sin(time * (1.2 + rng * 3.5) + rng * 15.0);
-    float size = mix(0.02, 0.045, rng * 18.0);
-    return (1.0 - smoothstep(0.0, size, dist)) * twinkle;
+    vec2 local = fract(grid) - 0.5;
+    vec2 jitter = vec2(hash21(cell + 1.7), hash21(cell + 9.2)) - 0.5;
+    float dist = length(local - jitter * 0.44);
+    float twinkle = 0.65 + 0.35 * sin(time * (1.2 + seed * 2.8) + seed * 70.0);
+    return smoothstep(0.06, 0.0, dist) * twinkle;
 }
 
 vec3 auroraLayer(vec2 p, float time, float layer, float baseHeight) {
-    float depth = layer / 5.0;
-    float warp = (0.06 + iWarpStrength * 0.0038) * (1.0 + depth * 0.65);
+    float depth = layer * 0.32;
+    float warpStrength = 0.20 + iWarpStrength * 0.010;
 
     vec2 q = p;
-    q.x *= 1.2 + depth * 0.6;
-    q.y *= 0.75 + depth * 0.16;
-    q.x += time * (0.05 + depth * 0.05);
-    q = domainWarp(q + vec2(depth * 2.7, 0.0), warp, 1.0 + depth * 0.8);
+    q.x *= 1.16 + depth * 0.34;
+    q.y *= 0.72 + depth * 0.08;
+    q += vec2(depth * 1.7 - time * (0.06 + depth * 0.04), depth * 0.14);
 
-    float ridgeNoise = fbm(vec2(q.x * 1.35 + depth * 4.1, time * 0.04 + depth * 2.3), 5) - 0.5;
-    float ridge = baseHeight + ridgeNoise * (0.38 - depth * 0.08);
+    float warpA = fbm3(q * (0.95 + depth * 0.18) + vec2(0.0, time * 0.06));
+    float warpB = vnoise(q * (1.28 + depth * 0.22) + vec2(4.1, -3.7) - vec2(time * 0.04));
+    vec2 warped = q + (vec2(warpA, warpB) - 0.5) * warpStrength;
+
+    float sweep = sin(warped.x * (2.6 + depth * 0.6) + time * (0.8 + depth * 0.22) + warpA * 4.8);
+    float ridge = baseHeight + (warpB - 0.5) * (0.52 - depth * 0.10) + sweep * (0.08 + depth * 0.03);
     float drop = ridge - p.y;
 
-    float curtain = smoothstep(-0.05, 0.12, drop) * (1.0 - smoothstep(0.84, 1.08, drop));
-    float rays = triNoise2d(vec2(q.x * 2.3 + depth * 6.0, p.y * 0.95 - depth * 1.9), 0.08 + depth * 0.04, time);
-    float filament = pow(rays, 1.35);
-    float shimmer = 0.68 + 0.32 * sin(time * 1.3 + q.x * 4.5 + depth * 5.7);
-    float glow = exp(-abs(drop - 0.16) * 7.0);
+    float curtain = smoothstep(-0.04, 0.16, drop) * (1.0 - smoothstep(0.78, 1.08, drop));
+    float folds = vnoise(vec2(warped.x * 3.4 + layer * 1.8, p.y * 1.5 - time * 0.08));
+    float filaments = 0.55 + 0.45 * sin(warped.x * 11.0 + folds * 5.0 + time * 1.12 + layer * 1.9);
+    filaments *= 0.78 + 0.22 * sin(warped.x * 22.0 - time * 0.48 + layer * 3.1);
+    float beam = curtain * mix(0.42, 1.0, filaments);
 
-    float intensity = curtain * filament * shimmer * (1.0 - depth * 0.12);
-    intensity += glow * filament * 0.15;
+    float body = smoothstep(0.12, 0.88, drop) * (1.0 - smoothstep(0.88, 1.22, drop));
+    float ribbon = smoothstep(0.04, 0.40, drop) * (1.0 - smoothstep(0.40, 0.76, drop));
+    float crown = smoothstep(-0.03, 0.22, drop) * (1.0 - smoothstep(0.22, 0.48, drop));
 
-    float colorT = depth * 0.18 + q.x * 0.08 + filament * 0.14 + time * 0.02;
-    vec3 col = paletteColor(colorT, iPalette);
+    vec3 col = paletteColor(0.16 + layer * 0.10 + warpA * 0.42 + filaments * 0.15, iPalette);
     if (iPalette == 0) {
-        // Vertical color structure: green curtain body, magenta mid ribbons, purple crown.
-        float crown = smoothstep(-0.02, 0.16, drop) * (1.0 - smoothstep(0.16, 0.34, drop));
-        float ribbon = smoothstep(0.05, 0.36, drop) * (1.0 - smoothstep(0.36, 0.70, drop));
-        float body = smoothstep(0.18, 0.80, drop) * (1.0 - smoothstep(0.80, 1.22, drop));
-        float sweep = 0.5 + 0.5 * sin(q.x * 5.0 + time * 0.8 + layer * 1.1);
-        float striation = 0.5 + 0.5 * sin(q.x * 10.5 + time * 1.05 + layer * 2.4 + filament * 4.2);
+        vec3 greenCore = vec3(0.04, 0.94, 0.40);
+        vec3 emerald = vec3(0.10, 0.76, 0.34);
+        vec3 magenta = vec3(0.86, 0.22, 0.78);
+        vec3 violet = vec3(0.44, 0.20, 0.92);
 
-        vec3 greenCore = vec3(0.07, 0.97, 0.45);
-        vec3 magentaRibbon = vec3(0.94, 0.32, 0.84);
-        vec3 purpleCrown = vec3(0.62, 0.30, 0.98);
-
-        vec3 physical = greenCore * (0.50 + 0.35 * body);
-        physical += magentaRibbon * (0.12 + 0.48 * ribbon * sweep);
-        physical += purpleCrown * (0.08 + 0.35 * crown * striation);
-
-        col = mix(col, physical, 0.90);
-        col = mix(col, magentaRibbon, 0.24 * ribbon * striation);
-        col = mix(col, purpleCrown, 0.18 * crown * (0.7 + 0.3 * sweep));
+        vec3 physical = emerald * (0.18 + body * 0.62);
+        physical += greenCore * (0.10 + body * 0.36 * (0.7 + 0.3 * filaments));
+        physical += magenta * ribbon * (0.14 + 0.28 * filaments);
+        physical += violet * crown * (0.14 + 0.30 * (1.0 - filaments * 0.4));
+        col = mix(col, physical, 0.92);
     }
-    vec3 highlight = (iPalette == 0) ? vec3(0.62, 0.98, 0.84) : vec3(0.88, 0.98, 0.95);
-    col = mix(col, highlight, pow(filament, 3.0) * 0.16);
 
-    return col * intensity * (0.05 + iIntensity * 0.0115);
+    float edge = smoothstep(0.02, 0.30, drop) * (1.0 - smoothstep(0.30, 0.56, drop));
+    vec3 highlight = (iPalette == 0) ? vec3(0.16, 0.92, 0.54) : paletteColor(0.82 + layer * 0.05, iPalette);
+    col = mix(col, highlight, edge * 0.20 * filaments);
+
+    float glow = exp(-abs(drop - 0.18) * 6.4) * 0.20;
+    float strength = beam * (0.20 + iIntensity * 0.010) * (1.0 - depth * 0.12);
+    strength += glow * 0.04;
+    return col * strength;
 }
 
 void main() {
-    vec2 uv = gl_FragCoord.xy / iResolution;
+    vec2 uv = gl_FragCoord.xy / iResolution.xy;
     vec2 p = (uv - 0.5) * vec2(iResolution.x / iResolution.y, 1.0);
-    float time = iTime * iSpeed * 0.32;
+    float time = iTime * iSpeed * 0.28;
 
-    vec3 skyZenith = vec3(0.005, 0.012, 0.03);
-    vec3 skyBase = (iPalette == 0) ? vec3(0.024, 0.046, 0.08) : vec3(0.02, 0.05, 0.12);
-    vec3 skyHorizon = mix(skyBase, paletteColor(0.18 + time * 0.02, iPalette) * 0.24, 0.6);
-    float skyMix = smoothstep(-0.45, 0.7, p.y);
+    vec3 skyZenith = vec3(0.004, 0.010, 0.028);
+    vec3 skyHorizon = (iPalette == 0)
+        ? vec3(0.010, 0.046, 0.030)
+        : paletteColor(0.10 + time * 0.01, iPalette) * 0.08;
+    float skyMix = smoothstep(-0.48, 0.76, p.y);
     vec3 col = mix(skyHorizon, skyZenith, skyMix);
-    float lowMist = 1.0 - smoothstep(-0.42, -0.04, p.y);
-    col += skyBase * lowMist * 0.12;
 
-    float stars = starField(uv, iTime) * (iStarBrightness * 0.012);
-    col += vec3(0.8, 0.9, 1.0) * stars;
+    float lowMist = 1.0 - smoothstep(-0.42, -0.02, p.y);
+    col += skyHorizon * lowMist * 0.16;
 
-    float baseHeight = mix(-0.08, 0.3, clamp(iCurtainHeight * 0.01, 0.0, 1.0));
-    vec3 aur = vec3(0.0);
-    for (int i = 0; i < 6; i++) {
-        aur += auroraLayer(p, time, float(i), baseHeight);
-    }
+    float stars = starField(uv, iTime) * (iStarBrightness * 0.010);
+    col += vec3(0.48, 0.66, 0.86) * stars;
 
-    // Horizon haze + volumetric bloom where curtains meet atmosphere.
-    float horizonHaze = exp(-abs(p.y + 0.2) * 8.5);
-    aur += paletteColor(0.52 + time * 0.01, iPalette) * horizonHaze * 0.06 * (iIntensity * 0.008);
-
-    col += aur;
-    if (iPalette == 0) {
-        float upperTint = smoothstep(-0.10, 0.85, p.y);
-        col += vec3(0.20, 0.08, 0.28) * upperTint * 0.08;
-    }
-
-    // Subtle reflection to avoid a dead lower half.
-    vec2 rp = vec2(p.x, -p.y - 0.16);
-    vec3 reflection = vec3(0.0);
+    float baseHeight = mix(-0.04, 0.28, clamp(iCurtainHeight * 0.01, 0.0, 1.0));
+    vec3 aurora = vec3(0.0);
     for (int i = 0; i < 3; i++) {
-        reflection += auroraLayer(rp, time * 0.86, float(i), baseHeight - 0.12);
+        aurora += auroraLayer(p, time, float(i), baseHeight);
     }
-    float waterMask = 1.0 - smoothstep(-0.48, -0.18, p.y);
-    col += reflection * waterMask * 0.34;
-    float seamGlow = exp(-abs(p.y + 0.18) * 14.0);
-    col += paletteColor(0.34 + time * 0.015, iPalette) * seamGlow * 0.02;
 
-    // Filmic tone mapping tuned to preserve colored highlights.
+    float horizonGlow = exp(-abs(p.y + 0.18) * 6.2);
+    aurora += paletteColor(0.24 + time * 0.01, iPalette) * horizonGlow * 0.03 * (0.35 + iIntensity * 0.010);
+
+    col += aurora;
+
+    if (iPalette == 0) {
+        float upperTint = smoothstep(-0.04, 0.92, p.y);
+        col += vec3(0.03, 0.08, 0.17) * upperTint * 0.06;
+        col += vec3(0.02, 0.10, 0.06) * upperTint * 0.04;
+    }
+
+    float groundGlow = 1.0 - smoothstep(-0.54, -0.14, p.y);
+    col += aurora * groundGlow * 0.10;
+
     col = max(col, vec3(0.0));
-    col = 1.0 - exp(-col * (0.96 + iIntensity * 0.0032));
-    col = pow(clamp(col, 0.0, 1.0), vec3(0.94));
+    col = 1.0 - exp(-col * (1.08 + iIntensity * 0.003));
+    col = pow(clamp(col, 0.0, 1.0), vec3(0.95));
 
     fragColor = vec4(col, 1.0);
 }

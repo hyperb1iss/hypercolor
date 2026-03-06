@@ -44,8 +44,8 @@ async fn main() -> Result<()> {
 
     // 1. Initialize tracing with the requested log level.
     //    The `RUST_LOG` env var takes precedence if set.
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&args.log_level));
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(default_env_filter(&args.log_level)));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
@@ -138,4 +138,15 @@ async fn main() -> Result<()> {
 
     info!("Hypercolor daemon exited cleanly");
     Ok(())
+}
+
+fn default_env_filter(log_level: &str) -> String {
+    let normalized = log_level.trim().to_ascii_lowercase();
+    if normalized == "debug" {
+        // Keep third-party crates quiet in debug mode, while still surfacing
+        // detailed logs from Hypercolor crates.
+        return "warn,hypercolor=debug,hypercolor_daemon=debug,hypercolor_core=debug,hypercolor_hal=debug,hypercolor_types=debug".to_owned();
+    }
+
+    normalized
 }

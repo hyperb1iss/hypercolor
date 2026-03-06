@@ -11,7 +11,7 @@ use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
 use crate::components::preset_panel::PresetToolbar;
 use crate::icons::*;
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
 /// Category → accent RGB string for inline styles.
 fn category_accent_rgb(category: &str) -> &'static str {
@@ -98,7 +98,8 @@ pub fn EffectsPage() -> impl IntoView {
     // Control change handler
     let on_control_change = Callback::new(move |(name, value): (String, serde_json::Value)| {
         if fx.active_effect_id.get().is_some() {
-            if let Some(control_value) = json_to_control_value(&value) {
+            let controls_snapshot = fx.active_controls.get();
+            if let Some(control_value) = json_to_control_value(&name, &controls_snapshot, &value) {
                 let control_name = name.clone();
                 fx.set_active_control_values.update(move |values| {
                     values.insert(control_name, control_value);
@@ -304,7 +305,11 @@ pub fn EffectsPage() -> impl IntoView {
     }
 }
 
-fn json_to_control_value(value: &serde_json::Value) -> Option<ControlValue> {
+fn json_to_control_value(
+    control_name: &str,
+    controls: &[ControlDefinition],
+    value: &serde_json::Value,
+) -> Option<ControlValue> {
     if let Some(v) = value.as_bool() {
         return Some(ControlValue::Boolean(v));
     }
@@ -317,6 +322,14 @@ fn json_to_control_value(value: &serde_json::Value) -> Option<ControlValue> {
         return Some(ControlValue::Float(float));
     }
     if let Some(v) = value.as_str() {
+        let is_dropdown = controls
+            .iter()
+            .find(|def| def.control_id().eq_ignore_ascii_case(control_name))
+            .map(|def| matches!(def.control_type, ControlType::Dropdown))
+            .unwrap_or(false);
+        if is_dropdown {
+            return Some(ControlValue::Enum(v.to_owned()));
+        }
         return Some(ControlValue::Text(v.to_owned()));
     }
     if let Some(array) = value.as_array()

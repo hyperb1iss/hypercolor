@@ -6,7 +6,7 @@
   <title>Plasma Engine</title>
   <meta description="Dual-flow Poison Bloom particle field with crisp additive sparks"/>
   <meta publisher="Hypercolor"/>
-  <meta property="bgColor" label="Bg Color" type="color" default="#03020c"/>
+  <meta property="bgColor" label="Background Color" type="color" default="#03020c"/>
   <meta property="color1" label="Color1" type="color" default="#94ff4f"/>
   <meta property="color2" label="Color2" type="color" default="#2cc8ff"/>
   <meta property="color3" label="Color3" type="color" default="#ff4fd8"/>
@@ -1192,6 +1192,7 @@
     canvasHeight;
     canvas = null;
     fpsCapLastFrameTime = 0;
+    lastControlPollTime = Number.NEGATIVE_INFINITY;
     constructor(config) {
       this.id = config.id;
       this.name = config.name;
@@ -1248,7 +1249,10 @@
       }
     }
     onFrame(time) {
-      if (time % 0.1 < 0.02) this.update();
+      if (time - this.lastControlPollTime >= 0.1) {
+        this.lastControlPollTime = time;
+        this.update();
+      }
     }
     update(force = false) {
       const controls = this.getControlValues();
@@ -1716,17 +1720,32 @@ void main() {
   function hasMagicTransform(key) {
     return MAGIC_TRANSFORMS.has(key);
   }
-  function resolveControlNames(key, spec) {
+  function resolveControlNames(key, spec2) {
     return {
-      label: spec.label,
-      uniformName: spec.uniform ?? deriveUniformName(key),
-      normalize: spec.normalize ?? getMagicNormalize(key)
+      label: spec2.label,
+      uniformName: spec2.uniform ?? deriveUniformName(key),
+      normalize: spec2.normalize ?? getMagicNormalize(key)
     };
   }
 
   // packages/core/src/controls/specs.ts
+  function spec(type, label, defaultValue, meta, opts) {
+    return {
+      __brand: "ControlSpec",
+      __type: type,
+      label,
+      defaultValue,
+      tooltip: opts?.tooltip,
+      uniform: opts?.uniform,
+      normalize: opts?.normalize,
+      meta
+    };
+  }
   function isControlSpec(value) {
     return value !== null && typeof value === "object" && value.__brand === "ControlSpec";
+  }
+  function color(label, defaultValue, opts) {
+    return spec("color", label, defaultValue, {}, opts);
   }
 
   // packages/core/src/controls/helpers.ts
@@ -1756,6 +1775,10 @@ void main() {
       return parsedNumeric;
     }
     return safeDefault;
+  }
+  function normalizePercentage(value, defaultValue = 100, minValue = 0.01) {
+    const rawValue = typeof value === "number" && !Number.isNaN(value) ? value : defaultValue;
+    return Math.max(minValue, rawValue / 100);
   }
 
   // packages/core/src/init.ts
@@ -1789,15 +1812,15 @@ void main() {
   function resolveControls(controls) {
     const resolved = [];
     for (const [key, value] of Object.entries(controls)) {
-      const spec = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
-      const names = resolveControlNames(key, spec);
-      const values = spec.meta.values;
+      const spec2 = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
+      const names = resolveControlNames(key, spec2);
+      const values = spec2.meta.values;
       resolved.push({
         key,
-        spec,
+        spec: spec2,
         uniformName: names.uniformName,
         normalize: names.normalize,
-        isMagicTransform: hasMagicTransform(key) && spec.__type === "combobox",
+        isMagicTransform: hasMagicTransform(key) && spec2.__type === "combobox",
         values
       });
     }
@@ -1831,8 +1854,12 @@ void main() {
       const values = {};
       for (const ctrl of this.resolvedControls) {
         let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
-        if (ctrl.normalize === "speed" && typeof val === "number") {
-          val = normalizeSpeed(val);
+        if (typeof val === "number") {
+          if (ctrl.normalize === "speed") {
+            val = normalizeSpeed(val);
+          } else if (ctrl.normalize === "percentage") {
+            val = normalizePercentage(val);
+          }
         }
         if (ctrl.isMagicTransform && ctrl.values) {
           val = comboboxValueToIndex(
@@ -1863,7 +1890,7 @@ void main() {
       for (const ctrl of this.resolvedControls) {
         const raw = controls[ctrl.key];
         if (raw !== void 0) {
-          this.setUniform(ctrl.uniformName, this.toUniformValue(ctrl, raw));
+          this.setUniform(ctrl.uniformName, this.toUniformValue(ctrl, raw, true));
         }
       }
     }
@@ -1880,12 +1907,13 @@ void main() {
       this.pushAllUniforms();
     }
     /** Convert a raw control value to a GPU-compatible uniform value. */
-    toUniformValue(ctrl, raw) {
+    toUniformValue(ctrl, raw, skipNormalization = false) {
       if (ctrl.spec.__type === "combobox" && ctrl.values) {
         return comboboxValueToIndex(raw, ctrl.values, 0);
       }
-      if (ctrl.normalize === "speed" && typeof raw === "number") {
-        return normalizeSpeed(raw);
+      if (!skipNormalization && typeof raw === "number") {
+        if (ctrl.normalize === "speed") return normalizeSpeed(raw);
+        if (ctrl.normalize === "percentage") return normalizePercentage(raw);
       }
       if (typeof raw === "boolean") {
         return raw ? 1 : 0;
@@ -1943,6 +1971,7 @@ void main() {
     if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
       storeMetadata({
         name,
+        shader,
         controls,
         resolvedControls: resolved,
         description: opts.description,
@@ -2310,13 +2339,13 @@ void main() {
   function resolveCanvasControls(controls) {
     const resolved = [];
     for (const [key, value] of Object.entries(controls)) {
-      const spec = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
-      const names = resolveControlNames(key, spec);
-      const isCombo = spec.__type === "combobox";
-      const values = spec.meta.values;
+      const spec2 = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key));
+      const names = resolveControlNames(key, spec2);
+      const isCombo = spec2.__type === "combobox";
+      const values = spec2.meta.values;
       resolved.push({
         key,
-        spec,
+        spec: spec2,
         normalize: names.normalize,
         isMagicTransform: hasMagicTransform(key) && isCombo,
         isPalette: key === "palette" && isCombo,
@@ -2329,8 +2358,12 @@ void main() {
     const result = {};
     for (const ctrl of controls) {
       let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
-      if (ctrl.normalize === "speed" && typeof val === "number") {
-        val = normalizeSpeed(val);
+      if (typeof val === "number") {
+        if (ctrl.normalize === "speed") {
+          val = normalizeSpeed(val);
+        } else if (ctrl.normalize === "percentage") {
+          val = normalizePercentage(val);
+        }
       }
       if (ctrl.isPalette && ctrl.values) {
         const paletteName = typeof val === "string" ? val : ctrl.values[0] ?? "SilkCircuit";
@@ -2517,7 +2550,7 @@ void main() {
 
   // src/effects/plasma-engine/main.ts
   var main_default = effect("Plasma Engine", fragment_default, {
-    bgColor: "#03020c",
+    bgColor: color("Background Color", "#03020c", { uniform: "iBackgroundColor" }),
     color1: "#94ff4f",
     color2: "#2cc8ff",
     color3: "#ff4fd8",

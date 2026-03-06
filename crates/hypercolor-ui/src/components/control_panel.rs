@@ -246,7 +246,7 @@ fn ControlWidget(
         ControlType::Dropdown => {
             let labels = def.labels.clone();
             let initial = match &initial_value {
-                ControlValue::Enum(s) => s.clone(),
+                ControlValue::Enum(s) | ControlValue::Text(s) => s.clone(),
                 _ => labels.first().cloned().unwrap_or_default(),
             };
             let (selected, set_selected) = signal(initial);
@@ -261,6 +261,7 @@ fn ControlWidget(
                                focus:outline-none focus:border-electric-purple/30
                                focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1)]
                                cursor-pointer transition-all duration-150"
+                        prop:value=move || selected.get()
                         on:change=move |ev| {
                             use wasm_bindgen::JsCast;
                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
@@ -273,12 +274,8 @@ fn ControlWidget(
                     >
                         {labels.iter().map(|label| {
                             let label = label.clone();
-                            let is_selected = {
-                                let label = label.clone();
-                                move || selected.get() == label
-                            };
                             view! {
-                                <option value=label.clone() selected=is_selected>{label.clone()}</option>
+                                <option value=label.clone()>{label.clone()}</option>
                             }
                         }).collect_view()}
                     </select>
@@ -287,7 +284,7 @@ fn ControlWidget(
         }
         ControlType::TextInput => {
             let initial = match &initial_value {
-                ControlValue::Text(s) => s.clone(),
+                ControlValue::Text(s) | ControlValue::Enum(s) => s.clone(),
                 _ => String::new(),
             };
             let (text, set_text) = signal(initial);

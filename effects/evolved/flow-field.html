@@ -1193,6 +1193,7 @@
     canvasHeight;
     canvas = null;
     fpsCapLastFrameTime = 0;
+    lastControlPollTime = Number.NEGATIVE_INFINITY;
     constructor(config) {
       this.id = config.id;
       this.name = config.name;
@@ -1249,7 +1250,10 @@
       }
     }
     onFrame(time) {
-      if (time % 0.1 < 0.02) this.update();
+      if (time - this.lastControlPollTime >= 0.1) {
+        this.lastControlPollTime = time;
+        this.update();
+      }
     }
     update(force = false) {
       const controls = this.getControlValues();
@@ -1432,6 +1436,10 @@
       return parsedNumeric;
     }
     return safeDefault;
+  }
+  function normalizePercentage(value, defaultValue = 100, minValue = 0.01) {
+    const rawValue = typeof value === "number" && !Number.isNaN(value) ? value : defaultValue;
+    return Math.max(minValue, rawValue / 100);
   }
 
   // packages/core/src/init.ts
@@ -1835,8 +1843,12 @@
     const result = {};
     for (const ctrl of controls) {
       let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
-      if (ctrl.normalize === "speed" && typeof val === "number") {
-        val = normalizeSpeed(val);
+      if (typeof val === "number") {
+        if (ctrl.normalize === "speed") {
+          val = normalizeSpeed(val);
+        } else if (ctrl.normalize === "percentage") {
+          val = normalizePercentage(val);
+        }
       }
       if (ctrl.isPalette && ctrl.values) {
         const paletteName = typeof val === "string" ? val : ctrl.values[0] ?? "SilkCircuit";

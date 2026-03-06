@@ -1,8 +1,8 @@
-import { effect } from '@hypercolor/sdk'
+import { color, effect } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Plasma Engine', shader, {
-    bgColor: '#03020c',
+    bgColor: color('Background Color', '#03020c', { uniform: 'iBackgroundColor' }),
     color1:  '#94ff4f',
     color2:  '#2cc8ff',
     color3:  '#ff4fd8',

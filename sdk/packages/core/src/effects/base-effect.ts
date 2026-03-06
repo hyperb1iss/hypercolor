@@ -25,6 +25,7 @@ export abstract class BaseEffect<T> {
     protected canvas: HTMLCanvasElement | null = null
 
     private fpsCapLastFrameTime = 0
+    private lastControlPollTime = Number.NEGATIVE_INFINITY
 
     constructor(config: EffectConfig) {
         this.id = config.id
@@ -93,8 +94,11 @@ export abstract class BaseEffect<T> {
     }
 
     protected onFrame(time: number): void {
-        // Poll controls periodically
-        if (time % 0.1 < 0.02) this.update()
+        // Poll controls on a fixed cadence without frame-rate-dependent bursts.
+        if (time - this.lastControlPollTime >= 0.1) {
+            this.lastControlPollTime = time
+            this.update()
+        }
     }
 
     public update(force = false): void {

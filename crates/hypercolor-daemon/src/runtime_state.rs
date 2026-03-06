@@ -5,11 +5,16 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use hypercolor_core::effect::EffectEngine;
 use hypercolor_types::effect::ControlValue;
+
+/// Process-local counter to guarantee per-save temp file uniqueness.
+static SNAPSHOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Runtime session snapshot persisted to disk.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -107,7 +112,7 @@ pub fn save(path: &Path, snapshot: &RuntimeSessionSnapshot) -> Result<(), Runtim
     }
 
     let bytes = serde_json::to_vec_pretty(snapshot).map_err(RuntimeSessionError::Serialize)?;
-    let tmp_path = path.with_extension("json.tmp");
+    let tmp_path = unique_temp_path(path);
 
     std::fs::write(&tmp_path, bytes).map_err(|source| RuntimeSessionError::WriteTemp {
         path: tmp_path.clone(),
@@ -120,9 +125,25 @@ pub fn save(path: &Path, snapshot: &RuntimeSessionSnapshot) -> Result<(), Runtim
     Ok(())
 }
 
+fn unique_temp_path(path: &Path) -> PathBuf {
+    let counter = SNAPSHOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let pid = std::process::id();
+
+    let file_name = path.file_name().map_or_else(
+        || "runtime-state.json".to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+
+    path.with_file_name(format!("{file_name}.tmp-{pid}-{nanos}-{counter}"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::{Arc, Barrier};
 
     use tempfile::TempDir;
 
@@ -157,5 +178,42 @@ mod tests {
         let path = tempdir.path().join("runtime-state.json");
         let loaded = load(&path).expect("load should succeed");
         assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn concurrent_saves_share_path_without_colliding_temp_files() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = Arc::new(tempdir.path().join("runtime-state.json"));
+        let snapshot = Arc::new(RuntimeSessionSnapshot {
+            active_effect_id: Some("0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3".to_owned()),
+            active_preset_id: Some("preset_42".to_owned()),
+            control_values: HashMap::new(),
+        });
+
+        let worker_count = 8;
+        let barrier = Arc::new(Barrier::new(worker_count));
+        let mut workers = Vec::with_capacity(worker_count);
+
+        for _ in 0..worker_count {
+            let path = Arc::clone(&path);
+            let snapshot = Arc::clone(&snapshot);
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..64 {
+                    save(path.as_path(), &snapshot).expect("concurrent save should succeed");
+                }
+            }));
+        }
+
+        for worker in workers {
+            worker.join().expect("worker thread should not panic");
+        }
+
+        let loaded = load(path.as_path()).expect("load should succeed");
+        assert!(
+            loaded.is_some(),
+            "snapshot file should exist after concurrent saves"
+        );
     }
 }

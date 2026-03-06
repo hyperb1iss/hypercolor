@@ -27,7 +27,7 @@ import type { ControlMap } from '../controls/infer'
 import { inferControl } from '../controls/infer'
 import { deriveLabel, hasMagicTransform, resolveControlNames } from '../controls/names'
 import { isControlSpec } from '../controls/specs'
-import { comboboxValueToIndex, getControlValue, normalizeSpeed } from '../controls/helpers'
+import { comboboxValueToIndex, getControlValue, normalizePercentage, normalizeSpeed } from '../controls/helpers'
 import { createPaletteFn } from '../palette'
 import type { PaletteFn } from '../palette'
 import { initializeEffect } from '../init'
@@ -97,8 +97,12 @@ function resolveValues(
     for (const ctrl of controls) {
         let val = getControlValue(ctrl.key, ctrl.spec.defaultValue)
 
-        if (ctrl.normalize === 'speed' && typeof val === 'number') {
-            val = normalizeSpeed(val)
+        if (typeof val === 'number') {
+            if (ctrl.normalize === 'speed') {
+                val = normalizeSpeed(val)
+            } else if (ctrl.normalize === 'percentage') {
+                val = normalizePercentage(val)
+            }
         }
 
         // Palette → function (canvas-specific behavior)

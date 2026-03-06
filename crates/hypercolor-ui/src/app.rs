@@ -4,6 +4,8 @@ use leptos::prelude::*;
 use leptos_meta::*;
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::path;
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 
@@ -151,6 +153,24 @@ pub fn App() -> impl IntoView {
     provide_context(DevicesContext {
         devices_resource,
         layouts_resource,
+    });
+
+    // Keep devices list fresh so startup discovery results appear in the UI
+    // without requiring a manual refresh/scan click.
+    Effect::new(move |_| {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let devices_resource = devices_resource;
+        let callback = Closure::<dyn FnMut()>::new(move || {
+            devices_resource.refetch();
+        });
+
+        let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
+            callback.as_ref().unchecked_ref(),
+            5_000,
+        );
+        callback.forget();
     });
 
     // Initialize active effect from API on load

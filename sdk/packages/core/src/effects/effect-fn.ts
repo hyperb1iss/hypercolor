@@ -25,7 +25,7 @@ import { inferControl } from '../controls/infer'
 import { deriveLabel, hasMagicTransform, resolveControlNames } from '../controls/names'
 import type { ControlSpec } from '../controls/specs'
 import { isControlSpec } from '../controls/specs'
-import { comboboxValueToIndex, getControlValue, normalizeSpeed } from '../controls/helpers'
+import { comboboxValueToIndex, getControlValue, normalizePercentage, normalizeSpeed } from '../controls/helpers'
 import { initializeEffect } from '../init'
 import type { UniformValue } from './webgl-effect'
 import { WebGLEffect } from './webgl-effect'
@@ -128,8 +128,12 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
             let val = getControlValue(ctrl.key, ctrl.spec.defaultValue)
 
             // Apply magic normalization
-            if (ctrl.normalize === 'speed' && typeof val === 'number') {
-                val = normalizeSpeed(val)
+            if (typeof val === 'number') {
+                if (ctrl.normalize === 'speed') {
+                    val = normalizeSpeed(val)
+                } else if (ctrl.normalize === 'percentage') {
+                    val = normalizePercentage(val)
+                }
             }
 
             // Apply magic combobox → index transform
@@ -171,7 +175,7 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
         for (const ctrl of this.resolvedControls) {
             const raw = controls[ctrl.key]
             if (raw !== undefined) {
-                this.setUniform(ctrl.uniformName, this.toUniformValue(ctrl, raw))
+                this.setUniform(ctrl.uniformName, this.toUniformValue(ctrl, raw, true))
             }
         }
     }
@@ -192,14 +196,15 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
     }
 
     /** Convert a raw control value to a GPU-compatible uniform value. */
-    private toUniformValue(ctrl: ResolvedControl, raw: unknown): UniformValue {
+    private toUniformValue(ctrl: ResolvedControl, raw: unknown, skipNormalization = false): UniformValue {
         // Combobox → integer index (palette magic or any combobox)
         if (ctrl.spec.__type === 'combobox' && ctrl.values) {
             return comboboxValueToIndex(raw as string | number, ctrl.values, 0)
         }
         // Speed normalization
-        if (ctrl.normalize === 'speed' && typeof raw === 'number') {
-            return normalizeSpeed(raw)
+        if (!skipNormalization && typeof raw === 'number') {
+            if (ctrl.normalize === 'speed') return normalizeSpeed(raw)
+            if (ctrl.normalize === 'percentage') return normalizePercentage(raw)
         }
         // Boolean → 0/1
         if (typeof raw === 'boolean') {
@@ -249,6 +254,7 @@ function hexToFloats(hex: string): number[] {
 
 interface EffectDef {
     name: string
+    shader: string
     controls: ControlMap
     resolvedControls: ResolvedControl[]
     description?: string
@@ -289,6 +295,7 @@ export function effect(
     ) {
         storeMetadata({
             name,
+            shader,
             controls,
             resolvedControls: resolved,
             description: opts.description,

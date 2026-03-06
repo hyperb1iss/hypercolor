@@ -1191,6 +1191,7 @@
     canvasHeight;
     canvas = null;
     fpsCapLastFrameTime = 0;
+    lastControlPollTime = Number.NEGATIVE_INFINITY;
     constructor(config) {
       this.id = config.id;
       this.name = config.name;
@@ -1247,7 +1248,10 @@
       }
     }
     onFrame(time) {
-      if (time % 0.1 < 0.02) this.update();
+      if (time - this.lastControlPollTime >= 0.1) {
+        this.lastControlPollTime = time;
+        this.update();
+      }
     }
     update(force = false) {
       const controls = this.getControlValues();
@@ -1756,6 +1760,10 @@ void main() {
     }
     return safeDefault;
   }
+  function normalizePercentage(value, defaultValue = 100, minValue = 0.01) {
+    const rawValue = typeof value === "number" && !Number.isNaN(value) ? value : defaultValue;
+    return Math.max(minValue, rawValue / 100);
+  }
 
   // packages/core/src/init.ts
   function detectInitMode() {
@@ -1830,8 +1838,12 @@ void main() {
       const values = {};
       for (const ctrl of this.resolvedControls) {
         let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
-        if (ctrl.normalize === "speed" && typeof val === "number") {
-          val = normalizeSpeed(val);
+        if (typeof val === "number") {
+          if (ctrl.normalize === "speed") {
+            val = normalizeSpeed(val);
+          } else if (ctrl.normalize === "percentage") {
+            val = normalizePercentage(val);
+          }
         }
         if (ctrl.isMagicTransform && ctrl.values) {
           val = comboboxValueToIndex(
@@ -1862,7 +1874,7 @@ void main() {
       for (const ctrl of this.resolvedControls) {
         const raw = controls[ctrl.key];
         if (raw !== void 0) {
-          this.setUniform(ctrl.uniformName, this.toUniformValue(ctrl, raw));
+          this.setUniform(ctrl.uniformName, this.toUniformValue(ctrl, raw, true));
         }
       }
     }
@@ -1879,12 +1891,13 @@ void main() {
       this.pushAllUniforms();
     }
     /** Convert a raw control value to a GPU-compatible uniform value. */
-    toUniformValue(ctrl, raw) {
+    toUniformValue(ctrl, raw, skipNormalization = false) {
       if (ctrl.spec.__type === "combobox" && ctrl.values) {
         return comboboxValueToIndex(raw, ctrl.values, 0);
       }
-      if (ctrl.normalize === "speed" && typeof raw === "number") {
-        return normalizeSpeed(raw);
+      if (!skipNormalization && typeof raw === "number") {
+        if (ctrl.normalize === "speed") return normalizeSpeed(raw);
+        if (ctrl.normalize === "percentage") return normalizePercentage(raw);
       }
       if (typeof raw === "boolean") {
         return raw ? 1 : 0;
@@ -1942,6 +1955,7 @@ void main() {
     if (typeof globalThis !== "undefined" && globalThis.__HYPERCOLOR_METADATA_ONLY__) {
       storeMetadata({
         name,
+        shader,
         controls,
         resolvedControls: resolved,
         description: opts.description,
@@ -2328,8 +2342,12 @@ void main() {
     const result = {};
     for (const ctrl of controls) {
       let val = getControlValue(ctrl.key, ctrl.spec.defaultValue);
-      if (ctrl.normalize === "speed" && typeof val === "number") {
-        val = normalizeSpeed(val);
+      if (typeof val === "number") {
+        if (ctrl.normalize === "speed") {
+          val = normalizeSpeed(val);
+        } else if (ctrl.normalize === "percentage") {
+          val = normalizePercentage(val);
+        }
       }
       if (ctrl.isPalette && ctrl.values) {
         const paletteName = typeof val === "string" ? val : ctrl.values[0] ?? "SilkCircuit";

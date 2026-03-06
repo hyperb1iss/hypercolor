@@ -58,6 +58,7 @@ function parseArgs() {
 
 interface NewApiDef {
     name: string
+    shader?: string
     description?: string
     author?: string
     audio?: boolean
@@ -96,6 +97,43 @@ function newApiToControls(def: NewApiDef): ControlDef[] {
     })
 }
 
+const BUILTIN_UNIFORMS = new Set(['iTime', 'iResolution', 'iMouse'])
+
+function extractShaderUniforms(shader: string): Set<string> {
+    const uniforms = new Set<string>()
+    const matches = shader.matchAll(/uniform\s+\w+\s+(i\w+)\s*;/g)
+    for (const match of matches) {
+        uniforms.add(match[1])
+    }
+    return uniforms
+}
+
+function validateShaderBindings(entryPath: string, def: NewApiDef): void {
+    if (!def.shader) return
+
+    const shaderUniforms = extractShaderUniforms(def.shader)
+    if (shaderUniforms.size === 0) return
+
+    const controlUniforms = new Set(
+        def.resolvedControls.map((ctrl) => ctrl.uniformName ?? `i${ctrl.key.charAt(0).toUpperCase()}${ctrl.key.slice(1)}`),
+    )
+
+    const missing = Array.from(controlUniforms).filter((name) => !shaderUniforms.has(name))
+    const extra = Array.from(shaderUniforms).filter(
+        (name) => !BUILTIN_UNIFORMS.has(name) && !name.startsWith('iAudio') && !controlUniforms.has(name),
+    )
+
+    if (missing.length === 0 && extra.length === 0) return
+
+    const effectId = basename(dirname(entryPath))
+    if (missing.length > 0) {
+        console.warn(`  Warning: ${effectId} has controls bound to missing uniforms: ${missing.join(', ')}`)
+    }
+    if (extra.length > 0) {
+        console.warn(`  Warning: ${effectId} shader exposes uniforms with no controls: ${extra.join(', ')}`)
+    }
+}
+
 async function extractMetadata(entryPath: string) {
     // Set metadata-only flag so initializeEffect() skips runtime init
     ;(globalThis as any).__HYPERCOLOR_METADATA_ONLY__ = true
@@ -121,6 +159,7 @@ async function extractMetadata(entryPath: string) {
         const defs = (globalThis as any).__hypercolorEffectDefs__ as NewApiDef[] | undefined
         if (defs && defs.length > 0) {
             const def = defs[defs.length - 1] // use last entry (single-effect files)
+            validateShaderBindings(entryPath, def)
             return {
                 effect: {
                     name: def.name,
@@ -285,7 +324,7 @@ async function buildEffect(entryPath: string, outDir: string) {
     // 5. Write output
     mkdirSync(outDir, { recursive: true })
     const outPath = join(outDir, `${effectId}.html`)
-    Bun.write(outPath, html)
+    await Bun.write(outPath, html)
 
     const sizeKB = (new TextEncoder().encode(html).length / 1024).toFixed(1)
     console.log(`\x1b[38;2;80;250;123m  ✓\x1b[0m ${outPath} (${sizeKB} KB)`)
