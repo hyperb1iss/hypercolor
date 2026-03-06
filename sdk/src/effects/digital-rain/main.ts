@@ -29,11 +29,8 @@ interface ColumnState {
 const COLOR_MODES = ['Matrix', 'Phosphor', 'SilkCircuit', 'Cyberpunk', 'Ice'] as const
 
 const GLYPHS = [
-    '█', '▓', '▒', '░', '▉', '▊', '▋', '▌', '▐', '▀', '▄',
-    '■', '▣', '▤', '▥', '▦', '▧', '▨', '▩',
-    '╬', '╫', '╪', '╳', '╱', '╲',
-    'ｱ', 'ｲ', 'ｷ', 'ｼ', 'ﾂ', 'ﾑ', 'ﾓ',
-    '0', '1',
+    '█', '▓', '▒', '░', '▉', '▊', '▋', '▌', '▀', '▄',
+    '■', '▣', '╳', '╱', '╲',
 ]
 
 const PALETTES: Record<string, RainPalette> = {
@@ -42,7 +39,7 @@ const PALETTES: Record<string, RainPalette> = {
         shadow: { r: 5, g: 28, b: 10 },
         trail: { r: 42, g: 138, b: 56 },
         bright: { r: 138, g: 248, b: 162 },
-        head: { r: 236, g: 255, b: 238 },
+        head: { r: 184, g: 255, b: 202 },
         glitch: { r: 182, g: 255, b: 196 },
     },
     Phosphor: {
@@ -50,15 +47,15 @@ const PALETTES: Record<string, RainPalette> = {
         shadow: { r: 32, g: 18, b: 4 },
         trail: { r: 156, g: 102, b: 32 },
         bright: { r: 250, g: 185, b: 88 },
-        head: { r: 255, g: 245, b: 220 },
-        glitch: { r: 255, g: 212, b: 120 },
+        head: { r: 255, g: 196, b: 124 },
+        glitch: { r: 255, g: 154, b: 72 },
     },
     SilkCircuit: {
         background: '#06060f',
         shadow: { r: 20, g: 12, b: 40 },
         trail: { r: 128, g: 255, b: 234 },
         bright: { r: 225, g: 53, b: 255 },
-        head: { r: 242, g: 255, b: 252 },
+        head: { r: 162, g: 255, b: 244 },
         glitch: { r: 255, g: 106, b: 193 },
     },
     Cyberpunk: {
@@ -66,15 +63,15 @@ const PALETTES: Record<string, RainPalette> = {
         shadow: { r: 22, g: 8, b: 32 },
         trail: { r: 255, g: 106, b: 193 },
         bright: { r: 132, g: 245, b: 255 },
-        head: { r: 250, g: 240, b: 255 },
-        glitch: { r: 255, g: 235, b: 88 },
+        head: { r: 204, g: 226, b: 255 },
+        glitch: { r: 255, g: 154, b: 72 },
     },
     Ice: {
         background: '#010917',
         shadow: { r: 6, g: 22, b: 40 },
         trail: { r: 62, g: 160, b: 232 },
         bright: { r: 146, g: 228, b: 255 },
-        head: { r: 236, g: 252, b: 255 },
+        head: { r: 182, g: 238, b: 255 },
         glitch: { r: 162, g: 252, b: 255 },
     },
 }
@@ -190,7 +187,7 @@ export default canvas.stateful('Digital Rain', {
     speed:     [1, 10, 5],
     density:   [10, 100, 62],
     trailLength: [5, 100, 58],
-    charSize:  [0, 100, 42],
+    charSize:  [0, 100, 54],
     colorMode: combo('Color Mode', [...COLOR_MODES], { default: 'Matrix' }),
     glitch:    false,
 }, () => {
@@ -205,7 +202,7 @@ export default canvas.stateful('Digital Rain', {
     let paletteState: RainPalette = PALETTES.Matrix
     let lastTime = -1
 
-    let prevCharSize = 42
+    let prevCharSize = 54
     let prevColorMode = 'Matrix'
 
     function rebuildColumns(density: number): void {
@@ -216,8 +213,8 @@ export default canvas.stateful('Digital Rain', {
     }
 
     function syncGrid(w: number, h: number, charSize: number, density: number): void {
-        const nextCellWidth = Math.max(6, Math.round(6 + charSize * 0.14))
-        const nextCellHeight = Math.max(nextCellWidth + 2, Math.round(nextCellWidth * 1.55))
+        const nextCellWidth = Math.max(8, Math.round(8 + charSize * 0.16))
+        const nextCellHeight = Math.max(nextCellWidth + 4, Math.round(nextCellWidth * 1.7))
         const nextCols = Math.max(8, Math.floor(w / nextCellWidth))
         const nextRows = Math.max(8, Math.floor(h / nextCellHeight))
 
@@ -304,7 +301,7 @@ export default canvas.stateful('Digital Rain', {
         const glyph = GLYPHS[randomGlyphIndex()]
         const x = columnIndex * cellWidth
         const y = row * cellHeight
-        ctx.fillStyle = rgba(paletteState.trail, 0.05)
+        ctx.fillStyle = rgba(paletteState.trail, 0.035)
         ctx.fillText(glyph, x, y)
     }
 
@@ -335,11 +332,11 @@ export default canvas.stateful('Digital Rain', {
             let alpha = (0.12 + trailLength / 135) * fade
 
             if (step === 0) {
-                alpha = 0.98
+                alpha = 0.92
                 color = paletteState.head
                 column.glyphs[row] = randomGlyphIndex()
 
-                ctx.fillStyle = rgba(paletteState.bright, 0.18)
+                ctx.fillStyle = rgba(paletteState.bright, 0.12)
                 ctx.fillRect(x, y, cellWidth - 1, cellHeight - 1)
             }
 

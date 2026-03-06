@@ -37,7 +37,7 @@ vec3 paletteColor(int palette, int slot) {
         if (slot == 1) return vec3(0.06, 0.02, 0.10);
         if (slot == 2) return vec3(0.88, 0.20, 1.00);
         if (slot == 3) return vec3(0.36, 0.80, 0.76);
-        return vec3(0.84, 0.72, 0.28);
+        return vec3(0.42, 0.92, 0.86);
     }
 
     if (palette == 1) {
@@ -68,7 +68,7 @@ vec3 paletteColor(int palette, int slot) {
     if (slot == 1) return vec3(0.10, 0.02, 0.10);
     if (slot == 2) return vec3(1.00, 0.22, 0.70);
     if (slot == 3) return vec3(0.16, 0.78, 0.58);
-    return vec3(0.95, 0.72, 0.30);
+    return vec3(0.36, 0.86, 0.98);
 }
 
 vec4 sceneLattice(vec3 coords, vec3 axisDist, vec2 local, float width, float growth, float t) {
@@ -169,8 +169,8 @@ void main() {
     float growth = clamp(iGrowth / 100.0, 0.0, 1.0);
     float glow = clamp(iEdgeGlow / 100.0, 0.0, 1.0);
 
-    float density = mix(3.2, 14.0, scaleMix);
-    float width = mix(0.090, 0.022, scaleMix);
+    float density = mix(2.8, 10.5, scaleMix);
+    float width = mix(0.110, 0.030, scaleMix);
 
     float theta = 0.18 * sin(t * 0.08);
     mat2 rot = mat2(cos(theta), -sin(theta), sin(theta), cos(theta));
@@ -212,7 +212,7 @@ void main() {
     float accentMask = clamp(scene.y, 0.0, 1.35);
     float highlightMask = clamp(scene.z, 0.0, 1.55);
 
-    float edgeGain = 0.42 + glow * 0.85;
+    float edgeGain = 0.36 + glow * 0.74;
     color += primaryColor * primaryMask * (0.46 + edgeGain * 0.42);
     color += accentColor * accentMask * (0.44 + edgeGain * 0.45);
     color += highlightColor * highlightMask * (0.40 + edgeGain * 0.36);
@@ -221,8 +221,8 @@ void main() {
         primaryMask * primaryMask * 0.55 +
         accentMask * accentMask * 0.62 +
         highlightMask * highlightMask * 0.84
-    ) * (0.16 + glow * 0.68);
-    color += highlightColor * bloom * 0.34;
+    ) * (0.12 + glow * 0.54);
+    color += highlightColor * bloom * 0.24;
 
     float vignette = smoothstep(1.45, 0.18, radial);
     color *= 0.82 + vignette * 0.42;

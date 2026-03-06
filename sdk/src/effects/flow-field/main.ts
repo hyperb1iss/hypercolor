@@ -36,6 +36,14 @@ const SCENE_TUNING: Record<string, SceneTuning> = {
     Pulse: { speed: 0.98, drift: 0.52, twinkle: 1.12, trail: 0.36 },
 }
 
+function ledSafeHue(hue: number): number {
+    const wrapped = ((hue % 360) + 360) % 360
+    if (wrapped >= 30 && wrapped < 90) {
+        return wrapped < 60 ? 24 : 120
+    }
+    return wrapped
+}
+
 function clamp(value: number, min: number, max: number): number {
     if (Number.isNaN(value)) return min
     return Math.max(min, Math.min(max, value))
@@ -60,7 +68,7 @@ function hexToRgb(hex: string): RGB {
         ? `${normalized[0]}${normalized[0]}${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}`
         : normalized
     const parsed = parseInt(full, 16)
-    if (Number.isNaN(parsed)) return { r: 184, g: 255, b: 79 }
+    if (Number.isNaN(parsed)) return { r: 93, g: 201, b: 255 }
     return { r: (parsed >> 16) & 255, g: (parsed >> 8) & 255, b: parsed & 255 }
 }
 
@@ -141,7 +149,7 @@ function resetFirefly(firefly: Firefly, w: number, h: number): void {
 export default canvas.stateful('Flow Field', {
     scene:     SCENES,
     colorMode: COLOR_MODES,
-    baseColor: '#b8ff4f',
+    baseColor: '#5dc9ff',
     count:     [8, 80, 30],
     size:      [1, 8, 2],
     speed:     [1, 10, 5],
@@ -150,8 +158,8 @@ export default canvas.stateful('Flow Field', {
     bgColor:   '#05060a',
 }, () => {
     let fireflies: Firefly[] = []
-    let cachedBaseColor = '#b8ff4f'
-    let cachedBaseHsl: HSL = { h: 90, s: 0.9, l: 0.64 }
+    let cachedBaseColor = '#5dc9ff'
+    let cachedBaseHsl: HSL = { h: 203, s: 1, l: 0.68 }
     let lastTime = -1
 
     function updateBaseColorCache(color: string): void {
@@ -177,22 +185,22 @@ export default canvas.stateful('Flow Field', {
         const base = cachedBaseHsl
 
         if (colorMode === 'Random') {
-            const hue = (base.h + firefly.hueOffset * 240 + 360) % 360
+            const hue = ledSafeHue(base.h + firefly.hueOffset * 160)
             const sat = clamp(84 + firefly.satOffset * 14, 58, 100)
-            const light = clamp(30 + brightness * 20 + firefly.lightOffset * 6, 22, 72)
+            const light = clamp(24 + brightness * 16 + firefly.lightOffset * 5, 18, 62)
             return hslToRgb(hue, sat, light)
         }
 
         if (colorMode === 'Rainbow') {
-            const hue = (time * 22 + index * (360 / Math.max(count, 1)) + firefly.hueOffset * 24 + 360) % 360
+            const hue = ledSafeHue(time * 22 + index * (360 / Math.max(count, 1)) + firefly.hueOffset * 24)
             const sat = clamp(92 + firefly.satOffset * 8, 70, 100)
-            const light = clamp(32 + brightness * 18 + firefly.lightOffset * 4, 24, 74)
+            const light = clamp(26 + brightness * 14 + firefly.lightOffset * 3, 20, 64)
             return hslToRgb(hue, sat, light)
         }
 
-        const hue = (base.h + firefly.hueOffset * 8 + 360) % 360
+        const hue = ledSafeHue(base.h + firefly.hueOffset * 8)
         const sat = clamp(base.s * 100 + 12 + firefly.satOffset * 4, 52, 100)
-        const light = clamp(base.l * 92 + brightness * 18 + firefly.lightOffset * 4, 22, 76)
+        const light = clamp(base.l * 82 + brightness * 14 + firefly.lightOffset * 3, 20, 66)
         return hslToRgb(hue, sat, light)
     }
 
@@ -266,8 +274,8 @@ export default canvas.stateful('Flow Field', {
         brightness: number,
         glowMix: number,
     ): void {
-        const haloColor = mixRgb(color, { r: 255, g: 190, b: 88 }, 0.10)
-        const coreColor = mixRgb(color, { r: 255, g: 214, b: 118 }, 0.16)
+        const haloColor = mixRgb(color, { r: 128, g: 255, b: 234 }, 0.10)
+        const coreColor = mixRgb(color, { r: 225, g: 53, b: 255 }, 0.12)
         const haloRadius = radius * (2.5 + glowMix * 2.1)
 
         ctx.fillStyle = rgba(haloColor, (0.08 + glowMix * 0.22) * brightness)

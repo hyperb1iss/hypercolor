@@ -61,7 +61,7 @@ class NyanDash extends CanvasEffect<NyanDashControls> {
     @NumberControl({ label: 'Cycle Speed', min: 0, max: 100, default: 34, tooltip: 'Hue cycle speed' })
     cycleSpeed!: number
 
-    @NumberControl({ label: 'Star Density', min: 0, max: 100, default: 58, tooltip: 'Twinkling star amount' })
+    @NumberControl({ label: 'Star Density', min: 0, max: 100, default: 44, tooltip: 'Twinkling star amount' })
     starDensity!: number
 
     private controls: NyanDashControls = {
@@ -72,7 +72,7 @@ class NyanDash extends CanvasEffect<NyanDashControls> {
         trailMode: 'Classic',
         colorCycle: true,
         cycleSpeed: 34,
-        starDensity: 58,
+        starDensity: 44,
     }
 
     private stars: DashStar[] = []
@@ -92,7 +92,7 @@ class NyanDash extends CanvasEffect<NyanDashControls> {
         this.trailMode = getControlValue('trailMode', 'Classic')
         this.colorCycle = getControlValue('colorCycle', true)
         this.cycleSpeed = getControlValue('cycleSpeed', 34)
-        this.starDensity = getControlValue('starDensity', 58)
+        this.starDensity = getControlValue('starDensity', 44)
     }
 
     protected getControlValues(): NyanDashControls {
@@ -162,7 +162,7 @@ class NyanDash extends CanvasEffect<NyanDashControls> {
     }
 
     private syncStars(width: number, height: number, force = false): void {
-        const targetCount = Math.max(0, Math.floor(this.controls.starDensity * 1.8))
+        const targetCount = Math.max(0, Math.floor(this.controls.starDensity * 1.25))
         const sizeChanged = this.canvasWidth !== width || this.canvasHeight !== height
 
         if (!force && !sizeChanged && targetCount === this.starCount) return
@@ -203,8 +203,8 @@ class NyanDash extends CanvasEffect<NyanDashControls> {
         ctx.fillRect(0, 0, width, height)
 
         const haze = ctx.createLinearGradient(0, height * 0.4, 0, height)
-        haze.addColorStop(0, 'rgba(255, 255, 255, 0.01)')
-        haze.addColorStop(1, 'rgba(255, 255, 255, 0.08)')
+        haze.addColorStop(0, 'rgba(128, 255, 234, 0.01)')
+        haze.addColorStop(1, 'rgba(225, 53, 255, 0.06)')
         ctx.fillStyle = haze
         ctx.fillRect(0, 0, width, height)
     }
@@ -228,7 +228,7 @@ class NyanDash extends CanvasEffect<NyanDashControls> {
             const size = Math.max(1, Math.round(star.size + twinkle * 0.8))
 
             const color = this.controls.colorCycle
-                ? this.hslToHex(cycleHue + star.hueOffset, 92, 78)
+                ? this.hslToHex(cycleHue + star.hueOffset, 96, 66)
                 : '#ecf2ff'
 
             ctx.globalAlpha = alpha
@@ -267,7 +267,7 @@ class NyanDash extends CanvasEffect<NyanDashControls> {
         const trailLength = Math.max(0, catLeft + 4 * unit)
         if (trailLength <= 0) return
 
-        const baseBands = ['#ff3f8e', '#ff8656', '#ffe266', '#74f2a8', '#5dc9ff', '#9380ff']
+        const baseBands = ['#ff3f8e', '#ff8656', '#ffb347', '#74f2a8', '#5dc9ff', '#9380ff']
         const bandHeight = Math.max(1, Math.round(unit * 2.35))
         const top = catCenterY - bandHeight * 3
         const segment = Math.max(2, Math.round(unit * 3.4))
@@ -276,7 +276,7 @@ class NyanDash extends CanvasEffect<NyanDashControls> {
 
         for (let bandIndex = 0; bandIndex < baseBands.length; bandIndex++) {
             const color = this.controls.colorCycle
-                ? this.hslToHex(cycleHue + bandIndex * 42, 96, 64)
+                ? this.hslToHex(cycleHue + bandIndex * 42, 96, 58)
                 : baseBands[bandIndex]
             const yBase = top + bandIndex * bandHeight
 
@@ -306,7 +306,7 @@ class NyanDash extends CanvasEffect<NyanDashControls> {
                         ctx.globalAlpha = 0.6
                         const sparkleX = this.snap(x + segment * 0.5)
                         const sparkleY = this.snap(y + h * 0.5)
-                        ctx.fillStyle = '#ffffff'
+                        ctx.fillStyle = this.hslToHex(cycleHue + bandIndex * 42, 96, 64)
                         ctx.fillRect(sparkleX - 1, sparkleY, 3, 1)
                         ctx.fillRect(sparkleX, sparkleY - 1, 1, 3)
                     }
@@ -376,13 +376,13 @@ class NyanDash extends CanvasEffect<NyanDashControls> {
 
         const sprinklePalette = this.controls.colorCycle
             ? [
-                this.hslToHex(cycleHue + 22, 96, 72),
+                this.hslToHex(cycleHue + 22, 96, 64),
                 this.hslToHex(cycleHue + 120, 94, 70),
                 this.hslToHex(cycleHue + 190, 96, 72),
                 this.hslToHex(cycleHue + 276, 92, 74),
                 this.hslToHex(cycleHue + 340, 94, 72),
             ]
-            : ['#ffe065', '#74f3ff', '#7eff9a', '#b7a8ff', '#ffb4d9']
+            : ['#ffb347', '#74f3ff', '#7eff9a', '#b7a8ff', '#ffb4d9']
 
         const sprinkles: Array<[number, number, number]> = [
             [4, 3, 0],

@@ -18,6 +18,7 @@ interface RGB { r: number; g: number; b: number }
 const ROTATION_MODES = ['Clockwise', 'Counter-Clockwise', 'Alternating', 'Pulse']
 const COLOR_MODES = ['RGB Split', 'RGB Cycle', 'Prism', 'Mono']
 const DEFAULT_BACKGROUND = '#04060f'
+const SAFE_HUES = [190, 220, 250, 285, 320, 18]
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -59,6 +60,23 @@ function hslToRgb(h: number, s: number, l: number): RGB {
         g: Math.round((g + m) * 255),
         b: Math.round((b + m) * 255),
     }
+}
+
+function ledSafeHue(hue: number): number {
+    const wrapped = ((hue % 360) + 360) % 360
+    if (wrapped >= 30 && wrapped < 90) {
+        return wrapped < 60 ? 24 : 120
+    }
+    return wrapped
+}
+
+function safeBandHue(value: number): number {
+    const wrapped = ((value % 1) + 1) % 1
+    const scaled = wrapped * SAFE_HUES.length
+    const index = Math.floor(scaled) % SAFE_HUES.length
+    const next = (index + 1) % SAFE_HUES.length
+    const blend = scaled - Math.floor(scaled)
+    return SAFE_HUES[index] + (SAFE_HUES[next] - SAFE_HUES[index]) * blend
 }
 
 function scaleColor(color: RGB, scale: number): RGB {
@@ -108,37 +126,37 @@ function resolveColor(
     }
 
     if (mode === 'RGB Cycle') {
-        const hue = (time * (52 + cycleRate * 188) + (arm / Math.max(arms, 1)) * 360 + life * 90) % 360
-        return hslToRgb(hue, 92, 60)
+        const hue = safeBandHue(time * (0.05 + cycleRate * 0.16) + arm / Math.max(arms, 1) + life * 0.18)
+        return hslToRgb(ledSafeHue(hue), 94, 56)
     }
 
     if (mode === 'Prism') {
-        const hue = (index * 137.508 + time * (26 + cycleRate * 96) + life * 122) % 360
-        return hslToRgb(hue, 88, 58)
+        const hue = safeBandHue(index * 0.173 + time * (0.03 + cycleRate * 0.08) + life * 0.22)
+        return hslToRgb(ledSafeHue(hue), 92, 54)
     }
 
     // Mono
     const monoHue = 208 + Math.sin(time * (2.2 + cycleRate * 3.8) + arm) * 22
-    return hslToRgb(monoHue, 48, 72)
+    return hslToRgb(monoHue, 84, 58)
 }
 
 // ── Effect ───────────────────────────────────────────────────────────────
 
 export default canvas.stateful('Voronoi Glass', {
     arms:         [1, 10, 5],
-    count:        [16, 320, 150],
-    particleSize: [1, 14, 4],
+    count:        [16, 220, 110],
+    particleSize: [1, 14, 5],
     growth:       [0, 100, 62],
     rotationMode: combo('Rotation Mode', ROTATION_MODES, { default: 'Alternating' }),
     colorMode:    combo('Color Mode', COLOR_MODES, { default: 'RGB Split' }),
-    cycleSpeed:   [0, 100, 58],
+    cycleSpeed:   [0, 100, 48],
     background:   DEFAULT_BACKGROUND,
 }, () => {
     let particles: ParticleSeed[] = []
     let particleCount = 0
 
     function ensureParticleCount(count: number): void {
-        const target = clamp(Math.round(count), 16, 320)
+        const target = clamp(Math.round(count), 16, 220)
         if (target === particleCount && particles.length === target) return
 
         if (target > particles.length) {
@@ -161,7 +179,7 @@ export default canvas.stateful('Voronoi Glass', {
         const radius = Math.max(width, height) * 0.84
         const hue = (210 + time * (16 + cycleRate * 70)) % 360
         const base = hslToRgb(hue, 82, 53)
-        const accent = hslToRgb((hue + 130) % 360, 86, 58)
+        const accent = hslToRgb(ledSafeHue(hue + 130), 88, 54)
 
         const glow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius)
         glow.addColorStop(0, toRgba(base, 0.11))
@@ -176,8 +194,8 @@ export default canvas.stateful('Voronoi Glass', {
         coreRadius: number, time: number, cycleRate: number,
     ): void {
         const hue = (time * (40 + cycleRate * 90) + 6) % 360
-        const coreA = hslToRgb(hue, 94, 60)
-        const coreB = hslToRgb((hue + 150) % 360, 90, 54)
+        const coreA = hslToRgb(ledSafeHue(hue), 94, 56)
+        const coreB = hslToRgb(ledSafeHue(hue + 150), 92, 52)
         const pulse = 1 + Math.sin(time * (4.2 + cycleRate * 4.8)) * 0.16
         const radius = coreRadius * pulse
 
@@ -264,7 +282,7 @@ export default canvas.stateful('Voronoi Glass', {
             ctx.arc(x, y, size, 0, Math.PI * 2)
             ctx.fill()
 
-            ctx.fillStyle = `rgba(255,255,255,${(0.22 * alpha).toFixed(3)})`
+            ctx.fillStyle = toRgba(scaleColor(color, 1.08), 0.18 * alpha)
             ctx.beginPath()
             ctx.arc(x, y, Math.max(0.55, size * 0.28), 0, Math.PI * 2)
             ctx.fill()

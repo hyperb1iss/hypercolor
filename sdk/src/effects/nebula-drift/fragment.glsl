@@ -140,9 +140,9 @@ void main() {
     float starsAmount = clamp(iStarField * 0.01, 0.0, 1.0);
     float time = iTime * (0.24 + speed * 0.34);
 
-    vec3 bgA = richPaletteColor(0.06 + uv.x * 0.04 + time * 0.02, iPalette, time * 0.20) * 0.08;
-    vec3 bgB = richPaletteColor(0.34 + uv.y * 0.08 - time * 0.015, iPalette, time * 0.16 + 0.4) * 0.16;
-    vec3 bgC = richPaletteColor(0.72 + uv.x * 0.05 - uv.y * 0.04, iPalette, -time * 0.12 + 0.8) * 0.10;
+    vec3 bgA = richPaletteColor(0.06 + uv.x * 0.04 + time * 0.02, iPalette, time * 0.20) * 0.06;
+    vec3 bgB = richPaletteColor(0.34 + uv.y * 0.08 - time * 0.015, iPalette, time * 0.16 + 0.4) * 0.12;
+    vec3 bgC = richPaletteColor(0.72 + uv.x * 0.05 - uv.y * 0.04, iPalette, -time * 0.12 + 0.8) * 0.08;
     vec3 color = mix(bgA, bgB, smoothstep(-0.72, 0.92, uv.y));
     color += bgC * (0.30 + 0.24 * smoothstep(-0.35, 0.85, uv.x - uv.y * 0.2));
 
@@ -152,7 +152,7 @@ void main() {
 
     color += back * 0.64;
     color += mid * 0.80;
-    color += front * 1.08;
+    color += front * 0.96;
 
     float ribbon = 1.0 - abs(vnoise((p + vec2(time * 0.22, -time * 0.17)) * 6.2) * 2.0 - 1.0);
     ribbon = pow(clamp(ribbon, 0.0, 1.0), 5.0);
@@ -162,8 +162,8 @@ void main() {
     stars += starLayer(uv, time, 120.0, 0.010, starsAmount) * 0.55;
     stars += starLayer(uv, time, 190.0, 0.018, starsAmount) * 0.35;
     stars += starLayer(uv, time, 260.0, 0.028, starsAmount) * 0.18;
-    vec3 starTint = mix(vec3(0.48, 0.72, 1.00), richPaletteColor(0.82 + uv.x * 0.08, iPalette, time * 0.18 + 1.1), 0.46);
-    color += starTint * stars * (0.14 + starsAmount * 0.24);
+    vec3 starTint = mix(vec3(0.20, 0.56, 1.00), richPaletteColor(0.82 + uv.x * 0.08, iPalette, time * 0.18 + 1.1), 0.62);
+    color += starTint * stars * (0.10 + starsAmount * 0.18);
 
     float vignette = smoothstep(1.60, 0.18, length(p));
     color *= 0.40 + 0.92 * vignette;
@@ -171,8 +171,8 @@ void main() {
     color = max(color, vec3(0.0));
     color = 1.0 - exp(-color * (1.26 + warp * 0.44));
     float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    float saturation = clamp(iSaturation * 0.01, 0.0, 1.9);
-    float contrast = clamp(iContrast * 0.01, 0.5, 1.8);
+    float saturation = clamp(iSaturation * 0.01, 0.0, 1.6);
+    float contrast = clamp(iContrast * 0.01, 0.6, 1.5);
     color = mix(vec3(luminance), color, saturation);
     color = (color - 0.5) * contrast + 0.5;
     color = pow(clamp(color, 0.0, 1.0), vec3(0.94));

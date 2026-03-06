@@ -25,14 +25,14 @@ interface ThemePalette {
 }
 
 const THEME_PALETTES: Record<string, ThemePalette> = {
-    Custom:        { primary: '#ff4f9a', secondary: '#76fff1', accent: '#6f2dff' },
-    Bubblegum:     { primary: '#ff4f9a', secondary: '#ff98c8', accent: '#ffd1eb' },
+    Custom:        { primary: '#ff4f9a', secondary: '#80ffea', accent: '#6f2dff' },
+    Bubblegum:     { primary: '#ff4f9a', secondary: '#ff74c5', accent: '#8a5cff' },
     'Cyber Pop':   { primary: '#08f7fe', secondary: '#ff06b5', accent: '#6f2dff' },
     Lagoon:        { primary: '#46f1dc', secondary: '#5da8ff', accent: '#1746ff' },
-    'Neon Soda':   { primary: '#89ff53', secondary: '#18e4ff', accent: '#ff4ed1' },
+    'Neon Soda':   { primary: '#36ff9a', secondary: '#18e4ff', accent: '#ff4ed1' },
     Jellyfish:     { primary: '#8a7cff', secondary: '#ff7fcf', accent: '#76fff1' },
-    'Citrus Pop':  { primary: '#ffe15d', secondary: '#ff9a3d', accent: '#ff5478' },
-    'Lavender Fizz': { primary: '#d0a4ff', secondary: '#ff88d4', accent: '#83c4ff' },
+    'Citrus Pop':  { primary: '#ffb347', secondary: '#ff7a2f', accent: '#ff5478' },
+    'Lavender Fizz': { primary: '#9f72ff', secondary: '#ff5ec8', accent: '#66d4ff' },
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -128,10 +128,10 @@ function enrichRgb(color: RGB, saturationBoost: number, lightnessOffset = 0): RG
 
 function polishBubbleColors(colors: { aura: RGB; body: RGB; rim: RGB; gloss: RGB }) {
     return {
-        aura: enrichRgb(colors.aura, 0.16, -0.02),
-        body: enrichRgb(colors.body, 0.12, -0.06),
-        rim: enrichRgb(colors.rim, 0.18, -0.01),
-        gloss: enrichRgb(colors.gloss, 0.08, 0.01),
+        aura: enrichRgb(colors.aura, 0.18, -0.08),
+        body: enrichRgb(colors.body, 0.16, -0.12),
+        rim: enrichRgb(colors.rim, 0.20, -0.06),
+        gloss: enrichRgb(colors.gloss, 0.12, -0.02),
     }
 }
 
@@ -309,14 +309,14 @@ export default canvas.stateful('Bubble Garden', {
     theme:     THEMES,
     bgColor:   '#05040a',
     color:     '#ff4f9a',
-    color2:    '#ff98c8',
-    color3:    '#76fff1',
+    color2:    '#80ffea',
+    color3:    '#6f2dff',
     speed:     [0, 100, 10],
     size:      [1, 10, 5],
-    count:     [10, 120, 36],
+    count:     [10, 120, 30],
 }, () => {
-    let bubbles = createBubbles(36, 320, 200)
-    let prevCount = 36
+    let bubbles = createBubbles(30, 320, 200)
+    let prevCount = 30
     let prevSpeed = 10
 
     return (ctx, time, c) => {

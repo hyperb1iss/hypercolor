@@ -140,14 +140,31 @@ pub fn EffectsPage() -> impl IntoView {
     let on_control_change = Callback::new(move |(name, value): (String, serde_json::Value)| {
         if fx.active_effect_id.get().is_some() {
             let controls_snapshot = fx.active_controls.get();
-            if let Some(control_value) = json_to_control_value(&name, &controls_snapshot, &value) {
-                let control_name = name.clone();
-                fx.set_active_control_values.update(move |values| {
-                    values.insert(control_name, control_value);
-                });
-            }
+            let current_values = fx.active_control_values.get();
+            let updates = expand_control_updates(
+                fx.active_effect_name.get().as_deref(),
+                &current_values,
+                &name,
+                &value,
+            );
 
-            let controls_json = serde_json::json!({ name: value });
+            fx.set_active_control_values.update({
+                let controls_snapshot = controls_snapshot.clone();
+                let updates = updates.clone();
+                move |values| {
+                    for (control_name, raw_value) in &updates {
+                        if let Some(control_value) =
+                            json_to_control_value(control_name, &controls_snapshot, raw_value)
+                        {
+                            values.insert(control_name.clone(), control_value);
+                        }
+                    }
+                }
+            });
+
+            let controls_json = serde_json::Value::Object(
+                updates.into_iter().collect::<serde_json::Map<String, serde_json::Value>>(),
+            );
             leptos::task::spawn_local(async move {
                 let _ = api::update_controls(&controls_json).await;
             });
@@ -429,8 +446,8 @@ pub fn EffectsPage() -> impl IntoView {
                             let controls_accent = format!("border-top: 2px solid rgba({}, 0.15)", rgb);
                             view! {
                                 <aside
-                                    class="w-[420px] shrink-0 sticky top-0 self-start space-y-3 animate-slide-in-right scrollbar-none z-[1]"
-                                    style="max-height: calc(100vh - 10rem); overflow-y: auto"
+                                    class="w-[420px] shrink-0 sticky top-0 self-start space-y-3 pb-4 animate-slide-in-right scrollbar-none z-[1]"
+                                    style="max-height: calc(100vh - 10rem); overflow-y: auto; overscroll-behavior: contain"
                                 >
                                     // Active effect name with category-colored dot
                                     {move || fx.active_effect_name.get().map(|name| {
@@ -505,6 +522,108 @@ pub fn EffectsPage() -> impl IntoView {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PoisonousThemePalette {
+    bg: &'static str,
+    colors: [&'static str; 3],
+}
+
+fn poisonous_theme_palette(theme: &str) -> Option<PoisonousThemePalette> {
+    match theme {
+        "Poison" => Some(PoisonousThemePalette {
+            bg: "#130032",
+            colors: ["#6000fc", "#b300ff", "#8a42ff"],
+        }),
+        "Blacklight" => Some(PoisonousThemePalette {
+            bg: "#06050d",
+            colors: ["#ff58c8", "#30e5ff", "#f4f24e"],
+        }),
+        "Radioactive" => Some(PoisonousThemePalette {
+            bg: "#060b05",
+            colors: ["#7bff00", "#00ff9d", "#f3ff52"],
+        }),
+        "Nightshade" => Some(PoisonousThemePalette {
+            bg: "#0b0615",
+            colors: ["#8d5cff", "#ff4fd1", "#56d8ff"],
+        }),
+        "Cotton Candy" => Some(PoisonousThemePalette {
+            bg: "#110816",
+            colors: ["#ff74c5", "#79ecff", "#ffe869"],
+        }),
+        _ => None,
+    }
+}
+
+fn is_poisonous_color_control(control_name: &str) -> bool {
+    matches!(control_name, "bgColor" | "color1" | "color2" | "color3")
+}
+
+fn control_text_value(value: &ControlValue) -> Option<&str> {
+    match value {
+        ControlValue::Text(text) | ControlValue::Enum(text) => Some(text.as_str()),
+        _ => None,
+    }
+}
+
+fn hex_to_rgba_json(hex: &str) -> Option<serde_json::Value> {
+    let hex = hex.strip_prefix('#').unwrap_or(hex);
+    if hex.len() != 6 {
+        return None;
+    }
+
+    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+
+    Some(serde_json::json!([
+        f32::from(red) / 255.0,
+        f32::from(green) / 255.0,
+        f32::from(blue) / 255.0,
+        1.0
+    ]))
+}
+
+fn expand_control_updates(
+    active_effect_name: Option<&str>,
+    current_values: &std::collections::HashMap<String, ControlValue>,
+    control_name: &str,
+    value: &serde_json::Value,
+) -> Vec<(String, serde_json::Value)> {
+    let mut updates = vec![(control_name.to_owned(), value.clone())];
+
+    if active_effect_name != Some("Poisonous") {
+        return updates;
+    }
+
+    if control_name == "theme"
+        && let Some(theme_name) = value.as_str()
+        && let Some(palette) = poisonous_theme_palette(theme_name)
+    {
+        for (name, hex) in [
+            ("bgColor", palette.bg),
+            ("color1", palette.colors[0]),
+            ("color2", palette.colors[1]),
+            ("color3", palette.colors[2]),
+        ] {
+            if let Some(color_value) = hex_to_rgba_json(hex) {
+                updates.push((name.to_owned(), color_value));
+            }
+        }
+    }
+
+    if is_poisonous_color_control(control_name) {
+        let active_theme = current_values
+            .get("theme")
+            .and_then(control_text_value)
+            .unwrap_or("Poison");
+        if active_theme != "Custom" {
+            updates.push(("theme".to_owned(), serde_json::json!("Custom")));
+        }
+    }
+
+    updates
+}
+
 fn json_to_control_value(
     control_name: &str,
     controls: &[ControlDefinition],
@@ -522,13 +641,23 @@ fn json_to_control_value(
         return Some(ControlValue::Float(float));
     }
     if let Some(v) = value.as_str() {
-        let is_dropdown = controls
+        let (is_dropdown, is_color_picker) = controls
             .iter()
             .find(|def| def.control_id().eq_ignore_ascii_case(control_name))
-            .map(|def| matches!(def.control_type, ControlType::Dropdown))
-            .unwrap_or(false);
+            .map(|def| {
+                (
+                    matches!(def.control_type, ControlType::Dropdown),
+                    matches!(def.control_type, ControlType::ColorPicker),
+                )
+            })
+            .unwrap_or((false, false));
         if is_dropdown {
             return Some(ControlValue::Enum(v.to_owned()));
+        }
+        if is_color_picker
+            && let Some(color_value) = hex_to_color_value(v)
+        {
+            return Some(color_value);
         }
         return Some(ControlValue::Text(v.to_owned()));
     }
@@ -550,6 +679,24 @@ fn parse_f32(value: f64) -> Option<f32> {
         return None;
     }
     Some(value as f32)
+}
+
+fn hex_to_color_value(hex: &str) -> Option<ControlValue> {
+    let hex = hex.strip_prefix('#').unwrap_or(hex);
+    if hex.len() != 6 {
+        return None;
+    }
+
+    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
+
+    Some(ControlValue::Color([
+        f32::from(red) / 255.0,
+        f32::from(green) / 255.0,
+        f32::from(blue) / 255.0,
+        1.0,
+    ]))
 }
 
 /// Loading skeleton for the effects grid.

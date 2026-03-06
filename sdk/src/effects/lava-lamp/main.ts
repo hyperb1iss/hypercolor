@@ -48,14 +48,14 @@ interface ThemePalette {
 const THEMES = ['Custom', 'Bubblegum', 'Lagoon', 'Toxic', 'Aurora', 'Molten', 'Synthwave', 'Citrus']
 
 const THEME_PALETTES: Record<string, ThemePalette> = {
-    Custom:    { color1: '#000ded', color2: '#e40020', color3: '#ffcf4d' },
-    Bubblegum: { color1: '#ff4f9a', color2: '#ff96c1', color3: '#ffd4ef' },
+    Custom:    { color1: '#16d1d9', color2: '#ff4fb4', color3: '#7d49ff' },
+    Bubblegum: { color1: '#ff4f9a', color2: '#ff74c5', color3: '#8a5cff' },
     Lagoon:    { color1: '#3cf2df', color2: '#4a96ff', color3: '#163dff' },
-    Toxic:     { color1: '#98ff4a', color2: '#0ae0cb', color3: '#6c2bff' },
+    Toxic:     { color1: '#36ff9a', color2: '#0ae0cb', color3: '#6c2bff' },
     Aurora:    { color1: '#33f587', color2: '#3fdcff', color3: '#8c4bff' },
-    Molten:    { color1: '#ff6329', color2: '#ffb021', color3: '#ffe66b' },
+    Molten:    { color1: '#ff6329', color2: '#ff8d1f', color3: '#ff4b5c' },
     Synthwave: { color1: '#ff4ed6', color2: '#8f48ff', color3: '#42d9ff' },
-    Citrus:    { color1: '#ffd84d', color2: '#ff9343', color3: '#ff5778' },
+    Citrus:    { color1: '#ffb347', color2: '#ff7a2f', color3: '#ff5778' },
 }
 
 @Effect({
@@ -74,13 +74,13 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
     @ComboboxControl({ label: 'Theme', values: THEMES, default: 'Custom', tooltip: 'Curated lava color palettes' })
     theme!: string
 
-    @ColorControl({ label: 'Color 1', default: '#000ded', tooltip: 'Primary lava color' })
+    @ColorControl({ label: 'Color 1', default: '#16d1d9', tooltip: 'Primary lava color' })
     color1!: string
 
-    @ColorControl({ label: 'Color 2', default: '#e40020', tooltip: 'Secondary lava color' })
+    @ColorControl({ label: 'Color 2', default: '#ff4fb4', tooltip: 'Secondary lava color' })
     color2!: string
 
-    @ColorControl({ label: 'Color 3', default: '#ffcf4d', tooltip: 'Highlight lava color' })
+    @ColorControl({ label: 'Color 3', default: '#7d49ff', tooltip: 'Highlight lava color' })
     color3!: string
 
     @BooleanControl({ label: 'Lava Color Cycle', default: false, tooltip: 'Cycle lava hues continuously' })
@@ -99,9 +99,9 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
         bgColor: '#0b0312',
         bgCycle: false,
         theme: 'Custom',
-        color1: '#000ded',
-        color2: '#e40020',
-        color3: '#ffcf4d',
+        color1: '#16d1d9',
+        color2: '#ff4fb4',
+        color3: '#7d49ff',
         rainbow: false,
         speed: 22,
         cycleSpeed: 22,
@@ -129,9 +129,9 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
         this.bgColor = getControlValue('bgColor', '#0b0312')
         this.bgCycle = getControlValue('bgCycle', false)
         this.theme = getControlValue('theme', 'Custom')
-        this.color1 = getControlValue('color1', '#000ded')
-        this.color2 = getControlValue('color2', '#e40020')
-        this.color3 = getControlValue('color3', '#ffcf4d')
+        this.color1 = getControlValue('color1', '#16d1d9')
+        this.color2 = getControlValue('color2', '#ff4fb4')
+        this.color3 = getControlValue('color3', '#7d49ff')
         this.rainbow = getControlValue('rainbow', false)
         this.speed = getControlValue('speed', 22)
         this.cycleSpeed = getControlValue('cycleSpeed', 22)
@@ -565,7 +565,9 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
 
     private shiftHexHue(hex: string, deltaDegrees: number): string {
         const { h, s, l } = this.rgbToHsl(this.hexToRgb(hex))
-        return this.hslToHex((h + deltaDegrees + 360) % 360, s, l)
+        const shifted = (h + deltaDegrees + 360) % 360
+        const safeHue = shifted >= 30 && shifted < 90 ? (shifted < 60 ? 24 : 120) : shifted
+        return this.hslToHex(safeHue, s, l)
     }
 
     private rgbToHsl(rgb: Rgb): { h: number; s: number; l: number } {

@@ -54,7 +54,7 @@ vec3 paletteColor(int id, int slot) {
         if (slot == 1) return vec3(0.10, 0.02, 0.14);
         if (slot == 2) return vec3(0.88, 0.21, 1.00);
         if (slot == 3) return vec3(0.50, 1.00, 0.92);
-        return vec3(0.95, 0.98, 0.55);
+        return vec3(1.00, 0.54, 0.18);
     }
 
     if (id == 1) {
@@ -62,7 +62,7 @@ vec3 paletteColor(int id, int slot) {
         if (slot == 1) return vec3(0.14, 0.05, 0.08);
         if (slot == 2) return vec3(1.00, 0.42, 0.72);
         if (slot == 3) return vec3(0.35, 0.95, 0.55);
-        return vec3(1.00, 0.92, 0.55);
+        return vec3(1.00, 0.56, 0.22);
     }
 
     if (id == 2) {
@@ -70,7 +70,7 @@ vec3 paletteColor(int id, int slot) {
         if (slot == 1) return vec3(0.18, 0.03, 0.02);
         if (slot == 2) return vec3(1.00, 0.24, 0.12);
         if (slot == 3) return vec3(1.00, 0.76, 0.14);
-        return vec3(0.95, 0.98, 0.70);
+        return vec3(0.96, 0.34, 0.66);
     }
 
     if (id == 3) {
@@ -78,7 +78,7 @@ vec3 paletteColor(int id, int slot) {
         if (slot == 1) return vec3(0.02, 0.08, 0.14);
         if (slot == 2) return vec3(0.22, 0.82, 1.00);
         if (slot == 3) return vec3(0.53, 1.00, 0.86);
-        return vec3(0.99, 0.99, 1.00);
+        return vec3(0.34, 0.96, 1.00);
     }
 
     if (slot == 0) return vec3(0.01, 0.01, 0.04);
@@ -95,7 +95,7 @@ vec3 applyColorMode(vec3 color, int mode, float shift) {
 
     if (mode == 2) {
         float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-        return mix(vec3(0.04, 0.15, 0.20), vec3(0.85, 1.00, 0.96), luma);
+        return mix(vec3(0.06, 0.10, 0.24), vec3(0.42, 0.98, 0.94), luma);
     }
 
     return color;
@@ -107,7 +107,7 @@ vec4 sceneRollerGrid(vec2 p, float t, float density) {
     float floorY = max(0.0, horizon - p.y);
     float depth = 1.0 / (0.09 + floorY);
 
-    float laneScale = mix(3.5, 11.0, density);
+    float laneScale = mix(3.0, 8.5, density);
     float lane = lineGrid(p.x * depth * laneScale, 0.055);
     float cross = lineGrid((depth + t * 1.3) * (0.75 + density * 2.6), 0.050);
     float primary = max(lane, cross) * floorMask * smoothstep(0.0, 0.85, floorY);
@@ -116,12 +116,12 @@ vec4 sceneRollerGrid(vec2 p, float t, float density) {
     float accent = side * floorMask * (0.35 + 0.65 * smoothstep(0.02, 0.55, floorY));
 
     float horizonStripe = 1.0 - smoothstep(0.0, 0.012, abs(p.y - horizon));
-    float arches = lineGrid(length(vec2(p.x, max(0.0, p.y - horizon) * 1.25)) * (3.2 + density * 8.0) - t * 0.35, 0.040)
+    float arches = lineGrid(length(vec2(p.x, max(0.0, p.y - horizon) * 1.25)) * (2.8 + density * 6.0) - t * 0.35, 0.046)
         * step(horizon, p.y);
 
     vec2 tile = vec2(
-        p.x * (6.0 + density * 10.0),
-        (p.y - horizon) * (4.0 + density * 7.0) + t * 0.25
+        p.x * (4.8 + density * 7.2),
+        (p.y - horizon) * (3.4 + density * 5.6) + t * 0.25
     );
     vec2 gv = fract(tile) - 0.5;
     float skyDiamond = diamondMask(gv, 0.19) * (1.0 - smoothstep(0.42, 0.95, p.y - horizon));
@@ -133,7 +133,7 @@ vec4 sceneRollerGrid(vec2 p, float t, float density) {
 }
 
 vec4 sceneArcadeCarpet(vec2 p, float t, float density) {
-    float scale = mix(3.0, 11.0, density);
+    float scale = mix(2.4, 7.0, density);
     vec2 q = p * scale + vec2(t * 0.4, -t * 0.28);
     vec2 id = floor(q);
     vec2 gv = fract(q) - 0.5;
@@ -145,8 +145,8 @@ vec4 sceneArcadeCarpet(vec2 p, float t, float density) {
 
     mat2 rot = mat2(0.70710678, -0.70710678, 0.70710678, 0.70710678);
     vec2 rg = rot * gv;
-    float stripeA = lineGrid(rg.x * (6.0 + density * 8.0) + t * 0.45, 0.08);
-    float stripeB = lineGrid(rg.y * (6.0 + density * 8.0) - t * 0.45, 0.08);
+    float stripeA = lineGrid(rg.x * (4.8 + density * 6.4) + t * 0.45, 0.10);
+    float stripeB = lineGrid(rg.y * (4.8 + density * 6.4) - t * 0.45, 0.10);
 
     float sparkle = diamondMask(gv + vec2(0.0, sin((id.x + id.y) * 0.8 + t) * 0.12), 0.08);
 
@@ -164,17 +164,17 @@ vec4 sceneLaserLanes(vec2 p, float t, float density) {
     float depth = 1.0 / (0.10 + floorY);
 
     float laneWarp = sin(depth * 1.6 + t * 0.8) * 0.28;
-    float lanesA = lineGrid((p.x * depth + laneWarp) * (1.8 + density * 7.2), 0.035);
-    float lanesB = lineGrid((p.x * depth * 0.72 - t * 0.9) * (1.2 + density * 5.0), 0.030);
+    float lanesA = lineGrid((p.x * depth + laneWarp) * (1.4 + density * 5.2), 0.040);
+    float lanesB = lineGrid((p.x * depth * 0.72 - t * 0.9) * (1.0 + density * 3.6), 0.036);
     float zBeats = lineGrid((depth + t * 1.4) * (0.6 + density * 2.4), 0.050);
 
     float primary = max(lanesA, zBeats) * floorMask;
     float accent = max(lanesB, (1.0 - smoothstep(0.0, 0.02, abs(p.x))) * zBeats) * floorMask * 0.95;
 
     float skyMask = step(horizon, p.y);
-    float skyBands = lineGrid((p.y - horizon) * (8.0 + density * 14.0) + t * 0.75, 0.060);
-    float skyColumns = lineGrid((p.x + sin((p.y - horizon) * 7.0 + t) * 0.15) * (2.6 + density * 4.5), 0.040);
-    float arch = lineGrid(length(vec2(p.x, max(0.0, p.y - horizon) * 1.05)) * (4.0 + density * 7.0) - t * 0.32, 0.035)
+    float skyBands = lineGrid((p.y - horizon) * (6.0 + density * 9.0) + t * 0.75, 0.070);
+    float skyColumns = lineGrid((p.x + sin((p.y - horizon) * 7.0 + t) * 0.15) * (2.0 + density * 3.4), 0.046);
+    float arch = lineGrid(length(vec2(p.x, max(0.0, p.y - horizon) * 1.05)) * (3.0 + density * 5.2) - t * 0.32, 0.042)
         * skyMask;
 
     float highlight = max(arch, skyBands * 0.45 + skyColumns * 0.5);
@@ -215,16 +215,16 @@ void main() {
     float accentMask = clamp(scene.y, 0.0, 1.2);
     float highlightMask = clamp(scene.z, 0.0, 1.4);
 
-    color += primary * primaryMask * (0.65 + glow * 0.95);
-    color += accent * accentMask * (0.62 + glow * 1.00);
-    color += highlight * highlightMask * (0.72 + glow * 1.30);
+    color += primary * primaryMask * (0.58 + glow * 0.84);
+    color += accent * accentMask * (0.56 + glow * 0.88);
+    color += highlight * highlightMask * (0.58 + glow * 0.96);
 
     float bloom = (
         primaryMask * primaryMask * 0.55 +
         accentMask * accentMask * 0.60 +
         highlightMask * highlightMask * 0.80
     ) * glow;
-    color += highlight * bloom * 0.55;
+    color += highlight * bloom * 0.34;
 
     float scan = 0.92 + 0.08 * step(0.5, fract(gl_FragCoord.y * 0.5));
     color *= scan;

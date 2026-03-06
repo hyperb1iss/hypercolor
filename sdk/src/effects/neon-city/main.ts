@@ -68,31 +68,31 @@ function getPalette(name: string): PaletteSet {
     if (name === 'SilkCircuit') {
         return {
             bgA: '#0f0621', bgB: '#1f1238', star: '#80ffea',
-            shardA: '#e135ff', shardB: '#ff6ac1', sweep: '#80ffea', spark: '#f1fa8c',
+            shardA: '#e135ff', shardB: '#ff6ac1', sweep: '#80ffea', spark: '#ff9a3d',
         }
     }
     if (name === 'Ion Storm') {
         return {
             bgA: '#051126', bgB: '#0a2d45', star: '#9be5ff',
-            shardA: '#5ad8ff', shardB: '#b8f6ff', sweep: '#62c9ff', spark: '#f3ffb8',
+            shardA: '#5ad8ff', shardB: '#7ef0ff', sweep: '#62c9ff', spark: '#64d8ff',
         }
     }
     if (name === 'Supernova') {
         return {
             bgA: '#270e05', bgB: '#44210c', star: '#ffd9a8',
-            shardA: '#ff7c2a', shardB: '#ffd16c', sweep: '#ff9545', spark: '#fff2b5',
+            shardA: '#ff7c2a', shardB: '#ff9f4a', sweep: '#ff9545', spark: '#ffb347',
         }
     }
     if (name === 'Aurora') {
         return {
             bgA: '#071c1a', bgB: '#122731', star: '#c9fff4',
-            shardA: '#43ff95', shardB: '#ad7bff', sweep: '#85ffd8', spark: '#e8fff1',
+            shardA: '#43ff95', shardB: '#ad7bff', sweep: '#85ffd8', spark: '#36ffb4',
         }
     }
     // Dark Matter (default)
     return {
         bgA: '#06091a', bgB: '#130f2a', star: '#b8d1ff',
-        shardA: '#8a5bff', shardB: '#ff57d6', sweep: '#82a8ff', spark: '#d8f2ff',
+        shardA: '#8a5bff', shardB: '#ff57d6', sweep: '#82a8ff', spark: '#80c8ff',
     }
 }
 
@@ -118,9 +118,9 @@ function getVoidCenter(scene: number, w: number, h: number, time: number): { x: 
 function computeCounts(density: number): { stars: number; shards: number; sparks: number } {
     const d = Math.max(0, Math.min(100, density)) / 100
     return {
-        stars: Math.floor(70 + d * 170),
-        shards: Math.floor(24 + d * 84),
-        sparks: Math.floor(12 + d * 48),
+        stars: Math.floor(36 + d * 88),
+        shards: Math.floor(18 + d * 52),
+        sparks: Math.floor(6 + d * 22),
     }
 }
 
@@ -132,14 +132,14 @@ export default canvas.stateful('Neon City', {
     lineSweep:    [0, 100, 62],
     voidStrength: [0, 100, 56],
     sparks:       true,
-    glow:         [0, 100, 72],
+    glow:         [0, 100, 64],
     colorMode:    combo('Palette', [...COLOR_MODES], { default: 'Dark Matter' }),
     scene:        SCENES,
 }, () => {
     let stars: Star[] = []
     let shards: Shard[] = []
     let sparkLanes: Spark[] = []
-    let counts = { stars: 130, shards: 52, sparks: 24 }
+    let counts = { stars: 86, shards: 42, sparks: 16 }
 
     let prevShardDensity = 58
 
@@ -187,14 +187,6 @@ export default canvas.stateful('Neon City', {
         ctx.fillStyle = haze
         ctx.fillRect(0, 0, w, h)
 
-        const grainCount = 70
-        for (let i = 0; i < grainCount; i++) {
-            const px = hash(i * 1.37 + 4.9 + time * 0.2) * w
-            const py = hash(i * 2.11 + 3.4 + time * 0.15) * h
-            const alpha = 0.02 + hash(i * 4.21 + 1.7) * 0.04
-            ctx.fillStyle = hexToRgba('#ffffff', alpha)
-            ctx.fillRect(px, py, 1, 1)
-        }
     }
 
     function drawVoid(

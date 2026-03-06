@@ -24,8 +24,12 @@ pub fn CanvasPreview(
             return;
         };
 
-        canvas.set_width(frame.width);
-        canvas.set_height(frame.height);
+        // Only resize canvas when dimensions actually change — setting width/height
+        // every frame forces layout recalc and causes the sidebar to jitter.
+        if canvas.width() != frame.width || canvas.height() != frame.height {
+            canvas.set_width(frame.width);
+            canvas.set_height(frame.height);
+        }
 
         let ctx = canvas
             .get_context("2d")

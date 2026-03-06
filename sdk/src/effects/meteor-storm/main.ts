@@ -33,7 +33,7 @@ interface SceneTone {
 // ── Constants ────────────────────────────────────────────────────────────
 
 const PATHS = ['Diagonal', 'Vertical']
-const SCENES = ['Night', 'Pastel']
+const SCENES = ['Night', 'Aurora']
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -69,25 +69,25 @@ function getSceneTone(path: string, skyTop: string, skyBottom: string, starColor
     const bottom = hexToRgb(skyBottom)
     const star = hexToRgb(starColor)
 
-    if (scene === 'Pastel') {
+    if (scene === 'Aurora') {
         return {
-            skyTop: mixRgb(top, { r: 255, g: 227, b: 246 }, 0.24),
-            skyBottom: mixRgb(bottom, { r: 210, g: 230, b: 255 }, 0.2),
-            star: mixRgb(star, { r: 255, g: 255, b: 255 }, 0.24),
-            trail: mixRgb(star, { r: 255, g: 214, b: 242 }, 0.34),
+            skyTop: mixRgb(top, { r: 12, g: 14, b: 42 }, 0.34),
+            skyBottom: mixRgb(bottom, { r: 22, g: 78, b: 118 }, 0.26),
+            star: mixRgb(star, { r: 150, g: 238, b: 255 }, 0.20),
+            trail: mixRgb(star, { r: 255, g: 104, b: 190 }, 0.24),
         }
     }
 
     return {
         skyTop: mixRgb(top, { r: 3, g: 6, b: 18 }, 0.32),
         skyBottom: mixRgb(bottom, { r: 15, g: 30, b: 68 }, 0.2),
-        star: mixRgb(star, { r: 255, g: 255, b: 255 }, 0.16),
-        trail: mixRgb(star, { r: 146, g: 198, b: 255 }, 0.24),
+        star: mixRgb(star, { r: 162, g: 224, b: 255 }, 0.14),
+        trail: mixRgb(star, { r: 92, g: 210, b: 255 }, 0.20),
     }
 }
 
 function computeBackgroundStarCount(density: number, starSize: number): number {
-    return Math.max(36, Math.floor(40 + density * 1.9 - starSize * 0.55))
+    return Math.max(22, Math.floor(24 + density * 1.1 - starSize * 0.40))
 }
 
 function computeMeteorCap(density: number, starSize: number): number {
@@ -104,11 +104,11 @@ export default canvas.stateful('Meteor Storm', {
     path:      PATHS,
     speed:     [1, 10, 5],
     starSize:  [1, 20, 8],
-    density:   [10, 100, 58],
+    density:   [10, 100, 52],
     trail:     [10, 100, 72],
     skyTop:    '#0b1233',
     skyBottom: '#1a3f89',
-    starColor: '#fff6bd',
+    starColor: '#8dd6ff',
     scene:     SCENES,
 }, () => {
     let stars: Star[] = []
@@ -135,7 +135,7 @@ export default canvas.stateful('Meteor Storm', {
             stars.push({
                 x: Math.random() * w,
                 y: Math.random() * h,
-                size: 0.35 + Math.random() * 1.4,
+                size: 0.55 + Math.random() * 1.6,
                 phase: Math.random() * Math.PI * 2,
                 depth: 0.25 + Math.random() * 0.95,
             })
@@ -198,7 +198,7 @@ export default canvas.stateful('Meteor Storm', {
             const x = (star.x + time * driftX * star.depth) % w
             const y = (star.y + time * driftY * (0.4 + star.depth)) % h
             const twinkle = 0.5 + 0.5 * Math.sin(time * (1.2 + star.depth * 1.6) + star.phase * 2.4)
-            const alpha = (0.15 + twinkle * 0.46) * (0.72 + star.depth * 0.28)
+            const alpha = (0.10 + twinkle * 0.34) * (0.70 + star.depth * 0.24)
             const size = Math.max(1, (star.size + sizeScale * 0.22) * (0.8 + star.depth * 0.28))
 
             ctx.fillStyle = rgbToRgba(tone.star, alpha * 0.7)
@@ -214,7 +214,7 @@ export default canvas.stateful('Meteor Storm', {
     }
 
     function drawMeteors(ctx: CanvasRenderingContext2D, time: number, tone: SceneTone): void {
-        const headColor = mixRgb(tone.star, { r: 255, g: 255, b: 255 }, 0.35)
+        const headColor = mixRgb(tone.star, tone.trail, 0.34)
 
         for (const meteor of meteors) {
             const velocity = Math.hypot(meteor.vx, meteor.vy)

@@ -22,7 +22,6 @@ interface RingParticle {
     direction: 1 | -1
 }
 
-const PARTICLES_PER_DIRECTION = 22
 const THEMES = ['Poison', 'Blacklight', 'Radioactive', 'Nightshade', 'Cotton Candy', 'Custom'] as const
 
 const THEME_PALETTES: Record<(typeof THEMES)[number], ThemePalette> = {
@@ -32,11 +31,11 @@ const THEME_PALETTES: Record<(typeof THEMES)[number], ThemePalette> = {
     },
     Blacklight: {
         bg: '#06050d',
-        colors: ['#ff58c8', '#30e5ff', '#f4f24e'],
+        colors: ['#ff58c8', '#30e5ff', '#ffb347'],
     },
     Radioactive: {
         bg: '#060b05',
-        colors: ['#7bff00', '#00ff9d', '#f3ff52'],
+        colors: ['#5cff24', '#00ff9d', '#ff9a3d'],
     },
     Nightshade: {
         bg: '#0b0615',
@@ -44,7 +43,7 @@ const THEME_PALETTES: Record<(typeof THEMES)[number], ThemePalette> = {
     },
     'Cotton Candy': {
         bg: '#110816',
-        colors: ['#ff74c5', '#79ecff', '#ffe869'],
+        colors: ['#ff74c5', '#79ecff', '#ffb347'],
     },
     Custom: {
         bg: '#130032',
@@ -121,7 +120,7 @@ function createParticle(
                 : height + Math.random() * offscreenMargin,
         speedX: (Math.random() - 0.5) * (Math.random() * 0.8 + 0.2),
         speedY: Math.random() * 2.4 + 0.7,
-        lineWidth: Math.round(Math.random() * 8) + 2,
+        lineWidth: Math.round(Math.random() * 6) + 3,
         radius,
         colorIndex: Math.floor(Math.random() * paletteSize),
         direction,
@@ -141,9 +140,14 @@ export default canvas.stateful('Poisonous', {
     let lastWidth = 0
     let lastHeight = 0
 
-    function reset(width: number, height: number, paletteSize: number): void {
+    function particlesPerDirectionForRings(ringCount: number): number {
+        const normalized = clamp((ringCount - 1) / 5, 0, 1)
+        return Math.round(6 + normalized * 18)
+    }
+
+    function reset(width: number, height: number, paletteSize: number, targetPerDirection: number): void {
         particles = []
-        for (let i = 0; i < PARTICLES_PER_DIRECTION; i++) {
+        for (let i = 0; i < targetPerDirection; i++) {
             particles.push(createParticle(width, height, paletteSize, 1, true))
             particles.push(createParticle(width, height, paletteSize, -1, true))
         }
@@ -151,14 +155,19 @@ export default canvas.stateful('Poisonous', {
         lastHeight = height
     }
 
-    function ensureParticleCount(width: number, height: number, paletteSize: number): void {
+    function ensureParticleCount(
+        width: number,
+        height: number,
+        paletteSize: number,
+        targetPerDirection: number,
+    ): void {
         const upward = particles.filter((particle) => particle.direction === -1).length
         const downward = particles.filter((particle) => particle.direction === 1).length
 
-        for (let i = downward; i < PARTICLES_PER_DIRECTION; i++) {
+        for (let i = downward; i < targetPerDirection; i++) {
             particles.push(createParticle(width, height, paletteSize, 1))
         }
-        for (let i = upward; i < PARTICLES_PER_DIRECTION; i++) {
+        for (let i = upward; i < targetPerDirection; i++) {
             particles.push(createParticle(width, height, paletteSize, -1))
         }
     }
@@ -172,11 +181,12 @@ export default canvas.stateful('Poisonous', {
         const speedRaw = controls.speedRaw as number
         const ringCount = Math.round(controls.ringCount as number)
         const speedScale = speedRaw / 50
+        const targetPerDirection = particlesPerDirectionForRings(ringCount)
 
         if (width !== lastWidth || height !== lastHeight || particles.length === 0) {
-            reset(width, height, palette.length)
+            reset(width, height, palette.length, targetPerDirection)
         } else {
-            ensureParticleCount(width, height, palette.length)
+            ensureParticleCount(width, height, palette.length, targetPerDirection)
         }
 
         ctx.fillStyle = speedRaw > 0 ? rgba(background, 0.16) : rgba(background, 1)
@@ -185,7 +195,7 @@ export default canvas.stateful('Poisonous', {
         for (const particle of particles) {
             const base = palette[particle.colorIndex] ?? palette[0]
             const accent = palette[(particle.colorIndex + 1) % palette.length] ?? mixRgb(base, { r: 255, g: 255, b: 255 }, 0.18)
-            const ringStep = Math.max(2.4, particle.radius * 0.18)
+            const ringStep = Math.max(3.6, particle.radius * 0.26)
 
             for (let ringIndex = 0; ringIndex < ringCount; ringIndex++) {
                 const ringRadius = particle.radius - ringIndex * ringStep
@@ -193,8 +203,8 @@ export default canvas.stateful('Poisonous', {
 
                 const blend = ringCount <= 1 ? 0 : ringIndex / Math.max(1, ringCount - 1)
                 const ringColor = mixRgb(base, accent, blend * 0.72)
-                const alpha = clamp(0.68 - ringIndex * 0.09, 0.24, 0.68)
-                const lineWidth = Math.max(1, particle.lineWidth * (1 - ringIndex * 0.16))
+                const alpha = clamp(0.62 - ringIndex * 0.10, 0.20, 0.62)
+                const lineWidth = Math.max(1.4, particle.lineWidth * (1 - ringIndex * 0.18))
 
                 ctx.strokeStyle = rgba(ringColor, alpha)
                 ctx.lineWidth = lineWidth
@@ -217,6 +227,6 @@ export default canvas.stateful('Poisonous', {
         })
     }
 }, {
-    description: 'A denser concentric-ring poison variant with selectable themes and controllable ring stacks',
+    description: 'Neon toxin rings drifting through a dark haze with theme and palette controls',
     author: 'Hypercolor',
 })

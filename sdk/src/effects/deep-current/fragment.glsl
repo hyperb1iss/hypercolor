@@ -78,15 +78,15 @@ void main() {
 
     float dividerWidth = 0.003 + (1.0 - blend) * 0.01;
     float divider = 1.0 - smoothstep(dividerWidth, dividerWidth + 0.012, abs((seamBase + seamShift) - seamCenter));
-    col += mix(iLeftColor, iRightColor, 0.5) * divider * (0.2 + ripple * 0.35);
-    col += vec3(1.0, 0.96, 0.87) * divider * 0.35;
+    col += mix(iLeftColor, iRightColor, 0.5) * divider * (0.16 + ripple * 0.28);
+    col += mix(iRightColor, vec3(1.0, 0.58, 0.14), 0.22) * divider * 0.16;
 
     float p1 = particleLayer(uv + vec2(0.0, time * 0.03), time, mix(14.0, 36.0, particleAmount), 0.28 + particleAmount * 0.95, 1.37);
     float p2 = particleLayer(uv + vec2(-time * 0.018, 0.0), time * 1.18, mix(22.0, 52.0, particleAmount), 0.4 + particleAmount * 1.1, 7.91);
     float particles = (p1 * 0.8 + p2 * 0.6) * mix(0.2, 1.0, particleAmount);
     vec3 particleColor = mix(iLeftColor, iRightColor, seamMix);
-    col += particleColor * particles * (0.4 + particleAmount * 0.65);
-    col += vec3(1.0, 0.95, 0.88) * particles * 0.25;
+    col += particleColor * particles * (0.34 + particleAmount * 0.54);
+    col += mix(iLeftColor, iRightColor, 0.62) * particles * 0.10;
 
     float verticalShade = 0.88 + 0.18 * smoothstep(0.0, 1.0, uv.y);
     float vignette = 1.0 - 0.28 * dot((uv - 0.5) * vec2(1.35, 1.0), (uv - 0.5) * vec2(1.35, 1.0));

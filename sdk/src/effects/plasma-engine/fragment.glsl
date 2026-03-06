@@ -42,12 +42,12 @@ vec3 plasmaPalette(float t, vec3 c1, vec3 c2, vec3 c3) {
 }
 
 vec3 themedPalette(float t) {
-    if (iTheme == 1) return plasmaPalette(t, vec3(0.56, 1.00, 0.28), vec3(0.10, 0.86, 0.86), vec3(0.42, 0.20, 0.98));
+    if (iTheme == 1) return plasmaPalette(t, vec3(0.14, 0.92, 0.64), vec3(0.10, 0.86, 0.86), vec3(0.42, 0.20, 0.98));
     if (iTheme == 2) return plasmaPalette(t, vec3(0.10, 0.88, 0.84), vec3(0.98, 0.22, 0.76), vec3(0.40, 0.18, 0.96));
-    if (iTheme == 3) return plasmaPalette(t, vec3(0.94, 0.22, 0.08), vec3(1.00, 0.56, 0.10), vec3(1.00, 0.86, 0.24));
+    if (iTheme == 3) return plasmaPalette(t, vec3(0.94, 0.22, 0.08), vec3(1.00, 0.52, 0.08), vec3(0.92, 0.32, 0.62));
     if (iTheme == 4) return plasmaPalette(t, vec3(0.14, 0.94, 0.54), vec3(0.20, 0.78, 1.00), vec3(0.56, 0.26, 0.98));
-    if (iTheme == 5) return plasmaPalette(t, vec3(1.00, 0.28, 0.70), vec3(0.18, 0.74, 1.00), vec3(1.00, 0.84, 0.18));
-    if (iTheme == 6) return plasmaPalette(t, vec3(0.86, 1.00, 0.24), vec3(0.10, 0.92, 0.84), vec3(1.00, 0.42, 0.34));
+    if (iTheme == 5) return plasmaPalette(t, vec3(1.00, 0.28, 0.70), vec3(0.18, 0.74, 1.00), vec3(1.00, 0.56, 0.12));
+    if (iTheme == 6) return plasmaPalette(t, vec3(0.18, 0.94, 0.74), vec3(0.10, 0.92, 0.84), vec3(1.00, 0.40, 0.32));
     if (iTheme == 7) return plasmaPalette(t, vec3(0.14, 0.90, 0.92), vec3(0.16, 0.48, 1.00), vec3(0.06, 0.14, 0.54));
     return plasmaPalette(t, iColor1, iColor2, iColor3);
 }
@@ -94,7 +94,7 @@ void main() {
     vec3 cycle = themedPalette(fract(plasma + time * 0.08 + noise * 0.08 + zebra * 0.05));
     palette = mix(palette, cycle, 0.18 + spread * 0.16);
 
-    float glow = smoothstep(0.30, 1.0, lava + contour * 0.6) * (0.05 + bloom * 0.20);
+    float glow = smoothstep(0.30, 1.0, lava + contour * 0.6) * (0.04 + bloom * 0.16);
     vec3 color = iBackgroundColor;
     color += themedPalette(fract(0.12 + zebra * 0.16)) * (0.04 + spread * 0.05) * (0.4 + noise * 0.6);
     color += palette * lava * (0.40 + density * 0.44);

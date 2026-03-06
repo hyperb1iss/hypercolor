@@ -42,7 +42,7 @@ vec3 paletteColor(float t, int id) {
     if (id == 1) return iqPalette(t, vec3(0.18, 0.50, 0.40), vec3(0.35, 0.40, 0.45), vec3(0.75, 0.70, 0.85), vec3(0.62, 0.30, 0.72));
     if (id == 2) return iqPalette(t, vec3(0.52, 0.18, 0.48), vec3(0.52, 0.45, 0.50), vec3(1.00, 1.00, 1.00), vec3(0.84, 0.10, 0.60));
     if (id == 3) return iqPalette(t, vec3(0.50, 0.22, 0.02), vec3(0.50, 0.40, 0.20), vec3(1.00, 0.72, 0.38), vec3(0.02, 0.16, 0.24));
-    if (id == 4) return iqPalette(t, vec3(0.54, 0.38, 0.26), vec3(0.44, 0.32, 0.30), vec3(0.90, 0.75, 0.62), vec3(0.06, 0.22, 0.38));
+    if (id == 4) return iqPalette(t, vec3(0.40, 0.16, 0.28), vec3(0.40, 0.26, 0.28), vec3(0.82, 0.68, 0.60), vec3(0.06, 0.24, 0.44));
     if (id == 5) return iqPalette(t, vec3(0.52, 0.60, 0.78), vec3(0.22, 0.30, 0.22), vec3(0.62, 0.82, 1.00), vec3(0.00, 0.10, 0.32));
     return iqPalette(t, vec3(0.50, 0.28, 0.54), vec3(0.48, 0.45, 0.45), vec3(1.00, 0.85, 0.70), vec3(0.88, 0.18, 0.52));
 }
@@ -109,7 +109,7 @@ void main() {
     float smoothness = clamp(iSmoothing * 0.01, 0.0, 1.0);
     float glowAmount = clamp(iGlow * 0.01, 0.0, 1.0);
 
-    float barCount = mix(140.0, 20.0, clamp(iBarWidth * 0.01, 0.0, 1.0));
+    float barCount = mix(84.0, 18.0, clamp(iBarWidth * 0.01, 0.0, 1.0));
     float barPos = uv.x * barCount;
     float barId = floor(barPos);
     float barCell = fract(barPos);
@@ -148,7 +148,7 @@ void main() {
     );
 
     float barBody = 1.0 - smoothstep(barHeight - 0.010, barHeight + 0.010, uv.y);
-    float ledRows = mix(20.0, 8.0, smoothness);
+    float ledRows = mix(16.0, 7.0, smoothness);
     float ledCell = fract(uv.y * ledRows - time * 0.22);
     float ledMask = smoothstep(0.05, 0.20, ledCell) * smoothstep(0.05, 0.20, 1.0 - ledCell);
     barBody *= mix(0.78, 1.0, ledMask);
@@ -179,15 +179,15 @@ void main() {
     color += accentColor * bloom;
 
     if (iScene == 1) {
-        float gridWave = abs(fract(uv.y * 17.0 - time * 1.3) - 0.5) - 0.44;
+        float gridWave = abs(fract(uv.y * 12.0 - time * 1.3) - 0.5) - 0.44;
         float grid = 1.0 - smoothstep(0.0, 0.02, gridWave);
-        color += accentColor * grid * 0.10 * (0.35 + energy);
+        color += accentColor * grid * 0.07 * (0.30 + energy * 0.82);
     } else if (iScene == 2) {
         float tunnel = exp(-abs(uv.x - 0.5) * 8.0) * (0.5 + 0.5 * sin(uv.y * 30.0 - time * 3.0));
         color += mix(baseColor, accentColor, 0.5) * tunnel * 0.14;
     } else if (iScene == 3) {
-        float prism = pow(abs(sin((uv.x - 0.5) * aspect * 18.0 + uv.y * 7.0 + time * 2.9)), 18.0);
-        color += accentColor * prism * 0.16;
+        float prism = pow(abs(sin((uv.x - 0.5) * aspect * 12.0 + uv.y * 5.0 + time * 2.9)), 18.0);
+        color += accentColor * prism * 0.12;
     }
 
     float scanline = 0.95 + 0.05 * sin(gl_FragCoord.y * 1.8 + time * 2.0);

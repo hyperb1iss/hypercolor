@@ -59,25 +59,25 @@ const THEME_PALETTES: Record<Exclude<ThemeName, 'Custom'>, Palette> = {
         background: '#05050b',
         front: '#ff52c8',
         squiggle: '#25e7ff',
-        accent: '#f3f14e',
+        accent: '#ffb347',
     },
     'Bus Seat': {
-        background: '#ccc000',
-        front: '#00cc93',
-        squiggle: '#00addb',
-        accent: '#111111',
+        background: '#11140a',
+        front: '#00d3a8',
+        squiggle: '#00b8ff',
+        accent: '#ff8c24',
     },
     'Laser Lime': {
         background: '#060b04',
-        front: '#a7ff2e',
+        front: '#68ff42',
         squiggle: '#00f0bc',
-        accent: '#ff67db',
+        accent: '#ff6ac1',
     },
     'Cotton Candy': {
         background: '#0b0811',
         front: '#ff61bf',
         squiggle: '#6af2ff',
-        accent: '#ffe65e',
+        accent: '#ffb347',
     },
     'Arcade Heat': {
         background: '#0d0406',
@@ -193,11 +193,19 @@ function hslToRgb(hsl: HSL): RGB {
     }
 }
 
+function ledSafeHue(hue: number): number {
+    const wrapped = wrap(hue, 360)
+    if (wrapped >= 30 && wrapped < 90) {
+        return wrapped < 60 ? 24 : 120
+    }
+    return wrapped
+}
+
 function shiftHexHue(hex: string, degrees: number): string {
     const hsl = rgbToHsl(hexToRgb(hex))
     return rgbToHex({
         ...hslToRgb({
-            h: hsl.h + degrees,
+            h: ledSafeHue(hsl.h + degrees),
             s: hsl.s,
             l: hsl.l,
         }),
@@ -751,7 +759,7 @@ export default canvas.stateful('Roller Rink', {
     density:         num('Density', [0, 100], 72),
     frontColor:      color('Front Color', '#ff52c8'),
     squiggleColor:   color('Squiggle Color', '#25e7ff'),
-    accentColor:     color('Accent Color', '#f3f14e'),
+    accentColor:     color('Accent Color', '#ffb347'),
     backgroundColor: color('Background Color', '#05050b'),
 }, () => {
     let flecks: Fleck[] = []
@@ -759,8 +767,8 @@ export default canvas.stateful('Roller Rink', {
     let lastDensity = -1
 
     function reseed(density: number): void {
-        const fleckCount = Math.floor(140 + density * 3.2)
-        const ornamentCount = Math.floor(18 + density * 0.34)
+        const fleckCount = Math.floor(84 + density * 1.9)
+        const ornamentCount = Math.floor(12 + density * 0.22)
         flecks = buildFlecks(fleckCount)
         ornaments = buildOrnaments(ornamentCount)
         lastDensity = density
@@ -791,16 +799,6 @@ export default canvas.stateful('Roller Rink', {
             drawPatternThree(ctx, width, height, palette, time, moveScale)
         }
 
-        if (palette.background.toLowerCase() === '#ccc000') {
-            ctx.fillStyle = rgba('#000000', 0.08)
-            for (let index = 0; index < 24; index++) {
-                const x = hash(index * 1.11 + 0.5) * width
-                const y = hash(index * 1.97 + 2.4) * height
-                ctx.beginPath()
-                ctx.arc(x, y, 3 + hash(index * 3.73 + 4.1) * 7, 0, Math.PI * 2)
-                ctx.fill()
-            }
-        }
     }
 }, {
     description: 'Sharp blacklight carpet geometry inspired by the original 90s bus-and-rink patterns, now with themed palettes',
