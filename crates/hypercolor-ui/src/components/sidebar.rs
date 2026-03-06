@@ -16,7 +16,7 @@ pub struct SidebarState {
     pub set_collapsed: WriteSignal<bool>,
 }
 
-/// Category → accent RGB string for inline styles.
+/// Category -> accent RGB string for inline styles.
 fn category_accent_rgb(category: &str) -> &'static str {
     match category {
         "ambient" => "128, 255, 234",
@@ -181,7 +181,7 @@ pub fn Sidebar() -> impl IntoView {
                 }).collect_view()}
             </div>
 
-            // Now Playing section — shows when an effect is active and sidebar is expanded
+            // Now Playing — full-width panel pinned to bottom, no rounded corners
             {move || {
                 if !has_active.get() || collapsed.get() {
                     return None;
@@ -189,61 +189,62 @@ pub fn Sidebar() -> impl IntoView {
                 let name = fx.active_effect_name.get().unwrap_or_default();
                 let cat = fx.active_effect_category.get();
                 let rgb = category_accent_rgb(&cat).to_string();
-                let bg_style = format!(
-                    "background: linear-gradient(135deg, rgba({rgb}, 0.08) 0%, rgba({rgb}, 0.02) 100%); \
-                     border-color: rgba({rgb}, 0.1)"
+
+                // Category accent: left edge glow strip + subtle tinted background
+                let panel_style = format!(
+                    "background: linear-gradient(90deg, rgba({rgb}, 0.10) 0%, rgba({rgb}, 0.02) 40%, transparent 100%); \
+                     box-shadow: inset 3px 0 0 rgb({rgb}), inset 4px 0 12px rgba({rgb}, 0.15)"
                 );
                 let dot_style = format!(
-                    "background: rgb({rgb}); box-shadow: 0 0 6px rgba({rgb}, 0.6)"
+                    "background: rgb({rgb}); box-shadow: 0 0 8px rgba({rgb}, 0.7)"
                 );
 
                 Some(view! {
                     <div
-                        class="mx-2 mb-2 rounded-xl border p-3 space-y-3 animate-pop-in"
-                        style=bg_style
+                        class="border-t border-edge-subtle px-4 py-4 space-y-4 animate-fade-in"
+                        style=panel_style
                     >
-                        // Effect name + category dot
-                        <div class="flex items-center gap-2 min-w-0">
-                            <div class="w-2 h-2 rounded-full dot-alive shrink-0" style=dot_style />
+                        // Now playing label
+                        <div class="text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary/60">"Now Playing"</div>
+
+                        // Effect name + category
+                        <div class="flex items-center gap-2.5 min-w-0">
+                            <div class="w-2.5 h-2.5 rounded-full dot-alive shrink-0" style=dot_style />
                             <div class="min-w-0 flex-1">
-                                <div class="text-xs font-medium text-fg-primary truncate">{name}</div>
-                                <div class="text-[10px] text-fg-tertiary capitalize">{cat}</div>
+                                <div class="text-sm font-medium text-fg-primary truncate leading-tight">{name}</div>
+                                <div class="text-[10px] text-fg-tertiary capitalize mt-0.5">{cat}</div>
                             </div>
                         </div>
 
-                        // Player controls — compact row
-                        <div class="flex items-center justify-center gap-1">
-                            // Previous
+                        // Player controls — full-width row with bigger touch targets
+                        <div class="flex items-center justify-between">
                             <button
-                                class="p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/60 player-btn"
+                                class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Previous effect"
                                 on:click=move |_| navigate_effect(-1)
                             >
-                                <Icon icon=LuSkipBack width="14px" height="14px" />
+                                <Icon icon=LuSkipBack width="16px" height="16px" />
                             </button>
-                            // Stop
                             <button
-                                class="p-1.5 rounded-lg text-error-red/40 hover:text-error-red hover:bg-error-red/[0.08] player-btn"
+                                class="p-2 rounded-lg text-error-red/40 hover:text-error-red hover:bg-error-red/[0.06] player-btn"
                                 title="Stop effect"
                                 on:click=move |_| fx.stop_effect()
                             >
-                                <Icon icon=LuSquare width="14px" height="14px" />
+                                <Icon icon=LuSquare width="16px" height="16px" />
                             </button>
-                            // Next
                             <button
-                                class="p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/60 player-btn"
+                                class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Next effect"
                                 on:click=move |_| navigate_effect(1)
                             >
-                                <Icon icon=LuSkipForward width="14px" height="14px" />
+                                <Icon icon=LuSkipForward width="16px" height="16px" />
                             </button>
-                            // Shuffle
                             <button
-                                class="p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/60 player-btn"
+                                class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Random effect"
                                 on:click=move |_| random_effect()
                             >
-                                <Icon icon=LuShuffle width="14px" height="14px" />
+                                <Icon icon=LuShuffle width="16px" height="16px" />
                             </button>
                         </div>
                     </div>
