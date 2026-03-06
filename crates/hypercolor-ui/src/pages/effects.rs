@@ -163,7 +163,9 @@ pub fn EffectsPage() -> impl IntoView {
             });
 
             let controls_json = serde_json::Value::Object(
-                updates.into_iter().collect::<serde_json::Map<String, serde_json::Value>>(),
+                updates
+                    .into_iter()
+                    .collect::<serde_json::Map<String, serde_json::Value>>(),
             );
             leptos::task::spawn_local(async move {
                 let _ = api::update_controls(&controls_json).await;
@@ -653,9 +655,7 @@ fn json_to_control_value(
         if is_dropdown {
             return Some(ControlValue::Enum(v.to_owned()));
         }
-        if is_color_picker
-            && let Some(color_value) = hex_to_color_value(v)
-        {
+        if is_color_picker && let Some(color_value) = hex_to_color_value(v) {
             return Some(color_value);
         }
         return Some(ControlValue::Text(v.to_owned()));

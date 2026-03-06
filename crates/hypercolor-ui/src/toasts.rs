@@ -1,7 +1,7 @@
 //! Toast notification helpers — thin wrappers around leptoaster.
 
-use leptos::prelude::use_context;
 use leptoaster::ToasterContext;
+use leptos::prelude::use_context;
 
 pub fn toast_success(msg: &str) {
     if let Some(toaster) = use_context::<ToasterContext>() {

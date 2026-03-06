@@ -9,16 +9,8 @@ use std::collections::{BTreeMap, HashMap};
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
 const QUICK_COLOR_SWATCHES: [&str; 10] = [
-    "#6000fc",
-    "#e135ff",
-    "#ff6ac1",
-    "#80ffea",
-    "#f1fa8c",
-    "#50fa7b",
-    "#82aaff",
-    "#ffffff",
-    "#ff8c42",
-    "#0a0910",
+    "#6000fc", "#e135ff", "#ff6ac1", "#80ffea", "#f1fa8c", "#50fa7b", "#82aaff", "#ffffff",
+    "#ff8c42", "#0a0910",
 ];
 
 /// Resolve the effective value for a control: live value > default.
@@ -604,12 +596,9 @@ fn ControlWidget(
 
 fn control_value_to_hex(value: &ControlValue) -> String {
     match value {
-        ControlValue::Color([r, g, b, _]) => format!(
-            "#{:02x}{:02x}{:02x}",
-            to_byte(*r),
-            to_byte(*g),
-            to_byte(*b)
-        ),
+        ControlValue::Color([r, g, b, _]) => {
+            format!("#{:02x}{:02x}{:02x}", to_byte(*r), to_byte(*g), to_byte(*b))
+        }
         ControlValue::Text(hex) if hex.starts_with('#') && hex.len() >= 7 => hex[..7].to_string(),
         _ => "#ffffff".to_string(),
     }

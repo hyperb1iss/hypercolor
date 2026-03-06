@@ -9,11 +9,11 @@ use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::DevicesContext;
-use crate::toasts;
 use crate::components::layout_canvas::LayoutCanvas;
 use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::icons::*;
+use crate::toasts;
 use hypercolor_types::spatial::SpatialLayout;
 
 /// Layout builder — wraps toolbar, palette, canvas viewport, and zone properties.
@@ -107,26 +107,30 @@ pub fn LayoutBuilder() -> impl IntoView {
     });
 
     // Push live preview to spatial engine whenever the layout changes (debounced).
-    Effect::new(move |prev_zones: Option<Option<Vec<hypercolor_types::spatial::DeviceZone>>>| {
-        let current = layout.get();
-        let current_zones = current.as_ref().map(|l| l.zones.clone());
+    Effect::new(
+        move |prev_zones: Option<Option<Vec<hypercolor_types::spatial::DeviceZone>>>| {
+            let current = layout.get();
+            let current_zones = current.as_ref().map(|l| l.zones.clone());
 
-        // Only push preview if zones actually changed (avoid initial no-op).
-        if current_zones != prev_zones.flatten() {
-            if let Some(layout) = current.as_ref() {
-                let layout_clone = layout.clone();
-                leptos::task::spawn_local(async move {
-                    let _ = api::preview_layout(&layout_clone).await;
-                });
+            // Only push preview if zones actually changed (avoid initial no-op).
+            if current_zones != prev_zones.flatten() {
+                if let Some(layout) = current.as_ref() {
+                    let layout_clone = layout.clone();
+                    leptos::task::spawn_local(async move {
+                        let _ = api::preview_layout(&layout_clone).await;
+                    });
+                }
             }
-        }
 
-        current.map(|l| l.zones.clone())
-    });
+            current.map(|l| l.zones.clone())
+        },
+    );
 
     // Save handler — persists to disk via PUT + persist
     let save_layout = move || {
-        let Some(l) = layout.get_untracked() else { return };
+        let Some(l) = layout.get_untracked() else {
+            return;
+        };
         let id = l.id.clone();
         let zones = l.zones.clone();
         let saved_copy = l.clone();
@@ -151,7 +155,9 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     // Revert handler — restores saved snapshot and pushes to spatial engine
     let revert_layout = move || {
-        let Some(saved) = saved_layout.get_untracked() else { return };
+        let Some(saved) = saved_layout.get_untracked() else {
+            return;
+        };
         set_layout.set(Some(saved));
         toasts::toast_info("Layout reverted");
     };

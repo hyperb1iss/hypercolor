@@ -339,4 +339,3 @@ fn DevicesLoadingSkeleton() -> impl IntoView {
         </div>
     }
 }
-

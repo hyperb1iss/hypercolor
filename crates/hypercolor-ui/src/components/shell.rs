@@ -80,7 +80,11 @@ fn extract_dominant_hue(pixels: &[u8]) -> Option<f64> {
 
     let avg_rad = hue_sin_sum.atan2(hue_cos_sum);
     let avg_hue = avg_rad.to_degrees();
-    Some(if avg_hue < 0.0 { avg_hue + 360.0 } else { avg_hue })
+    Some(if avg_hue < 0.0 {
+        avg_hue + 360.0
+    } else {
+        avg_hue
+    })
 }
 
 /// Top-level layout shell. Sidebar left, header + content right.

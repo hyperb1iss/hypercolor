@@ -631,8 +631,7 @@ pub async fn apply_layout(id: &str) -> Result<(), String> {
 pub async fn preview_layout(
     layout: &hypercolor_types::spatial::SpatialLayout,
 ) -> Result<(), String> {
-    let body =
-        serde_json::to_string(layout).map_err(|e| format!("Serialize error: {e}"))?;
+    let body = serde_json::to_string(layout).map_err(|e| format!("Serialize error: {e}"))?;
 
     let resp = Request::put("/api/v1/layouts/active/preview")
         .header("Content-Type", "application/json")

@@ -14,6 +14,7 @@ pub fn CanvasPreview(
     #[prop(into)] fps: Signal<f32>,
     #[prop(default = false)] show_fps: bool,
     #[prop(default = "100%".to_string())] max_width: String,
+    #[prop(optional)] aspect_ratio: Option<String>,
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
 
@@ -50,16 +51,23 @@ pub fn CanvasPreview(
         }
     });
 
-    let style = format!(
-        "max-width: {max_width}; width: 100%; aspect-ratio: 320 / 200; image-rendering: pixelated;"
-    );
+    let canvas_style = format!("max-width: {max_width}; image-rendering: pixelated;");
+    let wrapper_style = Signal::derive(move || {
+        let ratio = aspect_ratio.clone().unwrap_or_else(|| {
+            frame
+                .get()
+                .map(|frame| format!("{} / {}", frame.width.max(1), frame.height.max(1)))
+                .unwrap_or_else(|| "320 / 200".to_string())
+        });
+        format!("max-width: {max_width}; width: 100%; height: 100%; aspect-ratio: {ratio};")
+    });
 
     view! {
-        <div class="relative bg-black animate-scale-in">
+        <div class="relative bg-black animate-scale-in" style=move || wrapper_style.get()>
             <canvas
                 node_ref=canvas_ref
-                class="w-full h-auto block bg-black"
-                style=style
+                class="w-full h-full block bg-black"
+                style=canvas_style
             />
             {if show_fps {
                 Some(view! {

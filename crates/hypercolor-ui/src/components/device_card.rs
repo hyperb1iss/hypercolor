@@ -71,19 +71,14 @@ pub fn DeviceCard(
     let icon = backend_icon(&device.backend);
 
     // Backend-colored top accent gradient
-    let accent_gradient = format!(
-        "background: linear-gradient(180deg, rgba({rgb}, 0.07) 0%, transparent 50%)"
-    );
+    let accent_gradient =
+        format!("background: linear-gradient(180deg, rgba({rgb}, 0.07) 0%, transparent 50%)");
 
-    let badge_style = format!(
-        "background: rgba({rgb}, 0.1); color: rgb({rgb}); border-color: rgba({rgb}, 0.2)"
-    );
-    let dot_style = format!(
-        "background: rgb({status_rgb}); box-shadow: 0 0 6px rgba({status_rgb}, 0.5)"
-    );
-    let icon_style = format!(
-        "color: rgba({rgb}, 0.5)"
-    );
+    let badge_style =
+        format!("background: rgba({rgb}, 0.1); color: rgb({rgb}); border-color: rgba({rgb}, 0.2)");
+    let dot_style =
+        format!("background: rgb({status_rgb}); box-shadow: 0 0 6px rgba({status_rgb}, 0.5)");
+    let icon_style = format!("color: rgba({rgb}, 0.5)");
 
     let stagger = (index.min(12) + 1).to_string();
 
