@@ -67,6 +67,9 @@ declare global {
         /** Build-time metadata extraction flag */
         __HYPERCOLOR_METADATA_ONLY__?: boolean
 
+        /** Force WebGL effects to preserve the backbuffer between frames */
+        __hypercolorPreserveDrawingBuffer?: boolean
+
         /** Dynamic control values indexed by control ID */
         [controlId: string]: unknown
     }

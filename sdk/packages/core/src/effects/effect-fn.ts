@@ -48,6 +48,7 @@ export interface EffectFnOptions {
     author?: string
     audio?: boolean
     vertexShader?: string
+    preserveDrawingBuffer?: boolean
     setup?: (ctx: ShaderContext) => void | Promise<void>
     frame?: (ctx: ShaderContext, time: number) => void
 }
@@ -107,6 +108,7 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
             fragmentShader: shader,
             vertexShader: options.vertexShader,
             audioReactive: options.audio ?? false,
+            preserveDrawingBuffer: options.preserveDrawingBuffer,
         })
         this.resolvedControls = resolvedControls
         this.options = options

@@ -12,6 +12,7 @@ export interface WebGLEffectConfig extends EffectConfig {
     fragmentShader: string
     vertexShader?: string
     audioReactive?: boolean
+    preserveDrawingBuffer?: boolean
 }
 
 /** Uniform value types supported by the WebGL effect. */
@@ -41,6 +42,7 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
     protected fragmentShader: string
     protected vertexShader: string
     protected audioReactive: boolean
+    protected preserveDrawingBuffer: boolean
     protected currentAudioData: AudioData | null = null
 
     constructor(config: WebGLEffectConfig) {
@@ -48,12 +50,17 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
         this.fragmentShader = config.fragmentShader
         this.vertexShader = config.vertexShader ?? DEFAULT_VERTEX_SHADER
         this.audioReactive = config.audioReactive ?? false
+        this.preserveDrawingBuffer =
+            config.preserveDrawingBuffer ??
+            ((typeof window !== 'undefined'
+                ? (window as { __hypercolorPreserveDrawingBuffer?: boolean }).__hypercolorPreserveDrawingBuffer
+                : undefined) ?? false)
     }
 
     protected async initializeRenderer(): Promise<void> {
         if (!this.canvas) throw new Error('Canvas not available')
 
-        this.gl = this.canvas.getContext('webgl2', { preserveDrawingBuffer: true })
+        this.gl = this.canvas.getContext('webgl2', { preserveDrawingBuffer: this.preserveDrawingBuffer })
         if (!this.gl) throw new Error('WebGL2 not supported')
 
         // Compile shaders and link program

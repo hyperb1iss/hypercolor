@@ -127,7 +127,7 @@ function validateShaderBindings(entryPath: string, def: NewApiDef): void {
 
     const effectId = basename(dirname(entryPath))
     if (missing.length > 0) {
-        console.warn(`  Warning: ${effectId} has controls bound to missing uniforms: ${missing.join(', ')}`)
+        throw new Error(`Shader binding validation failed for ${effectId}: missing control uniforms ${missing.join(', ')}`)
     }
     if (extra.length > 0) {
         console.warn(`  Warning: ${effectId} shader exposes uniforms with no controls: ${extra.join(', ')}`)
@@ -196,6 +196,9 @@ async function extractMetadata(entryPath: string) {
         const controls = extractControlsFromClass(effectInstance.constructor)
         return { effect, controls }
     } catch (err) {
+        if (err instanceof Error && err.message.startsWith('Shader binding validation failed')) {
+            throw err
+        }
         console.warn(`  Warning: metadata extraction failed: ${err}`)
         return { effect: null, controls: [] }
     } finally {
