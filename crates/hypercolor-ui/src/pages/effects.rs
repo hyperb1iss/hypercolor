@@ -174,25 +174,25 @@ pub fn EffectsPage() -> impl IntoView {
     view! {
         <div class="flex flex-col h-full -m-6 animate-fade-in">
             // Fixed header — title + search + categories + capability filters
-            <div class="shrink-0 px-6 pt-6 pb-4 space-y-4 bg-layer-0 z-10">
+            <div class="shrink-0 px-6 pt-6 pb-4 space-y-4 bg-surface-base z-10">
                 // Title row
                 <div class="flex items-baseline justify-between">
-                    <h1 class="text-lg font-medium text-fg">"Effects"</h1>
-                    <span class="text-[11px] font-mono text-fg-dim tabular-nums">
+                    <h1 class="text-lg font-medium text-text-primary">"Effects"</h1>
+                    <span class="text-[11px] font-mono text-text-tertiary tabular-nums">
                         {move || effect_count.get()} " effects"
                     </span>
                 </div>
 
                 // Search bar
                 <div class="relative">
-                    <span class="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-fg-dim">
+                    <span class="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-text-tertiary">
                         <Icon icon=LuSearch width="14px" height="14px" />
                     </span>
                     <input
                         type="text"
                         placeholder="Search effects..."
-                        class="w-full bg-layer-2/60 border border-white/[0.04] rounded-lg pl-9 pr-10 py-2 text-sm text-fg
-                               placeholder-fg-dim focus:outline-none focus:border-electric-purple/20
+                        class="w-full bg-surface-overlay/60 border border-border-subtle rounded-lg pl-9 pr-10 py-2 text-sm text-text-primary
+                               placeholder-text-tertiary focus:outline-none focus:border-accent-muted
                                focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1),0_0_20px_rgba(225,53,255,0.06)]
                                transition-all duration-300"
                         prop:value=move || search.get()
@@ -203,7 +203,7 @@ pub fn EffectsPage() -> impl IntoView {
                             }
                         }
                     />
-                    <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-dim bg-white/[0.03] px-1.5 py-0.5 rounded border border-white/[0.03]">"/"</kbd>
+                    <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-text-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-border-subtle">"/"</kbd>
                 </div>
 
                 // Category + capability filter bar
@@ -237,7 +237,7 @@ pub fn EffectsPage() -> impl IntoView {
                     </div>
 
                     // Divider
-                    <div class="w-px h-5 bg-white/[0.06]" />
+                    <div class="w-px h-5 bg-border-subtle" />
 
                     // Favorites toggle chip
                     <button
@@ -325,12 +325,12 @@ pub fn EffectsPage() -> impl IntoView {
                                             />
                                             <div
                                                 class="absolute top-full left-0 mt-1 z-30 min-w-[200px] max-h-[280px] overflow-y-auto
-                                                       rounded-xl border border-white/[0.06] bg-layer-2 shadow-[0_8px_32px_rgba(0,0,0,0.4)]
+                                                       rounded-xl border border-border-subtle bg-surface-overlay shadow-[0_8px_32px_rgba(0,0,0,0.4)]
                                                        py-1 animate-fade-in scrollbar-none"
                                             >
                                                 // Clear all option
                                                 <button
-                                                    class="w-full text-left px-3 py-1.5 text-xs text-fg-dim hover:bg-white/[0.04] transition-colors"
+                                                    class="w-full text-left px-3 py-1.5 text-xs text-text-tertiary hover:bg-surface-hover/40 transition-colors"
                                                     on:click=move |_| {
                                                         set_selected_authors.set(std::collections::BTreeSet::new());
                                                         set_author_dropdown_open.set(false);
@@ -338,7 +338,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                 >
                                                     "All authors"
                                                 </button>
-                                                <div class="h-px bg-white/[0.04] mx-2 my-0.5" />
+                                                <div class="h-px bg-border-subtle mx-2 my-0.5" />
                                                 // Author checkboxes
                                                 {list.into_iter().map(|author| {
                                                     let author_toggle = author.clone();
@@ -347,7 +347,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                     let author_label = author.clone();
                                                     view! {
                                                         <button
-                                                            class="w-full text-left px-3 py-1.5 flex items-center gap-2.5 text-xs hover:bg-white/[0.04] transition-colors group"
+                                                            class="w-full text-left px-3 py-1.5 flex items-center gap-2.5 text-xs hover:bg-surface-hover/40 transition-colors group"
                                                             on:click=move |_| {
                                                                 let a = author_toggle.clone();
                                                                 set_selected_authors.update(move |set| {
@@ -372,7 +372,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                                     <Icon icon=LuCheck width="10px" height="10px" style="color: white" />
                                                                 })}
                                                             </div>
-                                                            <span class="text-fg-muted group-hover:text-fg transition-colors truncate">
+                                                            <span class="text-text-secondary group-hover:text-text-primary transition-colors truncate">
                                                                 {author_label.clone()}
                                                             </span>
                                                         </button>
@@ -399,8 +399,8 @@ pub fn EffectsPage() -> impl IntoView {
                                 if effects.is_empty() {
                                     view! {
                                         <div class="text-center py-20">
-                                            <div class="text-fg-dim text-sm">"No effects found"</div>
-                                            <div class="text-fg-dim/50 text-xs mt-1">"Try a different search or category"</div>
+                                            <div class="text-text-tertiary text-sm">"No effects found"</div>
+                                            <div class="text-text-tertiary/50 text-xs mt-1">"Try a different search or category"</div>
                                         </div>
                                     }.into_any()
                                 } else {
@@ -455,7 +455,7 @@ pub fn EffectsPage() -> impl IntoView {
                                         view! {
                                             <div class="flex items-center gap-2.5 px-1">
                                                 <div class="w-2.5 h-2.5 rounded-full dot-alive shrink-0" style=dot_s />
-                                                <span class="text-base font-medium text-fg">{name}</span>
+                                                <span class="text-base font-medium text-text-primary">{name}</span>
                                             </div>
                                         }
                                     })}
@@ -494,13 +494,13 @@ pub fn EffectsPage() -> impl IntoView {
 
                                     // Controls panel with category accent line
                                     <div
-                                        class="rounded-xl bg-layer-1 border border-white/[0.06] p-5
+                                        class="rounded-xl bg-surface-raised border border-border-subtle p-5
                                                shadow-[0_2px_12px_rgba(0,0,0,0.2)]"
                                         style=controls_accent.clone()
                                     >
                                         <div class="flex items-center gap-2 mb-4">
                                             <Icon icon=LuSettings width="16px" height="16px" style="color: rgba(139, 133, 160, 1)" />
-                                            <h3 class="text-xs font-mono uppercase tracking-[0.12em] text-fg-dim">
+                                            <h3 class="text-xs font-mono uppercase tracking-[0.12em] text-text-tertiary">
                                                 "Controls"
                                             </h3>
                                         </div>
@@ -706,22 +706,22 @@ fn LoadingSkeleton() -> impl IntoView {
         <div class="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
             {(0..12).map(|_| {
                 view! {
-                    <div class="rounded-2xl border border-white/[0.03] bg-layer-2/40 px-4 py-4 animate-pulse space-y-3">
+                    <div class="rounded-2xl border border-border-subtle bg-surface-overlay/40 px-4 py-4 animate-pulse space-y-3">
                         <div class="flex justify-between">
-                            <div class="h-4 w-28 bg-white/[0.04] rounded" />
-                            <div class="h-4 w-14 bg-white/[0.04] rounded-full" />
+                            <div class="h-4 w-28 bg-surface-overlay/40 rounded" />
+                            <div class="h-4 w-14 bg-surface-overlay/40 rounded-full" />
                         </div>
                         <div class="space-y-1.5">
-                            <div class="h-3 w-full bg-white/[0.02] rounded" />
-                            <div class="h-3 w-3/4 bg-white/[0.02] rounded" />
+                            <div class="h-3 w-full bg-surface-overlay/20 rounded" />
+                            <div class="h-3 w-3/4 bg-surface-overlay/20 rounded" />
                         </div>
                         <div class="flex gap-1.5">
-                            <div class="h-4 w-14 bg-white/[0.02] rounded" />
-                            <div class="h-4 w-12 bg-white/[0.02] rounded" />
+                            <div class="h-4 w-14 bg-surface-overlay/20 rounded" />
+                            <div class="h-4 w-12 bg-surface-overlay/20 rounded" />
                         </div>
-                        <div class="flex justify-between pt-1 border-t border-white/[0.02]">
-                            <div class="h-2.5 w-16 bg-white/[0.02] rounded" />
-                            <div class="h-2.5 w-12 bg-white/[0.02] rounded" />
+                        <div class="flex justify-between pt-1 border-t border-border-subtle">
+                            <div class="h-2.5 w-16 bg-surface-overlay/20 rounded" />
+                            <div class="h-2.5 w-12 bg-surface-overlay/20 rounded" />
                         </div>
                     </div>
                 }

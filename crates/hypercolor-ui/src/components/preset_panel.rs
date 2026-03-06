@@ -214,7 +214,7 @@ pub fn PresetToolbar(
 
     view! {
         <div
-            class="rounded-xl bg-layer-1 border border-white/[0.06] px-3 py-2.5
+            class="rounded-xl bg-surface-raised border border-border-subtle px-3 py-2.5
                    shadow-[0_2px_12px_rgba(0,0,0,0.15)]"
             style=move || accent_border.get()
         >
@@ -292,9 +292,9 @@ fn PresetSelectorRow(
             // Preset selector dropdown
             <div class="flex-1 min-w-0">
                 <select
-                    class="w-full bg-layer-3/60 border border-white/[0.06] rounded-lg px-2.5 py-1.5
-                           text-xs text-fg cursor-pointer truncate
-                           focus:outline-none focus:border-electric-purple/20
+                    class="w-full bg-surface-sunken/60 border border-border-subtle rounded-lg px-2.5 py-1.5
+                           text-xs text-text-primary cursor-pointer truncate
+                           focus:outline-none focus:border-accent-muted
                            transition-all duration-150"
                     on:change=on_select
                 >
@@ -341,9 +341,9 @@ fn PresetActionButtons(
         <div class="flex items-center gap-0.5 shrink-0">
             // Save (overwrite current preset)
             <button
-                class="p-1.5 rounded-md text-fg-dim/50 transition-colors duration-150
+                class="p-1.5 rounded-md text-text-tertiary/50 transition-colors duration-150
                        hover:text-success-green hover:bg-success-green/10
-                       disabled:opacity-20 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-dim/50"
+                       disabled:opacity-20 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-tertiary/50"
                 title="Save controls to preset"
                 disabled=move || !has_selection.get()
                 on:click=on_save
@@ -353,7 +353,7 @@ fn PresetActionButtons(
 
             // New preset
             <button
-                class="p-1.5 rounded-md text-fg-dim/50 transition-colors duration-150
+                class="p-1.5 rounded-md text-text-tertiary/50 transition-colors duration-150
                        hover:text-neon-cyan hover:bg-neon-cyan/10"
                 title="Create new preset"
                 on:click=on_new
@@ -363,9 +363,9 @@ fn PresetActionButtons(
 
             // Edit name
             <button
-                class="p-1.5 rounded-md text-fg-dim/50 transition-colors duration-150
+                class="p-1.5 rounded-md text-text-tertiary/50 transition-colors duration-150
                        hover:text-electric-purple hover:bg-electric-purple/10
-                       disabled:opacity-20 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-dim/50"
+                       disabled:opacity-20 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-tertiary/50"
                 title="Rename preset"
                 disabled=move || !has_selection.get()
                 on:click=on_edit
@@ -375,9 +375,9 @@ fn PresetActionButtons(
 
             // Delete
             <button
-                class="p-1.5 rounded-md text-fg-dim/50 transition-colors duration-150
+                class="p-1.5 rounded-md text-text-tertiary/50 transition-colors duration-150
                        hover:text-error-red hover:bg-error-red/10
-                       disabled:opacity-20 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-dim/50"
+                       disabled:opacity-20 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-text-tertiary/50"
                 title="Delete preset"
                 disabled=move || !has_selection.get()
                 on:click=on_delete
@@ -403,9 +403,9 @@ fn InlineNameInput(
             <input
                 type="text"
                 placeholder=placeholder
-                class="flex-1 bg-layer-3/60 border border-electric-purple/20 rounded-lg px-2.5 py-1.5
-                       text-xs text-fg placeholder-fg-dim/40
-                       focus:outline-none focus:border-electric-purple/40
+                class="flex-1 bg-surface-sunken/60 border border-accent-muted rounded-lg px-2.5 py-1.5
+                       text-xs text-text-primary placeholder-text-tertiary/40
+                       focus:outline-none focus:border-accent
                        transition-all duration-150"
                 prop:value=move || value.get()
                 on:input=move |ev| {
@@ -443,7 +443,7 @@ fn InlineNameButtons(
 ) -> impl IntoView {
     view! {
         <button
-            class="p-1.5 rounded-md text-fg-dim/50 transition-colors duration-150
+            class="p-1.5 rounded-md text-text-tertiary/50 transition-colors duration-150
                    hover:text-success-green hover:bg-success-green/10
                    disabled:opacity-20 disabled:cursor-not-allowed"
             title="Confirm"
@@ -458,7 +458,7 @@ fn InlineNameButtons(
             <Icon icon=LuCheck width="14px" height="14px" />
         </button>
         <button
-            class="p-1.5 rounded-md text-fg-dim/50 transition-colors duration-150
+            class="p-1.5 rounded-md text-text-tertiary/50 transition-colors duration-150
                    hover:text-error-red hover:bg-error-red/10"
             title="Cancel"
             on:click=move |_| on_cancel.run(())

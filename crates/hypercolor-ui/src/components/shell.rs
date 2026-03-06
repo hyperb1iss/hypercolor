@@ -259,17 +259,17 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
             />
 
             // Palette panel
-            <div class="relative w-full max-w-lg mx-4 rounded-xl glass border border-white/[0.08]
+            <div class="relative w-full max-w-lg mx-4 rounded-xl glass border border-border-subtle
                         shadow-[0_25px_60px_rgba(0,0,0,0.6),0_0_60px_rgba(225,53,255,0.06)]
                         overflow-hidden animate-scale-in">
                 // Search input
-                <div class="flex items-center gap-3 px-4 py-3.5 border-b border-white/[0.05]">
+                <div class="flex items-center gap-3 px-4 py-3.5 border-b border-border-subtle">
                     <Icon icon=LuSearch width="16px" height="16px" style="color: rgba(225, 53, 255, 0.6); flex-shrink: 0" />
                     <input
                         node_ref=input_ref
                         type="text"
                         placeholder="Search effects..."
-                        class="flex-1 bg-transparent text-sm text-fg placeholder-fg-dim outline-none"
+                        class="flex-1 bg-transparent text-sm text-text-primary placeholder-text-tertiary outline-none"
                         prop:value=move || query.get()
                         on:input=move |ev| {
                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -283,7 +283,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                             }
                         }
                     />
-                    <kbd class="text-[9px] font-mono text-zinc-600 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.04]">"ESC"</kbd>
+                    <kbd class="text-[9px] font-mono text-text-tertiary bg-surface-overlay/40 px-1.5 py-0.5 rounded border border-border-subtle">"ESC"</kbd>
                 </div>
 
                 // Results
@@ -292,7 +292,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                         let items = filtered.get();
                         if items.is_empty() {
                             view! {
-                                <div class="px-4 py-10 text-center text-xs text-fg-dim">
+                                <div class="px-4 py-10 text-center text-xs text-text-tertiary">
                                     "No matching effects"
                                 </div>
                             }.into_any()
@@ -322,10 +322,10 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                 }
                                             >
                                                 <div class="flex-1 min-w-0">
-                                                    <div class="text-sm text-zinc-300 group-hover:text-fg truncate transition-colors duration-150">{name}</div>
-                                                    <div class="text-[10px] text-fg-dim truncate">{desc}</div>
+                                                    <div class="text-sm text-text-secondary group-hover:text-text-primary truncate transition-colors duration-150">{name}</div>
+                                                    <div class="text-[10px] text-text-tertiary truncate">{desc}</div>
                                                 </div>
-                                                <span class="text-[10px] text-fg-dim capitalize shrink-0 px-2 py-0.5 rounded-full bg-white/[0.03]">{category}</span>
+                                                <span class="text-[10px] text-text-tertiary capitalize shrink-0 px-2 py-0.5 rounded-full bg-surface-overlay/30">{category}</span>
                                             </button>
                                         }
                                     }).collect_view()}

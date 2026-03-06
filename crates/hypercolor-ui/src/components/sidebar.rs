@@ -109,17 +109,17 @@ pub fn Sidebar() -> impl IntoView {
 
     view! {
         <nav
-            class="flex flex-col h-full bg-layer-1 border-r border-white/[0.04] shrink-0 transition-[width] duration-250 ease-out relative"
+            class="flex flex-col h-full bg-surface-raised border-r border-border-subtle shrink-0 transition-[width] duration-250 ease-out relative"
             class:w-56=move || !collapsed.get()
             class:w-14=move || collapsed.get()
         >
             // Logo section
-            <div class="h-14 flex items-center px-4 border-b border-white/[0.04]">
+            <div class="h-14 flex items-center px-4 border-b border-border-subtle">
                 <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-electric-purple via-coral to-neon-cyan flex items-center justify-center shadow-[0_0_12px_rgba(225,53,255,0.3)]">
                     <span class="text-[11px] font-bold text-white">"H"</span>
                 </div>
                 <span
-                    class="ml-3 text-sm font-semibold tracking-wider text-zinc-200 whitespace-nowrap overflow-hidden transition-opacity duration-200"
+                    class="ml-3 text-sm font-semibold tracking-wider text-text-primary whitespace-nowrap overflow-hidden transition-opacity duration-200"
                     class:opacity-0=move || collapsed.get()
                     class:opacity-100=move || !collapsed.get()
                     class:w-0=move || collapsed.get()
@@ -149,22 +149,22 @@ pub fn Sidebar() -> impl IntoView {
                             attr:class=move || {
                                 let base = "flex items-center h-10 px-3 rounded-lg nav-item-hover group relative";
                                 if is_active.get() {
-                                    format!("{base} bg-electric-purple/[0.08] text-zinc-100")
+                                    format!("{base} bg-accent-muted text-text-primary")
                                 } else {
-                                    format!("{base} text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.03]")
+                                    format!("{base} text-text-tertiary hover:text-text-primary hover:bg-surface-hover/30")
                                 }
                             }
                         >
                             // Active indicator bar
                             <div
-                                class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-electric-purple transition-all duration-200"
+                                class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 rounded-r-full bg-accent transition-all duration-200"
                                 class:opacity-0=move || !is_active.get()
                                 class:opacity-100=move || is_active.get()
                                 style:box-shadow=move || if is_active.get() { "0 0 8px rgba(225, 53, 255, 0.5)" } else { "none" }
                             />
                             <span
                                 class="w-[18px] h-[18px] flex items-center justify-center shrink-0"
-                                class:text-electric-purple=move || is_active.get()
+                                class:text-accent=move || is_active.get()
                             >
                                 <Icon icon=item.icon width="18px" height="18px" />
                             </span>
@@ -206,8 +206,8 @@ pub fn Sidebar() -> impl IntoView {
                         <div class="flex items-center gap-2 min-w-0">
                             <div class="w-2 h-2 rounded-full dot-alive shrink-0" style=dot_style />
                             <div class="min-w-0 flex-1">
-                                <div class="text-xs font-medium text-fg truncate">{name}</div>
-                                <div class="text-[10px] text-fg-dim capitalize">{cat}</div>
+                                <div class="text-xs font-medium text-text-primary truncate">{name}</div>
+                                <div class="text-[10px] text-text-tertiary capitalize">{cat}</div>
                             </div>
                         </div>
 
@@ -215,7 +215,7 @@ pub fn Sidebar() -> impl IntoView {
                         <div class="flex items-center justify-center gap-1">
                             // Previous
                             <button
-                                class="p-1.5 rounded-lg text-fg-dim hover:text-fg hover:bg-white/[0.08] player-btn"
+                                class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-hover/60 player-btn"
                                 title="Previous effect"
                                 on:click=move |_| navigate_effect(-1)
                             >
@@ -231,7 +231,7 @@ pub fn Sidebar() -> impl IntoView {
                             </button>
                             // Next
                             <button
-                                class="p-1.5 rounded-lg text-fg-dim hover:text-fg hover:bg-white/[0.08] player-btn"
+                                class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-hover/60 player-btn"
                                 title="Next effect"
                                 on:click=move |_| navigate_effect(1)
                             >
@@ -239,7 +239,7 @@ pub fn Sidebar() -> impl IntoView {
                             </button>
                             // Shuffle
                             <button
-                                class="p-1.5 rounded-lg text-fg-dim hover:text-fg hover:bg-white/[0.08] player-btn"
+                                class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-hover/60 player-btn"
                                 title="Random effect"
                                 on:click=move |_| random_effect()
                             >
@@ -251,10 +251,10 @@ pub fn Sidebar() -> impl IntoView {
             }}
 
             // Collapse toggle at bottom
-            <div class="px-2 py-3 border-t border-white/[0.04]">
+            <div class="px-2 py-3 border-t border-border-subtle">
                 <button
-                    class="flex items-center justify-center w-full h-8 rounded-lg text-zinc-600 hover:text-zinc-400
-                           hover:bg-white/[0.03] btn-press"
+                    class="flex items-center justify-center w-full h-8 rounded-lg text-text-tertiary hover:text-text-secondary
+                           hover:bg-surface-hover/30 btn-press"
                     on:click=move |_| set_collapsed.update(|v| *v = !*v)
                     title=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }
                 >

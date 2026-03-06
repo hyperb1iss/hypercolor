@@ -20,8 +20,8 @@ fn category_style(category: &str) -> (&'static str, &'static str) {
         "generative" => ("bg-success-green/10 text-success-green", "80, 250, 123"),
         "interactive" => ("bg-info-blue/10 text-info-blue", "130, 170, 255"),
         "productivity" => ("bg-pink-soft/10 text-pink-soft", "255, 153, 255"),
-        "utility" => ("bg-fg-muted/10 text-fg-muted", "139, 133, 160"),
-        _ => ("bg-white/5 text-zinc-400", "139, 133, 160"),
+        "utility" => ("bg-text-tertiary/10 text-text-tertiary", "139, 133, 160"),
+        _ => ("bg-surface-overlay/50 text-text-tertiary", "139, 133, 160"),
     }
 }
 
@@ -83,11 +83,11 @@ pub fn EffectCard(
                 let base = "relative rounded-2xl border text-left w-full group overflow-hidden \
                             card-hover animate-fade-in-up flex flex-col";
                 let state = if is_active.get() {
-                    "border-electric-purple/30 bg-layer-2 animate-breathe"
+                    "border-accent-muted bg-surface-overlay animate-breathe"
                 } else if !runnable {
-                    "border-white/[0.03] bg-layer-2/40 opacity-30 cursor-not-allowed"
+                    "border-border-subtle bg-surface-overlay/40 opacity-30 cursor-not-allowed"
                 } else {
-                    "border-white/[0.05] bg-layer-2/80 hover:border-white/10"
+                    "border-border-subtle bg-surface-overlay/80 hover:border-border-default"
                 };
                 format!("{base} {state} stagger-{}", stagger)
             }
@@ -110,7 +110,7 @@ pub fn EffectCard(
             // Favorite heart button — top right, floats above content
             <button
                 class="absolute top-3 right-3 z-10 p-1.5 rounded-full transition-all duration-200 \
-                       hover:bg-white/[0.06] hover:scale-110 active:scale-95"
+                       hover:bg-surface-hover/40 hover:scale-110 active:scale-95"
                 on:click={
                     let fav_id = fav_id.clone();
                     move |ev: web_sys::MouseEvent| {
@@ -128,7 +128,7 @@ pub fn EffectCard(
                         )
                     } else {
                         (
-                            "text-fg-dim/30 hover:text-fg-dim/60",
+                            "text-text-tertiary/30 hover:text-text-tertiary/60",
                             "transition: color 0.2s, filter 0.2s",
                         )
                     };
@@ -152,7 +152,7 @@ pub fn EffectCard(
             >
                 // Header: name + category badge
                 <div class="flex items-start justify-between gap-3 pr-6 mb-2">
-                    <h3 class="text-sm font-medium text-zinc-200 group-hover:text-fg line-clamp-1 transition-colors duration-200 leading-snug">
+                    <h3 class="text-sm font-medium text-text-primary group-hover:text-text-primary line-clamp-1 transition-colors duration-200 leading-snug">
                         {name}
                     </h3>
                     <span class=format!("shrink-0 text-[9px] font-mono tracking-wide px-2 py-0.5 rounded-full capitalize {badge_class}")>
@@ -161,7 +161,7 @@ pub fn EffectCard(
                 </div>
 
                 // Description
-                <p class="text-xs text-fg-muted/80 line-clamp-2 leading-relaxed min-h-[2.25rem] mb-3">
+                <p class="text-xs text-text-secondary/80 line-clamp-2 leading-relaxed min-h-[2.25rem] mb-3">
                     {description}
                 </p>
 
@@ -178,7 +178,7 @@ pub fn EffectCard(
 
                     // Source type badge
                     <span class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded \
-                                 bg-white/[0.03] text-fg-dim/60 border border-white/[0.04]">
+                                 bg-surface-overlay/30 text-text-tertiary/60 border border-border-subtle">
                         {if source == "html" {
                             view! { <Icon icon=LuGlobe width="10px" height="10px" /> }.into_any()
                         } else {
@@ -189,12 +189,12 @@ pub fn EffectCard(
                 </div>
 
                 // Footer: author + tags
-                <div class="flex items-center justify-between gap-2 pt-2 mt-auto border-t border-white/[0.03]">
-                    <span class="text-[10px] font-mono text-fg-dim truncate">{author}</span>
+                <div class="flex items-center justify-between gap-2 pt-2 mt-auto border-t border-border-subtle">
+                    <span class="text-[10px] font-mono text-text-tertiary truncate">{author}</span>
                     <div class="flex gap-1.5 overflow-hidden">
                         {tags.into_iter().take(3).map(|tag| {
                             view! {
-                                <span class="text-[9px] font-mono text-fg-dim/70 bg-white/[0.03] px-1.5 py-0.5 rounded whitespace-nowrap">
+                                <span class="text-[9px] font-mono text-text-tertiary/70 bg-surface-overlay/30 px-1.5 py-0.5 rounded whitespace-nowrap">
                                     {tag}
                                 </span>
                             }

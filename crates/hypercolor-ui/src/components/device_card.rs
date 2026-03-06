@@ -98,9 +98,9 @@ pub fn DeviceCard(
                 let base = "relative rounded-2xl border text-left w-full group overflow-hidden \
                             card-hover animate-fade-in-up cursor-pointer";
                 let state = if is_selected.get() {
-                    "border-electric-purple/30 bg-layer-2 animate-breathe"
+                    "border-accent-muted bg-surface-overlay animate-breathe"
                 } else {
-                    "border-white/[0.05] bg-layer-2/80 hover:border-white/10"
+                    "border-border-subtle bg-surface-overlay/80 hover:border-border-default"
                 };
                 format!("{base} {state} stagger-{}", stagger)
             }
@@ -128,7 +128,7 @@ pub fn DeviceCard(
                         <div class="w-5 h-5 shrink-0" style=icon_style>
                             <Icon icon=icon width="20px" height="20px" />
                         </div>
-                        <h3 class="text-sm font-medium text-zinc-200 group-hover:text-fg truncate transition-colors duration-200">
+                        <h3 class="text-sm font-medium text-text-primary group-hover:text-text-primary truncate transition-colors duration-200">
                             {device_name}
                         </h3>
                     </div>
@@ -141,7 +141,7 @@ pub fn DeviceCard(
                 </div>
 
                 // Metrics row
-                <div class="flex items-center gap-4 text-[11px] font-mono tabular-nums text-fg-dim">
+                <div class="flex items-center gap-4 text-[11px] font-mono tabular-nums text-text-tertiary">
                     <div class="flex items-center gap-1.5">
                         <Icon icon=LuCircleDot width="12px" height="12px" style="opacity: 0.4" />
                         <span>{total_leds} " LEDs"</span>
@@ -155,9 +155,9 @@ pub fn DeviceCard(
                 </div>
 
                 // Footer: status with animated dot
-                <div class="flex items-center gap-2 pt-2 border-t border-white/[0.04]">
+                <div class="flex items-center gap-2 pt-2 border-t border-border-subtle">
                     <div class="w-1.5 h-1.5 rounded-full shrink-0 dot-alive" style=dot_style />
-                    <span class="text-[10px] text-fg-dim">{status}</span>
+                    <span class="text-[10px] text-text-tertiary">{status}</span>
                 </div>
             </div>
         </button>

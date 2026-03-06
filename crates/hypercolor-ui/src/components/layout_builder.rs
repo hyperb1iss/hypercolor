@@ -200,7 +200,7 @@ pub fn LayoutBuilder() -> impl IntoView {
     view! {
         <div class="flex flex-col flex-1 overflow-hidden">
             // Toolbar
-            <div class="shrink-0 px-6 py-3 flex items-center gap-3 bg-layer-0 border-b border-white/[0.04]">
+            <div class="shrink-0 px-6 py-3 flex items-center gap-3 bg-surface-base border-b border-border-subtle">
                 // Layout selector
                 <Suspense fallback=|| ()>
                     {move || {
@@ -208,8 +208,8 @@ pub fn LayoutBuilder() -> impl IntoView {
                             let layouts = result.unwrap_or_default();
                             view! {
                                 <select
-                                    class="bg-layer-2 border border-white/[0.06] rounded-lg px-3 py-1.5 text-sm text-fg
-                                           focus:outline-none focus:border-electric-purple/20 min-w-[180px]"
+                                    class="bg-surface-sunken border border-border-subtle rounded-lg px-3 py-1.5 text-sm text-text-primary
+                                           focus:outline-none focus:border-accent-muted min-w-[180px]"
                                     on:change=move |ev| {
                                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
                                         if let Some(el) = target {
@@ -248,8 +248,8 @@ pub fn LayoutBuilder() -> impl IntoView {
                             <input
                                 type="text"
                                 placeholder="Layout name"
-                                class="bg-layer-2 border border-white/[0.06] rounded-lg px-3 py-1.5 text-sm text-fg
-                                       placeholder-fg-dim focus:outline-none focus:border-electric-purple/20 w-40"
+                                class="bg-surface-sunken border border-border-subtle rounded-lg px-3 py-1.5 text-sm text-text-primary
+                                       placeholder-text-tertiary focus:outline-none focus:border-accent-muted w-40"
                                 prop:value=move || new_layout_name.get()
                                 on:input=move |ev| {
                                     let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -261,13 +261,13 @@ pub fn LayoutBuilder() -> impl IntoView {
                                 }
                             />
                             <button
-                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-success-green/[0.1] border border-success-green/20
-                                       text-success-green hover:bg-success-green/[0.2] transition-all btn-press"
+                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-status-success/[0.1] border border-status-success/20
+                                       text-status-success hover:bg-status-success/[0.2] transition-all btn-press"
                                 on:click=move |_| create_layout()
                             >"Create"</button>
                             <button
-                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-white/[0.04] border border-white/[0.06]
-                                       text-fg-dim hover:text-fg hover:bg-white/[0.08] transition-all btn-press"
+                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-overlay/40 border border-border-subtle
+                                       text-text-tertiary hover:text-text-primary hover:bg-surface-hover/40 transition-all btn-press"
                                 on:click=move |_| set_creating.set(false)
                             >"Cancel"</button>
                         </div>
@@ -293,12 +293,12 @@ pub fn LayoutBuilder() -> impl IntoView {
                     let save_style = if dirty {
                         "background: rgba(80, 250, 123, 0.1); border-color: rgba(80, 250, 123, 0.2); color: rgb(80, 250, 123)"
                     } else {
-                        "background: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.06); color: rgba(161, 161, 170, 0.4); pointer-events: none"
+                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
                     };
                     let revert_style = if dirty {
                         "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.2); color: rgb(241, 250, 140)"
                     } else {
-                        "background: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.06); color: rgba(161, 161, 170, 0.4); pointer-events: none"
+                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
                     };
                     view! {
                         <div class="flex items-center gap-2">
@@ -321,8 +321,8 @@ pub fn LayoutBuilder() -> impl IntoView {
                                 "Save"
                             </button>
                             <button
-                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-error-red/[0.08] border border-error-red/20
-                                       text-error-red hover:bg-error-red/[0.15] transition-all btn-press"
+                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-status-error/[0.08] border border-status-error/20
+                                       text-status-error hover:bg-status-error/[0.15] transition-all btn-press"
                                 on:click=move |_| delete_layout()
                             >
                                 <Icon icon=LuTrash2 width="14px" height="14px" />
@@ -340,8 +340,8 @@ pub fn LayoutBuilder() -> impl IntoView {
                     view! {
                         <div class="flex-1 flex items-center justify-center">
                             <div class="text-center space-y-2">
-                                <div class="text-fg-dim text-sm">"Select or create a layout to begin"</div>
-                                <div class="text-fg-dim/50 text-xs">"Drag devices onto the canvas to build your spatial mapping"</div>
+                                <div class="text-text-tertiary text-sm">"Select or create a layout to begin"</div>
+                                <div class="text-text-tertiary/50 text-xs">"Drag devices onto the canvas to build your spatial mapping"</div>
                             </div>
                         </div>
                     }
@@ -349,7 +349,7 @@ pub fn LayoutBuilder() -> impl IntoView {
             >
                 <div class="flex flex-1 overflow-hidden">
                     // Left palette
-                    <div class="w-[200px] shrink-0 border-r border-white/[0.04] overflow-y-auto">
+                    <div class="w-[200px] shrink-0 border-r border-border-subtle overflow-y-auto">
                         <LayoutPalette
                             layout=layout_signal
                             set_layout=set_layout
@@ -370,7 +370,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                     </div>
 
                     // Right properties
-                    <div class="w-[280px] shrink-0 border-l border-white/[0.04] overflow-y-auto">
+                    <div class="w-[280px] shrink-0 border-l border-border-subtle overflow-y-auto">
                         <LayoutZoneProperties
                             layout=layout_signal
                             selected_zone_id=zone_id_signal

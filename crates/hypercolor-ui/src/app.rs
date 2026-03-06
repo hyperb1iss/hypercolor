@@ -243,7 +243,7 @@ pub fn App() -> impl IntoView {
 
         <Router>
             <Shell>
-                <Routes fallback=|| view! { <p class="text-zinc-400 p-8">"Not found"</p> }>
+                <Routes fallback=|| view! { <p class="text-text-tertiary p-8">"Not found"</p> }>
                     <Route path=path!("/") view=DashboardPage />
                     <Route path=path!("/effects") view=EffectsPage />
                     <Route path=path!("/effects/:id") view=EffectsPage />

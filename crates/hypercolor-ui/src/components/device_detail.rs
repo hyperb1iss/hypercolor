@@ -163,8 +163,8 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                             view! {
                                 <input
                                     type="text"
-                                    class="flex-1 bg-layer-2 border border-white/[0.06] rounded px-2 py-1 text-sm text-fg
-                                           focus:outline-none focus:border-electric-purple/30"
+                                    class="flex-1 bg-surface-overlay border border-border-subtle rounded px-2 py-1 text-sm text-text-primary
+                                           focus:outline-none focus:border-accent-muted"
                                     prop:value=move || name_input.get()
                                     on:input=move |ev| {
                                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -181,14 +181,14 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                             let name = dev_name_for_edit.clone();
                             view! {
                                 <span
-                                    class="text-base font-medium text-fg cursor-pointer hover:text-electric-purple transition-colors group flex items-center gap-1.5"
+                                    class="text-base font-medium text-text-primary cursor-pointer hover:text-accent transition-colors group flex items-center gap-1.5"
                                     on:click=move |_| {
                                         set_name_input.set(name.clone());
                                         set_editing_name.set(true);
                                     }
                                 >
                                     {dev.name.clone()}
-                                    <span class="w-3 h-3 text-fg-dim opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <span class="w-3 h-3 text-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity">
                                         <Icon icon=LuPencil width="12px" height="12px" />
                                     </span>
                                 </span>
@@ -197,7 +197,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                     </div>
 
                     // ── Info Panel ─────────────────────────────────────────
-                    <div class="rounded-xl bg-layer-1 border border-white/[0.06] overflow-hidden
+                    <div class="rounded-xl bg-surface-raised border border-border-subtle overflow-hidden
                                 shadow-[0_2px_12px_rgba(0,0,0,0.2)]"
                          style=accent_border>
                         <div class="p-4 space-y-3">
@@ -214,20 +214,20 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                 let zones = dev.zones.clone();
                                 let rgb = rgb.clone();
                                 view! {
-                                    <div class="pt-3 border-t border-white/[0.04]">
-                                        <h4 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-dim mb-2">"Zones"</h4>
+                                    <div class="pt-3 border-t border-border-subtle">
+                                        <h4 class="text-[10px] font-mono uppercase tracking-[0.12em] text-text-tertiary mb-2">"Zones"</h4>
                                         <div class="space-y-1">
                                             {zones.into_iter().map(|zone| {
                                                 let zone_rgb = rgb.clone();
                                                 view! {
                                                     <div class="flex items-center justify-between text-xs px-2 py-1 rounded-md
-                                                                bg-white/[0.02] hover:bg-white/[0.04] transition-colors">
+                                                                bg-surface-overlay/20 hover:bg-surface-hover/40 transition-colors">
                                                         <div class="flex items-center gap-2">
                                                             <div class="w-1 h-3 rounded-full"
                                                                  style=format!("background: rgba({zone_rgb}, 0.4)") />
-                                                            <span class="text-fg truncate">{zone.name}</span>
+                                                            <span class="text-text-primary truncate">{zone.name}</span>
                                                         </div>
-                                                        <span class="text-fg-dim font-mono tabular-nums">{zone.led_count}</span>
+                                                        <span class="text-text-tertiary font-mono tabular-nums">{zone.led_count}</span>
                                                     </div>
                                                 }
                                             }).collect_view()}
@@ -238,7 +238,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                         </div>
 
                         // ── Actions ───────────────────────────────────────
-                        <div class="px-4 py-3 bg-white/[0.015] border-t border-white/[0.04]">
+                        <div class="px-4 py-3 bg-surface-overlay/15 border-t border-border-subtle">
                             <div class="flex items-center gap-2">
                                 // Enable/Disable toggle
                                 <button
@@ -284,12 +284,12 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                     </div>
 
                     // ── Segments ───────────────────────────────────────────
-                    <div class="rounded-xl bg-layer-1 border border-white/[0.06] overflow-hidden
+                    <div class="rounded-xl bg-surface-raised border border-border-subtle overflow-hidden
                                 shadow-[0_2px_12px_rgba(0,0,0,0.2)]">
                         <div class="flex items-center justify-between px-4 py-3">
                             <div class="flex items-center gap-2">
                                 <Icon icon=LuCable width="14px" height="14px" style="color: rgba(139, 133, 160, 1)" />
-                                <h3 class="text-xs font-mono uppercase tracking-[0.12em] text-fg-dim">"Segments"</h3>
+                                <h3 class="text-xs font-mono uppercase tracking-[0.12em] text-text-tertiary">"Segments"</h3>
                             </div>
                             <button
                                 class="px-2 py-0.5 rounded text-[10px] font-medium transition-all"
@@ -302,12 +302,12 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
 
                         // Add segment form
                         {move || show_add_segment.get().then(|| view! {
-                            <div class="mx-4 mb-3 space-y-2 p-3 rounded-lg bg-layer-2/60 border border-white/[0.04] animate-fade-in">
+                            <div class="mx-4 mb-3 space-y-2 p-3 rounded-lg bg-surface-overlay/60 border border-border-subtle animate-fade-in">
                                 <input
                                     type="text"
                                     placeholder="Segment name"
-                                    class="w-full bg-layer-0/60 border border-white/[0.04] rounded px-2.5 py-1.5 text-xs text-fg
-                                           placeholder-fg-dim focus:outline-none focus:border-electric-purple/20"
+                                    class="w-full bg-surface-base/60 border border-border-subtle rounded px-2.5 py-1.5 text-xs text-text-primary
+                                           placeholder-text-tertiary focus:outline-none focus:border-accent-muted"
                                     prop:value=move || seg_name.get()
                                     on:input=move |ev| {
                                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -318,8 +318,8 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                     <input
                                         type="number"
                                         placeholder="Start"
-                                        class="flex-1 bg-layer-0/60 border border-white/[0.04] rounded px-2.5 py-1.5 text-xs text-fg font-mono
-                                               placeholder-fg-dim focus:outline-none focus:border-electric-purple/20"
+                                        class="flex-1 bg-surface-base/60 border border-border-subtle rounded px-2.5 py-1.5 text-xs text-text-primary font-mono
+                                               placeholder-text-tertiary focus:outline-none focus:border-accent-muted"
                                         prop:value=move || seg_start.get()
                                         on:input=move |ev| {
                                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -329,8 +329,8 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                     <input
                                         type="number"
                                         placeholder="Count"
-                                        class="flex-1 bg-layer-0/60 border border-white/[0.04] rounded px-2.5 py-1.5 text-xs text-fg font-mono
-                                               placeholder-fg-dim focus:outline-none focus:border-electric-purple/20"
+                                        class="flex-1 bg-surface-base/60 border border-border-subtle rounded px-2.5 py-1.5 text-xs text-text-primary font-mono
+                                               placeholder-text-tertiary focus:outline-none focus:border-accent-muted"
                                         prop:value=move || seg_count.get()
                                         on:input=move |ev| {
                                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -351,7 +351,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                         // Logical device list
                         <div class="px-4 pb-4">
                             <Suspense fallback=|| view! {
-                                <div class="text-xs text-fg-dim animate-pulse py-2">"Loading segments..."</div>
+                                <div class="text-xs text-text-tertiary animate-pulse py-2">"Loading segments..."</div>
                             }>
                                 {move || {
                                     logical_devices.get().map(|result| {
@@ -361,7 +361,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                                 let total = dev.map(|d| d.total_leds).unwrap_or(0);
                                                 if segments.is_empty() {
                                                     return view! {
-                                                        <div class="text-xs text-fg-dim py-3 text-center">"No segments configured"</div>
+                                                        <div class="text-xs text-text-tertiary py-3 text-center">"No segments configured"</div>
                                                     }.into_any();
                                                 }
                                                 view! {
@@ -372,26 +372,26 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                                             let bar_pct_start = if total > 0 { f64::from(seg.led_start) / total as f64 * 100.0 } else { 0.0 };
                                                             let bar_pct_width = if total > 0 { f64::from(seg.led_count) / total as f64 * 100.0 } else { 100.0 };
                                                             view! {
-                                                                <div class="p-2.5 rounded-lg bg-white/[0.02] border border-white/[0.03]
-                                                                            hover:bg-white/[0.04] transition-colors">
+                                                                <div class="p-2.5 rounded-lg bg-surface-overlay/20 border border-border-subtle
+                                                                            hover:bg-surface-hover/40 transition-colors">
                                                                     <div class="flex items-center justify-between mb-2">
                                                                         <div class="flex items-center gap-1.5">
-                                                                            <span class="text-xs text-fg font-medium">{seg.name}</span>
+                                                                            <span class="text-xs text-text-primary font-medium">{seg.name}</span>
                                                                             {is_default.then(|| view! {
-                                                                                <span class="px-1.5 py-0.5 rounded text-[8px] font-mono uppercase tracking-wider text-fg-dim bg-white/[0.04]">
+                                                                                <span class="px-1.5 py-0.5 rounded text-[8px] font-mono uppercase tracking-wider text-text-tertiary bg-surface-overlay/40">
                                                                                     "default"
                                                                                 </span>
                                                                             })}
                                                                         </div>
                                                                         <div class="flex items-center gap-2">
-                                                                            <span class="text-[10px] font-mono text-fg-dim tabular-nums">
+                                                                            <span class="text-[10px] font-mono text-text-tertiary tabular-nums">
                                                                                 {seg.led_start} "\u{2013}" {seg.led_end} " (" {seg.led_count} ")"
                                                                             </span>
                                                                             {(!is_default).then(|| {
                                                                                 let sid = seg_id.clone();
                                                                                 view! {
                                                                                     <button
-                                                                                        class="p-0.5 rounded text-fg-dim hover:text-error-red transition-colors"
+                                                                                        class="p-0.5 rounded text-text-tertiary hover:text-error-red transition-colors"
                                                                                         title="Delete segment"
                                                                                         on:click=move |_| delete_logical(sid.clone())
                                                                                     >
@@ -402,7 +402,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                                                         </div>
                                                                     </div>
                                                                     // LED range bar
-                                                                    <div class="h-1.5 rounded-full bg-white/[0.04] overflow-hidden">
+                                                                    <div class="h-1.5 rounded-full bg-surface-overlay/40 overflow-hidden">
                                                                         <div
                                                                             class="h-full rounded-full transition-all duration-300"
                                                                             style=format!(
@@ -437,8 +437,8 @@ fn detail_field(label: &'static str, value: &str) -> impl IntoView + use<> {
     let value = value.to_string();
     view! {
         <div>
-            <div class="text-[10px] font-mono uppercase tracking-wider text-fg-dim mb-0.5">{label}</div>
-            <div class="text-xs text-fg font-mono capitalize">{value}</div>
+            <div class="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-0.5">{label}</div>
+            <div class="text-xs text-text-primary font-mono capitalize">{value}</div>
         </div>
     }
 }
