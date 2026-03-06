@@ -1,9 +1,14 @@
-import { canvas, color, num } from '@hypercolor/sdk'
+import { canvas, color, combo, num } from '@hypercolor/sdk'
 
 interface RGB {
     r: number
     g: number
     b: number
+}
+
+interface ThemePalette {
+    bg: string
+    colors: [string, string, string]
 }
 
 interface RingParticle {
@@ -13,12 +18,39 @@ interface RingParticle {
     speedY: number
     lineWidth: number
     radius: number
-    innerRadius: number
     colorIndex: number
     direction: 1 | -1
 }
 
 const PARTICLES_PER_DIRECTION = 22
+const THEMES = ['Poison', 'Blacklight', 'Radioactive', 'Nightshade', 'Cotton Candy', 'Custom'] as const
+
+const THEME_PALETTES: Record<(typeof THEMES)[number], ThemePalette> = {
+    Poison: {
+        bg: '#130032',
+        colors: ['#6000fc', '#b300ff', '#8a42ff'],
+    },
+    Blacklight: {
+        bg: '#06050d',
+        colors: ['#ff58c8', '#30e5ff', '#f4f24e'],
+    },
+    Radioactive: {
+        bg: '#060b05',
+        colors: ['#7bff00', '#00ff9d', '#f3ff52'],
+    },
+    Nightshade: {
+        bg: '#0b0615',
+        colors: ['#8d5cff', '#ff4fd1', '#56d8ff'],
+    },
+    'Cotton Candy': {
+        bg: '#110816',
+        colors: ['#ff74c5', '#79ecff', '#ffe869'],
+    },
+    Custom: {
+        bg: '#130032',
+        colors: ['#6000fc', '#b300ff', '#8a42ff'],
+    },
+}
 
 function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value))
@@ -55,6 +87,22 @@ function mixRgb(a: RGB, b: RGB, t: number): RGB {
     }
 }
 
+function resolveThemePalette(controls: Record<string, unknown>): ThemePalette {
+    const theme = controls.theme as (typeof THEMES)[number]
+    if (theme === 'Custom') {
+        return {
+            bg: controls.bgColor as string,
+            colors: [
+                controls.color1 as string,
+                controls.color2 as string,
+                controls.color3 as string,
+            ],
+        }
+    }
+
+    return THEME_PALETTES[theme]
+}
+
 function createParticle(
     width: number,
     height: number,
@@ -75,18 +123,19 @@ function createParticle(
         speedY: Math.random() * 2.4 + 0.7,
         lineWidth: Math.round(Math.random() * 8) + 2,
         radius,
-        innerRadius: radius * 0.45,
         colorIndex: Math.floor(Math.random() * paletteSize),
         direction,
     }
 }
 
 export default canvas.stateful('Poisonous', {
+    theme:   combo('Theme', [...THEMES], { default: 'Poison' }),
     bgColor:  color('Background Color', '#130032'),
     color1:   color('Color 1', '#6000fc'),
     color2:   color('Color 2', '#b300ff'),
     color3:   color('Color 3', '#8a42ff'),
     speedRaw: num('Speed', [0, 100], 14),
+    ringCount: num('Rings', [1, 6], 2),
 }, () => {
     let particles: RingParticle[] = []
     let lastWidth = 0
@@ -117,13 +166,11 @@ export default canvas.stateful('Poisonous', {
     return (ctx, _time, controls) => {
         const width = ctx.canvas.width
         const height = ctx.canvas.height
-        const palette = [
-            hexToRgb(controls.color1 as string),
-            hexToRgb(controls.color2 as string),
-            hexToRgb(controls.color3 as string),
-        ]
-        const background = hexToRgb(controls.bgColor as string)
+        const themePalette = resolveThemePalette(controls as Record<string, unknown>)
+        const palette = themePalette.colors.map((color) => hexToRgb(color))
+        const background = hexToRgb(themePalette.bg)
         const speedRaw = controls.speedRaw as number
+        const ringCount = Math.round(controls.ringCount as number)
         const speedScale = speedRaw / 50
 
         if (width !== lastWidth || height !== lastHeight || particles.length === 0) {
@@ -137,26 +184,30 @@ export default canvas.stateful('Poisonous', {
 
         for (const particle of particles) {
             const base = palette[particle.colorIndex] ?? palette[0]
-            const accent = mixRgb(base, { r: 255, g: 255, b: 255 }, 0.18)
+            const accent = palette[(particle.colorIndex + 1) % palette.length] ?? mixRgb(base, { r: 255, g: 255, b: 255 }, 0.18)
+            const ringStep = Math.max(2.4, particle.radius * 0.18)
 
-            ctx.strokeStyle = rgba(base, 0.62)
-            ctx.lineWidth = particle.lineWidth
-            ctx.beginPath()
-            ctx.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2)
-            ctx.stroke()
+            for (let ringIndex = 0; ringIndex < ringCount; ringIndex++) {
+                const ringRadius = particle.radius - ringIndex * ringStep
+                if (ringRadius <= 1) break
 
-            ctx.strokeStyle = rgba(accent, 0.46)
-            ctx.lineWidth = Math.max(1, particle.lineWidth * 0.45)
-            ctx.beginPath()
-            ctx.arc(particle.x, particle.y, particle.innerRadius, 0, Math.PI * 2)
-            ctx.stroke()
+                const blend = ringCount <= 1 ? 0 : ringIndex / Math.max(1, ringCount - 1)
+                const ringColor = mixRgb(base, accent, blend * 0.72)
+                const alpha = clamp(0.68 - ringIndex * 0.09, 0.24, 0.68)
+                const lineWidth = Math.max(1, particle.lineWidth * (1 - ringIndex * 0.16))
+
+                ctx.strokeStyle = rgba(ringColor, alpha)
+                ctx.lineWidth = lineWidth
+                ctx.beginPath()
+                ctx.arc(particle.x, particle.y, ringRadius, 0, Math.PI * 2)
+                ctx.stroke()
+            }
 
             particle.x += particle.speedX * speedScale
             particle.y += particle.speedY * speedScale * particle.direction
             if (speedRaw > 0) {
                 const growth = (Math.random() / 1.4) * speedScale
                 particle.radius += growth
-                particle.innerRadius += growth * 0.72
             }
         }
 
@@ -166,6 +217,6 @@ export default canvas.stateful('Poisonous', {
         })
     }
 }, {
-    description: 'A denser concentric-ring poison variant with faster motion and cleaner double-circle detail',
+    description: 'A denser concentric-ring poison variant with selectable themes and controllable ring stacks',
     author: 'Hypercolor',
 })
