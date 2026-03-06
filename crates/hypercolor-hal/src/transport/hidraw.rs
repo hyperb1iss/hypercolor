@@ -3,6 +3,7 @@
 //! This path keeps the kernel `usbhid` driver attached and talks to devices
 //! through `/dev/hidraw*`, avoiding exclusive USB interface claims.
 
+use std::cmp::min;
 use std::ffi::{CStr, CString};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +11,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use hidapi::HidApi;
+use tracing::{debug, trace};
 
 use crate::transport::{Transport, TransportError};
 
@@ -112,6 +114,17 @@ impl UsbHidRawTransport {
             .open_path(&c_path)
             .map_err(|error| map_hidapi_error(&error))?;
 
+        debug!(
+            vendor_id = format_args!("{vendor_id:04X}"),
+            product_id = format_args!("{product_id:04X}"),
+            interface_number,
+            report_id = format_args!("0x{report_id:02X}"),
+            device_path = %device_path,
+            serial = serial.unwrap_or("<none>"),
+            usb_path = usb_path.unwrap_or("<unknown>"),
+            "opened hidraw transport"
+        );
+
         Ok(Self {
             device_path,
             report_id,
@@ -140,8 +153,22 @@ impl Transport for UsbHidRawTransport {
 
         let _guard = self.op_lock.lock().await;
         let device_path = self.device_path.clone();
-        let payload = data.to_vec();
         let report_id = self.report_id;
+        let mut packet = data.to_vec();
+
+        // hidapi expects report ID in the first byte. For report_id=0 devices
+        // the payload already starts with 0, so send as-is.
+        if report_id != 0 && packet.first().copied() != Some(report_id) {
+            packet.insert(0, report_id);
+        }
+
+        trace!(
+            device_path = %self.device_path,
+            report_id = format_args!("0x{report_id:02X}"),
+            packet_len = packet.len(),
+            packet_hex = %format_hex_preview(&packet, 32),
+            "hidraw feature report send"
+        );
 
         tokio::task::spawn_blocking(move || {
             let api = HidApi::new().map_err(|error| map_hidapi_error(&error))?;
@@ -149,13 +176,6 @@ impl Transport for UsbHidRawTransport {
             let device = api
                 .open_path(&c_path)
                 .map_err(|error| map_hidapi_error(&error))?;
-
-            // hidapi expects report ID in the first byte. For report_id=0 devices
-            // the payload already starts with 0, so send as-is.
-            let mut packet = payload;
-            if report_id != 0 && packet.first().copied() != Some(report_id) {
-                packet.insert(0, report_id);
-            }
 
             device
                 .send_feature_report(&packet)
@@ -177,7 +197,14 @@ impl Transport for UsbHidRawTransport {
         let report_id = self.report_id;
         let max_packet_len = self.max_packet_len;
 
-        tokio::task::spawn_blocking(move || {
+        debug!(
+            device_path = %self.device_path,
+            report_id = format_args!("0x{report_id:02X}"),
+            max_packet_len,
+            "hidraw feature report receive requested"
+        );
+
+        let response = tokio::task::spawn_blocking(move || {
             let api = HidApi::new().map_err(|error| map_hidapi_error(&error))?;
             let c_path = c_string_for_path(&device_path)?;
             let device = api
@@ -203,7 +230,17 @@ impl Transport for UsbHidRawTransport {
         .await
         .map_err(|error| TransportError::IoError {
             detail: format!("hidraw receive task failed: {error}"),
-        })?
+        })??;
+
+        trace!(
+            device_path = %self.device_path,
+            report_id = format_args!("0x{report_id:02X}"),
+            response_len = response.len(),
+            response_hex = %format_hex_preview(&response, 32),
+            "hidraw feature report received"
+        );
+
+        Ok(response)
     }
 
     async fn close(&self) -> Result<(), TransportError> {
@@ -259,6 +296,26 @@ fn normalize_usb_path(path: &str) -> Option<String> {
     let (bus, ports) = path.split_once('-')?;
     let bus = bus.parse::<u16>().ok()?;
     Some(format!("{bus}-{ports}"))
+}
+
+fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
+    let preview_len = min(bytes.len(), max_bytes);
+    let mut rendered = bytes
+        .iter()
+        .take(preview_len)
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if bytes.len() > preview_len {
+        rendered.push_str(&format!(" ... (+{} bytes)", bytes.len() - preview_len));
+    }
+
+    if rendered.is_empty() {
+        "<empty>".to_owned()
+    } else {
+        rendered
+    }
 }
 
 #[cfg(test)]

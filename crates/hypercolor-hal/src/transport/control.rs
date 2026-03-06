@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nusb::transfer::{ControlIn, ControlOut, ControlType, Recipient, TransferError};
+use tracing::{debug, trace};
 
 use crate::transport::{Transport, TransportError};
 
@@ -35,10 +36,23 @@ impl UsbControlTransport {
         interface_number: u8,
         report_id: u8,
     ) -> Result<Self, TransportError> {
+        #[cfg(target_os = "linux")]
+        let interface = device
+            .detach_and_claim_interface(interface_number)
+            .await
+            .map_err(|error| map_nusb_error(&error))?;
+
+        #[cfg(not(target_os = "linux"))]
         let interface = device
             .claim_interface(interface_number)
             .await
             .map_err(|error| map_nusb_error(&error))?;
+
+        debug!(
+            interface_number,
+            report_id = format_args!("0x{report_id:02X}"),
+            "opened USB control transport"
+        );
 
         Ok(Self {
             _device: device,
@@ -73,6 +87,13 @@ impl Transport for UsbControlTransport {
         self.check_open()?;
 
         let _guard = self.op_lock.lock().await;
+        trace!(
+            interface_number = self.interface_number,
+            report_id = format_args!("0x{:02X}", self.report_id),
+            packet_len = data.len(),
+            packet_hex = %format_hex_preview(data, 32),
+            "usb control feature report send"
+        );
 
         self.interface
             .control_out(
@@ -97,8 +118,16 @@ impl Transport for UsbControlTransport {
         let length = u16::try_from(self.max_packet_len).map_err(|_| TransportError::IoError {
             detail: "configured packet length exceeds u16".to_owned(),
         })?;
+        debug!(
+            interface_number = self.interface_number,
+            report_id = format_args!("0x{:02X}", self.report_id),
+            timeout_ms = timeout.as_millis(),
+            max_packet_len = self.max_packet_len,
+            "usb control feature report receive requested"
+        );
 
-        self.interface
+        let response = self
+            .interface
             .control_in(
                 ControlIn {
                     control_type: ControlType::Class,
@@ -111,7 +140,17 @@ impl Transport for UsbControlTransport {
                 timeout,
             )
             .await
-            .map_err(|error| map_transfer_error(error, timeout))
+            .map_err(|error| map_transfer_error(error, timeout))?;
+
+        trace!(
+            interface_number = self.interface_number,
+            report_id = format_args!("0x{:02X}", self.report_id),
+            response_len = response.len(),
+            response_hex = %format_hex_preview(&response, 32),
+            "usb control feature report received"
+        );
+
+        Ok(response)
     }
 
     async fn close(&self) -> Result<(), TransportError> {
@@ -145,5 +184,25 @@ fn map_transfer_error(error: TransferError, timeout: Duration) -> TransportError
         _ => TransportError::IoError {
             detail: error.to_string(),
         },
+    }
+}
+
+fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
+    let preview_len = bytes.len().min(max_bytes);
+    let mut rendered = bytes
+        .iter()
+        .take(preview_len)
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if bytes.len() > preview_len {
+        rendered.push_str(&format!(" ... (+{} bytes)", bytes.len() - preview_len));
+    }
+
+    if rendered.is_empty() {
+        "<empty>".to_owned()
+    } else {
+        rendered
     }
 }

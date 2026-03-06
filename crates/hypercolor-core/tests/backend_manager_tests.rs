@@ -90,6 +90,104 @@ impl DeviceBackend for SlowRecordingBackend {
     }
 }
 
+struct DirectControlRecordingBackend {
+    expected_device_id: DeviceId,
+    connected: bool,
+    writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
+    brightness_writes: Arc<Mutex<Vec<u8>>>,
+}
+
+impl DirectControlRecordingBackend {
+    fn new(
+        expected_device_id: DeviceId,
+        writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
+        brightness_writes: Arc<Mutex<Vec<u8>>>,
+    ) -> Self {
+        Self {
+            expected_device_id,
+            connected: false,
+            writes,
+            brightness_writes,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for DirectControlRecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "recording".to_owned(),
+            name: "Direct Control Recording Backend".to_owned(),
+            description: "Records direct writes and brightness changes for tests".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(vec![DeviceInfo {
+            id: self.expected_device_id,
+            name: "Recording Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::Custom("Test".to_owned()),
+            connection_type: ConnectionType::Network,
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 4,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities {
+                led_count: 4,
+                supports_direct: true,
+                supports_brightness: true,
+                max_fps: 60,
+            },
+        }])
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connected = true;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connected = false;
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected {
+            bail!("write while disconnected");
+        }
+
+        self.writes.lock().await.push(colors.to_vec());
+        Ok(())
+    }
+
+    async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected {
+            bail!("brightness change while disconnected");
+        }
+
+        self.brightness_writes.lock().await.push(brightness);
+        Ok(())
+    }
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn make_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
@@ -369,6 +467,92 @@ async fn write_device_colors_fails_for_unknown_backend() {
     assert!(
         error.to_string().contains("not registered"),
         "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn set_device_brightness_targets_backend_directly() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let brightness_writes = Arc::new(Mutex::new(Vec::new()));
+
+    let mut backend = DirectControlRecordingBackend::new(
+        device_id,
+        Arc::clone(&writes),
+        Arc::clone(&brightness_writes),
+    );
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+
+    manager
+        .set_device_brightness("recording", device_id, 128)
+        .await
+        .expect("brightness write should succeed");
+
+    assert!(
+        writes.lock().await.is_empty(),
+        "brightness should not write colors"
+    );
+    assert_eq!(*brightness_writes.lock().await, vec![128]);
+}
+
+#[tokio::test]
+async fn direct_control_suppresses_queued_writes_until_released() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let brightness_writes = Arc::new(Mutex::new(Vec::new()));
+
+    let mut backend = DirectControlRecordingBackend::new(
+        device_id,
+        Arc::clone(&writes),
+        Arc::clone(&brightness_writes),
+    );
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("recording:device", "recording", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "recording:device", 4)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[9, 9, 9]; 4],
+    }];
+
+    assert_eq!(manager.begin_direct_control("recording", device_id), 1);
+    assert!(manager.is_direct_control_active("recording", device_id));
+
+    let suppressed_stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(suppressed_stats.devices_written, 0);
+    assert_eq!(suppressed_stats.total_leds, 0);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(
+        writes.lock().await.is_empty(),
+        "queued writes should be suppressed"
+    );
+
+    manager
+        .write_device_colors("recording", device_id, &[[1, 2, 3]; 4])
+        .await
+        .expect("direct writes should still succeed");
+    assert_eq!(*writes.lock().await, vec![vec![[1, 2, 3]; 4]]);
+
+    assert_eq!(manager.end_direct_control("recording", device_id), 0);
+    assert!(!manager.is_direct_control_active("recording", device_id));
+
+    let resumed_stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(resumed_stats.devices_written, 1);
+    assert_eq!(resumed_stats.total_leds, 4);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let recorded = writes.lock().await.clone();
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded[1], vec![[9, 9, 9]; 4]);
+    assert!(
+        brightness_writes.lock().await.is_empty(),
+        "direct-control suppression should not touch brightness"
     );
 }
 

@@ -360,6 +360,9 @@ pub struct BackendManager {
 
     /// Per-target latest-frame output queues.
     output_queues: HashMap<BackendDeviceKey, OutputQueue>,
+
+    /// Reference-counted direct-control locks that suppress queued frame writes.
+    direct_control_locks: HashMap<BackendDeviceKey, usize>,
 }
 
 /// Internal mapping from a layout device identifier to a backend + device.
@@ -409,6 +412,8 @@ impl BackendManager {
         // They are lazily recreated on the next frame.
         self.output_queues
             .retain(|(queued_backend_id, _), _| queued_backend_id != &backend_id);
+        self.direct_control_locks
+            .retain(|(locked_backend_id, _), _| locked_backend_id != &backend_id);
 
         self.backends
             .insert(backend_id, Arc::new(Mutex::new(backend)));
@@ -581,6 +586,71 @@ impl BackendManager {
             })
     }
 
+    /// Adjust hardware brightness for a specific physical device.
+    ///
+    /// This bypasses spatial routing and targets the backend directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend is missing or the backend write fails.
+    pub async fn set_device_brightness(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        brightness: u8,
+    ) -> Result<()> {
+        let Some(backend) = self.backends.get(backend_id).cloned() else {
+            bail!("backend '{backend_id}' is not registered");
+        };
+
+        let mut backend = backend.lock().await;
+        backend
+            .set_brightness(&device_id, brightness)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to set brightness {} on device {device_id} using backend '{backend_id}'",
+                    brightness
+                )
+            })
+    }
+
+    /// Suppress queued frame writes for a specific physical device.
+    ///
+    /// Returns the active direct-control lock count after incrementing.
+    pub fn begin_direct_control(&mut self, backend_id: &str, device_id: DeviceId) -> usize {
+        let key = (backend_id.to_owned(), device_id);
+        let count = self.direct_control_locks.entry(key).or_insert(0);
+        *count = count.saturating_add(1);
+        *count
+    }
+
+    /// Release one direct-control lock for a specific physical device.
+    ///
+    /// Returns the remaining lock count after decrementing.
+    pub fn end_direct_control(&mut self, backend_id: &str, device_id: DeviceId) -> usize {
+        let key = (backend_id.to_owned(), device_id);
+        let Some(count) = self.direct_control_locks.get_mut(&key) else {
+            return 0;
+        };
+
+        *count = count.saturating_sub(1);
+        let remaining = *count;
+        if remaining == 0 {
+            self.direct_control_locks.remove(&key);
+        }
+
+        remaining
+    }
+
+    /// Whether queued frame writes are currently suppressed for a device.
+    #[must_use]
+    pub fn is_direct_control_active(&self, backend_id: &str, device_id: DeviceId) -> bool {
+        self.direct_control_locks
+            .get(&(backend_id.to_owned(), device_id))
+            .is_some_and(|count| *count > 0)
+    }
+
     /// Remove a device mapping.
     pub fn unmap_device(&mut self, layout_device_id: &str) -> bool {
         let Some(mapping) = self.device_map.remove(layout_device_id) else {
@@ -593,8 +663,9 @@ impl BackendManager {
         });
 
         if !still_used {
-            self.output_queues
-                .remove(&(mapping.backend_id, mapping.device_id));
+            let key = (mapping.backend_id, mapping.device_id);
+            self.output_queues.remove(&key);
+            self.direct_control_locks.remove(&key);
         }
 
         true
@@ -618,6 +689,8 @@ impl BackendManager {
             .any(|mapping| mapping.backend_id == backend_id && mapping.device_id == device_id)
         {
             self.output_queues
+                .remove(&(backend_id.to_owned(), device_id));
+            self.direct_control_locks
                 .remove(&(backend_id.to_owned(), device_id));
         }
 
@@ -724,6 +797,15 @@ impl BackendManager {
 
         // Dispatch to output queues.
         for ((backend_id, device_id), colors) in device_colors {
+            if self.is_direct_control_active(backend_id.as_str(), device_id) {
+                trace!(
+                    backend_id = %backend_id,
+                    device_id = %device_id,
+                    "skipping queued device frame while direct control is active"
+                );
+                continue;
+            }
+
             if !self.backends.contains_key(backend_id.as_str()) {
                 stats
                     .errors

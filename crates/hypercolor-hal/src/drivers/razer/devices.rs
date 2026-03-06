@@ -8,6 +8,7 @@ use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
 use super::protocol::RazerProtocol;
 use super::types::{
     LED_ID_BACKLIGHT, LED_ID_ZERO, RazerLightingCommandSet, RazerMatrixType, RazerProtocolVersion,
+    VARSTORE,
 };
 
 /// Razer vendor ID.
@@ -63,13 +64,18 @@ pub fn build_seiren_emote_protocol() -> Box<dyn Protocol> {
 
 /// Build a Blade 15 (Late 2021 Advanced) protocol instance.
 pub fn build_blade_15_late_2021_advanced_protocol() -> Box<dyn Protocol> {
-    Box::new(RazerProtocol::new(
-        RazerProtocolVersion::Modern,
-        RazerLightingCommandSet::Standard,
-        RazerMatrixType::Standard,
-        (6, 16),
-        LED_ID_BACKLIGHT,
-    ))
+    Box::new(
+        RazerProtocol::new(
+            RazerProtocolVersion::Modern,
+            RazerLightingCommandSet::Standard,
+            RazerMatrixType::Standard,
+            (6, 16),
+            LED_ID_BACKLIGHT,
+        )
+        .without_device_mode_commands()
+        .with_standard_storage(VARSTORE)
+        .with_frame_transaction_id(0xFF),
+    )
 }
 
 macro_rules! razer_descriptor {
@@ -120,13 +126,21 @@ static RAZER_DESCRIPTORS: &[DeviceDescriptor] = &[
         interface: 3,
         builder: build_seiren_emote_protocol
     ),
-    razer_descriptor!(
-        pid: PID_BLADE_15_LATE_2021_ADVANCED,
+    DeviceDescriptor {
+        vendor_id: RAZER_VENDOR_ID,
+        product_id: PID_BLADE_15_LATE_2021_ADVANCED,
         name: "Razer Blade 15 (Late 2021 Advanced)",
-        protocol_id: "razer/blade-15-late-2021-advanced",
-        interface: 2,
-        builder: build_blade_15_late_2021_advanced_protocol
-    ),
+        family: DeviceFamily::Razer,
+        transport: TransportType::UsbControl {
+            interface: 2,
+            report_id: 0x00,
+        },
+        protocol: ProtocolBinding {
+            id: "razer/blade-15-late-2021-advanced",
+            build: build_blade_15_late_2021_advanced_protocol,
+        },
+        firmware_predicate: None,
+    },
 ];
 
 /// Static Razer descriptors for HAL registration.

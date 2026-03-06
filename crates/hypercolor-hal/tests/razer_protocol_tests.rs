@@ -1,6 +1,6 @@
 use hypercolor_hal::drivers::razer::{
     LED_ID_BACKLIGHT, RAZER_REPORT_LEN, RazerLightingCommandSet, RazerMatrixType, RazerProtocol,
-    RazerProtocolVersion, razer_crc,
+    RazerProtocolVersion, build_blade_15_late_2021_advanced_protocol, razer_crc,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolError, ResponseStatus};
 use hypercolor_types::device::DeviceTopologyHint;
@@ -118,6 +118,46 @@ fn encode_brightness_uses_command_family_specific_packets() {
     assert_eq!(extended_cmd[0].data[1], 0x3F);
     assert_eq!(extended_cmd[0].data[6], 0x0F);
     assert_eq!(extended_cmd[0].data[7], 0x04);
+}
+
+#[test]
+fn blade_protocol_matches_uchroma_laptop_path() {
+    let protocol = build_blade_15_late_2021_advanced_protocol();
+
+    assert_eq!(protocol.name(), "Razer 0x1F Standard");
+    assert!(protocol.init_sequence().is_empty());
+    assert!(protocol.shutdown_sequence().is_empty());
+
+    let colors = vec![[0xFF, 0x06, 0xB5]; 96];
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 7, "6 rows + custom-mode activation");
+
+    let first_row = &commands[0].data;
+    assert_eq!(first_row[1], 0xFF);
+    assert_eq!(first_row[6], 0x03);
+    assert_eq!(first_row[7], 0x0B);
+    assert_eq!(first_row[8], 0xFF);
+    assert_eq!(first_row[9], 0x00);
+    assert_eq!(first_row[10], 0x00);
+    assert_eq!(first_row[11], 0x0F);
+
+    let activation = &commands[6].data;
+    assert_eq!(activation[1], 0x1F);
+    assert_eq!(activation[6], 0x03);
+    assert_eq!(activation[7], 0x0A);
+    assert_eq!(activation[8], 0x05);
+    assert_eq!(activation[9], 0x01);
+
+    let brightness = protocol
+        .encode_brightness(0x7F)
+        .expect("blade brightness should encode");
+    assert_eq!(brightness.len(), 1);
+    assert_eq!(brightness[0].data[1], 0x1F);
+    assert_eq!(brightness[0].data[6], 0x03);
+    assert_eq!(brightness[0].data[7], 0x03);
+    assert_eq!(brightness[0].data[8], 0x01);
+    assert_eq!(brightness[0].data[9], 0x05);
+    assert_eq!(brightness[0].data[10], 0x7F);
 }
 
 #[test]

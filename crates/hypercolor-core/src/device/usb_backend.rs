@@ -1,5 +1,6 @@
 //! USB backend that bridges HAL protocols to the core `DeviceBackend` trait.
 
+use std::cmp::min;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use hypercolor_hal::transport::hid::UsbHidTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::DeviceId;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 #[cfg(target_os = "linux")]
 use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
@@ -123,18 +124,75 @@ impl UsbBackend {
         transport: &dyn Transport,
         commands: Vec<ProtocolCommand>,
     ) -> Result<()> {
-        for command in commands {
+        let total_commands = commands.len();
+
+        for (index, command) in commands.into_iter().enumerate() {
+            let command_position = index + 1;
             let mut attempt = 0_u8;
+
+            debug!(
+                protocol = protocol.name(),
+                transport = transport.name(),
+                command_index = command_position,
+                total_commands,
+                expects_response = command.expects_response,
+                post_delay_ms = command.post_delay.as_millis(),
+                packet = %describe_packet(&command.data),
+                "usb command queued"
+            );
+            trace!(
+                protocol = protocol.name(),
+                transport = transport.name(),
+                command_index = command_position,
+                total_commands,
+                packet_hex = %format_hex_preview(&command.data, 32),
+                "usb command bytes"
+            );
 
             loop {
                 if command.expects_response {
+                    debug!(
+                        protocol = protocol.name(),
+                        transport = transport.name(),
+                        command_index = command_position,
+                        total_commands,
+                        attempt = attempt + 1,
+                        "usb send_receive starting"
+                    );
                     let response = transport
                         .send_receive(&command.data, RESPONSE_TIMEOUT)
                         .await
                         .map_err(map_transport_error)?;
 
+                    debug!(
+                        protocol = protocol.name(),
+                        transport = transport.name(),
+                        command_index = command_position,
+                        total_commands,
+                        response = %describe_packet(&response),
+                        "usb response received"
+                    );
+                    trace!(
+                        protocol = protocol.name(),
+                        transport = transport.name(),
+                        command_index = command_position,
+                        total_commands,
+                        response_hex = %format_hex_preview(&response, 32),
+                        "usb response bytes"
+                    );
+
                     match protocol.parse_response(&response) {
                         Ok(parsed) => {
+                            debug!(
+                                protocol = protocol.name(),
+                                transport = transport.name(),
+                                command_index = command_position,
+                                total_commands,
+                                status = ?parsed.status,
+                                parsed_data_len = parsed.data.len(),
+                                parsed_data = %format_hex_preview(&parsed.data, 24),
+                                "usb response parsed"
+                            );
                             if matches!(
                                 parsed.status,
                                 ResponseStatus::Busy | ResponseStatus::Timeout
@@ -160,10 +218,28 @@ impl UsbBackend {
                             continue;
                         }
                         Err(error) => {
+                            warn!(
+                                protocol = protocol.name(),
+                                transport = transport.name(),
+                                command_index = command_position,
+                                total_commands,
+                                error = %error,
+                                response = %describe_packet(&response),
+                                response_hex = %format_hex_preview(&response, 32),
+                                "protocol response parse failed"
+                            );
                             return Err(anyhow!("protocol response parse failed: {error}"));
                         }
                     }
                 } else {
+                    debug!(
+                        protocol = protocol.name(),
+                        transport = transport.name(),
+                        command_index = command_position,
+                        total_commands,
+                        attempt = attempt + 1,
+                        "usb send starting"
+                    );
                     transport
                         .send(&command.data)
                         .await
@@ -251,19 +327,29 @@ impl DeviceBackend for UsbBackend {
 
         let protocol = (pending.descriptor.protocol.build)();
         let transport = Self::build_transport(&pending, &usb).await?;
+        let init_sequence = protocol.init_sequence();
+        let first_init_packet = init_sequence
+            .first()
+            .map(|command| describe_packet(&command.data))
+            .unwrap_or_else(|| "<none>".to_owned());
 
-        Self::run_commands(
-            protocol.as_ref(),
-            transport.as_ref(),
-            protocol.init_sequence(),
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "failed to run init sequence for {}",
-                pending.descriptor.name
-            )
-        })?;
+        debug!(
+            device_id = %id,
+            protocol = protocol.name(),
+            transport = transport.name(),
+            init_commands = init_sequence.len(),
+            first_init_packet = %first_init_packet,
+            "running USB init sequence"
+        );
+
+        Self::run_commands(protocol.as_ref(), transport.as_ref(), init_sequence)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to run init sequence for {}",
+                    pending.descriptor.name
+                )
+            })?;
 
         self.connected.insert(
             *id,
@@ -311,6 +397,19 @@ impl DeviceBackend for UsbBackend {
         };
 
         let commands = device.protocol.encode_frame(colors);
+        let first_packet = commands
+            .first()
+            .map(|command| describe_packet(&command.data))
+            .unwrap_or_else(|| "<none>".to_owned());
+        debug!(
+            device_id = %id,
+            protocol = device.protocol.name(),
+            transport = device.transport.name(),
+            led_count = colors.len(),
+            command_count = commands.len(),
+            first_packet = %first_packet,
+            "usb frame write requested"
+        );
         Self::run_commands(
             device.protocol.as_ref(),
             device.transport.as_ref(),
@@ -318,6 +417,38 @@ impl DeviceBackend for UsbBackend {
         )
         .await
         .with_context(|| format!("USB frame write failed for device {id}"))
+    }
+
+    async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
+        let Some(device) = self.connected.get(id) else {
+            bail!("device {id} is not connected");
+        };
+
+        let commands = device
+            .protocol
+            .encode_brightness(brightness)
+            .with_context(|| format!("USB protocol does not support brightness for device {id}"))?;
+        let first_packet = commands
+            .first()
+            .map(|command| describe_packet(&command.data))
+            .unwrap_or_else(|| "<none>".to_owned());
+        debug!(
+            device_id = %id,
+            protocol = device.protocol.name(),
+            transport = device.transport.name(),
+            brightness,
+            command_count = commands.len(),
+            first_packet = %first_packet,
+            "usb brightness write requested"
+        );
+
+        Self::run_commands(
+            device.protocol.as_ref(),
+            device.transport.as_ref(),
+            commands,
+        )
+        .await
+        .with_context(|| format!("USB brightness write failed for device {id}"))
     }
 }
 
@@ -388,4 +519,50 @@ fn usb_path(usb: &nusb::DeviceInfo) -> String {
 
 fn map_transport_error(error: TransportError) -> anyhow::Error {
     anyhow!(error)
+}
+
+fn describe_packet(data: &[u8]) -> String {
+    if data.len() >= 89 {
+        let args_len = usize::from(data[5]);
+        let arg_end = min(8 + args_len, data.len());
+        let args = if arg_end > 8 {
+            format_hex_preview(&data[8..arg_end], 24)
+        } else {
+            "<none>".to_owned()
+        };
+
+        return format!(
+            "len={} status=0x{:02X} tx=0x{:02X} size={} class=0x{:02X} cmd=0x{:02X} crc=0x{:02X} args={}",
+            data.len(),
+            data[0],
+            data[1],
+            args_len,
+            data[6],
+            data[7],
+            data[88],
+            args
+        );
+    }
+
+    format!("len={} bytes={}", data.len(), format_hex_preview(data, 24))
+}
+
+fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
+    let preview_len = min(bytes.len(), max_bytes);
+    let mut rendered = bytes
+        .iter()
+        .take(preview_len)
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if bytes.len() > preview_len {
+        rendered.push_str(&format!(" ... (+{} bytes)", bytes.len() - preview_len));
+    }
+
+    if rendered.is_empty() {
+        "<empty>".to_owned()
+    } else {
+        rendered
+    }
 }

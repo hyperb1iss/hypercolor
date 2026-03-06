@@ -9,7 +9,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use hypercolor_core::device::{BackendManager, SegmentRange};
 use hypercolor_types::config::HypercolorConfig;
@@ -412,8 +412,37 @@ pub async fn identify_device(
         ));
     }
 
-    let manager = Arc::clone(&state.backend_manager);
     let backend_id = backend_id_for_family(&tracked.info.family);
+    let manager = Arc::clone(&state.backend_manager);
+    let on_frame = vec![identify_rgb; led_count];
+    {
+        let mut manager = manager.lock().await;
+        debug!(
+            backend_id = %backend_id,
+            device_id = %device_id,
+            led_count,
+            color = ?identify_rgb,
+            "identify enabling direct control and issuing initial on-frame"
+        );
+        manager.begin_direct_control(&backend_id, device_id);
+        if let Err(error) = manager
+            .write_device_colors(&backend_id, device_id, &on_frame)
+            .await
+        {
+            manager.end_direct_control(&backend_id, device_id);
+            warn!(
+                backend_id = %backend_id,
+                device_id = %device_id,
+                error = %error,
+                "identify initial write failed"
+            );
+            return ApiError::internal(format!(
+                "Failed to start identify flash for {}: {error}",
+                tracked.info.name
+            ));
+        }
+    }
+
     tracing::info!(
         device_id = %device_id,
         device = %tracked.info.name,
@@ -1041,10 +1070,29 @@ async fn run_identify_flash(
     let on_frame = vec![color; led_count];
     let off_frame = vec![[0, 0, 0]; led_count];
     let started_at = Instant::now();
-    let mut show_on = true;
+    let mut show_on = false;
+    let mut identify_failed = false;
+    let mut phase_index = 0_u32;
 
     loop {
+        if started_at.elapsed() >= duration {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(IDENTIFY_FLASH_INTERVAL_MS)).await;
+
         let frame = if show_on { &on_frame } else { &off_frame };
+        let phase = if show_on { "on" } else { "off" };
+        phase_index = phase_index.saturating_add(1);
+        debug!(
+            backend_id = %backend_id,
+            device_id = %device_id,
+            phase_index,
+            phase,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            frame_leds = frame.len(),
+            "identify issuing flash phase"
+        );
         let result = {
             let mut manager = manager.lock().await;
             manager
@@ -1059,30 +1107,50 @@ async fn run_identify_flash(
                 error = %error,
                 "identify write failed"
             );
-            return;
-        }
-
-        if started_at.elapsed() >= duration {
+            identify_failed = true;
             break;
         }
 
         show_on = !show_on;
-        tokio::time::sleep(Duration::from_millis(IDENTIFY_FLASH_INTERVAL_MS)).await;
     }
 
-    let clear_result = {
-        let mut manager = manager.lock().await;
-        manager
-            .write_device_colors(&backend_id, device_id, &off_frame)
-            .await
-    };
-    if let Err(error) = clear_result {
-        warn!(
+    if !identify_failed {
+        debug!(
             backend_id = %backend_id,
             device_id = %device_id,
-            error = %error,
-            "identify clear write failed"
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "identify issuing final clear frame"
         );
+        let clear_result = {
+            let mut manager = manager.lock().await;
+            manager
+                .write_device_colors(&backend_id, device_id, &off_frame)
+                .await
+        };
+        if let Err(error) = clear_result {
+            warn!(
+                backend_id = %backend_id,
+                device_id = %device_id,
+                error = %error,
+                "identify clear write failed"
+            );
+        }
+    }
+
+    {
+        let mut manager = manager.lock().await;
+        manager.end_direct_control(&backend_id, device_id);
+    }
+    debug!(
+        backend_id = %backend_id,
+        device_id = %device_id,
+        elapsed_ms = started_at.elapsed().as_millis(),
+        identify_failed,
+        "identify released direct control"
+    );
+
+    if identify_failed {
+        return;
     }
 
     tracing::info!(

@@ -121,6 +121,23 @@ lto = true
 codegen-units = 1
 strip = true
 
+# Keep local development responsive without the massive runtime cliff of
+# completely unoptimized Servo/canvas streaming in debug builds.
+[profile.dev]
+opt-level = 1
+debug = 1
+
+# The daemon render path is hot even in local iteration, so give the core
+# runtime a bit more help than the rest of the workspace.
+[profile.dev.package.hypercolor-core]
+opt-level = 2
+
+[profile.dev.package.hypercolor-daemon]
+opt-level = 2
+
+[profile.dev.package.hypercolor-hal]
+opt-level = 2
+
 # Servo HTML effects spend most CPU time in software canvas rasterization
 # (`vello_cpu` + SIMD helpers). Keep dev edit-compile loops fast while
 # avoiding debug-profile runtime cliffs for live preview.

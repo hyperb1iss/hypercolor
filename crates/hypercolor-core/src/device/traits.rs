@@ -4,7 +4,7 @@
 //! implements [`DeviceBackend`] for communication and [`DevicePlugin`] for
 //! lifecycle registration with the engine.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::types::device::{DeviceId, DeviceInfo};
@@ -111,6 +111,23 @@ pub trait DeviceBackend: Send + Sync {
     ///
     /// Returns an error if the device is disconnected or the write fails.
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()>;
+
+    /// Adjust hardware brightness for a connected device, if supported.
+    ///
+    /// Backends that do not expose device-level brightness should return an
+    /// unsupported error from the default implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device is disconnected, brightness is unsupported,
+    /// or the write fails.
+    async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
+        let _ = (id, brightness);
+        bail!(
+            "backend '{}' does not support device brightness control",
+            self.info().id
+        );
+    }
 }
 
 // ── DevicePlugin ─────────────────────────────────────────────────────────

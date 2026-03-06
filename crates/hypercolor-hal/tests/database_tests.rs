@@ -40,7 +40,7 @@ fn lookup_returns_blade_15_late_2021_advanced_descriptor() {
 
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbHidRaw {
+        TransportType::UsbControl {
             interface: 2,
             report_id: 0x00
         }
@@ -49,6 +49,8 @@ fn lookup_returns_blade_15_late_2021_advanced_descriptor() {
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Razer 0x1F Standard");
     assert_eq!(protocol.total_leds(), 96);
+    assert!(protocol.init_sequence().is_empty());
+    assert!(protocol.shutdown_sequence().is_empty());
 }
 
 #[test]

@@ -33,6 +33,9 @@ pub struct RazerProtocol {
     matrix_size: (u8, u8),
     reported_matrix_size: Option<(u8, u8)>,
     led_id: u8,
+    sends_device_mode_commands: bool,
+    standard_storage: u8,
+    frame_transaction_id: Option<u8>,
 }
 
 impl RazerProtocol {
@@ -52,6 +55,9 @@ impl RazerProtocol {
             matrix_size,
             reported_matrix_size: None,
             led_id,
+            sends_device_mode_commands: true,
+            standard_storage: NOSTORE,
+            frame_transaction_id: None,
         }
     }
 
@@ -59,6 +65,27 @@ impl RazerProtocol {
     #[must_use]
     pub const fn with_reported_matrix_size(mut self, reported_matrix_size: (u8, u8)) -> Self {
         self.reported_matrix_size = Some(reported_matrix_size);
+        self
+    }
+
+    /// Disable `SET_DEVICE_MODE` init/shutdown packets for devices that do not use them.
+    #[must_use]
+    pub const fn without_device_mode_commands(mut self) -> Self {
+        self.sends_device_mode_commands = false;
+        self
+    }
+
+    /// Override the storage byte used by standard LED/effect commands.
+    #[must_use]
+    pub const fn with_standard_storage(mut self, standard_storage: u8) -> Self {
+        self.standard_storage = standard_storage;
+        self
+    }
+
+    /// Override the transaction ID used for frame upload packets only.
+    #[must_use]
+    pub const fn with_frame_transaction_id(mut self, frame_transaction_id: u8) -> Self {
+        self.frame_transaction_id = Some(frame_transaction_id);
         self
     }
 
@@ -171,6 +198,25 @@ impl RazerProtocol {
         expects_response: bool,
         post_delay: Duration,
     ) -> Option<ProtocolCommand> {
+        self.build_packet_with_transaction(
+            self.version.transaction_id(),
+            command_class,
+            command_id,
+            args,
+            expects_response,
+            post_delay,
+        )
+    }
+
+    fn build_packet_with_transaction(
+        &self,
+        transaction_id: u8,
+        command_class: u8,
+        command_id: u8,
+        args: &[u8],
+        expects_response: bool,
+        post_delay: Duration,
+    ) -> Option<ProtocolCommand> {
         if args.len() > ARGS_LEN {
             warn!(
                 args_len = args.len(),
@@ -180,7 +226,7 @@ impl RazerProtocol {
         }
 
         let mut packet = [0_u8; RAZER_REPORT_LEN];
-        packet[1] = self.version.transaction_id();
+        packet[1] = transaction_id;
         packet[DATA_SIZE_OFFSET] = u8::try_from(args.len()).unwrap_or(0);
         packet[COMMAND_CLASS_OFFSET] = command_class;
         packet[COMMAND_ID_OFFSET] = command_id;
@@ -196,7 +242,13 @@ impl RazerProtocol {
 
     fn activation_command(&self) -> Option<ProtocolCommand> {
         if matches!(self.command_set, RazerLightingCommandSet::Standard) {
-            return self.build_packet(0x03, 0x0A, &[0x05, NOSTORE], false, Duration::ZERO);
+            return self.build_packet(
+                0x03,
+                0x0A,
+                &[0x05, self.standard_storage],
+                false,
+                Duration::ZERO,
+            );
         }
 
         self.build_packet(
@@ -213,7 +265,13 @@ impl RazerProtocol {
             RazerLightingCommandSet::Standard => (
                 0x03,
                 0x01,
-                vec![NOSTORE, self.led_id, color[0], color[1], color[2]],
+                vec![
+                    self.standard_storage,
+                    self.led_id,
+                    color[0],
+                    color[1],
+                    color[2],
+                ],
             ),
             RazerLightingCommandSet::Extended => (
                 0x0F,
@@ -239,6 +297,9 @@ impl RazerProtocol {
 
     fn encode_linear(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
         let mut commands = Vec::new();
+        let frame_transaction_id = self
+            .frame_transaction_id
+            .unwrap_or(self.version.transaction_id());
 
         let led_count = min(
             colors.len(),
@@ -261,8 +322,14 @@ impl RazerProtocol {
             args.push(0x00);
         }
 
-        if let Some(packet) = self.build_packet(0x03, 0x0C, &args, false, Duration::from_millis(1))
-        {
+        if let Some(packet) = self.build_packet_with_transaction(
+            frame_transaction_id,
+            0x03,
+            0x0C,
+            &args,
+            false,
+            Duration::from_millis(1),
+        ) {
             commands.push(packet);
         }
 
@@ -275,6 +342,9 @@ impl RazerProtocol {
 
     fn encode_matrix(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
         let mut commands = Vec::new();
+        let frame_transaction_id = self
+            .frame_transaction_id
+            .unwrap_or(self.version.transaction_id());
 
         let rows = usize::from(self.matrix_size.0);
         let cols = usize::from(self.matrix_size.1);
@@ -315,7 +385,8 @@ impl RazerProtocol {
                     args.extend_from_slice(color);
                 }
 
-                if let Some(packet) = self.build_packet(
+                if let Some(packet) = self.build_packet_with_transaction(
+                    frame_transaction_id,
                     command_class,
                     command_id,
                     &args,
@@ -351,12 +422,20 @@ impl Protocol for RazerProtocol {
     }
 
     fn init_sequence(&self) -> Vec<ProtocolCommand> {
+        if !self.sends_device_mode_commands {
+            return Vec::new();
+        }
+
         self.mode_command(0x03, Duration::from_millis(7))
             .into_iter()
             .collect()
     }
 
     fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
+        if !self.sends_device_mode_commands {
+            return Vec::new();
+        }
+
         self.mode_command(0x00, Duration::ZERO)
             .into_iter()
             .collect()
@@ -382,10 +461,15 @@ impl Protocol for RazerProtocol {
             RazerLightingCommandSet::Extended => (0x0F, 0x04),
         };
 
+        let storage = match self.command_set {
+            RazerLightingCommandSet::Standard => self.standard_storage,
+            RazerLightingCommandSet::Extended => NOSTORE,
+        };
+
         self.build_packet(
             command_class,
             command_id,
-            &[NOSTORE, self.led_id, brightness],
+            &[storage, self.led_id, brightness],
             false,
             Duration::ZERO,
         )
