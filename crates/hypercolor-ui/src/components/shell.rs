@@ -32,12 +32,91 @@ fn apply_theme(theme: &str) {
     }
 }
 
+/// Extract dominant hue (0..360) from RGBA pixel data by averaging sampled pixels.
+/// Samples every Nth pixel for performance — runs on a throttled timer, not every frame.
+fn extract_dominant_hue(pixels: &[u8]) -> Option<f64> {
+    if pixels.len() < 4 {
+        return None;
+    }
+
+    let step = (pixels.len() / 4 / 200).max(1); // ~200 samples max
+    let mut hue_sin_sum = 0.0_f64;
+    let mut hue_cos_sum = 0.0_f64;
+    let mut count = 0u32;
+
+    for i in (0..pixels.len() / 4).step_by(step) {
+        let offset = i * 4;
+        let r = f64::from(pixels[offset]) / 255.0;
+        let g = f64::from(pixels[offset + 1]) / 255.0;
+        let b = f64::from(pixels[offset + 2]) / 255.0;
+
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let chroma = max - min;
+
+        // Skip near-gray pixels (low chroma = no meaningful hue)
+        if chroma < 0.1 {
+            continue;
+        }
+
+        let hue = if (max - r).abs() < f64::EPSILON {
+            60.0 * (((g - b) / chroma) % 6.0)
+        } else if (max - g).abs() < f64::EPSILON {
+            60.0 * (((b - r) / chroma) + 2.0)
+        } else {
+            60.0 * (((r - g) / chroma) + 4.0)
+        };
+
+        let hue = if hue < 0.0 { hue + 360.0 } else { hue };
+        let rad = hue.to_radians();
+        hue_sin_sum += rad.sin();
+        hue_cos_sum += rad.cos();
+        count += 1;
+    }
+
+    if count < 5 {
+        return None; // Not enough chromatic pixels
+    }
+
+    let avg_rad = hue_sin_sum.atan2(hue_cos_sum);
+    let avg_hue = avg_rad.to_degrees();
+    Some(if avg_hue < 0.0 { avg_hue + 360.0 } else { avg_hue })
+}
+
 /// Top-level layout shell. Sidebar left, header + content right.
 #[component]
 pub fn Shell(children: Children) -> impl IntoView {
     let (palette_open, set_palette_open) = signal(false);
     let (theme, set_theme) = signal(read_theme());
     let is_dark = Memo::new(move |_| theme.get() == "dark");
+
+    // Ambient hue extraction — sample canvas frame ~2x/sec, update --ambient-hue
+    let shell_ref = NodeRef::<leptos::html::Div>::new();
+    let ws = use_context::<crate::app::WsContext>();
+    let (last_hue_update, set_last_hue_update) = signal(0.0_f64);
+
+    if let Some(ws) = ws {
+        Effect::new(move |_| {
+            let Some(frame) = ws.canvas_frame.get() else {
+                return;
+            };
+
+            // Throttle to ~2 updates/sec
+            let now = js_sys::Date::now();
+            if now - last_hue_update.get_untracked() < 500.0 {
+                return;
+            }
+            set_last_hue_update.set(now);
+
+            if let Some(hue) = extract_dominant_hue(&frame.pixels) {
+                if let Some(el) = shell_ref.get() {
+                    let html_el: &web_sys::HtmlElement = &el;
+                    let style = html_el.style();
+                    let _ = style.set_property("--ambient-hue", &format!("{hue:.0}"));
+                }
+            }
+        });
+    }
 
     // Global keyboard shortcuts
     let navigate = use_navigate();
@@ -70,6 +149,7 @@ pub fn Shell(children: Children) -> impl IntoView {
 
     view! {
         <div
+            node_ref=shell_ref
             class="flex h-screen bg-surface-base text-text-primary overflow-hidden noise-overlay"
             on:keydown=keydown_handler
             tabindex="-1"
