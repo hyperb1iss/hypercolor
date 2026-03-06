@@ -9,11 +9,11 @@ use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::DevicesContext;
-use crate::icons::*;
 use crate::toasts;
 use crate::components::layout_canvas::LayoutCanvas;
 use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
+use crate::icons::*;
 use hypercolor_types::spatial::SpatialLayout;
 
 /// Layout builder — wraps toolbar, palette, canvas viewport, and zone properties.
@@ -42,10 +42,9 @@ pub fn LayoutBuilder() -> impl IntoView {
         }
     });
 
-    // Dummy signal setter that child components use — we derive dirty from comparison now.
-    let set_is_dirty = SignalSetter::map(move |_: bool| {
-        // No-op: dirty state is derived from layout vs saved_layout comparison.
-    });
+    // Child components still expect a writable dirty signal even though the
+    // actual dirty state is derived from layout vs saved_layout comparison.
+    let (_dirty_marker, set_is_dirty) = signal(false);
 
     // Auto-select the active layout (or first available, or create a default) on mount
     Effect::new(move |_| {
@@ -114,8 +113,8 @@ pub fn LayoutBuilder() -> impl IntoView {
 
         // Only push preview if zones actually changed (avoid initial no-op).
         if current_zones != prev_zones.flatten() {
-            if let Some(l) = current {
-                let layout_clone = l.clone();
+            if let Some(layout) = current.as_ref() {
+                let layout_clone = layout.clone();
                 leptos::task::spawn_local(async move {
                     let _ = api::preview_layout(&layout_clone).await;
                 });

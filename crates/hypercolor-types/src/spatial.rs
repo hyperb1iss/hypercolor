@@ -311,7 +311,7 @@ pub struct RingDef {
 /// `size` (width, height), both in normalized `[0.0, 1.0]` canvas coordinates.
 /// LED positions within the zone are computed from the `topology` and stored
 /// in `led_positions` as zone-local normalized coordinates.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeviceZone {
     // ── Identity ──────────────────────────────────────────────────────
     /// Unique identifier within the layout.
@@ -375,7 +375,7 @@ fn default_scale() -> f32 {
 }
 
 /// Visual shape of the zone in the editor.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "shape_type", rename_all = "snake_case")]
 pub enum ZoneShape {
     /// Rectangular bounding box (default for strips, matrices).
@@ -470,7 +470,7 @@ fn default_edge_behavior() -> EdgeBehavior {
 // ── SamplingMode ────────────────────────────────────────────────────────────
 
 /// Sampling algorithm for canvas-to-LED color extraction.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SamplingMode {
     /// Snap to nearest integer pixel. O(1), 1 pixel read.
@@ -499,7 +499,7 @@ pub enum SamplingMode {
 // ── EdgeBehavior ────────────────────────────────────────────────────────────
 
 /// Edge behavior for out-of-bounds LED positions.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EdgeBehavior {
     /// Clamp coordinates to canvas bounds (default).
