@@ -395,19 +395,25 @@ pub fn Sidebar() -> impl IntoView {
                             "Now Playing"
                         </div>
 
-                        // Live canvas thumbnail — the effect IS the album art
-                        <div class="px-3">
-                            <div
-                                class="relative rounded-lg overflow-hidden bg-black/40"
-                                style=thumb_glow
-                            >
-                                <canvas
-                                    node_ref=np_canvas_ref
-                                    class="w-full h-auto block"
-                                    style="image-rendering: pixelated;"
-                                />
-                            </div>
-                        </div>
+                        // Live canvas thumbnail — only on pages without their own preview
+                        {move || {
+                            let path = location.pathname.get();
+                            let has_preview = path == "/" || path.starts_with("/effects");
+                            (!has_preview).then(|| view! {
+                                <div class="px-3 animate-fade-in">
+                                    <div
+                                        class="relative rounded-lg overflow-hidden bg-black/40"
+                                        style=thumb_glow.clone()
+                                    >
+                                        <canvas
+                                            node_ref=np_canvas_ref
+                                            class="w-full h-auto block"
+                                            style="image-rendering: pixelated;"
+                                        />
+                                    </div>
+                                </div>
+                            })
+                        }}
 
                         // Effect name + category
                         <div class="px-4 flex items-center gap-2.5 min-w-0">
