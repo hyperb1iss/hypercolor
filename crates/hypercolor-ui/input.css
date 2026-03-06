@@ -518,11 +518,7 @@ input[type="color"]::-webkit-color-swatch {
     -webkit-backdrop-filter: blur(8px);
 }
 
-/* ── Card hover glow ─────────────────────────────────────────────────────── */
-
-button[style*="--hover-glow"]:hover:not(:disabled) {
-    box-shadow: var(--hover-glow);
-}
+/* ── Card hover brightness ───────────────────────────────────────────────── */
 
 button:hover:not(:disabled) > .relative {
     filter: brightness(1.02);

@@ -66,12 +66,6 @@ pub fn EffectCard(
         accent_rgb
     );
 
-    // Hover glow shadow
-    let hover_glow = format!(
-        "0 8px 32px rgba({}, 0.08), 0 0 1px rgba({}, 0.2)",
-        accent_rgb, accent_rgb
-    );
-
     let click_id = effect.id.clone();
     let fav_id = effect.id.clone();
     let stagger = (index.min(12) + 1).to_string();
@@ -91,7 +85,6 @@ pub fn EffectCard(
                 };
                 format!("{base} {state} stagger-{}", stagger)
             }
-            style:--hover-glow=hover_glow.clone()
             style:--glow-rgb=accent_rgb.clone()
         >
             // Category accent gradient overlay

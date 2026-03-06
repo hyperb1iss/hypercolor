@@ -75,11 +75,6 @@ pub fn DeviceCard(
         "background: linear-gradient(180deg, rgba({rgb}, 0.07) 0%, transparent 50%)"
     );
 
-    // Hover glow shadow
-    let hover_glow = format!(
-        "0 8px 32px rgba({rgb}, 0.08), 0 0 1px rgba({rgb}, 0.2)"
-    );
-
     let badge_style = format!(
         "background: rgba({rgb}, 0.1); color: rgb({rgb}); border-color: rgba({rgb}, 0.2)"
     );
@@ -104,7 +99,6 @@ pub fn DeviceCard(
                 };
                 format!("{base} {state} stagger-{}", stagger)
             }
-            style:--hover-glow=hover_glow.clone()
             style:--glow-rgb=rgb.clone()
             on:click=move |_| on_select.run(device_id.clone())
         >
