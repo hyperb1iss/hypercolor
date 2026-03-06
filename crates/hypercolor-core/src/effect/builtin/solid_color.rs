@@ -47,7 +47,7 @@ impl EffectRenderer for SolidColorRenderer {
             self.color[2] * self.brightness,
             self.color[3],
         )
-        .to_rgba();
+        .to_srgba();
 
         canvas.fill(pixel);
         Ok(canvas)

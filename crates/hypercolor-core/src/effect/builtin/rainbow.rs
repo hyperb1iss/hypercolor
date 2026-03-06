@@ -54,7 +54,7 @@ impl EffectRenderer for RainbowRenderer {
                 let hue = ((pos_hue + time_offset) % 360.0 + 360.0) % 360.0;
 
                 let lch = Oklch::new(self.brightness, 0.15, hue, 1.0);
-                let rgba = RgbaF32::from_oklch(lch).to_rgba();
+                let rgba = RgbaF32::from_oklch(lch).to_srgba();
                 canvas.set_pixel(x, y, rgba);
             }
         }

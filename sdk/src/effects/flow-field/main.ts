@@ -178,21 +178,21 @@ export default canvas.stateful('Flow Field', {
 
         if (colorMode === 'Random') {
             const hue = (base.h + firefly.hueOffset * 240 + 360) % 360
-            const sat = clamp(72 + firefly.satOffset * 20, 42, 100)
-            const light = clamp(38 + brightness * 26 + firefly.lightOffset * 8, 28, 86)
+            const sat = clamp(84 + firefly.satOffset * 14, 58, 100)
+            const light = clamp(30 + brightness * 20 + firefly.lightOffset * 6, 22, 72)
             return hslToRgb(hue, sat, light)
         }
 
         if (colorMode === 'Rainbow') {
             const hue = (time * 22 + index * (360 / Math.max(count, 1)) + firefly.hueOffset * 24 + 360) % 360
-            const sat = clamp(84 + firefly.satOffset * 10, 56, 100)
-            const light = clamp(40 + brightness * 24 + firefly.lightOffset * 5, 32, 88)
+            const sat = clamp(92 + firefly.satOffset * 8, 70, 100)
+            const light = clamp(32 + brightness * 18 + firefly.lightOffset * 4, 24, 74)
             return hslToRgb(hue, sat, light)
         }
 
         const hue = (base.h + firefly.hueOffset * 8 + 360) % 360
-        const sat = clamp(base.s * 100 + firefly.satOffset * 4, 36, 100)
-        const light = clamp(base.l * 100 + brightness * 22 + firefly.lightOffset * 4, 24, 84)
+        const sat = clamp(base.s * 100 + 12 + firefly.satOffset * 4, 52, 100)
+        const light = clamp(base.l * 92 + brightness * 18 + firefly.lightOffset * 4, 22, 76)
         return hslToRgb(hue, sat, light)
     }
 
@@ -266,21 +266,21 @@ export default canvas.stateful('Flow Field', {
         brightness: number,
         glowMix: number,
     ): void {
-        const haloColor = mixRgb(color, { r: 255, g: 232, b: 140 }, 0.18)
-        const coreColor = mixRgb(color, { r: 255, g: 250, b: 210 }, 0.30)
-        const haloRadius = radius * (2.3 + glowMix * 1.8)
+        const haloColor = mixRgb(color, { r: 255, g: 190, b: 88 }, 0.10)
+        const coreColor = mixRgb(color, { r: 255, g: 214, b: 118 }, 0.16)
+        const haloRadius = radius * (2.5 + glowMix * 2.1)
 
-        ctx.fillStyle = rgba(haloColor, (0.06 + glowMix * 0.18) * brightness)
+        ctx.fillStyle = rgba(haloColor, (0.08 + glowMix * 0.22) * brightness)
         ctx.beginPath()
         ctx.arc(firefly.x, firefly.y, haloRadius, 0, Math.PI * 2)
         ctx.fill()
 
-        ctx.fillStyle = rgba(color, 0.42 + brightness * 0.42)
+        ctx.fillStyle = rgba(color, 0.52 + brightness * 0.40)
         ctx.beginPath()
         ctx.arc(firefly.x, firefly.y, radius * 1.3, 0, Math.PI * 2)
         ctx.fill()
 
-        ctx.fillStyle = rgba(coreColor, 0.58 + brightness * 0.28)
+        ctx.fillStyle = rgba(coreColor, 0.44 + brightness * 0.20)
         ctx.beginPath()
         ctx.arc(firefly.x, firefly.y, Math.max(0.65, radius * 0.55), 0, Math.PI * 2)
         ctx.fill()
@@ -313,7 +313,7 @@ export default canvas.stateful('Flow Field', {
         ctx.fillRect(0, 0, w, h)
 
         ctx.save()
-        ctx.globalCompositeOperation = 'lighter'
+        ctx.globalCompositeOperation = 'screen'
         ctx.lineCap = 'round'
 
         const particleCount = fireflies.length

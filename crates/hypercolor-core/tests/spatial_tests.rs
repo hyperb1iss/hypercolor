@@ -494,6 +494,60 @@ fn area_average_samples_region() {
     );
 }
 
+#[test]
+fn low_density_matrix_sampling_boosts_chroma() {
+    let canvas = solid_canvas(32, 20, Rgba::new(196, 124, 170, 255));
+    let zone = full_canvas_zone(
+        "keyboard",
+        LedTopology::Matrix {
+            width: 16,
+            height: 6,
+            serpentine: false,
+            start_corner: Corner::TopLeft,
+        },
+    );
+
+    let layout = test_layout(vec![zone], 32, 20);
+    let engine = SpatialEngine::new(layout);
+    let result = engine.sample(&canvas);
+    let color = &result[0].colors[0];
+
+    let original_spread = 196_u8.saturating_sub(124);
+    let boosted_spread = color.iter().max().copied().unwrap_or_default()
+        - color.iter().min().copied().unwrap_or_default();
+
+    assert!(
+        boosted_spread > original_spread,
+        "expected matrix color polish to increase channel spread, got original={original_spread} boosted={boosted_spread} color={color:?}"
+    );
+}
+
+#[test]
+fn matrix_sampling_leaves_neutral_grays_alone() {
+    let canvas = solid_canvas(32, 20, Rgba::new(128, 128, 128, 255));
+    let zone = full_canvas_zone(
+        "keyboard-gray",
+        LedTopology::Matrix {
+            width: 16,
+            height: 6,
+            serpentine: false,
+            start_corner: Corner::TopLeft,
+        },
+    );
+
+    let layout = test_layout(vec![zone], 32, 20);
+    let engine = SpatialEngine::new(layout);
+    let result = engine.sample(&canvas);
+    let color = &result[0].colors[0];
+
+    assert!(
+        (i16::from(color[0]) - 128).unsigned_abs() <= 1
+            && (i16::from(color[1]) - 128).unsigned_abs() <= 1
+            && (i16::from(color[2]) - 128).unsigned_abs() <= 1,
+        "neutral gray should remain neutral, got {color:?}"
+    );
+}
+
 // ── Multi-Zone Tests ────────────────────────────────────────────────────────
 
 #[test]

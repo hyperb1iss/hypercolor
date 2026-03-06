@@ -110,7 +110,7 @@ impl EffectRenderer for GradientRenderer {
                 let t = ((raw_t + offset) % 1.0).abs();
 
                 let blended = Oklab::lerp(lab_start, lab_end, t);
-                let rgba = RgbaF32::from_oklab(blended).to_rgba();
+                let rgba = RgbaF32::from_oklab(blended).to_srgba();
                 canvas.set_pixel(x, y, rgba);
             }
         }

@@ -63,7 +63,7 @@ impl EffectRenderer for BreathingRenderer {
             self.color[2] * brightness,
             self.color[3],
         )
-        .to_rgba();
+        .to_srgba();
 
         canvas.fill(pixel);
         Ok(canvas)

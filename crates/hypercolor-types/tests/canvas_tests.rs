@@ -168,6 +168,16 @@ fn from_srgb_u8_and_to_srgb_u8_roundtrip() {
     assert_eq!(bytes[3], 255);
 }
 
+#[test]
+fn from_srgb_u8_and_to_srgba_roundtrip() {
+    let color = RgbaF32::from_srgb_u8(128, 64, 200, 255);
+    let rgba = color.to_srgba();
+    assert!((i16::from(rgba.r) - 128).unsigned_abs() <= 1);
+    assert!((i16::from(rgba.g) - 64).unsigned_abs() <= 1);
+    assert!((i16::from(rgba.b) - 200).unsigned_abs() <= 1);
+    assert_eq!(rgba.a, 255);
+}
+
 // ── Canvas Construction ────────────────────────────────────────────────────
 
 #[test]

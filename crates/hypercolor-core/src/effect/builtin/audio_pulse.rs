@@ -80,7 +80,7 @@ impl EffectRenderer for AudioPulseRenderer {
         let rms_color = RgbaF32::lerp(&base, &peak, rms_t);
         let final_color = RgbaF32::lerp(&rms_color, &white, self.beat_flash * 0.6);
 
-        canvas.fill(final_color.to_rgba());
+        canvas.fill(final_color.to_srgba());
         Ok(canvas)
     }
 

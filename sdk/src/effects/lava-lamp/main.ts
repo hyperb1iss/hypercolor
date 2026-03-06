@@ -92,7 +92,7 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
     @NumberControl({ label: 'Color Speed', min: 1, max: 100, default: 22, tooltip: 'Hue cycling speed' })
     cycleSpeed!: number
 
-    @NumberControl({ label: 'Number of Blobs', min: 1, max: 20, default: 7, tooltip: 'How many metaballs are active' })
+    @NumberControl({ label: 'Number of Blobs', min: 1, max: 18, default: 6, tooltip: 'How many metaballs are active' })
     bCount!: number
 
     private controls: LavaLampControls = {
@@ -105,7 +105,7 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
         rainbow: false,
         speed: 22,
         cycleSpeed: 22,
-        bCount: 7,
+        bCount: 6,
     }
 
     private blobs: Blob[] = []
@@ -117,9 +117,9 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
     private cols = 0
     private rows = 0
 
-    private readonly step = 2
-    private readonly threshold = 1.0
-    private readonly contourLevels = [1.08, 1.46]
+    private readonly step = 1
+    private readonly threshold = 0.94
+    private readonly contourLevels = [1.00, 1.34, 1.78]
 
     constructor() {
         super({ id: 'lava-lamp', name: 'Lava Lamp', backgroundColor: '#0b0312' })
@@ -135,7 +135,7 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
         this.rainbow = getControlValue('rainbow', false)
         this.speed = getControlValue('speed', 22)
         this.cycleSpeed = getControlValue('cycleSpeed', 22)
-        this.bCount = getControlValue('bCount', 7)
+        this.bCount = getControlValue('bCount', 6)
     }
 
     protected getControlValues(): LavaLampControls {
@@ -157,7 +157,7 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
                 this.controls.cycleSpeed,
             ),
             bCount: Math.round(
-                this.clampNumber(getControlValue('bCount', this.controls.bCount), 1, 20, this.controls.bCount),
+                this.clampNumber(getControlValue('bCount', this.controls.bCount), 1, 18, this.controls.bCount),
             ),
         }
     }
@@ -251,7 +251,7 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
             const s1 = this.hash(i * 13.37 + 1.17)
             const s2 = this.hash(i * 19.11 + 4.28)
             const s3 = this.hash(i * 29.87 + 8.72)
-            const radius = minDim * (0.058 + s1 * 0.072)
+            const radius = minDim * (0.072 + s1 * 0.088)
 
             this.blobs.push({
                 x: radius + s2 * Math.max(8, w - radius * 2),
@@ -304,7 +304,7 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
 
     private computeField(width: number, height: number): void {
         const stride = this.cols
-        const bubbleFalloff = 36
+        const bubbleFalloff = 28
 
         for (let gy = 0; gy < this.rows; gy++) {
             const y = Math.min(height, gy * this.step)
@@ -338,24 +338,25 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
                 const v3 = this.field[idx + stride]
                 const fieldCenter = (v0 + v1 + v2 + v3) * 0.25
 
-                if (fieldCenter < 0.78) continue
+                if (fieldCenter < 0.70) continue
 
                 const verticalMix = gy / Math.max(1, this.rows - 1)
                 const flowMix = 0.5 + 0.5 * Math.sin(time * 1.45 + gx * 0.24 - gy * 0.18)
                 const mixRatio = this.clamp(verticalMix * 0.6 + flowMix * 0.4, 0, 1)
-                const hotCore = this.clamp((fieldCenter - 1.1) / 1.4, 0, 1)
+                const hotCore = this.clamp((fieldCenter - 0.96) / 1.32, 0, 1)
 
                 const base = this.mixRgb(colorA, colorB, mixRatio)
-                const baseTone = this.mixRgb(base, colorC, hotCore * 0.55)
-                const brightnessBoost = this.clamp((fieldCenter - this.threshold) * 26, 0, 34)
+                const baseTone = this.mixRgb(base, colorC, hotCore * 0.68)
+                const brightnessBoost = this.clamp((fieldCenter - this.threshold) * 32, 0, 42)
 
                 let band = 0
-                if (fieldCenter > 2.45) band = 3
-                else if (fieldCenter > 1.72) band = 2
-                else if (fieldCenter > 1.18) band = 1
+                if (fieldCenter > 2.18) band = 3
+                else if (fieldCenter > 1.52) band = 2
+                else if (fieldCenter > 1.02) band = 1
 
-                const tone = this.boostRgb(baseTone, brightnessBoost + band * 12)
-                const alpha = band === 3 ? 0.88 : band === 2 ? 0.74 : band === 1 ? 0.56 : 0.34
+                const brightTone = this.boostRgb(baseTone, brightnessBoost + band * 10)
+                const tone = this.enrichRgb(brightTone, 0.16 + hotCore * 0.14 + band * 0.04, -0.04 + hotCore * 0.02)
+                const alpha = band === 3 ? 0.94 : band === 2 ? 0.82 : band === 1 ? 0.64 : 0.42
 
                 ctx.fillStyle = `rgba(${tone.r},${tone.g},${tone.b},${alpha.toFixed(3)})`
                 ctx.fillRect(gx * this.step, gy * this.step, this.step, this.step)
@@ -368,12 +369,12 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
 
         for (let li = 0; li < this.contourLevels.length; li++) {
             const level = this.contourLevels[li]
-            const mid = this.mixRgb(colorA, colorB, 0.18 + li * 0.24)
-            const tone = this.mixRgb(mid, colorC, 0.24 + li * 0.18)
-            const edge = this.boostRgb(tone, 72 + li * 16)
+            const mid = this.mixRgb(colorA, colorB, 0.18 + li * 0.20)
+            const tone = this.mixRgb(mid, colorC, 0.28 + li * 0.16)
+            const edge = this.enrichRgb(this.boostRgb(tone, 60 + li * 14), 0.12 + li * 0.05, -0.02)
 
-            ctx.strokeStyle = `rgba(${edge.r},${edge.g},${edge.b},${(0.14 + li * 0.08).toFixed(3)})`
-            ctx.lineWidth = 0.55 + li * 0.16
+            ctx.strokeStyle = `rgba(${edge.r},${edge.g},${edge.b},${(0.12 + li * 0.07).toFixed(3)})`
+            ctx.lineWidth = 0.46 + li * 0.14
             ctx.beginPath()
 
             for (let gy = 0; gy < this.rows - 1; gy++) {
@@ -463,14 +464,14 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
         const colorC = this.hexToRgb(palette.color3)
 
         const wash = ctx.createRadialGradient(width * 0.34, height * 0.24, 0, width * 0.34, height * 0.24, width * 0.72)
-        wash.addColorStop(0, `rgba(${colorA.r},${colorA.g},${colorA.b},0.10)`)
-        wash.addColorStop(0.52, `rgba(${colorB.r},${colorB.g},${colorB.b},0.04)`)
+        wash.addColorStop(0, `rgba(${colorA.r},${colorA.g},${colorA.b},0.16)`)
+        wash.addColorStop(0.52, `rgba(${colorB.r},${colorB.g},${colorB.b},0.08)`)
         wash.addColorStop(1, 'rgba(0,0,0,0)')
         ctx.fillStyle = wash
         ctx.fillRect(0, 0, width, height)
 
         const haze = ctx.createLinearGradient(0, height, width, 0)
-        haze.addColorStop(0, `rgba(${colorC.r},${colorC.g},${colorC.b},0.05)`)
+        haze.addColorStop(0, `rgba(${colorC.r},${colorC.g},${colorC.b},0.09)`)
         haze.addColorStop(1, 'rgba(0,0,0,0)')
         ctx.fillStyle = haze
         ctx.fillRect(0, 0, width, height)
@@ -553,6 +554,15 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
         }
     }
 
+    private enrichRgb(color: Rgb, saturationBoost: number, lightnessOffset = 0): Rgb {
+        const { h, s, l } = this.rgbToHsl(color)
+        return this.hslToRgb(
+            h,
+            this.clamp(s + saturationBoost, 0, 1),
+            this.clamp(l + lightnessOffset, 0, 1),
+        )
+    }
+
     private shiftHexHue(hex: string, deltaDegrees: number): string {
         const { h, s, l } = this.rgbToHsl(this.hexToRgb(hex))
         return this.hslToHex((h + deltaDegrees + 360) % 360, s, l)
@@ -602,6 +612,30 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
         const toHex = (value: number) => Math.round((value + m) * 255).toString(16).padStart(2, '0')
 
         return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+    }
+
+    private hslToRgb(h: number, s: number, l: number): Rgb {
+        const c = (1 - Math.abs(2 * l - 1)) * s
+        const hp = h / 60
+        const x = c * (1 - Math.abs((hp % 2) - 1))
+
+        let r = 0
+        let g = 0
+        let b = 0
+
+        if (hp >= 0 && hp < 1) [r, g, b] = [c, x, 0]
+        else if (hp < 2) [r, g, b] = [x, c, 0]
+        else if (hp < 3) [r, g, b] = [0, c, x]
+        else if (hp < 4) [r, g, b] = [0, x, c]
+        else if (hp < 5) [r, g, b] = [x, 0, c]
+        else [r, g, b] = [c, 0, x]
+
+        const m = l - c / 2
+        return {
+            r: Math.round((r + m) * 255),
+            g: Math.round((g + m) * 255),
+            b: Math.round((b + m) * 255),
+        }
     }
 
     private hash(n: number): number {

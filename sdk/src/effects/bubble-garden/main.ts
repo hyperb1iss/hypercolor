@@ -97,17 +97,55 @@ function hslToRgb(h: number, sPercent: number, lPercent: number): RGB {
     }
 }
 
+function rgbToHsl(color: RGB): { h: number; s: number; l: number } {
+    const r = color.r / 255
+    const g = color.g / 255
+    const b = color.b / 255
+    const max = Math.max(r, g, b)
+    const min = Math.min(r, g, b)
+    const delta = max - min
+    const l = (max + min) / 2
+
+    if (delta === 0) return { h: 0, s: 0, l }
+
+    const s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min)
+    let h = 0
+    if (max === r) h = (g - b) / delta + (g < b ? 6 : 0)
+    else if (max === g) h = (b - r) / delta + 2
+    else h = (r - g) / delta + 4
+
+    return { h: h * 60, s, l }
+}
+
+function enrichRgb(color: RGB, saturationBoost: number, lightnessOffset = 0): RGB {
+    const { h, s, l } = rgbToHsl(color)
+    return hslToRgb(
+        h,
+        clamp((s + saturationBoost) * 100, 0, 100),
+        clamp((l + lightnessOffset) * 100, 0, 100),
+    )
+}
+
+function polishBubbleColors(colors: { aura: RGB; body: RGB; rim: RGB; gloss: RGB }) {
+    return {
+        aura: enrichRgb(colors.aura, 0.16, -0.02),
+        body: enrichRgb(colors.body, 0.12, -0.06),
+        rim: enrichRgb(colors.rim, 0.18, -0.01),
+        gloss: enrichRgb(colors.gloss, 0.08, 0.01),
+    }
+}
+
 function createBubbles(count: number, width: number, height: number): Bubble[] {
     const bubbles: Bubble[] = []
     for (let i = 0; i < count; i++) {
-        const radius = rand(10, 20)
+        const radius = rand(14, 28)
         bubbles.push({
             x: rand(radius, Math.max(radius + 1, width - radius)),
             y: rand(radius, Math.max(radius + 1, height - radius)),
             vx: randomVelocity(),
             vy: randomVelocity(),
             baseSize: radius,
-            alpha: 0.26 + (i / Math.max(1, count - 1)) * 0.28,
+            alpha: 0.34 + (i / Math.max(1, count - 1)) * 0.34,
             mix: Math.random(),
             phase: Math.random() * Math.PI * 2,
             driftBias: 0.84 + Math.random() * 0.44,
@@ -184,7 +222,7 @@ function resolveBubbleColors(
         const body = paletteGradientColor(bubble.mix + bubble.paletteBlend * 0.28, palette)
         const rim = paletteGradientColor(bubble.mix + 0.26 + bubble.paletteBlend * 0.14, palette)
         const gloss = paletteGradientColor(bubble.mix + 0.54, palette)
-        return { aura: mixRgb(body, rim, 0.12), body, rim, gloss }
+        return polishBubbleColors({ aura: mixRgb(body, rim, 0.22), body, rim, gloss })
     }
 
     if (mode === 'Color Cycle') {
@@ -194,14 +232,14 @@ function resolveBubbleColors(
         const body = mixRgb(base.body, next.body, blend * 0.52)
         const rim = mixRgb(base.rim, next.rim, blend * 0.4)
         const gloss = mixRgb(base.gloss, next.gloss, blend * 0.34)
-        return { aura: mixRgb(body, rim, 0.12), body, rim, gloss }
+        return polishBubbleColors({ aura: mixRgb(body, rim, 0.22), body, rim, gloss })
     }
 
     if (mode === 'Single Color') {
         const base = theme === 'Custom' ? hexToRgb(singleColor) : hexToRgb(palette.primary)
         const rim = hexToRgb(palette.secondary)
         const gloss = hexToRgb(palette.accent)
-        return { aura: mixRgb(base, rim, 0.12), body: base, rim, gloss }
+        return polishBubbleColors({ aura: mixRgb(base, rim, 0.24), body: base, rim, gloss })
     }
 
     let { body, rim, gloss } = pickPaletteSet((bubble.paletteBand + 0.02) / 3, palette)
@@ -222,7 +260,7 @@ function resolveBubbleColors(
         }
         aura = mixRgb(hexToRgb(palette.primary), hexToRgb(palette.accent), 0.12)
     }
-    return { aura, body, rim, gloss }
+    return polishBubbleColors({ aura, body, rim, gloss })
 }
 
 function smoothstep(edge0: number, edge1: number, value: number): number {
@@ -253,14 +291,14 @@ function drawBackdrop(
         height * 0.34,
         Math.max(width, height) * 0.86,
     )
-    wash.addColorStop(0, rgba(primary, 0.08))
-    wash.addColorStop(0.48, rgba(secondary, 0.045))
+    wash.addColorStop(0, rgba(primary, 0.14))
+    wash.addColorStop(0.48, rgba(secondary, 0.08))
     wash.addColorStop(1, rgba(primary, 0.0))
     ctx.fillStyle = wash
     ctx.fillRect(0, 0, width, height)
 
     const veil = ctx.createLinearGradient(0, 0, width, height)
-    veil.addColorStop(0, rgba(accent, 0.03))
+    veil.addColorStop(0, rgba(accent, 0.06))
     veil.addColorStop(1, rgba(secondary, 0.0))
     ctx.fillStyle = veil
     ctx.fillRect(0, 0, width, height)
@@ -275,10 +313,10 @@ export default canvas.stateful('Bubble Garden', {
     color3:    '#76fff1',
     speed:     [0, 100, 10],
     size:      [1, 10, 5],
-    count:     [10, 120, 50],
+    count:     [10, 120, 36],
 }, () => {
-    let bubbles = createBubbles(50, 320, 200)
-    let prevCount = 50
+    let bubbles = createBubbles(36, 320, 200)
+    let prevCount = 36
     let prevSpeed = 10
 
     return (ctx, time, c) => {
@@ -338,13 +376,13 @@ export default canvas.stateful('Bubble Garden', {
             }
 
             const colors = resolveBubbleColors(bubble, colorMode, theme, palette, color)
-            const bodyAlpha = bubble.alpha * 0.84
-            const auraAlpha = bubble.alpha * 0.26
-            const innerAlpha = bubble.alpha * 0.30
+            const bodyAlpha = bubble.alpha * 0.96
+            const auraAlpha = bubble.alpha * 0.42
+            const innerAlpha = bubble.alpha * 0.42
 
             ctx.fillStyle = rgba(colors.aura, auraAlpha)
             ctx.beginPath()
-            ctx.arc(bubble.x, bubble.y, radius * 1.35, 0, Math.PI * 2)
+            ctx.arc(bubble.x, bubble.y, radius * 1.55, 0, Math.PI * 2)
             ctx.fill()
 
             ctx.fillStyle = rgba(colors.body, bodyAlpha)
@@ -352,20 +390,20 @@ export default canvas.stateful('Bubble Garden', {
             ctx.arc(bubble.x, bubble.y, radius, 0, Math.PI * 2)
             ctx.fill()
 
-            ctx.fillStyle = rgba(mixRgb(colors.body, colors.gloss, 0.42), innerAlpha)
+            ctx.fillStyle = rgba(mixRgb(colors.body, colors.gloss, 0.34), innerAlpha)
             ctx.beginPath()
-            ctx.arc(bubble.x - radius * 0.18, bubble.y - radius * 0.22, radius * 0.58, 0, Math.PI * 2)
+            ctx.arc(bubble.x - radius * 0.18, bubble.y - radius * 0.22, radius * 0.62, 0, Math.PI * 2)
             ctx.fill()
 
-            ctx.strokeStyle = rgba(colors.rim, 0.38 + bubble.alpha * 0.18)
-            ctx.lineWidth = Math.max(1, radius * 0.10)
+            ctx.strokeStyle = rgba(colors.rim, 0.48 + bubble.alpha * 0.22)
+            ctx.lineWidth = Math.max(1, radius * 0.12)
             ctx.beginPath()
             ctx.arc(bubble.x, bubble.y, Math.max(1, radius - 0.5), 0, Math.PI * 2)
             ctx.stroke()
 
-            ctx.fillStyle = rgba(colors.gloss, 0.18 + bubble.alpha * 0.16)
+            ctx.fillStyle = rgba(colors.gloss, 0.26 + bubble.alpha * 0.20)
             ctx.beginPath()
-            ctx.arc(bubble.x - radius * 0.30, bubble.y - radius * 0.32, Math.max(1, radius * 0.14), 0, Math.PI * 2)
+            ctx.arc(bubble.x - radius * 0.30, bubble.y - radius * 0.32, Math.max(1, radius * 0.18), 0, Math.PI * 2)
             ctx.fill()
         }
     }

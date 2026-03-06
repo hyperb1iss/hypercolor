@@ -10,6 +10,8 @@ uniform float iSpeed;
 uniform float iCloudDensity;
 uniform float iWarpStrength;
 uniform float iStarField;
+uniform float iSaturation;
+uniform float iContrast;
 uniform int iPalette;
 
 float hash21(vec2 p) {
@@ -61,11 +63,11 @@ vec3 triGradient(float t, vec3 a, vec3 b, vec3 c) {
 }
 
 vec3 paletteColor(float t, int id) {
-    if (id == 0) return triGradient(t, vec3(0.12, 0.05, 0.20), vec3(0.84, 0.16, 0.66), vec3(0.18, 0.82, 0.86));
-    if (id == 1) return triGradient(t, vec3(0.02, 0.08, 0.20), vec3(0.06, 0.74, 0.96), vec3(0.98, 0.24, 0.78));
-    if (id == 2) return triGradient(t, vec3(0.02, 0.10, 0.06), vec3(0.08, 0.84, 0.44), vec3(0.44, 0.30, 0.92));
-    if (id == 3) return triGradient(t, vec3(0.14, 0.03, 0.02), vec3(0.88, 0.16, 0.06), vec3(0.98, 0.50, 0.14));
-    return triGradient(t, vec3(0.08, 0.03, 0.16), vec3(0.88, 0.18, 0.70), vec3(0.36, 0.74, 0.92));
+    if (id == 0) return triGradient(t, vec3(0.16, 0.04, 0.24), vec3(0.96, 0.12, 0.74), vec3(0.08, 0.94, 0.92));
+    if (id == 1) return triGradient(t, vec3(0.02, 0.10, 0.24), vec3(0.04, 0.84, 1.00), vec3(1.00, 0.14, 0.82));
+    if (id == 2) return triGradient(t, vec3(0.02, 0.12, 0.08), vec3(0.04, 0.92, 0.40), vec3(0.54, 0.26, 0.98));
+    if (id == 3) return triGradient(t, vec3(0.18, 0.03, 0.01), vec3(0.98, 0.18, 0.04), vec3(1.00, 0.58, 0.08));
+    return triGradient(t, vec3(0.10, 0.03, 0.18), vec3(0.96, 0.14, 0.76), vec3(0.30, 0.82, 0.98));
 }
 
 vec3 richPaletteColor(float t, int id, float phase) {
@@ -120,10 +122,10 @@ vec3 nebulaLayer(vec2 p, float time, float density, float warp, int paletteId, f
     vec3 rim = richPaletteColor(0.70 + ribbon * 0.16 - body * 0.08, paletteId, palettePhase + 0.41);
     vec3 glow = richPaletteColor(0.88 - body * 0.14 + plume * 0.22 + warpVec.y * 0.08, paletteId, palettePhase + 0.63);
 
-    vec3 color = base * mass * (0.26 + density * 0.58);
-    color += accent * haze * 0.30;
-    color += mix(accent, rim, 0.45) * streak * (0.16 + warp * 0.26);
-    color += glow * (0.08 + streak * 0.18) * (0.56 + warp * 0.38);
+    vec3 color = base * mass * (0.34 + density * 0.72);
+    color += accent * haze * 0.42;
+    color += mix(accent, rim, 0.45) * streak * (0.22 + warp * 0.34);
+    color += glow * (0.14 + streak * 0.24) * (0.72 + warp * 0.46);
     return color;
 }
 
@@ -138,36 +140,41 @@ void main() {
     float starsAmount = clamp(iStarField * 0.01, 0.0, 1.0);
     float time = iTime * (0.24 + speed * 0.34);
 
-    vec3 bgA = richPaletteColor(0.06 + uv.x * 0.04 + time * 0.02, iPalette, time * 0.20) * 0.05;
-    vec3 bgB = richPaletteColor(0.34 + uv.y * 0.08 - time * 0.015, iPalette, time * 0.16 + 0.4) * 0.11;
-    vec3 bgC = richPaletteColor(0.72 + uv.x * 0.05 - uv.y * 0.04, iPalette, -time * 0.12 + 0.8) * 0.06;
+    vec3 bgA = richPaletteColor(0.06 + uv.x * 0.04 + time * 0.02, iPalette, time * 0.20) * 0.08;
+    vec3 bgB = richPaletteColor(0.34 + uv.y * 0.08 - time * 0.015, iPalette, time * 0.16 + 0.4) * 0.16;
+    vec3 bgC = richPaletteColor(0.72 + uv.x * 0.05 - uv.y * 0.04, iPalette, -time * 0.12 + 0.8) * 0.10;
     vec3 color = mix(bgA, bgB, smoothstep(-0.72, 0.92, uv.y));
-    color += bgC * (0.24 + 0.20 * smoothstep(-0.35, 0.85, uv.x - uv.y * 0.2));
+    color += bgC * (0.30 + 0.24 * smoothstep(-0.35, 0.85, uv.x - uv.y * 0.2));
 
     vec3 back = nebulaLayer(p * 0.78 + vec2(1.8, -1.2), time * 0.58, density * 0.90, warp * 0.74, iPalette, 0.28);
     vec3 mid = nebulaLayer(rot(0.18) * p * 0.96 + vec2(-0.7, 1.1), time * 0.82, density * 0.96, warp * 0.88, iPalette, 0.55);
     vec3 front = nebulaLayer(p, time, density, warp, iPalette, 0.86);
 
-    color += back * 0.52;
-    color += mid * 0.64;
-    color += front;
+    color += back * 0.64;
+    color += mid * 0.80;
+    color += front * 1.08;
 
     float ribbon = 1.0 - abs(vnoise((p + vec2(time * 0.22, -time * 0.17)) * 6.2) * 2.0 - 1.0);
     ribbon = pow(clamp(ribbon, 0.0, 1.0), 5.0);
-    color += richPaletteColor(0.66 + ribbon * 0.16, iPalette, time * 0.24 + ribbon * 1.2) * ribbon * (0.05 + warp * 0.12);
+    color += richPaletteColor(0.66 + ribbon * 0.16, iPalette, time * 0.24 + ribbon * 1.2) * ribbon * (0.08 + warp * 0.18);
 
     float stars = 0.0;
     stars += starLayer(uv, time, 120.0, 0.010, starsAmount) * 0.55;
     stars += starLayer(uv, time, 190.0, 0.018, starsAmount) * 0.35;
     stars += starLayer(uv, time, 260.0, 0.028, starsAmount) * 0.18;
-    vec3 starTint = mix(vec3(0.42, 0.64, 0.92), richPaletteColor(0.82 + uv.x * 0.08, iPalette, time * 0.18 + 1.1), 0.35);
-    color += starTint * stars * (0.10 + starsAmount * 0.18);
+    vec3 starTint = mix(vec3(0.48, 0.72, 1.00), richPaletteColor(0.82 + uv.x * 0.08, iPalette, time * 0.18 + 1.1), 0.46);
+    color += starTint * stars * (0.14 + starsAmount * 0.24);
 
     float vignette = smoothstep(1.60, 0.18, length(p));
-    color *= 0.34 + 0.82 * vignette;
+    color *= 0.40 + 0.92 * vignette;
 
     color = max(color, vec3(0.0));
-    color = 1.0 - exp(-color * (1.12 + warp * 0.38));
-    color = pow(clamp(color, 0.0, 1.0), vec3(0.95));
+    color = 1.0 - exp(-color * (1.26 + warp * 0.44));
+    float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    float saturation = clamp(iSaturation * 0.01, 0.0, 1.9);
+    float contrast = clamp(iContrast * 0.01, 0.5, 1.8);
+    color = mix(vec3(luminance), color, saturation);
+    color = (color - 0.5) * contrast + 0.5;
+    color = pow(clamp(color, 0.0, 1.0), vec3(0.94));
     fragColor = vec4(color, 1.0);
 }

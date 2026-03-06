@@ -90,7 +90,7 @@ impl EffectRenderer for ColorWaveRenderer {
                     self.color[2] * intensity,
                     self.color[3],
                 )
-                .to_rgba();
+                .to_srgba();
 
                 canvas.set_pixel(x, y, pixel);
             }

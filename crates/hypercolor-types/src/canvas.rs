@@ -186,6 +186,16 @@ impl RgbaF32 {
         ]
     }
 
+    /// Convert back to byte [`Rgba`], applying sRGB gamma encoding.
+    ///
+    /// This is the correct conversion for effect output headed to canvas
+    /// storage or LED devices, where byte pixels are stored in sRGB space.
+    #[must_use]
+    pub fn to_srgba(self) -> Rgba {
+        let [r, g, b, a] = self.to_srgb_u8();
+        Rgba { r, g, b, a }
+    }
+
     /// Convert back to byte [`Rgba`], clamping each channel to `[0, 255]`.
     ///
     /// This is a direct (non-gamma-corrected) conversion — each float channel

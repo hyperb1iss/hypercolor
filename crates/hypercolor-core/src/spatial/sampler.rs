@@ -9,9 +9,9 @@
 //! methods. This module wraps them with the zone-level [`SamplingMode`] dispatch
 //! and coordinate transformation pipeline.
 
-use hypercolor_types::canvas::{Canvas, Rgba, SamplingMethod};
+use hypercolor_types::canvas::{Canvas, Rgba, RgbaF32, SamplingMethod};
 use hypercolor_types::spatial::{
-    DeviceZone, EdgeBehavior, NormalizedPosition, SamplingMode, SpatialLayout,
+    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
 };
 
 /// Transform a zone-local LED position to a normalized canvas position.
@@ -114,6 +114,7 @@ pub fn sample_led(
     };
 
     let color = canvas.sample(canvas_pos.x, canvas_pos.y, method);
+    let color = polish_sampled_color(color, zone);
 
     // Apply fade-to-black attenuation for out-of-bounds positions.
     apply_fade_to_black(color, canvas_pos, edge)
@@ -182,4 +183,40 @@ fn apply_fade_to_black(color: Rgba, canvas_pos: NormalizedPosition, edge: EdgeBe
         (f32::from(color.b) * attenuation).round() as u8,
         color.a,
     )
+}
+
+fn polish_sampled_color(color: Rgba, zone: &DeviceZone) -> Rgba {
+    if color.a == 0 || (color.r == 0 && color.g == 0 && color.b == 0) {
+        return color;
+    }
+
+    let LedTopology::Matrix { .. } = &zone.topology else {
+        return color;
+    };
+
+    let led_count = zone.led_positions.len().max(1);
+    let amount = if led_count <= 128 { 0.85 } else { 0.45 };
+
+    if amount <= f32::EPSILON {
+        return color;
+    }
+
+    let source = RgbaF32::from_srgb_u8(color.r, color.g, color.b, color.a);
+    let mut lch = source.to_oklch();
+
+    // Preserve true neutrals; the punch-up is meant for colors, not grayscale.
+    if lch.c < 0.01 {
+        return color;
+    }
+
+    let lightness = lch.l.clamp(0.0, 1.0);
+    let contrast = 1.0 + amount * 0.14;
+    lch.l = ((lightness - 0.5) * contrast + 0.5).clamp(0.0, 0.94);
+
+    let chroma_gain = 1.0 + amount * (0.24 + (0.76 - lightness).clamp(0.0, 0.56) * 0.28);
+    let chroma_headroom = (0.34 - lch.c).max(0.0);
+    lch.c = (lch.c * chroma_gain + chroma_headroom * amount * 0.10).clamp(0.0, 0.34);
+
+    let [r, g, b, _] = RgbaF32::from_oklch(lch).to_srgb_u8();
+    Rgba::new(r, g, b, color.a)
 }
