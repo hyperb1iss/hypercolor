@@ -10,10 +10,34 @@ use crate::components::sidebar::Sidebar;
 use crate::components::status_bar::StatusBar;
 use crate::icons::*;
 
+/// Read the current theme from the DOM.
+fn read_theme() -> String {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+        .and_then(|el| el.get_attribute("data-theme"))
+        .unwrap_or_else(|| "dark".to_string())
+}
+
+/// Apply a theme to the DOM and persist to localStorage.
+fn apply_theme(theme: &str) {
+    if let Some(doc) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+    {
+        let _ = doc.set_attribute("data-theme", theme);
+    }
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = storage.set_item("hc-theme", theme);
+    }
+}
+
 /// Top-level layout shell. Sidebar left, header + content right.
 #[component]
 pub fn Shell(children: Children) -> impl IntoView {
     let (palette_open, set_palette_open) = signal(false);
+    let (theme, set_theme) = signal(read_theme());
+    let is_dark = Memo::new(move |_| theme.get() == "dark");
 
     // Global keyboard shortcuts
     let navigate = use_navigate();
@@ -46,29 +70,48 @@ pub fn Shell(children: Children) -> impl IntoView {
 
     view! {
         <div
-            class="flex h-screen bg-layer-0 text-fg overflow-hidden noise-overlay"
+            class="flex h-screen bg-surface-base text-text-primary overflow-hidden noise-overlay"
             on:keydown=keydown_handler
             tabindex="-1"
         >
             <Sidebar />
             <div class="flex flex-col flex-1 min-w-0">
                 // Header
-                <header class="h-14 flex items-center justify-between px-6 border-b border-white/[0.04] bg-layer-1/80 glass-subtle">
+                <header class="h-14 flex items-center justify-between px-6 border-b border-border-subtle bg-surface-raised/80 glass-subtle">
                     <div class="flex items-center gap-4">
-                        <span class="text-[11px] text-fg-muted font-mono tracking-[0.2em] uppercase">"Hypercolor"</span>
+                        <span class="text-[11px] text-text-secondary font-mono tracking-[0.2em] uppercase">"Hypercolor"</span>
                         // Command palette trigger
                         <button
-                            class="hidden md:flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-white/[0.02] border border-white/[0.05]
-                                   text-xs text-zinc-600 hover:text-zinc-400 hover:border-white/[0.08] hover:bg-white/[0.04]
+                            class="hidden md:flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-surface-overlay/40 border border-border-subtle
+                                   text-xs text-text-tertiary hover:text-text-secondary hover:border-border-default hover:bg-surface-hover/40
                                    btn-press cursor-pointer group"
                             on:click=move |_| set_palette_open.set(true)
                         >
                             <Icon icon=LuSearch width="14px" height="14px" style="color: inherit" />
-                            <span class="text-zinc-600">"Search effects..."</span>
-                            <kbd class="text-[9px] font-mono text-zinc-700 bg-white/[0.04] px-1.5 py-0.5 rounded border border-white/[0.04]">"⌘K"</kbd>
+                            <span class="text-text-tertiary">"Search effects..."</span>
+                            <kbd class="text-[9px] font-mono text-text-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-border-subtle">"⌘K"</kbd>
                         </button>
                     </div>
-                    <StatusBar />
+                    <div class="flex items-center gap-3">
+                        // Theme toggle
+                        <button
+                            class="p-2 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-hover/40
+                                   btn-press transition-colors duration-150"
+                            title=move || if is_dark.get() { "Switch to light mode" } else { "Switch to dark mode" }
+                            on:click=move |_| {
+                                let next = if is_dark.get() { "light" } else { "dark" };
+                                apply_theme(next);
+                                set_theme.set(next.to_string());
+                            }
+                        >
+                            {move || if is_dark.get() {
+                                view! { <Icon icon=LuSun width="16px" height="16px" style="color: inherit" /> }.into_any()
+                            } else {
+                                view! { <Icon icon=LuMoon width="16px" height="16px" style="color: inherit" /> }.into_any()
+                            }}
+                        </button>
+                        <StatusBar />
+                    </div>
                 </header>
                 <main class="flex-1 overflow-auto p-6">
                     {children()}
