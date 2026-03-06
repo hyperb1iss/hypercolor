@@ -63,6 +63,8 @@ anyhow = "1.0"
 tokio = { version = "1.44", features = ["full"] }
 async-trait = "0.1"
 futures-core = "0.3"
+futures-util = "0.3"
+tokio-util = "0.7"
 
 # Observability
 tracing = "0.1"
@@ -96,6 +98,7 @@ mdns-sd = "0.11"
 tonic = "0.12"
 prost = "0.13"
 nusb = { version = "0.2.2", features = ["tokio"] }
+zbus = { version = "=5.13.0", default-features = false, features = ["tokio"] }
 
 # Screen capture
 xcap = "0.7"
@@ -128,6 +131,15 @@ strip = true
 opt-level = 1
 debug = 1
 
+# Keep Hypercolor crates debuggable, but treat third-party dependencies more
+# like "runtime" code: optimize them, trim debug payload, and drop expensive
+# safety instrumentation that mostly hurts hot render paths.
+[profile.dev.package."*"]
+opt-level = 2
+debug = "line-tables-only"
+debug-assertions = false
+overflow-checks = false
+
 # The daemon render path is hot even in local iteration, so give the core
 # runtime a bit more help than the rest of the workspace.
 [profile.dev.package.hypercolor-core]
@@ -142,21 +154,128 @@ opt-level = 2
 # Servo HTML effects spend most CPU time in software canvas rasterization
 # (`vello_cpu` + SIMD helpers). Keep dev edit-compile loops fast while
 # avoiding debug-profile runtime cliffs for live preview.
+[profile.dev.package.libservo]
+opt-level = 3
+debug = 0
+
 [profile.dev.package.vello_cpu]
 opt-level = 3
+debug = 0
 
 [profile.dev.package.vello_common]
 opt-level = 3
+debug = 0
 
 [profile.dev.package.fearless_simd]
 opt-level = 3
+debug = 0
 
 # JavaScript-heavy effects spend significant time in Servo's script pipeline.
 [profile.dev.package.mozjs]
 opt-level = 3
+debug = 0
+
+[profile.dev.package.mozjs_sys]
+opt-level = 3
+debug = 0
 
 [profile.dev.package.script]
 opt-level = 3
+debug = 0
 
 [profile.dev.package.script_bindings]
 opt-level = 3
+debug = 0
+
+[profile.dev.package.canvas]
+opt-level = 3
+debug = 0
+
+[profile.dev.package.layout]
+opt-level = 3
+debug = 0
+
+[profile.dev.package.webrender]
+opt-level = 3
+debug = 0
+
+[profile.dev.package.webrender_api]
+opt-level = 3
+debug = 0
+
+# Preview keeps the fast inner dev loop from `dev`, but disables the remaining
+# runtime-heavy safety checks in Hypercolor crates so local daemon/UI runs feel
+# much closer to release builds.
+[profile.preview]
+inherits = "dev"
+debug-assertions = false
+overflow-checks = false
+
+[profile.preview.package."*"]
+opt-level = 2
+debug = "line-tables-only"
+debug-assertions = false
+overflow-checks = false
+
+[profile.preview.package.hypercolor-core]
+opt-level = 2
+debug-assertions = false
+overflow-checks = false
+
+[profile.preview.package.hypercolor-daemon]
+opt-level = 2
+debug-assertions = false
+overflow-checks = false
+
+[profile.preview.package.hypercolor-hal]
+opt-level = 2
+debug-assertions = false
+overflow-checks = false
+
+[profile.preview.package.libservo]
+opt-level = 3
+debug = 0
+
+[profile.preview.package.vello_cpu]
+opt-level = 3
+debug = 0
+
+[profile.preview.package.vello_common]
+opt-level = 3
+debug = 0
+
+[profile.preview.package.fearless_simd]
+opt-level = 3
+debug = 0
+
+[profile.preview.package.mozjs]
+opt-level = 3
+debug = 0
+
+[profile.preview.package.mozjs_sys]
+opt-level = 3
+debug = 0
+
+[profile.preview.package.script]
+opt-level = 3
+debug = 0
+
+[profile.preview.package.script_bindings]
+opt-level = 3
+debug = 0
+
+[profile.preview.package.canvas]
+opt-level = 3
+debug = 0
+
+[profile.preview.package.layout]
+opt-level = 3
+debug = 0
+
+[profile.preview.package.webrender]
+opt-level = 3
+debug = 0
+
+[profile.preview.package.webrender_api]
+opt-level = 3
+debug = 0

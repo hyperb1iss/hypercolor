@@ -6,7 +6,7 @@ stable and reused.
 
 ## Local Workflow
 
-Use the wrapper script:
+Use the Servo wrapper script:
 
 ```bash
 ./scripts/servo-cache-build.sh
@@ -24,6 +24,12 @@ Override with any command:
 ./scripts/servo-cache-build.sh cargo clippy -p hypercolor-core --features servo --all-targets -- -D warnings
 ```
 
+For general workspace builds, use the shared wrapper:
+
+```bash
+./scripts/cargo-cache-build.sh cargo build --workspace
+```
+
 Run the daemon with Servo-enabled HTML rendering:
 
 ```bash
@@ -36,17 +42,20 @@ This command wraps:
 cargo run -p hypercolor-daemon --features servo -- --bind 127.0.0.1:9420
 ```
 
-The wrapper configures:
+The shared wrapper configures:
 
 - `CARGO_TARGET_DIR=$HOME/.cache/hypercolor/target` (unless already set)
 - `MOZBUILD_STATE_PATH=$HOME/.cache/hypercolor/mozbuild` (unless already set)
 - `CARGO_INCREMENTAL=1` (unless already set)
-- `ccache` integration for `CC`/`CXX` when `ccache` exists
+- `sccache` as `RUSTC_WRAPPER` when available
+- `clang` + `ld.lld` for faster link steps on `x86_64-unknown-linux-gnu` when available
+- `ccache` for `CC`/`CXX` when installed, otherwise `sccache` if available
 
 ## Verify Cache Hits
 
 ```bash
 ccache -s
+sccache --show-stats
 ```
 
 Look for increasing cache hit counts after the first Servo build.
@@ -58,6 +67,7 @@ Cache these paths:
 - Cargo target dir (`$CARGO_TARGET_DIR`)
 - Cargo git checkout + index (`$CARGO_HOME/git`)
 - Cargo registry (`$CARGO_HOME/registry`)
+- Rust compiler cache (`$SCCACHE_DIR`)
 - C/C++ cache (`$CCACHE_DIR`)
 - Mozilla build state (`$MOZBUILD_STATE_PATH`)
 
