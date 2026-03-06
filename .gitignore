@@ -27,7 +27,7 @@ bun.lock
 
 # Effects — community imports are reference-only, not shipped
 effects/community/
-/effects/evolved/
+/effects/hypercolor/
 
 # Debug
 *.pdb

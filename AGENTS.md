@@ -77,9 +77,14 @@ TypeScript SDK for building HTML effects, managed with **Bun**:
 just sdk-install         # bun install
 just sdk-dev             # Dev server with HMR
 just sdk-build           # Build packages
-just effects-build       # Build all effects -> effects/evolved/*.html
+just effects-build       # Build all effects -> effects/hypercolor/*.html
 just effect-build NAME   # Build single effect
 ```
+
+**Generated effects rule:** `effects/hypercolor/` is generated build output and is gitignored on
+purpose. Never hand-edit files under `effects/hypercolor/`, never treat them as source of truth, and
+never re-add them to version control. Make effect changes in `sdk/src/effects/` (and related SDK
+sources) only, then regenerate locally as needed for verification.
 
 ## Conventions
 
@@ -114,6 +119,8 @@ Multiple agents may work simultaneously. Follow these rules:
 3. **`cargo check --workspace`** must pass after your changes (does NOT cover `hypercolor-ui`)
 4. **No placeholder implementations** — implement the real logic or don't create the file
 5. **Tests are mandatory** — every public type/function needs test coverage in `tests/`
+6. **Never edit generated code** — especially anything under `effects/hypercolor/`; generated files are
+   build artifacts, not source files
 
 ## Specs & Design Docs
 

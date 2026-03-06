@@ -5,7 +5,7 @@
  * Usage:
  *   bun scripts/build-effect.ts src/effects/borealis/main.ts
  *   bun scripts/build-effect.ts --all              # build all effects
- *   bun scripts/build-effect.ts --out effects/evolved/ src/effects/borealis/main.ts
+ *   bun scripts/build-effect.ts --out effects/hypercolor/ src/effects/borealis/main.ts
  */
 
 import * as esbuild from 'esbuild'
@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { extractControlsFromClass, extractEffectMetadata } from '@hypercolor/sdk'
 
 const SDK_ROOT = resolve(import.meta.dirname, '..')
-const DEFAULT_OUT = resolve(SDK_ROOT, '..', 'effects', 'evolved')
+const DEFAULT_OUT = resolve(SDK_ROOT, '..', 'effects', 'hypercolor')
 
 // ── CLI Parsing ────────────────────────────────────────────────────────
 

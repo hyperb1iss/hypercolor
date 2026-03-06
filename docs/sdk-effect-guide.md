@@ -405,7 +405,7 @@ The build pipeline:
 3. Bundles TypeScript + GLSL into a single IIFE
 4. Wraps everything in an HTML file with canvas element
 
-Output goes to `effects/evolved/` by default.
+Output goes to `effects/hypercolor/` by default.
 
 ### HTML Output Format
 

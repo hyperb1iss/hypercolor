@@ -147,7 +147,7 @@ sdk-check:
 sdk-lint:
     cd sdk && bun run check
 
-# Build all SDK effects → effects/evolved/*.html
+# Build all SDK effects → effects/hypercolor/*.html
 effects-build:
     cd sdk && bun run build:effects
 

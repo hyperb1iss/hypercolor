@@ -9,7 +9,6 @@ set -euo pipefail
 CACHE_ROOT="${HYPERCOLOR_CACHE_DIR:-$HOME/.cache/hypercolor}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$CACHE_ROOT/target}"
 export MOZBUILD_STATE_PATH="${MOZBUILD_STATE_PATH:-$CACHE_ROOT/mozbuild}"
-export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
 TOOLCHAIN_DIR="$CACHE_ROOT/toolchain"
 
 mkdir -p "$CARGO_TARGET_DIR" "$MOZBUILD_STATE_PATH" "$TOOLCHAIN_DIR"
@@ -17,15 +16,60 @@ mkdir -p "$CARGO_TARGET_DIR" "$MOZBUILD_STATE_PATH" "$TOOLCHAIN_DIR"
 HOST_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 SCCACHE_BIN="$(command -v sccache || true)"
 CCACHE_BIN="$(command -v ccache || true)"
+ENABLE_RUST_SCCACHE=1
 
-if [ -n "$SCCACHE_BIN" ]; then
+for ((i = 1; i <= $#; i++)); do
+  arg="${!i}"
+  case "$arg" in
+    --release)
+      ENABLE_RUST_SCCACHE=1
+      ;;
+    --profile)
+      next_index=$((i + 1))
+      if [ "$next_index" -le "$#" ]; then
+        next_arg="${!next_index}"
+        if [ "$next_arg" != "release" ] && [ "$next_arg" != "bench" ]; then
+          ENABLE_RUST_SCCACHE=0
+        fi
+      fi
+      ;;
+    --profile=*)
+      profile_name="${arg#--profile=}"
+      if [ "$profile_name" != "release" ] && [ "$profile_name" != "bench" ]; then
+        ENABLE_RUST_SCCACHE=0
+      fi
+      ;;
+  esac
+done
+
+if [ "$#" -gt 0 ] && ! printf '%s\n' "$*" | grep -Eq -- '(^| )--release($| )|(^| )--profile(=| )(release|bench)($| )'; then
+  ENABLE_RUST_SCCACHE=0
+fi
+
+if [ -n "$SCCACHE_BIN" ] && [ "$ENABLE_RUST_SCCACHE" -eq 1 ]; then
   export SCCACHE_DIR="${SCCACHE_DIR:-$CACHE_ROOT/sccache}"
   mkdir -p "$SCCACHE_DIR"
   export RUSTC_WRAPPER="${RUSTC_WRAPPER:-$SCCACHE_BIN}"
+  # sccache rejects incremental compilation entirely, so prefer the
+  # compiler cache and force a compatible Cargo setting.
+  unset CARGO_INCREMENTAL || true
+  export CARGO_BUILD_INCREMENTAL="false"
+  export CARGO_PROFILE_DEV_INCREMENTAL="false"
+  export CARGO_PROFILE_RELEASE_INCREMENTAL="false"
+  export CARGO_PROFILE_TEST_INCREMENTAL="false"
+  export CARGO_PROFILE_BENCH_INCREMENTAL="false"
+  export CARGO_PROFILE_PREVIEW_INCREMENTAL="false"
   echo "[cargo-cache] sccache enabled for Rust compilation"
   echo "[cargo-cache] SCCACHE_DIR=$SCCACHE_DIR"
+  echo "[cargo-cache] incremental compilation disabled for sccache compatibility"
 else
-  echo "[cargo-cache] sccache not found; Rust compilation will use Cargo incremental only"
+  export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
+  if [ -n "$SCCACHE_BIN" ]; then
+    echo "[cargo-cache] skipping rust sccache for dev/preview-style build; using Cargo incremental instead"
+  else
+    echo "[cargo-cache] sccache not found; Rust compilation will use Cargo incremental only"
+  fi
+  echo "[cargo-cache] CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
 fi
 
 if [ "$HOST_TRIPLE" = "x86_64-unknown-linux-gnu" ] \

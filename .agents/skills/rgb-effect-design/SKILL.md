@@ -1,5 +1,5 @@
 ---
-name: RGB Effect Design
+name: rgb-effect-design
 version: 1.0.0
 description: >-
   This skill should be used when creating, modifying, or debugging RGB lighting
