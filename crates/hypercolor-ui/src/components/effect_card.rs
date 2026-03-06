@@ -31,7 +31,7 @@ fn source_label(source: &str) -> &'static str {
         "native" => "Native",
         "html" => "HTML",
         "shader" => "Shader",
-        _ => source.split_at(1.min(source.len())).0,
+        _ => "Other",
     }
 }
 
@@ -119,23 +119,25 @@ pub fn EffectCard(
                     }
                 }
             >
-                <span
-                    class=move || {
-                        if is_favorite.get() {
-                            "text-coral drop-shadow-[0_0_6px_rgba(255,106,193,0.5)]"
-                        } else {
-                            "text-fg-dim/30 hover:text-fg-dim/60"
-                        }
+                {move || {
+                    let fav = is_favorite.get();
+                    let (span_class, icon_style) = if fav {
+                        (
+                            "text-coral drop-shadow-[0_0_6px_rgba(255,106,193,0.5)]",
+                            "fill: currentColor; transition: color 0.2s, filter 0.2s",
+                        )
+                    } else {
+                        (
+                            "text-fg-dim/30 hover:text-fg-dim/60",
+                            "transition: color 0.2s, filter 0.2s",
+                        )
+                    };
+                    view! {
+                        <span class=span_class style="transition: color 0.2s, filter 0.2s">
+                            <Icon icon=LuHeart width="14px" height="14px" style=icon_style />
+                        </span>
                     }
-                    style="transition: color 0.2s, filter 0.2s"
-                >
-                    <Icon
-                        icon=LuHeart
-                        width="14px"
-                        height="14px"
-                        style=move || if is_favorite.get() { "fill: currentColor" } else { "" }
-                    />
-                </span>
+                }}
             </button>
 
             // Clickable card body

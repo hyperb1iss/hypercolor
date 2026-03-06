@@ -233,12 +233,10 @@ pub fn EffectsPage() -> impl IntoView {
                         }
                         on:click=move |_| set_favorites_only.update(|v| *v = !*v)
                     >
-                        <Icon
-                            icon=LuHeart
-                            width="11px"
-                            height="11px"
-                            style=move || if favorites_only.get() { "fill: currentColor" } else { "" }
-                        />
+                        {move || {
+                            let fav_style = if favorites_only.get() { "fill: currentColor" } else { "" };
+                            view! { <Icon icon=LuHeart width="11px" height="11px" style=fav_style /> }
+                        }}
                         "Favorites"
                         {move || {
                             let count = favorites_count.get();
