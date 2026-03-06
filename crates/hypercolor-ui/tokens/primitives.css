@@ -75,15 +75,15 @@
     --color-surface-active:  var(--surface-active);
 
     /* ── Semantic text aliases ── */
-    --color-text-primary:    var(--text-primary);
-    --color-text-secondary:  var(--text-secondary);
-    --color-text-tertiary:   var(--text-tertiary);
+    --color-fg-primary:      var(--text-primary);
+    --color-fg-secondary:    var(--text-secondary);
+    --color-fg-tertiary:     var(--text-tertiary);
 
     /* ── Semantic border aliases ── */
-    --color-border-subtle:   var(--border-subtle);
-    --color-border-default:  var(--border-default);
-    --color-border-strong:   var(--border-strong);
-    --color-border-focus:    var(--border-focus);
+    --color-edge-subtle:     var(--border-subtle);
+    --color-edge-default:    var(--border-default);
+    --color-edge-strong:     var(--border-strong);
+    --color-edge-focus:      var(--border-focus);
 
     /* ── Semantic accent aliases ── */
     --color-accent:          var(--accent);

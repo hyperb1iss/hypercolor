@@ -11,7 +11,7 @@ pub fn StatusBar() -> impl IntoView {
     let ws = expect_context::<WsContext>();
 
     view! {
-        <div class="flex items-center gap-3 text-[11px] font-mono text-text-tertiary">
+        <div class="flex items-center gap-3 text-[11px] font-mono text-fg-tertiary">
             // Connection indicator
             <div class="flex items-center gap-1.5">
                 <div
@@ -25,15 +25,15 @@ pub fn StatusBar() -> impl IntoView {
                         }
                     }
                 />
-                <span class="text-text-tertiary">{move || ws.connection_state.get().to_string()}</span>
+                <span class="text-fg-tertiary">{move || ws.connection_state.get().to_string()}</span>
             </div>
 
             <div class="w-px h-3 bg-border-subtle" />
 
             // FPS counter
             <div class="flex items-center gap-1.5">
-                <span class="text-text-tertiary/60">"FPS"</span>
-                <span class="tabular-nums text-text-secondary">
+                <span class="text-fg-tertiary/60">"FPS"</span>
+                <span class="tabular-nums text-fg-secondary">
                     {move || format!("{:.0}", ws.fps.get())}
                 </span>
             </div>

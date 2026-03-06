@@ -26,17 +26,17 @@ pub fn LayoutPalette(
 
     view! {
         <div class="p-3 space-y-3">
-            <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-text-tertiary">"Devices"</h3>
+            <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Devices"</h3>
 
             <Suspense fallback=|| view! {
-                <div class="text-xs text-text-tertiary animate-pulse">"Loading..."</div>
+                <div class="text-xs text-fg-tertiary animate-pulse">"Loading..."</div>
             }>
                 {move || {
                     ctx.devices_resource.get().map(|result| {
                         let devices = result.unwrap_or_default();
                         if devices.is_empty() {
                             return view! {
-                                <div class="text-xs text-text-tertiary">"No devices connected"</div>
+                                <div class="text-xs text-fg-tertiary">"No devices connected"</div>
                             }.into_any();
                         }
 
@@ -122,11 +122,11 @@ pub fn LayoutPalette(
                                                             let display_led_count = led_count;
 
                                                             view! {
-                                                                <div class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-surface-overlay/40 border border-border-subtle
-                                                                            hover:bg-surface-hover/40 hover:border-border-default transition-all group">
+                                                                <div class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-surface-overlay/40 border border-edge-subtle
+                                                                            hover:bg-surface-hover/40 hover:border-edge-default transition-all group">
                                                                     <div class="flex-1 min-w-0">
-                                                                        <div class="text-[11px] text-text-primary truncate">{display_name}</div>
-                                                                        <div class="text-[9px] text-text-tertiary font-mono flex items-center gap-1.5">
+                                                                        <div class="text-[11px] text-fg-primary truncate">{display_name}</div>
+                                                                        <div class="text-[9px] text-fg-tertiary font-mono flex items-center gap-1.5">
                                                                             <span>{display_led_count} " LEDs"</span>
                                                                             <span class="opacity-60">"·"</span>
                                                                             <span class="uppercase tracking-wide">{topology_chip}</span>

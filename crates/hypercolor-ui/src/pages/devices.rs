@@ -95,7 +95,7 @@ pub fn DevicesPage() -> impl IntoView {
         <div class="flex flex-col h-full -m-6 animate-fade-in">
             // Tab bar
             <div class="shrink-0 px-6 pt-6 pb-0 bg-surface-base z-10">
-                <div class="flex items-center gap-1 border-b border-border-subtle">
+                <div class="flex items-center gap-1 border-b border-edge-subtle">
                     {["devices", "layout"].into_iter().map(|tab| {
                         let tab_str = tab.to_string();
                         let tab_click = tab.to_string();
@@ -107,8 +107,8 @@ pub fn DevicesPage() -> impl IntoView {
                         view! {
                             <button
                                 class="px-4 py-2.5 text-sm font-medium transition-colors relative capitalize flex items-center gap-2"
-                                class:text-text-primary=move || is_active.get()
-                                class:text-text-tertiary=move || !is_active.get()
+                                class:text-fg-primary=move || is_active.get()
+                                class:text-fg-tertiary=move || !is_active.get()
                                 on:click=move |_| set_active_tab.set(tab_click.clone())
                             >
                                 {icon}
@@ -135,8 +135,8 @@ pub fn DevicesPage() -> impl IntoView {
                             // Title row with scan button
                             <div class="flex items-center justify-between">
                                 <div class="flex items-baseline gap-3">
-                                    <h1 class="text-lg font-medium text-text-primary">"Devices"</h1>
-                                    <span class="text-[11px] font-mono text-text-tertiary tabular-nums">
+                                    <h1 class="text-lg font-medium text-fg-primary">"Devices"</h1>
+                                    <span class="text-[11px] font-mono text-fg-tertiary tabular-nums">
                                         {move || device_count.get()} " devices"
                                     </span>
                                 </div>
@@ -159,14 +159,14 @@ pub fn DevicesPage() -> impl IntoView {
 
                             // Search bar
                             <div class="relative">
-                                <span class="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-text-tertiary">
+                                <span class="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
                                     <Icon icon=LuSearch width="14px" height="14px" />
                                 </span>
                                 <input
                                     type="text"
                                     placeholder="Search devices..."
-                                    class="w-full bg-surface-overlay/60 border border-border-subtle rounded-lg pl-9 pr-10 py-2 text-sm text-text-primary
-                                           placeholder-text-tertiary focus:outline-none focus:border-accent-muted
+                                    class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg pl-9 pr-10 py-2 text-sm text-fg-primary
+                                           placeholder-fg-tertiary focus:outline-none focus:border-accent-muted
                                            focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1),0_0_20px_rgba(225,53,255,0.06)]
                                            transition-all duration-300"
                                     prop:value=move || search.get()
@@ -175,7 +175,7 @@ pub fn DevicesPage() -> impl IntoView {
                                         if let Some(el) = target { set_search.set(el.value()); }
                                     }
                                 />
-                                <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-text-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-border-subtle">"/"</kbd>
+                                <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-edge-subtle">"/"</kbd>
                             </div>
 
                             // Combined filter row — status + separator + backends
@@ -260,8 +260,8 @@ pub fn DevicesPage() -> impl IntoView {
                                                 view! {
                                                     <div class="flex flex-col items-center justify-center py-24 space-y-3">
                                                         <Icon icon=LuCpu width="48px" height="48px" style="color: rgba(139, 133, 160, 0.2)" />
-                                                        <div class="text-text-tertiary text-sm">"No devices found"</div>
-                                                        <div class="text-text-tertiary/40 text-xs">"Try a different search or filter"</div>
+                                                        <div class="text-fg-tertiary text-sm">"No devices found"</div>
+                                                        <div class="text-fg-tertiary/40 text-xs">"Try a different search or filter"</div>
                                                     </div>
                                                 }.into_any()
                                             } else {
@@ -318,7 +318,7 @@ fn DevicesLoadingSkeleton() -> impl IntoView {
             {(0..6).map(|i| {
                 let stagger = format!("animation-delay: {}ms", i * 80);
                 view! {
-                    <div class="rounded-2xl border border-border-subtle bg-surface-overlay/40 px-4 py-4 animate-pulse space-y-3" style=stagger>
+                    <div class="rounded-2xl border border-edge-subtle bg-surface-overlay/40 px-4 py-4 animate-pulse space-y-3" style=stagger>
                         <div class="flex justify-between items-start">
                             <div class="flex items-center gap-2.5">
                                 <div class="w-5 h-5 bg-surface-overlay/40 rounded" />
@@ -330,7 +330,7 @@ fn DevicesLoadingSkeleton() -> impl IntoView {
                             <div class="h-3 w-16 bg-surface-overlay/20 rounded" />
                             <div class="h-3 w-16 bg-surface-overlay/20 rounded" />
                         </div>
-                        <div class="flex items-center gap-2 pt-2 border-t border-border-subtle">
+                        <div class="flex items-center gap-2 pt-2 border-t border-edge-subtle">
                             <div class="w-1.5 h-1.5 bg-surface-overlay/40 rounded-full" />
                             <div class="h-2.5 w-16 bg-surface-overlay/20 rounded" />
                         </div>

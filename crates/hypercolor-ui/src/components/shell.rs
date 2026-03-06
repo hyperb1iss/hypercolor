@@ -150,32 +150,32 @@ pub fn Shell(children: Children) -> impl IntoView {
     view! {
         <div
             node_ref=shell_ref
-            class="flex h-screen bg-surface-base text-text-primary overflow-hidden noise-overlay"
+            class="flex h-screen bg-surface-base text-fg-primary overflow-hidden noise-overlay"
             on:keydown=keydown_handler
             tabindex="-1"
         >
             <Sidebar />
             <div class="flex flex-col flex-1 min-w-0">
                 // Header
-                <header class="h-14 flex items-center justify-between px-6 border-b border-border-subtle bg-surface-raised/80 glass-subtle">
+                <header class="h-14 flex items-center justify-between px-6 border-b border-edge-subtle bg-surface-raised/80 glass-subtle">
                     <div class="flex items-center gap-4">
-                        <span class="text-[11px] text-text-secondary font-mono tracking-[0.2em] uppercase">"Hypercolor"</span>
+                        <span class="text-[11px] text-fg-secondary font-mono tracking-[0.2em] uppercase">"Hypercolor"</span>
                         // Command palette trigger
                         <button
-                            class="hidden md:flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-surface-overlay/40 border border-border-subtle
-                                   text-xs text-text-tertiary hover:text-text-secondary hover:border-border-default hover:bg-surface-hover/40
+                            class="hidden md:flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-surface-overlay/40 border border-edge-subtle
+                                   text-xs text-fg-tertiary hover:text-fg-secondary hover:border-edge-default hover:bg-surface-hover/40
                                    btn-press cursor-pointer group"
                             on:click=move |_| set_palette_open.set(true)
                         >
                             <Icon icon=LuSearch width="14px" height="14px" style="color: inherit" />
-                            <span class="text-text-tertiary">"Search effects..."</span>
-                            <kbd class="text-[9px] font-mono text-text-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-border-subtle">"⌘K"</kbd>
+                            <span class="text-fg-tertiary">"Search effects..."</span>
+                            <kbd class="text-[9px] font-mono text-fg-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-edge-subtle">"⌘K"</kbd>
                         </button>
                     </div>
                     <div class="flex items-center gap-3">
                         // Theme toggle
                         <button
-                            class="p-2 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-hover/40
+                            class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40
                                    btn-press transition-colors duration-150"
                             title=move || if is_dark.get() { "Switch to light mode" } else { "Switch to dark mode" }
                             on:click=move |_| {
@@ -259,17 +259,17 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
             />
 
             // Palette panel
-            <div class="relative w-full max-w-lg mx-4 rounded-xl glass border border-border-subtle
+            <div class="relative w-full max-w-lg mx-4 rounded-xl glass border border-edge-subtle
                         shadow-[0_25px_60px_rgba(0,0,0,0.6),0_0_60px_rgba(225,53,255,0.06)]
                         overflow-hidden animate-scale-in">
                 // Search input
-                <div class="flex items-center gap-3 px-4 py-3.5 border-b border-border-subtle">
+                <div class="flex items-center gap-3 px-4 py-3.5 border-b border-edge-subtle">
                     <Icon icon=LuSearch width="16px" height="16px" style="color: rgba(225, 53, 255, 0.6); flex-shrink: 0" />
                     <input
                         node_ref=input_ref
                         type="text"
                         placeholder="Search effects..."
-                        class="flex-1 bg-transparent text-sm text-text-primary placeholder-text-tertiary outline-none"
+                        class="flex-1 bg-transparent text-sm text-fg-primary placeholder-fg-tertiary outline-none"
                         prop:value=move || query.get()
                         on:input=move |ev| {
                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -283,7 +283,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                             }
                         }
                     />
-                    <kbd class="text-[9px] font-mono text-text-tertiary bg-surface-overlay/40 px-1.5 py-0.5 rounded border border-border-subtle">"ESC"</kbd>
+                    <kbd class="text-[9px] font-mono text-fg-tertiary bg-surface-overlay/40 px-1.5 py-0.5 rounded border border-edge-subtle">"ESC"</kbd>
                 </div>
 
                 // Results
@@ -292,7 +292,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                         let items = filtered.get();
                         if items.is_empty() {
                             view! {
-                                <div class="px-4 py-10 text-center text-xs text-text-tertiary">
+                                <div class="px-4 py-10 text-center text-xs text-fg-tertiary">
                                     "No matching effects"
                                 </div>
                             }.into_any()
@@ -322,10 +322,10 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                 }
                                             >
                                                 <div class="flex-1 min-w-0">
-                                                    <div class="text-sm text-text-secondary group-hover:text-text-primary truncate transition-colors duration-150">{name}</div>
-                                                    <div class="text-[10px] text-text-tertiary truncate">{desc}</div>
+                                                    <div class="text-sm text-fg-secondary group-hover:text-fg-primary truncate transition-colors duration-150">{name}</div>
+                                                    <div class="text-[10px] text-fg-tertiary truncate">{desc}</div>
                                                 </div>
-                                                <span class="text-[10px] text-text-tertiary capitalize shrink-0 px-2 py-0.5 rounded-full bg-surface-overlay/30">{category}</span>
+                                                <span class="text-[10px] text-fg-tertiary capitalize shrink-0 px-2 py-0.5 rounded-full bg-surface-overlay/30">{category}</span>
                                             </button>
                                         }
                                     }).collect_view()}

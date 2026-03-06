@@ -46,7 +46,7 @@ pub fn LayoutZoneProperties(
                 let Some(zone) = zone_snapshot.get() else {
                     return view! {
                         <div class="text-center py-8">
-                            <div class="text-xs text-text-tertiary">"Select a zone to edit"</div>
+                            <div class="text-xs text-fg-tertiary">"Select a zone to edit"</div>
                         </div>
                     }.into_any();
                 };
@@ -74,14 +74,14 @@ pub fn LayoutZoneProperties(
                 let zid_remove = zone_id;
 
                 view! {
-                    <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-text-tertiary">"Zone Properties"</h3>
+                    <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Zone Properties"</h3>
 
                     // Zone name
                     <div class="space-y-1">
-                        <label class="text-[10px] text-text-tertiary">"Name"</label>
+                        <label class="text-[10px] text-fg-tertiary">"Name"</label>
                         <input
                             type="text"
-                            class="w-full bg-surface-sunken border border-border-subtle rounded px-2.5 py-1.5 text-xs text-text-primary
+                            class="w-full bg-surface-sunken border border-edge-subtle rounded px-2.5 py-1.5 text-xs text-fg-primary
                                    focus:outline-none focus:border-accent-muted"
                             prop:value=zone_name
                             on:change=move |ev| {
@@ -97,23 +97,23 @@ pub fn LayoutZoneProperties(
 
                     // Device ID (read-only)
                     <div class="space-y-1">
-                        <label class="text-[10px] text-text-tertiary">"Device"</label>
-                        <div class="text-xs text-text-primary font-mono bg-surface-overlay/60 rounded px-2.5 py-1.5 border border-border-subtle truncate">
+                        <label class="text-[10px] text-fg-tertiary">"Device"</label>
+                        <div class="text-xs text-fg-primary font-mono bg-surface-overlay/60 rounded px-2.5 py-1.5 border border-edge-subtle truncate">
                             {device_id_display}
                         </div>
                     </div>
 
                     // Topology info
                     <div class="space-y-1">
-                        <label class="text-[10px] text-text-tertiary">"Topology"</label>
-                        <div class="text-xs text-text-primary bg-surface-overlay/60 rounded px-2.5 py-1.5 border border-border-subtle">
+                        <label class="text-[10px] text-fg-tertiary">"Topology"</label>
+                        <div class="text-xs text-fg-primary bg-surface-overlay/60 rounded px-2.5 py-1.5 border border-edge-subtle">
                             {topology_label} " · " {led_count} " LEDs"
                         </div>
                     </div>
 
                     // Position
                     <div class="space-y-1">
-                        <label class="text-[10px] text-text-tertiary">"Position"</label>
+                        <label class="text-[10px] text-fg-tertiary">"Position"</label>
                         <div class="grid grid-cols-2 gap-2">
                             {zone_number_input("X", pos_x, {
                                 let zid = zid_pos_x;
@@ -128,7 +128,7 @@ pub fn LayoutZoneProperties(
 
                     // Size
                     <div class="space-y-1">
-                        <label class="text-[10px] text-text-tertiary">"Size"</label>
+                        <label class="text-[10px] text-fg-tertiary">"Size"</label>
                         <div class="grid grid-cols-2 gap-2">
                             {zone_number_input("W", size_w, {
                                 let zid = zid_size_w;
@@ -143,7 +143,7 @@ pub fn LayoutZoneProperties(
 
                     // Rotation
                     <div class="space-y-1">
-                        <label class="text-[10px] text-text-tertiary">"Rotation"</label>
+                        <label class="text-[10px] text-fg-tertiary">"Rotation"</label>
                         <div class="flex items-center gap-2">
                             <input
                                 type="range"
@@ -161,7 +161,7 @@ pub fn LayoutZoneProperties(
                                     }
                                 }
                             />
-                            <span class="text-[10px] font-mono text-text-tertiary tabular-nums w-8 text-right">
+                            <span class="text-[10px] font-mono text-fg-tertiary tabular-nums w-8 text-right">
                                 {format!("{rotation_deg:.0}")} "°"
                             </span>
                         </div>
@@ -169,7 +169,7 @@ pub fn LayoutZoneProperties(
 
                     // Scale
                     <div class="space-y-1">
-                        <label class="text-[10px] text-text-tertiary">"Scale"</label>
+                        <label class="text-[10px] text-fg-tertiary">"Scale"</label>
                         <div class="flex items-center gap-2">
                             <input
                                 type="range"
@@ -186,14 +186,14 @@ pub fn LayoutZoneProperties(
                                     }
                                 }
                             />
-                            <span class="text-[10px] font-mono text-text-tertiary tabular-nums w-8 text-right">
+                            <span class="text-[10px] font-mono text-fg-tertiary tabular-nums w-8 text-right">
                                 {format!("{scale:.1}")} "x"
                             </span>
                         </div>
                     </div>
 
                     // Remove button
-                    <div class="pt-2 border-t border-border-subtle">
+                    <div class="pt-2 border-t border-edge-subtle">
                         <button
                             class="w-full px-3 py-1.5 rounded-lg text-xs font-medium bg-status-error/[0.08] border border-status-error/20
                                    text-status-error hover:bg-status-error/[0.15] transition-all btn-press"
@@ -226,13 +226,13 @@ fn zone_number_input(
 ) -> impl IntoView {
     view! {
         <div class="flex items-center gap-1.5">
-            <span class="text-[9px] text-text-tertiary font-mono w-3">{label}</span>
+            <span class="text-[9px] text-fg-tertiary font-mono w-3">{label}</span>
             <input
                 type="number"
                 step="0.01"
                 min="0"
                 max="1"
-                class="flex-1 bg-surface-sunken border border-border-subtle rounded px-2 py-1 text-[11px] text-text-primary font-mono
+                class="flex-1 bg-surface-sunken border border-edge-subtle rounded px-2 py-1 text-[11px] text-fg-primary font-mono
                        focus:outline-none focus:border-accent-muted w-full"
                 prop:value=format!("{value:.3}")
                 on:change=move |ev| {

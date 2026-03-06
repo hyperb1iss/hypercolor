@@ -63,7 +63,7 @@ pub fn CanvasPreview(
             />
             {if show_fps {
                 Some(view! {
-                    <div class="absolute top-2 right-2 bg-black/70 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-mono text-text-tertiary
+                    <div class="absolute top-2 right-2 bg-black/70 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-mono text-fg-tertiary
                                 transition-all duration-300 animate-fade-in">
                         {move || format!("{:.0} fps", fps.get())}
                     </div>

@@ -195,7 +195,7 @@ pub fn LayoutCanvas(
                             }
                         >
                             // Zone label
-                            <div class="absolute -top-5 left-0 text-[9px] font-mono text-text-primary whitespace-nowrap
+                            <div class="absolute -top-5 left-0 text-[9px] font-mono text-fg-primary whitespace-nowrap
                                         opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none
                                         bg-black/70 px-1.5 py-0.5 rounded">
                                 {move || zone_style.get().map(|(_, _, name, count)| format!("{name} · {count} LEDs")).unwrap_or_default()}

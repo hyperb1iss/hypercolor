@@ -200,7 +200,7 @@ pub fn LayoutBuilder() -> impl IntoView {
     view! {
         <div class="flex flex-col flex-1 overflow-hidden">
             // Toolbar
-            <div class="shrink-0 px-6 py-3 flex items-center gap-3 bg-surface-base border-b border-border-subtle">
+            <div class="shrink-0 px-6 py-3 flex items-center gap-3 bg-surface-base border-b border-edge-subtle">
                 // Layout selector
                 <Suspense fallback=|| ()>
                     {move || {
@@ -208,7 +208,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                             let layouts = result.unwrap_or_default();
                             view! {
                                 <select
-                                    class="bg-surface-sunken border border-border-subtle rounded-lg px-3 py-1.5 text-sm text-text-primary
+                                    class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
                                            focus:outline-none focus:border-accent-muted min-w-[180px]"
                                     on:change=move |ev| {
                                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
@@ -248,8 +248,8 @@ pub fn LayoutBuilder() -> impl IntoView {
                             <input
                                 type="text"
                                 placeholder="Layout name"
-                                class="bg-surface-sunken border border-border-subtle rounded-lg px-3 py-1.5 text-sm text-text-primary
-                                       placeholder-text-tertiary focus:outline-none focus:border-accent-muted w-40"
+                                class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
+                                       placeholder-fg-tertiary focus:outline-none focus:border-accent-muted w-40"
                                 prop:value=move || new_layout_name.get()
                                 on:input=move |ev| {
                                     let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -266,8 +266,8 @@ pub fn LayoutBuilder() -> impl IntoView {
                                 on:click=move |_| create_layout()
                             >"Create"</button>
                             <button
-                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-overlay/40 border border-border-subtle
-                                       text-text-tertiary hover:text-text-primary hover:bg-surface-hover/40 transition-all btn-press"
+                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-surface-overlay/40 border border-edge-subtle
+                                       text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 transition-all btn-press"
                                 on:click=move |_| set_creating.set(false)
                             >"Cancel"</button>
                         </div>
@@ -340,8 +340,8 @@ pub fn LayoutBuilder() -> impl IntoView {
                     view! {
                         <div class="flex-1 flex items-center justify-center">
                             <div class="text-center space-y-2">
-                                <div class="text-text-tertiary text-sm">"Select or create a layout to begin"</div>
-                                <div class="text-text-tertiary/50 text-xs">"Drag devices onto the canvas to build your spatial mapping"</div>
+                                <div class="text-fg-tertiary text-sm">"Select or create a layout to begin"</div>
+                                <div class="text-fg-tertiary/50 text-xs">"Drag devices onto the canvas to build your spatial mapping"</div>
                             </div>
                         </div>
                     }
@@ -349,7 +349,7 @@ pub fn LayoutBuilder() -> impl IntoView {
             >
                 <div class="flex flex-1 overflow-hidden">
                     // Left palette
-                    <div class="w-[200px] shrink-0 border-r border-border-subtle overflow-y-auto">
+                    <div class="w-[200px] shrink-0 border-r border-edge-subtle overflow-y-auto">
                         <LayoutPalette
                             layout=layout_signal
                             set_layout=set_layout
@@ -370,7 +370,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                     </div>
 
                     // Right properties
-                    <div class="w-[280px] shrink-0 border-l border-border-subtle overflow-y-auto">
+                    <div class="w-[280px] shrink-0 border-l border-edge-subtle overflow-y-auto">
                         <LayoutZoneProperties
                             layout=layout_signal
                             selected_zone_id=zone_id_signal

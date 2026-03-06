@@ -67,7 +67,7 @@ pub fn ControlPanel(
                 if groups.is_empty() {
                     view! {
                         <div class="text-center py-6">
-                            <div class="text-text-tertiary/50 text-xs">"No controls available"</div>
+                            <div class="text-fg-tertiary/50 text-xs">"No controls available"</div>
                         </div>
                     }.into_any()
                 } else {
@@ -76,7 +76,7 @@ pub fn ControlPanel(
                             <div class="space-y-3 animate-fade-in-up">
                                 <div class="flex items-center gap-2">
                                     <div class="h-px flex-1 bg-border-subtle" />
-                                    <h4 class="text-[9px] font-mono uppercase tracking-[0.2em] text-text-tertiary/60 shrink-0">
+                                    <h4 class="text-[9px] font-mono uppercase tracking-[0.2em] text-fg-tertiary/60 shrink-0">
                                         {group}
                                     </h4>
                                     <div class="h-px flex-1 bg-border-subtle" />
@@ -143,7 +143,7 @@ fn ControlWidget(
                 <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-surface-hover/20 transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
                     <div class="flex items-center justify-between mb-2">
-                        <label class="text-xs text-text-secondary font-medium">{name.clone()}</label>
+                        <label class="text-xs text-fg-secondary font-medium">{name.clone()}</label>
                         <span class="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded"
                               style=badge_style>
                             {fmt_value}
@@ -185,7 +185,7 @@ fn ControlWidget(
                 <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-surface-hover/20 transition-colors duration-150
                             flex items-center justify-between"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-text-secondary font-medium">{name.clone()}</label>
+                    <label class="text-xs text-fg-secondary font-medium">{name.clone()}</label>
                     <button
                         class="relative w-10 h-[22px] rounded-full toggle-track"
                         style=move || if checked.get() { on_style.clone() } else { "background: rgba(255,255,255,0.08)".to_string() }
@@ -198,7 +198,7 @@ fn ControlWidget(
                         <div
                             class="absolute top-[3px] w-4 h-4 rounded-full shadow-sm toggle-thumb"
                             class=("translate-x-[22px] bg-white", move || checked.get())
-                            class=("translate-x-[3px] bg-text-tertiary", move || !checked.get())
+                            class=("translate-x-[3px] bg-fg-tertiary", move || !checked.get())
                         />
                     </button>
                 </div>
@@ -234,8 +234,8 @@ fn ControlWidget(
                     <div class="flex items-center gap-3">
                         <button
                             type="button"
-                            class="h-9 w-9 shrink-0 rounded-xl border border-border-default shadow-lg
-                                   transition-all duration-200 hover:scale-105 hover:border-border-strong
+                            class="h-9 w-9 shrink-0 rounded-xl border border-edge-default shadow-lg
+                                   transition-all duration-200 hover:scale-105 hover:border-edge-strong
                                    active:scale-95"
                             style=move || format!(
                                 "background: linear-gradient(145deg, {0}, color-mix(in srgb, {0} 65%, black)); \
@@ -257,8 +257,8 @@ fn ControlWidget(
                         />
                         <div class="min-w-0 flex-1">
                             <div class="flex items-center justify-between">
-                                <label class="text-xs text-text-secondary font-medium">{name.clone()}</label>
-                                <span class="text-[10px] font-mono text-text-tertiary/60 uppercase tracking-wider">
+                                <label class="text-xs text-fg-secondary font-medium">{name.clone()}</label>
+                                <span class="text-[10px] font-mono text-fg-tertiary/60 uppercase tracking-wider">
                                     {move || color.get().to_uppercase()}
                                 </span>
                             </div>
@@ -267,27 +267,27 @@ fn ControlWidget(
 
                     // Inline expanded color picker — accordion style, no overlay
                     <Show when=move || is_expanded.get()>
-                        <div class="mt-3 space-y-3 rounded-xl bg-surface-sunken border border-border-subtle
+                        <div class="mt-3 space-y-3 rounded-xl bg-surface-sunken border border-edge-subtle
                                     p-3.5 shadow-[0_4px_24px_rgba(0,0,0,0.35)] animate-slide-down">
                             // Header — large preview + hex display + close
                             <div class="flex items-center justify-between">
                                 <div class="flex items-center gap-2.5">
                                     <div
-                                        class="h-7 w-7 rounded-lg border border-border-subtle"
+                                        class="h-7 w-7 rounded-lg border border-edge-subtle"
                                         style=move || format!(
                                             "background: {}; box-shadow: 0 0 10px {}44",
                                             color.get(), color.get()
                                         )
                                     />
-                                    <span class="text-xs font-mono uppercase text-text-tertiary/70 tracking-wider">
+                                    <span class="text-xs font-mono uppercase text-fg-tertiary/70 tracking-wider">
                                         {move || color.get().to_uppercase()}
                                     </span>
                                 </div>
                                 <button
                                     type="button"
-                                    class="px-2.5 py-1 rounded-lg text-[10px] font-medium text-text-tertiary
-                                           border border-border-subtle bg-surface-overlay/30
-                                           hover:bg-surface-hover/50 hover:text-text-primary hover:border-border-default
+                                    class="px-2.5 py-1 rounded-lg text-[10px] font-medium text-fg-tertiary
+                                           border border-edge-subtle bg-surface-overlay/30
+                                           hover:bg-surface-hover/50 hover:text-fg-primary hover:border-edge-default
                                            active:scale-95 transition-all duration-150"
                                     on:click={
                                         let picker_id = picker_id.clone();
@@ -306,9 +306,9 @@ fn ControlWidget(
                             // Hex input
                             <input
                                 type="text"
-                                class="w-full rounded-lg border border-border-subtle bg-surface-overlay/40
-                                       px-3 py-2 text-sm font-mono uppercase text-text-primary
-                                       placeholder-text-tertiary/30 focus:outline-none
+                                class="w-full rounded-lg border border-edge-subtle bg-surface-overlay/40
+                                       px-3 py-2 text-sm font-mono uppercase text-fg-primary
+                                       placeholder-fg-tertiary/30 focus:outline-none
                                        focus:border-accent-muted transition-all duration-150"
                                 maxlength="7"
                                 placeholder="#E135FF"
@@ -366,7 +366,7 @@ fn ControlWidget(
                                             type="button"
                                             class="aspect-square rounded-lg border transition-all duration-150 hover:scale-110"
                                             class=("border-white/30 shadow-[0_0_8px_rgba(225,53,255,0.3)]", move || is_active.get())
-                                            class=("border-border-subtle", move || !is_active.get())
+                                            class=("border-edge-subtle", move || !is_active.get())
                                             style=format!("background: {swatch_hex}")
                                             on:click={
                                                 let control_name = control_name.clone();
@@ -427,7 +427,7 @@ fn ControlWidget(
                                             }
                                         }
                                     />
-                                    <span class="text-[10px] font-mono text-text-tertiary/60 w-7 text-right tabular-nums">
+                                    <span class="text-[10px] font-mono text-fg-tertiary/60 w-7 text-right tabular-nums">
                                         {move || red.get()}
                                     </span>
                                 </div>
@@ -468,7 +468,7 @@ fn ControlWidget(
                                             }
                                         }
                                     />
-                                    <span class="text-[10px] font-mono text-text-tertiary/60 w-7 text-right tabular-nums">
+                                    <span class="text-[10px] font-mono text-fg-tertiary/60 w-7 text-right tabular-nums">
                                         {move || green.get()}
                                     </span>
                                 </div>
@@ -509,7 +509,7 @@ fn ControlWidget(
                                             }
                                         }
                                     />
-                                    <span class="text-[10px] font-mono text-text-tertiary/60 w-7 text-right tabular-nums">
+                                    <span class="text-[10px] font-mono text-fg-tertiary/60 w-7 text-right tabular-nums">
                                         {move || blue.get()}
                                     </span>
                                 </div>
@@ -531,9 +531,9 @@ fn ControlWidget(
             view! {
                 <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-surface-hover/20 transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-text-primary-muted font-medium mb-1.5 block">{name.clone()}</label>
+                    <label class="text-xs text-fg-primary-muted font-medium mb-1.5 block">{name.clone()}</label>
                     <select
-                        class="w-full bg-surface-sunken border border-border-subtle rounded-lg px-3 py-1.5 text-xs text-text-primary
+                        class="w-full bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-xs text-fg-primary
                                focus:outline-none focus:border-accent-muted
                                focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1)]
                                cursor-pointer transition-all duration-150"
@@ -569,13 +569,13 @@ fn ControlWidget(
             view! {
                 <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-surface-hover/20 transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-text-primary-muted font-medium mb-1.5 block">{name.clone()}</label>
+                    <label class="text-xs text-fg-primary-muted font-medium mb-1.5 block">{name.clone()}</label>
                     <input
                         type="text"
-                        class="w-full bg-surface-sunken border border-border-subtle rounded-lg px-3 py-1.5 text-xs text-text-primary
+                        class="w-full bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-xs text-fg-primary
                                focus:outline-none focus:border-accent-muted
                                focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1)]
-                               placeholder-text-tertiary/40 transition-all duration-150"
+                               placeholder-fg-tertiary/40 transition-all duration-150"
                         prop:value=move || text.get()
                         on:change=move |ev| {
                             use wasm_bindgen::JsCast;
@@ -593,9 +593,9 @@ fn ControlWidget(
         ControlType::GradientEditor => {
             view! {
                 <div class="rounded-lg px-3 py-2.5 opacity-40">
-                    <label class="text-xs text-text-primary-muted font-medium mb-1 block">{name.clone()}</label>
+                    <label class="text-xs text-fg-primary-muted font-medium mb-1 block">{name.clone()}</label>
                     <div class="h-6 rounded-md bg-gradient-to-r from-electric-purple via-neon-cyan to-coral opacity-30" />
-                    <span class="text-[9px] text-text-primary-dim/40 mt-1 block">"Gradient editor coming soon"</span>
+                    <span class="text-[9px] text-fg-primary-dim/40 mt-1 block">"Gradient editor coming soon"</span>
                 </div>
             }.into_any()
         }

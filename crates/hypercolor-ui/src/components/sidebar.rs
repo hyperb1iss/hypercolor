@@ -109,17 +109,17 @@ pub fn Sidebar() -> impl IntoView {
 
     view! {
         <nav
-            class="flex flex-col h-full bg-surface-raised border-r border-border-subtle shrink-0 transition-[width] duration-250 ease-out relative"
+            class="flex flex-col h-full bg-surface-raised border-r border-edge-subtle shrink-0 transition-[width] duration-250 ease-out relative"
             class:w-56=move || !collapsed.get()
             class:w-14=move || collapsed.get()
         >
             // Logo section
-            <div class="h-14 flex items-center px-4 border-b border-border-subtle">
+            <div class="h-14 flex items-center px-4 border-b border-edge-subtle">
                 <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-electric-purple via-coral to-neon-cyan flex items-center justify-center shadow-[0_0_12px_rgba(225,53,255,0.3)]">
                     <span class="text-[11px] font-bold text-white">"H"</span>
                 </div>
                 <span
-                    class="ml-3 text-sm font-semibold tracking-wider text-text-primary whitespace-nowrap overflow-hidden transition-opacity duration-200"
+                    class="ml-3 text-sm font-semibold tracking-wider text-fg-primary whitespace-nowrap overflow-hidden transition-opacity duration-200"
                     class:opacity-0=move || collapsed.get()
                     class:opacity-100=move || !collapsed.get()
                     class:w-0=move || collapsed.get()
@@ -149,9 +149,9 @@ pub fn Sidebar() -> impl IntoView {
                             attr:class=move || {
                                 let base = "flex items-center h-10 px-3 rounded-lg nav-item-hover group relative";
                                 if is_active.get() {
-                                    format!("{base} bg-accent-muted text-text-primary")
+                                    format!("{base} bg-accent-muted text-fg-primary")
                                 } else {
-                                    format!("{base} text-text-tertiary hover:text-text-primary hover:bg-surface-hover/30")
+                                    format!("{base} text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/30")
                                 }
                             }
                         >
@@ -206,8 +206,8 @@ pub fn Sidebar() -> impl IntoView {
                         <div class="flex items-center gap-2 min-w-0">
                             <div class="w-2 h-2 rounded-full dot-alive shrink-0" style=dot_style />
                             <div class="min-w-0 flex-1">
-                                <div class="text-xs font-medium text-text-primary truncate">{name}</div>
-                                <div class="text-[10px] text-text-tertiary capitalize">{cat}</div>
+                                <div class="text-xs font-medium text-fg-primary truncate">{name}</div>
+                                <div class="text-[10px] text-fg-tertiary capitalize">{cat}</div>
                             </div>
                         </div>
 
@@ -215,7 +215,7 @@ pub fn Sidebar() -> impl IntoView {
                         <div class="flex items-center justify-center gap-1">
                             // Previous
                             <button
-                                class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-hover/60 player-btn"
+                                class="p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/60 player-btn"
                                 title="Previous effect"
                                 on:click=move |_| navigate_effect(-1)
                             >
@@ -231,7 +231,7 @@ pub fn Sidebar() -> impl IntoView {
                             </button>
                             // Next
                             <button
-                                class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-hover/60 player-btn"
+                                class="p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/60 player-btn"
                                 title="Next effect"
                                 on:click=move |_| navigate_effect(1)
                             >
@@ -239,7 +239,7 @@ pub fn Sidebar() -> impl IntoView {
                             </button>
                             // Shuffle
                             <button
-                                class="p-1.5 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-surface-hover/60 player-btn"
+                                class="p-1.5 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/60 player-btn"
                                 title="Random effect"
                                 on:click=move |_| random_effect()
                             >
@@ -251,9 +251,9 @@ pub fn Sidebar() -> impl IntoView {
             }}
 
             // Collapse toggle at bottom
-            <div class="px-2 py-3 border-t border-border-subtle">
+            <div class="px-2 py-3 border-t border-edge-subtle">
                 <button
-                    class="flex items-center justify-center w-full h-8 rounded-lg text-text-tertiary hover:text-text-secondary
+                    class="flex items-center justify-center w-full h-8 rounded-lg text-fg-tertiary hover:text-fg-secondary
                            hover:bg-surface-hover/30 btn-press"
                     on:click=move |_| set_collapsed.update(|v| *v = !*v)
                     title=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }

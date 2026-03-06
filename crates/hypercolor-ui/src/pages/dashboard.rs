@@ -20,8 +20,8 @@ pub fn DashboardPage() -> impl IntoView {
         <div class="space-y-6 max-w-5xl animate-fade-in">
             // Hero
             <div>
-                <h1 class="text-lg font-medium text-text-primary mb-0.5">"Dashboard"</h1>
-                <p class="text-[13px] text-text-secondary">"Hypercolor lighting engine overview"</p>
+                <h1 class="text-lg font-medium text-fg-primary mb-0.5">"Dashboard"</h1>
+                <p class="text-[13px] text-fg-secondary">"Hypercolor lighting engine overview"</p>
             </div>
 
             // Status cards
@@ -41,14 +41,14 @@ pub fn DashboardPage() -> impl IntoView {
             // Main: preview + quick switch
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
                 // Live preview
-                <div class="rounded-xl bg-surface-overlay/60 border border-border-subtle overflow-hidden">
-                    <div class="px-4 py-3 border-b border-border-subtle flex items-center justify-between">
-                        <h2 class="text-[13px] font-medium text-text-secondary">"Live Preview"</h2>
+                <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
+                    <div class="px-4 py-3 border-b border-edge-subtle flex items-center justify-between">
+                        <h2 class="text-[13px] font-medium text-fg-secondary">"Live Preview"</h2>
                         {move || ws.active_effect.get().map(|name| {
                             view! {
                                 <div class="flex items-center gap-1.5">
                                     <div class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-                                    <span class="text-[11px] text-text-secondary font-mono">{name}</span>
+                                    <span class="text-[11px] text-fg-secondary font-mono">{name}</span>
                                 </div>
                             }
                         })}
@@ -63,13 +63,13 @@ pub fn DashboardPage() -> impl IntoView {
                 </div>
 
                 // Quick switch
-                <div class="rounded-xl bg-surface-overlay/60 border border-border-subtle">
-                    <div class="px-4 py-3 border-b border-border-subtle">
-                        <h2 class="text-[13px] font-medium text-text-secondary">"Quick Switch"</h2>
+                <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle">
+                    <div class="px-4 py-3 border-b border-edge-subtle">
+                        <h2 class="text-[13px] font-medium text-fg-secondary">"Quick Switch"</h2>
                     </div>
                     <div class="p-3">
                         <Suspense fallback=move || view! {
-                            <div class="text-xs text-text-tertiary py-4 text-center">"Loading effects..."</div>
+                            <div class="text-xs text-fg-tertiary py-4 text-center">"Loading effects..."</div>
                         }>
                             {move || effects_resource.get().map(|result| {
                                 match result {
@@ -81,7 +81,7 @@ pub fn DashboardPage() -> impl IntoView {
                                         view! { <QuickSwitchGrid effects=runnable /> }.into_any()
                                     }
                                     Err(_) => view! {
-                                        <p class="text-xs text-text-tertiary">"Could not load effects"</p>
+                                        <p class="text-xs text-fg-tertiary">"Could not load effects"</p>
                                     }.into_any(),
                                 }
                             })}
@@ -128,12 +128,12 @@ fn StatusCards(status: SystemStatus) -> impl IntoView {
             {cards.into_iter().enumerate().map(|(i, (label, value, healthy, _accent))| {
                 let delay_class = format!("stagger-{}", i + 1);
                 view! {
-                    <div class=format!("rounded-xl bg-surface-overlay/60 border border-border-subtle px-4 py-3 animate-fade-in-up {delay_class}")>
-                        <div class="text-[9px] font-mono uppercase tracking-[0.15em] text-text-tertiary mb-1.5">{label}</div>
+                    <div class=format!("rounded-xl bg-surface-overlay/60 border border-edge-subtle px-4 py-3 animate-fade-in-up {delay_class}")>
+                        <div class="text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary mb-1.5">{label}</div>
                         <div
                             class="text-lg font-medium tabular-nums"
-                            class=("text-text-primary", healthy)
-                            class=("text-text-secondary", !healthy)
+                            class=("text-fg-primary", healthy)
+                            class=("text-fg-secondary", !healthy)
                         >
                             {value}
                         </div>
@@ -149,7 +149,7 @@ fn StatusCards(status: SystemStatus) -> impl IntoView {
 fn QuickSwitchGrid(effects: Vec<EffectSummary>) -> impl IntoView {
     if effects.is_empty() {
         return view! {
-            <p class="text-xs text-text-tertiary py-4 text-center">"No runnable effects found"</p>
+            <p class="text-xs text-fg-tertiary py-4 text-center">"No runnable effects found"</p>
         }
         .into_any();
     }
@@ -163,7 +163,7 @@ fn QuickSwitchGrid(effects: Vec<EffectSummary>) -> impl IntoView {
                 let delay = format!("animation-delay: {}ms", i * 25);
                 view! {
                     <button
-                        class="text-left px-3 py-2 rounded-lg bg-surface-overlay/20 border border-border-subtle
+                        class="text-left px-3 py-2 rounded-lg bg-surface-overlay/20 border border-edge-subtle
                                hover:bg-accent-subtle hover:border-accent-muted card-hover btn-press group
                                animate-fade-in-up"
                         style=delay
@@ -174,8 +174,8 @@ fn QuickSwitchGrid(effects: Vec<EffectSummary>) -> impl IntoView {
                             });
                         }
                     >
-                        <div class="text-[12px] text-text-secondary truncate group-hover:text-text-primary transition-colors">{name}</div>
-                        <div class="text-[10px] text-text-tertiary capitalize">{category}</div>
+                        <div class="text-[12px] text-fg-secondary truncate group-hover:text-fg-primary transition-colors">{name}</div>
+                        <div class="text-[10px] text-fg-tertiary capitalize">{category}</div>
                     </button>
                 }
             }).collect_view()}
@@ -190,7 +190,7 @@ fn StatusSkeleton() -> impl IntoView {
     view! {
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
             {(0..4).map(|_| view! {
-                <div class="rounded-xl bg-surface-overlay/40 border border-border-subtle px-4 py-3 animate-pulse">
+                <div class="rounded-xl bg-surface-overlay/40 border border-edge-subtle px-4 py-3 animate-pulse">
                     <div class="h-2.5 w-12 bg-surface-overlay/40 rounded mb-2" />
                     <div class="h-5 w-16 bg-surface-overlay/40 rounded" />
                 </div>
