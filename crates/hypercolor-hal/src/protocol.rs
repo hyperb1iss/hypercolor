@@ -20,6 +20,12 @@ pub trait Protocol: Send + Sync {
     /// Encode a device frame into one or more wire-level commands.
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand>;
 
+    /// Encode a hardware brightness change, if the protocol supports it.
+    #[must_use]
+    fn encode_brightness(&self, _brightness: u8) -> Option<Vec<ProtocolCommand>> {
+        None
+    }
+
     /// Parse a raw device response payload.
     ///
     /// # Errors

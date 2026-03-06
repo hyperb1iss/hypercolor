@@ -6,7 +6,9 @@ use crate::protocol::Protocol;
 use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
 
 use super::protocol::RazerProtocol;
-use super::types::{LED_ID_BACKLIGHT, LED_ID_ZERO, RazerMatrixType, RazerProtocolVersion};
+use super::types::{
+    LED_ID_BACKLIGHT, LED_ID_ZERO, RazerLightingCommandSet, RazerMatrixType, RazerProtocolVersion,
+};
 
 /// Razer vendor ID.
 pub const RAZER_VENDOR_ID: u16 = 0x1532;
@@ -27,6 +29,7 @@ pub const PID_BLADE_15_LATE_2021_ADVANCED: u16 = 0x0276;
 pub fn build_huntsman_v2_protocol() -> Box<dyn Protocol> {
     Box::new(RazerProtocol::new(
         RazerProtocolVersion::Extended,
+        RazerLightingCommandSet::Extended,
         RazerMatrixType::Extended,
         (6, 22),
         LED_ID_BACKLIGHT,
@@ -37,6 +40,7 @@ pub fn build_huntsman_v2_protocol() -> Box<dyn Protocol> {
 pub fn build_basilisk_v3_protocol() -> Box<dyn Protocol> {
     Box::new(RazerProtocol::new(
         RazerProtocolVersion::Modern,
+        RazerLightingCommandSet::Extended,
         RazerMatrixType::Extended,
         (1, 11),
         LED_ID_ZERO,
@@ -45,18 +49,23 @@ pub fn build_basilisk_v3_protocol() -> Box<dyn Protocol> {
 
 /// Build a Seiren Emote protocol instance.
 pub fn build_seiren_emote_protocol() -> Box<dyn Protocol> {
-    Box::new(RazerProtocol::new(
-        RazerProtocolVersion::Extended,
-        RazerMatrixType::Extended,
-        (8, 8),
-        LED_ID_ZERO,
-    ))
+    Box::new(
+        RazerProtocol::new(
+            RazerProtocolVersion::Extended,
+            RazerLightingCommandSet::Extended,
+            RazerMatrixType::Extended,
+            (4, 16),
+            LED_ID_ZERO,
+        )
+        .with_reported_matrix_size((8, 8)),
+    )
 }
 
 /// Build a Blade 15 (Late 2021 Advanced) protocol instance.
 pub fn build_blade_15_late_2021_advanced_protocol() -> Box<dyn Protocol> {
     Box::new(RazerProtocol::new(
-        RazerProtocolVersion::Extended,
+        RazerProtocolVersion::Modern,
+        RazerLightingCommandSet::Standard,
         RazerMatrixType::Standard,
         (6, 16),
         LED_ID_BACKLIGHT,

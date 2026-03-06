@@ -13,7 +13,7 @@ use crate::protocol::{
 use super::crc::{RAZER_REPORT_LEN, razer_crc};
 use super::types::{
     EFFECT_CUSTOM_FRAME, LED_ID_BACKLIGHT, LED_ID_LOGO, LED_ID_SCROLL_WHEEL, LED_ID_ZERO, NOSTORE,
-    RazerMatrixType, RazerProtocolVersion,
+    RazerLightingCommandSet, RazerMatrixType, RazerProtocolVersion,
 };
 
 const STATUS_OFFSET: usize = 0;
@@ -28,8 +28,10 @@ const CRC_OFFSET: usize = 88;
 #[derive(Debug, Clone)]
 pub struct RazerProtocol {
     version: RazerProtocolVersion,
+    command_set: RazerLightingCommandSet,
     matrix_type: RazerMatrixType,
     matrix_size: (u8, u8),
+    reported_matrix_size: Option<(u8, u8)>,
     led_id: u8,
 }
 
@@ -38,22 +40,38 @@ impl RazerProtocol {
     #[must_use]
     pub fn new(
         version: RazerProtocolVersion,
+        command_set: RazerLightingCommandSet,
         matrix_type: RazerMatrixType,
         matrix_size: (u8, u8),
         led_id: u8,
     ) -> Self {
         Self {
             version,
+            command_set,
             matrix_type,
             matrix_size,
+            reported_matrix_size: None,
             led_id,
         }
+    }
+
+    /// Override the user-facing matrix dimensions when transport geometry differs.
+    #[must_use]
+    pub const fn with_reported_matrix_size(mut self, reported_matrix_size: (u8, u8)) -> Self {
+        self.reported_matrix_size = Some(reported_matrix_size);
+        self
     }
 
     /// Protocol generation.
     #[must_use]
     pub const fn version(&self) -> RazerProtocolVersion {
         self.version
+    }
+
+    /// Lighting command family used for non-mode packet generation.
+    #[must_use]
+    pub const fn command_set(&self) -> RazerLightingCommandSet {
+        self.command_set
     }
 
     /// Matrix addressing mode.
@@ -72,6 +90,26 @@ impl RazerProtocol {
     #[must_use]
     pub const fn led_id(&self) -> u8 {
         self.led_id
+    }
+
+    fn protocol_name(&self) -> &'static str {
+        match (self.version, self.command_set) {
+            (RazerProtocolVersion::Legacy, _) => "Razer Legacy",
+            (RazerProtocolVersion::Extended, RazerLightingCommandSet::Extended) => "Razer Extended",
+            (RazerProtocolVersion::Extended, RazerLightingCommandSet::Standard) => {
+                "Razer 0x3F Standard"
+            }
+            (RazerProtocolVersion::Modern, RazerLightingCommandSet::Extended) => "Razer Modern",
+            (RazerProtocolVersion::Modern, RazerLightingCommandSet::Standard) => {
+                "Razer 0x1F Standard"
+            }
+            (RazerProtocolVersion::WirelessKb, RazerLightingCommandSet::Extended) => {
+                "Razer Wireless Keyboard"
+            }
+            (RazerProtocolVersion::WirelessKb, RazerLightingCommandSet::Standard) => {
+                "Razer 0x9F Standard"
+            }
+        }
     }
 
     fn mode_command(&self, mode: u8, post_delay: Duration) -> Option<ProtocolCommand> {
@@ -157,31 +195,41 @@ impl RazerProtocol {
     }
 
     fn activation_command(&self) -> Option<ProtocolCommand> {
-        if matches!(self.version, RazerProtocolVersion::Legacy) {
+        if matches!(self.command_set, RazerLightingCommandSet::Standard) {
             return self.build_packet(0x03, 0x0A, &[0x05, NOSTORE], false, Duration::ZERO);
         }
 
         self.build_packet(
             0x0F,
             0x02,
-            &[NOSTORE, self.led_id, EFFECT_CUSTOM_FRAME],
+            &[NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME],
             false,
             Duration::ZERO,
         )
     }
 
     fn encode_scalar(&self, color: [u8; 3]) -> Vec<ProtocolCommand> {
-        let args = if matches!(self.version, RazerProtocolVersion::Legacy) {
-            vec![NOSTORE, self.led_id, color[0], color[1], color[2]]
-        } else {
-            vec![NOSTORE, self.led_id, 0x01, color[0], color[1], color[2]]
-        };
-
-        let command_class = self.version.command_class();
-        let command_id = if matches!(self.version, RazerProtocolVersion::Legacy) {
-            0x01
-        } else {
-            0x02
+        let (command_class, command_id, args) = match self.command_set {
+            RazerLightingCommandSet::Standard => (
+                0x03,
+                0x01,
+                vec![NOSTORE, self.led_id, color[0], color[1], color[2]],
+            ),
+            RazerLightingCommandSet::Extended => (
+                0x0F,
+                0x02,
+                vec![
+                    NOSTORE,
+                    self.led_id,
+                    0x01,
+                    0x00,
+                    0x00,
+                    0x01,
+                    color[0],
+                    color[1],
+                    color[2],
+                ],
+            ),
         };
 
         self.build_packet(command_class, command_id, &args, false, Duration::ZERO)
@@ -252,14 +300,16 @@ impl RazerProtocol {
                 let start_col = u8::try_from(chunk_start).unwrap_or(0);
                 let stop_col = u8::try_from(chunk_end - 1).unwrap_or(0);
 
-                let (command_class, command_id) =
-                    if matches!(self.version, RazerProtocolVersion::Legacy) {
+                let (command_class, command_id) = match self.command_set {
+                    RazerLightingCommandSet::Standard => {
                         args.extend_from_slice(&[0xFF, row_u8, start_col, stop_col]);
                         (0x03, 0x0B)
-                    } else {
+                    }
+                    RazerLightingCommandSet::Extended => {
                         args.extend_from_slice(&[0x00, 0x00, row_u8, start_col, stop_col]);
                         (0x0F, 0x03)
-                    };
+                    }
+                };
 
                 for color in &row_colors[chunk_start..chunk_end] {
                     args.extend_from_slice(color);
@@ -297,12 +347,7 @@ impl RazerProtocol {
 
 impl Protocol for RazerProtocol {
     fn name(&self) -> &str {
-        match self.version {
-            RazerProtocolVersion::Legacy => "Razer Legacy",
-            RazerProtocolVersion::Extended => "Razer Extended",
-            RazerProtocolVersion::Modern => "Razer Modern",
-            RazerProtocolVersion::WirelessKb => "Razer Wireless Keyboard",
-        }
+        self.protocol_name()
     }
 
     fn init_sequence(&self) -> Vec<ProtocolCommand> {
@@ -329,6 +374,22 @@ impl Protocol for RazerProtocol {
             | RazerMatrixType::Extended
             | RazerMatrixType::ExtendedArgb => self.encode_matrix(&normalized),
         }
+    }
+
+    fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {
+        let (command_class, command_id) = match self.command_set {
+            RazerLightingCommandSet::Standard => (0x03, 0x03),
+            RazerLightingCommandSet::Extended => (0x0F, 0x04),
+        };
+
+        self.build_packet(
+            command_class,
+            command_id,
+            &[NOSTORE, self.led_id, brightness],
+            false,
+            Duration::ZERO,
+        )
+        .map(|command| vec![command])
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
@@ -377,14 +438,15 @@ impl Protocol for RazerProtocol {
 
     fn zones(&self) -> Vec<ProtocolZone> {
         let total_leds = self.total_leds();
+        let zone_matrix_size = self.reported_matrix_size.unwrap_or(self.matrix_size);
         let topology = match self.matrix_type {
             RazerMatrixType::None => DeviceTopologyHint::Point,
             RazerMatrixType::Linear => DeviceTopologyHint::Strip,
             RazerMatrixType::Standard
             | RazerMatrixType::Extended
             | RazerMatrixType::ExtendedArgb => DeviceTopologyHint::Matrix {
-                rows: u32::from(self.matrix_size.0),
-                cols: u32::from(self.matrix_size.1),
+                rows: u32::from(zone_matrix_size.0),
+                cols: u32::from(zone_matrix_size.1),
             },
         };
 

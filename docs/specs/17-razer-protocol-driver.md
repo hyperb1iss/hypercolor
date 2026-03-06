@@ -103,25 +103,25 @@ For performance, the implementation may use 8-byte-at-a-time XOR folding via `u6
 
 ## 3. Protocol Generations
 
-Razer devices span multiple protocol generations, distinguished by the `transaction_id` byte. This byte is set to a fixed value per device model and determines which command classes are available.
+Razer devices span multiple protocol generations, distinguished by the `transaction_id` byte. This byte is fixed per device model, but it does not uniquely determine the lighting command family. Some devices mix a newer transaction ID with the older standard LED command set.
 
 ```rust
 /// Razer protocol generation, determined by transaction_id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RazerProtocolVersion {
-    /// Legacy protocol — transaction_id 0xFF, command class 0x03.
+    /// Legacy protocol — transaction_id 0xFF.
     /// Older Chroma devices (BlackWidow 2014, DeathAdder Chroma).
     Legacy,
 
-    /// Extended protocol — transaction_id 0x3F, command class 0x0F.
+    /// Extended transaction family — transaction_id 0x3F.
     /// Huntsman V2, BlackWidow V3, Cynosa V2, Seiren Emote.
     Extended,
 
-    /// Modern protocol — transaction_id 0x1F, command class 0x0F.
+    /// Modern transaction family — transaction_id 0x1F.
     /// Basilisk V3, Cobra Pro, Blade 2021+, newest peripherals.
     Modern,
 
-    /// Wireless keyboard protocol — transaction_id 0x9F, command class 0x0F.
+    /// Wireless keyboard transaction family — transaction_id 0x9F.
     /// DeathStalker V2 Pro wireless, Huntsman V2 wireless.
     WirelessKb,
 }
@@ -136,30 +136,28 @@ impl RazerProtocolVersion {
             Self::WirelessKb => 0x9F,
         }
     }
+}
 
-    /// Command class for LED/effect operations.
-    pub fn command_class(self) -> u8 {
-        match self {
-            Self::Legacy => 0x03,
-            _ => 0x0F,
-        }
-    }
-
-    /// Whether this version uses extended matrix frame format.
-    pub fn uses_extended_fx(self) -> bool {
-        !matches!(self, Self::Legacy)
-    }
+/// Lighting command family used for color/effect/brightness packets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RazerLightingCommandSet {
+    /// Standard LED commands (`0x03` class).
+    Standard,
+    /// Extended matrix commands (`0x0F` class).
+    Extended,
 }
 ```
 
 ### Transaction ID Mapping Table
 
-| Transaction ID | Protocol | Command Class | Example Devices |
+| Transaction ID | Transaction Family | Lighting Command Family | Example Devices |
 |---------------|----------|---------------|-----------------|
-| `0xFF` | Legacy | `0x03` | BlackWidow 2014, DeathAdder Chroma, Mamba 2015 |
-| `0x3F` | Extended | `0x0F` | Huntsman V2, BlackWidow V3, Cynosa V2, Seiren Emote |
-| `0x1F` | Modern | `0x0F` | Basilisk V3, Cobra Pro, Blade 2021+, Viper V3 |
-| `0x9F` | Wireless KB | `0x0F` | DeathStalker V2 Pro (wireless), Huntsman V2 (wireless) |
+| `0xFF` | Legacy | Standard (`0x03`) | BlackWidow 2014, DeathAdder Chroma, Mamba 2015 |
+| `0x3F` | Extended | Extended (`0x0F`) | Huntsman V2, BlackWidow V3, Cynosa V2 |
+| `0x3F` | Extended | Extended (`0x0F`) | Seiren Emote (transported as 4 × 16, reported as 8 × 8) |
+| `0x1F` | Modern | Extended (`0x0F`) | Basilisk V3, Cobra Pro, Viper V3 |
+| `0x1F` | Modern | Standard (`0x03`) | Blade 15 (Late 2021 Advanced), some laptop keyboards |
+| `0x9F` | Wireless KB | Extended (`0x0F`) | DeathStalker V2 Pro (wireless), Huntsman V2 (wireless) |
 
 ---
 
@@ -170,11 +168,11 @@ impl RazerProtocolVersion {
 | Class | Purpose | Protocols |
 |-------|---------|-----------|
 | `0x00` | Device info, mode, polling rate | All |
-| `0x03` | Standard LED control & effects | Legacy |
+| `0x03` | Standard LED control & effects | Legacy plus standard-command modern devices (for example Blade laptops) |
 | `0x04` | DPI / mouse sensor | All (mice only) |
 | `0x05` | Profile management | All |
 | `0x07` | Power / battery | All (wireless only) |
-| `0x0F` | Extended matrix effects & frames | Extended, Modern, Wireless KB |
+| `0x0F` | Extended matrix effects & frames | Devices using the extended lighting command family across `0x3F`, `0x1F`, and `0x9F` transaction IDs |
 
 ### 4.2 Device Info Commands (Class 0x00)
 
@@ -379,7 +377,7 @@ Note: The Basilisk V3 does not support hardware breathing — Hypercolor must re
 | Interface | TBD |
 | Status | **Needs USB capture verification** |
 
-The Seiren V3 Chroma is not present in OpenRGB or openrazer databases as of this writing. The only Seiren variant with known protocol data is the Seiren Emote (`0x0F1B`, Extended protocol, 8×8 matrix). The V3 Chroma likely uses the Modern protocol (`0x1F`) with a small LED matrix for its RGB ring. Implementation will require USB traffic capture from L-Connect or Synapse for protocol verification.
+The Seiren V3 Chroma is not present in OpenRGB or openrazer databases as of this writing. The only Seiren variant with known protocol data is the Seiren Emote (`0x0F1B`, Extended transaction family, extended lighting commands, 4 × 16 transport geometry exposed as an 8 × 8 matrix). The V3 Chroma likely uses the Modern protocol (`0x1F`) with a small LED matrix for its RGB ring. Implementation will require USB traffic capture from L-Connect or Synapse for protocol verification.
 
 ### 6.2 PID Registry (Broader Coverage)
 
@@ -413,7 +411,7 @@ The Seiren V3 Chroma is not present in OpenRGB or openrazer databases as of this
 
 | Device | PID | Transaction ID | Notes |
 |--------|-----|---------------|-------|
-| Seiren Emote | `0x0F1B` | `0x3F` | Microphone, 8×8 matrix (64 LEDs) |
+| Seiren Emote | `0x0F1B` | `0x3F` | Microphone, 4 × 16 transport geometry, reported as 8 × 8 (64 LEDs) |
 | Firefly V2 | `0x008A` | `0x3F` | Mousepad, 1 × 20 |
 | Chroma Addressable RGB Controller | `0x0F1F` | `0x3F` | 6 ARGB channels |
 | Charging Pad Chroma | `0x0F26` | `0x3F` | 1 × 10 |
@@ -435,10 +433,14 @@ The Seiren V3 Chroma is not present in OpenRGB or openrazer databases as of this
 pub struct RazerProtocol {
     /// Protocol generation for this device.
     version: RazerProtocolVersion,
+    /// Lighting command family used for non-mode packets.
+    command_set: RazerLightingCommandSet,
     /// Matrix addressing mode.
     matrix_type: RazerMatrixType,
     /// Matrix dimensions (rows, columns).
     matrix_size: (u8, u8),
+    /// Optional user-facing dimensions when transport geometry differs.
+    reported_matrix_size: Option<(u8, u8)>,
     /// Primary LED ID for this device.
     led_id: u8,
 }
@@ -446,20 +448,19 @@ pub struct RazerProtocol {
 
 ### 7.2 Transport
 
-`RazerTransport` wraps `nusb` USB control transfers for HID feature report I/O:
+On Linux, Hypercolor uses `TransportType::UsbHidRaw` for Razer devices so the kernel HID driver can stay attached while feature reports flow through `/dev/hidraw*`:
 
 ```rust
-/// USB HID feature report transport for Razer devices.
+/// Linux HIDRAW transport for Razer devices.
 ///
-/// Sends/receives 90-byte reports via USB control transfers.
-/// Handles timing delays between commands.
-pub struct RazerTransport {
-    /// nusb device handle.
-    device: nusb::Device,
-    /// USB interface number (typically 3).
-    interface: u8,
+/// Sends/receives 90-byte feature reports through hidapi.
+pub struct UsbHidRawTransport {
+    /// Open `/dev/hidraw*` node path.
+    device_path: String,
     /// Report ID (0x00 for most devices, 0x07 for Leviathan V2).
     report_id: u8,
+    /// Maximum feature report length.
+    max_packet_len: usize,
 }
 ```
 
@@ -469,21 +470,19 @@ Each supported device is described by a static descriptor mapping VID/PID to pro
 
 ```rust
 /// Static descriptor for a known Razer device.
-pub struct RazerDeviceDescriptor {
-    /// USB Product ID.
-    pub pid: u16,
+pub struct DeviceDescriptor {
+    /// USB vendor ID.
+    pub vendor_id: u16,
+    /// USB product ID.
+    pub product_id: u16,
     /// Human-readable device name.
     pub name: &'static str,
-    /// Protocol generation.
-    pub version: RazerProtocolVersion,
-    /// Matrix type and addressing mode.
-    pub matrix_type: RazerMatrixType,
-    /// Matrix dimensions (rows, columns). (0, 0) for non-matrix devices.
-    pub matrix_size: (u8, u8),
-    /// USB interface number for HID reports.
-    pub interface: u8,
-    /// Primary LED ID.
-    pub led_id: u8,
+    /// Device family classification.
+    pub family: DeviceFamily,
+    /// Transport binding used to reach the device.
+    pub transport: TransportType,
+    /// Protocol constructor and stable identifier.
+    pub protocol: ProtocolBinding,
 }
 ```
 

@@ -14,5 +14,5 @@ pub use devices::{
 pub use protocol::RazerProtocol;
 pub use types::{
     EFFECT_CUSTOM_FRAME, LED_ID_BACKLIGHT, LED_ID_LOGO, LED_ID_SCROLL_WHEEL, LED_ID_ZERO, NOSTORE,
-    RazerMatrixType, RazerProtocolVersion, VARSTORE,
+    RazerLightingCommandSet, RazerMatrixType, RazerProtocolVersion, VARSTORE,
 };

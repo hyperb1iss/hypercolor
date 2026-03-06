@@ -1,9 +1,10 @@
 use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::drivers::razer::{
-    PID_BASILISK_V3, PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, RAZER_VENDOR_ID,
+    PID_BASILISK_V3, PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, PID_SEIREN_EMOTE,
+    RAZER_VENDOR_ID,
 };
 use hypercolor_hal::registry::TransportType;
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};
 
 #[test]
 fn lookup_returns_huntsman_descriptor() {
@@ -46,8 +47,27 @@ fn lookup_returns_blade_15_late_2021_advanced_descriptor() {
     );
 
     let protocol = (descriptor.protocol.build)();
-    assert_eq!(protocol.name(), "Razer Extended");
+    assert_eq!(protocol.name(), "Razer 0x1F Standard");
     assert_eq!(protocol.total_leds(), 96);
+}
+
+#[test]
+fn lookup_returns_seiren_emote_with_8x8_zone_topology() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_SEIREN_EMOTE)
+        .expect("Seiren Emote descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Seiren Emote");
+    assert_eq!(descriptor.family, DeviceFamily::Razer);
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Razer Extended");
+    assert_eq!(protocol.total_leds(), 64);
+    assert_eq!(protocol.zones().len(), 1);
+
+    match &protocol.zones()[0].topology {
+        DeviceTopologyHint::Matrix { rows, cols } => assert_eq!((*rows, *cols), (8, 8)),
+        other => panic!("expected matrix topology, got {other:?}"),
+    }
 }
 
 #[test]

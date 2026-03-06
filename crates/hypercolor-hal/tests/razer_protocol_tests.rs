@@ -1,8 +1,9 @@
 use hypercolor_hal::drivers::razer::{
-    LED_ID_BACKLIGHT, RAZER_REPORT_LEN, RazerMatrixType, RazerProtocol, RazerProtocolVersion,
-    razer_crc,
+    LED_ID_BACKLIGHT, RAZER_REPORT_LEN, RazerLightingCommandSet, RazerMatrixType, RazerProtocol,
+    RazerProtocolVersion, razer_crc,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolError, ResponseStatus};
+use hypercolor_types::device::DeviceTopologyHint;
 
 #[test]
 fn crc_uses_expected_byte_window() {
@@ -26,6 +27,7 @@ fn protocol_version_transaction_id_mapping() {
 fn encode_extended_matrix_splits_row_chunks_and_adds_activation() {
     let protocol = RazerProtocol::new(
         RazerProtocolVersion::Extended,
+        RazerLightingCommandSet::Extended,
         RazerMatrixType::Extended,
         (1, 26),
         LED_ID_BACKLIGHT,
@@ -53,12 +55,96 @@ fn encode_extended_matrix_splits_row_chunks_and_adds_activation() {
     let activation = &commands[2].data;
     assert_eq!(activation[6], 0x0F);
     assert_eq!(activation[7], 0x02);
+    assert_eq!(activation[8], 0x00);
+    assert_eq!(activation[9], 0x00);
+    assert_eq!(activation[10], 0x08);
+}
+
+#[test]
+fn encode_standard_matrix_supports_modern_transaction_ids() {
+    let protocol = RazerProtocol::new(
+        RazerProtocolVersion::Modern,
+        RazerLightingCommandSet::Standard,
+        RazerMatrixType::Standard,
+        (1, 2),
+        LED_ID_BACKLIGHT,
+    );
+
+    let commands = protocol.encode_frame(&[[1, 2, 3], [4, 5, 6]]);
+    assert_eq!(commands.len(), 2, "frame packet + activation");
+    assert_eq!(protocol.name(), "Razer 0x1F Standard");
+
+    let frame = &commands[0].data;
+    assert_eq!(frame[1], 0x1F);
+    assert_eq!(frame[6], 0x03);
+    assert_eq!(frame[7], 0x0B);
+    assert_eq!(frame[8], 0xFF);
+
+    let activation = &commands[1].data;
+    assert_eq!(activation[1], 0x1F);
+    assert_eq!(activation[6], 0x03);
+    assert_eq!(activation[7], 0x0A);
+}
+
+#[test]
+fn encode_brightness_uses_command_family_specific_packets() {
+    let standard = RazerProtocol::new(
+        RazerProtocolVersion::Modern,
+        RazerLightingCommandSet::Standard,
+        RazerMatrixType::Standard,
+        (1, 1),
+        LED_ID_BACKLIGHT,
+    );
+    let extended = RazerProtocol::new(
+        RazerProtocolVersion::Extended,
+        RazerLightingCommandSet::Extended,
+        RazerMatrixType::Extended,
+        (1, 1),
+        LED_ID_BACKLIGHT,
+    );
+
+    let standard_cmd = standard
+        .encode_brightness(0x7F)
+        .expect("standard brightness should encode");
+    assert_eq!(standard_cmd.len(), 1);
+    assert_eq!(standard_cmd[0].data[1], 0x1F);
+    assert_eq!(standard_cmd[0].data[6], 0x03);
+    assert_eq!(standard_cmd[0].data[7], 0x03);
+
+    let extended_cmd = extended
+        .encode_brightness(0x55)
+        .expect("extended brightness should encode");
+    assert_eq!(extended_cmd.len(), 1);
+    assert_eq!(extended_cmd[0].data[1], 0x3F);
+    assert_eq!(extended_cmd[0].data[6], 0x0F);
+    assert_eq!(extended_cmd[0].data[7], 0x04);
+}
+
+#[test]
+fn reported_matrix_size_overrides_user_visible_topology() {
+    let protocol = RazerProtocol::new(
+        RazerProtocolVersion::Extended,
+        RazerLightingCommandSet::Extended,
+        RazerMatrixType::Extended,
+        (4, 16),
+        LED_ID_BACKLIGHT,
+    )
+    .with_reported_matrix_size((8, 8));
+
+    let zones = protocol.zones();
+    assert_eq!(zones.len(), 1);
+    assert_eq!(protocol.total_leds(), 64);
+    match &zones[0].topology {
+        DeviceTopologyHint::Matrix { rows, cols } => assert_eq!((*rows, *cols), (8, 8)),
+        other => panic!("expected matrix topology, got {other:?}"),
+    }
 }
 
 #[test]
 fn parse_response_reads_payload_on_success() {
     let protocol = RazerProtocol::new(
         RazerProtocolVersion::Extended,
+        RazerLightingCommandSet::Extended,
         RazerMatrixType::Extended,
         (1, 1),
         LED_ID_BACKLIGHT,
@@ -87,6 +173,7 @@ fn parse_response_reads_payload_on_success() {
 fn parse_response_rejects_crc_mismatch() {
     let protocol = RazerProtocol::new(
         RazerProtocolVersion::Extended,
+        RazerLightingCommandSet::Extended,
         RazerMatrixType::Extended,
         (1, 1),
         LED_ID_BACKLIGHT,
@@ -113,6 +200,7 @@ fn parse_response_rejects_crc_mismatch() {
 fn parse_response_propagates_device_failure() {
     let protocol = RazerProtocol::new(
         RazerProtocolVersion::Extended,
+        RazerLightingCommandSet::Extended,
         RazerMatrixType::Extended,
         (1, 1),
         LED_ID_BACKLIGHT,

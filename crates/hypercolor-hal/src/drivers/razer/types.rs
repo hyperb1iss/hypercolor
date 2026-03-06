@@ -27,21 +27,16 @@ impl RazerProtocolVersion {
             Self::WirelessKb => 0x9F,
         }
     }
+}
 
-    /// Command class used for frame/effect operations.
-    #[must_use]
-    pub const fn command_class(self) -> u8 {
-        match self {
-            Self::Legacy => 0x03,
-            _ => 0x0F,
-        }
-    }
+/// Lighting command family used for color/effect/brightness operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RazerLightingCommandSet {
+    /// Standard LED/effect commands under class `0x03`.
+    Standard,
 
-    /// Whether this version uses the extended frame format.
-    #[must_use]
-    pub const fn uses_extended_fx(self) -> bool {
-        !matches!(self, Self::Legacy)
-    }
+    /// Extended matrix/effect commands under class `0x0F`.
+    Extended,
 }
 
 /// Matrix addressing mode for a Razer device.
