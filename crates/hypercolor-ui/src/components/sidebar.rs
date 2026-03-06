@@ -1,12 +1,13 @@
 //! Fixed navigation sidebar — nav + now-playing section with player controls.
-//! The Now Playing panel dynamically samples the running effect's canvas output
-//! to extract a live color palette, creating an ambient glow that reflects the
-//! actual LED colors in real time.
+//! The Now Playing panel renders a live canvas thumbnail of the running effect
+//! and extracts a color palette for ambient glow styling.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_router::components::A;
 use leptos_router::hooks::use_location;
+use wasm_bindgen::Clamped;
+use wasm_bindgen::JsCast;
 
 use crate::app::{EffectsContext, WsContext};
 use crate::icons::*;
@@ -73,7 +74,6 @@ fn extract_palette(pixels: &[u8]) -> Option<LivePalette> {
         let chroma = max - min;
         let lightness = (max + min) / 2.0;
 
-        // Skip dark or desaturated pixels — we want vivid colors only
         if chroma < 0.15 || lightness < 0.08 {
             continue;
         }
@@ -94,7 +94,6 @@ fn extract_palette(pixels: &[u8]) -> Option<LivePalette> {
         sectors[sector].3 += 1;
     }
 
-    // Rank non-empty sectors by frequency
     let mut ranked: Vec<(usize, u32)> = sectors
         .iter()
         .enumerate()
@@ -124,7 +123,6 @@ fn extract_palette(pixels: &[u8]) -> Option<LivePalette> {
     Some(LivePalette { primary, secondary })
 }
 
-/// Linearly interpolate between two RGB triples for smooth color transitions.
 fn lerp_rgb(a: (f64, f64, f64), b: (f64, f64, f64), t: f64) -> (f64, f64, f64) {
     (
         a.0 + (b.0 - a.0) * t,
@@ -133,7 +131,6 @@ fn lerp_rgb(a: (f64, f64, f64), b: (f64, f64, f64), t: f64) -> (f64, f64, f64) {
     )
 }
 
-/// Format an RGB triple as a CSS-compatible string: "R, G, B".
 fn rgb_string(c: (f64, f64, f64)) -> String {
     format!("{:.0}, {:.0}, {:.0}", c.0, c.1, c.2)
 }
@@ -172,18 +169,19 @@ pub fn Sidebar() -> impl IntoView {
         },
     ];
 
-    // ── Live palette extraction from canvas frames ─────────────────────
+    // ── Live canvas + palette from WebSocket frames ────────────────────
     let ws = use_context::<WsContext>();
+    let np_canvas_ref = NodeRef::<leptos::html::Canvas>::new();
     let (live_palette, set_live_palette) = signal(None::<LivePalette>);
     let (last_palette_time, set_last_palette_time) = signal(0.0_f64);
 
     if let Some(ws) = ws {
+        // Palette extraction — throttled ~2x/sec for ambient styling
         Effect::new(move |_| {
             let Some(frame) = ws.canvas_frame.get() else {
                 return;
             };
 
-            // Throttle to ~2 updates/sec
             let now = js_sys::Date::now();
             if now - last_palette_time.get_untracked() < 500.0 {
                 return;
@@ -191,7 +189,6 @@ pub fn Sidebar() -> impl IntoView {
             set_last_palette_time.set(now);
 
             if let Some(new_palette) = extract_palette(&frame.pixels) {
-                // Smooth toward new colors via exponential moving average
                 let smoothed = match live_palette.get_untracked() {
                     Some(old) => LivePalette {
                         primary: lerp_rgb(old.primary, new_palette.primary, 0.3),
@@ -200,6 +197,37 @@ pub fn Sidebar() -> impl IntoView {
                     None => new_palette,
                 };
                 set_live_palette.set(Some(smoothed));
+            }
+        });
+
+        // Canvas painting — every frame, for smooth live thumbnail
+        Effect::new(move |_| {
+            let Some(frame) = ws.canvas_frame.get() else {
+                return;
+            };
+            let Some(canvas) = np_canvas_ref.get() else {
+                return;
+            };
+
+            if canvas.width() != frame.width || canvas.height() != frame.height {
+                canvas.set_width(frame.width);
+                canvas.set_height(frame.height);
+            }
+
+            let ctx = canvas
+                .get_context("2d")
+                .ok()
+                .flatten()
+                .and_then(|ctx| ctx.dyn_into::<web_sys::CanvasRenderingContext2d>().ok());
+
+            let Some(ctx) = ctx else { return };
+
+            if let Ok(data) = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
+                Clamped(&frame.pixels),
+                frame.width,
+                frame.height,
+            ) {
+                let _ = ctx.put_image_data(&data, 0.0, 0.0);
             }
         });
     }
@@ -322,7 +350,7 @@ pub fn Sidebar() -> impl IntoView {
                 }).collect_view()}
             </div>
 
-            // Now Playing — live palette panel pinned to bottom
+            // Now Playing — live thumbnail + palette-styled panel
             {move || {
                 if !has_active.get() || collapsed.get() {
                     return None;
@@ -331,7 +359,7 @@ pub fn Sidebar() -> impl IntoView {
                 let cat = fx.active_effect_category.get();
                 let fallback_rgb = category_accent_rgb(&cat).to_string();
 
-                // Use live-extracted palette if available, fall back to category accent
+                // Live palette colors with category fallback
                 let palette = live_palette.get();
                 let primary = palette.map_or_else(
                     || fallback_rgb.clone(),
@@ -342,43 +370,56 @@ pub fn Sidebar() -> impl IntoView {
                     |p| rgb_string(p.secondary),
                 );
 
-                // Diagonal gradient from primary to secondary with left edge glow strip
+                // Panel: left edge glow from primary color
                 let panel_style = format!(
-                    "background: linear-gradient(135deg, rgba({primary}, 0.12) 0%, rgba({secondary}, 0.04) 60%, transparent 100%); \
-                     box-shadow: inset 3px 0 0 rgb({primary}), inset 4px 0 12px rgba({primary}, 0.18)"
+                    "box-shadow: inset 3px 0 0 rgb({primary}), inset 4px 0 12px rgba({primary}, 0.15)"
                 );
+
+                // Canvas thumbnail glow — the thumbnail radiates the effect's colors
+                let thumb_glow = format!(
+                    "box-shadow: 0 4px 20px rgba({primary}, 0.25), 0 0 40px rgba({secondary}, 0.08)"
+                );
+
+                // Status dot
                 let dot_style = format!(
                     "background: rgb({primary}); box-shadow: 0 0 8px rgba({primary}, 0.7)"
-                );
-                // Subtle category label colored by secondary
-                let label_style = format!(
-                    "color: rgba({secondary}, 0.5)"
                 );
 
                 Some(view! {
                     <div
-                        class="border-t border-edge-subtle px-4 py-4 space-y-4 animate-fade-in"
+                        class="border-t border-edge-subtle py-3 space-y-3 animate-fade-in"
                         style=panel_style
                     >
-                        // Now playing label — picks up secondary palette color
-                        <div
-                            class="text-[9px] font-mono uppercase tracking-[0.15em]"
-                            style=label_style
-                        >
+                        // Now Playing label
+                        <div class="px-4 text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary/60">
                             "Now Playing"
                         </div>
 
-                        // Effect name + live-colored dot
-                        <div class="flex items-center gap-2.5 min-w-0">
-                            <div class="w-2.5 h-2.5 rounded-full dot-alive shrink-0" style=dot_style />
+                        // Live canvas thumbnail — the effect IS the album art
+                        <div class="px-3">
+                            <div
+                                class="relative rounded-lg overflow-hidden bg-black/40"
+                                style=thumb_glow
+                            >
+                                <canvas
+                                    node_ref=np_canvas_ref
+                                    class="w-full h-auto block"
+                                    style="image-rendering: pixelated;"
+                                />
+                            </div>
+                        </div>
+
+                        // Effect name + category
+                        <div class="px-4 flex items-center gap-2.5 min-w-0">
+                            <div class="w-2 h-2 rounded-full dot-alive shrink-0" style=dot_style />
                             <div class="min-w-0 flex-1">
-                                <div class="text-sm font-medium text-fg-primary truncate leading-tight">{name}</div>
+                                <div class="text-[13px] font-medium text-fg-primary truncate leading-tight">{name}</div>
                                 <div class="text-[10px] text-fg-tertiary capitalize mt-0.5">{cat}</div>
                             </div>
                         </div>
 
-                        // Player controls — full-width row with bigger touch targets
-                        <div class="flex items-center justify-between">
+                        // Player controls
+                        <div class="px-4 flex items-center justify-between">
                             <button
                                 class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Previous effect"
