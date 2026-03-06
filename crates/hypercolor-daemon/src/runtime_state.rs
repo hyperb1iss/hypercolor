@@ -28,6 +28,9 @@ pub struct RuntimeSessionSnapshot {
 
     /// Current active control values for the running effect.
     pub control_values: HashMap<String, ControlValue>,
+
+    /// Active layout ID, if one was applied to the spatial engine.
+    pub active_layout_id: Option<String>,
 }
 
 /// Errors produced while loading/saving runtime snapshots.
@@ -79,6 +82,7 @@ pub fn snapshot_from_engine(engine: &EffectEngine) -> RuntimeSessionSnapshot {
         active_effect_id,
         active_preset_id: engine.active_preset_id().map(ToOwned::to_owned),
         control_values: engine.active_controls().clone(),
+        active_layout_id: None, // Populated by the caller with spatial engine state.
     }
 }
 
@@ -161,6 +165,7 @@ mod tests {
             active_effect_id: Some("0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3".to_owned()),
             active_preset_id: Some("preset_42".to_owned()),
             control_values: controls,
+            active_layout_id: Some("layout_abc123".to_owned()),
         };
 
         save(&path, &expected).expect("save snapshot");
@@ -188,6 +193,7 @@ mod tests {
             active_effect_id: Some("0195e5b0-b2ea-7f22-9ab2-9bc31b48adf3".to_owned()),
             active_preset_id: Some("preset_42".to_owned()),
             control_values: HashMap::new(),
+            active_layout_id: None,
         });
 
         let worker_count = 8;

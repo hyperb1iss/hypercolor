@@ -627,6 +627,27 @@ pub async fn apply_layout(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Push a layout to the spatial engine for live preview (no persistence).
+pub async fn preview_layout(
+    layout: &hypercolor_types::spatial::SpatialLayout,
+) -> Result<(), String> {
+    let body =
+        serde_json::to_string(layout).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::put("/api/v1/layouts/active/preview")
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
 /// Delete a layout.
 pub async fn delete_layout(id: &str) -> Result<(), String> {
     let url = format!("/api/v1/layouts/{id}");

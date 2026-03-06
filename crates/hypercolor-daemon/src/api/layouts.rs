@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::persist_layouts;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -182,6 +183,8 @@ pub async fn create_layout(
     };
 
     layouts.insert(id, layout);
+    drop(layouts);
+    persist_layouts(&state).await;
     ApiResponse::created(summary)
 }
 
@@ -240,6 +243,8 @@ pub async fn update_layout(
         is_active: existing.id == active_layout_id,
     };
 
+    drop(layouts);
+    persist_layouts(&state).await;
     ApiResponse::ok(summary)
 }
 
@@ -271,6 +276,21 @@ pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<Str
     }))
 }
 
+/// `PUT /api/v1/layouts/active/preview` — Push a layout to the spatial engine without persisting.
+///
+/// Used by the layout editor for live preview while dragging zones.
+pub async fn preview_layout(
+    State(state): State<Arc<AppState>>,
+    Json(layout): Json<SpatialLayout>,
+) -> Response {
+    {
+        let mut spatial = state.spatial_engine.write().await;
+        spatial.update_layout(layout);
+    }
+
+    ApiResponse::ok(serde_json::json!({ "previewing": true }))
+}
+
 /// `DELETE /api/v1/layouts/:id` — Delete a layout.
 pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let active_layout_id = {
@@ -291,6 +311,8 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
     }
 
     layouts.remove(&key);
+    drop(layouts);
+    persist_layouts(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "id": key,

@@ -105,8 +105,11 @@ pub struct AppState {
     /// In-memory profile store.
     pub profiles: RwLock<HashMap<String, profiles::Profile>>,
 
-    /// In-memory layout store.
-    pub layouts: RwLock<HashMap<String, SpatialLayout>>,
+    /// In-memory layout store (shared with DaemonState, persisted to layouts.json).
+    pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
+
+    /// Persistent path for spatial layouts.
+    pub layouts_path: PathBuf,
 
     /// Logical device segmentation store (physical device -> logical ranges).
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
@@ -169,7 +172,8 @@ impl AppState {
             config_manager: None,
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             profiles: RwLock::new(HashMap::new()),
-            layouts: RwLock::new(HashMap::new()),
+            layouts: Arc::new(RwLock::new(HashMap::new())),
+            layouts_path: ConfigManager::data_dir().join("layouts.json"),
             logical_devices: Arc::new(RwLock::new(HashMap::new())),
             logical_devices_path: ConfigManager::data_dir().join("logical-devices.json"),
             effect_layout_links: Arc::new(RwLock::new(HashMap::new())),
@@ -216,7 +220,8 @@ impl AppState {
             config_manager: Some(Arc::clone(&daemon.config_manager)),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: RwLock::new(HashMap::new()),
-            layouts: RwLock::new(HashMap::new()),
+            layouts: Arc::clone(&daemon.layouts),
+            layouts_path: daemon.layouts_path.clone(),
             logical_devices: Arc::clone(&daemon.logical_devices),
             logical_devices_path: daemon.logical_devices_path.clone(),
             effect_layout_links: Arc::clone(&daemon.effect_layout_links),
@@ -235,12 +240,30 @@ impl Default for AppState {
     }
 }
 
-/// Persist the current runtime session snapshot (active effect/preset/controls).
+/// Persist the spatial layout store to disk.
+pub(crate) async fn persist_layouts(state: &Arc<AppState>) {
+    let layouts = state.layouts.read().await;
+    if let Err(error) = crate::layout_store::save(&state.layouts_path, &layouts) {
+        warn!(
+            path = %state.layouts_path.display(),
+            %error,
+            "Failed to persist layout store"
+        );
+    }
+}
+
+/// Persist the current runtime session snapshot (active effect/preset/controls/layout).
 pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
-    let snapshot = {
+    let mut snapshot = {
         let engine = state.effect_engine.lock().await;
         runtime_state::snapshot_from_engine(&engine)
     };
+
+    // Capture active layout ID from the spatial engine.
+    {
+        let spatial = state.spatial_engine.read().await;
+        snapshot.active_layout_id = Some(spatial.layout().id.clone());
+    }
 
     if let Err(error) = runtime_state::save(&state.runtime_state_path, &snapshot) {
         warn!(
@@ -366,7 +389,14 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             "/layouts",
             axum::routing::get(layouts::list_layouts).post(layouts::create_layout),
         )
-        .route("/layouts/active", axum::routing::get(layouts::get_active_layout))
+        .route(
+            "/layouts/active",
+            axum::routing::get(layouts::get_active_layout),
+        )
+        .route(
+            "/layouts/active/preview",
+            axum::routing::put(layouts::preview_layout),
+        )
         .route(
             "/layouts/{id}",
             axum::routing::get(layouts::get_layout)

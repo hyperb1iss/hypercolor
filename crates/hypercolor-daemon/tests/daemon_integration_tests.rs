@@ -177,6 +177,7 @@ async fn daemon_start_restores_last_runtime_session() {
         active_effect_id: Some(effect_id.clone()),
         active_preset_id: Some("startup-preset".to_owned()),
         control_values: HashMap::new(),
+        active_layout_id: None,
     };
     runtime_state::save(&state.runtime_state_path, &snapshot).expect("persist runtime snapshot");
 

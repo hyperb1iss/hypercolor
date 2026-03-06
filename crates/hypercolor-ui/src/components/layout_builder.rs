@@ -1,4 +1,7 @@
 //! Layout builder wrapper — toolbar + three-column layout editor.
+//!
+//! Edits are pushed to the spatial engine immediately for live preview.
+//! Save persists to disk. Revert restores to the last saved state.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -20,14 +23,29 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     let (selected_layout_id, set_selected_layout_id) = signal(None::<String>);
     let (layout, set_layout) = signal(None::<SpatialLayout>);
+    let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
     let (selected_zone_id, set_selected_zone_id) = signal(None::<String>);
-    let (is_dirty, set_is_dirty) = signal(false);
     let (creating, set_creating) = signal(false);
     let (new_layout_name, set_new_layout_name) = signal(String::new());
     let (initialized, set_initialized) = signal(false);
     let layout_signal = Signal::derive(move || layout.get());
     let zone_id_signal = Signal::derive(move || selected_zone_id.get());
     let has_layout = Signal::derive(move || layout.with(|current| current.is_some()));
+
+    // Derive dirty state by comparing working layout zones to saved snapshot.
+    let is_dirty = Signal::derive(move || {
+        let current = layout.get();
+        let saved = saved_layout.get();
+        match (current, saved) {
+            (Some(c), Some(s)) => c.zones != s.zones,
+            _ => false,
+        }
+    });
+
+    // Dummy signal setter that child components use — we derive dirty from comparison now.
+    let set_is_dirty = SignalSetter::map(move |_: bool| {
+        // No-op: dirty state is derived from layout vs saved_layout comparison.
+    });
 
     // Auto-select the active layout (or first available, or create a default) on mount
     Effect::new(move |_| {
@@ -75,23 +93,44 @@ pub fn LayoutBuilder() -> impl IntoView {
         let id = selected_layout_id.get();
         if let Some(id) = id {
             let set_layout = set_layout;
+            let set_saved = set_saved_layout;
             leptos::task::spawn_local(async move {
                 if let Ok(l) = api::fetch_layout(&id).await {
+                    set_saved.set(Some(l.clone()));
                     set_layout.set(Some(l));
                 }
             });
         } else {
             set_layout.set(None);
+            set_saved_layout.set(None);
         }
         set_selected_zone_id.set(None);
-        set_is_dirty.set(false);
     });
 
-    // Save handler
+    // Push live preview to spatial engine whenever the layout changes (debounced).
+    Effect::new(move |prev_zones: Option<Option<Vec<hypercolor_types::spatial::DeviceZone>>>| {
+        let current = layout.get();
+        let current_zones = current.as_ref().map(|l| l.zones.clone());
+
+        // Only push preview if zones actually changed (avoid initial no-op).
+        if current_zones != prev_zones.flatten() {
+            if let Some(l) = current {
+                let layout_clone = l.clone();
+                leptos::task::spawn_local(async move {
+                    let _ = api::preview_layout(&layout_clone).await;
+                });
+            }
+        }
+
+        current.map(|l| l.zones.clone())
+    });
+
+    // Save handler — persists to disk via PUT + persist
     let save_layout = move || {
         let Some(l) = layout.get_untracked() else { return };
         let id = l.id.clone();
         let zones = l.zones.clone();
+        let saved_copy = l.clone();
         let layouts_resource = ctx.layouts_resource;
         leptos::task::spawn_local(async move {
             let req = api::UpdateLayoutApiRequest {
@@ -103,7 +142,7 @@ pub fn LayoutBuilder() -> impl IntoView {
             };
             if api::update_layout(&id, &req).await.is_ok() {
                 toasts::toast_success("Layout saved");
-                set_is_dirty.set(false);
+                set_saved_layout.set(Some(saved_copy));
             } else {
                 toasts::toast_error("Failed to save layout");
             }
@@ -111,34 +150,11 @@ pub fn LayoutBuilder() -> impl IntoView {
         });
     };
 
-    // Apply handler
-    let apply_layout = move || {
-        let Some(l) = layout.get_untracked() else { return };
-        let id = l.id.clone();
-        let zones = l.zones.clone();
-        let layouts_resource = ctx.layouts_resource;
-        leptos::task::spawn_local(async move {
-            let req = api::UpdateLayoutApiRequest {
-                name: None,
-                description: None,
-                canvas_width: None,
-                canvas_height: None,
-                zones: Some(zones),
-            };
-
-            if api::update_layout(&id, &req).await.is_err() {
-                toasts::toast_error("Failed to save layout before apply");
-                return;
-            }
-
-            if api::apply_layout(&id).await.is_ok() {
-                toasts::toast_success("Layout applied");
-                set_is_dirty.set(false);
-            } else {
-                toasts::toast_error("Failed to apply layout");
-            }
-            layouts_resource.refetch();
-        });
+    // Revert handler — restores saved snapshot and pushes to spatial engine
+    let revert_layout = move || {
+        let Some(saved) = saved_layout.get_untracked() else { return };
+        set_layout.set(Some(saved));
+        toasts::toast_info("Layout reverted");
     };
 
     // Delete handler
@@ -148,6 +164,7 @@ pub fn LayoutBuilder() -> impl IntoView {
         let layouts_resource = ctx.layouts_resource;
         set_selected_layout_id.set(None);
         set_layout.set(None);
+        set_saved_layout.set(None);
         leptos::task::spawn_local(async move {
             if api::delete_layout(&id).await.is_ok() {
                 toasts::toast_info("Layout deleted");
@@ -271,30 +288,38 @@ pub fn LayoutBuilder() -> impl IntoView {
 
                 <div class="flex-1" />
 
-                // Save / Apply / Delete buttons — only when a layout is loaded
+                // Save / Revert / Delete buttons — only when a layout is loaded
                 {move || layout.get().map(|_| {
-                    let save_style = if is_dirty.get() {
+                    let dirty = is_dirty.get();
+                    let save_style = if dirty {
                         "background: rgba(80, 250, 123, 0.1); border-color: rgba(80, 250, 123, 0.2); color: rgb(80, 250, 123)"
                     } else {
-                        "background: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.06); color: rgba(161, 161, 170, 1)"
+                        "background: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.06); color: rgba(161, 161, 170, 0.4); pointer-events: none"
+                    };
+                    let revert_style = if dirty {
+                        "background: rgba(241, 250, 140, 0.08); border-color: rgba(241, 250, 140, 0.2); color: rgb(241, 250, 140)"
+                    } else {
+                        "background: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.06); color: rgba(161, 161, 170, 0.4); pointer-events: none"
                     };
                     view! {
                         <div class="flex items-center gap-2">
                             <button
                                 class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
-                                style=save_style
-                                on:click=move |_| save_layout()
+                                style=revert_style
+                                on:click=move |_| revert_layout()
+                                disabled=move || !is_dirty.get()
                             >
-                                <Icon icon=LuSave width="14px" height="14px" />
-                                {move || if is_dirty.get() { "Save *" } else { "Save" }}
+                                <Icon icon=LuUndo2 width="14px" height="14px" />
+                                "Revert"
                             </button>
                             <button
-                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-neon-cyan/[0.08] border border-neon-cyan/20
-                                       text-neon-cyan hover:bg-neon-cyan/[0.15] transition-all btn-press"
-                                on:click=move |_| apply_layout()
+                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                style=save_style
+                                on:click=move |_| save_layout()
+                                disabled=move || !is_dirty.get()
                             >
-                                <Icon icon=LuPlay width="14px" height="14px" />
-                                "Apply"
+                                <Icon icon=LuSave width="14px" height="14px" />
+                                "Save"
                             </button>
                             <button
                                 class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-error-red/[0.08] border border-error-red/20

@@ -539,6 +539,18 @@ impl DaemonState {
             return;
         };
 
+        // Restore active layout if persisted.
+        if let Some(layout_id) = &snapshot.active_layout_id {
+            let layouts = self.layouts.read().await;
+            if let Some(layout) = layouts.get(layout_id) {
+                let mut spatial = self.spatial_engine.write().await;
+                spatial.update_layout(layout.clone());
+                info!(layout_id, layout_name = %layout.name, "Restored active layout");
+            } else {
+                debug!(layout_id, "Persisted active layout not found in store; using default");
+            }
+        }
+
         if let Err(error) = self.apply_runtime_session_snapshot(snapshot).await {
             warn!(%error, "Failed to restore runtime session snapshot");
         }
