@@ -1,0 +1,109 @@
+/* ── Luminary Primitives ─────────────────────────────────────────────────────
+   Tier 1: Raw OKLCH values. Never referenced directly in components.
+   These register as Tailwind theme utilities via @theme.
+   ──────────────────────────────────────────────────────────────────────────── */
+
+@theme {
+    /* ── Void scale (dark surfaces, violet undertone) ── */
+    --color-void-1:     oklch(0.110 0.020 280);
+    --color-void-2:     oklch(0.130 0.018 280);
+    --color-void-3:     oklch(0.155 0.016 280);
+    --color-void-4:     oklch(0.185 0.014 280);
+    --color-void-5:     oklch(0.220 0.012 280);
+    --color-void-6:     oklch(0.280 0.010 280);
+
+    /* ── Cloud scale (light surfaces, violet undertone) ── */
+    --color-cloud-1:    oklch(0.985 0.005 280);
+    --color-cloud-2:    oklch(0.960 0.008 280);
+    --color-cloud-3:    oklch(0.930 0.010 280);
+    --color-cloud-4:    oklch(0.890 0.012 280);
+    --color-cloud-5:    oklch(0.840 0.014 280);
+    --color-cloud-6:    oklch(0.780 0.016 280);
+
+    /* ── SilkCircuit accent palette ── */
+    --color-purple:         oklch(0.65 0.30 320);
+    --color-purple-hover:   oklch(0.70 0.30 320);
+    --color-purple-light:   oklch(0.58 0.28 320);
+    --color-cyan:           oklch(0.88 0.18 175);
+    --color-coral:          oklch(0.72 0.22 350);
+    --color-yellow:         oklch(0.93 0.15 105);
+    --color-green:          oklch(0.85 0.22 155);
+    --color-red:            oklch(0.68 0.22 25);
+    --color-blue:           oklch(0.72 0.12 260);
+
+    /* ── Legacy hex aliases (backward compat during migration) ── */
+    --color-electric-purple: #e135ff;
+    --color-neon-cyan:       #80ffea;
+    --color-electric-yellow: #f1fa8c;
+    --color-success-green:   #50fa7b;
+    --color-error-red:       #ff6363;
+    --color-info-blue:       #82AAFF;
+    --color-pink-soft:       #ff99ff;
+
+    /* ── Typography ── */
+    --font-sans:    'Satoshi', 'Inter', system-ui, -apple-system, sans-serif;
+    --font-mono:    'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;
+    --font-display: 'Satoshi', system-ui, sans-serif;
+
+    /* ── Motion ── */
+    --ease-silk:    cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-spring:  cubic-bezier(0.34, 1.56, 0.64, 1);
+    --ease-out:     cubic-bezier(0, 0, 0.2, 1);
+    --duration-fast:   120ms;
+    --duration-normal: 200ms;
+    --duration-slow:   400ms;
+
+    /* ── Radii ── */
+    --radius-sm:  6px;
+    --radius-md:  10px;
+    --radius-lg:  14px;
+    --radius-xl:  20px;
+
+    /* ── Spacing (kept from legacy) ── */
+    --spacing-xs: 4px;
+    --spacing-sm: 8px;
+    --spacing-md: 16px;
+    --spacing-lg: 24px;
+    --spacing-xl: 32px;
+
+    /* ── Semantic surface aliases (resolve to CSS vars set per theme) ── */
+    --color-surface-base:    var(--surface-base);
+    --color-surface-raised:  var(--surface-raised);
+    --color-surface-overlay: var(--surface-overlay);
+    --color-surface-sunken:  var(--surface-sunken);
+    --color-surface-hover:   var(--surface-hover);
+    --color-surface-active:  var(--surface-active);
+
+    /* ── Semantic text aliases ── */
+    --color-text-primary:    var(--text-primary);
+    --color-text-secondary:  var(--text-secondary);
+    --color-text-tertiary:   var(--text-tertiary);
+
+    /* ── Semantic border aliases ── */
+    --color-border-subtle:   var(--border-subtle);
+    --color-border-default:  var(--border-default);
+    --color-border-strong:   var(--border-strong);
+    --color-border-focus:    var(--border-focus);
+
+    /* ── Semantic accent aliases ── */
+    --color-accent:          var(--accent);
+    --color-accent-hover:    var(--accent-hover);
+    --color-accent-muted:    var(--accent-muted);
+    --color-accent-subtle:   var(--accent-subtle);
+
+    /* ── Semantic status aliases ── */
+    --color-status-success:  var(--status-success);
+    --color-status-error:    var(--status-error);
+    --color-status-warning:  var(--status-warning);
+    --color-status-info:     var(--status-info);
+
+    /* ── Legacy surface aliases (backward compat) ── */
+    --color-layer-0: var(--surface-base);
+    --color-layer-1: var(--surface-raised);
+    --color-layer-2: var(--surface-overlay);
+    --color-layer-3: var(--surface-sunken);
+    --color-layer-4: var(--surface-hover);
+    --color-fg:      var(--text-primary);
+    --color-fg-muted: var(--text-secondary);
+    --color-fg-dim:  var(--text-tertiary);
+}

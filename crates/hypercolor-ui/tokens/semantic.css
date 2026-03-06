@@ -1,0 +1,121 @@
+/* ── Luminary Semantic Tokens ────────────────────────────────────────────────
+   Tier 2: Intent-mapped tokens, swapped per theme.
+   Components reference these via Tailwind aliases (bg-surface-base, etc.)
+   or directly (var(--surface-base)).
+   ──────────────────────────────────────────────────────────────────────────── */
+
+/* ── Dark mode (default) ── */
+
+:root, [data-theme="dark"] {
+    color-scheme: dark;
+
+    /* Surfaces */
+    --surface-base:      oklch(0.110 0.020 280);
+    --surface-raised:    oklch(0.130 0.018 280);
+    --surface-overlay:   oklch(0.155 0.016 280);
+    --surface-sunken:    oklch(0.185 0.014 280);
+    --surface-hover:     oklch(0.220 0.012 280);
+    --surface-active:    oklch(0.280 0.010 280);
+
+    /* Glass (Prism) */
+    --glass-bg:          oklch(0.13 0.02 280 / 0.70);
+    --glass-bg-dense:    oklch(0.13 0.02 280 / 0.85);
+    --glass-blur:        16px;
+    --glass-saturate:    1.3;
+    --glass-border:      oklch(1 0 0 / 0.06);
+
+    /* Text */
+    --text-primary:      oklch(0.96 0.01 280);
+    --text-secondary:    oklch(0.68 0.03 280);
+    --text-tertiary:     oklch(0.52 0.04 280);
+    --text-inverse:      oklch(0.110 0.020 280);
+
+    /* Borders */
+    --border-subtle:     oklch(1 0 0 / 0.06);
+    --border-default:    oklch(1 0 0 / 0.10);
+    --border-strong:     oklch(1 0 0 / 0.16);
+    --border-focus:      oklch(0.88 0.18 175 / 0.40);
+
+    /* Accent */
+    --accent:            oklch(0.65 0.30 320);
+    --accent-hover:      oklch(0.70 0.30 320);
+    --accent-muted:      oklch(0.65 0.30 320 / 0.12);
+    --accent-subtle:     oklch(0.65 0.30 320 / 0.06);
+
+    /* Ambient (dynamic — --ambient-hue set from Leptos) */
+    --ambient-hue:       320;
+    --ambient-glow:      oklch(0.65 0.20 var(--ambient-hue) / 0.08);
+    --ambient-border:    oklch(0.65 0.20 var(--ambient-hue) / 0.15);
+    --ambient-tint:      oklch(0.65 0.20 var(--ambient-hue) / 0.04);
+
+    /* Status */
+    --status-success:    oklch(0.85 0.22 155);
+    --status-error:      oklch(0.68 0.22 25);
+    --status-warning:    oklch(0.93 0.15 105);
+    --status-info:       oklch(0.72 0.12 260);
+
+    /* Scrollbar */
+    --scrollbar-thumb:   oklch(0.65 0.30 320 / 0.15);
+    --scrollbar-hover:   oklch(0.65 0.30 320 / 0.30);
+
+    /* Interactive glows (referenced in input.css for sliders, focus, etc.) */
+    --glow-accent:       oklch(0.65 0.30 320);
+    --glow-accent-50:    oklch(0.65 0.30 320 / 0.5);
+    --glow-accent-80:    oklch(0.65 0.30 320 / 0.8);
+    --glow-accent-70:    oklch(0.65 0.30 320 / 0.7);
+    --glow-focus:        oklch(0.88 0.18 175 / 0.30);
+    --glow-focus-soft:   oklch(0.88 0.18 175 / 0.15);
+    --selection-bg:      oklch(0.65 0.30 320 / 0.25);
+
+    /* Noise overlay intensity */
+    --noise-opacity:     0.025;
+}
+
+/* ── Light mode ── */
+
+[data-theme="light"] {
+    color-scheme: light;
+
+    /* Surfaces */
+    --surface-base:      oklch(0.985 0.005 280);
+    --surface-raised:    oklch(0.960 0.008 280);
+    --surface-overlay:   white;
+    --surface-sunken:    oklch(0.930 0.010 280);
+    --surface-hover:     oklch(0.890 0.012 280);
+    --surface-active:    oklch(0.840 0.014 280);
+
+    /* Glass */
+    --glass-bg:          oklch(0.98 0.005 280 / 0.70);
+    --glass-bg-dense:    oklch(0.98 0.005 280 / 0.85);
+    --glass-border:      oklch(0 0 0 / 0.08);
+
+    /* Text */
+    --text-primary:      oklch(0.18 0.02 280);
+    --text-secondary:    oklch(0.42 0.03 280);
+    --text-tertiary:     oklch(0.58 0.02 280);
+    --text-inverse:      oklch(0.985 0.005 280);
+
+    /* Borders */
+    --border-subtle:     oklch(0 0 0 / 0.06);
+    --border-default:    oklch(0 0 0 / 0.10);
+    --border-strong:     oklch(0 0 0 / 0.18);
+    --border-focus:      oklch(0.65 0.30 320 / 0.50);
+
+    /* Accent (slightly desaturated for light backgrounds) */
+    --accent:            oklch(0.58 0.28 320);
+    --accent-hover:      oklch(0.52 0.28 320);
+    --accent-muted:      oklch(0.58 0.28 320 / 0.10);
+    --accent-subtle:     oklch(0.58 0.28 320 / 0.05);
+
+    /* Ambient (lower intensity on light) */
+    --ambient-glow:      oklch(0.58 0.15 var(--ambient-hue) / 0.06);
+    --ambient-border:    oklch(0.58 0.15 var(--ambient-hue) / 0.12);
+    --ambient-tint:      oklch(0.58 0.15 var(--ambient-hue) / 0.03);
+
+    /* Scrollbar */
+    --scrollbar-thumb:   oklch(0 0 0 / 0.12);
+    --scrollbar-hover:   oklch(0 0 0 / 0.24);
+
+    /* Noise */
+    --noise-opacity:     0.01;
+}
