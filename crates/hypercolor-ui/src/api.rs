@@ -420,7 +420,15 @@ pub async fn update_device(id: &str, req: &UpdateDeviceRequest) -> Result<Device
 /// Identify a device by flashing its LEDs.
 pub async fn identify_device(id: &str) -> Result<(), String> {
     let url = format!("/api/v1/devices/{id}/identify");
+    let body = serde_json::json!({
+        "duration_ms": 2000,
+        "color": "FF06B5",
+    });
+
     let resp = Request::post(&url)
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&body).map_err(|e| format!("Serialize error: {e}"))?)
+        .map_err(|e| format!("Request error: {e}"))?
         .send()
         .await
         .map_err(|e| format!("Network error: {e}"))?;

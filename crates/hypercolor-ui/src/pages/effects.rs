@@ -49,6 +49,23 @@ pub fn EffectsPage() -> impl IntoView {
 
     let (search, set_search) = signal(String::new());
     let (category_filter, set_category_filter) = signal("all".to_string());
+    let (selected_authors, set_selected_authors) =
+        signal(std::collections::BTreeSet::<String>::new());
+    let (author_dropdown_open, set_author_dropdown_open) = signal(false);
+
+    // Derive unique sorted author list from loaded effects
+    let authors = Memo::new(move |_| {
+        let Some(Ok(effects)) = fx.effects_resource.get() else {
+            return Vec::new();
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for e in &effects {
+            if !e.author.is_empty() {
+                seen.insert(e.author.clone());
+            }
+        }
+        seen.into_iter().collect::<Vec<_>>()
+    });
 
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
     let ws_fps = Signal::derive(move || ws.fps.get());
@@ -67,6 +84,7 @@ pub fn EffectsPage() -> impl IntoView {
 
         let search_term = search.get().to_lowercase();
         let cat = category_filter.get();
+        let sel_authors = selected_authors.get();
 
         effects
             .into_iter()
@@ -74,14 +92,18 @@ pub fn EffectsPage() -> impl IntoView {
                 if cat != "all" && e.category != cat {
                     return false;
                 }
+                if !sel_authors.is_empty() && !sel_authors.contains(&e.author) {
+                    return false;
+                }
                 if !search_term.is_empty() {
                     let matches_name = e.name.to_lowercase().contains(&search_term);
                     let matches_desc = e.description.to_lowercase().contains(&search_term);
+                    let matches_author = e.author.to_lowercase().contains(&search_term);
                     let matches_tags = e
                         .tags
                         .iter()
                         .any(|t| t.to_lowercase().contains(&search_term));
-                    return matches_name || matches_desc || matches_tags;
+                    return matches_name || matches_desc || matches_author || matches_tags;
                 }
                 true
             })
@@ -175,6 +197,114 @@ pub fn EffectsPage() -> impl IntoView {
                         }
                     }).collect_view()}
                 </div>
+
+                // Author multiselect dropdown
+                {move || {
+                    let author_list = authors.get();
+                    (author_list.len() > 1).then(move || {
+                        let sel = selected_authors.get();
+                        let count = sel.len();
+                        let label = if count == 0 {
+                            "All authors".to_string()
+                        } else if count == 1 {
+                            sel.iter().next().unwrap_or(&String::new()).clone()
+                        } else {
+                            format!("{count} authors")
+                        };
+
+                        view! {
+                            <div class="relative">
+                                // Trigger button
+                                <button
+                                    class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200"
+                                    style=move || if selected_authors.get().is_empty() {
+                                        "color: rgba(255, 106, 193, 0.6); border-color: rgba(255, 106, 193, 0.1); background: rgba(255, 106, 193, 0.03)"
+                                    } else {
+                                        "background: rgba(255, 106, 193, 0.12); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.25); box-shadow: 0 0 10px rgba(255, 106, 193, 0.15)"
+                                    }
+                                    on:click=move |_| set_author_dropdown_open.update(|v| *v = !*v)
+                                >
+                                    <Icon icon=LuUser width="12px" height="12px" />
+                                    <span>{label.clone()}</span>
+                                    <span
+                                        class="w-3 h-3 flex items-center justify-center transition-transform duration-200"
+                                        class:rotate-180=move || author_dropdown_open.get()
+                                    >
+                                        <Icon icon=LuChevronDown width="12px" height="12px" />
+                                    </span>
+                                </button>
+
+                                // Dropdown panel
+                                {move || author_dropdown_open.get().then(|| {
+                                    let list = authors.get();
+                                    view! {
+                                        // Invisible backdrop to close on outside click
+                                        <div
+                                            class="fixed inset-0 z-20"
+                                            on:click=move |_| set_author_dropdown_open.set(false)
+                                        />
+                                        <div
+                                            class="absolute top-full left-0 mt-1 z-30 min-w-[200px] max-h-[280px] overflow-y-auto
+                                                   rounded-xl border border-white/[0.06] bg-layer-2 shadow-[0_8px_32px_rgba(0,0,0,0.4)]
+                                                   py-1 animate-fade-in scrollbar-none"
+                                        >
+                                            // Clear all option
+                                            <button
+                                                class="w-full text-left px-3 py-1.5 text-xs text-fg-dim hover:bg-white/[0.04] transition-colors"
+                                                on:click=move |_| {
+                                                    set_selected_authors.set(std::collections::BTreeSet::new());
+                                                    set_author_dropdown_open.set(false);
+                                                }
+                                            >
+                                                "All authors"
+                                            </button>
+                                            <div class="h-px bg-white/[0.04] mx-2 my-0.5" />
+                                            // Author checkboxes
+                                            {list.into_iter().map(|author| {
+                                                let author_toggle = author.clone();
+                                                let author_check = author.clone();
+                                                let author_check2 = author.clone();
+                                                let author_label = author.clone();
+                                                view! {
+                                                    <button
+                                                        class="w-full text-left px-3 py-1.5 flex items-center gap-2.5 text-xs hover:bg-white/[0.04] transition-colors group"
+                                                        on:click=move |_| {
+                                                            let a = author_toggle.clone();
+                                                            set_selected_authors.update(move |set| {
+                                                                if !set.remove(&a) {
+                                                                    set.insert(a);
+                                                                }
+                                                            });
+                                                        }
+                                                    >
+                                                        // Checkbox indicator
+                                                        <div
+                                                            class="w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all duration-150"
+                                                            style=move || {
+                                                                if selected_authors.get().contains(&author_check) {
+                                                                    "background: rgba(255, 106, 193, 0.8); border-color: rgb(255, 106, 193)"
+                                                                } else {
+                                                                    "border-color: rgba(255, 255, 255, 0.1); background: transparent"
+                                                                }
+                                                            }
+                                                        >
+                                                            {move || selected_authors.get().contains(&author_check2).then(|| view! {
+                                                                <Icon icon=LuCheck width="10px" height="10px" style="color: white" />
+                                                            })}
+                                                        </div>
+                                                        <span class="text-fg-muted group-hover:text-fg transition-colors truncate">
+                                                            {author_label.clone()}
+                                                        </span>
+                                                    </button>
+                                                }
+                                            }).collect_view()}
+                                        </div>
+                                    }
+                                })}
+                            </div>
+                        }
+                    })
+                }}
             </div>
 
             // Scrollable content: grid + pinned detail panel

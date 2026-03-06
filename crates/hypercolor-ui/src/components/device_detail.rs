@@ -91,7 +91,14 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
         set_identify_active.set(true);
         toasts::toast_info("Identifying device...");
         leptos::task::spawn_local(async move {
-            let _ = api::identify_device(&id).await;
+            if let Err(error) = api::identify_device(&id).await {
+                set_identify_active.set(false);
+                toasts::toast_error(&format!("Identify failed: {error}"));
+                return;
+            }
+
+            toasts::toast_success("Device identify flash started");
+
             // Flash indicator for 3s then reset
             let promise = js_sys::Promise::new(&mut |resolve, _| {
                 let _ = web_sys::window()

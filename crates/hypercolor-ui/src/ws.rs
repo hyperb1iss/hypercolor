@@ -85,6 +85,8 @@ impl WsManager {
 
         ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
+        let preview_fps = if cfg!(debug_assertions) { 15 } else { 30 };
+
         // onopen — subscribe to canvas + events
         let ws_clone = ws.clone();
         let on_open = Closure::<dyn FnMut()>::new(move || {
@@ -94,7 +96,7 @@ impl WsManager {
                 "type": "subscribe",
                 "channels": ["canvas", "events"],
                 "config": {
-                    "canvas": { "fps": 30, "format": "rgba" }
+                    "canvas": { "fps": preview_fps, "format": "rgba" }
                 }
             });
             let _ = ws_clone.send_with_str(&subscribe_msg.to_string());
