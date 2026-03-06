@@ -2,14 +2,15 @@ import { color, effect } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Plasma Engine', shader, {
+    theme:   ['Custom', 'Poison', 'Cyberpunk', 'Inferno', 'Aurora', 'Arcade', 'Tropical', 'Oceanic'],
     bgColor: color('Background Color', '#03020c', { uniform: 'iBackgroundColor' }),
-    color1:  '#94ff4f',
-    color2:  '#2cc8ff',
-    color3:  '#ff4fd8',
-    speed:   [1, 10, 5],
-    bloom:   [0, 100, 68],
-    spread:  [0, 100, 54],
-    density: [10, 100, 60],
+    color1:  '#8dff4f',
+    color2:  '#16d1d9',
+    color3:  '#7d49ff',
+    speed:   [1, 10, 6],
+    bloom:   [0, 100, 48],
+    spread:  [0, 100, 58],
+    density: [10, 100, 54],
 }, {
-    description: 'Dual-flow Poison Bloom particle field with crisp additive sparks',
+    description: 'Smooth demoscene plasma with contour bands and rich theme palettes',
 })

@@ -6,11 +6,11 @@ out vec4 fragColor;
 uniform float iTime;
 uniform vec2 iResolution;
 
-// Controls
 uniform vec3 iBackgroundColor;
 uniform vec3 iColor1;
 uniform vec3 iColor2;
 uniform vec3 iColor3;
+uniform int iTheme;
 uniform float iSpeed;
 uniform float iBloom;
 uniform float iSpread;
@@ -22,107 +22,92 @@ float hash21(vec2 p) {
     return fract((p3.x + p3.y) * p3.z);
 }
 
-vec2 hash22(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.xx + p3.yz) * p3.zy);
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-mat2 rot(float a) {
-    float s = sin(a);
-    float c = cos(a);
-    return mat2(c, -s, s, c);
+vec3 plasmaPalette(float t, vec3 c1, vec3 c2, vec3 c3) {
+    vec3 color = mix(c1, c2, smoothstep(0.04, 0.52, t));
+    color = mix(color, c3, smoothstep(0.48, 0.96, t));
+    return color;
 }
 
-vec2 flowA(vec2 p, float t, float spread) {
-    vec2 q = p;
-    q += vec2(sin(p.y * 1.70 + t * 0.82), cos(p.x * 1.38 - t * 1.07)) * (0.45 + spread * 0.85);
-    q = rot(0.22 * sin(t * 0.20) + 0.12) * q;
-    return q;
-}
-
-vec2 flowB(vec2 p, float t, float spread) {
-    vec2 q = p;
-    q += vec2(cos(p.y * 1.28 - t * 0.96), sin(p.x * 1.82 + t * 0.88)) * (0.40 + spread * 0.80);
-    q = rot(-0.30 * cos(t * 0.16) - 0.14) * q;
-    return q;
+vec3 themedPalette(float t) {
+    if (iTheme == 1) return plasmaPalette(t, vec3(0.56, 1.00, 0.28), vec3(0.10, 0.86, 0.86), vec3(0.42, 0.20, 0.98));
+    if (iTheme == 2) return plasmaPalette(t, vec3(0.10, 0.88, 0.84), vec3(0.98, 0.22, 0.76), vec3(0.40, 0.18, 0.96));
+    if (iTheme == 3) return plasmaPalette(t, vec3(0.94, 0.22, 0.08), vec3(1.00, 0.56, 0.10), vec3(1.00, 0.86, 0.24));
+    if (iTheme == 4) return plasmaPalette(t, vec3(0.14, 0.94, 0.54), vec3(0.20, 0.78, 1.00), vec3(0.56, 0.26, 0.98));
+    if (iTheme == 5) return plasmaPalette(t, vec3(1.00, 0.28, 0.70), vec3(0.18, 0.74, 1.00), vec3(1.00, 0.84, 0.18));
+    if (iTheme == 6) return plasmaPalette(t, vec3(0.86, 1.00, 0.24), vec3(0.10, 0.92, 0.84), vec3(1.00, 0.42, 0.34));
+    if (iTheme == 7) return plasmaPalette(t, vec3(0.14, 0.90, 0.92), vec3(0.16, 0.48, 1.00), vec3(0.06, 0.14, 0.54));
+    return plasmaPalette(t, iColor1, iColor2, iColor3);
 }
 
 void main() {
-    vec2 uv = (gl_FragCoord.xy - 0.5 * iResolution.xy) / iResolution.y;
-    float t = iTime * iSpeed * 0.60;
+    vec2 uv = gl_FragCoord.xy / iResolution.xy;
+    float speed = max(iSpeed, 0.2);
     float bloom = clamp(iBloom * 0.01, 0.0, 1.0);
     float spread = clamp(iSpread * 0.01, 0.0, 1.0);
     float density = clamp(iDensity * 0.01, 0.10, 1.0);
+    float time = iTime * (0.34 + speed * 0.52);
 
-    float gridScale = mix(9.0, 30.0, density);
-    vec2 domain = uv * gridScale;
-    float warpScale = 0.82 + spread * 0.75;
+    vec2 p = uv * 2.0 - 1.0;
+    p.x *= iResolution.x / iResolution.y;
 
-    vec2 streamA = flowA(domain * warpScale, t, spread);
-    vec2 streamB = flowB(domain * vec2(warpScale * 0.95, warpScale), t, spread);
+    vec2 q = p * mix(2.8, 8.8, density);
+    q += vec2(
+        sin(p.y * 3.2 + time * 0.88),
+        cos(p.x * 2.7 - time * 0.76)
+    ) * (0.16 + spread * 0.40);
 
-    vec2 baseA = floor(streamA);
-    vec2 baseB = floor(streamB);
+    float plasma = 0.0;
+    plasma += sin(q.x * 1.2 + time * 1.34);
+    plasma += sin(q.y * 1.7 - time * 1.08);
+    plasma += sin((q.x + q.y) * 1.1 + time * 0.74);
+    plasma += sin(length(q - vec2(
+        sin(time * 0.46) * 1.5,
+        cos(time * 0.34) * 1.3
+    )) * 3.1 - time * 1.42);
+    plasma += sin(length(q + vec2(
+        cos(time * 0.29) * 1.2,
+        sin(time * 0.41) * 1.4
+    )) * 2.4 + time * 1.18);
+    plasma = plasma / 5.0;
+    plasma = 0.5 + 0.5 * plasma;
 
-    vec3 accum = vec3(0.0);
-    float energyA = 0.0;
-    float energyB = 0.0;
-    float bloomGain = mix(0.22, 1.25, bloom);
+    float bandWave = 0.5 + 0.5 * sin(plasma * mix(9.0, 20.0, density) * 6.28318 - time * 0.8);
+    float contour = smoothstep(0.76 - bloom * 0.16, 0.98, bandWave);
+    float lava = smoothstep(0.16, 0.94, plasma);
+    float zebra = 0.5 + 0.5 * sin((q.x + q.y * 0.8) * mix(1.8, 4.4, density) + time * 0.54);
 
-    for (int oy = -1; oy <= 1; oy++) {
-        for (int ox = -1; ox <= 1; ox++) {
-            vec2 offset = vec2(float(ox), float(oy));
+    float noise = vnoise(uv * vec2(22.0, 16.0) + vec2(time * 0.35, -time * 0.26));
+    vec3 palette = themedPalette(plasma);
+    vec3 cycle = themedPalette(fract(plasma + time * 0.08 + noise * 0.08 + zebra * 0.05));
+    palette = mix(palette, cycle, 0.18 + spread * 0.16);
 
-            vec2 cellA = baseA + offset;
-            vec2 seedA = hash22(cellA + 37.1);
-            float phaseA = hash21(cellA + 141.7) * 6.2831853;
-            vec2 orbitA = vec2(
-                sin(t * (0.95 + seedA.x * 0.90) + phaseA),
-                cos(t * (1.10 + seedA.y * 0.85) - phaseA)
-            );
-            vec2 jitterA = (seedA - 0.5) * (0.85 + spread * 1.75);
-            vec2 particleA = cellA + 0.5 + jitterA * 0.45 + orbitA * (0.22 + spread * 0.44);
-            float distA = length(streamA - particleA);
+    float glow = smoothstep(0.30, 1.0, lava + contour * 0.6) * (0.05 + bloom * 0.20);
+    vec3 color = iBackgroundColor;
+    color += themedPalette(fract(0.12 + zebra * 0.16)) * (0.04 + spread * 0.05) * (0.4 + noise * 0.6);
+    color += palette * lava * (0.40 + density * 0.44);
+    color += themedPalette(fract(plasma + 0.42)) * contour * (0.12 + bloom * 0.34);
+    color += cycle * glow;
+    color += mix(palette, cycle, 0.5) * contour * (0.05 + bloom * 0.12);
 
-            float coreA = smoothstep(0.22, 0.0, distA);
-            coreA *= coreA;
-            float haloA = exp(-distA * mix(16.0, 7.0, bloom));
-            float twinkleA = 0.72 + 0.28 * sin(t * 8.5 + phaseA * 2.7 + seedA.x * 21.0);
-            float contribA = coreA * (1.15 + twinkleA) + haloA * 0.20 * bloomGain;
-            accum += iColor1 * contribA;
-            energyA += coreA;
+    float vignette = smoothstep(1.48, 0.10, length(p));
+    color *= 0.42 + 0.74 * vignette;
 
-            vec2 cellB = baseB + offset;
-            vec2 seedB = hash22(cellB + 91.3);
-            float phaseB = hash21(cellB + 269.9) * 6.2831853;
-            vec2 orbitB = vec2(
-                cos(-t * (1.02 + seedB.y * 0.92) + phaseB),
-                sin(-t * (0.88 + seedB.x * 0.86) - phaseB)
-            );
-            vec2 jitterB = (seedB - 0.5) * (0.92 + spread * 1.95);
-            vec2 particleB = cellB + 0.5 + jitterB * 0.48 + orbitB * (0.25 + spread * 0.48);
-            float distB = length(streamB - particleB);
+    color = max(color, vec3(0.0));
+    color = 1.0 - exp(-color * mix(1.05, 1.78, bloom));
+    color = pow(clamp(color, 0.0, 1.0), vec3(0.94));
 
-            float coreB = smoothstep(0.21, 0.0, distB);
-            coreB *= coreB;
-            float haloB = exp(-distB * mix(17.0, 7.4, bloom));
-            float twinkleB = 0.70 + 0.30 * sin(-t * 9.2 + phaseB * 2.1 + seedB.y * 23.0);
-            float contribB = coreB * (1.20 + twinkleB) + haloB * 0.19 * bloomGain;
-            accum += iColor2 * contribB;
-            energyB += coreB;
-        }
-    }
-
-    float overlap = sqrt(max(0.0, energyA * energyB));
-    float pulse = 0.65 + 0.35 * sin(t * 2.3 + length(uv) * 9.5);
-    accum += iColor3 * overlap * (1.45 + bloom * 2.75) * pulse;
-
-    float edgeFade = 1.0 - smoothstep(0.18, 1.28 + spread * 0.20, length(uv));
-    accum *= 0.75 + edgeFade * 0.45;
-
-    vec3 color = iBackgroundColor + accum * (1.0 + density * 1.35);
-    color = 1.0 - exp(-color * mix(1.05, 1.85, bloom));
-
-    fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+    fragColor = vec4(color, 1.0);
 }

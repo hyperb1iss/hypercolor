@@ -66,6 +66,7 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
         // Compile shaders and link program
         this.program = this.createProgram(this.vertexShader, this.fragmentShader)
         this.gl.useProgram(this.program)
+        this.gl.viewport(0, 0, this.canvas.width, this.canvas.height)
 
         // Create fullscreen quad geometry
         this.createQuad()
@@ -110,6 +111,12 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
     protected updateParameters(controls: T): void {
         if (!this.program) return
         this.updateUniforms(controls)
+    }
+
+    protected onCanvasResize(width: number, height: number): void {
+        if (!this.gl) return
+        this.gl.viewport(0, 0, width, height)
+        this.setUniform('iResolution', [width, height])
     }
 
     // ── Uniform API ─────────────────────────────────────────────────────

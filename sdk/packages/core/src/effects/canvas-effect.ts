@@ -53,6 +53,11 @@ export abstract class CanvasEffect<T> extends BaseEffect<T> {
         this.applyControls(controls)
     }
 
+    protected onCanvasResize(): void {
+        if (!this.ctx) return
+        this.ctx.imageSmoothingEnabled = true
+    }
+
     /** Draw the effect. Called every frame after canvas is cleared. */
     protected abstract draw(time: number, deltaTime: number): void
 

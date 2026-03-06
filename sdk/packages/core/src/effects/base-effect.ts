@@ -50,6 +50,7 @@ export abstract class BaseEffect<T> {
                 document.body.appendChild(this.canvas)
             }
 
+            this.syncCanvasSizeFromEngine()
             await this.initializeRenderer()
             this.initializeControls()
             window.update = this.update.bind(this)
@@ -81,6 +82,7 @@ export abstract class BaseEffect<T> {
             this.fpsCapLastFrameTime = timestamp
         }
 
+        this.syncCanvasSizeFromEngine()
         this.render(timestamp / 1000)
         this.onFrame(timestamp / 1000)
     }
@@ -105,6 +107,25 @@ export abstract class BaseEffect<T> {
         const controls = this.getControlValues()
         this.updateParameters(controls)
         if (force) this.debug('debug', 'Controls updated', controls)
+    }
+
+    protected onCanvasResize(_width: number, _height: number): void {}
+
+    private syncCanvasSizeFromEngine(): void {
+        if (!this.canvas) return
+
+        const engine = (window as { engine?: { width?: unknown; height?: unknown } }).engine
+        const width = typeof engine?.width === 'number' && Number.isFinite(engine.width) ? Math.max(1, Math.round(engine.width)) : null
+        const height = typeof engine?.height === 'number' && Number.isFinite(engine.height) ? Math.max(1, Math.round(engine.height)) : null
+
+        if (width == null || height == null) return
+        if (this.canvas.width === width && this.canvas.height === height) return
+
+        this.canvas.width = width
+        this.canvas.height = height
+        this.canvasWidth = width
+        this.canvasHeight = height
+        this.onCanvasResize(width, height)
     }
 
     protected handleInitError(error: unknown): void {

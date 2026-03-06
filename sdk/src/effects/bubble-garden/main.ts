@@ -1,50 +1,100 @@
 import { canvas } from '@hypercolor/sdk'
 
-const COLOR_MODES = ['Single Color', 'Rainbow', 'Color Cycle']
+const COLOR_MODES = ['Triad', 'Single Color', 'Palette Blend', 'Color Cycle']
+const THEMES = ['Custom', 'Bubblegum', 'Cyber Pop', 'Lagoon', 'Neon Soda', 'Jellyfish', 'Citrus Pop', 'Lavender Fizz']
 
-interface Bubble { x: number; y: number; vx: number; vy: number; baseSize: number; alpha: number }
+interface Bubble {
+    x: number
+    y: number
+    vx: number
+    vy: number
+    baseSize: number
+    alpha: number
+    mix: number
+    phase: number
+    driftBias: number
+    paletteBand: number
+    paletteBlend: number
+}
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+interface RGB { r: number; g: number; b: number }
+interface ThemePalette {
+    primary: string
+    secondary: string
+    accent: string
+}
 
-function rand(min: number, max: number) {
-    return Math.floor(Math.random() * (max - min + 1)) + min
+const THEME_PALETTES: Record<string, ThemePalette> = {
+    Custom:        { primary: '#ff4f9a', secondary: '#76fff1', accent: '#6f2dff' },
+    Bubblegum:     { primary: '#ff4f9a', secondary: '#ff98c8', accent: '#ffd1eb' },
+    'Cyber Pop':   { primary: '#08f7fe', secondary: '#ff06b5', accent: '#6f2dff' },
+    Lagoon:        { primary: '#46f1dc', secondary: '#5da8ff', accent: '#1746ff' },
+    'Neon Soda':   { primary: '#89ff53', secondary: '#18e4ff', accent: '#ff4ed1' },
+    Jellyfish:     { primary: '#8a7cff', secondary: '#ff7fcf', accent: '#76fff1' },
+    'Citrus Pop':  { primary: '#ffe15d', secondary: '#ff9a3d', accent: '#ff5478' },
+    'Lavender Fizz': { primary: '#d0a4ff', secondary: '#ff88d4', accent: '#83c4ff' },
+}
+
+function clamp(value: number, min: number, max: number): number {
+    if (Number.isNaN(value)) return min
+    return Math.max(min, Math.min(max, value))
+}
+
+function rand(min: number, max: number): number {
+    return Math.random() * (max - min) + min
 }
 
 function randomVelocity(): number {
-    const v = rand(-10, 10) / 10
-    return Math.abs(v) < 0.001 ? (Math.random() < 0.5 ? -1 : 1) : v
+    const value = rand(-1.0, 1.0)
+    return Math.abs(value) < 0.08 ? (Math.random() < 0.5 ? -0.22 : 0.22) : value
 }
 
-function hexToRgb(hex: string) {
-    const norm = hex.replace('#', '')
-    const full = norm.length === 3
-        ? `${norm[0]}${norm[0]}${norm[1]}${norm[1]}${norm[2]}${norm[2]}`
-        : norm
-    const n = parseInt(full, 16)
-    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 }
+function hexToRgb(hex: string): RGB {
+    const normalized = hex.replace('#', '')
+    const full = normalized.length === 3
+        ? `${normalized[0]}${normalized[0]}${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}`
+        : normalized
+    const parsed = parseInt(full, 16)
+    if (Number.isNaN(parsed)) return { r: 255, g: 0, b: 102 }
+    return { r: (parsed >> 16) & 255, g: (parsed >> 8) & 255, b: parsed & 255 }
 }
 
-function hexToRgba(hex: string, alpha: number): string {
-    const c = hexToRgb(hex)
-    return `rgba(${c.r},${c.g},${c.b},${Math.max(0, Math.min(1, alpha)).toFixed(3)})`
+function rgba(color: RGB, alpha: number): string {
+    return `rgba(${color.r}, ${color.g}, ${color.b}, ${clamp(alpha, 0, 1)})`
 }
 
-function hslToHex(h: number, s: number, l: number): string {
-    h = ((h % 360) + 360) % 360
-    s /= 100
-    l /= 100
+function mixRgb(a: RGB, b: RGB, amount: number): RGB {
+    const t = clamp(amount, 0, 1)
+    return {
+        r: Math.round(a.r + (b.r - a.r) * t),
+        g: Math.round(a.g + (b.g - a.g) * t),
+        b: Math.round(a.b + (b.b - a.b) * t),
+    }
+}
+
+function hslToRgb(h: number, sPercent: number, lPercent: number): RGB {
+    const s = clamp(sPercent, 0, 100) / 100
+    const l = clamp(lPercent, 0, 100) / 100
     const c = (1 - Math.abs(2 * l - 1)) * s
-    const x = c * (1 - Math.abs(((h / 60) % 2) - 1))
-    const m = l - c / 2
-    let r = 0, g = 0, b = 0
-    if (h < 60) [r, g, b] = [c, x, 0]
-    else if (h < 120) [r, g, b] = [x, c, 0]
-    else if (h < 180) [r, g, b] = [0, c, x]
-    else if (h < 240) [r, g, b] = [0, x, c]
-    else if (h < 300) [r, g, b] = [x, 0, c]
+    const hPrime = ((h % 360) + 360) % 360 / 60
+    const x = c * (1 - Math.abs((hPrime % 2) - 1))
+
+    let r = 0
+    let g = 0
+    let b = 0
+    if (hPrime < 1) [r, g, b] = [c, x, 0]
+    else if (hPrime < 2) [r, g, b] = [x, c, 0]
+    else if (hPrime < 3) [r, g, b] = [0, c, x]
+    else if (hPrime < 4) [r, g, b] = [0, x, c]
+    else if (hPrime < 5) [r, g, b] = [x, 0, c]
     else [r, g, b] = [c, 0, x]
-    const toHex = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, '0')
-    return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+
+    const m = l - c / 2
+    return {
+        r: Math.round((r + m) * 255),
+        g: Math.round((g + m) * 255),
+        b: Math.round((b + m) * 255),
+    }
 }
 
 function createBubbles(count: number, width: number, height: number): Bubble[] {
@@ -52,23 +102,177 @@ function createBubbles(count: number, width: number, height: number): Bubble[] {
     for (let i = 0; i < count; i++) {
         const radius = rand(10, 20)
         bubbles.push({
-            x: rand(radius, Math.max(radius, width - radius)),
-            y: rand(radius, Math.max(radius, height - radius)),
+            x: rand(radius, Math.max(radius + 1, width - radius)),
+            y: rand(radius, Math.max(radius + 1, height - radius)),
             vx: randomVelocity(),
             vy: randomVelocity(),
             baseSize: radius,
-            alpha: 0.5 + (i / Math.max(1, count - 1)) * 0.4,
+            alpha: 0.26 + (i / Math.max(1, count - 1)) * 0.28,
+            mix: Math.random(),
+            phase: Math.random() * Math.PI * 2,
+            driftBias: 0.84 + Math.random() * 0.44,
+            paletteBand: Math.floor(Math.random() * 3),
+            paletteBlend: Math.random(),
         })
     }
     return bubbles
 }
 
-// ── Effect ───────────────────────────────────────────────────────────────
+function getPalette(theme: string, primary: string, secondary: string, accent: string): ThemePalette {
+    if (theme === 'Custom') {
+        return { primary, secondary, accent }
+    }
+    return THEME_PALETTES[theme] ?? THEME_PALETTES.Bubblegum
+}
+
+function pickPaletteColor(index: number, palette: ThemePalette): RGB {
+    if (index === 0) return hexToRgb(palette.primary)
+    if (index === 1) return hexToRgb(palette.secondary)
+    return hexToRgb(palette.accent)
+}
+
+function pickPaletteSet(phase: number, palette: ThemePalette): { body: RGB; rim: RGB; gloss: RGB } {
+    const band = Math.floor(fract(phase) * 3)
+    if (band === 0) {
+        return {
+            body: pickPaletteColor(0, palette),
+            rim: pickPaletteColor(1, palette),
+            gloss: pickPaletteColor(2, palette),
+        }
+    }
+    if (band === 1) {
+        return {
+            body: pickPaletteColor(1, palette),
+            rim: pickPaletteColor(2, palette),
+            gloss: pickPaletteColor(0, palette),
+        }
+    }
+    return {
+        body: pickPaletteColor(2, palette),
+        rim: pickPaletteColor(0, palette),
+        gloss: pickPaletteColor(1, palette),
+    }
+}
+
+function fract(value: number): number {
+    return value - Math.floor(value)
+}
+
+function paletteGradientColor(phase: number, palette: ThemePalette): RGB {
+    const t = fract(phase)
+    const primary = pickPaletteColor(0, palette)
+    const secondary = pickPaletteColor(1, palette)
+    const accent = pickPaletteColor(2, palette)
+
+    if (t < 1 / 3) {
+        return mixRgb(primary, secondary, smoothstep(0, 1 / 3, t))
+    }
+    if (t < 2 / 3) {
+        return mixRgb(secondary, accent, smoothstep(1 / 3, 2 / 3, t))
+    }
+    return mixRgb(accent, primary, smoothstep(2 / 3, 1, t))
+}
+
+function resolveBubbleColors(
+    bubble: Bubble,
+    mode: string,
+    theme: string,
+    palette: ThemePalette,
+    singleColor: string,
+): { aura: RGB; body: RGB; rim: RGB; gloss: RGB } {
+    if (mode === 'Palette Blend' || mode === 'Rainbow') {
+        const body = paletteGradientColor(bubble.mix + bubble.paletteBlend * 0.28, palette)
+        const rim = paletteGradientColor(bubble.mix + 0.26 + bubble.paletteBlend * 0.14, palette)
+        const gloss = paletteGradientColor(bubble.mix + 0.54, palette)
+        return { aura: mixRgb(body, rim, 0.12), body, rim, gloss }
+    }
+
+    if (mode === 'Color Cycle') {
+        const base = pickPaletteSet((bubble.paletteBand + 0.02) / 3, palette)
+        const next = pickPaletteSet(((bubble.paletteBand + 1) % 3 + 0.02) / 3, palette)
+        const blend = smoothstep(0.15, 0.85, bubble.paletteBlend)
+        const body = mixRgb(base.body, next.body, blend * 0.52)
+        const rim = mixRgb(base.rim, next.rim, blend * 0.4)
+        const gloss = mixRgb(base.gloss, next.gloss, blend * 0.34)
+        return { aura: mixRgb(body, rim, 0.12), body, rim, gloss }
+    }
+
+    if (mode === 'Single Color') {
+        const base = theme === 'Custom' ? hexToRgb(singleColor) : hexToRgb(palette.primary)
+        const rim = hexToRgb(palette.secondary)
+        const gloss = hexToRgb(palette.accent)
+        return { aura: mixRgb(base, rim, 0.12), body: base, rim, gloss }
+    }
+
+    let { body, rim, gloss } = pickPaletteSet((bubble.paletteBand + 0.02) / 3, palette)
+    let aura = mixRgb(body, rim, 0.10)
+    if (palette.primary === '#08f7fe') {
+        if (bubble.paletteBand === 0) {
+            body = hexToRgb(palette.secondary)
+            rim = hexToRgb(palette.primary)
+            gloss = hexToRgb(palette.accent)
+        } else if (bubble.paletteBand === 1) {
+            body = hexToRgb(palette.primary)
+            rim = hexToRgb(palette.secondary)
+            gloss = hexToRgb(palette.accent)
+        } else {
+            body = hexToRgb(palette.accent)
+            rim = hexToRgb(palette.primary)
+            gloss = hexToRgb(palette.secondary)
+        }
+        aura = mixRgb(hexToRgb(palette.primary), hexToRgb(palette.accent), 0.12)
+    }
+    return { aura, body, rim, gloss }
+}
+
+function smoothstep(edge0: number, edge1: number, value: number): number {
+    const t = clamp((value - edge0) / Math.max(0.0001, edge1 - edge0), 0, 1)
+    return t * t * (3 - 2 * t)
+}
+
+function drawBackdrop(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    bgColor: string,
+    palette: ThemePalette,
+    time: number,
+): void {
+    ctx.fillStyle = bgColor
+    ctx.fillRect(0, 0, width, height)
+
+    const primary = hexToRgb(palette.primary)
+    const secondary = hexToRgb(palette.secondary)
+    const accent = hexToRgb(palette.accent)
+
+    const wash = ctx.createRadialGradient(
+        width * (0.24 + Math.sin(time * 0.18) * 0.06),
+        height * (0.26 + Math.cos(time * 0.15) * 0.05),
+        0,
+        width * 0.34,
+        height * 0.34,
+        Math.max(width, height) * 0.86,
+    )
+    wash.addColorStop(0, rgba(primary, 0.08))
+    wash.addColorStop(0.48, rgba(secondary, 0.045))
+    wash.addColorStop(1, rgba(primary, 0.0))
+    ctx.fillStyle = wash
+    ctx.fillRect(0, 0, width, height)
+
+    const veil = ctx.createLinearGradient(0, 0, width, height)
+    veil.addColorStop(0, rgba(accent, 0.03))
+    veil.addColorStop(1, rgba(secondary, 0.0))
+    ctx.fillStyle = veil
+    ctx.fillRect(0, 0, width, height)
+}
 
 export default canvas.stateful('Bubble Garden', {
     colorMode: COLOR_MODES,
-    bgColor:   '#000000',
-    color:     '#ff0066',
+    theme:     THEMES,
+    bgColor:   '#05040a',
+    color:     '#ff4f9a',
+    color2:    '#ff98c8',
+    color3:    '#76fff1',
     speed:     [0, 100, 10],
     size:      [1, 10, 5],
     count:     [10, 120, 50],
@@ -76,15 +280,17 @@ export default canvas.stateful('Bubble Garden', {
     let bubbles = createBubbles(50, 320, 200)
     let prevCount = 50
     let prevSpeed = 10
-    let hue = 0
 
-    return (ctx, _time, c) => {
+    return (ctx, time, c) => {
         const count = Math.max(10, Math.floor(c.count as number))
         const speed = c.speed as number
         const size = c.size as number
         const colorMode = c.colorMode as string
+        const theme = c.theme as string
         const bgColor = c.bgColor as string
         const color = c.color as string
+        const color2 = c.color2 as string
+        const color3 = c.color3 as string
         const width = ctx.canvas.width
         const height = ctx.canvas.height
 
@@ -92,45 +298,77 @@ export default canvas.stateful('Bubble Garden', {
             bubbles = createBubbles(count, width, height)
             prevCount = count
         } else if (speed !== prevSpeed) {
-            for (const b of bubbles) { b.vx = randomVelocity(); b.vy = randomVelocity() }
+            for (const bubble of bubbles) {
+                bubble.vx = randomVelocity()
+                bubble.vy = randomVelocity()
+            }
             prevSpeed = speed
         }
 
-        ctx.fillStyle = bgColor
-        ctx.fillRect(0, 0, width, height)
+        const palette = getPalette(theme, color, color2, color3)
+        drawBackdrop(ctx, width, height, bgColor, palette, time)
 
-        const speedScale = Math.max(0, speed) / 10
+        const speedScale = Math.max(0, speed) / 12
         const sizeScale = Math.max(0.2, size / 5)
-        hue = (hue + 1) % 360
 
-        for (const b of bubbles) {
-            const radius = b.baseSize * sizeScale
+        for (let i = 0; i < bubbles.length; i++) {
+            const bubble = bubbles[i]
+            const pulse = 0.90 + 0.12 * Math.sin(time * (1.0 + bubble.driftBias * 0.4) + bubble.phase)
+            const radius = bubble.baseSize * sizeScale * pulse
 
             if (speedScale > 0) {
-                b.x += b.vx * speedScale
-                b.y += b.vy * speedScale
-                if (b.x + radius >= width)  { b.x = width - radius; b.vx = -Math.abs(b.vx) }
-                else if (b.x - radius <= 0) { b.x = radius; b.vx = Math.abs(b.vx) }
-                if (b.y + radius >= height) { b.y = height - radius; b.vy = -Math.abs(b.vy) }
-                else if (b.y - radius <= 0) { b.y = radius; b.vy = Math.abs(b.vy) }
+                bubble.x += (bubble.vx * speedScale + Math.sin(time * 0.5 + bubble.phase) * 0.08) * bubble.driftBias
+                bubble.y += (bubble.vy * speedScale + Math.cos(time * 0.42 + bubble.phase) * 0.06) * bubble.driftBias
+
+                if (bubble.x + radius >= width) {
+                    bubble.x = width - radius
+                    bubble.vx = -Math.abs(bubble.vx)
+                } else if (bubble.x - radius <= 0) {
+                    bubble.x = radius
+                    bubble.vx = Math.abs(bubble.vx)
+                }
+
+                if (bubble.y + radius >= height) {
+                    bubble.y = height - radius
+                    bubble.vy = -Math.abs(bubble.vy)
+                } else if (bubble.y - radius <= 0) {
+                    bubble.y = radius
+                    bubble.vy = Math.abs(bubble.vy)
+                }
             }
 
-            let fill = color
-            if (colorMode === 'Color Cycle') fill = hslToHex(hue, 100, 50)
-            else if (colorMode === 'Rainbow') fill = hslToHex((b.x / Math.max(width, 1)) * 360, 100, 50)
+            const colors = resolveBubbleColors(bubble, colorMode, theme, palette, color)
+            const bodyAlpha = bubble.alpha * 0.84
+            const auraAlpha = bubble.alpha * 0.26
+            const innerAlpha = bubble.alpha * 0.30
 
-            ctx.fillStyle = hexToRgba(fill, b.alpha)
+            ctx.fillStyle = rgba(colors.aura, auraAlpha)
             ctx.beginPath()
-            ctx.arc(b.x, b.y, radius, 0, Math.PI * 2)
+            ctx.arc(bubble.x, bubble.y, radius * 1.35, 0, Math.PI * 2)
             ctx.fill()
 
-            ctx.strokeStyle = hexToRgba('#ffffff', 0.22)
-            ctx.lineWidth = 1
+            ctx.fillStyle = rgba(colors.body, bodyAlpha)
             ctx.beginPath()
-            ctx.arc(b.x, b.y, Math.max(1, radius - 0.5), 0, Math.PI * 2)
+            ctx.arc(bubble.x, bubble.y, radius, 0, Math.PI * 2)
+            ctx.fill()
+
+            ctx.fillStyle = rgba(mixRgb(colors.body, colors.gloss, 0.42), innerAlpha)
+            ctx.beginPath()
+            ctx.arc(bubble.x - radius * 0.18, bubble.y - radius * 0.22, radius * 0.58, 0, Math.PI * 2)
+            ctx.fill()
+
+            ctx.strokeStyle = rgba(colors.rim, 0.38 + bubble.alpha * 0.18)
+            ctx.lineWidth = Math.max(1, radius * 0.10)
+            ctx.beginPath()
+            ctx.arc(bubble.x, bubble.y, Math.max(1, radius - 0.5), 0, Math.PI * 2)
             ctx.stroke()
+
+            ctx.fillStyle = rgba(colors.gloss, 0.18 + bubble.alpha * 0.16)
+            ctx.beginPath()
+            ctx.arc(bubble.x - radius * 0.30, bubble.y - radius * 0.32, Math.max(1, radius * 0.14), 0, Math.PI * 2)
+            ctx.fill()
         }
     }
 }, {
-    description: 'Community-style bouncing bubbles with crisp rendering and simple controls',
+    description: 'Theme-rich bubble field with custom triads, colored rims, and glossy highlights',
 })

@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import {
     BooleanControl,
     CanvasEffect,
+    ComboboxControl,
     ColorControl,
     Effect,
     NumberControl,
@@ -12,8 +13,10 @@ import {
 interface LavaLampControls {
     bgColor: string
     bgCycle: boolean
+    theme: string
     color1: string
     color2: string
+    color3: string
     rainbow: boolean
     speed: number
     cycleSpeed: number
@@ -36,6 +39,25 @@ interface Rgb {
     b: number
 }
 
+interface ThemePalette {
+    color1: string
+    color2: string
+    color3: string
+}
+
+const THEMES = ['Custom', 'Bubblegum', 'Lagoon', 'Toxic', 'Aurora', 'Molten', 'Synthwave', 'Citrus']
+
+const THEME_PALETTES: Record<string, ThemePalette> = {
+    Custom:    { color1: '#000ded', color2: '#e40020', color3: '#ffcf4d' },
+    Bubblegum: { color1: '#ff4f9a', color2: '#ff96c1', color3: '#ffd4ef' },
+    Lagoon:    { color1: '#3cf2df', color2: '#4a96ff', color3: '#163dff' },
+    Toxic:     { color1: '#98ff4a', color2: '#0ae0cb', color3: '#6c2bff' },
+    Aurora:    { color1: '#33f587', color2: '#3fdcff', color3: '#8c4bff' },
+    Molten:    { color1: '#ff6329', color2: '#ffb021', color3: '#ffe66b' },
+    Synthwave: { color1: '#ff4ed6', color2: '#8f48ff', color3: '#42d9ff' },
+    Citrus:    { color1: '#ffd84d', color2: '#ff9343', color3: '#ff5778' },
+}
+
 @Effect({
     name: 'Lava Lamp',
     description: 'Community-inspired contour metaballs with crisp RGB blends and merge/split motion',
@@ -49,11 +71,17 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
     @BooleanControl({ label: 'Background Color Cycle', default: false, tooltip: 'Cycle background hue over time' })
     bgCycle!: boolean
 
+    @ComboboxControl({ label: 'Theme', values: THEMES, default: 'Custom', tooltip: 'Curated lava color palettes' })
+    theme!: string
+
     @ColorControl({ label: 'Color 1', default: '#000ded', tooltip: 'Primary lava color' })
     color1!: string
 
     @ColorControl({ label: 'Color 2', default: '#e40020', tooltip: 'Secondary lava color' })
     color2!: string
+
+    @ColorControl({ label: 'Color 3', default: '#ffcf4d', tooltip: 'Highlight lava color' })
+    color3!: string
 
     @BooleanControl({ label: 'Lava Color Cycle', default: false, tooltip: 'Cycle lava hues continuously' })
     rainbow!: boolean
@@ -70,8 +98,10 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
     private controls: LavaLampControls = {
         bgColor: '#0b0312',
         bgCycle: false,
+        theme: 'Custom',
         color1: '#000ded',
         color2: '#e40020',
+        color3: '#ffcf4d',
         rainbow: false,
         speed: 22,
         cycleSpeed: 22,
@@ -87,9 +117,9 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
     private cols = 0
     private rows = 0
 
-    private readonly step = 5
+    private readonly step = 2
     private readonly threshold = 1.0
-    private readonly contourLevels = [1.0, 1.35, 1.75]
+    private readonly contourLevels = [1.08, 1.46]
 
     constructor() {
         super({ id: 'lava-lamp', name: 'Lava Lamp', backgroundColor: '#0b0312' })
@@ -98,8 +128,10 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
     protected initializeControls(): void {
         this.bgColor = getControlValue('bgColor', '#0b0312')
         this.bgCycle = getControlValue('bgCycle', false)
+        this.theme = getControlValue('theme', 'Custom')
         this.color1 = getControlValue('color1', '#000ded')
         this.color2 = getControlValue('color2', '#e40020')
+        this.color3 = getControlValue('color3', '#ffcf4d')
         this.rainbow = getControlValue('rainbow', false)
         this.speed = getControlValue('speed', 22)
         this.cycleSpeed = getControlValue('cycleSpeed', 22)
@@ -110,8 +142,12 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
         return {
             bgColor: this.normalizeHexColor(getControlValue('bgColor', this.controls.bgColor), this.controls.bgColor),
             bgCycle: this.coerceBoolean(getControlValue('bgCycle', this.controls.bgCycle), this.controls.bgCycle),
+            theme: typeof getControlValue('theme', this.controls.theme) === 'string'
+                ? getControlValue('theme', this.controls.theme)
+                : this.controls.theme,
             color1: this.normalizeHexColor(getControlValue('color1', this.controls.color1), this.controls.color1),
             color2: this.normalizeHexColor(getControlValue('color2', this.controls.color2), this.controls.color2),
+            color3: this.normalizeHexColor(getControlValue('color3', this.controls.color3), this.controls.color3),
             rainbow: this.coerceBoolean(getControlValue('rainbow', this.controls.rainbow), this.controls.rainbow),
             speed: this.clampNumber(getControlValue('speed', this.controls.speed), 1, 100, this.controls.speed),
             cycleSpeed: this.clampNumber(
@@ -136,7 +172,7 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
     }
 
     protected async loadResources(): Promise<void> {
-        if (this.ctx) this.ctx.imageSmoothingEnabled = false
+        if (this.ctx) this.ctx.imageSmoothingEnabled = true
 
         this.ensureFieldGrid(this.canvas?.width ?? 320, this.canvas?.height ?? 200)
         this.resetBlobs(this.controls.bCount)
@@ -157,11 +193,15 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
 
         this.updateBlobs(time, w, h)
 
+        const palette = this.resolvePalette()
+
         const backgroundColor = this.controls.bgCycle
             ? this.shiftHexHue(this.controls.bgColor, this.bgHue)
             : this.controls.bgColor
         ctx.fillStyle = backgroundColor
         ctx.fillRect(0, 0, w, h)
+
+        this.drawBackdrop(ctx, w, h, palette)
 
         const vignette = ctx.createLinearGradient(0, 0, 0, h)
         vignette.addColorStop(0, this.hexToRgba(this.controls.bgColor, 0.17))
@@ -171,18 +211,22 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
         ctx.fillRect(0, 0, w, h)
 
         const lavaColorA = this.controls.rainbow
-            ? this.shiftHexHue(this.controls.color1, this.lavaHue)
-            : this.controls.color1
+            ? this.shiftHexHue(palette.color1, this.lavaHue)
+            : palette.color1
         const lavaColorB = this.controls.rainbow
-            ? this.shiftHexHue(this.controls.color2, this.lavaHue + 180)
-            : this.controls.color2
+            ? this.shiftHexHue(palette.color2, this.lavaHue + 140)
+            : palette.color2
+        const lavaColorC = this.controls.rainbow
+            ? this.shiftHexHue(palette.color3, this.lavaHue + 280)
+            : palette.color3
 
         const colorA = this.hexToRgb(lavaColorA)
         const colorB = this.hexToRgb(lavaColorB)
+        const colorC = this.hexToRgb(lavaColorC)
 
         this.computeField(w, h)
-        this.drawLavaCells(ctx, time, colorA, colorB)
-        this.drawContours(ctx, colorA, colorB)
+        this.drawLavaCells(ctx, time, colorA, colorB, colorC)
+        this.drawContours(ctx, colorA, colorB, colorC)
     }
 
     private ensureFieldGrid(width: number, height: number): void {
@@ -282,7 +326,7 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
         }
     }
 
-    private drawLavaCells(ctx: CanvasRenderingContext2D, time: number, colorA: Rgb, colorB: Rgb): void {
+    private drawLavaCells(ctx: CanvasRenderingContext2D, time: number, colorA: Rgb, colorB: Rgb, colorC: Rgb): void {
         const stride = this.cols
 
         for (let gy = 0; gy < this.rows - 1; gy++) {
@@ -299,34 +343,37 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
                 const verticalMix = gy / Math.max(1, this.rows - 1)
                 const flowMix = 0.5 + 0.5 * Math.sin(time * 1.45 + gx * 0.24 - gy * 0.18)
                 const mixRatio = this.clamp(verticalMix * 0.6 + flowMix * 0.4, 0, 1)
+                const hotCore = this.clamp((fieldCenter - 1.1) / 1.4, 0, 1)
 
                 const base = this.mixRgb(colorA, colorB, mixRatio)
-                const brightnessBoost = this.clamp((fieldCenter - this.threshold) * 34, 0, 46)
+                const baseTone = this.mixRgb(base, colorC, hotCore * 0.55)
+                const brightnessBoost = this.clamp((fieldCenter - this.threshold) * 26, 0, 34)
 
                 let band = 0
                 if (fieldCenter > 2.45) band = 3
                 else if (fieldCenter > 1.72) band = 2
                 else if (fieldCenter > 1.18) band = 1
 
-                const tone = this.boostRgb(base, brightnessBoost + band * 18)
-                const alpha = band === 3 ? 0.97 : band === 2 ? 0.84 : band === 1 ? 0.66 : 0.44
+                const tone = this.boostRgb(baseTone, brightnessBoost + band * 12)
+                const alpha = band === 3 ? 0.88 : band === 2 ? 0.74 : band === 1 ? 0.56 : 0.34
 
                 ctx.fillStyle = `rgba(${tone.r},${tone.g},${tone.b},${alpha.toFixed(3)})`
-                ctx.fillRect(gx * this.step, gy * this.step, this.step + 1, this.step + 1)
+                ctx.fillRect(gx * this.step, gy * this.step, this.step, this.step)
             }
         }
     }
 
-    private drawContours(ctx: CanvasRenderingContext2D, colorA: Rgb, colorB: Rgb): void {
+    private drawContours(ctx: CanvasRenderingContext2D, colorA: Rgb, colorB: Rgb, colorC: Rgb): void {
         const stride = this.cols
 
         for (let li = 0; li < this.contourLevels.length; li++) {
             const level = this.contourLevels[li]
-            const tone = this.mixRgb(colorA, colorB, 0.18 + li * 0.32)
+            const mid = this.mixRgb(colorA, colorB, 0.18 + li * 0.24)
+            const tone = this.mixRgb(mid, colorC, 0.24 + li * 0.18)
             const edge = this.boostRgb(tone, 72 + li * 16)
 
-            ctx.strokeStyle = `rgba(${edge.r},${edge.g},${edge.b},${(0.36 + li * 0.12).toFixed(3)})`
-            ctx.lineWidth = 1.1 + li * 0.35
+            ctx.strokeStyle = `rgba(${edge.r},${edge.g},${edge.b},${(0.14 + li * 0.08).toFixed(3)})`
+            ctx.lineWidth = 0.55 + li * 0.16
             ctx.beginPath()
 
             for (let gy = 0; gy < this.rows - 1; gy++) {
@@ -396,6 +443,37 @@ class LavaLamp extends CanvasEffect<LavaLampControls> {
 
             ctx.stroke()
         }
+    }
+
+    private resolvePalette(): ThemePalette {
+        if (this.controls.theme !== 'Custom') {
+            return THEME_PALETTES[this.controls.theme] ?? THEME_PALETTES.Custom
+        }
+
+        return {
+            color1: this.controls.color1,
+            color2: this.controls.color2,
+            color3: this.controls.color3,
+        }
+    }
+
+    private drawBackdrop(ctx: CanvasRenderingContext2D, width: number, height: number, palette: ThemePalette): void {
+        const colorA = this.hexToRgb(palette.color1)
+        const colorB = this.hexToRgb(palette.color2)
+        const colorC = this.hexToRgb(palette.color3)
+
+        const wash = ctx.createRadialGradient(width * 0.34, height * 0.24, 0, width * 0.34, height * 0.24, width * 0.72)
+        wash.addColorStop(0, `rgba(${colorA.r},${colorA.g},${colorA.b},0.10)`)
+        wash.addColorStop(0.52, `rgba(${colorB.r},${colorB.g},${colorB.b},0.04)`)
+        wash.addColorStop(1, 'rgba(0,0,0,0)')
+        ctx.fillStyle = wash
+        ctx.fillRect(0, 0, width, height)
+
+        const haze = ctx.createLinearGradient(0, height, width, 0)
+        haze.addColorStop(0, `rgba(${colorC.r},${colorC.g},${colorC.b},0.05)`)
+        haze.addColorStop(1, 'rgba(0,0,0,0)')
+        ctx.fillStyle = haze
+        ctx.fillRect(0, 0, width, height)
     }
 
     private traceSegment(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number): void {
