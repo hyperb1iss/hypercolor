@@ -270,7 +270,6 @@ impl AudioInput {
     }
 
     /// Access the underlying analyzer (for advanced usage / testing).
-    #[must_use]
     pub fn analyzer(&self) -> std::sync::MutexGuard<'_, AudioAnalyzer> {
         self.analyzer
             .lock()
@@ -368,10 +367,10 @@ fn build_capture_stream(
 ) -> anyhow::Result<Stream> {
     let host = cpal::default_host();
     let device = select_input_device(&host, &config.source)?;
-    let device_name = device
-        .description()
-        .map(|description| description.name().to_owned())
-        .unwrap_or_else(|_| "<unknown-audio-device>".to_owned());
+    let device_name = device.description().map_or_else(
+        |_| "<unknown-audio-device>".to_owned(),
+        |description| description.name().to_owned(),
+    );
     let supported_config = device
         .default_input_config()
         .with_context(|| format!("failed to get default input config for '{device_name}'"))?;
@@ -381,40 +380,40 @@ fn build_capture_stream(
 
     match supported_config.sample_format() {
         SampleFormat::I8 => {
-            build_stream::<i8>(&device, &stream_config, channels, analyzer, device_name)
+            build_stream::<i8>(&device, &stream_config, channels, analyzer, &device_name)
         }
         SampleFormat::I16 => {
-            build_stream::<i16>(&device, &stream_config, channels, analyzer, device_name)
+            build_stream::<i16>(&device, &stream_config, channels, analyzer, &device_name)
         }
         SampleFormat::I24 => {
-            build_stream::<cpal::I24>(&device, &stream_config, channels, analyzer, device_name)
+            build_stream::<cpal::I24>(&device, &stream_config, channels, analyzer, &device_name)
         }
         SampleFormat::I32 => {
-            build_stream::<i32>(&device, &stream_config, channels, analyzer, device_name)
+            build_stream::<i32>(&device, &stream_config, channels, analyzer, &device_name)
         }
         SampleFormat::I64 => {
-            build_stream::<i64>(&device, &stream_config, channels, analyzer, device_name)
+            build_stream::<i64>(&device, &stream_config, channels, analyzer, &device_name)
         }
         SampleFormat::U8 => {
-            build_stream::<u8>(&device, &stream_config, channels, analyzer, device_name)
+            build_stream::<u8>(&device, &stream_config, channels, analyzer, &device_name)
         }
         SampleFormat::U16 => {
-            build_stream::<u16>(&device, &stream_config, channels, analyzer, device_name)
+            build_stream::<u16>(&device, &stream_config, channels, analyzer, &device_name)
         }
         SampleFormat::U24 => {
-            build_stream::<cpal::U24>(&device, &stream_config, channels, analyzer, device_name)
+            build_stream::<cpal::U24>(&device, &stream_config, channels, analyzer, &device_name)
         }
         SampleFormat::U32 => {
-            build_stream::<u32>(&device, &stream_config, channels, analyzer, device_name)
+            build_stream::<u32>(&device, &stream_config, channels, analyzer, &device_name)
         }
         SampleFormat::U64 => {
-            build_stream::<u64>(&device, &stream_config, channels, analyzer, device_name)
+            build_stream::<u64>(&device, &stream_config, channels, analyzer, &device_name)
         }
         SampleFormat::F32 => {
-            build_stream::<f32>(&device, &stream_config, channels, analyzer, device_name)
+            build_stream::<f32>(&device, &stream_config, channels, analyzer, &device_name)
         }
         SampleFormat::F64 => {
-            build_stream::<f64>(&device, &stream_config, channels, analyzer, device_name)
+            build_stream::<f64>(&device, &stream_config, channels, analyzer, &device_name)
         }
         sample_format => Err(anyhow!("unsupported audio sample format: {sample_format}")),
     }
@@ -511,13 +510,13 @@ fn build_stream<T>(
     config: &cpal::StreamConfig,
     channels: usize,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
-    device_name: String,
+    device_name: &str,
 ) -> anyhow::Result<Stream>
 where
     T: Sample + SizedSample + Send + 'static,
     f32: FromSample<T>,
 {
-    let err_name = device_name.clone();
+    let err_name = device_name.to_owned();
     device
         .build_input_stream(
             config,

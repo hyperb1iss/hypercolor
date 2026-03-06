@@ -4,6 +4,7 @@ use hypercolor_types::config::{
     AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
     FeatureFlags, HypercolorConfig, LogLevel, ShutdownBehavior, TuiConfig, WebConfig,
 };
+use hypercolor_types::session::SessionConfig;
 
 // ─── Default Value Tests ─────────────────────────────────────────────────────
 
@@ -146,6 +147,7 @@ fn full_config_toml_roundtrip() {
         dbus: DbusConfig::default(),
         tui: TuiConfig::default(),
         features: FeatureFlags::default(),
+        session: SessionConfig::default(),
     };
     let toml_str = toml::to_string(&original).expect("serialize HypercolorConfig");
     let restored: HypercolorConfig =

@@ -9,4 +9,5 @@ pub mod mcp;
 pub mod playlist_runtime;
 pub mod render_thread;
 pub mod runtime_state;
+pub mod session;
 pub mod startup;

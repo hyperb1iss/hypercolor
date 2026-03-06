@@ -34,6 +34,8 @@ fn html_metadata(path: PathBuf) -> EffectMetadata {
         description: "servo smoke test".to_owned(),
         category: EffectCategory::Ambient,
         tags: vec!["servo".to_owned(), "smoke".to_owned()],
+        controls: Vec::new(),
+        audio_reactive: false,
         source: EffectSource::Html { path },
         license: None,
     }

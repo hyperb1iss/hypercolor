@@ -8,6 +8,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::session::SessionConfig;
+
 // ─── Default Value Functions ─────────────────────────────────────────────────
 // Referenced by `#[serde(default = "defaults::...")]` throughout this module.
 
@@ -152,6 +154,9 @@ pub struct HypercolorConfig {
     pub tui: TuiConfig,
 
     #[serde(default)]
+    pub session: SessionConfig,
+
+    #[serde(default)]
     pub features: FeatureFlags,
 }
 
@@ -171,6 +176,7 @@ impl Default for HypercolorConfig {
             discovery: DiscoveryConfig::default(),
             dbus: DbusConfig::default(),
             tui: TuiConfig::default(),
+            session: SessionConfig::default(),
             features: FeatureFlags::default(),
         }
     }

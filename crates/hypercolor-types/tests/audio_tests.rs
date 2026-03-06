@@ -97,12 +97,15 @@ fn band_methods_handle_empty_spectrum() {
         chromagram: vec![],
         beat_detected: false,
         beat_confidence: 0.0,
+        beat_phase: 0.0,
+        beat_pulse: 0.0,
         bpm: 0.0,
         rms_level: 0.0,
         peak_level: 0.0,
         spectral_centroid: 0.0,
         spectral_flux: 0.0,
         onset_detected: false,
+        onset_pulse: 0.0,
     };
     assert!(data.bass().abs() < f32::EPSILON);
     assert!(data.mid().abs() < f32::EPSILON);
@@ -117,12 +120,15 @@ fn band_methods_handle_short_spectrum() {
         chromagram: vec![],
         beat_detected: false,
         beat_confidence: 0.0,
+        beat_phase: 0.0,
+        beat_pulse: 0.0,
         bpm: 0.0,
         rms_level: 0.0,
         peak_level: 0.0,
         spectral_centroid: 0.0,
         spectral_flux: 0.0,
         onset_detected: false,
+        onset_pulse: 0.0,
     };
     // Bass covers 0..40, all 1.0
     assert!((data.bass() - 1.0).abs() < f32::EPSILON);

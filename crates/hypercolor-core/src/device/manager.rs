@@ -609,8 +609,7 @@ impl BackendManager {
             .await
             .with_context(|| {
                 format!(
-                    "failed to set brightness {} on device {device_id} using backend '{backend_id}'",
-                    brightness
+                    "failed to set brightness {brightness} on device {device_id} using backend '{backend_id}'"
                 )
             })
     }

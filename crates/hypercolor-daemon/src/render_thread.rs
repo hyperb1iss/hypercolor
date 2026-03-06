@@ -14,11 +14,12 @@
 //! }
 //! ```
 
+use std::cmp::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
@@ -31,6 +32,8 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
+
+use crate::session::OutputPowerState;
 
 // ── RenderThread ────────────────────────────────────────────────────────────
 
@@ -67,6 +70,9 @@ pub struct RenderThreadState {
 
     /// Input orchestrator for audio and screen capture sampling.
     pub input_manager: Arc<Mutex<InputManager>>,
+
+    /// Session policy output state (brightness scale + sleep flag).
+    pub power_state: watch::Receiver<OutputPowerState>,
 
     /// Target render canvas width.
     pub canvas_width: u32,
@@ -157,6 +163,8 @@ struct FrameExecution {
 
 /// Sleep duration when the pipeline is fully idle.
 const IDLE_THROTTLE_SLEEP: Duration = Duration::from_millis(120);
+/// Sleep duration while session policy has output fully suspended.
+const SESSION_SLEEP_THROTTLE_SLEEP: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 struct FrameInputs {
@@ -192,6 +200,7 @@ async fn run_pipeline(state: RenderThreadState) {
     let mut skip_decision = SkipDecision::None;
     let mut last_tick = Instant::now();
     let mut idle_black_pushed = false;
+    let mut sleep_black_pushed = false;
 
     loop {
         // ── Timing gate ─────────────────────────────────────────────
@@ -224,6 +233,7 @@ async fn run_pipeline(state: RenderThreadState) {
             &mut cached_canvas,
             &mut last_tick,
             &mut idle_black_pushed,
+            &mut sleep_black_pushed,
         )
         .await;
         skip_decision = frame.next_skip_decision;
@@ -243,10 +253,16 @@ async fn execute_frame(
     cached_canvas: &mut Option<Canvas>,
     last_tick: &mut Instant,
     idle_black_pushed: &mut bool,
+    sleep_black_pushed: &mut bool,
 ) -> FrameExecution {
     let frame_start = Instant::now();
     let delta_secs = last_tick.elapsed().as_secs_f32();
     *last_tick = frame_start;
+
+    let output_power = *state.power_state.borrow();
+    if let Some(frame) = maybe_sleep_throttle(state, output_power, sleep_black_pushed).await {
+        return frame;
+    }
 
     let effect_running = current_effect_running(state).await;
     if let Some(frame) = maybe_idle_throttle(state, effect_running, idle_black_pushed).await {
@@ -265,20 +281,15 @@ async fn execute_frame(
     let input_us = micros_u32(input_start.elapsed());
 
     // ── Stage 2: Effect render → Canvas ─────────────────────────
-    let render_start = Instant::now();
-    let canvas = if let (SkipDecision::ReuseCanvas, Some(previous)) =
-        (skip_decision, cached_canvas.as_ref())
-    {
-        previous.clone()
-    } else if let Some(screen_canvas) = inputs.screen_canvas.clone() {
-        *cached_canvas = Some(screen_canvas.clone());
-        screen_canvas
-    } else {
-        let rendered = render_effect(state, delta_secs, &inputs.audio, &inputs.interaction).await;
-        *cached_canvas = Some(rendered.clone());
-        rendered
-    };
-    let render_us = micros_u32(render_start.elapsed());
+    let (canvas, render_us) = resolve_frame_canvas(
+        state,
+        skip_decision,
+        &inputs,
+        cached_canvas,
+        delta_secs,
+        output_power.brightness,
+    )
+    .await;
 
     // ── Stage 3: Spatial sampling → ZoneColors ──────────────────
     let sample_start = Instant::now();
@@ -357,6 +368,32 @@ async fn execute_frame(
     }
 }
 
+async fn resolve_frame_canvas(
+    state: &RenderThreadState,
+    skip_decision: SkipDecision,
+    inputs: &FrameInputs,
+    cached_canvas: &mut Option<Canvas>,
+    delta_secs: f32,
+    brightness: f32,
+) -> (Canvas, u32) {
+    let render_start = Instant::now();
+    let canvas = if let (SkipDecision::ReuseCanvas, Some(previous)) =
+        (skip_decision, cached_canvas.as_ref())
+    {
+        previous.clone()
+    } else if let Some(screen_canvas) = inputs.screen_canvas.clone() {
+        *cached_canvas = Some(screen_canvas.clone());
+        screen_canvas
+    } else {
+        let rendered = render_effect(state, delta_secs, &inputs.audio, &inputs.interaction).await;
+        *cached_canvas = Some(rendered.clone());
+        rendered
+    };
+    let mut canvas = canvas;
+    apply_output_brightness(&mut canvas, brightness);
+    (canvas, micros_u32(render_start.elapsed()))
+}
+
 async fn current_effect_running(state: &RenderThreadState) -> bool {
     let engine = state.effect_engine.lock().await;
     engine.is_running()
@@ -395,6 +432,76 @@ async fn maybe_idle_throttle(
     None
 }
 
+async fn maybe_sleep_throttle(
+    state: &RenderThreadState,
+    power_state: OutputPowerState,
+    sleep_black_pushed: &mut bool,
+) -> Option<FrameExecution> {
+    if !power_state.sleeping {
+        *sleep_black_pushed = false;
+        return None;
+    }
+
+    if *sleep_black_pushed {
+        {
+            let mut rl = state.render_loop.write().await;
+            let _ = rl.frame_complete();
+        }
+
+        return Some(FrameExecution {
+            headroom: SESSION_SLEEP_THROTTLE_SLEEP,
+            next_skip_decision: SkipDecision::None,
+        });
+    }
+
+    let canvas = Canvas::new(state.canvas_width, state.canvas_height);
+    let sample_start = Instant::now();
+    let (zone_colors, layout) = {
+        let spatial = state.spatial_engine.read().await;
+        let colors = spatial.sample(&canvas);
+        let layout = spatial.layout().clone();
+        (colors, layout)
+    };
+    let sample_us = micros_u32(sample_start.elapsed());
+
+    let push_start = Instant::now();
+    {
+        let mut manager = state.backend_manager.lock().await;
+        let _ = manager.write_frame(&zone_colors, &layout).await;
+    }
+    let push_us = micros_u32(push_start.elapsed());
+
+    let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
+    let frame_num_u32 = u64_to_u32(frame_number);
+    let total_us = sample_us.saturating_add(push_us);
+    let _ = publish_frame_updates(
+        state,
+        zone_colors,
+        &AudioData::silence(),
+        &canvas,
+        frame_num_u32,
+        elapsed_ms,
+        FrameTiming {
+            render_us: 0,
+            sample_us,
+            push_us,
+            total_us,
+            budget_us,
+        },
+    );
+
+    {
+        let mut rl = state.render_loop.write().await;
+        let _ = rl.frame_complete();
+    }
+
+    *sleep_black_pushed = true;
+    Some(FrameExecution {
+        headroom: SESSION_SLEEP_THROTTLE_SLEEP,
+        next_skip_decision: SkipDecision::None,
+    })
+}
+
 fn should_idle_throttle(
     effect_running: bool,
     screen_capture_enabled: bool,
@@ -407,6 +514,42 @@ fn should_idle_throttle(
     }
 
     frame_receivers == 0 && canvas_receivers == 0 && spectrum_receivers == 0
+}
+
+fn apply_output_brightness(canvas: &mut Canvas, brightness: f32) {
+    let brightness = brightness.clamp(0.0, 1.0);
+    if brightness >= 0.999 {
+        return;
+    }
+    if brightness <= 0.0 {
+        canvas.clear();
+        return;
+    }
+
+    let factor = brightness_factor(brightness);
+    for chunk in canvas.as_rgba_bytes_mut().chunks_exact_mut(4) {
+        chunk[0] = scale_channel(chunk[0], factor);
+        chunk[1] = scale_channel(chunk[1], factor);
+        chunk[2] = scale_channel(chunk[2], factor);
+    }
+}
+
+fn brightness_factor(brightness: f32) -> u16 {
+    let target = f64::from(brightness.clamp(0.0, 1.0)) * f64::from(u8::MAX);
+    (0_u16..=u16::from(u8::MAX))
+        .min_by(|left, right| {
+            let left_delta = (f64::from(*left) - target).abs();
+            let right_delta = (f64::from(*right) - target).abs();
+            left_delta
+                .partial_cmp(&right_delta)
+                .unwrap_or(Ordering::Equal)
+        })
+        .expect("brightness factor search range should be non-empty")
+}
+
+fn scale_channel(channel: u8, factor: u16) -> u8 {
+    let scaled = (u16::from(channel) * factor) / u16::from(u8::MAX);
+    u8::try_from(scaled).expect("scaled brightness channel should remain within byte range")
 }
 
 /// Sample current input values for the frame.

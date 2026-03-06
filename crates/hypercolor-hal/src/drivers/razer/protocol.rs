@@ -281,6 +281,7 @@ impl RazerProtocol {
         )
     }
 
+    #[allow(clippy::too_many_arguments, clippy::unused_self)]
     fn build_packet_with_options(
         &self,
         transaction_id: u8,

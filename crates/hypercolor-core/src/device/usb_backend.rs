@@ -2,6 +2,7 @@
 
 use std::cmp::min;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -132,126 +133,21 @@ impl UsbBackend {
 
         for (index, command) in commands.into_iter().enumerate() {
             let command_position = index + 1;
-            let mut attempt = 0_u8;
-
-            trace!(
-                protocol = protocol.name(),
-                transport = transport.name(),
-                command_index = command_position,
+            Self::trace_queued_command(
+                protocol,
+                transport,
+                &command,
+                command_position,
                 total_commands,
-                expects_response = command.expects_response,
-                post_delay_ms = command.post_delay.as_millis(),
-                packet = %describe_packet(&command.data),
-                "usb command queued"
             );
-            trace!(
-                protocol = protocol.name(),
-                transport = transport.name(),
-                command_index = command_position,
+            Self::run_command(
+                protocol,
+                transport,
+                &command,
+                command_position,
                 total_commands,
-                packet_hex = %format_hex_preview(&command.data, 32),
-                "usb command bytes"
-            );
-
-            loop {
-                if command.expects_response {
-                    trace!(
-                        protocol = protocol.name(),
-                        transport = transport.name(),
-                        command_index = command_position,
-                        total_commands,
-                        attempt = attempt + 1,
-                        "usb send_receive starting"
-                    );
-                    let response = transport
-                        .send_receive(&command.data, RESPONSE_TIMEOUT)
-                        .await
-                        .map_err(map_transport_error)?;
-
-                    trace!(
-                        protocol = protocol.name(),
-                        transport = transport.name(),
-                        command_index = command_position,
-                        total_commands,
-                        response = %describe_packet(&response),
-                        "usb response received"
-                    );
-                    trace!(
-                        protocol = protocol.name(),
-                        transport = transport.name(),
-                        command_index = command_position,
-                        total_commands,
-                        response_hex = %format_hex_preview(&response, 32),
-                        "usb response bytes"
-                    );
-
-                    match protocol.parse_response(&response) {
-                        Ok(parsed) => {
-                            trace!(
-                                protocol = protocol.name(),
-                                transport = transport.name(),
-                                command_index = command_position,
-                                total_commands,
-                                status = ?parsed.status,
-                                parsed_data_len = parsed.data.len(),
-                                parsed_data = %format_hex_preview(&parsed.data, 24),
-                                "usb response parsed"
-                            );
-                            if matches!(
-                                parsed.status,
-                                ResponseStatus::Busy | ResponseStatus::Timeout
-                            ) && attempt < MAX_RETRIES
-                            {
-                                attempt = attempt.saturating_add(1);
-                                tokio::time::sleep(RETRY_BACKOFF).await;
-                                continue;
-                            }
-
-                            if parsed.status == ResponseStatus::Unsupported {
-                                warn!(
-                                    protocol = protocol.name(),
-                                    "command not supported by device; continuing"
-                                );
-                            }
-                        }
-                        Err(ProtocolError::DeviceError {
-                            status: ResponseStatus::Busy | ResponseStatus::Timeout,
-                        }) if attempt < MAX_RETRIES => {
-                            attempt = attempt.saturating_add(1);
-                            tokio::time::sleep(RETRY_BACKOFF).await;
-                            continue;
-                        }
-                        Err(error) => {
-                            warn!(
-                                protocol = protocol.name(),
-                                transport = transport.name(),
-                                command_index = command_position,
-                                total_commands,
-                                error = %error,
-                                response = %describe_packet(&response),
-                                response_hex = %format_hex_preview(&response, 32),
-                                "protocol response parse failed"
-                            );
-                            return Err(anyhow!("protocol response parse failed: {error}"));
-                        }
-                    }
-                } else {
-                    trace!(
-                        protocol = protocol.name(),
-                        transport = transport.name(),
-                        command_index = command_position,
-                        total_commands,
-                        attempt = attempt + 1,
-                        "usb send starting"
-                    );
-                    transport
-                        .send(&command.data)
-                        .await
-                        .map_err(map_transport_error)?;
-                }
-
-                break;
-            }
+            )
+            .await?;
 
             if !command.post_delay.is_zero() {
                 tokio::time::sleep(command.post_delay).await;
@@ -259,6 +155,167 @@ impl UsbBackend {
         }
 
         Ok(())
+    }
+
+    fn trace_queued_command(
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        command: &ProtocolCommand,
+        command_position: usize,
+        total_commands: usize,
+    ) {
+        trace!(
+            protocol = protocol.name(),
+            transport = transport.name(),
+            command_index = command_position,
+            total_commands,
+            expects_response = command.expects_response,
+            post_delay_ms = command.post_delay.as_millis(),
+            packet = %describe_packet(&command.data),
+            "usb command queued"
+        );
+        trace!(
+            protocol = protocol.name(),
+            transport = transport.name(),
+            command_index = command_position,
+            total_commands,
+            packet_hex = %format_hex_preview(&command.data, 32),
+            "usb command bytes"
+        );
+    }
+
+    async fn run_command(
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        command: &ProtocolCommand,
+        command_position: usize,
+        total_commands: usize,
+    ) -> Result<()> {
+        let mut attempt = 0_u8;
+
+        loop {
+            if command.expects_response {
+                if Self::run_response_command(
+                    protocol,
+                    transport,
+                    command,
+                    command_position,
+                    total_commands,
+                    &mut attempt,
+                )
+                .await?
+                {
+                    continue;
+                }
+            } else {
+                trace!(
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    command_index = command_position,
+                    total_commands,
+                    attempt = attempt + 1,
+                    "usb send starting"
+                );
+                transport
+                    .send(&command.data)
+                    .await
+                    .map_err(map_transport_error)?;
+            }
+
+            return Ok(());
+        }
+    }
+
+    async fn run_response_command(
+        protocol: &dyn Protocol,
+        transport: &dyn Transport,
+        command: &ProtocolCommand,
+        command_position: usize,
+        total_commands: usize,
+        attempt: &mut u8,
+    ) -> Result<bool> {
+        trace!(
+            protocol = protocol.name(),
+            transport = transport.name(),
+            command_index = command_position,
+            total_commands,
+            attempt = *attempt + 1,
+            "usb send_receive starting"
+        );
+        let response = transport
+            .send_receive(&command.data, RESPONSE_TIMEOUT)
+            .await
+            .map_err(map_transport_error)?;
+
+        trace!(
+            protocol = protocol.name(),
+            transport = transport.name(),
+            command_index = command_position,
+            total_commands,
+            response = %describe_packet(&response),
+            "usb response received"
+        );
+        trace!(
+            protocol = protocol.name(),
+            transport = transport.name(),
+            command_index = command_position,
+            total_commands,
+            response_hex = %format_hex_preview(&response, 32),
+            "usb response bytes"
+        );
+
+        match protocol.parse_response(&response) {
+            Ok(parsed) => {
+                trace!(
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    command_index = command_position,
+                    total_commands,
+                    status = ?parsed.status,
+                    parsed_data_len = parsed.data.len(),
+                    parsed_data = %format_hex_preview(&parsed.data, 24),
+                    "usb response parsed"
+                );
+                if matches!(
+                    parsed.status,
+                    ResponseStatus::Busy | ResponseStatus::Timeout
+                ) && *attempt < MAX_RETRIES
+                {
+                    *attempt = attempt.saturating_add(1);
+                    tokio::time::sleep(RETRY_BACKOFF).await;
+                    return Ok(true);
+                }
+
+                if parsed.status == ResponseStatus::Unsupported {
+                    warn!(
+                        protocol = protocol.name(),
+                        "command not supported by device; continuing"
+                    );
+                }
+
+                Ok(false)
+            }
+            Err(ProtocolError::DeviceError {
+                status: ResponseStatus::Busy | ResponseStatus::Timeout,
+            }) if *attempt < MAX_RETRIES => {
+                *attempt = attempt.saturating_add(1);
+                tokio::time::sleep(RETRY_BACKOFF).await;
+                Ok(true)
+            }
+            Err(error) => {
+                warn!(
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    command_index = command_position,
+                    total_commands,
+                    error = %error,
+                    response = %describe_packet(&response),
+                    response_hex = %format_hex_preview(&response, 32),
+                    "protocol response parse failed"
+                );
+                Err(anyhow!("protocol response parse failed: {error}"))
+            }
+        }
     }
 
     fn spawn_keepalive(
@@ -372,10 +429,10 @@ impl DeviceBackend for UsbBackend {
         let protocol: Arc<dyn Protocol> = Arc::from((pending.descriptor.protocol.build)());
         let transport: Arc<dyn Transport> = Arc::from(Self::build_transport(&pending, &usb).await?);
         let init_sequence = protocol.init_sequence();
-        let first_init_packet = init_sequence
-            .first()
-            .map(|command| describe_packet(&command.data))
-            .unwrap_or_else(|| "<none>".to_owned());
+        let first_init_packet = init_sequence.first().map_or_else(
+            || "<none>".to_owned(),
+            |command| describe_packet(&command.data),
+        );
 
         debug!(
             device_id = %id,
@@ -466,10 +523,10 @@ impl DeviceBackend for UsbBackend {
         };
 
         let commands = device.protocol.encode_frame(colors);
-        let first_packet = commands
-            .first()
-            .map(|command| describe_packet(&command.data))
-            .unwrap_or_else(|| "<none>".to_owned());
+        let first_packet = commands.first().map_or_else(
+            || "<none>".to_owned(),
+            |command| describe_packet(&command.data),
+        );
         trace!(
             device_id = %id,
             protocol = device.protocol.name(),
@@ -497,10 +554,10 @@ impl DeviceBackend for UsbBackend {
             .protocol
             .encode_brightness(brightness)
             .with_context(|| format!("USB protocol does not support brightness for device {id}"))?;
-        let first_packet = commands
-            .first()
-            .map(|command| describe_packet(&command.data))
-            .unwrap_or_else(|| "<none>".to_owned());
+        let first_packet = commands.first().map_or_else(
+            || "<none>".to_owned(),
+            |command| describe_packet(&command.data),
+        );
         debug!(
             device_id = %id,
             protocol = device.protocol.name(),
@@ -626,7 +683,8 @@ fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
         .join(" ");
 
     if bytes.len() > preview_len {
-        rendered.push_str(&format!(" ... (+{} bytes)", bytes.len() - preview_len));
+        let extra_bytes = bytes.len() - preview_len;
+        let _ = write!(&mut rendered, " ... (+{extra_bytes} bytes)");
     }
 
     if rendered.is_empty() {

@@ -8,6 +8,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::session::SessionEvent;
+
 // ── Supporting Types ────────────────────────────────────────────────────
 
 /// Lightweight reference to an effect (avoids cloning full metadata into events).
@@ -555,6 +557,9 @@ pub enum HypercolorEvent {
     /// Rendering resumed.
     Resumed,
 
+    /// Session/power-awareness state changed.
+    SessionChanged(SessionEvent),
+
     /// A system-level error occurred.
     Error {
         code: String,
@@ -704,6 +709,7 @@ impl HypercolorEvent {
             | Self::BrightnessChanged { .. }
             | Self::Paused
             | Self::Resumed
+            | Self::SessionChanged(..)
             | Self::Error { .. } => EventCategory::System,
 
             Self::TriggerFired { .. }

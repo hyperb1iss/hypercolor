@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
@@ -50,6 +50,7 @@ use crate::effect_layouts;
 use crate::logical_devices::LogicalDevice;
 use crate::render_thread::{RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
+use crate::session::{OutputPowerState, SessionController};
 use crate::{discovery, discovery::DiscoveryBackend};
 
 // ── Config File Name ────────────────────────────────────────────────────────
@@ -122,7 +123,7 @@ pub struct DaemonState {
     /// Persistent JSON file for spatial layouts.
     pub layouts_path: PathBuf,
 
-    /// In-memory layout store (shared with AppState).
+    /// In-memory layout store (shared with `AppState`).
     pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
 
     /// Persistent JSON file for startup runtime session state.
@@ -130,6 +131,9 @@ pub struct DaemonState {
 
     /// Global discovery scan lock shared across startup and API-triggered scans.
     pub discovery_in_progress: Arc<AtomicBool>,
+
+    /// Shared session-driven output power state for the render thread.
+    pub power_state: watch::Sender<OutputPowerState>,
 
     /// Handle to the running render thread (if started).
     render_thread: Option<RenderThread>,
@@ -139,6 +143,9 @@ pub struct DaemonState {
 
     /// Periodic discovery worker task.
     discovery_task: Option<tokio::task::JoinHandle<()>>,
+
+    /// Session/power-awareness watcher and policy controller.
+    session_controller: Option<SessionController>,
 
     /// Wall-clock reference for daemon uptime reporting.
     pub start_time: Instant,
@@ -170,6 +177,9 @@ impl DaemonState {
         // ── Event Bus ───────────────────────────────────────────────────
         let event_bus = Arc::new(HypercolorBus::new());
         info!("Event bus created");
+
+        let (power_state, _) = watch::channel(OutputPowerState::default());
+        info!("Session power state channel created");
 
         // ── Device Registry ─────────────────────────────────────────────
         let device_registry = DeviceRegistry::new();
@@ -344,9 +354,11 @@ impl DaemonState {
             layouts,
             runtime_state_path,
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
+            power_state,
             render_thread: None,
             effect_watcher_task: None,
             discovery_task: None,
+            session_controller: None,
             start_time: Instant::now(),
         })
     }
@@ -356,6 +368,18 @@ impl DaemonState {
     /// Lock-free via `arc_swap` — cheap to call from any context.
     pub fn config(&self) -> Arc<HypercolorConfig> {
         Arc::clone(&self.config_manager.get())
+    }
+
+    fn discovery_runtime(&self) -> discovery::DiscoveryRuntime {
+        discovery::DiscoveryRuntime {
+            device_registry: self.device_registry.clone(),
+            backend_manager: Arc::clone(&self.backend_manager),
+            lifecycle_manager: Arc::clone(&self.lifecycle_manager),
+            reconnect_tasks: Arc::clone(&self.reconnect_tasks),
+            event_bus: Arc::clone(&self.event_bus),
+            logical_devices: Arc::clone(&self.logical_devices),
+            in_progress: Arc::clone(&self.discovery_in_progress),
+        }
     }
 
     /// Start all subsystems — render loop, render thread, backend discovery.
@@ -386,6 +410,14 @@ impl DaemonState {
         // before the render loop begins producing frames.
         self.restore_runtime_session_if_configured(&config).await;
 
+        self.session_controller = Some(SessionController::start(
+            Arc::clone(&self.config_manager),
+            Arc::clone(&self.event_bus),
+            Arc::clone(&self.effect_engine),
+            self.power_state.clone(),
+            self.discovery_runtime(),
+        ));
+
         // Start the render loop.
         {
             let mut loop_guard = self.render_loop.write().await;
@@ -400,6 +432,7 @@ impl DaemonState {
             event_bus: Arc::clone(&self.event_bus),
             render_loop: Arc::clone(&self.render_loop),
             input_manager: Arc::clone(&self.input_manager),
+            power_state: self.power_state.subscribe(),
             canvas_width: config.daemon.canvas_width,
             canvas_height: config.daemon.canvas_height,
             screen_capture_enabled: config.capture.enabled,
@@ -447,6 +480,10 @@ impl DaemonState {
     /// sequence from completing.
     pub async fn shutdown(&mut self) -> Result<()> {
         info!("Beginning graceful shutdown");
+
+        if let Some(controller) = self.session_controller.take() {
+            controller.shutdown().await;
+        }
 
         // 1. Stop render loop — next tick() will return false.
         {
@@ -547,7 +584,10 @@ impl DaemonState {
                 spatial.update_layout(layout.clone());
                 info!(layout_id, layout_name = %layout.name, "Restored active layout");
             } else {
-                debug!(layout_id, "Persisted active layout not found in store; using default");
+                debug!(
+                    layout_id,
+                    "Persisted active layout not found in store; using default"
+                );
             }
         }
 

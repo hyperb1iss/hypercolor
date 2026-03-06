@@ -942,6 +942,8 @@ mod tests {
             description: "Audio reactive".to_owned(),
             category: EffectCategory::Audio,
             tags: Vec::new(),
+            controls: Vec::new(),
+            audio_reactive: true,
             source: EffectSource::Html {
                 path: PathBuf::from("effects/audio.html"),
             },
@@ -961,6 +963,8 @@ mod tests {
             description: "Ambient effect with audio response".to_owned(),
             category: EffectCategory::Ambient,
             tags: vec!["visual".to_owned(), "audio-reactive".to_owned()],
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Html {
                 path: PathBuf::from("effects/ambient-audio.html"),
             },
@@ -980,6 +984,8 @@ mod tests {
             description: "Ambient effect".to_owned(),
             category: EffectCategory::Ambient,
             tags: vec!["ambient".to_owned(), "canvas2d".to_owned()],
+            controls: Vec::new(),
+            audio_reactive: false,
             source: EffectSource::Html {
                 path: PathBuf::from("effects/electric-colors.html"),
             },

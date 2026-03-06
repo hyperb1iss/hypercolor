@@ -308,7 +308,8 @@ fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
         .join(" ");
 
     if bytes.len() > preview_len {
-        rendered.push_str(&format!(" ... (+{} bytes)", bytes.len() - preview_len));
+        use std::fmt::Write;
+        let _ = write!(rendered, " ... (+{} bytes)", bytes.len() - preview_len);
     }
 
     if rendered.is_empty() {

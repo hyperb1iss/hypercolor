@@ -5,6 +5,7 @@ use hypercolor_types::event::{
     EventControlValue, EventPriority, FrameData, FrameTiming, HypercolorEvent, Severity,
     TransitionRef, ZoneColors, ZoneRef,
 };
+use hypercolor_types::session::SessionEvent;
 
 // ── Category Tests ──────────────────────────────────────────────────────
 
@@ -249,6 +250,7 @@ fn system_events_have_system_category() {
         },
         HypercolorEvent::Paused,
         HypercolorEvent::Resumed,
+        HypercolorEvent::SessionChanged(SessionEvent::ScreenLocked),
         HypercolorEvent::Error {
             code: "E001".into(),
             message: "out of memory".into(),
@@ -553,6 +555,21 @@ fn serialize_resumed_roundtrip() {
     let deserialized: HypercolorEvent = serde_json::from_str(&json).expect("deserialize Resumed");
 
     assert!(matches!(deserialized, HypercolorEvent::Resumed));
+}
+
+#[test]
+fn serialize_session_changed_roundtrip() {
+    let event = HypercolorEvent::SessionChanged(SessionEvent::IdleEntered {
+        idle_duration: std::time::Duration::from_secs(120),
+    });
+    let json = serde_json::to_string(&event).expect("serialize SessionChanged");
+    let deserialized: HypercolorEvent =
+        serde_json::from_str(&json).expect("deserialize SessionChanged");
+
+    assert!(matches!(
+        deserialized,
+        HypercolorEvent::SessionChanged(SessionEvent::IdleEntered { .. })
+    ));
 }
 
 #[test]

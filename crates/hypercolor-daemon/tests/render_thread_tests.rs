@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig, MockEffectRenderer};
@@ -23,6 +23,7 @@ use hypercolor_types::spatial::{
 };
 
 use hypercolor_daemon::render_thread::{RenderThread, RenderThreadState};
+use hypercolor_daemon::session::OutputPowerState;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -132,6 +133,7 @@ fn make_render_state(
     spatial_engine: SpatialEngine,
     backend_manager: BackendManager,
 ) -> RenderThreadState {
+    let (_, power_state) = watch::channel(OutputPowerState::default());
     RenderThreadState {
         effect_engine: Arc::new(Mutex::new(effect_engine)),
         spatial_engine: Arc::new(RwLock::new(spatial_engine)),
@@ -139,6 +141,7 @@ fn make_render_state(
         event_bus: Arc::new(HypercolorBus::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
+        power_state,
         canvas_width: 320,
         canvas_height: 200,
         screen_capture_enabled: false,
@@ -329,6 +332,7 @@ async fn pipeline_renders_active_effect_to_devices() {
         .activate(Box::new(renderer), metadata)
         .expect("activate");
 
+    let (_, power_state) = watch::channel(OutputPowerState::default());
     let state = RenderThreadState {
         effect_engine: Arc::new(Mutex::new(effect_engine)),
         spatial_engine: Arc::new(RwLock::new(spatial_engine)),
@@ -336,6 +340,7 @@ async fn pipeline_renders_active_effect_to_devices() {
         event_bus: Arc::new(HypercolorBus::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
+        power_state,
         canvas_width: 320,
         canvas_height: 200,
         screen_capture_enabled: false,

@@ -105,7 +105,7 @@ pub struct AppState {
     /// In-memory profile store.
     pub profiles: RwLock<HashMap<String, profiles::Profile>>,
 
-    /// In-memory layout store (shared with DaemonState, persisted to layouts.json).
+    /// In-memory layout store (shared with `DaemonState`, persisted to layouts.json).
     pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
 
     /// Persistent path for spatial layouts.

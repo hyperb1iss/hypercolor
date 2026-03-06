@@ -1,4 +1,4 @@
-//! Host keyboard and mouse capture for interactive LightScript effects.
+//! Host keyboard and mouse capture for interactive `LightScript` effects.
 //!
 //! The capture backend runs on a dedicated polling thread so the public input
 //! source stays `Send` even when the platform device handle is not.
@@ -23,7 +23,7 @@ struct SharedInteractionState {
     interaction: InteractionData,
 }
 
-/// Global host input source for LightScript keyboard and mouse helpers.
+/// Global host input source for `LightScript` keyboard and mouse helpers.
 pub struct InteractionInput {
     name: String,
     running: bool,
@@ -96,7 +96,7 @@ impl InputSource for InteractionInput {
                         .filter(|key| !previous_keys.contains(key))
                         .map(|key| canonical_key_name(*key))
                         .collect::<Vec<String>>();
-                    previous_keys = current_keys.clone();
+                    previous_keys.clone_from(&current_keys);
 
                     let keyboard = KeyboardData {
                         pressed_keys: current_keys
@@ -105,7 +105,7 @@ impl InputSource for InteractionInput {
                             .collect(),
                         recent_keys,
                     };
-                    let mouse = mouse_data_from_state(mouse_state);
+                    let mouse = mouse_data_from_state(&mouse_state);
 
                     if let Ok(mut guard) = shared.lock() {
                         guard.interaction.keyboard.pressed_keys = keyboard.pressed_keys;
@@ -180,12 +180,13 @@ fn extend_recent_keys(target: &mut Vec<String>, mut recent: Vec<String>, limit: 
     }
 }
 
-fn mouse_data_from_state(mouse_state: device_query::MouseState) -> MouseData {
+fn mouse_data_from_state(mouse_state: &device_query::MouseState) -> MouseData {
     let buttons = mouse_state
         .button_pressed
         .iter()
         .enumerate()
-        .filter_map(|(idx, pressed)| (*pressed).then(|| mouse_button_name(idx)))
+        .filter(|(_, pressed)| **pressed)
+        .map(|(idx, _)| mouse_button_name(idx))
         .collect::<Vec<String>>();
     let (x, y) = mouse_state.coords;
     MouseData {
@@ -254,14 +255,10 @@ fn canonical_key_name(key: Keycode) -> String {
         Keycode::RControl => "ControlRight",
         Keycode::LShift => "ShiftLeft",
         Keycode::RShift => "ShiftRight",
-        Keycode::LAlt => "AltLeft",
-        Keycode::RAlt => "AltRight",
-        Keycode::LMeta => "MetaLeft",
-        Keycode::RMeta => "MetaRight",
-        Keycode::Command => "MetaLeft",
-        Keycode::RCommand => "MetaRight",
-        Keycode::LOption => "AltLeft",
-        Keycode::ROption => "AltRight",
+        Keycode::LAlt | Keycode::LOption => "AltLeft",
+        Keycode::RAlt | Keycode::ROption => "AltRight",
+        Keycode::LMeta | Keycode::Command => "MetaLeft",
+        Keycode::RMeta | Keycode::RCommand => "MetaRight",
         other => match other {
             Keycode::Grave => "`",
             Keycode::Minus => "-",
@@ -315,10 +312,11 @@ mod tests {
 
     #[test]
     fn mouse_state_maps_common_buttons() {
-        let mouse = mouse_data_from_state(device_query::MouseState {
+        let mouse_state = device_query::MouseState {
             coords: (12, 34),
             button_pressed: vec![false, true, false, true],
-        });
+        };
+        let mouse = mouse_data_from_state(&mouse_state);
         assert_eq!(mouse.x, 12);
         assert_eq!(mouse.y, 34);
         assert!(mouse.down);
