@@ -17,7 +17,7 @@ use hypercolor_core::input::audio::features::{
 use hypercolor_core::input::audio::fft::{FftPipeline, RingBuffer, precompute_hann, spectral_flux};
 use hypercolor_core::input::{InputData, InputSource};
 use hypercolor_types::audio::{
-    AudioData, AudioPipelineConfig, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS,
+    AudioData, AudioPipelineConfig, AudioSourceType, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -64,6 +64,13 @@ fn kick_pulse(sample_rate: u32, num_samples: usize) -> Vec<f32> {
             env * (2.0 * PI * freq * t).sin()
         })
         .collect()
+}
+
+fn manual_input_config() -> AudioPipelineConfig {
+    AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    }
 }
 
 // ── FFT Pipeline Tests ───────────────────────────────────────────────────
@@ -674,7 +681,7 @@ fn ring_buffer_partial_read() {
 
 #[test]
 fn audio_input_lifecycle() {
-    let config = AudioPipelineConfig::default();
+    let config = manual_input_config();
     let mut input = AudioInput::new(&config);
 
     assert!(!input.is_running());
@@ -688,21 +695,21 @@ fn audio_input_lifecycle() {
 }
 
 #[test]
-fn audio_input_returns_none_without_samples() {
-    let config = AudioPipelineConfig::default();
+fn audio_input_returns_silence_when_capture_disabled() {
+    let config = manual_input_config();
     let mut input = AudioInput::new(&config);
     input.start().expect("start");
 
     let data = input.sample().expect("sample should not error");
     assert!(
-        matches!(data, InputData::None),
-        "should return None when no samples are pushed"
+        matches!(data, InputData::Audio(audio) if audio == AudioData::silence()),
+        "disabled capture should fall back to silence"
     );
 }
 
 #[test]
 fn audio_input_produces_audio_data_with_samples() {
-    let config = AudioPipelineConfig::default();
+    let config = manual_input_config();
     let mut input = AudioInput::new(&config);
     input.start().expect("start");
 
@@ -720,6 +727,7 @@ fn audio_input_produces_audio_data_with_samples() {
         }
         InputData::None => panic!("expected Audio data, got None"),
         InputData::Screen(_) => panic!("expected Audio data"),
+        InputData::Interaction(_) => panic!("expected Audio data"),
     }
 }
 
@@ -727,7 +735,7 @@ fn audio_input_produces_audio_data_with_samples() {
 fn audio_input_silence_produces_near_zero() {
     let config = AudioPipelineConfig {
         noise_floor: -120.0, // Very low floor so silence still gets processed
-        ..AudioPipelineConfig::default()
+        ..manual_input_config()
     };
     let mut input = AudioInput::new(&config);
     input.start().expect("start");
@@ -748,19 +756,20 @@ fn audio_input_silence_produces_near_zero() {
             // Also acceptable — might not have enough data.
         }
         InputData::Screen(_) => panic!("unexpected variant"),
+        InputData::Interaction(_) => panic!("unexpected variant"),
     }
 }
 
 #[test]
 fn audio_input_custom_name() {
-    let config = AudioPipelineConfig::default();
+    let config = manual_input_config();
     let input = AudioInput::new(&config).with_name("PipeWire Monitor");
     assert_eq!(input.name(), "PipeWire Monitor");
 }
 
 #[test]
 fn audio_input_multiple_frames() {
-    let config = AudioPipelineConfig::default();
+    let config = manual_input_config();
     let mut input = AudioInput::new(&config);
     input.start().expect("start");
 
@@ -778,6 +787,25 @@ fn audio_input_multiple_frames() {
     assert!(
         matches!(data, InputData::Audio(_)),
         "should produce audio data"
+    );
+}
+
+#[test]
+fn audio_input_missing_device_degrades_to_silence() {
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::Named("__hypercolor_missing_audio_device__".to_owned()),
+        ..AudioPipelineConfig::default()
+    };
+    let mut input = AudioInput::new(&config);
+
+    input
+        .start()
+        .expect("missing device should not fail startup");
+
+    let data = input.sample().expect("sample should not error");
+    assert!(
+        matches!(data, InputData::Audio(audio) if audio == AudioData::silence()),
+        "missing device should degrade to silence"
     );
 }
 

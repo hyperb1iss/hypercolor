@@ -7,6 +7,7 @@ use std::time::SystemTime;
 use hypercolor_core::effect::{
     EffectEngine, EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
 };
+use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH};
 use hypercolor_types::effect::{
@@ -182,6 +183,7 @@ fn frame_input_construction() {
         delta_secs: 0.016,
         frame_number: 90,
         audio: AudioData::silence(),
+        interaction: InteractionData::default(),
         canvas_width: DEFAULT_CANVAS_WIDTH,
         canvas_height: DEFAULT_CANVAS_HEIGHT,
     };
@@ -200,6 +202,7 @@ fn frame_input_clone() {
         delta_secs: 0.033,
         frame_number: 60,
         audio: AudioData::silence(),
+        interaction: InteractionData::default(),
         canvas_width: 320,
         canvas_height: 200,
     };

@@ -33,11 +33,11 @@ use hypercolor_core::effect::{
     default_effect_search_paths, register_html_effects,
 };
 use hypercolor_core::engine::RenderLoop;
-use hypercolor_core::input::InputManager;
 use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::screen::{
     CaptureConfig as ScreenCaptureConfig, MonitorSelect, ScreenCaptureInput,
 };
+use hypercolor_core::input::{InputManager, InteractionInput};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
@@ -118,6 +118,12 @@ pub struct DaemonState {
 
     /// Persistent JSON file for effect -> layout associations.
     pub effect_layout_links_path: PathBuf,
+
+    /// Persistent JSON file for spatial layouts.
+    pub layouts_path: PathBuf,
+
+    /// In-memory layout store (shared with AppState).
+    pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
 
     /// Persistent JSON file for startup runtime session state.
     pub runtime_state_path: PathBuf,
@@ -288,6 +294,26 @@ impl DaemonState {
         let effect_layout_links = Arc::new(RwLock::new(persisted_links));
         info!(path = %effect_layout_links_path.display(), "Effect/layout association store ready");
 
+        // ── Layout Store ─────────────────────────────────────────────
+        let layouts_path = ConfigManager::data_dir().join("layouts.json");
+        let persisted_layouts = match crate::layout_store::load(&layouts_path) {
+            Ok(entries) => entries,
+            Err(error) => {
+                warn!(
+                    path = %layouts_path.display(),
+                    %error,
+                    "Failed to load persisted layouts; starting with empty store"
+                );
+                HashMap::new()
+            }
+        };
+        let layouts = Arc::new(RwLock::new(persisted_layouts));
+        info!(
+            path = %layouts_path.display(),
+            count = layouts.blocking_read().len(),
+            "Layout store ready"
+        );
+
         // ── Runtime Session Store ───────────────────────────────────
         let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
         info!(
@@ -314,6 +340,8 @@ impl DaemonState {
             logical_devices_path,
             effect_layout_links,
             effect_layout_links_path,
+            layouts_path,
+            layouts,
             runtime_state_path,
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             render_thread: None,
@@ -811,6 +839,7 @@ impl DiscoveryWorkerContext {
 
 fn build_input_manager(config: &HypercolorConfig) -> InputManager {
     let mut input_manager = InputManager::new();
+    input_manager.add_source(Box::new(InteractionInput::new()));
 
     if config.audio.enabled {
         let audio_pipeline_config = AudioPipelineConfig {

@@ -13,6 +13,7 @@ use hypercolor_types::effect::{ControlValidationError, ControlValue, EffectMetad
 
 use super::factory::create_renderer_for_metadata;
 use super::traits::{EffectRenderer, FrameInput};
+use crate::input::InteractionData;
 
 // ── EffectEngine ─────────────────────────────────────────────────────────────
 
@@ -295,6 +296,23 @@ impl EffectEngine {
     ///
     /// Returns an error if the renderer's `tick` call fails.
     pub fn tick(&mut self, delta_secs: f32, audio: &AudioData) -> anyhow::Result<Canvas> {
+        self.tick_with_interaction(delta_secs, audio, &InteractionData::default())
+    }
+
+    /// Produce a single frame with host interaction state.
+    ///
+    /// HTML/Servo effects use `interaction` to populate `engine.keyboard` and
+    /// `engine.mouse`, while native effects can ignore it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the renderer's `tick` call fails.
+    pub fn tick_with_interaction(
+        &mut self,
+        delta_secs: f32,
+        audio: &AudioData,
+        interaction: &InteractionData,
+    ) -> anyhow::Result<Canvas> {
         // If not running, return a blank canvas
         if self.state != EffectState::Running {
             return Ok(Canvas::new(self.canvas_width, self.canvas_height));
@@ -311,6 +329,7 @@ impl EffectEngine {
             delta_secs,
             frame_number: self.frame_number,
             audio: audio.clone(),
+            interaction: interaction.clone(),
             canvas_width: self.canvas_width,
             canvas_height: self.canvas_height,
         };

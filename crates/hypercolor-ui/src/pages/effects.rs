@@ -13,7 +13,7 @@ use crate::components::preset_panel::PresetToolbar;
 use crate::icons::*;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
-/// Category → accent RGB string for inline styles.
+/// Category -> accent RGB string for inline styles.
 fn category_accent_rgb(category: &str) -> &'static str {
     match category {
         "ambient" => "128, 255, 234",
@@ -52,6 +52,8 @@ pub fn EffectsPage() -> impl IntoView {
     let (selected_authors, set_selected_authors) =
         signal(std::collections::BTreeSet::<String>::new());
     let (author_dropdown_open, set_author_dropdown_open) = signal(false);
+    let (favorites_only, set_favorites_only) = signal(false);
+    let (audio_reactive_only, set_audio_reactive_only) = signal(false);
 
     // Derive unique sorted author list from loaded effects
     let authors = Memo::new(move |_| {
@@ -66,6 +68,9 @@ pub fn EffectsPage() -> impl IntoView {
         }
         seen.into_iter().collect::<Vec<_>>()
     });
+
+    // Count how many effects are favorited (for the badge)
+    let favorites_count = Memo::new(move |_| fx.favorite_ids.get().len());
 
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
     let ws_fps = Signal::derive(move || ws.fps.get());
@@ -85,6 +90,9 @@ pub fn EffectsPage() -> impl IntoView {
         let search_term = search.get().to_lowercase();
         let cat = category_filter.get();
         let sel_authors = selected_authors.get();
+        let fav_only = favorites_only.get();
+        let audio_only = audio_reactive_only.get();
+        let fav_ids = fx.favorite_ids.get();
 
         effects
             .into_iter()
@@ -93,6 +101,12 @@ pub fn EffectsPage() -> impl IntoView {
                     return false;
                 }
                 if !sel_authors.is_empty() && !sel_authors.contains(&e.author) {
+                    return false;
+                }
+                if fav_only && !fav_ids.contains(&e.id) {
+                    return false;
+                }
+                if audio_only && !e.audio_reactive {
                     return false;
                 }
                 if !search_term.is_empty() {
@@ -117,6 +131,11 @@ pub fn EffectsPage() -> impl IntoView {
         fx.apply_effect(id);
     });
 
+    // Toggle favorite handler
+    let on_toggle_favorite = Callback::new(move |id: String| {
+        fx.toggle_favorite(id);
+    });
+
     // Control change handler
     let on_control_change = Callback::new(move |(name, value): (String, serde_json::Value)| {
         if fx.active_effect_id.get().is_some() {
@@ -137,7 +156,7 @@ pub fn EffectsPage() -> impl IntoView {
 
     view! {
         <div class="flex flex-col h-full -m-6 animate-fade-in">
-            // Fixed header — title + search + categories
+            // Fixed header — title + search + categories + capability filters
             <div class="shrink-0 px-6 pt-6 pb-4 space-y-4 bg-layer-0 z-10">
                 // Title row
                 <div class="flex items-baseline justify-between">
@@ -170,141 +189,188 @@ pub fn EffectsPage() -> impl IntoView {
                     <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-dim bg-white/[0.03] px-1.5 py-0.5 rounded border border-white/[0.03]">"/"</kbd>
                 </div>
 
-                // Category filter bar — each chip tinted with its category color
-                <div class="flex gap-1.5 flex-wrap">
-                    {CATEGORIES.iter().map(|cat| {
-                        let cat = cat.to_string();
-                        let cat_clone = cat.clone();
-                        let rgb = if cat == "all" { "225, 53, 255" } else { category_accent_rgb(&cat) }.to_string();
-                        let is_active = {
-                            let cat = cat.clone();
-                            Memo::new(move |_| category_filter.get() == cat)
-                        };
-                        let active_style = format!(
-                            "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 12px rgba({rgb}, 0.2), inset 0 0 8px rgba({rgb}, 0.05)"
-                        );
-                        let inactive_style = format!(
-                            "color: rgba({rgb}, 0.6); border-color: rgba({rgb}, 0.1); background: rgba({rgb}, 0.03)"
-                        );
-                        view! {
-                            <button
-                                class="px-2.5 py-1 rounded-full text-xs font-medium capitalize border chip-interactive"
-                                style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
-                                on:click=move |_| set_category_filter.set(cat_clone.clone())
-                            >
-                                {cat.clone()}
-                            </button>
-                        }
-                    }).collect_view()}
-                </div>
-
-                // Author multiselect dropdown
-                {move || {
-                    let author_list = authors.get();
-                    (author_list.len() > 1).then(move || {
-                        let sel = selected_authors.get();
-                        let count = sel.len();
-                        let label = if count == 0 {
-                            "All authors".to_string()
-                        } else if count == 1 {
-                            sel.iter().next().unwrap_or(&String::new()).clone()
-                        } else {
-                            format!("{count} authors")
-                        };
-
-                        view! {
-                            <div class="relative">
-                                // Trigger button
+                // Category + capability filter bar
+                <div class="flex items-center gap-3 flex-wrap">
+                    // Category chips
+                    <div class="flex gap-1.5 flex-wrap">
+                        {CATEGORIES.iter().map(|cat| {
+                            let cat = cat.to_string();
+                            let cat_clone = cat.clone();
+                            let rgb = if cat == "all" { "225, 53, 255" } else { category_accent_rgb(&cat) }.to_string();
+                            let is_active = {
+                                let cat = cat.clone();
+                                Memo::new(move |_| category_filter.get() == cat)
+                            };
+                            let active_style = format!(
+                                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 12px rgba({rgb}, 0.2), inset 0 0 8px rgba({rgb}, 0.05)"
+                            );
+                            let inactive_style = format!(
+                                "color: rgba({rgb}, 0.6); border-color: rgba({rgb}, 0.1); background: rgba({rgb}, 0.03)"
+                            );
+                            view! {
                                 <button
-                                    class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200"
-                                    style=move || if selected_authors.get().is_empty() {
-                                        "color: rgba(255, 106, 193, 0.6); border-color: rgba(255, 106, 193, 0.1); background: rgba(255, 106, 193, 0.03)"
-                                    } else {
-                                        "background: rgba(255, 106, 193, 0.12); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.25); box-shadow: 0 0 10px rgba(255, 106, 193, 0.15)"
-                                    }
-                                    on:click=move |_| set_author_dropdown_open.update(|v| *v = !*v)
+                                    class="px-2.5 py-1 rounded-full text-xs font-medium capitalize border chip-interactive"
+                                    style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
+                                    on:click=move |_| set_category_filter.set(cat_clone.clone())
                                 >
-                                    <Icon icon=LuUser width="12px" height="12px" />
-                                    <span>{label.clone()}</span>
-                                    <span
-                                        class="w-3 h-3 flex items-center justify-center transition-transform duration-200"
-                                        class:rotate-180=move || author_dropdown_open.get()
-                                    >
-                                        <Icon icon=LuChevronDown width="12px" height="12px" />
-                                    </span>
+                                    {cat.clone()}
                                 </button>
+                            }
+                        }).collect_view()}
+                    </div>
 
-                                // Dropdown panel
-                                {move || author_dropdown_open.get().then(|| {
-                                    let list = authors.get();
-                                    view! {
-                                        // Invisible backdrop to close on outside click
-                                        <div
-                                            class="fixed inset-0 z-20"
-                                            on:click=move |_| set_author_dropdown_open.set(false)
-                                        />
-                                        <div
-                                            class="absolute top-full left-0 mt-1 z-30 min-w-[200px] max-h-[280px] overflow-y-auto
-                                                   rounded-xl border border-white/[0.06] bg-layer-2 shadow-[0_8px_32px_rgba(0,0,0,0.4)]
-                                                   py-1 animate-fade-in scrollbar-none"
+                    // Divider
+                    <div class="w-px h-5 bg-white/[0.06]" />
+
+                    // Favorites toggle chip
+                    <button
+                        class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border chip-interactive transition-all duration-200"
+                        style=move || if favorites_only.get() {
+                            "background: rgba(255, 106, 193, 0.15); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.3); \
+                             box-shadow: 0 0 12px rgba(255, 106, 193, 0.2), inset 0 0 8px rgba(255, 106, 193, 0.05)"
+                        } else {
+                            "color: rgba(255, 106, 193, 0.5); border-color: rgba(255, 106, 193, 0.1); background: rgba(255, 106, 193, 0.03)"
+                        }
+                        on:click=move |_| set_favorites_only.update(|v| *v = !*v)
+                    >
+                        <Icon
+                            icon=LuHeart
+                            width="11px"
+                            height="11px"
+                            style=move || if favorites_only.get() { "fill: currentColor" } else { "" }
+                        />
+                        "Favorites"
+                        {move || {
+                            let count = favorites_count.get();
+                            (count > 0).then(|| view! {
+                                <span class="text-[9px] font-mono opacity-70">{count}</span>
+                            })
+                        }}
+                    </button>
+
+                    // Audio reactive filter chip
+                    <button
+                        class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border chip-interactive transition-all duration-200"
+                        style=move || if audio_reactive_only.get() {
+                            "background: rgba(255, 106, 193, 0.15); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.3); \
+                             box-shadow: 0 0 12px rgba(255, 106, 193, 0.2), inset 0 0 8px rgba(255, 106, 193, 0.05)"
+                        } else {
+                            "color: rgba(139, 133, 160, 0.5); border-color: rgba(139, 133, 160, 0.1); background: rgba(139, 133, 160, 0.03)"
+                        }
+                        on:click=move |_| set_audio_reactive_only.update(|v| *v = !*v)
+                    >
+                        <Icon icon=LuAudioLines width="11px" height="11px" />
+                        "Audio"
+                    </button>
+
+                    // Author multiselect dropdown
+                    {move || {
+                        let author_list = authors.get();
+                        (author_list.len() > 1).then(move || {
+                            let sel = selected_authors.get();
+                            let count = sel.len();
+                            let label = if count == 0 {
+                                "All authors".to_string()
+                            } else if count == 1 {
+                                sel.iter().next().unwrap_or(&String::new()).clone()
+                            } else {
+                                format!("{count} authors")
+                            };
+
+                            view! {
+                                <div class="relative">
+                                    // Trigger button
+                                    <button
+                                        class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200"
+                                        style=move || if selected_authors.get().is_empty() {
+                                            "color: rgba(255, 106, 193, 0.6); border-color: rgba(255, 106, 193, 0.1); background: rgba(255, 106, 193, 0.03)"
+                                        } else {
+                                            "background: rgba(255, 106, 193, 0.12); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.25); box-shadow: 0 0 10px rgba(255, 106, 193, 0.15)"
+                                        }
+                                        on:click=move |_| set_author_dropdown_open.update(|v| *v = !*v)
+                                    >
+                                        <Icon icon=LuUser width="12px" height="12px" />
+                                        <span>{label.clone()}</span>
+                                        <span
+                                            class="w-3 h-3 flex items-center justify-center transition-transform duration-200"
+                                            class:rotate-180=move || author_dropdown_open.get()
                                         >
-                                            // Clear all option
-                                            <button
-                                                class="w-full text-left px-3 py-1.5 text-xs text-fg-dim hover:bg-white/[0.04] transition-colors"
-                                                on:click=move |_| {
-                                                    set_selected_authors.set(std::collections::BTreeSet::new());
-                                                    set_author_dropdown_open.set(false);
-                                                }
+                                            <Icon icon=LuChevronDown width="12px" height="12px" />
+                                        </span>
+                                    </button>
+
+                                    // Dropdown panel
+                                    {move || author_dropdown_open.get().then(|| {
+                                        let list = authors.get();
+                                        view! {
+                                            // Invisible backdrop to close on outside click
+                                            <div
+                                                class="fixed inset-0 z-20"
+                                                on:click=move |_| set_author_dropdown_open.set(false)
+                                            />
+                                            <div
+                                                class="absolute top-full left-0 mt-1 z-30 min-w-[200px] max-h-[280px] overflow-y-auto
+                                                       rounded-xl border border-white/[0.06] bg-layer-2 shadow-[0_8px_32px_rgba(0,0,0,0.4)]
+                                                       py-1 animate-fade-in scrollbar-none"
                                             >
-                                                "All authors"
-                                            </button>
-                                            <div class="h-px bg-white/[0.04] mx-2 my-0.5" />
-                                            // Author checkboxes
-                                            {list.into_iter().map(|author| {
-                                                let author_toggle = author.clone();
-                                                let author_check = author.clone();
-                                                let author_check2 = author.clone();
-                                                let author_label = author.clone();
-                                                view! {
-                                                    <button
-                                                        class="w-full text-left px-3 py-1.5 flex items-center gap-2.5 text-xs hover:bg-white/[0.04] transition-colors group"
-                                                        on:click=move |_| {
-                                                            let a = author_toggle.clone();
-                                                            set_selected_authors.update(move |set| {
-                                                                if !set.remove(&a) {
-                                                                    set.insert(a);
-                                                                }
-                                                            });
-                                                        }
-                                                    >
-                                                        // Checkbox indicator
-                                                        <div
-                                                            class="w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all duration-150"
-                                                            style=move || {
-                                                                if selected_authors.get().contains(&author_check) {
-                                                                    "background: rgba(255, 106, 193, 0.8); border-color: rgb(255, 106, 193)"
-                                                                } else {
-                                                                    "border-color: rgba(255, 255, 255, 0.1); background: transparent"
-                                                                }
+                                                // Clear all option
+                                                <button
+                                                    class="w-full text-left px-3 py-1.5 text-xs text-fg-dim hover:bg-white/[0.04] transition-colors"
+                                                    on:click=move |_| {
+                                                        set_selected_authors.set(std::collections::BTreeSet::new());
+                                                        set_author_dropdown_open.set(false);
+                                                    }
+                                                >
+                                                    "All authors"
+                                                </button>
+                                                <div class="h-px bg-white/[0.04] mx-2 my-0.5" />
+                                                // Author checkboxes
+                                                {list.into_iter().map(|author| {
+                                                    let author_toggle = author.clone();
+                                                    let author_check = author.clone();
+                                                    let author_check2 = author.clone();
+                                                    let author_label = author.clone();
+                                                    view! {
+                                                        <button
+                                                            class="w-full text-left px-3 py-1.5 flex items-center gap-2.5 text-xs hover:bg-white/[0.04] transition-colors group"
+                                                            on:click=move |_| {
+                                                                let a = author_toggle.clone();
+                                                                set_selected_authors.update(move |set| {
+                                                                    if !set.remove(&a) {
+                                                                        set.insert(a);
+                                                                    }
+                                                                });
                                                             }
                                                         >
-                                                            {move || selected_authors.get().contains(&author_check2).then(|| view! {
-                                                                <Icon icon=LuCheck width="10px" height="10px" style="color: white" />
-                                                            })}
-                                                        </div>
-                                                        <span class="text-fg-muted group-hover:text-fg transition-colors truncate">
-                                                            {author_label.clone()}
-                                                        </span>
-                                                    </button>
-                                                }
-                                            }).collect_view()}
-                                        </div>
-                                    }
-                                })}
-                            </div>
-                        }
-                    })
-                }}
+                                                            // Checkbox indicator
+                                                            <div
+                                                                class="w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all duration-150"
+                                                                style=move || {
+                                                                    if selected_authors.get().contains(&author_check) {
+                                                                        "background: rgba(255, 106, 193, 0.8); border-color: rgb(255, 106, 193)"
+                                                                    } else {
+                                                                        "border-color: rgba(255, 255, 255, 0.1); background: transparent"
+                                                                    }
+                                                                }
+                                                            >
+                                                                {move || selected_authors.get().contains(&author_check2).then(|| view! {
+                                                                    <Icon icon=LuCheck width="10px" height="10px" style="color: white" />
+                                                                })}
+                                                            </div>
+                                                            <span class="text-fg-muted group-hover:text-fg transition-colors truncate">
+                                                                {author_label.clone()}
+                                                            </span>
+                                                        </button>
+                                                    }
+                                                }).collect_view()}
+                                            </div>
+                                        }
+                                    })}
+                                </div>
+                            }
+                        })
+                    }}
+                </div>
             </div>
 
             // Scrollable content: grid + pinned detail panel
@@ -324,22 +390,28 @@ pub fn EffectsPage() -> impl IntoView {
                                     }.into_any()
                                 } else {
                                     let grid_class = if has_active.get() {
-                                        "grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3"
+                                        "grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3"
                                     } else {
-                                        "grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4"
+                                        "grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4"
                                     };
                                     view! {
                                         <div class=grid_class>
                                             {effects.into_iter().enumerate().map(|(i, effect)| {
                                                 let effect_id = effect.id.clone();
+                                                let fav_effect_id = effect.id.clone();
                                                 let is_active = Signal::derive(move || {
                                                     fx.active_effect_id.get().as_deref() == Some(&effect_id)
+                                                });
+                                                let is_favorite = Signal::derive(move || {
+                                                    fx.favorite_ids.get().contains(&fav_effect_id)
                                                 });
                                                 view! {
                                                     <EffectCard
                                                         effect=effect
                                                         is_active=is_active
+                                                        is_favorite=is_favorite
                                                         on_apply=on_apply
+                                                        on_toggle_favorite=on_toggle_favorite
                                                         index=i
                                                     />
                                                 }
@@ -486,7 +558,7 @@ fn parse_f32(value: f64) -> Option<f32> {
 #[component]
 fn LoadingSkeleton() -> impl IntoView {
     view! {
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
+        <div class="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
             {(0..12).map(|_| {
                 view! {
                     <div class="rounded-2xl border border-white/[0.03] bg-layer-2/40 px-4 py-4 animate-pulse space-y-3">
@@ -497,6 +569,10 @@ fn LoadingSkeleton() -> impl IntoView {
                         <div class="space-y-1.5">
                             <div class="h-3 w-full bg-white/[0.02] rounded" />
                             <div class="h-3 w-3/4 bg-white/[0.02] rounded" />
+                        </div>
+                        <div class="flex gap-1.5">
+                            <div class="h-4 w-14 bg-white/[0.02] rounded" />
+                            <div class="h-4 w-12 bg-white/[0.02] rounded" />
                         </div>
                         <div class="flex justify-between pt-1 border-t border-white/[0.02]">
                             <div class="h-2.5 w-16 bg-white/[0.02] rounded" />

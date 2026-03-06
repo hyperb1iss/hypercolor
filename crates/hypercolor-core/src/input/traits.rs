@@ -17,10 +17,45 @@ use crate::types::event::ZoneColors;
 pub enum InputData {
     /// Audio analysis snapshot — spectrum, beats, levels.
     Audio(AudioData),
+    /// Global keyboard and mouse state for interactive HTML effects.
+    Interaction(InteractionData),
     /// Screen capture zone colors — grabbed from display regions.
     Screen(ScreenData),
     /// No data available this frame (source idle or warming up).
     None,
+}
+
+// ── InteractionData ────────────────────────────────────────────────────────
+
+/// Snapshot of host keyboard and mouse state for one frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InteractionData {
+    /// Keyboard state including currently pressed keys and edge-triggered presses.
+    pub keyboard: KeyboardData,
+    /// Mouse position and pressed buttons.
+    pub mouse: MouseData,
+}
+
+/// Keyboard snapshot for one frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyboardData {
+    /// Keys currently held down.
+    pub pressed_keys: Vec<String>,
+    /// Keys newly pressed since the last frame sample.
+    pub recent_keys: Vec<String>,
+}
+
+/// Mouse snapshot for one frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MouseData {
+    /// Global X position in pixels.
+    pub x: i32,
+    /// Global Y position in pixels.
+    pub y: i32,
+    /// Buttons currently held down.
+    pub buttons: Vec<String>,
+    /// Whether any button is currently pressed.
+    pub down: bool,
 }
 
 // ── ScreenData ─────────────────────────────────────────────────────────────

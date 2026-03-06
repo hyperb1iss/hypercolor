@@ -92,6 +92,8 @@ impl ServoRenderer {
         if let Some(audio_update) = frame_scripts.audio_update {
             self.pending_scripts.push(audio_update);
         }
+        self.pending_scripts
+            .push(LightscriptRuntime::input_update_script(&input.interaction));
     }
 
     fn placeholder_canvas(input: &FrameInput) -> Canvas {

@@ -52,6 +52,7 @@ pub struct EffectSummary {
     pub runnable: bool,
     pub tags: Vec<String>,
     pub version: String,
+    pub audio_reactive: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -132,6 +133,7 @@ pub async fn list_effects(State(state): State<Arc<AppState>>) -> Response {
                 runnable: is_runnable_source(&meta.source),
                 tags: meta.tags.clone(),
                 version: meta.version.clone(),
+                audio_reactive: meta.audio_reactive,
             }
         })
         .collect();

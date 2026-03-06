@@ -2,6 +2,7 @@
 pub mod api;
 pub mod discovery;
 pub mod effect_layouts;
+pub mod layout_store;
 pub mod library;
 pub mod logical_devices;
 pub mod mcp;

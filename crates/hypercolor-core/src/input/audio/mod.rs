@@ -20,8 +20,14 @@ pub mod beat;
 pub mod features;
 pub mod fft;
 
+use std::sync::{Arc, Mutex};
+
+use anyhow::{Context, anyhow};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig};
+
 use crate::input::traits::{InputData, InputSource};
-use crate::types::audio::{AudioData, AudioPipelineConfig};
+use crate::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 
 use beat::{BeatDetector, BeatFrame};
 use features::{
@@ -66,6 +72,12 @@ impl AudioAnalyzer {
     /// Create a new analyzer from the given audio config.
     #[must_use]
     pub fn new(config: &AudioPipelineConfig) -> Self {
+        Self::with_sample_rate(config, 48_000)
+    }
+
+    /// Create a new analyzer from the given audio config and runtime sample rate.
+    #[must_use]
+    pub fn with_sample_rate(config: &AudioPipelineConfig, sample_rate_hz: u32) -> Self {
         let fft_size = config.fft_size;
         // Ring buffer holds 4x the FFT size for comfortable overlap.
         let ring_capacity = fft_size * 4;
@@ -73,8 +85,8 @@ impl AudioAnalyzer {
         Self {
             config: config.clone(),
             ring: RingBuffer::new(ring_capacity),
-            fft: FftPipeline::new(fft_size, 48_000),
-            mel: MelFilterbank::new(fft_size, 48_000, MEL_BANDS),
+            fft: FftPipeline::new(fft_size, sample_rate_hz),
+            mel: MelFilterbank::new(fft_size, sample_rate_hz, MEL_BANDS),
             beat: BeatDetector::new(config.beat_sensitivity),
 
             spectrum_smoother: ArraySmoother::new(SPECTRUM_BINS, 0.6, 0.15),
@@ -190,25 +202,23 @@ impl AudioAnalyzer {
             chromagram: self.chroma_smoother.values().to_vec(),
             beat_detected: beat_state.beat_detected,
             beat_confidence: beat_state.beat_confidence,
+            beat_phase: self.beat.phase(),
+            beat_pulse: beat_state.beat_pulse,
             bpm: beat_state.bpm,
             rms_level: self.rms_smoother.value(),
             peak_level: peak,
             spectral_centroid: self.centroid_smoother.value(),
             spectral_flux: self.flux_smoother.value(),
             onset_detected: beat_state.onset_detected,
+            onset_pulse: beat_state.onset_pulse,
         }))
     }
 
     /// Reset all internal state (e.g. on source change).
     pub fn reset(&mut self) {
-        self.beat.reset();
-        self.spectrum_smoother.reset();
-        self.mel_smoother.reset();
-        self.chroma_smoother.reset();
-        self.rms_smoother.reset(0.0);
-        self.centroid_smoother.reset(0.0);
-        self.flux_smoother.reset(0.0);
-        self.elapsed = 0.0;
+        let config = self.config.clone();
+        let sample_rate = self.fft.sample_rate();
+        *self = Self::with_sample_rate(&config, sample_rate);
     }
 }
 
@@ -223,7 +233,10 @@ impl AudioAnalyzer {
 pub struct AudioInput {
     name: String,
     running: bool,
-    analyzer: AudioAnalyzer,
+    config: AudioPipelineConfig,
+    analyzer: Arc<Mutex<AudioAnalyzer>>,
+    stream: Option<Stream>,
+    degraded_to_silence: bool,
 }
 
 impl AudioInput {
@@ -233,7 +246,10 @@ impl AudioInput {
         Self {
             name: "AudioInput".to_owned(),
             running: false,
-            analyzer: AudioAnalyzer::new(config),
+            config: config.clone(),
+            analyzer: Arc::new(Mutex::new(AudioAnalyzer::new(config))),
+            stream: None,
+            degraded_to_silence: false,
         }
     }
 
@@ -248,13 +264,17 @@ impl AudioInput {
     ///
     /// This is the entry point for both cpal callbacks and test harnesses.
     pub fn push_samples(&mut self, samples: &[f32]) {
-        self.analyzer.push_samples(samples);
+        if let Ok(mut analyzer) = self.analyzer.lock() {
+            analyzer.push_samples(samples);
+        }
     }
 
     /// Access the underlying analyzer (for advanced usage / testing).
     #[must_use]
-    pub fn analyzer(&self) -> &AudioAnalyzer {
-        &self.analyzer
+    pub fn analyzer(&self) -> std::sync::MutexGuard<'_, AudioAnalyzer> {
+        self.analyzer
+            .lock()
+            .expect("audio analyzer mutex should not be poisoned")
     }
 }
 
@@ -264,26 +284,271 @@ impl InputSource for AudioInput {
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
+        if self.running {
+            return Ok(());
+        }
+
         self.running = true;
+        self.degraded_to_silence = false;
+        self.stream = None;
+
+        if matches!(self.config.source, AudioSourceType::None) {
+            return Ok(());
+        }
+
+        match build_capture_stream(&self.config, Arc::clone(&self.analyzer)) {
+            Ok(stream) => {
+                if let Err(error) = stream
+                    .play()
+                    .context("failed to start audio capture stream")
+                {
+                    self.degraded_to_silence = true;
+                    tracing::warn!(
+                        source = ?self.config.source,
+                        %error,
+                        "Audio capture could not start; LightScript audio input will fall back to silence"
+                    );
+                } else {
+                    self.stream = Some(stream);
+                }
+            }
+            Err(error) => {
+                self.degraded_to_silence = true;
+                tracing::warn!(
+                    source = ?self.config.source,
+                    %error,
+                    "Audio capture unavailable; LightScript audio input will fall back to silence"
+                );
+            }
+        }
+
         Ok(())
     }
 
     fn stop(&mut self) {
+        self.stream = None;
         self.running = false;
-        self.analyzer.reset();
+        self.degraded_to_silence = false;
+        if let Ok(mut analyzer) = self.analyzer.lock() {
+            analyzer.reset();
+        }
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
+        if !self.running {
+            return Ok(InputData::None);
+        }
+
         // Use a fixed dt of ~16ms (60fps). In production this would
         // come from the actual frame timer.
         let dt = 1.0 / 60.0;
-        match self.analyzer.analyze(dt)? {
+        let mut analyzer = self
+            .analyzer
+            .lock()
+            .map_err(|_| anyhow!("audio analyzer mutex poisoned"))?;
+        match analyzer.analyze(dt)? {
             Some(data) => Ok(InputData::Audio(data)),
+            None if self.degraded_to_silence
+                || matches!(self.config.source, AudioSourceType::None) =>
+            {
+                Ok(InputData::Audio(AudioData::silence()))
+            }
             None => Ok(InputData::None),
         }
     }
 
     fn is_running(&self) -> bool {
         self.running
+    }
+}
+
+fn build_capture_stream(
+    config: &AudioPipelineConfig,
+    analyzer: Arc<Mutex<AudioAnalyzer>>,
+) -> anyhow::Result<Stream> {
+    let host = cpal::default_host();
+    let device = select_input_device(&host, &config.source)?;
+    let device_name = device
+        .description()
+        .map(|description| description.name().to_owned())
+        .unwrap_or_else(|_| "<unknown-audio-device>".to_owned());
+    let supported_config = device
+        .default_input_config()
+        .with_context(|| format!("failed to get default input config for '{device_name}'"))?;
+    reconfigure_analyzer(&analyzer, config, &supported_config);
+    let stream_config: cpal::StreamConfig = supported_config.config();
+    let channels = usize::from(stream_config.channels.max(1));
+
+    match supported_config.sample_format() {
+        SampleFormat::I8 => {
+            build_stream::<i8>(&device, &stream_config, channels, analyzer, device_name)
+        }
+        SampleFormat::I16 => {
+            build_stream::<i16>(&device, &stream_config, channels, analyzer, device_name)
+        }
+        SampleFormat::I24 => {
+            build_stream::<cpal::I24>(&device, &stream_config, channels, analyzer, device_name)
+        }
+        SampleFormat::I32 => {
+            build_stream::<i32>(&device, &stream_config, channels, analyzer, device_name)
+        }
+        SampleFormat::I64 => {
+            build_stream::<i64>(&device, &stream_config, channels, analyzer, device_name)
+        }
+        SampleFormat::U8 => {
+            build_stream::<u8>(&device, &stream_config, channels, analyzer, device_name)
+        }
+        SampleFormat::U16 => {
+            build_stream::<u16>(&device, &stream_config, channels, analyzer, device_name)
+        }
+        SampleFormat::U24 => {
+            build_stream::<cpal::U24>(&device, &stream_config, channels, analyzer, device_name)
+        }
+        SampleFormat::U32 => {
+            build_stream::<u32>(&device, &stream_config, channels, analyzer, device_name)
+        }
+        SampleFormat::U64 => {
+            build_stream::<u64>(&device, &stream_config, channels, analyzer, device_name)
+        }
+        SampleFormat::F32 => {
+            build_stream::<f32>(&device, &stream_config, channels, analyzer, device_name)
+        }
+        SampleFormat::F64 => {
+            build_stream::<f64>(&device, &stream_config, channels, analyzer, device_name)
+        }
+        sample_format => Err(anyhow!("unsupported audio sample format: {sample_format}")),
+    }
+}
+
+fn reconfigure_analyzer(
+    analyzer: &Arc<Mutex<AudioAnalyzer>>,
+    config: &AudioPipelineConfig,
+    supported_config: &SupportedStreamConfig,
+) {
+    if let Ok(mut guard) = analyzer.lock() {
+        *guard = AudioAnalyzer::with_sample_rate(config, supported_config.sample_rate());
+    }
+}
+
+fn select_input_device(
+    host: &cpal::Host,
+    source: &AudioSourceType,
+) -> anyhow::Result<cpal::Device> {
+    match source {
+        AudioSourceType::None => Err(anyhow!("audio source is disabled")),
+        AudioSourceType::Named(name) => find_named_input_device(host, name)?
+            .ok_or_else(|| anyhow!("audio input device '{name}' not found")),
+        AudioSourceType::SystemMonitor => find_monitor_input_device(host)?
+            .or_else(|| host.default_input_device())
+            .ok_or_else(|| anyhow!("no input device available for system monitor capture")),
+        AudioSourceType::Microphone => find_microphone_input_device(host)?
+            .or_else(|| host.default_input_device())
+            .ok_or_else(|| anyhow!("no microphone input device available")),
+    }
+}
+
+fn find_named_input_device(host: &cpal::Host, name: &str) -> anyhow::Result<Option<cpal::Device>> {
+    let wanted = name.trim().to_ascii_lowercase();
+    let mut partial_match = None;
+
+    for device in host
+        .input_devices()
+        .context("failed to enumerate input devices")?
+    {
+        let Ok(description) = device.description() else {
+            continue;
+        };
+        let device_name = description.name();
+        let normalized = device_name.trim().to_ascii_lowercase();
+        if normalized == wanted {
+            return Ok(Some(device));
+        }
+        if partial_match.is_none() && normalized.contains(&wanted) {
+            partial_match = Some(device);
+        }
+    }
+
+    Ok(partial_match)
+}
+
+fn find_monitor_input_device(host: &cpal::Host) -> anyhow::Result<Option<cpal::Device>> {
+    find_input_device_matching(host, is_monitorish_device_name)
+}
+
+fn find_microphone_input_device(host: &cpal::Host) -> anyhow::Result<Option<cpal::Device>> {
+    find_input_device_matching(host, |name| !is_monitorish_device_name(name))
+}
+
+fn find_input_device_matching(
+    host: &cpal::Host,
+    predicate: impl Fn(&str) -> bool,
+) -> anyhow::Result<Option<cpal::Device>> {
+    for device in host
+        .input_devices()
+        .context("failed to enumerate input devices")?
+    {
+        let Ok(description) = device.description() else {
+            continue;
+        };
+        let device_name = description.name();
+        if predicate(device_name) {
+            return Ok(Some(device));
+        }
+    }
+
+    Ok(None)
+}
+
+fn is_monitorish_device_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    ["monitor", "loopback", "what u hear", "stereo mix"]
+        .iter()
+        .any(|needle| normalized.contains(needle))
+}
+
+fn build_stream<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    analyzer: Arc<Mutex<AudioAnalyzer>>,
+    device_name: String,
+) -> anyhow::Result<Stream>
+where
+    T: Sample + SizedSample + Send + 'static,
+    f32: FromSample<T>,
+{
+    let err_name = device_name.clone();
+    device
+        .build_input_stream(
+            config,
+            move |data: &[T], _| push_input_samples(data, channels, &analyzer),
+            move |error| {
+                tracing::warn!(
+                    device = %err_name,
+                    %error,
+                    "Audio capture stream reported an error"
+                );
+            },
+            None,
+        )
+        .with_context(|| format!("failed to build audio capture stream for '{device_name}'"))
+}
+
+fn push_input_samples<T>(input: &[T], channels: usize, analyzer: &Arc<Mutex<AudioAnalyzer>>)
+where
+    T: Sample + Copy,
+    f32: FromSample<T>,
+{
+    let channel_count = channels.max(1);
+    let mut mono = Vec::with_capacity(input.len().max(1) / channel_count.max(1));
+
+    for frame in input.chunks(channel_count) {
+        let sum = frame.iter().copied().map(f32::from_sample).sum::<f32>();
+        let sample_count = u16::try_from(frame.len()).unwrap_or(1);
+        mono.push((sum / f32::from(sample_count)).clamp(-1.0, 1.0));
+    }
+
+    if let Ok(mut guard) = analyzer.lock() {
+        guard.push_samples(&mono);
     }
 }

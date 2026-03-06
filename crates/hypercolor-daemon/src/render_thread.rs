@@ -26,7 +26,7 @@ use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::BackendManager;
 use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::engine::{FrameStats, RenderLoop};
-use hypercolor_core::input::{InputData, InputManager, ScreenData};
+use hypercolor_core::input::{InputData, InputManager, InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
@@ -161,6 +161,7 @@ const IDLE_THROTTLE_SLEEP: Duration = Duration::from_millis(120);
 #[derive(Clone)]
 struct FrameInputs {
     audio: AudioData,
+    interaction: InteractionData,
     screen_canvas: Option<Canvas>,
 }
 
@@ -168,6 +169,7 @@ impl FrameInputs {
     fn silence() -> Self {
         Self {
             audio: AudioData::silence(),
+            interaction: InteractionData::default(),
             screen_canvas: None,
         }
     }
@@ -272,7 +274,7 @@ async fn execute_frame(
         *cached_canvas = Some(screen_canvas.clone());
         screen_canvas
     } else {
-        let rendered = render_effect(state, delta_secs, &inputs.audio).await;
+        let rendered = render_effect(state, delta_secs, &inputs.audio, &inputs.interaction).await;
         *cached_canvas = Some(rendered.clone());
         rendered
     };
@@ -415,10 +417,12 @@ async fn sample_inputs(state: &RenderThreadState) -> FrameInputs {
     };
 
     let mut audio = AudioData::silence();
+    let mut interaction = InteractionData::default();
     let mut screen_data: Option<ScreenData> = None;
     for sample in samples {
         match sample {
             InputData::Audio(snapshot) => audio = snapshot,
+            InputData::Interaction(snapshot) => interaction = snapshot,
             InputData::Screen(snapshot) => screen_data = Some(snapshot),
             InputData::None => {}
         }
@@ -430,6 +434,7 @@ async fn sample_inputs(state: &RenderThreadState) -> FrameInputs {
 
     FrameInputs {
         audio,
+        interaction,
         screen_canvas,
     }
 }
@@ -574,10 +579,15 @@ fn parse_sector_zone_id(zone_id: &str) -> Option<(u32, u32)> {
 }
 
 /// Render one frame from the effect engine, falling back to a black canvas on error.
-async fn render_effect(state: &RenderThreadState, delta_secs: f32, audio: &AudioData) -> Canvas {
+async fn render_effect(
+    state: &RenderThreadState,
+    delta_secs: f32,
+    audio: &AudioData,
+    interaction: &InteractionData,
+) -> Canvas {
     let mut engine = state.effect_engine.lock().await;
 
-    match engine.tick(delta_secs, audio) {
+    match engine.tick_with_interaction(delta_secs, audio, interaction) {
         Ok(canvas) => canvas,
         Err(e) => {
             warn!(error = %e, "effect render failed, producing black canvas");

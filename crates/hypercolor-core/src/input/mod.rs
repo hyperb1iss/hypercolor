@@ -5,10 +5,12 @@
 //! `sample_all()` each frame to collect fresh data from every active source.
 
 pub mod audio;
+pub mod interaction;
 pub mod screen;
 mod traits;
 
-pub use traits::{InputData, InputSource, ScreenData};
+pub use interaction::InteractionInput;
+pub use traits::{InputData, InputSource, InteractionData, KeyboardData, MouseData, ScreenData};
 
 use tracing::{error, info};
 

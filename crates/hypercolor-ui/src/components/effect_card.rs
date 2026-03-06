@@ -1,10 +1,13 @@
-//! Effect card — cinematic card with category accent, hover glow, and active state.
+//! Effect card — cinematic card with category accent, favorite heart, capability badges,
+//! hover glow, and active state.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 
 use crate::api::EffectSummary;
+use crate::icons::*;
 
-/// Category → (badge classes, accent hex for gradients).
+/// Category -> (badge classes, accent hex for gradients).
 fn category_style(category: &str) -> (&'static str, &'static str) {
     match category {
         "ambient" => ("bg-neon-cyan/10 text-neon-cyan", "128, 255, 234"),
@@ -22,12 +25,24 @@ fn category_style(category: &str) -> (&'static str, &'static str) {
     }
 }
 
+/// Source type label.
+fn source_label(source: &str) -> &'static str {
+    match source {
+        "native" => "Native",
+        "html" => "HTML",
+        "shader" => "Shader",
+        _ => source.split_at(1.min(source.len())).0,
+    }
+}
+
 /// Cinematic effect card for the browse grid.
 #[component]
 pub fn EffectCard(
     effect: EffectSummary,
     #[prop(into)] is_active: Signal<bool>,
+    #[prop(into)] is_favorite: Signal<bool>,
     #[prop(into)] on_apply: Callback<String>,
+    #[prop(into)] on_toggle_favorite: Callback<String>,
     /// Index for stagger animation (clamped to 12).
     #[prop(default = 0)]
     index: usize,
@@ -38,6 +53,8 @@ pub fn EffectCard(
     let category = effect.category.clone();
     let tags = effect.tags.clone();
     let runnable = effect.runnable;
+    let audio_reactive = effect.audio_reactive;
+    let source = effect.source.clone();
 
     let (badge_class, accent_rgb) = category_style(&category);
     let badge_class = badge_class.to_string();
@@ -56,13 +73,15 @@ pub fn EffectCard(
     );
 
     let click_id = effect.id.clone();
+    let fav_id = effect.id.clone();
     let stagger = (index.min(12) + 1).to_string();
+    let source_tag = source_label(&source).to_string();
 
     view! {
-        <button
+        <div
             class=move || {
                 let base = "relative rounded-2xl border text-left w-full group overflow-hidden \
-                            card-hover animate-fade-in-up";
+                            card-hover animate-fade-in-up flex flex-col";
                 let state = if is_active.get() {
                     "border-electric-purple/30 bg-layer-2 animate-breathe"
                 } else if !runnable {
@@ -74,12 +93,6 @@ pub fn EffectCard(
             }
             style:--hover-glow=hover_glow.clone()
             style:--glow-rgb=accent_rgb.clone()
-            disabled=!runnable
-            on:click=move |_| {
-                if runnable {
-                    on_apply.run(click_id.clone());
-                }
-            }
         >
             // Category accent gradient overlay
             <div class="absolute inset-0 pointer-events-none rounded-2xl" style=accent_gradient />
@@ -94,9 +107,49 @@ pub fn EffectCard(
                 <div class="absolute top-0 left-1/2 -translate-x-1/2 w-16 h-[2px] rounded-full bg-electric-purple/60 blur-[2px]" />
             })}
 
-            <div class="relative px-4 py-4 space-y-2.5">
+            // Favorite heart button — top right, floats above content
+            <button
+                class="absolute top-3 right-3 z-10 p-1.5 rounded-full transition-all duration-200 \
+                       hover:bg-white/[0.06] hover:scale-110 active:scale-95"
+                on:click={
+                    let fav_id = fav_id.clone();
+                    move |ev: web_sys::MouseEvent| {
+                        ev.stop_propagation();
+                        on_toggle_favorite.run(fav_id.clone());
+                    }
+                }
+            >
+                <span
+                    class=move || {
+                        if is_favorite.get() {
+                            "text-coral drop-shadow-[0_0_6px_rgba(255,106,193,0.5)]"
+                        } else {
+                            "text-fg-dim/30 hover:text-fg-dim/60"
+                        }
+                    }
+                    style="transition: color 0.2s, filter 0.2s"
+                >
+                    <Icon
+                        icon=LuHeart
+                        width="14px"
+                        height="14px"
+                        style=move || if is_favorite.get() { "fill: currentColor" } else { "" }
+                    />
+                </span>
+            </button>
+
+            // Clickable card body
+            <button
+                class="relative flex flex-col flex-1 px-4 pt-4 pb-3 text-left"
+                disabled=!runnable
+                on:click=move |_| {
+                    if runnable {
+                        on_apply.run(click_id.clone());
+                    }
+                }
+            >
                 // Header: name + category badge
-                <div class="flex items-start justify-between gap-3">
+                <div class="flex items-start justify-between gap-3 pr-6 mb-2">
                     <h3 class="text-sm font-medium text-zinc-200 group-hover:text-fg line-clamp-1 transition-colors duration-200 leading-snug">
                         {name}
                     </h3>
@@ -105,16 +158,39 @@ pub fn EffectCard(
                     </span>
                 </div>
 
-                // Description (two lines for richness)
-                <p class="text-xs text-fg-muted/80 line-clamp-2 leading-relaxed min-h-[2.25rem]">
+                // Description
+                <p class="text-xs text-fg-muted/80 line-clamp-2 leading-relaxed min-h-[2.25rem] mb-3">
                     {description}
                 </p>
 
+                // Capability badges row
+                <div class="flex items-center gap-1.5 mb-3 flex-wrap">
+                    // Audio reactive badge
+                    {audio_reactive.then(|| view! {
+                        <span class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded \
+                                     bg-coral/8 text-coral/80 border border-coral/10">
+                            <Icon icon=LuAudioLines width="10px" height="10px" />
+                            "Audio"
+                        </span>
+                    })}
+
+                    // Source type badge
+                    <span class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded \
+                                 bg-white/[0.03] text-fg-dim/60 border border-white/[0.04]">
+                        {if source == "html" {
+                            view! { <Icon icon=LuGlobe width="10px" height="10px" /> }.into_any()
+                        } else {
+                            view! { <Icon icon=LuCode width="10px" height="10px" /> }.into_any()
+                        }}
+                        {source_tag}
+                    </span>
+                </div>
+
                 // Footer: author + tags
-                <div class="flex items-center justify-between gap-2 pt-1 border-t border-white/[0.03]">
+                <div class="flex items-center justify-between gap-2 pt-2 mt-auto border-t border-white/[0.03]">
                     <span class="text-[10px] font-mono text-fg-dim truncate">{author}</span>
                     <div class="flex gap-1.5 overflow-hidden">
-                        {tags.into_iter().take(2).map(|tag| {
+                        {tags.into_iter().take(3).map(|tag| {
                             view! {
                                 <span class="text-[9px] font-mono text-fg-dim/70 bg-white/[0.03] px-1.5 py-0.5 rounded whitespace-nowrap">
                                     {tag}
@@ -123,7 +199,7 @@ pub fn EffectCard(
                         }).collect_view()}
                     </div>
                 </div>
-            </div>
-        </button>
+            </button>
+        </div>
     }
 }

@@ -8,6 +8,8 @@ use std::collections::HashMap;
 use hypercolor_types::audio::{AudioData, CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 use hypercolor_types::effect::ControlValue;
 
+use crate::input::InteractionData;
+
 const LEVEL_FLOOR_DB: f32 = -100.0;
 const DEFAULT_ZONE_WIDTH: usize = 28;
 const DEFAULT_ZONE_HEIGHT: usize = 20;
@@ -252,7 +254,8 @@ impl LightscriptRuntime {
         script.push_str("    window.engine.keyboard.isKeyDown = function(key) {\n");
         script
             .push_str("      if (typeof key !== 'string' || key.length === 0) { return false; }\n");
-        script.push_str("      return !!window.engine.keyboard.keys[key];\n");
+        script.push_str("      if (window.engine.keyboard.keys[key]) { return true; }\n");
+        script.push_str("      return !!window.engine.keyboard.keys[key.toLowerCase()];\n");
         script.push_str("    };\n");
         script.push_str("  }\n");
         script
@@ -272,7 +275,10 @@ impl LightscriptRuntime {
         script.push_str(
             "      const recent = Array.isArray(window.engine.keyboard.recent) ? window.engine.keyboard.recent : [];\n",
         );
-        script.push_str("      return recent.indexOf(key) !== -1;\n");
+        script.push_str("      const lower = key.toLowerCase();\n");
+        script.push_str(
+            "      return recent.some(function(entry) { return typeof entry === 'string' && (entry === key || entry.toLowerCase() === lower); });\n",
+        );
         script.push_str("    };\n");
         script.push_str("  }\n");
 
@@ -294,9 +300,14 @@ impl LightscriptRuntime {
         script.push_str("  if (typeof window.engine.mouse.isDown !== 'function') {\n");
         script.push_str("    window.engine.mouse.isDown = function(button) {\n");
         script.push_str(
-            "      if (typeof button !== 'string' || button.length === 0) { return !!window.engine.mouse.down; }\n",
+            "      if ((typeof button !== 'string' || button.length === 0) && typeof button !== 'number') { return !!window.engine.mouse.down; }\n",
         );
-        script.push_str("      return !!window.engine.mouse.buttons[button];\n");
+        script
+            .push_str("      const key = typeof button === 'number' ? String(button) : button;\n");
+        script.push_str("      if (window.engine.mouse.buttons[key]) { return true; }\n");
+        script.push_str(
+            "      return typeof key === 'string' ? !!window.engine.mouse.buttons[key.toLowerCase()] : false;\n",
+        );
         script.push_str("    };\n");
         script.push_str("  }\n");
 
@@ -361,6 +372,39 @@ impl LightscriptRuntime {
         }
     }
 
+    /// Build JavaScript to update `window.engine.keyboard` and `window.engine.mouse`.
+    #[must_use]
+    pub fn input_update_script(interaction: &InteractionData) -> String {
+        let keyboard_keys =
+            js_true_object_literal(&keyboard_lookup_keys(&interaction.keyboard.pressed_keys));
+        let recent_keys = serde_json::to_string(&interaction.keyboard.recent_keys)
+            .unwrap_or_else(|_| "[]".to_owned());
+        let mouse_buttons = js_true_object_literal(&mouse_lookup_keys(&interaction.mouse.buttons));
+
+        format!(
+            concat!(
+                "(function(){{\n",
+                "  if (typeof window.engine !== 'object' || window.engine === null) {{ window.engine = {{}}; }}\n",
+                "  if (typeof window.engine.keyboard !== 'object' || window.engine.keyboard === null) {{ window.engine.keyboard = {{}}; }}\n",
+                "  if (typeof window.engine.mouse !== 'object' || window.engine.mouse === null) {{ window.engine.mouse = {{}}; }}\n",
+                "  window.engine.keyboard.keys = {};\n",
+                "  window.engine.keyboard.recent = {};\n",
+                "  window.engine.mouse.x = {};\n",
+                "  window.engine.mouse.y = {};\n",
+                "  window.engine.mouse.down = {};\n",
+                "  window.engine.mouse.buttons = {};\n",
+                "  if (typeof globalThis === 'object' && globalThis !== null) {{ globalThis.engine = window.engine; }}\n",
+                "}})();",
+            ),
+            keyboard_keys,
+            recent_keys,
+            interaction.mouse.x,
+            interaction.mouse.y,
+            js_bool(interaction.mouse.down),
+            mouse_buttons,
+        )
+    }
+
     #[allow(
         clippy::too_many_lines,
         clippy::format_push_string,
@@ -375,16 +419,8 @@ impl LightscriptRuntime {
         let treble = clamp_unit(audio.treble());
         let density = clamp_unit(audio.spectral_flux);
         let brightness = clamp_unit(audio.spectral_centroid);
-        let beat_pulse = if audio.beat_detected {
-            1.0_f32
-        } else {
-            0.0_f32
-        };
-        let onset_pulse = if audio.onset_detected {
-            1.0_f32
-        } else {
-            0.0_f32
-        };
+        let beat_pulse = clamp_unit(audio.beat_pulse);
+        let onset_pulse = clamp_unit(audio.onset_pulse);
 
         let spectrum = pad_and_sanitize_f32(&audio.spectrum, SPECTRUM_BINS);
         let frequency_raw = spectrum
@@ -463,7 +499,10 @@ impl LightscriptRuntime {
             "  window.engine.audio.beatPulse = {};\n",
             js_number(beat_pulse)
         ));
-        script.push_str("  window.engine.audio.beatPhase = 0;\n");
+        script.push_str(&format!(
+            "  window.engine.audio.beatPhase = {};\n",
+            js_number(clamp_unit(audio.beat_phase))
+        ));
         script.push_str(&format!(
             "  window.engine.audio.beatConfidence = {};\n",
             js_number(audio.beat_confidence)
@@ -625,6 +664,137 @@ fn join_i8_csv(values: &[i8]) -> String {
         .join(",")
 }
 
+fn js_true_object_literal(values: &[String]) -> String {
+    if values.is_empty() {
+        return "{}".to_owned();
+    }
+
+    let entries = values
+        .iter()
+        .map(|value| {
+            let key = serde_json::to_string(value).unwrap_or_else(|_| "\"invalid\"".to_owned());
+            format!("{key}:true")
+        })
+        .collect::<Vec<String>>()
+        .join(",");
+
+    format!("{{{entries}}}")
+}
+
+fn keyboard_lookup_keys(pressed_keys: &[String]) -> Vec<String> {
+    let mut keys = Vec::new();
+    for name in pressed_keys {
+        push_unique(&mut keys, name.clone());
+        push_unique(&mut keys, name.to_ascii_lowercase());
+
+        match name.as_str() {
+            "Escape" => {
+                push_unique(&mut keys, "Esc".to_owned());
+                push_unique(&mut keys, "esc".to_owned());
+                push_unique(&mut keys, "escape".to_owned());
+            }
+            "Space" => {
+                push_unique(&mut keys, " ".to_owned());
+                push_unique(&mut keys, "space".to_owned());
+                push_unique(&mut keys, "Spacebar".to_owned());
+            }
+            "ArrowLeft" => {
+                push_unique(&mut keys, "Left".to_owned());
+                push_unique(&mut keys, "left".to_owned());
+            }
+            "ArrowRight" => {
+                push_unique(&mut keys, "Right".to_owned());
+                push_unique(&mut keys, "right".to_owned());
+            }
+            "ArrowUp" => {
+                push_unique(&mut keys, "Up".to_owned());
+                push_unique(&mut keys, "up".to_owned());
+            }
+            "ArrowDown" => {
+                push_unique(&mut keys, "Down".to_owned());
+                push_unique(&mut keys, "down".to_owned());
+            }
+            "ControlLeft" | "ControlRight" => {
+                push_unique(&mut keys, "Control".to_owned());
+                push_unique(&mut keys, "control".to_owned());
+            }
+            "ShiftLeft" | "ShiftRight" => {
+                push_unique(&mut keys, "Shift".to_owned());
+                push_unique(&mut keys, "shift".to_owned());
+            }
+            "AltLeft" | "AltRight" => {
+                push_unique(&mut keys, "Alt".to_owned());
+                push_unique(&mut keys, "alt".to_owned());
+            }
+            "MetaLeft" | "MetaRight" => {
+                push_unique(&mut keys, "Meta".to_owned());
+                push_unique(&mut keys, "meta".to_owned());
+                push_unique(&mut keys, "Command".to_owned());
+                push_unique(&mut keys, "command".to_owned());
+            }
+            _ => {
+                if let Some(ch) = single_ascii_alpha(name) {
+                    push_unique(&mut keys, ch.to_ascii_uppercase().to_string());
+                    push_unique(&mut keys, format!("Key{}", ch.to_ascii_uppercase()));
+                } else if let Some(ch) = single_ascii_digit(name) {
+                    push_unique(&mut keys, format!("Digit{ch}"));
+                    push_unique(&mut keys, format!("Key{ch}"));
+                }
+            }
+        }
+    }
+
+    keys
+}
+
+fn mouse_lookup_keys(buttons: &[String]) -> Vec<String> {
+    let mut keys = Vec::new();
+    for button in buttons {
+        push_unique(&mut keys, button.clone());
+        push_unique(&mut keys, button.to_ascii_lowercase());
+        match button.as_str() {
+            "left" => {
+                push_unique(&mut keys, "1".to_owned());
+                push_unique(&mut keys, "primary".to_owned());
+            }
+            "middle" => {
+                push_unique(&mut keys, "2".to_owned());
+            }
+            "right" => {
+                push_unique(&mut keys, "3".to_owned());
+                push_unique(&mut keys, "secondary".to_owned());
+            }
+            "button4" => {
+                push_unique(&mut keys, "4".to_owned());
+            }
+            "button5" => {
+                push_unique(&mut keys, "5".to_owned());
+            }
+            _ => {}
+        }
+    }
+
+    keys
+}
+
+fn push_unique(values: &mut Vec<String>, candidate: String) {
+    if !values.contains(&candidate) {
+        values.push(candidate);
+    }
+}
+
+fn single_ascii_alpha(name: &str) -> Option<char> {
+    let mut chars = name.chars();
+    let ch = chars.next()?;
+    (chars.next().is_none() && ch.is_ascii_alphabetic()).then_some(ch)
+}
+
+fn single_ascii_digit(name: &str) -> Option<char> {
+    let mut chars = name.chars();
+    let ch = chars.next()?;
+    (chars.next().is_none() && ch.is_ascii_digit()).then_some(ch)
+}
+
 fn js_number(value: f32) -> String {
     if value.is_finite() {
         value.to_string()
@@ -712,11 +882,17 @@ mod tests {
     fn audio_script_contains_level_and_freq_payload() {
         let mut audio = AudioData::silence();
         audio.rms_level = 1.0;
+        audio.beat_pulse = 0.75;
+        audio.onset_pulse = 0.5;
+        audio.beat_phase = 0.25;
         audio.spectrum = vec![0.1, 0.2, 0.3];
 
         let script = LightscriptRuntime::audio_update_script(&audio);
         assert!(script.contains("window.engine.audio.level = 0"));
         assert!(script.contains("window.engine.audio.levelRaw = 0"));
+        assert!(script.contains("window.engine.audio.beatPulse = 0.75"));
+        assert!(script.contains("window.engine.audio.onsetPulse = 0.5"));
+        assert!(script.contains("window.engine.audio.beatPhase = 0.25"));
         assert!(script.contains("window.engine.audio.freq = new Int8Array([13,25,38"));
         assert!(script.contains("window.engine.audio.frequency = new Float32Array([0.1,0.2,0.3"));
         assert!(script.contains("window.engine.audio.melBands = new Float32Array(["));
@@ -739,6 +915,40 @@ mod tests {
         assert!(script.contains("window.engine.audio.freq = new Int8Array([0,0,0"));
         assert!(script.contains("window.engine.audio.frequency = new Float32Array([0,0,0"));
         assert!(script.contains("window.engine.audio.melBands = new Float32Array([0,0"));
+    }
+
+    #[test]
+    fn input_script_populates_keyboard_and_mouse_state() {
+        let interaction = InteractionData {
+            keyboard: crate::input::KeyboardData {
+                pressed_keys: vec!["a".to_owned(), "Space".to_owned()],
+                recent_keys: vec!["a".to_owned()],
+            },
+            mouse: crate::input::MouseData {
+                x: 42,
+                y: 24,
+                buttons: vec!["left".to_owned()],
+                down: true,
+            },
+        };
+
+        let script = LightscriptRuntime::input_update_script(&interaction);
+        assert!(script.contains("window.engine.keyboard.keys = {"));
+        assert!(script.contains("\"a\":true"));
+        assert!(script.contains("\"A\":true"));
+        assert!(script.contains("\"KeyA\":true"));
+        assert!(script.contains("\"Space\":true"));
+        assert!(script.contains("\"space\":true"));
+        assert!(script.contains("\" \":true"));
+        assert!(script.contains("\"Spacebar\":true"));
+        assert!(script.contains("window.engine.keyboard.recent = [\"a\"]"));
+        assert!(script.contains("window.engine.mouse.x = 42"));
+        assert!(script.contains("window.engine.mouse.y = 24"));
+        assert!(script.contains("window.engine.mouse.down = true"));
+        assert!(script.contains("window.engine.mouse.buttons = {"));
+        assert!(script.contains("\"left\":true"));
+        assert!(script.contains("\"1\":true"));
+        assert!(script.contains("\"primary\":true"));
     }
 
     #[test]

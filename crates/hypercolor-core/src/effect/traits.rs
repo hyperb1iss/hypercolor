@@ -8,6 +8,8 @@ use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 
+use crate::input::InteractionData;
+
 // ── FrameInput ───────────────────────────────────────────────────────────────
 
 /// Per-frame input data passed to the active renderer on every tick.
@@ -29,6 +31,9 @@ pub struct FrameInput {
     /// Current audio analysis snapshot. Use [`AudioData::silence`]
     /// when no audio source is available.
     pub audio: AudioData,
+
+    /// Host keyboard and mouse state for interactive HTML effects.
+    pub interaction: InteractionData,
 
     /// Target canvas width in pixels.
     pub canvas_width: u32,

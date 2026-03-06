@@ -82,10 +82,11 @@ hypercolor-types = { path = "crates/hypercolor-types" }
 hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
 
-# Audio
+# Audio + input capture
 realfft = "3.4"
 rustfft = "6.2"
-cpal = "0.15"
+cpal = "0.17.3"
+device_query = "4.0.1"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json"] }

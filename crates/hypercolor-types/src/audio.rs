@@ -46,6 +46,12 @@ pub struct AudioData {
     /// Confidence in the current tempo estimate (0.0–1.0).
     pub beat_confidence: f32,
 
+    /// Beat phase: 0.0 = on beat, 1.0 = just before the next beat.
+    pub beat_phase: f32,
+
+    /// Beat pulse envelope (1.0 on beat, decays toward 0.0).
+    pub beat_pulse: f32,
+
     /// Estimated tempo in beats per minute.
     pub bpm: f32,
 
@@ -63,6 +69,9 @@ pub struct AudioData {
 
     /// True when a transient onset (not necessarily beat-aligned) is detected.
     pub onset_detected: bool,
+
+    /// Onset pulse envelope (1.0 on onset, decays toward 0.0).
+    pub onset_pulse: f32,
 }
 
 impl AudioData {
@@ -75,12 +84,15 @@ impl AudioData {
             chromagram: vec![0.0; CHROMA_BINS],
             beat_detected: false,
             beat_confidence: 0.0,
+            beat_phase: 0.0,
+            beat_pulse: 0.0,
             bpm: 0.0,
             rms_level: 0.0,
             peak_level: 0.0,
             spectral_centroid: 0.0,
             spectral_flux: 0.0,
             onset_detected: false,
+            onset_pulse: 0.0,
         }
     }
 

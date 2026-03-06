@@ -471,6 +471,7 @@ fn effect_renderer_lifecycle_tracking() {
         delta_secs: 0.016,
         frame_number: 0,
         audio: AudioData::silence(),
+        interaction: hypercolor_core::input::InteractionData::default(),
         canvas_width: 10,
         canvas_height: 10,
     };

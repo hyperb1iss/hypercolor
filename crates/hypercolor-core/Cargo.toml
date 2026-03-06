@@ -36,6 +36,8 @@ reqwest = { workspace = true }
 nusb = { workspace = true }
 realfft = { workspace = true }
 rustfft = { workspace = true }
+cpal = { workspace = true }
+device_query = { workspace = true }
 dpi = { workspace = true, optional = true }
 servo = { package = "libservo", git = "https://github.com/servo/servo", rev = "301f7da52e320764fd0063facb90de0ec8db8f25", default-features = false, optional = true }
 mozjs-jit = { package = "mozjs", version = "=0.14.8", default-features = false, features = ["jit"], optional = true }

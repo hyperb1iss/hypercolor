@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 use leptos_meta::*;
@@ -41,6 +41,8 @@ pub struct EffectsContext {
     pub set_active_control_values: WriteSignal<HashMap<String, ControlValue>>,
     pub active_preset_id: ReadSignal<Option<String>>,
     pub set_active_preset_id: WriteSignal<Option<String>>,
+    pub favorite_ids: ReadSignal<HashSet<String>>,
+    pub set_favorite_ids: WriteSignal<HashSet<String>>,
 }
 
 /// Shared device + layout state — accessible from devices page and layout builder.
@@ -90,6 +92,31 @@ impl EffectsContext {
         });
     }
 
+    /// Toggle an effect's favorite status.
+    pub fn toggle_favorite(&self, effect_id: String) {
+        let is_fav = self.favorite_ids.get().contains(&effect_id);
+        let set_favorites = self.set_favorite_ids;
+
+        if is_fav {
+            set_favorites.update(|ids| {
+                ids.remove(&effect_id);
+            });
+            leptos::task::spawn_local(async move {
+                let _ = api::remove_favorite(&effect_id).await;
+            });
+        } else {
+            set_favorites.update({
+                let id = effect_id.clone();
+                move |ids| {
+                    ids.insert(id);
+                }
+            });
+            leptos::task::spawn_local(async move {
+                let _ = api::add_favorite(&effect_id).await;
+            });
+        }
+    }
+
     /// Stop the active effect.
     pub fn stop_effect(&self) {
         self.set_active_effect_id.set(None);
@@ -122,6 +149,7 @@ pub fn App() -> impl IntoView {
     // Global effects state — shared between sidebar player + effects page
     let effects_resource = LocalResource::new(api::fetch_effects);
     let active_resource = LocalResource::new(api::fetch_active_effect);
+    let favorites_resource = LocalResource::new(api::fetch_favorites);
     let (active_effect_id, set_active_effect_id) = signal(None::<String>);
     let (active_effect_name, set_active_effect_name) = signal(None::<String>);
     let (active_effect_category, set_active_effect_category) = signal(String::new());
@@ -129,6 +157,7 @@ pub fn App() -> impl IntoView {
     let (active_control_values, set_active_control_values) =
         signal(HashMap::<String, ControlValue>::new());
     let (active_preset_id, set_active_preset_id) = signal(None::<String>);
+    let (favorite_ids, set_favorite_ids) = signal(HashSet::<String>::new());
 
     let effects_ctx = EffectsContext {
         effects_resource,
@@ -144,8 +173,18 @@ pub fn App() -> impl IntoView {
         set_active_control_values,
         active_preset_id,
         set_active_preset_id,
+        favorite_ids,
+        set_favorite_ids,
     };
     provide_context(effects_ctx);
+
+    // Initialize favorites from API on load
+    Effect::new(move |_| {
+        if let Some(Ok(favorites)) = favorites_resource.get() {
+            let ids: HashSet<String> = favorites.iter().map(|f| f.effect_id.clone()).collect();
+            set_favorite_ids.set(ids);
+        }
+    });
 
     // Global devices + layouts state
     let devices_resource = LocalResource::new(api::fetch_devices);

@@ -10,6 +10,7 @@ use hypercolor_core::effect::builtin::{
     SolidColorRenderer, create_builtin_renderer, register_builtin_effects,
 };
 use hypercolor_core::effect::{EffectRegistry, EffectRenderer, FrameInput};
+use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::Rgba;
 use hypercolor_types::effect::{
@@ -46,6 +47,7 @@ fn frame(time_secs: f32, frame_number: u64) -> FrameInput {
         delta_secs: 1.0 / 60.0,
         frame_number,
         audio: AudioData::silence(),
+        interaction: InteractionData::default(),
         canvas_width: W,
         canvas_height: H,
     }
@@ -57,6 +59,7 @@ fn frame_with_audio(time_secs: f32, audio: AudioData) -> FrameInput {
         delta_secs: 1.0 / 60.0,
         frame_number: 0,
         audio,
+        interaction: InteractionData::default(),
         canvas_width: W,
         canvas_height: H,
     }
@@ -537,6 +540,7 @@ fn audio_pulse_full_lifecycle() {
             delta_secs: 1.0 / 60.0,
             frame_number: i,
             audio,
+            interaction: InteractionData::default(),
             canvas_width: W,
             canvas_height: H,
         };

@@ -27,6 +27,8 @@ pub struct EffectSummary {
     pub runnable: bool,
     pub tags: Vec<String>,
     pub version: String,
+    #[serde(default)]
+    pub audio_reactive: bool,
 }
 
 /// Paginated effect list response.
@@ -757,6 +759,73 @@ pub async fn update_preset(id: &str, req: &CreatePresetRequest) -> Result<Preset
 /// Delete a preset by ID.
 pub async fn delete_preset(id: &str) -> Result<(), String> {
     let url = format!("/api/v1/library/presets/{id}");
+    let resp = Request::delete(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+// ── Favorite Types ──────────────────────────────────────────────────────
+
+/// Favorite entry from `GET /api/v1/library/favorites`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FavoriteSummary {
+    pub effect_id: String,
+    pub effect_name: String,
+    pub added_at_ms: u64,
+}
+
+/// Paginated favorites list response.
+#[derive(Debug, Deserialize)]
+pub struct FavoriteListResponse {
+    pub items: Vec<FavoriteSummary>,
+}
+
+// ── Favorite Fetch Functions ───────────────────────────────────────────
+
+/// Fetch all favorited effect IDs.
+pub async fn fetch_favorites() -> Result<Vec<FavoriteSummary>, String> {
+    let resp = Request::get("/api/v1/library/favorites")
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<FavoriteListResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.items)
+}
+
+/// Add an effect to favorites.
+pub async fn add_favorite(effect_id: &str) -> Result<(), String> {
+    let body = serde_json::json!({ "effect": effect_id });
+
+    let resp = Request::post("/api/v1/library/favorites")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&body).map_err(|e| format!("Serialize error: {e}"))?)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Remove an effect from favorites.
+pub async fn remove_favorite(effect_id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/library/favorites/{effect_id}");
     let resp = Request::delete(&url)
         .send()
         .await

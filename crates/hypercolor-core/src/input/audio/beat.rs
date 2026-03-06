@@ -434,6 +434,12 @@ impl BeatDetector {
         }
     }
 
+    /// Current beat phase from the internal tempo tracker.
+    #[must_use]
+    pub fn phase(&self) -> f32 {
+        self.tempo.phase()
+    }
+
     /// Reset all detection state.
     pub fn reset(&mut self) {
         self.bass_onset.reset();
