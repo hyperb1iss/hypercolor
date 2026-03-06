@@ -1,11 +1,14 @@
 //! Fixed navigation sidebar — nav + now-playing section with player controls.
+//! The Now Playing panel dynamically samples the running effect's canvas output
+//! to extract a live color palette, creating an ambient glow that reflects the
+//! actual LED colors in real time.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_router::components::A;
 use leptos_router::hooks::use_location;
 
-use crate::app::EffectsContext;
+use crate::app::{EffectsContext, WsContext};
 use crate::icons::*;
 
 /// Sidebar collapsed state, shared via context so the shell can react.
@@ -16,7 +19,7 @@ pub struct SidebarState {
     pub set_collapsed: WriteSignal<bool>,
 }
 
-/// Category -> accent RGB string for inline styles.
+/// Category -> accent RGB string for inline styles (fallback when no canvas data).
 fn category_accent_rgb(category: &str) -> &'static str {
     match category {
         "ambient" => "128, 255, 234",
@@ -30,6 +33,112 @@ fn category_accent_rgb(category: &str) -> &'static str {
         _ => "225, 53, 255",
     }
 }
+
+// ── Live Palette Extraction ────────────────────────────────────────────────
+
+/// Two-color palette extracted from live canvas frame pixels.
+#[derive(Clone, Copy)]
+struct LivePalette {
+    primary: (f64, f64, f64),
+    secondary: (f64, f64, f64),
+}
+
+/// Extract the 1-2 most dominant vibrant colors from RGBA pixel data.
+///
+/// Samples ~200 pixels, groups by hue sector (12 sectors of 30 degrees each),
+/// skips dark/desaturated pixels, and returns averaged RGB for the top sectors.
+fn extract_palette(pixels: &[u8]) -> Option<LivePalette> {
+    if pixels.len() < 16 {
+        return None;
+    }
+
+    let pixel_count = pixels.len() / 4;
+    let step = (pixel_count / 200).max(1);
+
+    // 12 hue sectors (30 deg each): (r_sum, g_sum, b_sum, count)
+    let mut sectors = [(0.0_f64, 0.0_f64, 0.0_f64, 0_u32); 12];
+
+    for i in (0..pixel_count).step_by(step) {
+        let off = i * 4;
+        let r = f64::from(pixels[off]);
+        let g = f64::from(pixels[off + 1]);
+        let b = f64::from(pixels[off + 2]);
+
+        let rf = r / 255.0;
+        let gf = g / 255.0;
+        let bf = b / 255.0;
+
+        let max = rf.max(gf).max(bf);
+        let min = rf.min(gf).min(bf);
+        let chroma = max - min;
+        let lightness = (max + min) / 2.0;
+
+        // Skip dark or desaturated pixels — we want vivid colors only
+        if chroma < 0.15 || lightness < 0.08 {
+            continue;
+        }
+
+        let hue = if (max - rf).abs() < f64::EPSILON {
+            60.0 * (((gf - bf) / chroma) % 6.0)
+        } else if (max - gf).abs() < f64::EPSILON {
+            60.0 * (((bf - rf) / chroma) + 2.0)
+        } else {
+            60.0 * (((rf - gf) / chroma) + 4.0)
+        };
+        let hue = if hue < 0.0 { hue + 360.0 } else { hue };
+
+        let sector = ((hue / 30.0) as usize).min(11);
+        sectors[sector].0 += r;
+        sectors[sector].1 += g;
+        sectors[sector].2 += b;
+        sectors[sector].3 += 1;
+    }
+
+    // Rank non-empty sectors by frequency
+    let mut ranked: Vec<(usize, u32)> = sectors
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.3 >= 3)
+        .map(|(i, s)| (i, s.3))
+        .collect();
+
+    if ranked.is_empty() {
+        return None;
+    }
+
+    ranked.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let avg = |idx: usize| -> (f64, f64, f64) {
+        let s = &sectors[idx];
+        let n = f64::from(s.3);
+        (s.0 / n, s.1 / n, s.2 / n)
+    };
+
+    let primary = avg(ranked[0].0);
+    let secondary = if ranked.len() > 1 {
+        avg(ranked[1].0)
+    } else {
+        primary
+    };
+
+    Some(LivePalette { primary, secondary })
+}
+
+/// Linearly interpolate between two RGB triples for smooth color transitions.
+fn lerp_rgb(a: (f64, f64, f64), b: (f64, f64, f64), t: f64) -> (f64, f64, f64) {
+    (
+        a.0 + (b.0 - a.0) * t,
+        a.1 + (b.1 - a.1) * t,
+        a.2 + (b.2 - a.2) * t,
+    )
+}
+
+/// Format an RGB triple as a CSS-compatible string: "R, G, B".
+fn rgb_string(c: (f64, f64, f64)) -> String {
+    format!("{:.0}, {:.0}, {:.0}", c.0, c.1, c.2)
+}
+
+// ── Sidebar Component ──────────────────────────────────────────────────────
 
 /// Navigation sidebar with manual toggle.
 #[component]
@@ -62,6 +171,38 @@ pub fn Sidebar() -> impl IntoView {
             icon: LuCpu,
         },
     ];
+
+    // ── Live palette extraction from canvas frames ─────────────────────
+    let ws = use_context::<WsContext>();
+    let (live_palette, set_live_palette) = signal(None::<LivePalette>);
+    let (last_palette_time, set_last_palette_time) = signal(0.0_f64);
+
+    if let Some(ws) = ws {
+        Effect::new(move |_| {
+            let Some(frame) = ws.canvas_frame.get() else {
+                return;
+            };
+
+            // Throttle to ~2 updates/sec
+            let now = js_sys::Date::now();
+            if now - last_palette_time.get_untracked() < 500.0 {
+                return;
+            }
+            set_last_palette_time.set(now);
+
+            if let Some(new_palette) = extract_palette(&frame.pixels) {
+                // Smooth toward new colors via exponential moving average
+                let smoothed = match live_palette.get_untracked() {
+                    Some(old) => LivePalette {
+                        primary: lerp_rgb(old.primary, new_palette.primary, 0.3),
+                        secondary: lerp_rgb(old.secondary, new_palette.secondary, 0.3),
+                    },
+                    None => new_palette,
+                };
+                set_live_palette.set(Some(smoothed));
+            }
+        });
+    }
 
     // Navigate effects list (for prev/next)
     let navigate_effect = move |direction: i32| {
@@ -181,22 +322,37 @@ pub fn Sidebar() -> impl IntoView {
                 }).collect_view()}
             </div>
 
-            // Now Playing — full-width panel pinned to bottom, no rounded corners
+            // Now Playing — live palette panel pinned to bottom
             {move || {
                 if !has_active.get() || collapsed.get() {
                     return None;
                 }
                 let name = fx.active_effect_name.get().unwrap_or_default();
                 let cat = fx.active_effect_category.get();
-                let rgb = category_accent_rgb(&cat).to_string();
+                let fallback_rgb = category_accent_rgb(&cat).to_string();
 
-                // Category accent: left edge glow strip + subtle tinted background
+                // Use live-extracted palette if available, fall back to category accent
+                let palette = live_palette.get();
+                let primary = palette.map_or_else(
+                    || fallback_rgb.clone(),
+                    |p| rgb_string(p.primary),
+                );
+                let secondary = palette.map_or_else(
+                    || fallback_rgb.clone(),
+                    |p| rgb_string(p.secondary),
+                );
+
+                // Diagonal gradient from primary to secondary with left edge glow strip
                 let panel_style = format!(
-                    "background: linear-gradient(90deg, rgba({rgb}, 0.10) 0%, rgba({rgb}, 0.02) 40%, transparent 100%); \
-                     box-shadow: inset 3px 0 0 rgb({rgb}), inset 4px 0 12px rgba({rgb}, 0.15)"
+                    "background: linear-gradient(135deg, rgba({primary}, 0.12) 0%, rgba({secondary}, 0.04) 60%, transparent 100%); \
+                     box-shadow: inset 3px 0 0 rgb({primary}), inset 4px 0 12px rgba({primary}, 0.18)"
                 );
                 let dot_style = format!(
-                    "background: rgb({rgb}); box-shadow: 0 0 8px rgba({rgb}, 0.7)"
+                    "background: rgb({primary}); box-shadow: 0 0 8px rgba({primary}, 0.7)"
+                );
+                // Subtle category label colored by secondary
+                let label_style = format!(
+                    "color: rgba({secondary}, 0.5)"
                 );
 
                 Some(view! {
@@ -204,10 +360,15 @@ pub fn Sidebar() -> impl IntoView {
                         class="border-t border-edge-subtle px-4 py-4 space-y-4 animate-fade-in"
                         style=panel_style
                     >
-                        // Now playing label
-                        <div class="text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary/60">"Now Playing"</div>
+                        // Now playing label — picks up secondary palette color
+                        <div
+                            class="text-[9px] font-mono uppercase tracking-[0.15em]"
+                            style=label_style
+                        >
+                            "Now Playing"
+                        </div>
 
-                        // Effect name + category
+                        // Effect name + live-colored dot
                         <div class="flex items-center gap-2.5 min-w-0">
                             <div class="w-2.5 h-2.5 rounded-full dot-alive shrink-0" style=dot_style />
                             <div class="min-w-0 flex-1">
