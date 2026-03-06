@@ -1424,16 +1424,18 @@ void main() {
     fragmentShader;
     vertexShader;
     audioReactive;
+    preserveDrawingBuffer;
     currentAudioData = null;
     constructor(config) {
       super(config);
       this.fragmentShader = config.fragmentShader;
       this.vertexShader = config.vertexShader ?? DEFAULT_VERTEX_SHADER;
       this.audioReactive = config.audioReactive ?? false;
+      this.preserveDrawingBuffer = config.preserveDrawingBuffer ?? ((typeof window !== "undefined" ? window.__hypercolorPreserveDrawingBuffer : void 0) ?? false);
     }
     async initializeRenderer() {
       if (!this.canvas) throw new Error("Canvas not available");
-      this.gl = this.canvas.getContext("webgl2", { preserveDrawingBuffer: true });
+      this.gl = this.canvas.getContext("webgl2", { preserveDrawingBuffer: this.preserveDrawingBuffer });
       if (!this.gl) throw new Error("WebGL2 not supported");
       this.program = this.createProgram(this.vertexShader, this.fragmentShader);
       this.gl.useProgram(this.program);
@@ -1838,7 +1840,8 @@ void main() {
         name,
         fragmentShader: shader,
         vertexShader: options.vertexShader,
-        audioReactive: options.audio ?? false
+        audioReactive: options.audio ?? false,
+        preserveDrawingBuffer: options.preserveDrawingBuffer
       });
       this.resolvedControls = resolvedControls;
       this.options = options;
