@@ -134,7 +134,7 @@ impl UsbBackend {
             let command_position = index + 1;
             let mut attempt = 0_u8;
 
-            debug!(
+            trace!(
                 protocol = protocol.name(),
                 transport = transport.name(),
                 command_index = command_position,
@@ -155,7 +155,7 @@ impl UsbBackend {
 
             loop {
                 if command.expects_response {
-                    debug!(
+                    trace!(
                         protocol = protocol.name(),
                         transport = transport.name(),
                         command_index = command_position,
@@ -168,7 +168,7 @@ impl UsbBackend {
                         .await
                         .map_err(map_transport_error)?;
 
-                    debug!(
+                    trace!(
                         protocol = protocol.name(),
                         transport = transport.name(),
                         command_index = command_position,
@@ -187,7 +187,7 @@ impl UsbBackend {
 
                     match protocol.parse_response(&response) {
                         Ok(parsed) => {
-                            debug!(
+                            trace!(
                                 protocol = protocol.name(),
                                 transport = transport.name(),
                                 command_index = command_position,
@@ -236,7 +236,7 @@ impl UsbBackend {
                         }
                     }
                 } else {
-                    debug!(
+                    trace!(
                         protocol = protocol.name(),
                         transport = transport.name(),
                         command_index = command_position,
@@ -271,7 +271,7 @@ impl UsbBackend {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(keepalive.interval).await;
-                debug!(
+                trace!(
                     device_id = %device_id,
                     device = device_name,
                     protocol = protocol.name(),
@@ -470,7 +470,7 @@ impl DeviceBackend for UsbBackend {
             .first()
             .map(|command| describe_packet(&command.data))
             .unwrap_or_else(|| "<none>".to_owned());
-        debug!(
+        trace!(
             device_id = %id,
             protocol = device.protocol.name(),
             transport = device.transport.name(),
