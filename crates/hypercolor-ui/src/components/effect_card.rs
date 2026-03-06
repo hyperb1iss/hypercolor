@@ -123,8 +123,8 @@ pub fn EffectCard(
                     let fav = is_favorite.get();
                     let (span_class, icon_style) = if fav {
                         (
-                            "text-coral drop-shadow-[0_0_6px_rgba(255,106,193,0.5)]",
-                            "fill: currentColor; transition: color 0.2s, filter 0.2s",
+                            "text-coral",
+                            "fill: currentColor; filter: drop-shadow(0 0 8px rgba(255,106,193,0.6)); transition: color 0.2s, filter 0.3s",
                         )
                     } else {
                         (

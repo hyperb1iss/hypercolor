@@ -188,6 +188,7 @@ fn ControlWidget(
                     <label class="text-xs text-fg-secondary font-medium">{name.clone()}</label>
                     <button
                         class="relative w-10 h-[22px] rounded-full toggle-track"
+                        class=("toggle-track-on", move || checked.get())
                         style=move || if checked.get() { on_style.clone() } else { "background: rgba(255,255,255,0.08)".to_string() }
                         on:click=move |_| {
                             let new_val = !checked.get();
@@ -196,8 +197,8 @@ fn ControlWidget(
                         }
                     >
                         <div
-                            class="absolute top-[3px] w-4 h-4 rounded-full shadow-sm toggle-thumb"
-                            class=("translate-x-[22px] bg-white", move || checked.get())
+                            class="absolute top-[3px] w-4 h-4 rounded-full toggle-thumb"
+                            class=("translate-x-[22px] bg-white toggle-thumb-on", move || checked.get())
                             class=("translate-x-[3px] bg-fg-tertiary", move || !checked.get())
                         />
                     </button>
@@ -234,12 +235,11 @@ fn ControlWidget(
                     <div class="flex items-center gap-3">
                         <button
                             type="button"
-                            class="h-9 w-9 shrink-0 rounded-xl border border-edge-default shadow-lg
-                                   transition-all duration-200 hover:scale-105 hover:border-edge-strong
-                                   active:scale-95"
+                            class="h-9 w-9 shrink-0 rounded-xl border border-edge-default swatch-glow
+                                   transition-all duration-200 hover:border-edge-strong"
                             style=move || format!(
                                 "background: linear-gradient(145deg, {0}, color-mix(in srgb, {0} 65%, black)); \
-                                 box-shadow: 0 0 16px {0}33, inset 0 1px 0 rgba(255,255,255,0.06)",
+                                 --swatch-color: {0}55",
                                 color.get()
                             )
                             on:click={
@@ -268,7 +268,7 @@ fn ControlWidget(
                     // Inline expanded color picker — accordion style, no overlay
                     <Show when=move || is_expanded.get()>
                         <div class="mt-3 space-y-3 rounded-xl bg-surface-sunken border border-edge-subtle
-                                    p-3.5 shadow-[0_4px_24px_rgba(0,0,0,0.35)] animate-slide-down">
+                                    p-3.5 dropdown-glow animate-slide-down animate-glow-reveal">
                             // Header — large preview + hex display + close
                             <div class="flex items-center justify-between">
                                 <div class="flex items-center gap-2.5">
@@ -365,7 +365,7 @@ fn ControlWidget(
                                         <button
                                             type="button"
                                             class="aspect-square rounded-lg border transition-all duration-150 hover:scale-110"
-                                            class=("border-white/30 shadow-[0_0_8px_rgba(225,53,255,0.3)]", move || is_active.get())
+                                            class=("border-white/30 edge-glow-accent", move || is_active.get())
                                             class=("border-edge-subtle", move || !is_active.get())
                                             style=format!("background: {swatch_hex}")
                                             on:click={
@@ -535,7 +535,7 @@ fn ControlWidget(
                     <select
                         class="w-full bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-xs text-fg-primary
                                focus:outline-none focus:border-accent-muted
-                               focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1)]
+                               focus:border-accent-muted glow-ring
                                cursor-pointer transition-all duration-150"
                         prop:value=move || selected.get()
                         on:change=move |ev| {
@@ -574,7 +574,7 @@ fn ControlWidget(
                         type="text"
                         class="w-full bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-xs text-fg-primary
                                focus:outline-none focus:border-accent-muted
-                               focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1)]
+                               focus:border-accent-muted glow-ring
                                placeholder-fg-tertiary/40 transition-all duration-150"
                         prop:value=move || text.get()
                         on:change=move |ev| {

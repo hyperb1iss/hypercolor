@@ -115,7 +115,7 @@ pub fn Sidebar() -> impl IntoView {
         >
             // Logo section
             <div class="h-14 flex items-center px-4 border-b border-edge-subtle">
-                <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-electric-purple via-coral to-neon-cyan flex items-center justify-center shadow-[0_0_12px_rgba(225,53,255,0.3)]">
+                <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-electric-purple via-coral to-neon-cyan flex items-center justify-center animate-breathe" style="--glow-rgb: 225, 53, 255">
                     <span class="text-[11px] font-bold text-white">"H"</span>
                 </div>
                 <span

@@ -197,8 +197,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                     </div>
 
                     // ── Info Panel ─────────────────────────────────────────
-                    <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden
-                                shadow-[0_2px_12px_rgba(0,0,0,0.2)]"
+                    <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow"
                          style=accent_border>
                         <div class="p-4 space-y-3">
                             // Device metadata grid
@@ -284,8 +283,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                     </div>
 
                     // ── Segments ───────────────────────────────────────────
-                    <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden
-                                shadow-[0_2px_12px_rgba(0,0,0,0.2)]">
+                    <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">
                         <div class="flex items-center justify-between px-4 py-3">
                             <div class="flex items-center gap-2">
                                 <Icon icon=LuCable width="14px" height="14px" style="color: rgba(139, 133, 160, 1)" />

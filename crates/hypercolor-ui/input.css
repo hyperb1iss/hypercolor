@@ -187,11 +187,11 @@ input[type="color"]::-webkit-color-swatch {
     color: white;
 }
 
-/* ── Focus rings ─────────────────────────────────────────────────────────── */
+/* ── Focus rings — glow, never outline ──────────────────────────────────── */
 
 :focus-visible {
     outline: none;
-    box-shadow: 0 0 0 2px var(--glow-focus), 0 0 8px var(--glow-focus-soft);
+    box-shadow: 0 0 0 2px var(--glow-focus), 0 0 12px var(--glow-focus-soft);
 }
 
 /* ── Entrance Animations ─────────────────────────────────────────────────── */
@@ -245,8 +245,10 @@ input[type="color"]::-webkit-color-swatch {
 }
 
 @keyframes breathe {
-    0%, 100% { box-shadow: 0 0 20px rgba(var(--glow-rgb, 225, 53, 255), 0.08); }
-    50%      { box-shadow: 0 0 30px rgba(var(--glow-rgb, 225, 53, 255), 0.16); }
+    0%, 100% { box-shadow: 0 0 20px rgba(var(--glow-rgb, 225, 53, 255), 0.08),
+                           0 0 2px rgba(var(--glow-rgb, 225, 53, 255), 0.12); }
+    50%      { box-shadow: 0 0 32px rgba(var(--glow-rgb, 225, 53, 255), 0.18),
+                           0 0 4px rgba(var(--glow-rgb, 225, 53, 255), 0.25); }
 }
 
 @keyframes glowPulse {
@@ -274,6 +276,26 @@ input[type="color"]::-webkit-color-swatch {
     50%      { transform: scale(1.3); opacity: 1; }
 }
 
+@keyframes glowRingIn {
+    0%   { box-shadow: 0 0 0 2px transparent, 0 0 0 transparent; }
+    40%  { box-shadow: 0 0 0 2px var(--accent-muted), 0 0 20px var(--glow-accent-50); }
+    100% { box-shadow: 0 0 0 2px var(--accent-muted), 0 0 8px rgba(225, 53, 255, 0.12); }
+}
+
+@keyframes edgeShimmer {
+    0%   { border-color: var(--border-subtle); }
+    25%  { border-color: var(--accent-muted); }
+    50%  { border-color: var(--accent-hover); }
+    75%  { border-color: var(--accent-muted); }
+    100% { border-color: var(--border-subtle); }
+}
+
+@keyframes glowReveal {
+    0%   { opacity: 0; box-shadow: 0 0 0 rgba(225, 53, 255, 0); }
+    50%  { opacity: 1; box-shadow: 0 0 24px rgba(225, 53, 255, 0.15); }
+    100% { opacity: 1; box-shadow: 0 0 12px rgba(225, 53, 255, 0.08); }
+}
+
 /* ── Animation Utility Classes ───────────────────────────────────────────── */
 
 .animate-fade-in-up     { animation: fadeInUp 0.35s var(--ease-silk) both; }
@@ -285,6 +307,8 @@ input[type="color"]::-webkit-color-swatch {
 .animate-slide-down     { animation: slideDown 0.3s var(--ease-silk) both; }
 .animate-breathe        { animation: breathe 3s ease-in-out infinite; }
 .animate-border-glow    { animation: borderGlow 2s ease-in-out infinite; }
+.animate-edge-shimmer   { animation: edgeShimmer 3s ease-in-out infinite; }
+.animate-glow-reveal    { animation: glowReveal 0.5s var(--ease-silk) both; }
 
 .animate-shimmer {
     background: linear-gradient(
@@ -314,23 +338,49 @@ input[type="color"]::-webkit-color-swatch {
 
 /* ── Interactive Micro-Interactions ───────────────────────────────────────── */
 
+/* Cards: no lift — border brightens, ambient glow emanates, press squishes */
 .card-hover {
-    transition: transform 0.25s var(--ease-spring),
-                box-shadow 0.25s var(--ease-silk),
-                border-color 0.2s ease;
+    transition: transform 0.2s var(--ease-spring),
+                border-color 0.25s var(--ease-silk),
+                box-shadow 0.35s var(--ease-silk),
+                filter 0.25s ease;
 }
-.card-hover:hover:not(:disabled) { transform: translateY(-2px); }
-.card-hover:active:not(:disabled) { transform: translateY(0) scale(0.985); transition-duration: 0.1s; }
+.card-hover:hover:not(:disabled) {
+    border-color: var(--accent-muted);
+    box-shadow: 0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.10),
+                0 0 2px rgba(var(--glow-rgb, 225, 53, 255), 0.18),
+                inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    filter: brightness(1.06);
+}
+.card-hover:active:not(:disabled) {
+    transform: scale(0.97);
+    box-shadow: 0 0 16px rgba(var(--glow-rgb, 225, 53, 255), 0.22),
+                inset 0 0 12px rgba(var(--glow-rgb, 225, 53, 255), 0.06);
+    filter: brightness(1.1);
+    transition-duration: 0.08s;
+}
 
+/* Buttons: press down, glow brighter on hover */
 .btn-press {
     transition: transform 0.15s var(--ease-spring),
-                box-shadow 0.15s ease,
+                box-shadow 0.2s ease,
                 background-color 0.15s ease,
+                border-color 0.2s ease,
                 color 0.15s ease,
+                filter 0.15s ease,
                 opacity 0.15s ease;
 }
-.btn-press:active:not(:disabled) { transform: scale(0.92); }
+.btn-press:hover:not(:disabled) {
+    filter: brightness(1.2);
+    box-shadow: 0 0 12px rgba(var(--glow-rgb, 225, 53, 255), 0.08);
+}
+.btn-press:active:not(:disabled) {
+    transform: scale(0.92);
+    filter: brightness(0.95);
+    box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.15);
+}
 
+/* Chips: scale + glow halo */
 .chip-interactive {
     transition: transform 0.2s var(--ease-spring),
                 box-shadow 0.2s ease,
@@ -339,30 +389,112 @@ input[type="color"]::-webkit-color-swatch {
                 border-color 0.2s ease,
                 filter 0.2s ease;
 }
-.chip-interactive:hover { transform: scale(1.06); filter: brightness(1.2); }
+.chip-interactive:hover {
+    transform: scale(1.06);
+    filter: brightness(1.25);
+    box-shadow: 0 0 12px rgba(var(--glow-rgb, 225, 53, 255), 0.15);
+}
 .chip-interactive:active { transform: scale(0.96); transition-duration: 0.08s; }
 
+/* Nav items: inner glow, no translate */
 .nav-item-hover {
-    transition: transform 0.2s var(--ease-silk),
-                background-color 0.15s ease,
-                color 0.15s ease;
+    transition: background-color 0.2s var(--ease-silk),
+                color 0.2s ease,
+                box-shadow 0.25s ease;
 }
-.nav-item-hover:hover { transform: translateX(2px); }
+.nav-item-hover:hover {
+    box-shadow: inset 0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.05);
+}
 
+/* Player controls: scale + glow halo */
 .player-btn {
     transition: transform 0.2s var(--ease-spring),
                 color 0.15s ease,
                 background-color 0.15s ease,
-                box-shadow 0.2s ease;
+                filter 0.2s ease;
 }
-.player-btn:hover { transform: scale(1.15); }
+.player-btn:hover {
+    transform: scale(1.15);
+    filter: drop-shadow(0 0 8px currentColor);
+}
 .player-btn:active { transform: scale(0.9); transition-duration: 0.08s; }
 
-.toggle-track { transition: background-color 0.3s var(--ease-silk), box-shadow 0.3s var(--ease-silk); }
-.toggle-thumb { transition: transform 0.3s var(--ease-spring), background-color 0.2s ease; }
+/* Toggle: track glows when on, thumb gets halo */
+.toggle-track {
+    transition: background-color 0.3s var(--ease-silk),
+                box-shadow 0.3s var(--ease-silk);
+}
+.toggle-track-on {
+    box-shadow: 0 0 14px rgba(var(--glow-rgb, 225, 53, 255), 0.25),
+                inset 0 0 8px rgba(var(--glow-rgb, 225, 53, 255), 0.10);
+}
+.toggle-thumb {
+    transition: transform 0.3s var(--ease-spring),
+                background-color 0.2s ease,
+                box-shadow 0.25s ease;
+}
+.toggle-thumb-on {
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.4);
+}
 
-.search-glow:focus { animation: borderGlow 2s ease-in-out infinite; }
+/* Search input: animated border glow on focus */
+.search-glow:focus {
+    animation: borderGlow 2s ease-in-out infinite;
+}
+
+/* Status dot: alive pulse */
 .dot-alive { animation: dotPulse 2s ease-in-out infinite; }
+
+/* Focus glow ring — pulses once then holds steady */
+.glow-ring:focus-visible {
+    outline: none;
+    animation: glowRingIn 0.4s var(--ease-silk) forwards;
+}
+
+/* ── Ambient Glow Utilities ─────────────────────────────────────────────── */
+
+/* Soft edge glow — replaces elevation shadows on panels */
+.edge-glow {
+    box-shadow: 0 0 1px var(--border-subtle),
+                inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+/* Accent edge glow — for active/important panels */
+.edge-glow-accent {
+    box-shadow: 0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.08),
+                0 0 2px rgba(var(--glow-rgb, 225, 53, 255), 0.18),
+                inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* Command palette / modal glow — cinematic ambient */
+.modal-glow {
+    box-shadow: 0 0 80px rgba(225, 53, 255, 0.08),
+                0 0 2px rgba(225, 53, 255, 0.12),
+                inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* Dropdown glow */
+.dropdown-glow {
+    box-shadow: 0 0 32px rgba(0, 0, 0, 0.3),
+                0 0 2px rgba(225, 53, 255, 0.08),
+                inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* Color swatch glow — emanates the swatch color */
+.swatch-glow {
+    box-shadow: 0 0 20px var(--swatch-color, rgba(225, 53, 255, 0.3)),
+                inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    transition: box-shadow 0.2s ease, transform 0.15s var(--ease-spring);
+}
+.swatch-glow:hover {
+    box-shadow: 0 0 28px var(--swatch-color, rgba(225, 53, 255, 0.4)),
+                inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    transform: scale(1.05);
+}
+.swatch-glow:active {
+    transform: scale(0.95);
+    transition-duration: 0.08s;
+}
 
 /* ── Glass (Prism) ───────────────────────────────────────────────────────── */
 
@@ -432,6 +564,8 @@ button:hover:not(:disabled) > .relative {
     .animate-slide-down,
     .animate-breathe,
     .animate-border-glow,
+    .animate-edge-shimmer,
+    .animate-glow-reveal,
     .animate-shimmer,
     .dot-alive,
     .card-glow {
@@ -444,7 +578,8 @@ button:hover:not(:disabled) > .relative {
     .nav-item-hover,
     .player-btn,
     .toggle-track,
-    .toggle-thumb {
+    .toggle-thumb,
+    .swatch-glow {
         transition: none !important;
     }
 }

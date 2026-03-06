@@ -260,8 +260,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
 
             // Palette panel
             <div class="relative w-full max-w-lg mx-4 rounded-xl glass border border-edge-subtle
-                        shadow-[0_25px_60px_rgba(0,0,0,0.6),0_0_60px_rgba(225,53,255,0.06)]
-                        overflow-hidden animate-scale-in">
+                        modal-glow overflow-hidden animate-scale-in">
                 // Search input
                 <div class="flex items-center gap-3 px-4 py-3.5 border-b border-edge-subtle">
                     <Icon icon=LuSearch width="16px" height="16px" style="color: rgba(225, 53, 255, 0.6); flex-shrink: 0" />

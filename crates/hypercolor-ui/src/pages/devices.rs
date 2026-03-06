@@ -167,8 +167,7 @@ pub fn DevicesPage() -> impl IntoView {
                                     placeholder="Search devices..."
                                     class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg pl-9 pr-10 py-2 text-sm text-fg-primary
                                            placeholder-fg-tertiary focus:outline-none focus:border-accent-muted
-                                           focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1),0_0_20px_rgba(225,53,255,0.06)]
-                                           transition-all duration-300"
+                                           search-glow glow-ring transition-all duration-300"
                                     prop:value=move || search.get()
                                     on:input=move |ev| {
                                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());

@@ -193,8 +193,7 @@ pub fn EffectsPage() -> impl IntoView {
                         placeholder="Search effects..."
                         class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg pl-9 pr-10 py-2 text-sm text-fg-primary
                                placeholder-fg-tertiary focus:outline-none focus:border-accent-muted
-                               focus:shadow-[0_0_0_1px_rgba(225,53,255,0.1),0_0_20px_rgba(225,53,255,0.06)]
-                               transition-all duration-300"
+                               search-glow glow-ring transition-all duration-300"
                         prop:value=move || search.get()
                         on:input=move |ev| {
                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -325,8 +324,8 @@ pub fn EffectsPage() -> impl IntoView {
                                             />
                                             <div
                                                 class="absolute top-full left-0 mt-1 z-30 min-w-[200px] max-h-[280px] overflow-y-auto
-                                                       rounded-xl border border-edge-subtle bg-surface-overlay shadow-[0_8px_32px_rgba(0,0,0,0.4)]
-                                                       py-1 animate-fade-in scrollbar-none"
+                                                       rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
+                                                       py-1 animate-fade-in animate-glow-reveal scrollbar-none"
                                             >
                                                 // Clear all option
                                                 <button
@@ -483,7 +482,7 @@ pub fn EffectsPage() -> impl IntoView {
                                     />
 
                                     // Live preview — no border, black bleeds to edge
-                                    <div class="rounded-xl bg-black overflow-hidden shadow-[0_4px_24px_rgba(0,0,0,0.3)]">
+                                    <div class="rounded-xl bg-black overflow-hidden edge-glow">
 
                                         <CanvasPreview
                                             frame=canvas_frame
@@ -494,8 +493,7 @@ pub fn EffectsPage() -> impl IntoView {
 
                                     // Controls panel with category accent line
                                     <div
-                                        class="rounded-xl bg-surface-raised border border-edge-subtle p-5
-                                               shadow-[0_2px_12px_rgba(0,0,0,0.2)]"
+                                        class="rounded-xl bg-surface-raised border border-edge-subtle p-5 edge-glow"
                                         style=controls_accent.clone()
                                     >
                                         <div class="flex items-center gap-2 mb-4">
