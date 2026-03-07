@@ -7,7 +7,6 @@ use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::components::sidebar::Sidebar;
-use crate::components::status_bar::StatusBar;
 use crate::icons::*;
 
 /// Read the current theme from the DOM.
@@ -87,12 +86,40 @@ fn extract_dominant_hue(pixels: &[u8]) -> Option<f64> {
     })
 }
 
+/// Shared theme state — provided via context for sidebar and other consumers.
+#[derive(Clone, Copy)]
+pub struct ThemeContext {
+    pub is_dark: Memo<bool>,
+    pub toggle: Callback<()>,
+}
+
+/// Shared command palette trigger.
+#[derive(Clone, Copy)]
+pub struct PaletteContext {
+    pub open: Callback<()>,
+}
+
 /// Top-level layout shell. Sidebar left, header + content right.
 #[component]
 pub fn Shell(children: Children) -> impl IntoView {
     let (palette_open, set_palette_open) = signal(false);
     let (theme, set_theme) = signal(read_theme());
     let is_dark = Memo::new(move |_| theme.get() == "dark");
+
+    let toggle_theme = Callback::new(move |()| {
+        let next = if is_dark.get() { "light" } else { "dark" };
+        apply_theme(next);
+        set_theme.set(next.to_string());
+    });
+
+    provide_context(ThemeContext {
+        is_dark,
+        toggle: toggle_theme,
+    });
+
+    provide_context(PaletteContext {
+        open: Callback::new(move |()| set_palette_open.set(true)),
+    });
 
     // Ambient hue extraction — sample canvas frame ~2x/sec, update --ambient-hue
     let shell_ref = NodeRef::<leptos::html::Div>::new();
@@ -159,48 +186,9 @@ pub fn Shell(children: Children) -> impl IntoView {
             tabindex="-1"
         >
             <Sidebar />
-            <div class="flex flex-col flex-1 min-w-0">
-                // Header
-                <header class="h-14 flex items-center justify-between px-6 border-b border-edge-subtle bg-surface-raised/80 glass-subtle">
-                    <div class="flex items-center gap-4">
-                        <span class="text-[11px] text-fg-secondary font-mono tracking-[0.2em] uppercase">"Hypercolor"</span>
-                        // Command palette trigger
-                        <button
-                            class="hidden md:flex items-center gap-2.5 px-3 py-1.5 rounded-lg bg-surface-overlay/40 border border-edge-subtle
-                                   text-xs text-fg-tertiary hover:text-fg-secondary hover:border-edge-default hover:bg-surface-hover/40
-                                   btn-press cursor-pointer group"
-                            on:click=move |_| set_palette_open.set(true)
-                        >
-                            <Icon icon=LuSearch width="14px" height="14px" style="color: inherit" />
-                            <span class="text-fg-tertiary">"Search effects..."</span>
-                            <kbd class="text-[9px] font-mono text-fg-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-edge-subtle">"⌘K"</kbd>
-                        </button>
-                    </div>
-                    <div class="flex items-center gap-3">
-                        // Theme toggle
-                        <button
-                            class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40
-                                   btn-press transition-colors duration-150"
-                            title=move || if is_dark.get() { "Switch to light mode" } else { "Switch to dark mode" }
-                            on:click=move |_| {
-                                let next = if is_dark.get() { "light" } else { "dark" };
-                                apply_theme(next);
-                                set_theme.set(next.to_string());
-                            }
-                        >
-                            {move || if is_dark.get() {
-                                view! { <Icon icon=LuSun width="16px" height="16px" style="color: inherit" /> }.into_any()
-                            } else {
-                                view! { <Icon icon=LuMoon width="16px" height="16px" style="color: inherit" /> }.into_any()
-                            }}
-                        </button>
-                        <StatusBar />
-                    </div>
-                </header>
-                <main class="flex-1 overflow-auto p-6">
-                    {children()}
-                </main>
-            </div>
+            <main class="flex-1 min-w-0 overflow-auto p-6">
+                {children()}
+            </main>
 
             // Command palette overlay
             {move || palette_open.get().then(|| {

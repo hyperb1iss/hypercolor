@@ -548,6 +548,183 @@ button:hover:not(:disabled) > .relative {
     display: none;
 }
 
+/* ── Logo Animations ────────────────────────────────────────────────────── */
+
+.logo-circuit {
+    font-family: 'Orbitron', sans-serif;
+    position: relative;
+}
+
+/* Shared gradient base for all logo modes */
+.logo-circuit-text {
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+/* ── Mode 0: Slow Drift — gentle oscillating gradient, very ambient ───── */
+.logo-mode-drift .logo-circuit-text {
+    background: linear-gradient(
+        90deg,
+        #e135ff 0%, #ff6ac1 25%, #80ffea 50%, #f1fa8c 75%, #e135ff 100%
+    );
+    background-size: 200% 100%;
+    animation: logoDrift 24s ease-in-out infinite;
+    filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3))
+            drop-shadow(0 0 5px rgba(128, 255, 234, 0.2));
+}
+
+@keyframes logoDrift {
+    0%   { background-position: 0% 50%; }
+    50%  { background-position: 200% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+/* ── Mode 1: Chromatic Glitch — slow drift with brief RGB-split bursts ── */
+.logo-mode-glitch .logo-circuit-text {
+    background: linear-gradient(
+        90deg,
+        #e135ff 0%, #ff6ac1 25%, #80ffea 50%, #f1fa8c 75%, #e135ff 100%
+    );
+    background-size: 200% 100%;
+    animation:
+        logoDrift 24s ease-in-out infinite,
+        logoGlitch 12s step-end infinite;
+}
+
+@keyframes logoGlitch {
+    0%, 100% {
+        filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3))
+                drop-shadow(0 0 5px rgba(128, 255, 234, 0.2));
+        transform: none;
+    }
+    /* Brief glitch at ~33% */
+    32% { filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3)); transform: none; }
+    32.5% {
+        filter: drop-shadow(-2px 0 0 rgba(128, 255, 234, 0.7))
+                drop-shadow(2px 0 0 rgba(225, 53, 255, 0.7))
+                drop-shadow(0 0 16px rgba(255, 106, 193, 0.5));
+        transform: translateX(-1px) skewX(-1deg);
+    }
+    33.5% {
+        filter: drop-shadow(1px 0 0 rgba(241, 250, 140, 0.6))
+                drop-shadow(-1px 0 0 rgba(225, 53, 255, 0.6))
+                drop-shadow(0 0 20px rgba(128, 255, 234, 0.4));
+        transform: translateX(1px) skewX(0.5deg);
+    }
+    34% { filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3)); transform: none; }
+    /* Brief glitch at ~72% */
+    71% { transform: none; }
+    71.5% {
+        filter: drop-shadow(2px 0 0 rgba(128, 255, 234, 0.8))
+                drop-shadow(-2px 0 0 rgba(255, 106, 193, 0.8))
+                drop-shadow(0 0 24px rgba(225, 53, 255, 0.5));
+        transform: translateX(1px);
+    }
+    72% {
+        filter: drop-shadow(-1px 1px 0 rgba(241, 250, 140, 0.5))
+                drop-shadow(1px -1px 0 rgba(128, 255, 234, 0.5));
+        transform: translateX(-1px) skewX(-0.5deg);
+    }
+    72.5% { filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3)); transform: none; }
+}
+
+/* ── Mode 2: Prismatic Breathe — gradient + pulsing glow intensity ────── */
+.logo-mode-breathe .logo-circuit-text {
+    background: linear-gradient(
+        90deg,
+        #e135ff 0%, #80ffea 33%, #ff6ac1 66%, #e135ff 100%
+    );
+    background-size: 300% 100%;
+    animation:
+        logoDrift 30s ease-in-out infinite,
+        logoBreathe 6s ease-in-out infinite;
+}
+
+@keyframes logoBreathe {
+    0%, 100% {
+        filter: drop-shadow(0 0 8px rgba(225, 53, 255, 0.2))
+                drop-shadow(0 0 3px rgba(128, 255, 234, 0.1));
+    }
+    50% {
+        filter: drop-shadow(0 0 20px rgba(225, 53, 255, 0.5))
+                drop-shadow(0 0 8px rgba(128, 255, 234, 0.35))
+                drop-shadow(0 0 40px rgba(255, 106, 193, 0.15));
+    }
+}
+
+/* ── Mode 3: Warp Scan — gradient sweeps with perspective warp pulses ─── */
+.logo-mode-warp .logo-circuit-text {
+    background: linear-gradient(
+        90deg,
+        #e135ff 0%, #ff6ac1 20%, #80ffea 40%, #f1fa8c 60%, #50fa7b 80%, #e135ff 100%
+    );
+    background-size: 300% 100%;
+    animation:
+        logoWarpGradient 20s linear infinite,
+        logoWarp 16s ease-in-out infinite;
+    filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3))
+            drop-shadow(0 0 5px rgba(128, 255, 234, 0.2));
+}
+
+@keyframes logoWarpGradient {
+    0%   { background-position: 0% 50%; }
+    100% { background-position: 300% 50%; }
+}
+
+@keyframes logoWarp {
+    0%, 100% {
+        transform: perspective(500px) rotateY(0deg) scaleX(1);
+        filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3))
+                drop-shadow(0 0 5px rgba(128, 255, 234, 0.2));
+    }
+    15% {
+        transform: perspective(500px) rotateY(2deg) scaleX(1.01);
+    }
+    30% {
+        transform: perspective(500px) rotateY(0deg) scaleX(1);
+    }
+    50% {
+        transform: perspective(500px) rotateY(-2.5deg) scaleX(0.99);
+        filter: drop-shadow(0 0 20px rgba(128, 255, 234, 0.45))
+                drop-shadow(0 0 8px rgba(225, 53, 255, 0.3));
+    }
+    65% {
+        transform: perspective(500px) rotateY(0deg) scaleX(1);
+    }
+    80% {
+        transform: perspective(500px) rotateY(1.5deg) scaleX(1.005);
+        filter: drop-shadow(0 0 16px rgba(255, 106, 193, 0.4))
+                drop-shadow(0 0 6px rgba(241, 250, 140, 0.2));
+    }
+}
+
+/* ── Light mode overrides ─────────────────────────────────────────────── */
+[data-theme="light"] .logo-circuit-text {
+    background: linear-gradient(
+        90deg,
+        #b800d4 0%, #d4007a 25%, #009e8e 50%, #8a7600 75%, #b800d4 100%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 8px rgba(180, 0, 210, 0.25))
+            drop-shadow(0 0 3px rgba(0, 158, 142, 0.2));
+}
+
+/* Shared: collapsed icon mark */
+.logo-mark {
+    background: linear-gradient(135deg, #e135ff 0%, #ff6ac1 50%, #80ffea 100%);
+    background-size: 200% 200%;
+    animation: markShift 6s ease-in-out infinite;
+}
+
+@keyframes markShift {
+    0%, 100% { background-position: 0% 50%; }
+    50%      { background-position: 100% 50%; }
+}
+
 /* ── Reduced motion ──────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
@@ -564,7 +741,12 @@ button:hover:not(:disabled) > .relative {
     .animate-glow-reveal,
     .animate-shimmer,
     .dot-alive,
-    .card-glow {
+    .card-glow,
+    .logo-mode-drift .logo-circuit-text,
+    .logo-mode-glitch .logo-circuit-text,
+    .logo-mode-breathe .logo-circuit-text,
+    .logo-mode-warp .logo-circuit-text,
+    .logo-mark {
         animation: none !important;
     }
 

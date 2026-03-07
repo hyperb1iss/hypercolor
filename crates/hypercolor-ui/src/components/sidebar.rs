@@ -10,6 +10,7 @@ use wasm_bindgen::Clamped;
 use wasm_bindgen::JsCast;
 
 use crate::app::{EffectsContext, WsContext};
+use crate::ws::ConnectionState;
 use crate::icons::*;
 
 /// Sidebar collapsed state, shared via context so the shell can react.
@@ -282,19 +283,32 @@ pub fn Sidebar() -> impl IntoView {
             class:w-56=move || !collapsed.get()
             class:w-14=move || collapsed.get()
         >
-            // Logo section
-            <div class="h-14 flex items-center px-4 border-b border-edge-subtle">
-                <div class="w-7 h-7 rounded-lg bg-gradient-to-br from-electric-purple via-coral to-neon-cyan flex items-center justify-center animate-breathe" style="--glow-rgb: 225, 53, 255">
-                    <span class="text-[11px] font-bold text-white">"H"</span>
-                </div>
-                <span
-                    class="ml-3 text-sm font-semibold tracking-wider text-fg-primary whitespace-nowrap overflow-hidden transition-opacity duration-200"
-                    class:opacity-0=move || collapsed.get()
-                    class:opacity-100=move || !collapsed.get()
-                    class:w-0=move || collapsed.get()
+            // Logo
+            <div
+                class="w-full border-b border-edge-subtle transition-all duration-300"
+                class:h-14=move || collapsed.get()
+                class:h-32=move || !collapsed.get()
+            >
+                // Collapsed state: gradient mark
+                <div
+                    class="items-center justify-center h-full"
+                    style:display=move || if collapsed.get() { "flex" } else { "none" }
                 >
-                    "Hypercolor"
-                </span>
+                    <div class="w-8 h-8 rounded-lg logo-mark flex items-center justify-center animate-breathe" style="--glow-rgb: 225, 53, 255">
+                        <span class="text-xs font-bold text-white">"H"</span>
+                    </div>
+                </div>
+
+                // Expanded state: Circuit Type logo
+                <div
+                    class="flex-col items-center justify-center h-full px-3 py-4 overflow-hidden"
+                    style:display=move || if collapsed.get() { "none" } else { "flex" }
+                >
+                    <div class="logo-circuit flex flex-col items-center leading-none">
+                        <span class="logo-circuit-text text-[28px] font-bold tracking-[0.15em]">"HYPER"</span>
+                        <span class="logo-circuit-text text-[28px] font-medium tracking-[0.35em] mt-0.5">"COLOR"</span>
+                    </div>
+                </div>
             </div>
 
             // Nav items
@@ -466,22 +480,100 @@ pub fn Sidebar() -> impl IntoView {
                 })
             }}
 
-            // Collapse toggle at bottom
-            <div class="px-2 py-3 border-t border-edge-subtle">
-                <button
-                    class="flex items-center justify-center w-full h-8 rounded-lg text-fg-tertiary hover:text-fg-secondary
-                           hover:bg-surface-hover/30 btn-press"
-                    on:click=move |_| set_collapsed.update(|v| *v = !*v)
-                    title=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }
-                >
-                    <span
-                        class="w-4 h-4 flex items-center justify-center transition-transform duration-200"
-                        class:rotate-180=move || collapsed.get()
-                    >
-                        <Icon icon=LuChevronLeft width="16px" height="16px" />
-                    </span>
-                </button>
-            </div>
+            // Bottom bar — status, theme, search, collapse
+            {
+                let theme_ctx = use_context::<crate::components::shell::ThemeContext>();
+                let palette_ctx = use_context::<crate::components::shell::PaletteContext>();
+                let ws_ctx = use_context::<WsContext>();
+
+                view! {
+                    <div class="border-t border-edge-subtle px-2 py-2 space-y-1">
+                        // Status + actions row (expanded only)
+                        <div
+                            class="flex items-center justify-between px-1"
+                            style:display=move || if collapsed.get() { "none" } else { "flex" }
+                        >
+                            // Connection status
+                            <div class="flex items-center gap-1.5 text-[10px] font-mono text-fg-tertiary">
+                                {move || {
+                                    ws_ctx.map(|ws| {
+                                        view! {
+                                            <div
+                                                class="w-[5px] h-[5px] rounded-full"
+                                                style=move || {
+                                                    match ws.connection_state.get() {
+                                                        ConnectionState::Connected => "background: rgb(80, 250, 123); box-shadow: 0 0 6px rgba(80, 250, 123, 0.5)",
+                                                        ConnectionState::Error => "background: rgb(255, 99, 99); box-shadow: 0 0 6px rgba(255, 99, 99, 0.5)",
+                                                        ConnectionState::Connecting => "background: rgb(241, 250, 140)",
+                                                        ConnectionState::Disconnected => "background: rgb(82, 82, 91)",
+                                                    }
+                                                }
+                                            />
+                                            <span>{move || ws.connection_state.get().to_string()}</span>
+                                            <span class="text-fg-tertiary/50 ml-1">{move || format!("{:.0}fps", ws.fps.get())}</span>
+                                        }
+                                    })
+                                }}
+                            </div>
+
+                            // Right side: theme + search
+                            <div class="flex items-center gap-0.5">
+                                // Search (command palette)
+                                {move || {
+                                    palette_ctx.map(|ctx| {
+                                        let open = ctx.open;
+                                        view! {
+                                            <button
+                                                class="p-1.5 rounded-md text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 btn-press"
+                                                title="Search effects (⌘K)"
+                                                on:click=move |_| open.run(())
+                                            >
+                                                <Icon icon=LuSearch width="14px" height="14px" />
+                                            </button>
+                                        }
+                                    })
+                                }}
+
+                                // Theme toggle
+                                {move || {
+                                    theme_ctx.map(|ctx| {
+                                        let toggle = ctx.toggle;
+                                        let is_dark = ctx.is_dark;
+                                        view! {
+                                            <button
+                                                class="p-1.5 rounded-md text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 btn-press"
+                                                title=move || if is_dark.get() { "Light mode" } else { "Dark mode" }
+                                                on:click=move |_| toggle.run(())
+                                            >
+                                                {move || if is_dark.get() {
+                                                    view! { <Icon icon=LuSun width="14px" height="14px" style="color: inherit" /> }.into_any()
+                                                } else {
+                                                    view! { <Icon icon=LuMoon width="14px" height="14px" style="color: inherit" /> }.into_any()
+                                                }}
+                                            </button>
+                                        }
+                                    })
+                                }}
+                            </div>
+                        </div>
+
+                        // Collapse toggle
+                        <button
+                            class="flex items-center justify-center w-full h-8 rounded-lg text-fg-tertiary hover:text-fg-secondary
+                                   hover:bg-surface-hover/30 btn-press"
+                            on:click=move |_| set_collapsed.update(|v| *v = !*v)
+                            title=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }
+                        >
+                            <span
+                                class="w-4 h-4 flex items-center justify-center transition-transform duration-200"
+                                class:rotate-180=move || collapsed.get()
+                            >
+                                <Icon icon=LuChevronLeft width="16px" height="16px" />
+                            </span>
+                        </button>
+                    </div>
+                }
+            }
         </nav>
     }
 }

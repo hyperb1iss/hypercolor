@@ -1,7 +1,7 @@
 use hypercolor_types::spatial::{
     Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, NormalizedRect, Orientation,
     RingDef, RoomAdjacency, RoomDimensions, SamplingMode, SpaceDefinition, SpatialLayout,
-    StripDirection, Wall, Winding, ZoneShape,
+    StripDirection, Wall, Winding, ZoneGroup, ZoneShape,
 };
 
 // ── NormalizedPosition ──────────────────────────────────────────────────────
@@ -243,6 +243,7 @@ fn device_zone_construction() {
         name: "ATX Strimer".into(),
         device_id: "hid:prism-s-1".into(),
         zone_name: Some("atx".into()),
+        group_id: Some("pc-case".into()),
         position: NormalizedPosition::new(0.5, 0.5),
         size: NormalizedPosition::new(0.3, 0.1),
         rotation: 0.0,
@@ -262,6 +263,7 @@ fn device_zone_construction() {
     assert_eq!(zone.id, "zone-1");
     assert_eq!(zone.device_id, "hid:prism-s-1");
     assert_eq!(zone.zone_name.as_deref(), Some("atx"));
+    assert_eq!(zone.group_id.as_deref(), Some("pc-case"));
     assert_eq!(zone.topology.led_count(), 24);
     assert!((zone.scale - 1.0).abs() < f32::EPSILON);
 }
@@ -273,6 +275,7 @@ fn device_zone_optional_fields() {
         name: "Bulb".into(),
         device_id: "hue:1".into(),
         zone_name: None,
+        group_id: None,
         position: NormalizedPosition::new(0.5, 0.5),
         size: NormalizedPosition::new(0.1, 0.1),
         rotation: 0.0,
@@ -287,6 +290,7 @@ fn device_zone_optional_fields() {
     };
 
     assert!(zone.zone_name.is_none());
+    assert!(zone.group_id.is_none());
     assert!(zone.orientation.is_none());
     assert!(zone.sampling_mode.is_none());
     assert!(zone.edge_behavior.is_none());
@@ -305,6 +309,7 @@ fn spatial_layout_empty_zones() {
         canvas_width: 320,
         canvas_height: 200,
         zones: vec![],
+        groups: vec![],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -314,6 +319,7 @@ fn spatial_layout_empty_zones() {
     assert_eq!(layout.canvas_width, 320);
     assert_eq!(layout.canvas_height, 200);
     assert!(layout.zones.is_empty());
+    assert!(layout.groups.is_empty());
     assert!(layout.spaces.is_none());
 }
 
@@ -324,6 +330,7 @@ fn spatial_layout_with_zones() {
         name: "Front Fan".into(),
         device_id: "hid:prism-s-1".into(),
         zone_name: Some("ch1".into()),
+        group_id: Some("pc-case".into()),
         position: NormalizedPosition::new(0.2, 0.3),
         size: NormalizedPosition::new(0.15, 0.15),
         rotation: std::f32::consts::FRAC_PI_4,
@@ -348,6 +355,11 @@ fn spatial_layout_with_zones() {
         canvas_width: 320,
         canvas_height: 200,
         zones: vec![zone],
+        groups: vec![ZoneGroup {
+            id: "pc-case".into(),
+            name: "PC Case".into(),
+            color: Some("#e135ff".into()),
+        }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -355,6 +367,7 @@ fn spatial_layout_with_zones() {
     };
 
     assert_eq!(layout.zones.len(), 1);
+    assert_eq!(layout.groups.len(), 1);
     assert_eq!(layout.zones[0].topology.led_count(), 16);
 }
 
@@ -421,6 +434,46 @@ fn normalized_position_json_roundtrip() {
 }
 
 #[test]
+fn spatial_layout_deserializes_missing_groups_and_group_ids() {
+    let raw = r#"{
+        "id": "legacy-layout",
+        "name": "Legacy Layout",
+        "description": null,
+        "canvas_width": 320,
+        "canvas_height": 200,
+        "zones": [
+            {
+                "id": "zone-1",
+                "name": "Legacy Zone",
+                "device_id": "mock:legacy",
+                "zone_name": null,
+                "position": {"x": 0.5, "y": 0.5},
+                "size": {"x": 0.2, "y": 0.2},
+                "rotation": 0.0,
+                "scale": 1.0,
+                "orientation": null,
+                "topology": {"type": "point"},
+                "sampling_mode": null,
+                "edge_behavior": null,
+                "shape": null,
+                "shape_preset": null
+            }
+        ],
+        "default_sampling_mode": {"type": "bilinear"},
+        "default_edge_behavior": "clamp",
+        "spaces": null,
+        "version": 1
+    }"#;
+
+    let layout: SpatialLayout =
+        serde_json::from_str(raw).expect("legacy layouts should still deserialize");
+
+    assert!(layout.groups.is_empty());
+    assert_eq!(layout.zones.len(), 1);
+    assert!(layout.zones[0].group_id.is_none());
+}
+
+#[test]
 fn led_topology_strip_json_roundtrip() {
     let topo = LedTopology::Strip {
         count: 30,
@@ -483,6 +536,57 @@ fn zone_shape_arc_json_roundtrip() {
     assert!(matches!(recovered, ZoneShape::Arc { .. }));
 }
 
+#[test]
+fn zone_group_construction() {
+    let group = ZoneGroup {
+        id: "desk".into(),
+        name: "Desk".into(),
+        color: Some("#80ffea".into()),
+    };
+
+    assert_eq!(group.id, "desk");
+    assert_eq!(group.name, "Desk");
+    assert_eq!(group.color.as_deref(), Some("#80ffea"));
+}
+
+#[test]
+fn spatial_layout_deserializes_without_groups_fields() {
+    let raw = serde_json::json!({
+        "id": "legacy-layout",
+        "name": "Legacy Layout",
+        "description": null,
+        "canvas_width": 320,
+        "canvas_height": 200,
+        "zones": [{
+            "id": "zone-1",
+            "name": "Legacy Zone",
+            "device_id": "wled:desk",
+            "zone_name": null,
+            "position": { "x": 0.5, "y": 0.5 },
+            "size": { "x": 0.3, "y": 0.2 },
+            "rotation": 0.0,
+            "scale": 1.0,
+            "orientation": null,
+            "topology": { "type": "point" },
+            "sampling_mode": null,
+            "edge_behavior": null,
+            "shape": null,
+            "shape_preset": null
+        }],
+        "default_sampling_mode": { "type": "bilinear" },
+        "default_edge_behavior": "clamp",
+        "spaces": null,
+        "version": 1
+    });
+
+    let layout: SpatialLayout =
+        serde_json::from_value(raw).expect("legacy layout JSON should deserialize");
+
+    assert!(layout.groups.is_empty());
+    assert_eq!(layout.zones.len(), 1);
+    assert!(layout.zones[0].group_id.is_none());
+}
+
 // ── Multi-Room Types ────────────────────────────────────────────────────────
 
 #[test]
@@ -524,6 +628,11 @@ fn layout_with_spaces_json_roundtrip() {
         canvas_width: 640,
         canvas_height: 400,
         zones: vec![],
+        groups: vec![ZoneGroup {
+            id: "living-room".into(),
+            name: "Living Room".into(),
+            color: None,
+        }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: Some(vec![SpaceDefinition {
@@ -541,6 +650,7 @@ fn layout_with_spaces_json_roundtrip() {
     let recovered: SpatialLayout = serde_json::from_str(&json).expect("deserialize SpatialLayout");
     assert_eq!(recovered.id, "multi-room");
     assert_eq!(recovered.canvas_width, 640);
+    assert_eq!(recovered.groups.len(), 1);
     assert!(recovered.spaces.is_some());
 }
 

@@ -152,6 +152,7 @@ impl AppState {
             canvas_width: 320,
             canvas_height: 200,
             zones: Vec::new(),
+            groups: Vec::new(),
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
             spaces: None,

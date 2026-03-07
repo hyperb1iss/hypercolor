@@ -302,6 +302,18 @@ pub struct RingDef {
     pub direction: Winding,
 }
 
+/// Named collection of zones for editor organization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ZoneGroup {
+    /// Unique group identifier within a layout.
+    pub id: String,
+    /// Human-readable group name.
+    pub name: String,
+    /// Optional hex color used by the editor for visual distinction.
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
 // ── DeviceZone ──────────────────────────────────────────────────────────────
 
 /// A device zone: the spatial binding between a physical device and a
@@ -327,6 +339,10 @@ pub struct DeviceZone {
     /// Sub-device channel or segment name (e.g., `"ch1"`, `"atx"`, `"segment-0"`).
     /// `None` for single-zone devices.
     pub zone_name: Option<String>,
+
+    /// Group this zone belongs to. `None` means ungrouped.
+    #[serde(default)]
+    pub group_id: Option<String>,
 
     // ── Placement ─────────────────────────────────────────────────────
     /// Center position of the zone on the canvas. Normalized `[0.0, 1.0]`.
@@ -439,6 +455,10 @@ pub struct SpatialLayout {
     // ── Zones ─────────────────────────────────────────────────────────
     /// All device zones in this layout, ordered by rendering priority.
     pub zones: Vec<DeviceZone>,
+
+    /// Named groups for organizing zones in the editor.
+    #[serde(default)]
+    pub groups: Vec<ZoneGroup>,
 
     // ── Defaults ──────────────────────────────────────────────────────
     /// Default sampling mode for zones that don't specify one.

@@ -4,13 +4,15 @@
 //! This module provides CRUD operations against an in-memory store
 //! of [`SpatialLayout`] objects.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
+use hypercolor_types::spatial::{DeviceZone, SpatialLayout, ZoneGroup};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
@@ -31,6 +33,7 @@ pub struct LayoutSummary {
     pub canvas_width: u32,
     pub canvas_height: u32,
     pub zone_count: usize,
+    pub group_count: usize,
     pub is_active: bool,
 }
 
@@ -49,6 +52,7 @@ pub struct UpdateLayoutRequest {
     pub canvas_width: Option<u32>,
     pub canvas_height: Option<u32>,
     pub zones: Option<Vec<DeviceZone>>,
+    pub groups: Option<Vec<ZoneGroup>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -89,6 +93,7 @@ pub async fn list_layouts(
             canvas_width: layout.canvas_width,
             canvas_height: layout.canvas_height,
             zone_count: layout.zones.len(),
+            group_count: layout.groups.len(),
             is_active: layout.id == active_layout_id,
         })
         .collect();
@@ -167,6 +172,7 @@ pub async fn create_layout(
         canvas_width,
         canvas_height,
         zones: Vec::new(),
+        groups: Vec::new(),
         default_sampling_mode: hypercolor_types::spatial::SamplingMode::Bilinear,
         default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
         spaces: None,
@@ -179,6 +185,7 @@ pub async fn create_layout(
         canvas_width: layout.canvas_width,
         canvas_height: layout.canvas_height,
         zone_count: 0,
+        group_count: 0,
         is_active: false,
     };
 
@@ -207,26 +214,48 @@ pub async fn update_layout(
         .get_mut(&key)
         .expect("resolved layout key must exist");
 
-    if let Some(name) = body.name {
+    let UpdateLayoutRequest {
+        name,
+        description,
+        canvas_width,
+        canvas_height,
+        mut zones,
+        groups,
+    } = body;
+
+    if let Some(name) = name {
         let normalized_name = match normalize_layout_name(&name) {
             Ok(name) => name,
             Err(error) => return ApiError::validation(error),
         };
         existing.name = normalized_name;
     }
-    existing.description = body.description;
+    existing.description = description;
 
-    if let Some(w) = body.canvas_width {
+    if let Some(w) = canvas_width {
         existing.canvas_width = w;
     }
-    if let Some(h) = body.canvas_height {
+    if let Some(h) = canvas_height {
         existing.canvas_height = h;
     }
     if let Err(error) = validate_canvas_dimensions(existing.canvas_width, existing.canvas_height) {
         return ApiError::validation(error);
     }
 
-    if let Some(zones) = body.zones {
+    let groups_replaced = if let Some(groups) = groups {
+        existing.groups = groups;
+        true
+    } else {
+        false
+    };
+
+    if let Some(zones) = zones.as_mut() {
+        sanitize_group_membership(&existing.groups, zones);
+    } else if groups_replaced {
+        sanitize_group_membership(&existing.groups, &mut existing.zones);
+    }
+
+    if let Some(zones) = zones {
         existing.zones = zones;
     }
 
@@ -240,6 +269,7 @@ pub async fn update_layout(
         canvas_width: existing.canvas_width,
         canvas_height: existing.canvas_height,
         zone_count: existing.zones.len(),
+        group_count: existing.groups.len(),
         is_active: existing.id == active_layout_id,
     };
 
@@ -281,8 +311,10 @@ pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<Str
 /// Used by the layout editor for live preview while dragging zones.
 pub async fn preview_layout(
     State(state): State<Arc<AppState>>,
-    Json(layout): Json<SpatialLayout>,
+    Json(mut layout): Json<SpatialLayout>,
 ) -> Response {
+    sanitize_group_membership(&layout.groups, &mut layout.zones);
+
     {
         let mut spatial = state.spatial_engine.write().await;
         spatial.update_layout(layout);
@@ -354,4 +386,24 @@ fn validate_canvas_dimensions(width: u32, height: u32) -> Result<(), String> {
         return Err("canvas_width and canvas_height must be greater than 0".to_owned());
     }
     Ok(())
+}
+
+fn sanitize_group_membership(groups: &[ZoneGroup], zones: &mut [DeviceZone]) {
+    let valid_group_ids: HashSet<&str> = groups.iter().map(|group| group.id.as_str()).collect();
+
+    for zone in zones.iter_mut() {
+        let Some(group_id) = zone.group_id.as_ref() else {
+            continue;
+        };
+        if valid_group_ids.contains(group_id.as_str()) {
+            continue;
+        }
+
+        warn!(
+            zone_id = %zone.id,
+            group_id = %group_id,
+            "Clearing orphaned layout zone group reference"
+        );
+        zone.group_id = None;
+    }
 }
