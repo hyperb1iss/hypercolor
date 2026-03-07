@@ -1,14 +1,18 @@
 //! Tests for the WLED device backend.
 //!
-//! All tests use mock transports — no actual network I/O.
+//! Tests use parsing/unit checks plus local loopback UDP for streaming behavior.
 
 use std::net::IpAddr;
+use std::time::Duration;
 
 use hypercolor_core::device::DeviceBackend;
 use hypercolor_core::device::wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
     WledDeviceInfo, WledProtocol, WledSegmentInfo, build_ddp_frame, universes_needed,
 };
+use hypercolor_types::device::DeviceId;
+use tokio::net::UdpSocket;
+use tokio::time::timeout;
 
 // ── DDP Constants ───────────────────────────────────────────────────────
 
@@ -572,6 +576,9 @@ fn parse_wled_info_basic() {
         "freeheap": 120_000,
         "uptime": 86400,
         "arch": "esp32",
+        "wifi": {
+            "bssid": "aa:bb:cc:dd:ee:ff"
+        },
         "fxcount": 118,
         "palcount": 71
     });
@@ -592,6 +599,7 @@ fn parse_wled_info_basic() {
     assert_eq!(info.free_heap, 120_000);
     assert_eq!(info.uptime_secs, 86400);
     assert_eq!(info.arch, "esp32");
+    assert!(info.is_wifi);
     assert_eq!(info.effect_count, 118);
     assert_eq!(info.palette_count, 71);
 }
@@ -652,6 +660,7 @@ fn parse_wled_info_with_defaults() {
     assert_eq!(info.name, "WLED");
     assert_eq!(info.led_count, 0);
     assert!(!info.rgbw);
+    assert!(!info.is_wifi);
 }
 
 #[test]
@@ -770,6 +779,42 @@ fn protocol_default_is_ddp() {
     assert_eq!(WledProtocol::default(), WledProtocol::Ddp);
 }
 
+#[test]
+fn negotiated_target_fps_clamps_reported_value() {
+    let info = test_wled_info(300, false, 75, true);
+    assert_eq!(info.negotiated_target_fps(), 60);
+
+    let info = test_wled_info(300, false, 12, true);
+    assert_eq!(info.negotiated_target_fps(), 15);
+
+    let info = test_wled_info(300, false, 32, true);
+    assert_eq!(info.negotiated_target_fps(), 32);
+}
+
+#[test]
+fn negotiated_target_fps_uses_unreported_heuristics() {
+    assert_eq!(
+        test_wled_info(250, false, 0, true).negotiated_target_fps(),
+        40
+    );
+    assert_eq!(
+        test_wled_info(500, false, 0, true).negotiated_target_fps(),
+        30
+    );
+    assert_eq!(
+        test_wled_info(500, false, 0, false).negotiated_target_fps(),
+        40
+    );
+    assert_eq!(
+        test_wled_info(900, false, 0, true).negotiated_target_fps(),
+        25
+    );
+    assert_eq!(
+        test_wled_info(900, false, 0, false).negotiated_target_fps(),
+        35
+    );
+}
+
 // ── WledBackend Lifecycle Tests ────────────────────────────────────────
 
 #[tokio::test]
@@ -836,6 +881,138 @@ async fn backend_write_to_disconnected_fails() {
     );
 }
 
+#[tokio::test]
+async fn backend_connect_reuses_shared_socket_and_allocates_e131_universes() {
+    let mut backend = WledBackend::new(vec![]);
+    backend.set_realtime_http_enabled(false);
+    backend.set_protocol(WledProtocol::E131);
+
+    let device_a = DeviceId::new();
+    let device_b = DeviceId::new();
+
+    backend.remember_device(
+        device_a,
+        "127.0.0.2".parse().expect("valid loopback IP"),
+        test_wled_info(300, false, 30, true),
+    );
+    backend.remember_device(
+        device_b,
+        "127.0.0.3".parse().expect("valid loopback IP"),
+        test_wled_info(300, false, 30, true),
+    );
+
+    backend.connect(&device_a).await.expect("connect device A");
+    backend.connect(&device_b).await.expect("connect device B");
+
+    let shared_addr = backend
+        .shared_socket_local_addr()
+        .expect("shared socket should be initialized");
+    assert_eq!(
+        backend.connected_socket_local_addr(&device_a),
+        Some(shared_addr)
+    );
+    assert_eq!(
+        backend.connected_socket_local_addr(&device_b),
+        Some(shared_addr)
+    );
+    assert_eq!(backend.connected_e131_start_universe(&device_a), Some(1));
+    assert_eq!(backend.connected_e131_start_universe(&device_b), Some(3));
+    assert_eq!(backend.target_fps(&device_a), Some(30));
+}
+
+#[tokio::test]
+async fn backend_write_colors_pads_dedups_and_keeps_alive() {
+    let receiver = UdpSocket::bind("127.0.0.4:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let mut backend = WledBackend::new(vec![]);
+    backend.set_realtime_http_enabled(false);
+
+    let device_id = DeviceId::new();
+    backend.remember_device(
+        device_id,
+        "127.0.0.4".parse().expect("valid loopback IP"),
+        test_wled_info(4, false, 30, true),
+    );
+    backend
+        .connect(&device_id)
+        .await
+        .expect("connect should succeed");
+
+    let colors = [[1, 2, 3], [4, 5, 6]];
+    backend
+        .write_colors(&device_id, &colors)
+        .await
+        .expect("first write should succeed");
+
+    let mut packet = [0_u8; 64];
+    let (len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+        .await
+        .expect("expected initial DDP frame")
+        .expect("recv initial DDP frame");
+    assert_eq!(len, DDP_HEADER_SIZE + 12);
+    assert_eq!(&packet[10..22], &[1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0, 0]);
+
+    backend
+        .write_colors(&device_id, &colors)
+        .await
+        .expect("duplicate write should succeed");
+    let mut dedup_packet = [0_u8; 64];
+    assert!(
+        timeout(
+            Duration::from_millis(150),
+            receiver.recv_from(&mut dedup_packet)
+        )
+        .await
+        .is_err(),
+        "deduplicated frame should not send another UDP packet"
+    );
+
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+    backend
+        .write_colors(&device_id, &colors)
+        .await
+        .expect("keepalive write should succeed");
+    let (len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+        .await
+        .expect("expected keepalive DDP frame")
+        .expect("recv keepalive DDP frame");
+    assert_eq!(len, DDP_HEADER_SIZE + 12);
+}
+
+#[tokio::test]
+async fn backend_write_colors_truncates_oversized_frames() {
+    let receiver = UdpSocket::bind("127.0.0.5:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let mut backend = WledBackend::new(vec![]);
+    backend.set_realtime_http_enabled(false);
+
+    let device_id = DeviceId::new();
+    backend.remember_device(
+        device_id,
+        "127.0.0.5".parse().expect("valid loopback IP"),
+        test_wled_info(2, false, 30, true),
+    );
+    backend
+        .connect(&device_id)
+        .await
+        .expect("connect should succeed");
+
+    backend
+        .write_colors(&device_id, &[[9, 8, 7], [6, 5, 4], [3, 2, 1]])
+        .await
+        .expect("oversized write should succeed");
+
+    let mut packet = [0_u8; 64];
+    let (len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+        .await
+        .expect("expected truncated DDP frame")
+        .expect("recv truncated DDP frame");
+    assert_eq!(len, DDP_HEADER_SIZE + 6);
+    assert_eq!(&packet[10..16], &[9, 8, 7, 6, 5, 4]);
+}
+
 // ── DdpPacket Edge Cases ───────────────────────────────────────────────
 
 #[test]
@@ -886,6 +1063,7 @@ fn wled_device_info_serializable() {
         free_heap: 120_000,
         uptime_secs: 86400,
         arch: "esp32".to_owned(),
+        is_wifi: true,
         effect_count: 118,
         palette_count: 71,
     };
@@ -896,4 +1074,26 @@ fn wled_device_info_serializable() {
     assert_eq!(restored.name, "Test Device");
     assert_eq!(restored.led_count, 300);
     assert_eq!(restored.firmware_version, "0.15.3");
+    assert!(restored.is_wifi);
+}
+
+fn test_wled_info(led_count: u16, rgbw: bool, fps: u8, is_wifi: bool) -> WledDeviceInfo {
+    WledDeviceInfo {
+        firmware_version: "0.15.3".to_owned(),
+        build_id: 2_312_050,
+        mac: "aabbccddeeff".to_owned(),
+        name: "Test Device".to_owned(),
+        led_count,
+        rgbw,
+        max_segments: 16,
+        fps,
+        power_draw_ma: 1500,
+        max_power_ma: 5000,
+        free_heap: 120_000,
+        uptime_secs: 86_400,
+        arch: "esp32".to_owned(),
+        is_wifi,
+        effect_count: 118,
+        palette_count: 71,
+    }
 }

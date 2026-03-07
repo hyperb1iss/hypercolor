@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::device::discovery::TransportScanner;
 use crate::device::traits::{BackendInfo, DeviceBackend};
@@ -24,6 +24,13 @@ use super::ddp::{DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DDP_PORT, DdpSequence, build_d
 use super::e131::{
     E131_CHANNELS_PER_UNIVERSE, E131_PORT, E131_PRIORITY, E131Packet, E131SequenceTracker,
 };
+
+const REALTIME_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
+const REALTIME_PRIME_FRAMES: usize = 3;
+const REALTIME_PRIME_DELAY: Duration = Duration::from_millis(50);
+const DEDUP_THRESHOLD: u8 = 2;
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
+const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_secs(60);
 
 // ── Protocol Selection ──────────────────────────────────────────────────
 
@@ -101,10 +108,31 @@ pub struct WledDeviceInfo {
     pub uptime_secs: u32,
     /// Architecture string (e.g., "esp32").
     pub arch: String,
+    /// Whether the controller is currently connected over WiFi.
+    #[serde(default)]
+    pub is_wifi: bool,
     /// Number of built-in effects.
     pub effect_count: u8,
     /// Number of palettes.
     pub palette_count: u16,
+}
+
+impl WledDeviceInfo {
+    /// Negotiate a practical streaming FPS from WLED's reported capabilities.
+    #[must_use]
+    pub fn negotiated_target_fps(&self) -> u32 {
+        if self.fps > 0 {
+            return u32::from(self.fps).clamp(15, 60);
+        }
+
+        match (usize::from(self.led_count), self.is_wifi) {
+            (0..=300, _) => 40,
+            (301..=600, true) => 30,
+            (301..=600, false) => 40,
+            (_, true) => 25,
+            (_, false) => 35,
+        }
+    }
 }
 
 // ── WLED Segment Info ───────────────────────────────────────────────────
@@ -180,6 +208,14 @@ pub struct WledDevice {
     e131_cid: uuid::Uuid,
     /// Starting E1.31 universe number for this device.
     e131_start_universe: u16,
+    /// Last pixel data successfully sent.
+    last_sent_pixels: Option<Vec<u8>>,
+    /// Rolling count of consecutive send failures.
+    consecutive_failures: u32,
+    /// Timestamp of the last successful send.
+    last_success_at: Option<Instant>,
+    /// Timestamp of the most recent frame-size mismatch warning.
+    last_size_mismatch_warn_at: Option<Instant>,
 
     /// Frames successfully sent.
     pub frames_sent: u64,
@@ -194,14 +230,39 @@ impl WledDevice {
     ///
     /// Returns an error if the UDP send fails.
     pub async fn send_frame(&mut self, pixel_data: &[u8]) -> Result<()> {
-        match self.protocol {
+        let force_send = self
+            .last_frame_at
+            .is_none_or(|last_frame_at| last_frame_at.elapsed() >= KEEPALIVE_INTERVAL);
+
+        if !force_send
+            && self
+                .last_sent_pixels
+                .as_deref()
+                .is_some_and(|last| pixels_match_with_threshold(last, pixel_data, DEDUP_THRESHOLD))
+        {
+            return Ok(());
+        }
+
+        let send_result = match self.protocol {
             WledProtocol::Ddp => self.send_ddp(pixel_data).await,
             WledProtocol::E131 => self.send_e131(pixel_data).await,
-        }?;
+        };
 
-        self.frames_sent += 1;
-        self.last_frame_at = Some(Instant::now());
-        Ok(())
+        match &send_result {
+            Ok(()) => {
+                let now = Instant::now();
+                self.frames_sent += 1;
+                self.last_frame_at = Some(now);
+                self.last_success_at = Some(now);
+                self.last_sent_pixels = Some(pixel_data.to_vec());
+                self.consecutive_failures = 0;
+            }
+            Err(_) => {
+                self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+            }
+        }
+
+        send_result
     }
 
     /// Send pixel data via DDP, fragmenting if necessary.
@@ -274,6 +335,9 @@ pub fn parse_wled_info(json: &serde_json::Value) -> Result<WledDeviceInfo> {
         free_heap: json["freeheap"].as_u64().unwrap_or(0) as u32,
         uptime_secs: json["uptime"].as_u64().unwrap_or(0) as u32,
         arch: json["arch"].as_str().unwrap_or("unknown").to_owned(),
+        is_wifi: json["wifi"]["bssid"]
+            .as_str()
+            .is_some_and(|bssid| !bssid.trim().is_empty()),
         effect_count: json["fxcount"].as_u64().unwrap_or(0) as u8,
         palette_count: json["palcount"].as_u64().unwrap_or(0) as u16,
     })
@@ -342,8 +406,99 @@ fn build_device_info(device_id: DeviceId, wled_info: &WledDeviceInfo, _ip: IpAdd
             led_count: u32::from(wled_info.led_count),
             supports_direct: true,
             supports_brightness: true,
-            max_fps: u32::from(wled_info.fps).max(60),
+            max_fps: wled_info.negotiated_target_fps(),
         },
+    }
+}
+
+async fn post_realtime_state(ip: IpAddr, body: serde_json::Value) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(REALTIME_HTTP_TIMEOUT)
+        .build()
+        .context("Failed to build WLED HTTP client")?;
+
+    client
+        .post(format!("http://{ip}/json/state"))
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| format!("Failed to update WLED realtime state for {ip}"))?;
+
+    Ok(())
+}
+
+async fn enter_realtime_mode(ip: IpAddr) -> Result<()> {
+    post_realtime_state(
+        ip,
+        serde_json::json!({
+            "lor": 1,
+            "live": true,
+            "transition": 0,
+        }),
+    )
+    .await
+}
+
+async fn exit_realtime_mode(ip: IpAddr) -> Result<()> {
+    post_realtime_state(
+        ip,
+        serde_json::json!({
+            "live": false,
+            "lor": 0,
+            "transition": 7,
+        }),
+    )
+    .await
+}
+
+async fn prime_device(device: &mut WledDevice) -> Result<()> {
+    let black_frame =
+        vec![0_u8; usize::from(device.led_count) * device.color_format.bytes_per_pixel()];
+
+    for _ in 0..REALTIME_PRIME_FRAMES {
+        device.send_frame(&black_frame).await?;
+        tokio::time::sleep(REALTIME_PRIME_DELAY).await;
+    }
+
+    Ok(())
+}
+
+fn pixels_match_with_threshold(previous: &[u8], current: &[u8], threshold: u8) -> bool {
+    previous.len() == current.len()
+        && previous
+            .iter()
+            .zip(current.iter())
+            .all(|(left, right)| left.abs_diff(*right) <= threshold)
+}
+
+fn encode_colors(
+    colors: &[[u8; 3]],
+    color_format: WledColorFormat,
+    expected_led_count: usize,
+) -> Vec<u8> {
+    match color_format {
+        WledColorFormat::Rgb => {
+            let mut pixel_data = Vec::with_capacity(expected_led_count * 3);
+            for index in 0..expected_led_count {
+                let color = colors.get(index).copied().unwrap_or([0, 0, 0]);
+                pixel_data.extend_from_slice(&color);
+            }
+            pixel_data
+        }
+        WledColorFormat::Rgbw => {
+            let mut pixel_data = Vec::with_capacity(expected_led_count * 4);
+            for index in 0..expected_led_count {
+                let color = colors.get(index).copied().unwrap_or([0, 0, 0]);
+                let white = color[0].min(color[1]).min(color[2]);
+                pixel_data.extend_from_slice(&[
+                    color[0] - white,
+                    color[1] - white,
+                    color[2] - white,
+                    white,
+                ]);
+            }
+            pixel_data
+        }
     }
 }
 
@@ -388,8 +543,17 @@ pub struct WledBackend {
     /// Default protocol for new connections.
     default_protocol: WledProtocol,
 
+    /// Shared UDP socket used by all connected WLED devices.
+    shared_socket: Option<Arc<UdpSocket>>,
+
+    /// Whether connect/disconnect should manage WLED realtime mode over HTTP.
+    realtime_http_enabled: bool,
+
     /// E1.31 sender CID (stable UUID per backend instance).
     e131_cid: uuid::Uuid,
+
+    /// Next available E1.31 universe number for auto-allocation.
+    next_e131_universe: u16,
 }
 
 impl WledBackend {
@@ -413,7 +577,10 @@ impl WledBackend {
             device_ips: HashMap::new(),
             device_infos: HashMap::new(),
             default_protocol: WledProtocol::default(),
+            shared_socket: None,
+            realtime_http_enabled: true,
             e131_cid: uuid::Uuid::now_v7(),
+            next_e131_universe: 1,
         }
     }
 
@@ -422,9 +589,101 @@ impl WledBackend {
         self.default_protocol = protocol;
     }
 
+    /// Enable or disable HTTP realtime-mode lifecycle calls.
+    pub fn set_realtime_http_enabled(&mut self, enabled: bool) {
+        self.realtime_http_enabled = enabled;
+    }
+
+    /// Seed the backend with a discovered device entry.
+    pub fn remember_device(&mut self, device_id: DeviceId, ip: IpAddr, info: WledDeviceInfo) {
+        self.device_ips.insert(device_id, ip);
+        self.device_infos.insert(device_id, info);
+    }
+
+    /// The local address of the shared UDP socket, if initialized.
+    #[must_use]
+    pub fn shared_socket_local_addr(&self) -> Option<SocketAddr> {
+        self.shared_socket
+            .as_ref()
+            .and_then(|socket| socket.local_addr().ok())
+    }
+
+    /// The local UDP socket used by a connected device, if available.
+    #[must_use]
+    pub fn connected_socket_local_addr(&self, id: &DeviceId) -> Option<SocketAddr> {
+        self.devices
+            .get(id)
+            .and_then(|device| device.socket.local_addr().ok())
+    }
+
+    /// The starting E1.31 universe assigned to a connected device.
+    #[must_use]
+    pub fn connected_e131_start_universe(&self, id: &DeviceId) -> Option<u16> {
+        self.devices
+            .get(id)
+            .map(|device| device.e131_start_universe)
+    }
+
     /// Probe a single IP for a WLED device via HTTP.
     async fn probe_ip(ip: IpAddr) -> Result<WledDeviceInfo> {
         super::fetch_wled_info(ip).await
+    }
+
+    async fn ensure_shared_socket(&mut self) -> Result<Arc<UdpSocket>> {
+        if let Some(socket) = &self.shared_socket {
+            return Ok(Arc::clone(socket));
+        }
+
+        let socket = Arc::new(
+            UdpSocket::bind("0.0.0.0:0")
+                .await
+                .context("Failed to bind shared WLED UDP socket")?,
+        );
+        self.shared_socket = Some(Arc::clone(&socket));
+        Ok(socket)
+    }
+
+    fn allocate_e131_start_universe(
+        &mut self,
+        color_format: WledColorFormat,
+        led_count: u16,
+        protocol: WledProtocol,
+    ) -> u16 {
+        if protocol != WledProtocol::E131 {
+            return 1;
+        }
+
+        let pixels_per_universe = E131_CHANNELS_PER_UNIVERSE / color_format.bytes_per_pixel();
+        let universes_needed = usize::from(led_count)
+            .div_ceil(pixels_per_universe)
+            .clamp(1, usize::from(u16::MAX));
+        let universes_needed = u16::try_from(universes_needed).unwrap_or(u16::MAX);
+        let start_universe = self.next_e131_universe;
+        self.next_e131_universe = self
+            .next_e131_universe
+            .saturating_add(universes_needed.max(1));
+        start_universe
+    }
+
+    /// Check if a device is reachable over WLED's HTTP API.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the device ID is unknown or the client cannot be built.
+    pub async fn health_check(&self, id: &DeviceId) -> Result<bool> {
+        let ip = self
+            .device_ips
+            .get(id)
+            .copied()
+            .with_context(|| format!("Unknown WLED device {id}"))?;
+
+        let url = format!("http://{ip}/json/info");
+        let client = reqwest::Client::builder()
+            .timeout(REALTIME_HTTP_TIMEOUT)
+            .build()
+            .context("Failed to build WLED HTTP client")?;
+
+        Ok(client.get(url).send().await.is_ok())
     }
 }
 
@@ -532,11 +791,12 @@ impl DeviceBackend for WledBackend {
                 known_info_ids
             );
         };
-
-        // Bind a UDP socket for this device
-        let socket = UdpSocket::bind("0.0.0.0:0")
-            .await
-            .context("Failed to bind UDP socket")?;
+        let socket = self.ensure_shared_socket().await?;
+        if self.realtime_http_enabled {
+            enter_realtime_mode(ip)
+                .await
+                .with_context(|| format!("Failed to enter realtime mode for WLED device {id}"))?;
+        }
 
         let port = match self.default_protocol {
             WledProtocol::Ddp => DDP_PORT,
@@ -549,29 +809,43 @@ impl DeviceBackend for WledBackend {
         } else {
             WledColorFormat::Rgb
         };
+        let protocol = self.default_protocol;
+        let e131_start_universe =
+            self.allocate_e131_start_universe(color_format, wled_info.led_count, protocol);
 
-        let device = WledDevice {
+        let mut device = WledDevice {
             device_id: *id,
             ip,
-            protocol: self.default_protocol,
+            protocol,
             pixel_addr,
             color_format,
             led_count: wled_info.led_count,
             info: wled_info,
-            socket: Arc::new(socket),
+            socket,
             ddp_sequence: DdpSequence::default(),
             e131_sequences: E131SequenceTracker::default(),
             e131_cid: self.e131_cid,
-            e131_start_universe: 1,
+            e131_start_universe,
+            last_sent_pixels: None,
+            consecutive_failures: 0,
+            last_success_at: None,
+            last_size_mismatch_warn_at: None,
             frames_sent: 0,
             last_frame_at: None,
         };
 
+        if self.realtime_http_enabled {
+            prime_device(&mut device)
+                .await
+                .with_context(|| format!("Failed to prime WLED device {id}"))?;
+        }
+
         info!(
             device_id = %id,
             ip = %ip,
-            protocol = ?self.default_protocol,
+            protocol = ?protocol,
             leds = device.led_count,
+            start_universe = device.e131_start_universe,
             "Connected to WLED device"
         );
 
@@ -580,7 +854,17 @@ impl DeviceBackend for WledBackend {
     }
 
     async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        if self.devices.remove(id).is_some() {
+        if let Some(device) = self.devices.remove(id) {
+            if self.realtime_http_enabled
+                && let Err(error) = exit_realtime_mode(device.ip).await
+            {
+                debug!(
+                    device_id = %id,
+                    ip = %device.ip,
+                    error = %error,
+                    "best-effort exit from WLED realtime mode failed"
+                );
+            }
             info!(device_id = %id, "Disconnected from WLED device");
             Ok(())
         } else {
@@ -593,20 +877,37 @@ impl DeviceBackend for WledBackend {
             .devices
             .get_mut(id)
             .with_context(|| format!("WLED device {id} is not connected"))?;
+        let expected_led_count = usize::from(device.led_count);
 
-        // Convert RGB triplets to flat pixel data
-        let pixel_data: Vec<u8> = match device.color_format {
-            WledColorFormat::Rgb => colors.iter().flat_map(|c| *c).collect(),
-            WledColorFormat::Rgbw => colors
-                .iter()
-                .flat_map(|c| {
-                    // Naive white extraction: min(R,G,B) becomes the white channel
-                    let w = c[0].min(c[1]).min(c[2]);
-                    [c[0] - w, c[1] - w, c[2] - w, w]
-                })
-                .collect(),
-        };
+        if colors.len() != expected_led_count {
+            let should_warn = device
+                .last_size_mismatch_warn_at
+                .is_none_or(|last_warn_at| last_warn_at.elapsed() >= SIZE_MISMATCH_WARN_INTERVAL);
+
+            if should_warn {
+                warn!(
+                    device_id = %id,
+                    expected_led_count,
+                    actual_led_count = colors.len(),
+                    "WLED frame size mismatch; truncating or padding to match device"
+                );
+                device.last_size_mismatch_warn_at = Some(Instant::now());
+            }
+        }
+
+        let pixel_data = encode_colors(colors, device.color_format, expected_led_count);
 
         device.send_frame(&pixel_data).await
+    }
+
+    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+        self.devices
+            .get(id)
+            .map(|device| device.info.negotiated_target_fps())
+            .or_else(|| {
+                self.device_infos
+                    .get(id)
+                    .map(WledDeviceInfo::negotiated_target_fps)
+            })
     }
 }
