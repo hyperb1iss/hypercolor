@@ -22,6 +22,7 @@ use tower::ServiceExt;
 use tracing::{debug, warn};
 
 use crate::api::AppState;
+use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
 
 /// Maximum number of events that can be buffered per WebSocket client.
 const WS_BUFFER_SIZE: usize = 64;
@@ -1337,6 +1338,7 @@ fn sanitize_f32(value: f32) -> f32 {
 
 async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> ServerMessage {
     let render_stats = state.render_loop.read().await.stats();
+    let performance_snapshot = state.performance.read().await.snapshot();
     let target_fps = render_stats.tier.fps();
     let avg_frame_secs = render_stats.avg_frame_time.as_secs_f64();
     let actual_fps = if render_stats.avg_frame_time.is_zero() {
@@ -1345,6 +1347,8 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
         (1.0 / avg_frame_secs).max(0.0)
     };
     let avg_ms = avg_frame_secs * 1000.0;
+    let frame_time = frame_time_summary(performance_snapshot.frame_time, avg_ms);
+    let latest_frame = performance_snapshot.latest_frame.unwrap_or_default();
 
     let devices = state.device_registry.list().await;
     let total_leds = devices.iter().fold(0_usize, |acc, tracked| {
@@ -1375,17 +1379,17 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
                 dropped: render_stats.consecutive_misses,
             },
             frame_time: MetricsFrameTime {
-                avg_ms: round_2(avg_ms),
-                p95_ms: round_2(avg_ms),
-                p99_ms: round_2(avg_ms),
-                max_ms: round_2(avg_ms),
+                avg_ms: round_2(frame_time.avg_ms),
+                p95_ms: round_2(frame_time.p95_ms),
+                p99_ms: round_2(frame_time.p99_ms),
+                max_ms: round_2(frame_time.max_ms),
             },
             stages: MetricsStages {
-                input_sampling_ms: 0.0,
-                effect_rendering_ms: 0.0,
-                spatial_sampling_ms: 0.0,
-                device_output_ms: 0.0,
-                event_bus_ms: 0.0,
+                input_sampling_ms: round_2(us_to_ms(latest_frame.input_us)),
+                effect_rendering_ms: round_2(us_to_ms(latest_frame.render_us)),
+                spatial_sampling_ms: round_2(us_to_ms(latest_frame.sample_us)),
+                device_output_ms: round_2(us_to_ms(latest_frame.push_us)),
+                event_bus_ms: round_2(us_to_ms(latest_frame.publish_us)),
             },
             memory: MetricsMemory {
                 daemon_rss_mb: round_1(daemon_rss_mb),
@@ -1395,7 +1399,7 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
             devices: MetricsDevices {
                 connected,
                 total_leds,
-                output_errors: 0,
+                output_errors: latest_frame.output_errors,
             },
             websocket: MetricsWebsocket {
                 client_count,
@@ -1411,6 +1415,26 @@ fn round_1(value: f64) -> f64 {
 
 fn round_2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
+}
+
+fn us_to_ms(value: u32) -> f64 {
+    f64::from(value) / 1000.0
+}
+
+fn frame_time_summary(
+    summary: RenderFrameTimeSummary,
+    fallback_avg_ms: f64,
+) -> RenderFrameTimeSummary {
+    if summary.avg_ms > 0.0 {
+        summary
+    } else {
+        RenderFrameTimeSummary {
+            avg_ms: fallback_avg_ms,
+            p95_ms: fallback_avg_ms,
+            p99_ms: fallback_avg_ms,
+            max_ms: fallback_avg_ms,
+        }
+    }
 }
 
 fn process_rss_mb() -> Option<f64> {

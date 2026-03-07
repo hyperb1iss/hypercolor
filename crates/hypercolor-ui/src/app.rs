@@ -15,14 +15,18 @@ use crate::pages::dashboard::DashboardPage;
 use crate::pages::devices::DevicesPage;
 use crate::pages::effects::EffectsPage;
 use crate::pages::layout::LayoutPage;
-use crate::ws::{CanvasFrame, ConnectionState, WsManager};
+use crate::pages::settings::SettingsPage;
+use crate::ws::{BackpressureNotice, CanvasFrame, ConnectionState, PerformanceMetrics, WsManager};
 
 /// Global WebSocket state provided via Leptos context.
 #[derive(Clone, Copy)]
 pub struct WsContext {
     pub canvas_frame: ReadSignal<Option<CanvasFrame>>,
     pub connection_state: ReadSignal<ConnectionState>,
-    pub fps: ReadSignal<f32>,
+    pub preview_fps: ReadSignal<f32>,
+    pub preview_target_fps: u32,
+    pub metrics: ReadSignal<Option<PerformanceMetrics>>,
+    pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
 }
 
@@ -142,7 +146,10 @@ pub fn App() -> impl IntoView {
     let ws_ctx = WsContext {
         canvas_frame: ws.canvas_frame,
         connection_state: ws.connection_state,
-        fps: ws.fps,
+        preview_fps: ws.preview_fps,
+        preview_target_fps: ws.preview_target_fps,
+        metrics: ws.metrics,
+        backpressure_notice: ws.backpressure_notice,
         active_effect: ws.active_effect,
     };
     provide_context(ws_ctx);
@@ -250,6 +257,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/effects/:id") view=EffectsPage />
                     <Route path=path!("/layout") view=LayoutPage />
                     <Route path=path!("/devices") view=DevicesPage />
+                    <Route path=path!("/settings") view=SettingsPage />
                 </Routes>
             </Shell>
         </Router>

@@ -29,6 +29,7 @@ use hypercolor_types::spatial::{
 
 use hypercolor_daemon::discovery::DiscoveryRuntime;
 use hypercolor_daemon::logical_devices::LogicalDevice;
+use hypercolor_daemon::performance::PerformanceTracker;
 use hypercolor_daemon::render_thread::{RenderThread, RenderThreadState};
 use hypercolor_daemon::session::OutputPowerState;
 
@@ -152,6 +153,7 @@ fn make_render_state(
         effect_engine: Arc::new(Mutex::new(effect_engine)),
         spatial_engine: Arc::new(RwLock::new(spatial_engine)),
         backend_manager: Arc::new(Mutex::new(backend_manager)),
+        performance: Arc::new(RwLock::new(PerformanceTracker::default())),
         discovery_runtime: None,
         event_bus: Arc::new(HypercolorBus::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
@@ -378,6 +380,7 @@ async fn pipeline_renders_active_effect_to_devices() {
         effect_engine: Arc::new(Mutex::new(effect_engine)),
         spatial_engine: Arc::new(RwLock::new(spatial_engine)),
         backend_manager: Arc::new(Mutex::new(backend_manager)),
+        performance: Arc::new(RwLock::new(PerformanceTracker::default())),
         discovery_runtime: None,
         event_bus: Arc::new(HypercolorBus::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
@@ -500,6 +503,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         effect_engine: Arc::new(Mutex::new(effect_engine)),
         spatial_engine: Arc::new(RwLock::new(spatial_engine)),
         backend_manager,
+        performance: Arc::new(RwLock::new(PerformanceTracker::default())),
         discovery_runtime: Some(discovery_runtime.clone()),
         event_bus,
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),

@@ -50,6 +50,7 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use crate::attachment_profiles::AttachmentProfileStore;
 use crate::effect_layouts;
 use crate::logical_devices::LogicalDevice;
+use crate::performance::PerformanceTracker;
 use crate::render_thread::{RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
 use crate::session::{OutputPowerState, SessionController};
@@ -100,6 +101,9 @@ pub struct DaemonState {
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
+
+    /// Rolling render-performance snapshot shared with the API.
+    pub performance: Arc<RwLock<PerformanceTracker>>,
 
     /// Device lifecycle state/action orchestration.
     pub lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
@@ -231,6 +235,9 @@ impl DaemonState {
         let render_loop = RenderLoop::new(config.daemon.target_fps);
         let render_loop = Arc::new(RwLock::new(render_loop));
         info!(target_fps = config.daemon.target_fps, "Render loop created");
+
+        let performance = Arc::new(RwLock::new(PerformanceTracker::default()));
+        info!("Performance tracker created");
 
         // ── Spatial Engine ──────────────────────────────────────────────
         let default_layout = SpatialLayout {
@@ -392,6 +399,7 @@ impl DaemonState {
             render_loop,
             spatial_engine,
             backend_manager,
+            performance,
             lifecycle_manager,
             reconnect_tasks,
             input_manager,
@@ -480,6 +488,7 @@ impl DaemonState {
             effect_engine: Arc::clone(&self.effect_engine),
             spatial_engine: Arc::clone(&self.spatial_engine),
             backend_manager: Arc::clone(&self.backend_manager),
+            performance: Arc::clone(&self.performance),
             discovery_runtime: Some(self.discovery_runtime()),
             event_bus: Arc::clone(&self.event_bus),
             render_loop: Arc::clone(&self.render_loop),

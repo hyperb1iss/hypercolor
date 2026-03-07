@@ -34,6 +34,7 @@ use hypercolor_core::types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANV
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 
 use crate::discovery::{DiscoveryRuntime, handle_async_write_failures};
+use crate::performance::{LatestFrameMetrics, PerformanceTracker};
 use crate::session::OutputPowerState;
 
 // ── RenderThread ────────────────────────────────────────────────────────────
@@ -62,6 +63,9 @@ pub struct RenderThreadState {
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
+
+    /// Rolling render-performance snapshot shared with metrics endpoints.
+    pub performance: Arc<RwLock<PerformanceTracker>>,
 
     /// Discovery/lifecycle runtime used to react to async device write failures.
     pub discovery_runtime: Option<DiscoveryRuntime>,
@@ -339,6 +343,19 @@ async fn execute_frame(
         },
     );
 
+    {
+        let mut performance = state.performance.write().await;
+        performance.record_frame(LatestFrameMetrics {
+            input_us,
+            render_us,
+            sample_us,
+            push_us,
+            publish_us,
+            total_us,
+            output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
+        });
+    }
+
     for err in &write_stats.errors {
         warn!(error = %err, "device write error");
     }
@@ -475,10 +492,11 @@ async fn maybe_sleep_throttle(
     let sample_us = micros_u32(sample_start.elapsed());
 
     let push_start = Instant::now();
-    let async_failures = {
+    let (write_stats, async_failures) = {
         let mut manager = state.backend_manager.lock().await;
-        let _ = manager.write_frame(&zone_colors, &layout).await;
-        manager.async_write_failures()
+        let write_stats = manager.write_frame(&zone_colors, &layout).await;
+        let async_failures = manager.async_write_failures();
+        (write_stats, async_failures)
     };
     let push_us = micros_u32(push_start.elapsed());
 
@@ -489,7 +507,7 @@ async fn maybe_sleep_throttle(
     let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
     let frame_num_u32 = u64_to_u32(frame_number);
     let total_us = sample_us.saturating_add(push_us);
-    let _ = publish_frame_updates(
+    let publish_us = publish_frame_updates(
         state,
         zone_colors,
         &AudioData::silence(),
@@ -504,6 +522,19 @@ async fn maybe_sleep_throttle(
             budget_us,
         },
     );
+
+    {
+        let mut performance = state.performance.write().await;
+        performance.record_frame(LatestFrameMetrics {
+            input_us: 0,
+            render_us: 0,
+            sample_us,
+            push_us,
+            publish_us,
+            total_us,
+            output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
+        });
+    }
 
     {
         let mut rl = state.render_loop.write().await;

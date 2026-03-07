@@ -157,21 +157,31 @@ pub fn Sidebar() -> impl IntoView {
             path: "/",
             label: "Dashboard",
             icon: LuLayoutDashboard,
+            divider_before: false,
         },
         NavItem {
             path: "/effects",
             label: "Effects",
             icon: LuLayers,
+            divider_before: false,
         },
         NavItem {
             path: "/layout",
             label: "Layout",
             icon: LuLayoutTemplate,
+            divider_before: false,
         },
         NavItem {
             path: "/devices",
             label: "Devices",
             icon: LuCpu,
+            divider_before: false,
+        },
+        NavItem {
+            path: "/settings",
+            label: "Settings",
+            icon: LuSettings,
+            divider_before: true,
         },
     ];
 
@@ -331,7 +341,7 @@ pub fn Sidebar() -> impl IntoView {
                         })
                     };
 
-                    view! {
+                    let link = view! {
                         <A
                             href=item.path
                             attr:class=move || {
@@ -365,6 +375,15 @@ pub fn Sidebar() -> impl IntoView {
                                 {item.label}
                             </span>
                         </A>
+                    };
+
+                    if item.divider_before {
+                        view! {
+                            <div class="h-px bg-border-subtle/30 my-2 mx-1" />
+                            {link}
+                        }.into_any()
+                    } else {
+                        link.into_any()
                     }
                 }).collect_view()}
             </div>
@@ -515,7 +534,17 @@ pub fn Sidebar() -> impl IntoView {
                                                 }
                                             />
                                             <span>{move || ws.connection_state.get().to_string()}</span>
-                                            <span class="text-fg-tertiary/50 ml-1">{move || format!("{:.0}fps", ws.fps.get())}</span>
+                                            <span class="text-fg-tertiary/50 ml-1">
+                                                {move || format!("preview {:.0}/{}", ws.preview_fps.get(), ws.preview_target_fps)}
+                                            </span>
+                                            <span class="text-fg-tertiary/50">
+                                                {move || {
+                                                    ws.metrics
+                                                        .get()
+                                                        .map(|metrics| format!("engine {:.0}/{}", metrics.fps.actual, metrics.fps.target))
+                                                        .unwrap_or_else(|| "engine ...".to_string())
+                                                }}
+                                            </span>
                                         }
                                     })
                                 }}
@@ -587,4 +616,5 @@ struct NavItem {
     path: &'static str,
     label: &'static str,
     icon: icondata_core::Icon,
+    divider_before: bool,
 }

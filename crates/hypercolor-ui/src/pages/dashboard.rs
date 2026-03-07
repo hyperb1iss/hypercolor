@@ -5,6 +5,7 @@ use leptos::prelude::*;
 use crate::api::{self, EffectSummary, SystemStatus};
 use crate::app::WsContext;
 use crate::components::canvas_preview::CanvasPreview;
+use crate::ws::{BackpressureNotice, PerformanceMetrics};
 
 /// Dashboard landing page.
 #[component]
@@ -14,7 +15,9 @@ pub fn DashboardPage() -> impl IntoView {
     let effects_resource = LocalResource::new(api::fetch_effects);
 
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
-    let ws_fps = Signal::derive(move || ws.fps.get());
+    let preview_fps = Signal::derive(move || ws.preview_fps.get());
+    let metrics = Signal::derive(move || ws.metrics.get());
+    let backpressure = Signal::derive(move || ws.backpressure_notice.get());
 
     view! {
         <div class="space-y-6 max-w-5xl animate-fade-in">
@@ -38,6 +41,13 @@ pub fn DashboardPage() -> impl IntoView {
                 })}
             </Suspense>
 
+            <PerformancePanel
+                preview_fps=preview_fps
+                preview_target_fps=ws.preview_target_fps
+                metrics=metrics
+                backpressure=backpressure
+            />
+
             // Main: preview + quick switch
             <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
                 // Live preview
@@ -56,8 +66,9 @@ pub fn DashboardPage() -> impl IntoView {
                     <div class="p-3">
                         <CanvasPreview
                             frame=canvas_frame
-                            fps=ws_fps
+                            fps=preview_fps
                             show_fps=true
+                            fps_target=ws.preview_target_fps
                         />
                     </div>
                 </div>
@@ -88,6 +99,190 @@ pub fn DashboardPage() -> impl IntoView {
                         </Suspense>
                     </div>
                 </div>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn PerformancePanel(
+    #[prop(into)] preview_fps: Signal<f32>,
+    preview_target_fps: u32,
+    #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
+    #[prop(into)] backpressure: Signal<Option<BackpressureNotice>>,
+) -> impl IntoView {
+    let stage_chip = |label: &'static str, value: Signal<f64>| {
+        view! {
+            <div class="rounded-lg border border-edge-subtle bg-surface-overlay/30 px-3 py-2">
+                <div class="text-[9px] font-mono uppercase tracking-[0.14em] text-fg-tertiary mb-1">
+                    {label}
+                </div>
+                <div class="text-sm tabular-nums text-fg-secondary">
+                    {move || format!("{:.2} ms", value.get())}
+                </div>
+            </div>
+        }
+    };
+
+    let engine_text = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| format!("{:.1}/{} fps", metrics.fps.actual, metrics.fps.target))
+            .unwrap_or_else(|| "Waiting...".to_string())
+    });
+    let engine_hint = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| format!("{} budget misses", metrics.fps.dropped))
+            .unwrap_or_else(|| "render loop".to_string())
+    });
+    let frame_time_text = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| format!("{:.2} ms avg", metrics.frame_time.avg_ms))
+            .unwrap_or_else(|| "Waiting...".to_string())
+    });
+    let frame_time_hint = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| format!("p95 {:.2} ms", metrics.frame_time.p95_ms))
+            .unwrap_or_else(|| "collecting samples".to_string())
+    });
+    let preview_text =
+        Signal::derive(move || format!("{:.1}/{} fps", preview_fps.get(), preview_target_fps));
+    let preview_hint = Signal::derive(move || {
+        if preview_target_fps <= 15 {
+            "debug preview cap".to_string()
+        } else {
+            "canvas stream delivery".to_string()
+        }
+    });
+    let websocket_text = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| format_bytes_per_sec(metrics.websocket.bytes_sent_per_sec))
+            .unwrap_or_else(|| "Waiting...".to_string())
+    });
+    let websocket_hint = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| format!("{} client(s)", metrics.websocket.client_count))
+            .unwrap_or_else(|| "metrics channel".to_string())
+    });
+    let device_output_text = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| metrics.devices.output_errors.to_string())
+            .unwrap_or_else(|| "0".to_string())
+    });
+    let device_output_hint = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| {
+                format!(
+                    "{} devices, {} LEDs",
+                    metrics.devices.connected, metrics.devices.total_leds
+                )
+            })
+            .unwrap_or_else(|| "device output".to_string())
+    });
+
+    let input_stage = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| metrics.stages.input_sampling_ms)
+            .unwrap_or_default()
+    });
+    let render_stage = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| metrics.stages.effect_rendering_ms)
+            .unwrap_or_default()
+    });
+    let sample_stage = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| metrics.stages.spatial_sampling_ms)
+            .unwrap_or_default()
+    });
+    let push_stage = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| metrics.stages.device_output_ms)
+            .unwrap_or_default()
+    });
+    let publish_stage = Signal::derive(move || {
+        metrics
+            .get()
+            .map(|metrics| metrics.stages.event_bus_ms)
+            .unwrap_or_default()
+    });
+
+    let metric_card = |label: &'static str, value: Signal<String>, hint: Signal<String>| {
+        view! {
+            <div class="rounded-lg border border-edge-subtle bg-surface-overlay/30 px-4 py-3">
+                <div class="text-[9px] font-mono uppercase tracking-[0.14em] text-fg-tertiary mb-1.5">
+                    {label}
+                </div>
+                <div class="text-lg font-medium tabular-nums text-fg-primary">{move || value.get()}</div>
+                <div class="text-[11px] text-fg-tertiary mt-1">{move || hint.get()}</div>
+            </div>
+        }
+    };
+
+    view! {
+        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
+            <div class="px-4 py-3 border-b border-edge-subtle flex items-center justify-between gap-3">
+                <div>
+                    <h2 class="text-[14px] font-medium text-fg-secondary">"Performance"</h2>
+                    <p class="text-[11px] text-fg-tertiary">"Separate engine timing from preview delivery and websocket transport."</p>
+                </div>
+                <div class="text-[10px] font-mono text-fg-tertiary rounded-full border border-edge-subtle bg-surface-overlay/30 px-2.5 py-1">
+                    {move || {
+                        metrics
+                            .get()
+                            .map(|metrics| format!("budget misses {}", metrics.fps.dropped))
+                            .unwrap_or_else(|| "metrics warming up".to_string())
+                    }}
+                </div>
+            </div>
+
+            <div class="p-4 space-y-4">
+                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+                    {metric_card("Engine", engine_text, engine_hint)}
+                    {metric_card("Preview", preview_text, preview_hint)}
+                    {metric_card("Frame Time", frame_time_text, frame_time_hint)}
+                    {metric_card("WebSocket", websocket_text, websocket_hint)}
+                </div>
+
+                <div class="grid grid-cols-2 lg:grid-cols-5 gap-2">
+                    {stage_chip("Input", input_stage)}
+                    {stage_chip("Render", render_stage)}
+                    {stage_chip("Sample", sample_stage)}
+                    {stage_chip("Queue", push_stage)}
+                    {stage_chip("Publish", publish_stage)}
+                </div>
+
+                <div class="rounded-lg border border-edge-subtle bg-surface-overlay/20 px-3 py-2 text-[12px] text-fg-secondary">
+                    <span class="font-mono text-fg-primary mr-2">"Output Errors"</span>
+                    <span class="tabular-nums">{move || device_output_text.get()}</span>
+                    <span class="text-fg-tertiary ml-2">{move || device_output_hint.get()}</span>
+                </div>
+
+                {move || backpressure.get().map(|notice| {
+                    view! {
+                        <div class="rounded-lg border border-electric-yellow/20 bg-electric-yellow/[0.06] px-3 py-2 text-[12px] text-electric-yellow">
+                            <span class="font-mono uppercase tracking-[0.14em] mr-2">"Backpressure"</span>
+                            {format!(
+                                "{} dropped on {}. {} -> {} fps",
+                                notice.dropped_frames,
+                                notice.channel,
+                                notice.recommendation.replace('_', " "),
+                                notice.suggested_fps
+                            )}
+                        </div>
+                    }
+                })}
             </div>
         </div>
     }
@@ -206,5 +401,15 @@ fn format_uptime(seconds: u64) -> String {
         format!("{}m", seconds / 60)
     } else {
         format!("{}h {}m", seconds / 3600, (seconds % 3600) / 60)
+    }
+}
+
+fn format_bytes_per_sec(bytes_per_sec: f64) -> String {
+    if bytes_per_sec >= 1_000_000.0 {
+        format!("{:.2} MB/s", bytes_per_sec / 1_000_000.0)
+    } else if bytes_per_sec >= 1_000.0 {
+        format!("{:.1} KB/s", bytes_per_sec / 1_000.0)
+    } else {
+        format!("{bytes_per_sec:.0} B/s")
     }
 }

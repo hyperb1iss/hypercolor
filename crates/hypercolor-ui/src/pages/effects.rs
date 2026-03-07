@@ -72,7 +72,7 @@ pub fn EffectsPage() -> impl IntoView {
     let favorites_count = Memo::new(move |_| fx.favorite_ids.get().len());
 
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
-    let ws_fps = Signal::derive(move || ws.fps.get());
+    let preview_fps = Signal::derive(move || ws.preview_fps.get());
     let controls = Signal::derive(move || fx.active_controls.get());
     let control_values = Signal::derive(move || fx.active_control_values.get());
     let accent_rgb =
@@ -488,8 +488,9 @@ pub fn EffectsPage() -> impl IntoView {
                                     <div class="rounded-xl bg-black overflow-hidden edge-glow">
                                         <CanvasPreview
                                             frame=canvas_frame
-                                            fps=ws_fps
+                                            fps=preview_fps
                                             show_fps=true
+                                            fps_target=ws.preview_target_fps
                                         />
                                     </div>
 

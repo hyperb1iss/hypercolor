@@ -50,6 +50,7 @@ use hypercolor_types::spatial::SpatialLayout;
 use crate::attachment_profiles::AttachmentProfileStore;
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
+use crate::performance::PerformanceTracker;
 use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::runtime_state;
 
@@ -93,6 +94,9 @@ pub struct AppState {
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
+
+    /// Rolling render-performance snapshot shared with metrics endpoints.
+    pub performance: Arc<RwLock<PerformanceTracker>>,
 
     /// Device lifecycle state/action orchestration.
     pub lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
@@ -203,6 +207,7 @@ impl AppState {
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
             spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(default_layout))),
             backend_manager: Arc::new(Mutex::new(BackendManager::new())),
+            performance: Arc::new(RwLock::new(PerformanceTracker::default())),
             lifecycle_manager: Arc::new(Mutex::new(DeviceLifecycleManager::new())),
             reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
             config_manager: None,
@@ -253,6 +258,7 @@ impl AppState {
             render_loop: Arc::clone(&daemon.render_loop),
             spatial_engine: Arc::clone(&daemon.spatial_engine),
             backend_manager: Arc::clone(&daemon.backend_manager),
+            performance: Arc::clone(&daemon.performance),
             lifecycle_manager: Arc::clone(&daemon.lifecycle_manager),
             reconnect_tasks: Arc::clone(&daemon.reconnect_tasks),
             config_manager: Some(Arc::clone(&daemon.config_manager)),

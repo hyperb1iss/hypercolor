@@ -19,7 +19,7 @@ pub fn LayoutCanvas(
 ) -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
-    let ws_fps = Signal::derive(move || ws.fps.get());
+    let preview_fps = Signal::derive(move || ws.preview_fps.get());
 
     let canvas_slot_ref = NodeRef::<leptos::html::Div>::new();
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
@@ -223,7 +223,7 @@ pub fn LayoutCanvas(
                     <div class="absolute inset-0 pointer-events-none">
                         <CanvasPreview
                             frame=canvas_frame
-                            fps=ws_fps
+                            fps=preview_fps
                             show_fps=false
                             aspect_ratio=preview_aspect_ratio.get()
                         />

@@ -30,11 +30,26 @@ pub fn StatusBar() -> impl IntoView {
 
             <div class="w-px h-3 bg-border-subtle" />
 
-            // FPS counter
+            // Preview FPS counter
             <div class="flex items-center gap-1.5">
-                <span class="text-fg-tertiary/60">"FPS"</span>
+                <span class="text-fg-tertiary/60">"Preview"</span>
                 <span class="tabular-nums text-fg-secondary">
-                    {move || format!("{:.0}", ws.fps.get())}
+                    {move || format!("{:.0}/{}", ws.preview_fps.get(), ws.preview_target_fps)}
+                </span>
+            </div>
+
+            <div class="w-px h-3 bg-border-subtle" />
+
+            // Engine FPS counter
+            <div class="flex items-center gap-1.5">
+                <span class="text-fg-tertiary/60">"Engine"</span>
+                <span class="tabular-nums text-fg-secondary">
+                    {move || {
+                        ws.metrics
+                            .get()
+                            .map(|metrics| format!("{:.0}/{}", metrics.fps.actual, metrics.fps.target))
+                            .unwrap_or_else(|| "--".to_string())
+                    }}
                 </span>
             </div>
         </div>
