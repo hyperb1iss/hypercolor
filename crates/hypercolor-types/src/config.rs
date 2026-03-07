@@ -84,12 +84,6 @@ mod defaults {
     pub fn scan_interval() -> u64 {
         300
     }
-    pub fn openrgb_host() -> String {
-        "127.0.0.1".into()
-    }
-    pub fn openrgb_port() -> u16 {
-        6742
-    }
     pub fn wled_dedup_threshold() -> u8 {
         2
     }
@@ -412,7 +406,7 @@ impl Default for CaptureConfig {
 
 // ─── Discovery ───────────────────────────────────────────────────────────────
 
-/// Network device discovery: mDNS, WLED, Hue, `OpenRGB`.
+/// Network device discovery: mDNS, WLED, and Hue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryConfig {
     #[serde(default = "defaults::bool_true")]
@@ -426,12 +420,6 @@ pub struct DiscoveryConfig {
 
     #[serde(default = "defaults::bool_true")]
     pub hue_scan: bool,
-
-    #[serde(default = "defaults::openrgb_host")]
-    pub openrgb_host: String,
-
-    #[serde(default = "defaults::openrgb_port")]
-    pub openrgb_port: u16,
 }
 
 impl Default for DiscoveryConfig {
@@ -441,8 +429,6 @@ impl Default for DiscoveryConfig {
             scan_interval_secs: defaults::scan_interval(),
             wled_scan: defaults::bool_true(),
             hue_scan: defaults::bool_true(),
-            openrgb_host: defaults::openrgb_host(),
-            openrgb_port: defaults::openrgb_port(),
         }
     }
 }

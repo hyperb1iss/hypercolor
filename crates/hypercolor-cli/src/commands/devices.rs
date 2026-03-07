@@ -43,7 +43,7 @@ pub struct DeviceListArgs {
 /// Arguments for `devices discover`.
 #[derive(Debug, Args)]
 pub struct DeviceDiscoverArgs {
-    /// Scan specific backends only (repeatable: wled, openrgb, hid, hue).
+    /// Scan specific backends only (repeatable: wled, hid, hue).
     #[arg(long)]
     pub backend: Vec<String>,
 

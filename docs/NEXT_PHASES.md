@@ -12,7 +12,7 @@
 |-------|--------|-------|
 | **Types** | Done | 7 modules, full serde, Oklab/Oklch color math |
 | **Core engine** | Done | Render loop, FPS tiers, effect engine, spatial sampler |
-| **Device backends** | Done | WLED (DDP/E1.31), OpenRGB (binary SDK), mock backend |
+| **Device backends** | Done | WLED (DDP/E1.31), mock backend |
 | **Audio pipeline** | Done | FFT, beat detection, mel bands, chromagram |
 | **Screen capture** | Done | Sector analysis, temporal smoothing, letterbox detection |
 | **Scene engine** | Done | Priority stack, Oklab transitions, automation rules |
@@ -80,7 +80,6 @@ tokio::spawn(async move {
 Wire backends into `DaemonState::initialize()`:
 
 - Register `MockDeviceBackend` (always available, for testing)
-- Register `OpenRgbBackend` (if OpenRGB server is reachable)
 - Register `WledBackend` (if WLED devices configured)
 - Run initial `DiscoveryOrchestrator::full_scan()` on startup
 - Schedule periodic re-scans
@@ -249,7 +248,7 @@ Ratatui with `crossterm` backend. Vim-style keybindings. SilkCircuit Neon color 
 │ ┌─ Devices ──────────────┐ ┌─ Active Effect ──────────────┐ │
 │ │ ● WLED Strip (60 LEDs) │ │ Rainbow                      │ │
 │ │ ● WLED Matrix (256)    │ │ FPS: 60 (Full tier)          │ │
-│ │ ○ OpenRGB Keyboard     │ │ Frame: 12,847                │ │
+│ │ ○ Desk LED Strip       │ │ Frame: 12,847                │ │
 │ │                        │ │ Canvas: 320×200              │ │
 │ └────────────────────────┘ └──────────────────────────────┘ │
 │ ┌─ Audio ────────────────┐ ┌─ Effect Controls ────────────┐ │
@@ -379,7 +378,7 @@ Phase 8 (Web UI)
 | Servo on Windows needs MSVC | Can't use Cygwin for Servo builds | Use native MSVC toolchain. Cygwin for everything else. |
 | Canvas 2D rendering bugs vs Chrome | Visual differences | Test against effect corpus. Fix upstream or apply tweaks. |
 | TUI color fidelity | Low-res preview | Use braille dots + 24-bit color; accept limitations |
-| OpenRGB server not running | No real devices | Mock backend always available for testing |
+| No real devices configured | No real devices | Mock backend always available for testing |
 
 ---
 
@@ -397,7 +396,7 @@ hyper effects list        # Shows: 6 built-in effects
 hyper effects activate rainbow
 hyper status              # Shows: running, 60fps, effect: Rainbow
 
-# With OpenRGB running:
+# With WLED running:
 hyper devices list        # Shows discovered devices
 hyper devices discover    # Triggers rescan
 ```

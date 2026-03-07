@@ -237,7 +237,6 @@ fn connection_type_serde_round_trip() {
 
 #[test]
 fn device_family_display() {
-    assert_eq!(DeviceFamily::OpenRgb.to_string(), "OpenRGB");
     assert_eq!(DeviceFamily::Wled.to_string(), "WLED");
     assert_eq!(DeviceFamily::Hue.to_string(), "Philips Hue");
     assert_eq!(DeviceFamily::Razer.to_string(), "Razer");
@@ -268,7 +267,6 @@ fn device_family_equality() {
 #[test]
 fn device_family_serde_round_trip() {
     let families = vec![
-        DeviceFamily::OpenRgb,
         DeviceFamily::Wled,
         DeviceFamily::Hue,
         DeviceFamily::Razer,
@@ -346,12 +344,12 @@ fn device_error_display_messages() {
     );
 
     let err = DeviceError::ProtocolError {
-        device: "OpenRGB".into(),
+        device: "WLED".into(),
         detail: "unexpected packet type 0xFF".into(),
     };
     assert_eq!(
         err.to_string(),
-        "protocol error for OpenRGB: unexpected packet type 0xFF"
+        "protocol error for WLED: unexpected packet type 0xFF"
     );
 
     let err = DeviceError::Disconnected {
@@ -497,15 +495,6 @@ fn device_identifier_hue_display() {
 }
 
 #[test]
-fn device_identifier_openrgb_display() {
-    let id = DeviceIdentifier::OpenRgb {
-        controller_name: "ASUS Aura LED Controller".into(),
-        location: "HID: /dev/hidraw3".into(),
-    };
-    assert_eq!(id.display_short(), "ASUS Aura LED Controller");
-}
-
-#[test]
 fn device_identifier_bridge_display() {
     let id = DeviceIdentifier::Bridge {
         service: "openlinkhub".into(),
@@ -570,18 +559,6 @@ fn device_identifier_fingerprint_hue() {
 }
 
 #[test]
-fn device_identifier_fingerprint_openrgb() {
-    let id = DeviceIdentifier::OpenRgb {
-        controller_name: "Corsair Vengeance".into(),
-        location: "I2C: /dev/i2c-1".into(),
-    };
-    assert_eq!(
-        id.fingerprint(),
-        DeviceFingerprint("orgb:Corsair Vengeance:I2C: /dev/i2c-1".into())
-    );
-}
-
-#[test]
 fn device_identifier_fingerprint_bridge() {
     let id = DeviceIdentifier::Bridge {
         service: "openlinkhub".into(),
@@ -610,10 +587,6 @@ fn device_identifier_serde_round_trip() {
         DeviceIdentifier::HueBridge {
             bridge_id: "BRIDGE1".into(),
             light_id: "1".into(),
-        },
-        DeviceIdentifier::OpenRgb {
-            controller_name: "MSI Mystic".into(),
-            location: "HID: /dev/hidraw0".into(),
         },
         DeviceIdentifier::Bridge {
             service: "openlinkhub".into(),
@@ -657,15 +630,16 @@ fn device_handle_ids_are_unique_and_monotonic() {
 
 #[test]
 fn device_handle_accessors_and_display() {
-    let identifier = DeviceIdentifier::OpenRgb {
-        controller_name: "Keyboard".into(),
-        location: "USB".into(),
+    let identifier = DeviceIdentifier::Network {
+        mac_address: "AA:BB:CC:DD:EE:05".into(),
+        last_ip: None,
+        mdns_hostname: Some("desk-strip".into()),
     };
-    let handle = DeviceHandle::new(identifier.clone(), "openrgb");
+    let handle = DeviceHandle::new(identifier.clone(), "wled");
 
     assert_eq!(handle.device_id(), &identifier);
-    assert_eq!(handle.backend_id(), "openrgb");
-    assert!(handle.to_string().starts_with("openrgb#"));
+    assert_eq!(handle.backend_id(), "wled");
+    assert!(handle.to_string().starts_with("wled#"));
 }
 
 #[test]

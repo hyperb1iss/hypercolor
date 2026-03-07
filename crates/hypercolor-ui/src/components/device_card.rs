@@ -11,7 +11,6 @@ pub fn backend_accent_rgb(backend: &str) -> &'static str {
     match backend.to_lowercase().as_str() {
         "razer" => "225, 53, 255",
         "wled" => "128, 255, 234",
-        "openrgb" => "80, 250, 123",
         "corsair" | "corsair-bridge" => "255, 153, 255",
         "hue" => "255, 183, 77",
         _ => "139, 133, 160",
@@ -45,10 +44,18 @@ fn backend_icon(backend: &str) -> icondata_core::Icon {
     match backend.to_lowercase().as_str() {
         "razer" => LuDiamond,
         "wled" => LuWifi,
-        "openrgb" => LuLightbulb,
         "corsair" | "corsair-bridge" => LuFlag,
         "hue" => LuSun,
         _ => LuCpu,
+    }
+}
+
+fn endpoint_label(device: &DeviceSummary) -> Option<String> {
+    match (&device.network_hostname, &device.network_ip) {
+        (Some(hostname), Some(ip)) => Some(format!("{hostname} ({ip})")),
+        (Some(hostname), None) => Some(hostname.clone()),
+        (None, Some(ip)) => Some(ip.clone()),
+        (None, None) => None,
     }
 }
 
@@ -69,6 +76,7 @@ pub fn DeviceCard(
     let device_name = device.name.clone();
     let status = status_label(&device.status);
     let icon = backend_icon(&device.backend);
+    let endpoint = endpoint_label(&device);
 
     // Backend-colored top accent gradient
     let accent_gradient =
@@ -142,6 +150,15 @@ pub fn DeviceCard(
                         </div>
                     })}
                 </div>
+
+                {endpoint.map(|endpoint| {
+                    view! {
+                        <div class="flex items-center gap-1.5 text-[10px] font-mono text-fg-tertiary min-w-0">
+                            <Icon icon=LuGlobe width="12px" height="12px" style="opacity: 0.4" />
+                            <span class="truncate">{endpoint}</span>
+                        </div>
+                    }
+                })}
 
                 // Footer: status with animated dot
                 <div class="flex items-center gap-2 pt-2 border-t border-edge-subtle">

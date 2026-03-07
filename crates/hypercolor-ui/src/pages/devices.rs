@@ -14,7 +14,7 @@ use crate::toasts;
 const STATUSES: &[&str] = &["all", "active", "connected", "known", "disabled"];
 
 /// Backend filter options.
-const BACKENDS: &[&str] = &["all", "razer", "wled", "openrgb", "corsair", "hue"];
+const BACKENDS: &[&str] = &["all", "razer", "wled", "corsair", "hue"];
 
 /// Status → accent RGB for filter chips.
 fn status_accent_rgb(status: &str) -> &'static str {
@@ -32,7 +32,6 @@ fn backend_chip_rgb(backend: &str) -> &'static str {
     match backend {
         "razer" => "225, 53, 255",
         "wled" => "128, 255, 234",
-        "openrgb" => "80, 250, 123",
         "corsair" => "255, 153, 255",
         "hue" => "255, 183, 77",
         _ => "225, 53, 255",

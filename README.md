@@ -59,17 +59,17 @@ Write an effect in TypeScript. Watch it run on your keyboard.
 │  (TS/GLSL)   │     │  320 × 200   │     │   Sampler     │
 └──────────────┘     └──────────────┘     └──────┬───────┘
                                                   │
-                     ┌───────────┬────────────────┼────────────┐
-                     ▼           ▼                ▼            ▼
-               ┌──────────┐ ┌──────────┐  ┌──────────┐ ┌──────────┐
-               │  Razer   │ │   WLED   │  │ OpenRGB  │ │ PrismRGB │
-               │  USB/HID │ │  UDP/DDP │  │  gRPC    │ │  USB/HID │
-               └──────────┘ └──────────┘  └──────────┘ └──────────┘
+                     ┌───────────┬────────────────┐
+                     ▼           ▼                ▼
+               ┌──────────┐ ┌──────────┐  ┌──────────┐
+               │  Razer   │ │   WLED   │  │ PrismRGB │
+               │  USB/HID │ │  UDP/DDP │  │  USB/HID │
+               └──────────┘ └──────────┘  └──────────┘
 ```
 
 1. **Effects render to a virtual canvas** — a 320×200 pixel buffer, using HTML Canvas, WebGL, or native GLSL shaders
 2. **The spatial engine samples that canvas** at each LED's physical position using bilinear interpolation
-3. **Color data flows to hardware** over USB, UDP, or gRPC — every device gets the right pixels from the right part of the canvas
+3. **Color data flows to hardware** over USB and UDP — every device gets the right pixels from the right part of the canvas
 4. **Audio, screen capture, and keyboard input** feed back into effects in real time
 
 The result: one effect paints the whole room. Your keyboard, your LED strip, your case fans — all
@@ -156,7 +156,6 @@ Every effect is open source, well-documented, and serves as a reference for writ
 |---------|----------|---------|
 | **Razer** | USB HID (reverse-engineered) | Huntsman V2, Basilisk V3, Blade 14/15, Seiren Emote |
 | **WLED** | UDP DDP + mDNS discovery | Any WLED-compatible LED strip or controller |
-| **OpenRGB** | gRPC bridge (GPL-isolated) | 900+ devices via OpenRGB's driver library |
 | **PrismRGB** | USB HID | PrismRGB 8/S/Mini controllers |
 
 ### 🖥️ Dual Render Path
@@ -314,7 +313,6 @@ sdk/                   # TypeScript SDK (Bun monorepo)
 - **Servo** for full web platform compatibility in a headless embedded browser
 - **wgpu** for GPU abstraction across Vulkan, OpenGL, and Metal
 - **Tokio** async runtime with lock-free channels for the hot path
-- **OpenRGB isolated via gRPC** subprocess bridge — GPL-2.0 license quarantine
 - **Oklab** color space for perceptually uniform transitions and blending
 - **Edition 2024**, `#![forbid(unsafe_code)]`, clippy pedantic
 
@@ -344,7 +342,7 @@ captured from a live instance with real hardware.
 **What works today:**
 - Daemon with 60fps render loop
 - 23+ SDK effects (shader + canvas)
-- Razer USB/HID, WLED UDP, OpenRGB bridge backends
+- Razer USB/HID, WLED UDP, PrismRGB USB/HID backends
 - Leptos web UI with live effect preview
 - REST API + WebSocket
 - CLI with all subcommands

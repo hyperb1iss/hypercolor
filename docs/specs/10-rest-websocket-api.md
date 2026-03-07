@@ -352,7 +352,7 @@ GET /api/v1/devices
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `status` | `string` | all | Filter: `"connected"`, `"disconnected"`, `"error"` |
-| `backend` | `string` | all | Filter by backend: `"wled"`, `"openrgb"`, `"hid"`, `"hue"`, `"razer"` |
+| `backend` | `string` | all | Filter by backend: `"wled"`, `"hid"`, `"hue"`, `"razer"` |
 | `q` | `string` | -- | Search by name |
 | `offset` | `integer` | `0` | Pagination offset |
 | `limit` | `integer` | `50` | Pagination limit |
@@ -411,7 +411,7 @@ GET /api/v1/devices
 |-------|------|----------|-------------|
 | `id` | `string` | no | Stable device identifier |
 | `name` | `string` | no | Display name (user-editable) |
-| `backend` | `string` | no | Driver backend: `"wled"`, `"openrgb"`, `"hid"`, `"hue"`, `"razer"` |
+| `backend` | `string` | no | Driver backend: `"wled"`, `"hid"`, `"hue"`, `"razer"` |
 | `status` | `string` | no | `"connected"`, `"disconnected"`, `"error"`, `"initializing"` |
 | `firmware_version` | `string` | yes | Firmware/driver version if known |
 | `total_leds` | `integer` | no | Sum of LEDs across all zones |
@@ -569,7 +569,7 @@ Triggers an asynchronous scan across all configured backends. Discovery results 
 
 ```json
 {
-  "backends": ["wled", "openrgb"],
+  "backends": ["wled"],
   "timeout_ms": 10000
 }
 ```
@@ -586,7 +586,7 @@ Triggers an asynchronous scan across all configured backends. Discovery results 
   "data": {
     "scan_id": "scan_f8e7d6c5",
     "status": "scanning",
-    "backends": ["wled", "openrgb"],
+    "backends": ["wled"],
     "timeout_ms": 10000
   },
   "meta": { ... }

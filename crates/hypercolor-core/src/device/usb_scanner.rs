@@ -151,7 +151,6 @@ fn protocol_zone_to_zone_info(zone: ProtocolZone) -> hypercolor_types::device::Z
 
 fn vendor_name_for_family(family: &DeviceFamily) -> &'static str {
     match family {
-        DeviceFamily::OpenRgb => "OpenRGB",
         DeviceFamily::Wled => "WLED",
         DeviceFamily::Hue => "Philips Hue",
         DeviceFamily::Razer => "Razer",

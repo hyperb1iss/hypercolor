@@ -74,8 +74,6 @@ fn discovery_defaults_match_spec() {
     assert_eq!(d.scan_interval_secs, 300);
     assert!(d.wled_scan);
     assert!(d.hue_scan);
-    assert_eq!(d.openrgb_host, "127.0.0.1");
-    assert_eq!(d.openrgb_port, 6742);
 }
 
 #[test]

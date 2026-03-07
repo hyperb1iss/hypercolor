@@ -117,8 +117,8 @@ Each agent owns one module file. No two agents touch the same file.
 // DeviceId, DeviceInfo, DeviceHandle, DeviceState enum
 // DeviceCapabilities, ZoneInfo, LedTopology enum
 // ConnectionType enum (Usb, Network, Bluetooth, Bridge)
-// DeviceFamily enum (OpenRgb, Wled, Hue, PrismRgb, Nollie, Custom)
-// DeviceIdentifier enum (UsbHid, Network, HueBridge, OpenRgb)
+// DeviceFamily enum (Wled, Hue, PrismRgb, Nollie, Custom)
+// DeviceIdentifier enum (UsbHid, Network, HueBridge)
 // DeviceError enum (thiserror)
 ```
 
@@ -207,7 +207,7 @@ Each agent owns one module file. No two agents touch the same file.
 // CaptureConfig { enabled, source, fps, monitor }
 // TuiConfig { theme, preview_fps }
 // DiscoveryConfig { scan_interval, backends: Vec<String> }
-// FeatureFlags { openrgb, wled, hue, hid, audio, screen_capture, servo }
+// FeatureFlags { wled, hue, hid, audio, screen_capture, servo }
 // ProfileConfig, SceneConfig, LayoutConfig (for file formats)
 ```
 
@@ -411,22 +411,6 @@ Each backend implements `DeviceBackend`. Each agent owns one backend module. Aud
 ```
 
 **Tests:** Packet construction for all 4 controllers (verify against DRIVERS.md hex examples), channel LED count validation, checksum computation, init/render/shutdown sequences. Uses mock USB transport — no actual hardware needed.
-
-### Task 3.3: OpenRGB Bridge
-
-**Module:** `crates/hypercolor-core/src/device/openrgb/mod.rs`, `bridge.rs`, `proto.rs`
-**Spec:** `docs/specs/05-openrgb-bridge.md` (entire spec)
-**Depends on:** Task 2.1
-
-```rust
-// OpenRgbBridge implements DeviceBackend
-// gRPC client (tonic) connecting to bridge process
-// Bridge process supervisor: spawn, health check, restart
-// Protobuf message types: ControllerInfo, ZoneInfo, LedColor, UpdateRequest
-// Zone type mapping: OpenRGB zone types → Hypercolor topology
-```
-
-**Tests:** Protobuf message serialization, zone mapping logic, health check state machine, fallback when bridge unavailable. Uses mock gRPC server — no actual OpenRGB needed.
 
 ### Task 3.4: Audio Pipeline
 
@@ -722,7 +706,6 @@ Wave 2 ───┬── Task 2.1 (device traits)     ← 1.2
                │
 Wave 3 ───┬── Task 3.1 (WLED backend)      ← 2.1
            ├── Task 3.2 (USB HID backend)   ← 2.1
-           ├── Task 3.3 (OpenRGB bridge)    ← 2.1
            ├── Task 3.4 (audio pipeline)    ← 2.7
            ├── Task 3.5 (screen capture)    ← 2.7
            └── Task 3.6 (scene engine)      ← 2.2, 2.3, 2.5

@@ -1695,7 +1695,6 @@ async fn resolve_device_id_or_response(
 
 fn backend_id_for_family(family: &DeviceFamily) -> String {
     match family {
-        DeviceFamily::OpenRgb => "openrgb".to_owned(),
         DeviceFamily::Wled => "wled".to_owned(),
         DeviceFamily::Hue => "hue".to_owned(),
         DeviceFamily::Razer
@@ -1709,7 +1708,6 @@ fn backend_id_for_family(family: &DeviceFamily) -> String {
 
 fn attachment_family_id(family: &DeviceFamily) -> String {
     match family {
-        DeviceFamily::OpenRgb => "openrgb".to_owned(),
         DeviceFamily::Wled => "wled".to_owned(),
         DeviceFamily::Hue => "hue".to_owned(),
         DeviceFamily::Razer => "razer".to_owned(),

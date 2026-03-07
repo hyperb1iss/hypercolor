@@ -387,12 +387,6 @@ impl DeviceLifecycleManager {
             }
         }
 
-        if backend_id == "openrgb"
-            && let Some(value) = value.strip_prefix("orgb:")
-        {
-            return format!("openrgb:{value}");
-        }
-
         Self::layout_device_id(backend_id, device_info)
     }
 
@@ -403,17 +397,6 @@ impl DeviceLifecycleManager {
     ) -> DeviceIdentifier {
         if let Some(fingerprint) = fingerprint {
             let value = fingerprint.0.clone();
-            if backend_id == "openrgb"
-                && let Some(rest) = value.strip_prefix("orgb:")
-            {
-                let mut parts = rest.splitn(2, ':');
-                if let (Some(controller_name), Some(location)) = (parts.next(), parts.next()) {
-                    return DeviceIdentifier::OpenRgb {
-                        controller_name: controller_name.to_owned(),
-                        location: location.to_owned(),
-                    };
-                }
-            }
             if backend_id == "wled"
                 && let Some(rest) = value.strip_prefix("net:")
             {
@@ -429,17 +412,10 @@ impl DeviceLifecycleManager {
             }
         }
 
-        if backend_id == "openrgb" {
-            DeviceIdentifier::OpenRgb {
-                controller_name: device_info.name.clone(),
-                location: "unknown".to_owned(),
-            }
-        } else {
-            DeviceIdentifier::Network {
-                mac_address: format!("{backend_id}:{}", device_info.id),
-                last_ip: None,
-                mdns_hostname: Some(device_info.name.clone()),
-            }
+        DeviceIdentifier::Network {
+            mac_address: format!("{backend_id}:{}", device_info.id),
+            last_ip: None,
+            mdns_hostname: Some(device_info.name.clone()),
         }
     }
 }
@@ -588,14 +564,12 @@ mod tests {
             max_attempts: Some(2),
             jitter: 0.0,
         });
-        let info = device_info("GPU Controller", DeviceFamily::OpenRgb);
+        let info = device_info("Kitchen Strip", DeviceFamily::Wled);
         lifecycle.on_discovered(
             info.id,
             &info,
-            "openrgb",
-            Some(&DeviceFingerprint(
-                "orgb:ASUS Aura Controller:HID/USB".to_owned(),
-            )),
+            "wled",
+            Some(&DeviceFingerprint("net:wled:office-strip".to_owned())),
         );
         lifecycle
             .on_connected(info.id)

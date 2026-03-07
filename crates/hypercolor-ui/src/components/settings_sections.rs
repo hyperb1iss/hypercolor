@@ -383,9 +383,6 @@ pub fn DiscoverySection(
     let scan_interval = Signal::derive(move || config.get().discovery.scan_interval_secs as f64);
     let wled = Signal::derive(move || config.get().discovery.wled_scan);
     let hue = Signal::derive(move || config.get().discovery.hue_scan);
-    let openrgb_host = Signal::derive(move || config.get().discovery.openrgb_host.clone());
-    let openrgb_port = Signal::derive(move || f64::from(config.get().discovery.openrgb_port));
-
     view! {
         <section id="section-discovery" class="rounded-xl bg-surface-raised border border-edge-subtle p-5 space-y-0">
             <SectionHeader title="Device Discovery" icon=LuRadar />
@@ -418,22 +415,6 @@ pub fn DiscoverySection(
                 key="discovery.hue_scan"
                 value=hue
                 on_change=on_change
-            />
-            <SettingTextInput
-                label="OpenRGB Host"
-                description="OpenRGB SDK server address"
-                key="discovery.openrgb_host"
-                value=openrgb_host
-                on_change=on_change
-                placeholder="127.0.0.1"
-            />
-            <SettingNumberInput
-                label="OpenRGB Port"
-                description="OpenRGB SDK server port"
-                key="discovery.openrgb_port"
-                value=openrgb_port
-                on_change=on_change
-                min=1.0 max=65535.0 step=1.0
             />
             <SectionReset section_label="Discovery" on_reset=Callback::new(move |()| on_reset.run("discovery".to_string())) />
         </section>

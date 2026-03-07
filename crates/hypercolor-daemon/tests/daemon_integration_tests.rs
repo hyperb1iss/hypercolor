@@ -235,8 +235,6 @@ async fn config_loading_all_sub_configs_have_defaults() {
     assert!(config.discovery.mdns_enabled);
     assert!(config.discovery.wled_scan);
     assert!(config.discovery.hue_scan);
-    assert_eq!(config.discovery.openrgb_host, "127.0.0.1");
-    assert_eq!(config.discovery.openrgb_port, 6742);
 
     // Feature flags default to false
     assert!(!config.features.wasm_plugins);

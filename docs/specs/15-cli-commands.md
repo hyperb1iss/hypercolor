@@ -1054,7 +1054,7 @@ pub enum DeviceCommand {
 
 #[derive(Args)]
 pub struct DeviceDiscoverArgs {
-    /// Scan specific backends only (repeatable: wled, openrgb, hid, hue)
+    /// Scan specific backends only (repeatable: wled, hid, hue)
     #[arg(long)]
     pub backend: Vec<String>,
 
@@ -1152,7 +1152,7 @@ hypercolor device rename "WLED Living Room" "Living Room Strip"
   Discovering devices...
   ⠸ Scanning USB HID...         found 3
   ⠴ Scanning mDNS (WLED)...     found 2
-  ⠦ Scanning OpenRGB (6742)...  timeout
+  ⠦ Scanning WLED...  timeout
 
   5 devices found (3 USB, 2 network)
 
@@ -2920,7 +2920,7 @@ Long operations use animated spinners from the `indicatif` crate:
   Discovering devices...
   ⠸ Scanning USB HID...         found 3
   ⠴ Scanning mDNS (WLED)...     found 2
-  ⠦ Scanning OpenRGB (6742)...  timeout
+  ⠦ Scanning WLED...  timeout
 ```
 
 Spinners are suppressed in `--quiet` mode and when stdout is not a TTY.

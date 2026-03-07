@@ -378,7 +378,7 @@ async fn list_devices_includes_structured_zone_topology_hints() {
         id,
         name: "Matrix Panel".to_owned(),
         vendor: "test-vendor".to_owned(),
-        family: DeviceFamily::OpenRgb,
+        family: DeviceFamily::Wled,
         model: None,
         connection_type: ConnectionType::Network,
         zones: vec![ZoneInfo {
@@ -576,7 +576,7 @@ async fn discover_devices_wait_mode_returns_report() {
                 .uri("/api/v1/devices/discover")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"backends": ["openrgb"], "timeout_ms": 100, "wait": true}"#,
+                    r#"{"backends": ["wled"], "timeout_ms": 100, "wait": true}"#,
                 ))
                 .expect("failed to build request"),
         )

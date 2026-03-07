@@ -33,7 +33,7 @@ The Hardware Abstraction Layer introduces a clean separation between **protocol 
 
 ### Why a Separate Crate
 
-The existing engine layer (`hypercolor-core`) defines `DeviceBackend` and `TransportScanner` — high-level traits for device communication and discovery. These are transport-agnostic and work for network backends (WLED, OpenRGB) as well as USB.
+The existing engine layer (`hypercolor-core`) defines `DeviceBackend` and `TransportScanner` — high-level traits for device communication and discovery. These are transport-agnostic and work for network backends (WLED, Hue) as well as USB.
 
 For USB devices, we need a lower layer:
 
@@ -52,7 +52,7 @@ These live in `hypercolor-hal` because:
 - **Device lifecycle management** — Owned by `DeviceLifecycleManager` in core.
 - **Frame routing** — Owned by `BackendManager` in core.
 - **Discovery orchestration** — Owned by `DiscoveryOrchestrator` in core.
-- **Network protocols** — WLED/DDP, OpenRGB gRPC, Hue stay in core. The HAL is USB-specific.
+- **Network protocols** — WLED/DDP and Hue stay in core. The HAL is USB-specific.
 
 ---
 
@@ -714,7 +714,6 @@ The daemon's `backend_id_for_family()` function (in `hypercolor-daemon/src/disco
 ```rust
 fn backend_id_for_family(family: &DeviceFamily) -> String {
     match family {
-        DeviceFamily::OpenRgb  => "openrgb".to_owned(),
         DeviceFamily::Wled     => "wled".to_owned(),
         DeviceFamily::Hue      => "hue".to_owned(),
         // HAL-managed USB families → single UsbBackend
@@ -737,7 +736,6 @@ The `DiscoveryBackend` enum in the daemon must also be extended:
 ```rust
 pub enum DiscoveryBackend {
     Wled,
-    OpenRgb,
     Usb,           // new — UsbScanner
     CorsairBridge, // new — HTTP health check + device list
 }
@@ -889,7 +887,6 @@ New variants added to `DeviceFamily` in `hypercolor-types`:
 
 ```rust
 pub enum DeviceFamily {
-    OpenRgb,
     Wled,
     Hue,
     Razer,      // USB VID 0x1532
@@ -909,7 +906,6 @@ pub enum DeviceIdentifier {
     UsbHid { vendor_id: u16, product_id: u16, serial: Option<String>, usb_path: Option<String> },
     Network { mac_address: String, last_ip: Option<IpAddr>, mdns_hostname: Option<String> },
     HueBridge { bridge_id: String, light_id: String },
-    OpenRgb { controller_name: String, location: String },
     /// Device managed by an external bridge service.
     Bridge {
         /// Bridge service identifier (e.g., "openlinkhub").
@@ -1045,12 +1041,10 @@ daemon main()
 │
 ├── 2. Build DiscoveryOrchestrator
 │   ├── WledScanner (existing)
-│   ├── OpenRgbScanner (existing)
 │   └── UsbScanner (new — from hypercolor-core, uses HAL database)
 │
 ├── 3. Build BackendManager
 │   ├── WledBackend (existing)
-│   ├── OpenRgbBackend (existing)
 │   ├── UsbBackend (new — from hypercolor-core, wraps HAL Protocol+Transport)
 │   └── CorsairBridgeBackend (new — direct DeviceBackend, no HAL)
 │
@@ -1058,7 +1052,6 @@ daemon main()
 │
 ├── 5. DiscoveryOrchestrator::full_scan()
 │   ├── WledScanner: mDNS + UDP broadcast → WLED devices
-│   ├── OpenRgbScanner: gRPC probe → OpenRGB controllers
 │   └── UsbScanner: nusb::list_devices() filtered by ProtocolDatabase
 │       → Razer, Lian Li, PrismRGB devices
 │
@@ -1273,7 +1266,7 @@ impl MockTransport {
 
 **Packet capture replay:**
 
-For each supported device family, maintain a set of captured USB packets (from OpenRGB, uchroma, or real hardware) and verify that:
+For each supported device family, maintain a set of captured USB packets (from vendor software, uchroma, or real hardware) and verify that:
 - `encode_frame()` produces byte-identical output for the same input colors
 - `parse_response()` correctly decodes captured response packets
 - Init/shutdown sequences match reference implementations

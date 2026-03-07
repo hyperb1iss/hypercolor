@@ -6,7 +6,7 @@
 
 ## Vision
 
-Hypercolor is what SignalRGB would be if it were open source, cross-platform, and built by people who actually use Linux. A daemon-first lighting engine that runs HTML/Canvas effects at 60fps, samples pixels at LED positions, and pushes colors to every RGB device in your setup — OpenRGB controllers, WLED strips, Philips Hue bulbs, and raw USB HID devices like PrismRGB.
+Hypercolor is what SignalRGB would be if it were open source, cross-platform, and built by people who actually use Linux. A daemon-first lighting engine that runs HTML/Canvas effects at 60fps, samples pixels at LED positions, and pushes colors to every RGB device in your setup — WLED strips, Philips Hue bulbs, and raw USB HID devices like PrismRGB.
 
 **Core premise:** Effects are web pages. A 320×200 canvas renders visual effects (shaders, animations, particle systems). A spatial mapping engine samples that canvas at each LED's position. Color data flows to hardware over multiple transport protocols. The entire system is controllable via a gorgeous web UI, a snappy TUI, a scriptable CLI, or pure headless daemon mode.
 
@@ -45,9 +45,9 @@ Hypercolor is what SignalRGB would be if it were open source, cross-platform, an
 │  ┌──────────────────────▼────────────────────────────────────────┐  │
 │  │                  Device Backends                               │  │
 │  │  ┌────────┐ ┌──────┐ ┌─────┐ ┌─────┐ ┌───────────────────┐  │  │
-│  │  │OpenRGB │ │ WLED │ │ Hue │ │ HID │ │ Future: Wasm/gRPC │  │  │
-│  │  │ (TCP)  │ │(DDP) │ │(HTTP│ │(USB)│ │  community plugins│  │  │
-│  │  └────────┘ └──────┘ └─────┘ └─────┘ └───────────────────┘  │  │
+│  │  │ WLED │ │ Hue │ │ HID │ │ Future: Wasm/gRPC           │  │  │
+│  │  │(DDP) │ │(HTTP│ │(USB)│ │  community plugins          │  │  │
+│  │  └──────┘ └─────┘ └─────┘ └──────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────────────┘  │
 │                                                                     │
 │  ┌───────────────────────────────────────────────────────────────┐  │
@@ -96,7 +96,6 @@ hypercolor/
 │   │       ├── device/                 # Device backend abstraction
 │   │       │   ├── mod.rs
 │   │       │   ├── traits.rs           # DeviceBackend, DevicePlugin traits
-│   │       │   ├── openrgb.rs          # OpenRGB SDK client
 │   │       │   ├── wled.rs             # WLED DDP/E1.31
 │   │       │   ├── hid.rs              # Direct USB HID (PrismRGB)
 │   │       │   ├── hue.rs              # Philips Hue bridge
@@ -460,15 +459,14 @@ pub trait InputSource: Send + Sync {
 }
 ```
 
-Feature-gated backends:
+Current Cargo features:
 ```toml
 [features]
-default = ["wled", "hid"]
-openrgb = ["dep:openrgb2"]         # GPL-2.0 — see Phase 3
-wled = ["dep:ddp-rs"]
-hue = ["dep:hues", "dep:reqwest"]
-hid = ["dep:hidapi"]
+default = []
+servo = ["dep:servo", "dep:dpi", "dep:rustls", "dep:mozjs-jit"]
 ```
+
+Device backends are built into `hypercolor-core` today.
 
 #### Phase 2: Wasm Extensions (Community Plugins)
 
@@ -490,31 +488,13 @@ interface device-backend {
 
 Plugins compile to `wasm32-wasip1`. Sandboxed execution, can't crash the host. The WIT interface ensures type safety across the Wasm boundary.
 
-#### Phase 3: gRPC Process Bridge (GPL Isolation)
+#### Phase 3: Optional Process Plugins
 
-`openrgb2` crate is GPL-2.0. To avoid GPL contamination of the MIT/Apache binary:
-
-```
-hypercolor (MIT/Apache-2.0)
-    │
-    │ gRPC / Unix socket
-    │
-    ▼
-hypercolor-openrgb-bridge (GPL-2.0)
-    │
-    ▼
-openrgb2 crate → OpenRGB daemon (TCP 6742)
-```
-
-The bridge runs as a separate process. Same `DeviceBackend` trait, but dispatches over a socket instead of in-process calls. Also useful for any future backend written in Python, Go, etc.
+Hypercolor does not carry a dedicated bridge-only architecture today. If we
+introduce out-of-process plugins later, they should be generic plugin
+boundaries.
 
 ### Backend Implementations
-
-**OpenRGB** (`openrgb2` crate, async tokio):
-- TCP client on port 6742
-- Protocol v4/v5 — enumerate controllers, set LEDs per zone
-- Handles: motherboard, GPU, RAM, Corsair, Razer, etc.
-- GPL-2.0 license — isolated via gRPC bridge
 
 **WLED** (`ddp-rs` crate):
 - UDP DDP packets — 480 pixels/packet, no universe management
@@ -737,7 +717,6 @@ Enables desktop integration: systemd service management, GNOME extension hooks, 
 | `ddp-rs` | WLED DDP protocol | MIT | `wled` |
 | `sacn` | E1.31/sACN protocol | MIT/Apache | `wled-sacn` |
 | `hidapi` | USB HID (PrismRGB) | MIT | `hid` |
-| `openrgb2` | OpenRGB SDK client | **GPL-2.0** | `openrgb` |
 | `reqwest` | HTTP (Hue, REST APIs) | MIT/Apache | `hue` |
 
 ### Input Sources
@@ -784,7 +763,6 @@ Servo is a git dependency (not on crates.io). Requires pinned revision + matchin
 
 ### Phase 1: Hardware Expansion
 - USB HID backend: PrismRGB Prism 8, Prism S, Prism Mini, Nollie 8
-- OpenRGB backend (via gRPC bridge for GPL isolation)
 - Multi-device support with zone-per-device mapping
 - Audio input source (cpal + FFT)
 - Configuration file (TOML profiles)
@@ -822,7 +800,6 @@ Servo is a git dependency (not on crates.io). Requires pinned revision + matchin
 | **Web UI framework** | SvelteKit (not Leptos/Dioxus) | Rich Canvas/WebGL ecosystem needed for spatial editor; effects are literally HTML — they render natively in a browser UI |
 | **Web server** | Axum | tokio-native, first-class WebSocket, serves embedded SPA |
 | **Plugin system** | Compile-time traits → Wasm later | Ship fast with zero overhead; add runtime extensibility when community demands it |
-| **OpenRGB integration** | gRPC bridge process | GPL-2.0 isolation — keeps the main binary MIT/Apache |
 | **TUI** | Ratatui | Established in the ecosystem (git-iris, unifi-cli), true-color LED preview |
 | **Audio** | cpal + spectrum-analyzer | Cross-platform capture, efficient FFT |
 | **IPC** | tokio broadcast/watch channels | Multi-consumer events + latest-value state — perfect for real-time LED data |

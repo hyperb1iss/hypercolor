@@ -18,9 +18,9 @@ use super::registry::DeviceRegistry;
 
 /// A single-transport device scanner.
 ///
-/// Implemented by transport-specific scanners (USB, mDNS, UDP broadcast,
-/// `OpenRGB` gRPC). Each scanner probes one transport and returns all
-/// currently reachable devices.
+/// Implemented by transport-specific scanners (USB, mDNS, UDP broadcast).
+/// Each scanner probes one transport and returns all currently reachable
+/// devices.
 #[async_trait::async_trait]
 pub trait TransportScanner: Send + Sync {
     /// Human-readable scanner name (for logging and diagnostics).
@@ -36,8 +36,6 @@ pub trait TransportScanner: Send + Sync {
     /// | USB HID   | <100ms | 500ms   |
     /// | mDNS      | 3s     | 10s     |
     /// | UDP bcast | 3s     | 5s      |
-    /// | `OpenRGB` | 1s     | 5s      |
-    ///
     /// # Errors
     ///
     /// Returns an error if the transport is inaccessible or the scan

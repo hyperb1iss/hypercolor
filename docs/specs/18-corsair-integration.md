@@ -175,18 +175,16 @@ OpenLinkHub's REST API is **profile-based** — it maps named lighting profiles 
 - **Preset effects:** Supported via profile name mapping
 - **Per-LED real-time control:** Not supported through REST API
 
-### 5.2 Direct Mode via OpenRGB Protocol
+### 5.2 Real-Time Control Status
 
-For 60fps per-LED control, route through OpenLinkHub's built-in OpenRGB server (default port `6743`). This leverages the existing `OpenRgbBackend` in Hypercolor:
+Phase 1 routes Corsair lighting through OpenLinkHub's REST API for static color,
+profile changes, and other non-streaming operations. Hypercolor does not ship a
+dedicated high-frequency relay path here anymore.
 
-```
-Hypercolor Effect Engine
-        │
-        ├── Static/Preset effects → OpenLinkHub REST API
-        │
-        └── Real-time per-LED     → OpenRGB protocol (port 6743)
-                                     via existing OpenRgbBackend
-```
+Per-LED 60fps animation is deferred until the native USB backend lands in Phase
+2. At that point, the effect engine will write frames directly through the
+native Corsair transport instead of tunneling through a separate compatibility
+service.
 
 ### 5.3 Decision Matrix
 
@@ -194,7 +192,7 @@ Hypercolor Effect Engine
 |----------|-----------|---------|---------|
 | Static color | REST API | ~10ms | No (zone-level) |
 | Preset effect (breathing, rainbow) | REST API | ~10ms | No |
-| Real-time animation (60fps) | OpenRGB (port 6743) | ~1ms | Yes |
+| Real-time animation (60fps) | Native USB backend (Phase 2) | TBD | Deferred |
 | Brightness adjustment | REST API | ~10ms | No |
 | Fan speed control | REST API | ~10ms | N/A |
 
@@ -395,7 +393,6 @@ Requires a new `DeviceFamily::Corsair` variant in `hypercolor-types`:
 
 ```rust
 pub enum DeviceFamily {
-    OpenRgb,
     Wled,
     Hue,
     Razer,
@@ -466,6 +463,5 @@ pub struct MockOpenLinkHub {
 ## References
 
 - OpenLinkHub: `github.com/jurkovic-nikola/OpenLinkHub` — REST API documentation
-- `~/dev/OpenRGB/Controllers/CorsairICueLinkController/` — native protocol implementation (C++)
-- `~/dev/OpenRGB/Controllers/CorsairPeripheralV2Controller/` — V2 peripheral reference
-- `~/dev/OpenRGB/Controllers/CorsairLightingNodeController/` — Lighting Node reference
+- Local C++ controller references for iCUE LINK, Corsair Peripheral V2, and
+  Lighting Node behavior — used as reverse-engineering reference material

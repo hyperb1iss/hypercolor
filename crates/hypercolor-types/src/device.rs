@@ -227,7 +227,7 @@ pub enum ConnectionType {
     /// USB HID (`PrismRGB`, Nollie).
     Usb,
 
-    /// Network protocols (WLED DDP, E1.31, `OpenRGB` SDK TCP, Hue HTTP).
+    /// Network protocols (WLED DDP, E1.31, Hue HTTP).
     Network,
 
     /// Bluetooth Low Energy.
@@ -246,9 +246,6 @@ pub enum ConnectionType {
 /// `Custom(String)`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DeviceFamily {
-    /// Any device managed through the `OpenRGB` SDK.
-    OpenRgb,
-
     /// WLED ESP8266/ESP32 controller.
     Wled,
 
@@ -277,7 +274,6 @@ pub enum DeviceFamily {
 impl fmt::Display for DeviceFamily {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::OpenRgb => write!(f, "OpenRGB"),
             Self::Wled => write!(f, "WLED"),
             Self::Hue => write!(f, "Philips Hue"),
             Self::Razer => write!(f, "Razer"),
@@ -421,7 +417,7 @@ pub enum DeviceError {
         device: String,
     },
 
-    /// Protocol-level error (DDP, E1.31, `OpenRGB` SDK, Hue, etc.).
+    /// Protocol-level error (DDP, E1.31, Hue, etc.).
     #[error("protocol error for {device}: {detail}")]
     ProtocolError {
         /// Device display name or identifier.
@@ -515,14 +511,6 @@ pub enum DeviceIdentifier {
         light_id: String,
     },
 
-    /// Device managed by `OpenRGB`.
-    OpenRgb {
-        /// Controller name as reported by `OpenRGB`.
-        controller_name: String,
-        /// Location string (bus type + address).
-        location: String,
-    },
-
     /// Device managed by an external bridge service.
     Bridge {
         /// Bridge service identifier (for example, `openlinkhub`).
@@ -562,9 +550,6 @@ impl DeviceIdentifier {
                 let prefix_len = 8.min(bridge_id.len());
                 format!("Hue {}:{light_id}", &bridge_id[..prefix_len])
             }
-            Self::OpenRgb {
-                controller_name, ..
-            } => controller_name.clone(),
             Self::Bridge {
                 service,
                 device_serial,
@@ -596,11 +581,6 @@ impl DeviceIdentifier {
                 light_id,
                 ..
             } => DeviceFingerprint(format!("hue:{bridge_id}:{light_id}")),
-            Self::OpenRgb {
-                controller_name,
-                location,
-                ..
-            } => DeviceFingerprint(format!("orgb:{controller_name}:{location}")),
             Self::Bridge {
                 service,
                 device_serial,

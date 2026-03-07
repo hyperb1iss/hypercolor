@@ -8,7 +8,6 @@ mod discovery;
 mod lifecycle;
 pub mod manager;
 pub mod mock;
-pub mod openrgb;
 mod registry;
 mod state_machine;
 mod traits;

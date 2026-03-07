@@ -100,7 +100,8 @@ pub enum SceneScope {
     /// Every device the daemon manages. The default for "save current state."
     Full,
 
-    /// PC-attached devices only: OpenRGB-managed, USB HID (PrismRGB), internal controllers.
+    /// PC-attached devices only: USB HID devices, internal controllers, and
+    /// other locally attached hardware.
     PcOnly,
 
     /// Network/room devices only: WLED strips, Hue bulbs, smart home endpoints.

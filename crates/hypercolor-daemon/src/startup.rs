@@ -22,7 +22,6 @@ use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::mock::MockDeviceBackend;
-use hypercolor_core::device::openrgb::{ClientConfig as OpenRgbClientConfig, OpenRgbBackend};
 use hypercolor_core::device::wled::{WledBackend, WledProtocol};
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbBackend, UsbHotplugEvent,
@@ -259,13 +258,6 @@ impl DaemonState {
         // ── Backend Manager ─────────────────────────────────────────────
         let mut backend_manager_inner = BackendManager::new();
         backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
-        backend_manager_inner.register_backend(Box::new(OpenRgbBackend::new(
-            OpenRgbClientConfig {
-                host: config.discovery.openrgb_host.clone(),
-                port: config.discovery.openrgb_port,
-                ..OpenRgbClientConfig::default()
-            },
-        )));
         if config.discovery.wled_scan {
             backend_manager_inner.register_backend(Box::new(build_wled_backend(config)));
         }

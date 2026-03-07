@@ -32,8 +32,7 @@
 
 The device backend system is the output half of Hypercolor's pipeline. It receives
 sampled LED color data from the spatial engine and pushes it to physical hardware
-over USB HID, UDP (DDP/E1.31), TCP (OpenRGB SDK), HTTP/DTLS (Philips Hue), and
-future transports.
+over USB HID, UDP (DDP/E1.31), HTTP/DTLS (Philips Hue), and future transports.
 
 ### Design constraints
 
@@ -45,8 +44,6 @@ future transports.
   state machine.
 - **Compile-time extensibility (Phase 1).** Backends are Rust trait objects
   behind Cargo feature flags. No runtime plugin loading yet.
-- **GPL isolation.** The OpenRGB backend lives in a separate process, connected
-  via gRPC over a Unix socket. The main binary stays MIT/Apache-2.0.
 - **Latest-frame semantics.** If the transport cannot keep up (USB HID at full
   Prism 8 load takes ~49ms), stale frames are silently dropped and only the
   newest frame is transmitted.
@@ -59,12 +56,14 @@ future transports.
 | `wled-sacn` | `sacn` | E1.31/sACN fallback |
 | `hid` | `hidapi` | USB HID communication |
 | `hue` | `reqwest` | Hue bridge REST + Entertainment API |
-| `openrgb` | `tonic` | gRPC client for OpenRGB bridge process |
 | _(core)_ | `tokio` | Async runtime, channels, timers |
 | _(core)_ | `rgb` | Color types |
 | _(core)_ | `serde` | Serialization for DeviceInfo, DeviceIdentifier |
 | _(core)_ | `tracing` | Structured logging |
 | _(core)_ | `thiserror` | Error types |
+
+Current backends are native transports; there is no dedicated bridge crate in
+the active architecture.
 
 ---
 
@@ -106,12 +105,12 @@ use crate::device::{
 pub trait DeviceBackend: Send + Sync {
     /// Human-readable backend name for logging and UI display.
     ///
-    /// Examples: `"WLED (DDP)"`, `"USB HID (PrismRGB)"`, `"OpenRGB (gRPC)"`.
+    /// Examples: `"WLED (DDP)"`, `"USB HID (PrismRGB)"`, `"Hue Entertainment"`.
     fn name(&self) -> &str;
 
     /// Unique backend identifier used in configuration and feature gating.
     ///
-    /// Examples: `"wled"`, `"hid"`, `"openrgb"`, `"hue"`.
+    /// Examples: `"wled"`, `"hid"`, `"hue"`.
     fn id(&self) -> &str;
 
     /// Scan for devices reachable via this backend's transport.
@@ -125,7 +124,7 @@ pub trait DeviceBackend: Send + Sync {
     /// | USB HID   | <100ms | 500ms   |
     /// | mDNS      | 3s     | 10s     |
     /// | UDP bcast | 3s     | 5s      |
-    /// | OpenRGB   | 1s     | 5s      |
+    /// | Hue       | 1s     | 5s      |
     ///
     /// Returns all devices currently reachable. The `DiscoveryOrchestrator`
     /// handles deduplication across backends.
@@ -135,7 +134,6 @@ pub trait DeviceBackend: Send + Sync {
     ///
     /// For USB HID: opens the HID device file, runs initialization sequence.
     /// For WLED: verifies reachability via HTTP `/json/info`, caches metadata.
-    /// For OpenRGB: registers as a client for the specified controller.
     /// For Hue: authenticates with the bridge, establishes Entertainment stream.
     ///
     /// Returns an opaque [`DeviceHandle`] that identifies this connection for
@@ -172,8 +170,7 @@ pub trait DeviceBackend: Send + Sync {
     ///
     /// For USB HID: sends the shutdown color, activates hardware mode, closes
     /// the device file. For WLED: no action needed (stateless UDP). For
-    /// OpenRGB: releases the controller. For Hue: tears down the Entertainment
-    /// stream.
+    /// Hue: tears down the Entertainment stream.
     ///
     /// The `DeviceHandle` is consumed and invalidated.
     async fn disconnect(&mut self, handle: DeviceHandle) -> Result<(), DeviceError>;
@@ -259,7 +256,7 @@ use crate::engine::HypercolorApp;
 ///
 /// 1. In `build()`: registers its `DeviceBackend` impl with the app.
 /// 2. In `ready()`: verifies runtime dependencies (hidapi available, network
-///    reachable, OpenRGB bridge process running).
+///    reachable, Hue bridge reachable).
 /// 3. In `cleanup()`: disconnects all devices, releases resources.
 ///
 /// # Example
@@ -334,8 +331,6 @@ fn register_plugins(app: &mut HypercolorApp) {
     #[cfg(feature = "hue")]
     app.add_plugin(HuePlugin::default());
 
-    #[cfg(feature = "openrgb")]
-    app.add_plugin(OpenRgbBridgePlugin::default());
 }
 ```
 
@@ -380,7 +375,7 @@ pub struct DeviceInfo {
     ///
     /// A single-zone device (most WLED strips) has one entry. Multi-zone
     /// devices (Prism 8 with 8 channels, Prism S with ATX + GPU cables,
-    /// OpenRGB controllers with multiple zones) have many.
+    /// Hue entertainment groups) have many.
     pub zones: Vec<ZoneInfo>,
 
     /// Firmware version, if known.
@@ -445,9 +440,6 @@ pub enum ConnectionType {
     /// UDP E1.31/sACN (WLED fallback, other DMX devices).
     E131,
 
-    /// TCP via OpenRGB SDK protocol (port 6742).
-    OpenRgbSdk,
-
     /// HTTP REST + DTLS Entertainment API (Philips Hue).
     PhilipsHue,
 
@@ -475,9 +467,6 @@ pub enum DeviceFamily {
 
     /// Philips Hue bridge + lights.
     PhilipsHue,
-
-    /// Any device managed by OpenRGB.
-    OpenRgb,
 
     /// Unknown or user-defined device family.
     Custom(String),
@@ -517,7 +506,6 @@ pub enum DeviceFamily {
     PrismMini,
     Wled,
     PhilipsHue,
-    OpenRgb,
     Unknown,
 }
 ```
@@ -952,7 +940,6 @@ use std::net::IpAddr;
 /// | `UsbHid` | VID:PID + path | Same USB port only (without serial) |
 /// | `Network` | MAC address | Reboots, DHCP reassignment |
 /// | `HueBridge` | Bridge ID + light ID | Reboots, network changes |
-/// | `OpenRgb` | Controller name + location | Reboots (if OpenRGB config stable) |
 #[derive(Debug, Clone, Hash, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DeviceIdentifier {
     /// USB HID device identified by vendor/product IDs.
@@ -1015,28 +1002,6 @@ pub enum DeviceIdentifier {
         light_serial: Option<String>,
     },
 
-    /// Device managed by OpenRGB.
-    ///
-    /// OpenRGB assigns controller indices dynamically, so we use the
-    /// controller name + location string as the stable identity. The
-    /// location encodes the bus type and address (e.g., "HID: /dev/hidraw3",
-    /// "I2C: /dev/i2c-1, address 0x29").
-    ///
-    /// Caveat: if the user reconfigures OpenRGB or changes hardware,
-    /// locations may shift. The name + location combo is the best we
-    /// can do without OpenRGB providing a stable device ID.
-    OpenRgb {
-        /// Controller name as reported by OpenRGB (e.g., "ASUS Aura LED Controller").
-        controller_name: String,
-
-        /// Location string (e.g., "HID: /dev/hidraw3").
-        location: String,
-
-        /// Controller index in the current OpenRGB session.
-        /// NOT stable across restarts -- used only for the current connection.
-        #[serde(skip)]
-        controller_index: Option<u32>,
-    },
 }
 
 impl DeviceIdentifier {
@@ -1077,19 +1042,6 @@ impl DeviceIdentifier {
         }
     }
 
-    /// Construct an OpenRGB controller identifier.
-    pub fn openrgb(
-        controller_name: String,
-        location: String,
-        controller_index: u32,
-    ) -> Self {
-        Self::OpenRgb {
-            controller_name,
-            location,
-            controller_index: Some(controller_index),
-        }
-    }
-
     /// A short, human-readable string for logging and display.
     pub fn display_short(&self) -> String {
         match self {
@@ -1108,7 +1060,6 @@ impl DeviceIdentifier {
             Self::HueBridge { bridge_id, light_id, .. } => {
                 format!("Hue {}:{}", &bridge_id[..8.min(bridge_id.len())], light_id)
             }
-            Self::OpenRgb { controller_name, .. } => controller_name.clone(),
         }
     }
 
@@ -1130,9 +1081,6 @@ impl DeviceIdentifier {
             }
             Self::HueBridge { bridge_id, light_id, .. } => {
                 DeviceFingerprint(format!("hue:{}:{}", bridge_id, light_id))
-            }
-            Self::OpenRgb { controller_name, location, .. } => {
-                DeviceFingerprint(format!("orgb:{}:{}", controller_name, location))
             }
         }
     }
@@ -1215,7 +1163,6 @@ use tokio::sync::watch;
 /// |-----------|-------------|---------------------|
 /// | USB HID   | 1 (watch)  | Drop stale frame, send newest |
 /// | WLED DDP  | 1 (watch)  | Drop stale frame, send newest |
-/// | OpenRGB   | 1 (watch)  | Drop stale frame, send newest |
 /// | Hue       | 1 (watch)  | Drop stale frame, rate-limit to 25fps |
 pub struct OutputQueue {
     /// The sender side, held by the render loop dispatcher.
@@ -1461,7 +1408,7 @@ pub struct DiscoveryOrchestrator {
 /// A single-transport device scanner.
 ///
 /// Implemented by `UsbScanner`, `MdnsScanner`, `UdpBroadcastScanner`,
-/// `OpenRgbScanner`, and future transport scanners.
+/// and future transport scanners.
 #[async_trait::async_trait]
 pub trait TransportScanner: Send + Sync {
     /// Human-readable scanner name (for logging).
@@ -2000,32 +1947,9 @@ mDNS re-announces when device returns
 Reconnection succeeds -> back to Active
 ```
 
-**OpenRGB (TCP)**
-
-```text
-Daemon starts
-    |
-    v
-Attempt TCP connect to localhost:6742
-    |
-    +-- Success --> Enumerate controllers, import as devices
-    |
-    +-- Refused --> OpenRGB not running, skip
-                   (optionally offer to start it)
-
---- later ---
-
-OpenRGB quits or crashes
-    |
-    v
-TCP read returns EOF or ECONNRESET
-    |
-    v
-All OpenRGB devices transition to Reconnecting
-    |
-    v
-Reconnection loop tries TCP connect periodically
-```
+Additional network backends follow the same reconnection pattern: connection
+failures transition devices into `Reconnecting`, periodic health checks retry,
+and a successful transport handshake restores the device to `Active`.
 
 ---
 
@@ -2045,7 +1969,6 @@ wled       = ["dep:ddp-rs"]
 wled-sacn  = ["dep:sacn", "wled"]
 hid        = ["dep:hidapi"]
 hue        = ["dep:reqwest"]
-openrgb    = ["grpc-bridge"]           # Always via bridge (GPL isolation)
 
 # Input sources
 audio          = ["dep:cpal", "dep:spectrum-analyzer"]
@@ -2054,7 +1977,6 @@ midi           = ["dep:midir"]
 
 # Plugin runtime (Phase 2+)
 wasm-plugins = ["dep:wasmtime", "dep:wasmtime-wasi"]
-grpc-bridge  = ["dep:tonic"]
 
 # Effect engines
 servo = ["dep:libservo"]               # HTML/Canvas compatibility path
@@ -2087,9 +2009,6 @@ pub mod hid;
 #[cfg(feature = "hue")]
 pub mod hue;
 
-#[cfg(feature = "openrgb")]
-pub mod openrgb;
-
 #[cfg(feature = "mock-devices")]
 pub mod mock;
 
@@ -2116,9 +2035,6 @@ fn register_device_plugins(app: &mut HypercolorApp) {
     #[cfg(feature = "hue")]
     app.add_plugin(crate::plugins::HuePlugin::default());
 
-    #[cfg(feature = "openrgb")]
-    app.add_plugin(crate::plugins::OpenRgbBridgePlugin::default());
-
     #[cfg(feature = "mock-devices")]
     app.add_plugin(crate::plugins::MockPlugin::default());
 }
@@ -2140,10 +2056,11 @@ fn register_scanners(orchestrator: &mut DiscoveryOrchestrator) {
     #[cfg(feature = "hue")]
     orchestrator.add_scanner(Box::new(MdnsScanner::new_hue()));
 
-    #[cfg(feature = "openrgb")]
-    orchestrator.add_scanner(Box::new(OpenRgbScanner::new()));
 }
 ```
+
+Future bridge-style transports, if any, should be specified generically rather
+than as a transport-specific special case.
 
 ### Build matrix implications
 
@@ -2152,7 +2069,6 @@ fn register_scanners(orchestrator: &mut DiscoveryOrchestrator) {
 | `default` (wled + hid + audio + screen) | ~2 min | ~15 MB | hidapi, cpal |
 | `default` + `servo` | ~25 min | ~80 MB | SpiderMonkey |
 | `default` + `hue` | ~2.5 min | ~18 MB | + reqwest/TLS |
-| `default` + `openrgb` | ~3 min | ~20 MB | + tonic/protobuf |
 | Minimal (no defaults) | ~1 min | ~8 MB | tokio only |
 
 ---
@@ -2225,7 +2141,7 @@ pub enum DeviceError {
         detail: String,
     },
 
-    /// Network protocol error (DDP, E1.31, OpenRGB SDK).
+    /// Network protocol error (DDP, E1.31, Hue REST/Entertainment).
     #[error("network protocol error for {device}: {detail}")]
     NetworkProtocol {
         device: String,
@@ -2383,7 +2299,6 @@ crates/hypercolor-core/src/device/
 ├── wled.rs                 # #[cfg(feature = "wled")] -- WLED DDP/E1.31 backend
 ├── hid.rs                  # #[cfg(feature = "hid")]  -- PrismRGB/Nollie USB HID backend
 ├── hue.rs                  # #[cfg(feature = "hue")]  -- Philips Hue backend
-├── openrgb.rs              # #[cfg(feature = "openrgb")] -- OpenRGB gRPC bridge client
 └── mock.rs                 # #[cfg(feature = "mock-devices")] -- Mock backend for testing
 ```
 
@@ -2408,7 +2323,6 @@ the daemon's startup orchestration.
    loops. An alternative is to push this into each `DeviceBackend` implementation
    so transports can customize retry behavior.
 
-4. **gRPC bridge lifecycle.** The spec describes the bridge as a separate binary
-   but doesn't detail process supervision (spawn, health check, restart). This
-   needs a dedicated sub-spec or integration with the `DevicePlugin::ready()`
-   mechanism.
+4. **Future process-boundary story.** If Hypercolor ever reintroduces
+   out-of-process backends, the plugin/process supervision model should be
+   specified generically instead of reviving a bridge-only special case.

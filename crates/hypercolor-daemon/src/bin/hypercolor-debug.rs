@@ -2,7 +2,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use hypercolor_core::device::openrgb::{OpenRgbScanner, ScannerConfig as OpenRgbScannerConfig};
 use hypercolor_core::device::wled::WledScanner;
 use hypercolor_core::device::{
     DeviceRegistry, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport, UsbHotplugEvent,
@@ -36,7 +35,6 @@ enum DebugCommand {
 enum DebugBackend {
     Usb,
     Wled,
-    Openrgb,
 }
 
 #[derive(Debug, Args)]
@@ -60,14 +58,6 @@ struct DetectArgs {
     /// Discovery timeout for network scanners.
     #[arg(long, default_value_t = 10_000)]
     timeout_ms: u64,
-
-    /// `OpenRGB` SDK host used when `openrgb` backend is enabled.
-    #[arg(long, default_value = "127.0.0.1")]
-    openrgb_host: String,
-
-    /// `OpenRGB` SDK port used when `openrgb` backend is enabled.
-    #[arg(long, default_value_t = 6742)]
-    openrgb_port: u16,
 }
 
 #[tokio::main]
@@ -243,7 +233,7 @@ fn log_hotplug_event(event: &UsbHotplugEvent) {
 async fn run_scan(
     registry: &DeviceRegistry,
     backends: &[DebugBackend],
-    args: &DetectArgs,
+    _args: &DetectArgs,
     timeout: Duration,
     trigger: &str,
 ) -> Result<()> {
@@ -253,15 +243,6 @@ async fn run_scan(
             DebugBackend::Usb => orchestrator.add_scanner(Box::new(UsbScanner::new())),
             DebugBackend::Wled => {
                 orchestrator.add_scanner(Box::new(WledScanner::with_timeout(timeout)));
-            }
-            DebugBackend::Openrgb => {
-                let probe_timeout =
-                    timeout.clamp(Duration::from_millis(250), Duration::from_secs(2));
-                orchestrator.add_scanner(Box::new(OpenRgbScanner::new(OpenRgbScannerConfig {
-                    host: args.openrgb_host.clone(),
-                    port: args.openrgb_port,
-                    probe_timeout,
-                })));
             }
         }
     }
@@ -350,7 +331,6 @@ fn backend_hint(family: &hypercolor_types::device::DeviceFamily) -> &'static str
         | hypercolor_types::device::DeviceFamily::LianLi
         | hypercolor_types::device::DeviceFamily::PrismRgb => "usb",
         hypercolor_types::device::DeviceFamily::Wled => "wled",
-        hypercolor_types::device::DeviceFamily::OpenRgb => "openrgb",
         hypercolor_types::device::DeviceFamily::Hue => "hue",
         hypercolor_types::device::DeviceFamily::Custom(_) => "custom",
     }

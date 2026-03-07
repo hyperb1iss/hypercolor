@@ -331,7 +331,7 @@ List all known RGB devices with connection status, LED count, and zone informati
 {
   "name": "list_devices",
   "title": "List RGB Devices",
-  "description": "Enumerate all known RGB devices with their connection status, backend type (WLED, OpenRGB, USB HID, Hue), LED count, and zone configuration. Use the status filter to show only connected or disconnected devices.",
+  "description": "Enumerate all known RGB devices with their connection status, backend type (WLED, USB HID, Hue), LED count, and zone configuration. Use the status filter to show only connected or disconnected devices.",
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -353,7 +353,7 @@ List all known RGB devices with connection status, LED count, and zone informati
           "properties": {
             "id": { "type": "string" },
             "name": { "type": "string" },
-            "backend": { "type": "string", "enum": ["wled", "openrgb", "usb_hid", "hue", "razer", "corsair"] },
+            "backend": { "type": "string", "enum": ["wled", "usb_hid", "hue", "razer", "corsair"] },
             "status": { "type": "string", "enum": ["connected", "disconnected", "error"] },
             "total_leds": { "type": "integer" },
             "zones": {

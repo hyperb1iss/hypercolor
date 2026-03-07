@@ -337,8 +337,6 @@ mdns_enabled = true                  # Auto-detect mDNS-advertised devices
 scan_interval_secs = 300             # Re-scan interval (seconds)
 wled_scan = true                     # Scan for WLED devices
 hue_scan = true                      # Scan for Philips Hue bridges
-openrgb_host = "127.0.0.1"          # OpenRGB SDK server host
-openrgb_port = 6742                  # OpenRGB SDK server port
 
 # ─── D-Bus (Linux only) ───────────────────────────────────────
 
@@ -520,7 +518,6 @@ effect = "builtin/solid-color"
 Device ID construction:
   USB devices:    <backend>-<vid>-<pid>-<serial>       e.g. "hid-16d5-1f01-abc123"
   Network:        <backend>-<hostname-or-ip>            e.g. "wled-desk-strip"
-  OpenRGB:        openrgb-<controller-id>-<zone-idx>    e.g. "openrgb-0-2"
   Hue:            hue-<bridge-id>-<light-id>            e.g. "hue-abc-12"
 
 Zone name:
@@ -696,7 +693,7 @@ All transition types and their parameters:
 | Scope | Devices Affected |
 |---|---|
 | `full` | Every device the daemon manages |
-| `pc-only` | USB HID, OpenRGB -- physically attached devices |
+| `pc-only` | USB HID and other physically attached devices |
 | `room-only` | WLED, Hue -- network/wireless devices |
 | `devices` | Explicit device list (array of device IDs) |
 | `zones` | Explicit zone list (array of zone IDs) |
@@ -1458,12 +1455,6 @@ pub struct DiscoveryConfig {
 
     #[serde(default = "defaults::bool_true")]
     pub hue_scan: bool,
-
-    #[serde(default = "defaults::openrgb_host")]
-    pub openrgb_host: String,
-
-    #[serde(default = "defaults::openrgb_port")]
-    pub openrgb_port: u16,
 }
 ```
 
@@ -2215,8 +2206,6 @@ Every field has a compile-time default. A fresh install with zero config files s
 | | `scan_interval_secs` | `300` | 5 minutes |
 | | `wled_scan` | `true` | |
 | | `hue_scan` | `true` | |
-| | `openrgb_host` | `"127.0.0.1"` | |
-| | `openrgb_port` | `6742` | |
 | **dbus** | `enabled` | `true` | Linux only |
 | | `bus_name` | `"tech.hyperbliss.hypercolor1"` | |
 | **tui** | `theme` | `"silkcircuit"` | |
@@ -2293,8 +2282,6 @@ mod defaults {
     pub fn capture_source() -> String { "auto".into() }
     pub fn capture_fps() -> u32 { 30 }
     pub fn scan_interval() -> u64 { 300 }
-    pub fn openrgb_host() -> String { "127.0.0.1".into() }
-    pub fn openrgb_port() -> u16 { 6742 }
     pub fn bus_name() -> String { "tech.hyperbliss.hypercolor1".into() }
     pub fn tui_theme() -> String { "silkcircuit".into() }
     pub fn preview_fps() -> u32 { 15 }
@@ -2464,8 +2451,6 @@ Section and key names are UPPER_SNAKE_CASE. Nested sections use additional `__` 
 | `HYPERCOLOR_AUDIO__ENABLED` | `audio.enabled` | `bool` |
 | `HYPERCOLOR_CAPTURE__ENABLED` | `capture.enabled` | `bool` |
 | `HYPERCOLOR_CAPTURE__MONITOR` | `capture.monitor` | `u32` |
-| `HYPERCOLOR_DISCOVERY__OPENRGB_HOST` | `discovery.openrgb_host` | `String` |
-| `HYPERCOLOR_DISCOVERY__OPENRGB_PORT` | `discovery.openrgb_port` | `u16` |
 | `HYPERCOLOR_DBUS__ENABLED` | `dbus.enabled` | `bool` |
 | `HYPERCOLOR_TUI__THEME` | `tui.theme` | `String` |
 | `HYPERCOLOR_FEATURES__WASM_PLUGINS` | `features.wasm_plugins` | `bool` |
