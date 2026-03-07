@@ -92,6 +92,7 @@ pub fn SettingSlider(
     step: f64,
     #[prop(default = false)] restart_required: bool,
     #[prop(default = 2)] decimals: usize,
+    #[prop(default = false)] integer: bool,
 ) -> impl IntoView {
     let key_owned = key.to_string();
     let fmt = move || {
@@ -124,7 +125,12 @@ pub fn SettingSlider(
                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
                         if let Some(el) = target {
                             if let Ok(val) = el.value().parse::<f64>() {
-                                on_change.run((key_owned.clone(), serde_json::json!(val)));
+                                let json_val = if integer {
+                                    serde_json::json!(val as i64)
+                                } else {
+                                    serde_json::json!(val)
+                                };
+                                on_change.run((key_owned.clone(), json_val));
                             }
                         }
                     }
@@ -148,6 +154,7 @@ pub fn SettingDropdown(
     #[prop(into)] options: Signal<Vec<(String, String)>>,
     on_change: Callback<(String, serde_json::Value)>,
     #[prop(default = false)] restart_required: bool,
+    #[prop(default = false)] numeric: bool,
 ) -> impl IntoView {
     let key_owned = key.to_string();
     view! {
@@ -166,7 +173,15 @@ pub fn SettingDropdown(
                 on:change=move |ev| {
                     let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
                     if let Some(el) = target {
-                        on_change.run((key_owned.clone(), serde_json::json!(el.value())));
+                        let str_val = el.value();
+                        let json_val = if numeric {
+                            str_val.parse::<i64>()
+                                .map(|n| serde_json::json!(n))
+                                .unwrap_or_else(|_| serde_json::json!(str_val))
+                        } else {
+                            serde_json::json!(str_val)
+                        };
+                        on_change.run((key_owned.clone(), json_val));
                     }
                 }
             >
@@ -410,10 +425,7 @@ pub fn SettingPathList(
 // ── Section Reset ──────────────────────────────────────────────────────────
 
 #[component]
-pub fn SectionReset(
-    section_label: &'static str,
-    on_reset: Callback<()>,
-) -> impl IntoView {
+pub fn SectionReset(section_label: &'static str, on_reset: Callback<()>) -> impl IntoView {
     let (confirming, set_confirming) = signal(false);
     view! {
         <div class="pt-4 mt-2 border-t border-edge-subtle/20">

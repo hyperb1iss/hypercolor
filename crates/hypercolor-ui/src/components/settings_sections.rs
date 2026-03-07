@@ -60,6 +60,7 @@ pub fn AudioSection(
                 options=Signal::stored(fft_options)
                 on_change=on_change
                 restart_required=true
+                numeric=true
             />
             <SettingSlider
                 label="Smoothing"
@@ -136,6 +137,7 @@ pub fn CaptureSection(
                 on_change=on_change
                 min=1.0 max=60.0 step=1.0
                 decimals=0
+                integer=true
             />
             <SettingNumberInput
                 label="Monitor"
@@ -285,6 +287,7 @@ pub fn NetworkSection(
                 on_change=on_change
                 min=1.0 max=120.0 step=1.0
                 decimals=0
+                integer=true
             />
             <SettingSlider
                 label="WebSocket FPS"
@@ -294,6 +297,7 @@ pub fn NetworkSection(
                 on_change=on_change
                 min=1.0 max=60.0 step=1.0
                 decimals=0
+                integer=true
             />
             <SettingToggle
                 label="Open Browser on Start"
@@ -303,8 +307,14 @@ pub fn NetworkSection(
                 on_change=on_change
             />
             <SectionReset section_label="Network" on_reset=Callback::new(move |()| {
-                on_reset.run("daemon".to_string());
-                on_reset.run("web".to_string());
+                // Reset only the keys owned by this section — avoid nuking the
+                // entire "daemon" section which would wipe developer settings too.
+                for key in &[
+                    "daemon.listen_address", "daemon.port", "daemon.target_fps",
+                    "web.websocket_fps", "web.open_browser",
+                ] {
+                    on_reset.run(key.to_string());
+                }
             }) />
         </section>
     }
@@ -438,7 +448,8 @@ pub fn DeveloperSection(
     on_change: Callback<(String, serde_json::Value)>,
     on_reset: Callback<String>,
 ) -> impl IntoView {
-    let log_level = Signal::derive(move || format!("{:?}", config.get().daemon.log_level).to_lowercase());
+    let log_level =
+        Signal::derive(move || format!("{:?}", config.get().daemon.log_level).to_lowercase());
     let canvas_width = Signal::derive(move || f64::from(config.get().daemon.canvas_width));
     let canvas_height = Signal::derive(move || f64::from(config.get().daemon.canvas_height));
     let max_devices = Signal::derive(move || f64::from(config.get().daemon.max_devices));
@@ -540,9 +551,7 @@ pub fn DeveloperSection(
 // ── About ──────────────────────────────────────────────────────────────────
 
 #[component]
-pub fn AboutSection(
-    #[prop(into)] config_path: Signal<String>,
-) -> impl IntoView {
+pub fn AboutSection(#[prop(into)] config_path: Signal<String>) -> impl IntoView {
     let status = LocalResource::new(api::fetch_status);
 
     view! {
