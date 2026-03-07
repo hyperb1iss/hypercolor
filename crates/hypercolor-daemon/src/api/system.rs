@@ -3,6 +3,7 @@
 //! Provides daemon status overview and a lightweight health check
 //! for monitoring and load balancer probes.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -11,6 +12,11 @@ use serde::Serialize;
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
+use crate::api::settings;
+
+use hypercolor_core::config::ConfigManager;
+
+const DEFAULT_CONFIG_FILE_NAME: &str = "hypercolor.toml";
 
 // ── Response Types ───────────────────────────────────────────────────────
 
@@ -18,11 +24,16 @@ use crate::api::envelope::ApiResponse;
 pub struct SystemStatus {
     pub running: bool,
     pub version: String,
+    pub config_path: String,
+    pub data_dir: String,
+    pub cache_dir: String,
     pub uptime_seconds: u64,
     pub device_count: usize,
     pub effect_count: usize,
     pub scene_count: usize,
     pub active_effect: Option<String>,
+    pub audio_available: bool,
+    pub capture_available: bool,
     pub render_loop: RenderLoopStatus,
     pub event_bus_subscribers: usize,
 }
@@ -76,15 +87,23 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     };
 
     let uptime_seconds = state.start_time.elapsed().as_secs();
+    let config_path = config_path(&state).display().to_string();
+    let data_dir = ConfigManager::data_dir().display().to_string();
+    let cache_dir = ConfigManager::cache_dir().display().to_string();
 
     ApiResponse::ok(SystemStatus {
         running: true,
         version: env!("CARGO_PKG_VERSION").to_owned(),
+        config_path,
+        data_dir,
+        cache_dir,
         uptime_seconds,
         device_count,
         effect_count,
         scene_count,
         active_effect,
+        audio_available: settings::audio_input_available(),
+        capture_available: settings::capture_input_available(),
         render_loop: render_loop_status,
         event_bus_subscribers: subscribers,
     })
@@ -106,4 +125,11 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> Response {
     };
 
     (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+}
+
+fn config_path(state: &AppState) -> PathBuf {
+    state.config_manager.as_ref().map_or_else(
+        || ConfigManager::config_dir().join(DEFAULT_CONFIG_FILE_NAME),
+        |manager| manager.path().to_path_buf(),
+    )
 }

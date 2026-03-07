@@ -17,6 +17,7 @@ pub mod preview;
 pub mod profiles;
 pub mod scenes;
 pub mod security;
+pub mod settings;
 pub mod system;
 pub mod ws;
 
@@ -524,6 +525,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         // ── System ───────────────────────────────────────────────────
         .route("/status", axum::routing::get(system::get_status))
         .route("/state", axum::routing::get(system::get_status))
+        .route("/audio/devices", axum::routing::get(settings::list_audio_devices))
         // ── Preview ──────────────────────────────────────────────────
         .route("/preview", axum::routing::get(preview::preview_page))
         // ── Config ───────────────────────────────────────────────────

@@ -9,6 +9,7 @@ use std::time::SystemTime;
 
 use axum::body::Body;
 use http::{Request, StatusCode};
+use hypercolor_core::config::ConfigManager;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -110,6 +111,82 @@ async fn status_returns_200_with_envelope() {
         request_id.starts_with("req_"),
         "request_id should start with req_"
     );
+    assert_eq!(
+        json["data"]["config_path"],
+        serde_json::json!(default_config_path())
+    );
+    assert_eq!(
+        json["data"]["data_dir"],
+        serde_json::json!(ConfigManager::data_dir().display().to_string())
+    );
+    assert_eq!(
+        json["data"]["cache_dir"],
+        serde_json::json!(ConfigManager::cache_dir().display().to_string())
+    );
+    assert!(
+        json["data"]["audio_available"].is_boolean(),
+        "audio_available should be a bool"
+    );
+    assert_eq!(json["data"]["capture_available"], serde_json::json!(false));
+}
+
+#[tokio::test]
+async fn status_prefers_live_config_manager_path() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let custom_config_path = tempdir.path().join("custom-settings.toml");
+    let config_manager = Arc::new(
+        ConfigManager::new(custom_config_path.clone()).expect("config manager should build"),
+    );
+    let mut state = AppState::new();
+    state.config_manager = Some(config_manager);
+
+    let app = test_app_with_state(Arc::new(state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    assert_eq!(
+        json["data"]["config_path"],
+        serde_json::json!(custom_config_path.display().to_string())
+    );
+}
+
+#[tokio::test]
+async fn audio_devices_returns_default_option_and_current_value() {
+    let app = test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/audio/devices")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    let devices = json["data"]["devices"]
+        .as_array()
+        .expect("devices should be an array");
+    assert!(
+        !devices.is_empty(),
+        "devices should include the default option"
+    );
+    assert_eq!(devices[0]["id"], "default");
+    assert_eq!(devices[0]["name"], "Default");
+    assert_eq!(json["data"]["current"], "default");
 }
 
 #[tokio::test]
@@ -183,6 +260,13 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
         state: EffectState::Loading,
     };
     let _ = registry.register(entry);
+}
+
+fn default_config_path() -> String {
+    ConfigManager::config_dir()
+        .join("hypercolor.toml")
+        .display()
+        .to_string()
 }
 
 async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
