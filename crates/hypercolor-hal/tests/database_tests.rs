@@ -1,4 +1,5 @@
 use hypercolor_hal::database::ProtocolDatabase;
+use hypercolor_hal::drivers::dygma::{DYGMA_VENDOR_ID, PID_DEFY_WIRED, PID_DEFY_WIRELESS};
 use hypercolor_hal::drivers::prismrgb::{
     NOLLIE_VENDOR_ID, PID_NOLLIE_8_V2, PID_PRISM_8, PID_PRISM_MINI, PID_PRISM_S,
     PRISM_GCS_VENDOR_ID, PRISM_VENDOR_ID,
@@ -24,6 +25,39 @@ fn lookup_returns_prism_8_descriptor() {
     assert_eq!(protocol.name(), "PrismRGB Prism 8");
     assert_eq!(protocol.total_leds(), 1_008);
     assert_eq!(protocol.zones().len(), 8);
+}
+
+#[test]
+fn lookup_returns_defy_wired_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(DYGMA_VENDOR_ID, PID_DEFY_WIRED)
+        .expect("Dygma Defy descriptor should exist");
+
+    assert_eq!(descriptor.name, "Dygma Defy");
+    assert_eq!(descriptor.family, DeviceFamily::Dygma);
+    assert_eq!(descriptor.protocol.id, "dygma/defy-wired");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbSerial { baud_rate: 115_200 }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Dygma Defy");
+    assert_eq!(protocol.total_leds(), 176);
+    assert_eq!(protocol.zones().len(), 4);
+}
+
+#[test]
+fn lookup_returns_defy_wireless_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(DYGMA_VENDOR_ID, PID_DEFY_WIRELESS)
+        .expect("Dygma Defy Wireless descriptor should exist");
+
+    assert_eq!(descriptor.name, "Dygma Defy Wireless");
+    assert_eq!(descriptor.family, DeviceFamily::Dygma);
+    assert_eq!(descriptor.protocol.id, "dygma/defy-wireless");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbSerial { baud_rate: 115_200 }
+    );
 }
 
 #[test]
@@ -177,6 +211,8 @@ fn lookup_returns_seiren_emote_with_8x8_zone_topology() {
 #[test]
 fn known_vid_pid_contains_razer_entries() {
     let pairs = ProtocolDatabase::known_vid_pids();
+    assert!(pairs.contains(&(DYGMA_VENDOR_ID, PID_DEFY_WIRED)));
+    assert!(pairs.contains(&(DYGMA_VENDOR_ID, PID_DEFY_WIRELESS)));
     assert!(pairs.contains(&(PRISM_VENDOR_ID, PID_PRISM_8)));
     assert!(pairs.contains(&(NOLLIE_VENDOR_ID, PID_NOLLIE_8_V2)));
     assert!(pairs.contains(&(PRISM_GCS_VENDOR_ID, PID_PRISM_S)));
@@ -201,5 +237,5 @@ fn by_vendor_returns_only_razer_entries() {
 #[test]
 fn count_matches_static_descriptor_count() {
     assert_eq!(ProtocolDatabase::count(), ProtocolDatabase::all().len());
-    assert!(ProtocolDatabase::count() >= 11);
+    assert!(ProtocolDatabase::count() >= 13);
 }

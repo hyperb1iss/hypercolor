@@ -100,6 +100,8 @@ impl WledScanner {
                 led_count: u32::from(led_count),
                 supports_direct: true,
                 supports_brightness: true,
+                has_display: false,
+                display_resolution: None,
                 max_fps: wled_info.map_or(60, |info| info.negotiated_target_fps()),
             },
         };

@@ -47,6 +47,8 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
             led_count,
             supports_direct: true,
             supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
             max_fps: 60,
         },
     }

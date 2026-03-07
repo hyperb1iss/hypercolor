@@ -210,8 +210,7 @@ fn normalize_outgoing_packet(
         return Ok(data.to_vec());
     }
 
-    if data.len() == HID_REPORT_SIZE && endpoint_packet_size + 1 == HID_REPORT_SIZE && data[0] == 0
-    {
+    if data.len() == endpoint_packet_size + 1 && data[0] == 0 {
         return Ok(data[1..].to_vec());
     }
 

@@ -79,6 +79,20 @@ pub enum TransportType {
         interface: u8,
     },
 
+    /// USB bulk-transfer transport with HID feature-report sideband control.
+    UsbBulk {
+        /// Interface number to claim.
+        interface: u8,
+        /// HID report ID used for feature-report init/keepalive commands.
+        report_id: u8,
+    },
+
+    /// USB CDC-ACM serial transport.
+    UsbSerial {
+        /// Serial port baud rate hint.
+        baud_rate: u32,
+    },
+
     /// Vendor-specific control transfer transport.
     UsbVendor,
 }

@@ -87,6 +87,8 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
             led_count: 60,
             supports_direct: true,
             supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
             max_fps: 60,
         },
     };

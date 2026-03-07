@@ -82,6 +82,8 @@ fn sample_device_info() -> DeviceInfo {
             led_count: 90,
             supports_direct: true,
             supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
             max_fps: 60,
         },
     }
@@ -136,6 +138,8 @@ fn capabilities_serde_round_trip() {
         led_count: 144,
         supports_direct: false,
         supports_brightness: true,
+        has_display: false,
+        display_resolution: None,
         max_fps: 30,
     };
     let json = serde_json::to_string(&caps).expect("serialize");
@@ -238,6 +242,7 @@ fn device_family_display() {
     assert_eq!(DeviceFamily::Hue.to_string(), "Philips Hue");
     assert_eq!(DeviceFamily::Razer.to_string(), "Razer");
     assert_eq!(DeviceFamily::Corsair.to_string(), "Corsair");
+    assert_eq!(DeviceFamily::Dygma.to_string(), "Dygma");
     assert_eq!(DeviceFamily::LianLi.to_string(), "Lian Li");
     assert_eq!(DeviceFamily::PrismRgb.to_string(), "PrismRGB");
     assert_eq!(
@@ -268,6 +273,7 @@ fn device_family_serde_round_trip() {
         DeviceFamily::Hue,
         DeviceFamily::Razer,
         DeviceFamily::Corsair,
+        DeviceFamily::Dygma,
         DeviceFamily::LianLi,
         DeviceFamily::PrismRgb,
         DeviceFamily::Custom("PrismRGB".into()),

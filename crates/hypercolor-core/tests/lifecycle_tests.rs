@@ -116,6 +116,8 @@ fn device_info(id: DeviceId, name: &str) -> DeviceInfo {
             led_count: 4,
             supports_direct: true,
             supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
             max_fps: 60,
         },
     }

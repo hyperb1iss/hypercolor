@@ -8,7 +8,7 @@ use tracing::warn;
 
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ProtocolZone,
-    ResponseStatus,
+    ResponseStatus, TransferType,
 };
 
 use super::crc::{RAZER_REPORT_LEN, razer_crc};
@@ -329,6 +329,7 @@ impl RazerProtocol {
             data: packet.to_vec(),
             expects_response,
             post_delay,
+            transfer_type: TransferType::Primary,
         })
     }
 
@@ -666,6 +667,8 @@ impl Protocol for RazerProtocol {
             led_count: self.total_leds(),
             supports_direct: true,
             supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
             max_fps,
         }
     }

@@ -882,8 +882,11 @@ fn backend_id_for_family(family: &DeviceFamily) -> String {
         DeviceFamily::OpenRgb => "openrgb".to_owned(),
         DeviceFamily::Wled => "wled".to_owned(),
         DeviceFamily::Hue => "hue".to_owned(),
-        DeviceFamily::Razer | DeviceFamily::LianLi | DeviceFamily::PrismRgb => "usb".to_owned(),
-        DeviceFamily::Corsair => "corsair-bridge".to_owned(),
+        DeviceFamily::Razer
+        | DeviceFamily::Corsair
+        | DeviceFamily::Dygma
+        | DeviceFamily::LianLi
+        | DeviceFamily::PrismRgb => "usb".to_owned(),
         DeviceFamily::Custom(name) => name.to_ascii_lowercase(),
     }
 }

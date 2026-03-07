@@ -346,6 +346,7 @@ fn backend_hint(family: &hypercolor_types::device::DeviceFamily) -> &'static str
     match family {
         hypercolor_types::device::DeviceFamily::Razer
         | hypercolor_types::device::DeviceFamily::Corsair
+        | hypercolor_types::device::DeviceFamily::Dygma
         | hypercolor_types::device::DeviceFamily::LianLi
         | hypercolor_types::device::DeviceFamily::PrismRgb => "usb",
         hypercolor_types::device::DeviceFamily::Wled => "wled",

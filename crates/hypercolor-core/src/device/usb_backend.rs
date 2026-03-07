@@ -11,8 +11,10 @@ use hypercolor_hal::database::{DeviceDescriptor, TransportType};
 use hypercolor_hal::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ResponseStatus,
 };
+use hypercolor_hal::transport::bulk::UsbBulkTransport;
 use hypercolor_hal::transport::control::UsbControlTransport;
 use hypercolor_hal::transport::hid::UsbHidTransport;
+use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::DeviceId;
@@ -25,7 +27,6 @@ use super::discovery::TransportScanner;
 use super::traits::{BackendInfo, DeviceBackend};
 use super::usb_scanner::UsbScanner;
 
-const RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_000);
 const RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const MAX_RETRIES: u8 = 3;
 
@@ -58,6 +59,10 @@ impl UsbBackend {
         Self::default()
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "transport setup fans out by transport family"
+    )]
     async fn build_transport(
         pending: &PendingUsbDevice,
         usb: &nusb::DeviceInfo,
@@ -103,40 +108,100 @@ impl UsbBackend {
             TransportType::UsbControl {
                 interface,
                 report_id,
-            } => {
-                let device = usb.open().await.with_context(|| {
-                    format!(
-                        "failed to open USB device {:04X}:{:04X}",
-                        pending.vendor_id, pending.product_id
-                    )
-                })?;
-                let transport = UsbControlTransport::new(device, interface, report_id)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "failed to claim USB interface {interface} for control transport (report_id=0x{report_id:02X}); interface may be busy (kernel or another userspace driver)"
-                        )
-                })?;
-                Ok(Box::new(transport))
-            }
+            } => Self::open_control_transport(pending, usb, interface, report_id).await,
             TransportType::UsbHid { interface } => {
-                let device = usb.open().await.with_context(|| {
-                    format!(
-                        "failed to open USB device {:04X}:{:04X}",
-                        pending.vendor_id, pending.product_id
-                    )
-                })?;
-                let transport = UsbHidTransport::new(device, interface).await.with_context(
-                    || {
-                        format!(
-                            "failed to claim USB interface {interface} for HID interrupt transport"
-                        )
-                    },
-                )?;
-                Ok(Box::new(transport))
+                Self::open_hid_transport(pending, usb, interface).await
+            }
+            TransportType::UsbBulk {
+                interface,
+                report_id,
+            } => Self::open_bulk_transport(pending, usb, interface, report_id).await,
+            TransportType::UsbSerial { baud_rate } => {
+                Self::open_serial_transport(pending, baud_rate)
             }
             TransportType::UsbVendor => Ok(Box::new(UsbVendorTransport::new())),
         }
+    }
+
+    async fn open_control_transport(
+        pending: &PendingUsbDevice,
+        usb: &nusb::DeviceInfo,
+        interface: u8,
+        report_id: u8,
+    ) -> Result<Box<dyn Transport>> {
+        let device = Self::open_usb_device(pending, usb).await?;
+        let transport = UsbControlTransport::new(device, interface, report_id)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to claim USB interface {interface} for control transport (report_id=0x{report_id:02X}); interface may be busy (kernel or another userspace driver)"
+                )
+            })?;
+        Ok(Box::new(transport))
+    }
+
+    async fn open_hid_transport(
+        pending: &PendingUsbDevice,
+        usb: &nusb::DeviceInfo,
+        interface: u8,
+    ) -> Result<Box<dyn Transport>> {
+        let device = Self::open_usb_device(pending, usb).await?;
+        let transport = UsbHidTransport::new(device, interface)
+            .await
+            .with_context(|| {
+                format!("failed to claim USB interface {interface} for HID interrupt transport")
+            })?;
+        Ok(Box::new(transport))
+    }
+
+    async fn open_bulk_transport(
+        pending: &PendingUsbDevice,
+        usb: &nusb::DeviceInfo,
+        interface: u8,
+        report_id: u8,
+    ) -> Result<Box<dyn Transport>> {
+        let device = Self::open_usb_device(pending, usb).await?;
+        let transport = UsbBulkTransport::new(device, interface, report_id)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to claim USB interface {interface} for bulk transport (report_id=0x{report_id:02X})"
+                )
+            })?;
+        Ok(Box::new(transport))
+    }
+
+    fn open_serial_transport(
+        pending: &PendingUsbDevice,
+        baud_rate: u32,
+    ) -> Result<Box<dyn Transport>> {
+        let transport = UsbSerialTransport::open(
+            pending.vendor_id,
+            pending.product_id,
+            baud_rate,
+            pending.serial.as_deref(),
+        )
+        .with_context(|| {
+            format!(
+                "failed to open serial transport for {:04X}:{:04X} (serial={})",
+                pending.vendor_id,
+                pending.product_id,
+                pending.serial.as_deref().unwrap_or("<none>")
+            )
+        })?;
+        Ok(Box::new(transport))
+    }
+
+    async fn open_usb_device(
+        pending: &PendingUsbDevice,
+        usb: &nusb::DeviceInfo,
+    ) -> Result<nusb::Device> {
+        usb.open().await.with_context(|| {
+            format!(
+                "failed to open USB device {:04X}:{:04X}",
+                pending.vendor_id, pending.product_id
+            )
+        })
     }
 
     async fn run_commands(
@@ -186,6 +251,7 @@ impl UsbBackend {
             total_commands,
             expects_response = command.expects_response,
             post_delay_ms = command.post_delay.as_millis(),
+            transfer_type = ?command.transfer_type,
             packet = %describe_packet(&command.data),
             "usb command queued"
         );
@@ -229,10 +295,11 @@ impl UsbBackend {
                     command_index = command_position,
                     total_commands,
                     attempt = attempt + 1,
+                    transfer_type = ?command.transfer_type,
                     "usb send starting"
                 );
                 transport
-                    .send(&command.data)
+                    .send_with_type(&command.data, command.transfer_type)
                     .await
                     .map_err(map_transport_error)?;
             }
@@ -255,10 +322,15 @@ impl UsbBackend {
             command_index = command_position,
             total_commands,
             attempt = *attempt + 1,
+            transfer_type = ?command.transfer_type,
             "usb send_receive starting"
         );
         let response = transport
-            .send_receive(&command.data, RESPONSE_TIMEOUT)
+            .send_receive_with_type(
+                &command.data,
+                protocol.response_timeout(),
+                command.transfer_type,
+            )
             .await
             .map_err(map_transport_error)?;
 
@@ -353,12 +425,13 @@ impl UsbBackend {
                     "usb keepalive tick"
                 );
 
-                if let Err(error) = Self::run_commands(
-                    protocol.as_ref(),
-                    transport.as_ref(),
-                    keepalive.commands.clone(),
-                )
-                .await
+                let commands = protocol.keepalive_commands();
+                if commands.is_empty() {
+                    continue;
+                }
+
+                if let Err(error) =
+                    Self::run_commands(protocol.as_ref(), transport.as_ref(), commands).await
                 {
                     warn!(
                         device_id = %device_id,

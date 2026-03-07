@@ -83,6 +83,11 @@ pub enum ZoneTopologySummary {
     Matrix { rows: u32, cols: u32 },
     Ring { count: u32 },
     Point,
+    Display {
+        width: u32,
+        height: u32,
+        circular: bool,
+    },
     Custom,
 }
 
@@ -1603,6 +1608,15 @@ fn summarize_zone_topology(topology: &DeviceTopologyHint) -> ZoneTopologySummary
         },
         DeviceTopologyHint::Ring { count } => ZoneTopologySummary::Ring { count: *count },
         DeviceTopologyHint::Point => ZoneTopologySummary::Point,
+        DeviceTopologyHint::Display {
+            width,
+            height,
+            circular,
+        } => ZoneTopologySummary::Display {
+            width: *width,
+            height: *height,
+            circular: *circular,
+        },
         DeviceTopologyHint::Custom => ZoneTopologySummary::Custom,
     }
 }
@@ -1648,8 +1662,11 @@ fn backend_id_for_family(family: &DeviceFamily) -> String {
         DeviceFamily::OpenRgb => "openrgb".to_owned(),
         DeviceFamily::Wled => "wled".to_owned(),
         DeviceFamily::Hue => "hue".to_owned(),
-        DeviceFamily::Razer | DeviceFamily::LianLi | DeviceFamily::PrismRgb => "usb".to_owned(),
-        DeviceFamily::Corsair => "corsair-bridge".to_owned(),
+        DeviceFamily::Razer
+        | DeviceFamily::Corsair
+        | DeviceFamily::Dygma
+        | DeviceFamily::LianLi
+        | DeviceFamily::PrismRgb => "usb".to_owned(),
         DeviceFamily::Custom(name) => name.to_ascii_lowercase(),
     }
 }
@@ -1661,6 +1678,7 @@ fn attachment_family_id(family: &DeviceFamily) -> String {
         DeviceFamily::Hue => "hue".to_owned(),
         DeviceFamily::Razer => "razer".to_owned(),
         DeviceFamily::Corsair => "corsair".to_owned(),
+        DeviceFamily::Dygma => "dygma".to_owned(),
         DeviceFamily::LianLi => "lianli".to_owned(),
         DeviceFamily::PrismRgb => "prismrgb".to_owned(),
         DeviceFamily::Custom(name) => name

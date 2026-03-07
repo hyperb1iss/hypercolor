@@ -34,12 +34,35 @@ pub trait Protocol: Send + Sync {
         None
     }
 
+    /// Resolve the command sequence to send for a keepalive tick.
+    ///
+    /// By default this reuses the static command list from [`keepalive`].
+    /// Protocols with stateful keepalives can override this to generate
+    /// commands from their latest internal state.
+    fn keepalive_commands(&self) -> Vec<ProtocolCommand> {
+        self.keepalive()
+            .map_or_else(Vec::new, |keepalive| keepalive.commands)
+    }
+
     /// Parse a raw device response payload.
     ///
     /// # Errors
     ///
     /// Returns [`ProtocolError`] when the response is malformed or invalid.
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError>;
+
+    /// Response timeout budget for commands that expect a reply.
+    fn response_timeout(&self) -> Duration {
+        Duration::from_millis(1_000)
+    }
+
+    /// Encode a display frame from JPEG-compressed image data.
+    ///
+    /// Only implemented by protocols that drive pixel displays.
+    #[must_use]
+    fn encode_display_frame(&self, _jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
+        None
+    }
 
     /// Zone descriptors for this device.
     fn zones(&self) -> Vec<ProtocolZone>;
@@ -54,6 +77,20 @@ pub trait Protocol: Send + Sync {
     fn frame_interval(&self) -> Duration;
 }
 
+/// Transport path hint for a protocol command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransferType {
+    /// Use the transport's default data path.
+    #[default]
+    Primary,
+
+    /// Use a bulk endpoint path.
+    Bulk,
+
+    /// Use HID feature reports over control transfers.
+    HidReport,
+}
+
 /// One transport-ready command produced by a protocol encoder.
 #[derive(Debug, Clone)]
 pub struct ProtocolCommand {
@@ -65,6 +102,9 @@ pub struct ProtocolCommand {
 
     /// Minimum delay after sending this command.
     pub post_delay: Duration,
+
+    /// Transport path hint for this command.
+    pub transfer_type: TransferType,
 }
 
 /// A low-frequency protocol command sequence that should be run periodically

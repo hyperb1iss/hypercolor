@@ -408,6 +408,8 @@ fn build_device_info(device_id: DeviceId, wled_info: &WledDeviceInfo, _ip: IpAdd
             led_count: u32::from(wled_info.led_count),
             supports_direct: true,
             supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
             max_fps: wled_info.negotiated_target_fps(),
         },
     }

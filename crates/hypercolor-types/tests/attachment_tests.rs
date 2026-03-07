@@ -66,6 +66,8 @@ fn sample_device() -> DeviceInfo {
             led_count: 282,
             supports_direct: true,
             supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
             max_fps: 60,
         },
     }

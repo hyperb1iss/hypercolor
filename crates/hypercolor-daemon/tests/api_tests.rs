@@ -7,9 +7,11 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
 
+use anyhow::Result;
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -35,6 +37,50 @@ fn test_app() -> axum::Router {
 /// Build a test router with shared state (for multi-step tests).
 fn test_app_with_state(state: Arc<AppState>) -> axum::Router {
     api::build_router(state, None)
+}
+
+struct NoopBackend {
+    info: BackendInfo,
+}
+
+impl NoopBackend {
+    fn new(id: &str, name: &str) -> Self {
+        Self {
+            info: BackendInfo {
+                id: id.to_owned(),
+                name: name.to_owned(),
+                description: "Test no-op backend".to_owned(),
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for NoopBackend {
+    fn info(&self) -> BackendInfo {
+        self.info.clone()
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        Ok(())
+    }
+}
+
+async fn register_noop_backend(state: &Arc<AppState>, id: &str, name: &str) {
+    let mut manager = state.backend_manager.lock().await;
+    manager.register_backend(Box::new(NoopBackend::new(id, name)));
 }
 
 /// Extract the JSON body from a response.
@@ -289,6 +335,8 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
             led_count: 60,
             supports_direct: true,
             supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
             max_fps: 60,
         },
     };
@@ -344,6 +392,8 @@ async fn list_devices_includes_structured_zone_topology_hints() {
             led_count: 96,
             supports_direct: true,
             supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
             max_fps: 60,
         },
     };
@@ -2690,6 +2740,7 @@ async fn list_devices_rejects_invalid_limit() {
 #[tokio::test]
 async fn identify_device_validates_and_returns_canonical_id() {
     let state = Arc::new(AppState::new());
+    register_noop_backend(&state, "wled", "WLED Test Backend").await;
     let device_id = insert_test_device(&state, "Keyboard").await;
     let _ = state
         .device_registry

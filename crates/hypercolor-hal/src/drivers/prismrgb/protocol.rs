@@ -8,6 +8,7 @@ use tracing::warn;
 
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
+    TransferType,
 };
 
 const CHANNELS_PRISM_8: usize = 8;
@@ -400,6 +401,8 @@ impl Protocol for PrismRgbProtocol {
             led_count: self.total_leds(),
             supports_direct: true,
             supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
             max_fps: 60,
         }
     }
@@ -466,7 +469,7 @@ fn encode_color(color: [u8; 3], scale: f32, format: DeviceColorFormat) -> [u8; 3
     match format {
         DeviceColorFormat::Grb => [gs, rs, bs],
         DeviceColorFormat::Rbg => [rs, bs, gs],
-        DeviceColorFormat::Rgb | DeviceColorFormat::Rgbw => [rs, gs, bs],
+        DeviceColorFormat::Rgb | DeviceColorFormat::Rgbw | DeviceColorFormat::Jpeg => [rs, gs, bs],
     }
 }
 
@@ -479,6 +482,7 @@ fn command_from_packet(
         data: packet.to_vec(),
         expects_response,
         post_delay,
+        transfer_type: TransferType::Primary,
     }
 }
 

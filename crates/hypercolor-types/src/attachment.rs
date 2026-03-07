@@ -501,6 +501,9 @@ fn suggested_categories(topology: &DeviceTopologyHint) -> Vec<AttachmentCategory
         DeviceTopologyHint::Point => {
             vec![AttachmentCategory::Bulb, other_attachment_category()]
         }
+        DeviceTopologyHint::Display { .. } => {
+            vec![AttachmentCategory::Matrix, other_attachment_category()]
+        }
         DeviceTopologyHint::Custom => vec![other_attachment_category()],
     }
 }

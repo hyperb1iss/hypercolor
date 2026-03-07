@@ -131,6 +131,12 @@ pub struct DeviceCapabilities {
     /// Whether brightness can be controlled independently of color.
     pub supports_brightness: bool,
 
+    /// Whether the device exposes a pixel display surface.
+    pub has_display: bool,
+
+    /// Display resolution in pixels, when applicable.
+    pub display_resolution: Option<(u32, u32)>,
+
     /// Maximum sustainable frame rate (0 = unknown / unlimited).
     pub max_fps: u32,
 }
@@ -141,6 +147,8 @@ impl Default for DeviceCapabilities {
             led_count: 0,
             supports_direct: true,
             supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
             max_fps: 60,
         }
     }
@@ -197,6 +205,16 @@ pub enum DeviceTopologyHint {
     /// Single-LED point source (e.g., Hue bulb).
     Point,
 
+    /// Pixel display (LCD, OLED, etc.).
+    Display {
+        /// Display width in pixels.
+        width: u32,
+        /// Display height in pixels.
+        height: u32,
+        /// Whether the panel is circular.
+        circular: bool,
+    },
+
     /// Arbitrary positions defined in the spatial layout.
     Custom,
 }
@@ -243,6 +261,9 @@ pub enum DeviceFamily {
     /// Native Corsair devices (and bridge-managed Corsair in phase 1).
     Corsair,
 
+    /// Native Dygma keyboards over USB serial.
+    Dygma,
+
     /// Native Lian Li USB hub devices.
     LianLi,
 
@@ -261,6 +282,7 @@ impl fmt::Display for DeviceFamily {
             Self::Hue => write!(f, "Philips Hue"),
             Self::Razer => write!(f, "Razer"),
             Self::Corsair => write!(f, "Corsair"),
+            Self::Dygma => write!(f, "Dygma"),
             Self::LianLi => write!(f, "Lian Li"),
             Self::PrismRgb => write!(f, "PrismRGB"),
             Self::Custom(name) => write!(f, "{name}"),
@@ -341,6 +363,9 @@ pub enum DeviceColorFormat {
 
     /// Red-Blue-Green channel order.
     Rbg,
+
+    /// JPEG-compressed pixel data.
+    Jpeg,
 }
 
 impl fmt::Display for DeviceColorFormat {
@@ -350,6 +375,7 @@ impl fmt::Display for DeviceColorFormat {
             Self::Rgbw => write!(f, "RGBW"),
             Self::Grb => write!(f, "GRB"),
             Self::Rbg => write!(f, "RBG"),
+            Self::Jpeg => write!(f, "JPEG"),
         }
     }
 }

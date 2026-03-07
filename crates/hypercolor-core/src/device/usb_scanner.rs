@@ -48,6 +48,8 @@ impl UsbScanner {
                     led_count: fallback_led_count,
                     supports_direct: true,
                     supports_brightness: true,
+                    has_display: false,
+                    display_resolution: None,
                     max_fps: 60,
                 },
             )
@@ -154,6 +156,7 @@ fn vendor_name_for_family(family: &DeviceFamily) -> &'static str {
         DeviceFamily::Hue => "Philips Hue",
         DeviceFamily::Razer => "Razer",
         DeviceFamily::Corsair => "Corsair",
+        DeviceFamily::Dygma => "Dygma",
         DeviceFamily::LianLi => "Lian Li",
         DeviceFamily::PrismRgb => "PrismRGB",
         DeviceFamily::Custom(_) => "Unknown",
