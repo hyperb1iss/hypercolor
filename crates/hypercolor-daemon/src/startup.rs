@@ -300,10 +300,12 @@ impl DaemonState {
         // ── Attachment Template Registry ─────────────────────────────
         let attachment_templates_dir = ConfigManager::data_dir().join("attachments");
         let mut attachment_registry_inner = AttachmentRegistry::new();
-        let builtin_count = attachment_registry_inner.load_builtins().unwrap_or_else(|error| {
-            warn!(%error, "Failed to load built-in attachment templates");
-            0
-        });
+        let builtin_count = attachment_registry_inner
+            .load_builtins()
+            .unwrap_or_else(|error| {
+                warn!(%error, "Failed to load built-in attachment templates");
+                0
+            });
         let user_count = attachment_registry_inner
             .load_user_dir(&attachment_templates_dir)
             .unwrap_or_else(|error| {

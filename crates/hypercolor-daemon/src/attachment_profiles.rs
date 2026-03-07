@@ -33,7 +33,10 @@ impl AttachmentProfileStore {
         }
 
         let raw = fs::read_to_string(path).with_context(|| {
-            format!("failed to read attachment profile store at {}", path.display())
+            format!(
+                "failed to read attachment profile store at {}",
+                path.display()
+            )
         })?;
         let profiles: HashMap<String, DeviceAttachmentProfile> = serde_json::from_str(&raw)
             .with_context(|| {

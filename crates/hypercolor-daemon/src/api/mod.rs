@@ -4,13 +4,13 @@
 //! the shared [`AppState`] that every handler receives via Axum's
 //! [`State`](axum::extract::State) extractor.
 
+pub mod attachments;
 pub mod config;
 pub mod control_values;
 pub mod devices;
 pub mod diagnose;
 pub mod effects;
 pub mod envelope;
-pub mod attachments;
 pub mod layouts;
 pub mod library;
 pub mod preview;
@@ -183,8 +183,8 @@ impl AppState {
         }
 
         let attachment_profiles_path = ConfigManager::data_dir().join("attachment-profiles.json");
-        let attachment_profiles =
-            AttachmentProfileStore::load(&attachment_profiles_path).unwrap_or_else(|error| {
+        let attachment_profiles = AttachmentProfileStore::load(&attachment_profiles_path)
+            .unwrap_or_else(|error| {
                 warn!(
                     path = %attachment_profiles_path.display(),
                     %error,

@@ -217,7 +217,10 @@ async fn attachment_catalog_and_metadata_endpoints_work() {
     .await;
     assert_eq!(list_response.status(), StatusCode::OK);
     let list_json = body_json(list_response).await;
-    assert_eq!(list_json["data"]["items"][0]["id"], "generic-argb-fan-6-leds");
+    assert_eq!(
+        list_json["data"]["items"][0]["id"],
+        "generic-argb-fan-6-leds"
+    );
     assert_eq!(list_json["data"]["items"][0]["vendor"], "Generic");
 
     let detail_response = send_empty(
@@ -420,7 +423,10 @@ async fn device_attachment_profile_flow_persists_and_blocks_in_use_template_dele
     .await;
     assert_eq!(update_response.status(), StatusCode::OK);
     let update_json = body_json(update_response).await;
-    assert_eq!(update_json["data"]["bindings"][0]["effective_led_count"], 24);
+    assert_eq!(
+        update_json["data"]["bindings"][0]["effective_led_count"],
+        24
+    );
     assert_eq!(
         update_json["data"]["suggested_zones"]
             .as_array()
@@ -438,8 +444,12 @@ async fn device_attachment_profile_flow_persists_and_blocks_in_use_template_dele
         "attachment profile store should be written"
     );
 
-    let get_response = send_empty(&app, "GET", format!("/api/v1/devices/{device_id}/attachments"))
-        .await;
+    let get_response = send_empty(
+        &app,
+        "GET",
+        format!("/api/v1/devices/{device_id}/attachments"),
+    )
+    .await;
     assert_eq!(get_response.status(), StatusCode::OK);
     let get_json = body_json(get_response).await;
     assert_eq!(get_json["data"]["slots"][0]["id"], "main");

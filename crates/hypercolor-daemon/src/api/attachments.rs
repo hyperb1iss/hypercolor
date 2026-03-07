@@ -266,10 +266,7 @@ pub async fn list_vendors(State(state): State<Arc<AppState>>) -> Response {
     reason = "private handler helper returns a concrete HTTP response on validation failure"
 )]
 fn build_filter(query: &ListTemplatesQuery) -> Result<TemplateFilter, Response> {
-    let category = query
-        .category
-        .as_deref()
-        .map(AttachmentCategory::from_raw);
+    let category = query.category.as_deref().map(AttachmentCategory::from_raw);
     let origin = match query.origin.as_deref() {
         Some("built_in") => Some(AttachmentOrigin::BuiltIn),
         Some("user") => Some(AttachmentOrigin::User),

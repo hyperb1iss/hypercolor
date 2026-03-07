@@ -471,9 +471,7 @@ pub async fn update_attachments(
         let mut profiles = state.attachment_profiles.write().await;
         profiles.update(&device_key, profile);
         if let Err(error) = profiles.save() {
-            return ApiError::internal(format!(
-                "Failed to persist attachment profile: {error}"
-            ));
+            return ApiError::internal(format!("Failed to persist attachment profile: {error}"));
         }
     }
 
@@ -1364,7 +1362,9 @@ fn preview_attachment_zones(bindings: &[ResolvedAttachmentBinding]) -> Vec<Attac
     zones
 }
 
-fn suggested_attachment_zones(bindings: &[ResolvedAttachmentBinding]) -> Vec<AttachmentSuggestedZone> {
+fn suggested_attachment_zones(
+    bindings: &[ResolvedAttachmentBinding],
+) -> Vec<AttachmentSuggestedZone> {
     let mut zones = Vec::new();
 
     for binding in bindings {
@@ -1572,11 +1572,11 @@ async fn active_layout_targets_device(
     }
 
     let spatial = state.spatial_engine.read().await;
-    spatial
-        .layout()
-        .zones
-        .iter()
-        .any(|zone| logical_ids.iter().any(|candidate| candidate == &zone.device_id))
+    spatial.layout().zones.iter().any(|zone| {
+        logical_ids
+            .iter()
+            .any(|candidate| candidate == &zone.device_id)
+    })
 }
 
 fn map_physical_device_alias(
@@ -1665,7 +1665,9 @@ fn attachment_family_id(family: &DeviceFamily) -> String {
         DeviceFamily::PrismRgb => "prismrgb".to_owned(),
         DeviceFamily::Custom(name) => name
             .chars()
-            .filter(|character| character.is_ascii_alphanumeric() || *character == '_' || *character == '-')
+            .filter(|character| {
+                character.is_ascii_alphanumeric() || *character == '_' || *character == '-'
+            })
             .collect::<String>()
             .to_ascii_lowercase(),
     }
