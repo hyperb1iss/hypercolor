@@ -9,8 +9,7 @@ use std::sync::{LazyLock, RwLock};
 /// Application directory name, appended to all platform base paths.
 const APP_DIR: &str = "hypercolor";
 
-static DATA_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> =
-    LazyLock::new(|| RwLock::new(None));
+static DATA_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(|| RwLock::new(None));
 
 /// Returns the platform-appropriate configuration directory.
 ///

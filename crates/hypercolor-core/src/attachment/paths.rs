@@ -19,7 +19,10 @@ pub fn resolve_attachment_path(path: &Path) -> Result<PathBuf> {
         if path.exists() {
             return Ok(path.to_path_buf());
         }
-        bail!("absolute attachment template path does not exist: {}", path.display());
+        bail!(
+            "absolute attachment template path does not exist: {}",
+            path.display()
+        );
     }
 
     let mut candidates = vec![bundled_attachments_root().join(path)];

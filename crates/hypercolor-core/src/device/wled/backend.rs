@@ -453,14 +453,27 @@ async fn exit_realtime_mode(ip: IpAddr) -> Result<()> {
     .await
 }
 
+/// Prime a device with black frames to flush WLED's internal state.
+///
+/// Bypasses dedup intentionally — all three frames are identical black
+/// but must actually be sent to ensure WLED fully transitions to realtime.
 async fn prime_device(device: &mut WledDevice) -> Result<()> {
     let black_frame =
         vec![0_u8; usize::from(device.led_count) * device.color_format.bytes_per_pixel()];
 
     for _ in 0..REALTIME_PRIME_FRAMES {
-        device.send_frame(&black_frame).await?;
+        // Send directly via protocol, bypassing send_frame() dedup logic
+        match device.protocol {
+            WledProtocol::Ddp => device.send_ddp(&black_frame).await?,
+            WledProtocol::E131 => device.send_e131(&black_frame).await?,
+        }
         tokio::time::sleep(REALTIME_PRIME_DELAY).await;
     }
+
+    // Seed dedup cache with the black frame so the first real render
+    // frame won't be suppressed if it happens to also be black
+    device.last_sent_pixels = Some(black_frame);
+    device.last_frame_at = Some(Instant::now());
 
     Ok(())
 }

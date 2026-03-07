@@ -268,7 +268,10 @@ fn device_zone_construction() {
     assert_eq!(zone.zone_name.as_deref(), Some("atx"));
     assert_eq!(zone.group_id.as_deref(), Some("pc-case"));
     assert_eq!(zone.topology.led_count(), 24);
-    assert_eq!(zone.led_mapping.as_deref(), Some(expected_mapping.as_slice()));
+    assert_eq!(
+        zone.led_mapping.as_deref(),
+        Some(expected_mapping.as_slice())
+    );
     assert!((zone.scale - 1.0).abs() < f32::EPSILON);
 }
 

@@ -83,9 +83,11 @@ impl AttachmentRegistry {
 
         for (relative_path, raw_toml) in EMBEDDED_ATTACHMENT_TEMPLATES {
             let manifest: AttachmentTemplateManifest =
-                toml::from_str(raw_toml).map_err(|source| AttachmentRegistryError::ParseManifest {
-                    path: PathBuf::from(relative_path),
-                    source,
+                toml::from_str(raw_toml).map_err(|source| {
+                    AttachmentRegistryError::ParseManifest {
+                        path: PathBuf::from(relative_path),
+                        source,
+                    }
                 })?;
             self.register_manifest(manifest, AttachmentOrigin::BuiltIn)?;
             loaded = loaded.saturating_add(1);
@@ -200,7 +202,11 @@ impl AttachmentRegistry {
             left.vendor
                 .to_ascii_lowercase()
                 .cmp(&right.vendor.to_ascii_lowercase())
-                .then_with(|| left.name.to_ascii_lowercase().cmp(&right.name.to_ascii_lowercase()))
+                .then_with(|| {
+                    left.name
+                        .to_ascii_lowercase()
+                        .cmp(&right.name.to_ascii_lowercase())
+                })
                 .then_with(|| left.id.cmp(&right.id))
         });
         templates
@@ -250,7 +256,11 @@ impl AttachmentRegistry {
             .iter()
             .map(|(vendor, ids)| (vendor.clone(), ids.len()))
             .collect();
-        items.sort_by(|left, right| left.0.to_ascii_lowercase().cmp(&right.0.to_ascii_lowercase()));
+        items.sort_by(|left, right| {
+            left.0
+                .to_ascii_lowercase()
+                .cmp(&right.0.to_ascii_lowercase())
+        });
         items
     }
 
@@ -296,10 +306,11 @@ fn collect_toml_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
-        let entries = fs::read_dir(&dir).map_err(|source| AttachmentRegistryError::ReadDirectory {
-            path: dir.clone(),
-            source,
-        })?;
+        let entries =
+            fs::read_dir(&dir).map_err(|source| AttachmentRegistryError::ReadDirectory {
+                path: dir.clone(),
+                source,
+            })?;
 
         for entry in entries {
             let entry = entry.map_err(|source| AttachmentRegistryError::ReadDirectory {
@@ -307,12 +318,13 @@ fn collect_toml_files(root: &Path) -> Result<Vec<PathBuf>> {
                 source,
             })?;
             let path = entry.path();
-            let file_type = entry.file_type().map_err(|source| {
-                AttachmentRegistryError::ReadDirectory {
-                    path: path.clone(),
-                    source,
-                }
-            })?;
+            let file_type =
+                entry
+                    .file_type()
+                    .map_err(|source| AttachmentRegistryError::ReadDirectory {
+                        path: path.clone(),
+                        source,
+                    })?;
 
             if file_type.is_dir() {
                 stack.push(path);
@@ -342,7 +354,10 @@ fn template_matches_filter(template: &AttachmentTemplate, filter: &TemplateFilte
         return false;
     }
 
-    if filter.origin.is_some_and(|origin| template.origin != origin) {
+    if filter
+        .origin
+        .is_some_and(|origin| template.origin != origin)
+    {
         return false;
     }
 
