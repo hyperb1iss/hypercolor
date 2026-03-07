@@ -24,6 +24,8 @@ struct SlowRecordingBackend {
     delay: Duration,
     writes: Arc<Mutex<Vec<Vec<[u8; 3]>>>>,
     write_count: Arc<AtomicUsize>,
+    target_fps: Option<u32>,
+    write_times: Option<Arc<Mutex<Vec<Instant>>>>,
 }
 
 impl SlowRecordingBackend {
@@ -38,7 +40,19 @@ impl SlowRecordingBackend {
             delay,
             writes,
             write_count,
+            target_fps: None,
+            write_times: None,
         }
+    }
+
+    fn with_target_fps(mut self, target_fps: u32) -> Self {
+        self.target_fps = Some(target_fps);
+        self
+    }
+
+    fn with_write_times(mut self, write_times: Arc<Mutex<Vec<Instant>>>) -> Self {
+        self.write_times = Some(write_times);
+        self
     }
 }
 
@@ -86,8 +100,19 @@ impl DeviceBackend for SlowRecordingBackend {
 
         tokio::time::sleep(self.delay).await;
         self.write_count.fetch_add(1, Ordering::Relaxed);
+        if let Some(write_times) = &self.write_times {
+            write_times.lock().await.push(Instant::now());
+        }
         self.writes.lock().await.push(colors.to_vec());
         Ok(())
+    }
+
+    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+        if *id == self.expected_device_id {
+            self.target_fps
+        } else {
+            None
+        }
     }
 }
 
@@ -408,6 +433,45 @@ async fn disconnect_device_disconnects_and_unmaps_layout_device() {
     let stats = manager.write_frame(&zone_colors, &layout).await;
     assert_eq!(stats.devices_written, 0);
     assert!(stats.errors.is_empty());
+}
+
+#[tokio::test]
+async fn connect_device_caches_backend_target_fps_for_output_queue() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(5),
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    )
+    .with_target_fps(37);
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager
+        .connect_device("slow", device_id, "slow:fps-cache")
+        .await
+        .expect("connect should succeed");
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:fps-cache", 4)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[1, 2, 3]; 4],
+    }];
+    manager.write_frame(&zone_colors, &layout).await;
+    tokio::time::sleep(Duration::from_millis(40)).await;
+
+    assert_eq!(manager.cached_target_fps("slow", device_id), Some(37));
+
+    let snapshot = manager.debug_snapshot();
+    let queue = snapshot
+        .queues
+        .first()
+        .expect("expected one queue snapshot");
+    assert_eq!(queue.target_fps, 37);
+    assert_eq!(queue.frames_sent, 1);
 }
 
 #[tokio::test]
@@ -1014,4 +1078,63 @@ async fn write_frame_drops_stale_intermediate_payloads() {
         "debug snapshot should track dropped stale frames"
     );
     assert_eq!(queue.mapped_layout_ids, vec!["slow:strip".to_string()]);
+}
+
+#[tokio::test]
+async fn write_frame_uses_interval_pacing_for_cached_target_fps() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let write_times = Arc::new(Mutex::new(Vec::<Instant>::new()));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::ZERO,
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    )
+    .with_target_fps(10)
+    .with_write_times(Arc::clone(&write_times));
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager
+        .connect_device("slow", device_id, "slow:paced")
+        .await
+        .expect("connect should succeed");
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:paced", 4)]);
+    let first = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[255, 0, 0]; 4],
+    }];
+    let second = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[0, 0, 255]; 4],
+    }];
+
+    manager.write_frame(&first, &layout).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    manager.write_frame(&second, &layout).await;
+
+    tokio::time::sleep(Duration::from_millis(220)).await;
+
+    let write_times = write_times.lock().await.clone();
+    assert!(
+        write_times.len() >= 2,
+        "expected paced backend to receive two writes"
+    );
+    let delta = write_times[1].saturating_duration_since(write_times[0]);
+    assert!(
+        delta >= Duration::from_millis(70),
+        "expected interval pacing between writes, delta={delta:?}"
+    );
+
+    let snapshot = manager.debug_snapshot();
+    let queue = snapshot
+        .queues
+        .first()
+        .expect("expected one queue snapshot");
+    assert_eq!(queue.target_fps, 10);
+    assert_eq!(queue.frames_sent, 2);
 }

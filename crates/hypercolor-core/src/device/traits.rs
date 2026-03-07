@@ -128,6 +128,16 @@ pub trait DeviceBackend: Send + Sync {
             self.info().id
         );
     }
+
+    /// Preferred output frame rate for a connected device.
+    ///
+    /// Backends can override this to inform the manager's per-device output
+    /// queue pacing. Returning `None` keeps the manager default.
+    #[must_use]
+    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+        let _ = id;
+        None
+    }
 }
 
 // ── DevicePlugin ─────────────────────────────────────────────────────────

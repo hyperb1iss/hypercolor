@@ -6,8 +6,8 @@
 //! it groups zone colors by target device and queues a single payload per
 //! device for asynchronous transmission.
 
-use std::collections::HashMap;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,7 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
+use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{debug, trace, warn};
 
 use hypercolor_types::device::DeviceId;
@@ -197,11 +198,7 @@ impl OutputQueue {
         let metrics_for_task = Arc::clone(&metrics);
 
         let io_task = tokio::spawn(async move {
-            let frame_interval = if target_fps == 0 {
-                None
-            } else {
-                Some(Duration::from_secs_f64(1.0 / f64::from(target_fps)))
-            };
+            let mut interval = interval_for_target_fps(target_fps);
 
             let mut last_sent_sequence = 0_u64;
 
@@ -214,6 +211,10 @@ impl OutputQueue {
                 let Some(frame) = rx.borrow_and_update().clone() else {
                     continue;
                 };
+
+                if let Some(ref mut limiter) = interval {
+                    limiter.tick().await;
+                }
 
                 if frame.sequence > last_sent_sequence + 1 {
                     let dropped = frame.sequence - last_sent_sequence - 1;
@@ -229,7 +230,6 @@ impl OutputQueue {
                     );
                 }
 
-                let send_started = Instant::now();
                 let result = {
                     let mut backend = backend.lock().await;
                     backend.write_colors(&device_id, &frame.colors).await
@@ -262,13 +262,6 @@ impl OutputQueue {
                 }
 
                 last_sent_sequence = frame.sequence;
-
-                if let Some(interval) = frame_interval {
-                    let elapsed = send_started.elapsed();
-                    if let Some(remaining) = interval.checked_sub(elapsed) {
-                        tokio::time::sleep(remaining).await;
-                    }
-                }
             }
         });
 
@@ -362,6 +355,9 @@ pub struct BackendManager {
     /// Per-target latest-frame output queues.
     output_queues: HashMap<BackendDeviceKey, OutputQueue>,
 
+    /// Preferred output FPS for connected devices, captured at connect time.
+    device_fps_cache: HashMap<BackendDeviceKey, u32>,
+
     /// Reference-counted direct-control locks that suppress queued frame writes.
     direct_control_locks: HashMap<BackendDeviceKey, usize>,
 }
@@ -413,6 +409,8 @@ impl BackendManager {
         // They are lazily recreated on the next frame.
         self.output_queues
             .retain(|(queued_backend_id, _), _| queued_backend_id != &backend_id);
+        self.device_fps_cache
+            .retain(|(cached_backend_id, _), _| cached_backend_id != &backend_id);
         self.direct_control_locks
             .retain(|(locked_backend_id, _), _| locked_backend_id != &backend_id);
 
@@ -521,6 +519,10 @@ impl BackendManager {
                     "connect succeeded after discovery refresh"
                 );
             }
+
+            let target_fps = backend.target_fps(&device_id).unwrap_or(60);
+            self.device_fps_cache
+                .insert((backend_id.to_owned(), device_id), target_fps);
         }
 
         self.map_device(
@@ -554,6 +556,8 @@ impl BackendManager {
         }
 
         let _ = self.remove_device_mappings_for_physical(backend_id, device_id);
+        self.device_fps_cache
+            .remove(&(backend_id.to_owned(), device_id));
         Ok(())
     }
 
@@ -761,10 +765,7 @@ impl BackendManager {
             let remapped_colors = remap_zone_colors(
                 &zc.zone_id,
                 &zc.colors,
-                zone_to_mapping
-                    .get(zc.zone_id.as_str())
-                    .copied()
-                    .flatten(),
+                zone_to_mapping.get(zc.zone_id.as_str()).copied().flatten(),
             );
 
             let Some(mapping) = self.device_map.get(*layout_device_id) else {
@@ -850,14 +851,20 @@ impl BackendManager {
 
         if !self.output_queues.contains_key(&key) {
             let backend = self.backends.get(backend_id)?.clone();
-
-            // Use a 60fps default for now; backend-specific caps can be
-            // introduced once the trait grows explicit max-fps reporting.
-            let queue = OutputQueue::spawn(backend_id.to_owned(), device_id, backend, 60);
+            let target_fps = self.device_fps_cache.get(&key).copied().unwrap_or(60);
+            let queue = OutputQueue::spawn(backend_id.to_owned(), device_id, backend, target_fps);
             self.output_queues.insert(key.clone(), queue);
         }
 
         self.output_queues.get_mut(&key)
+    }
+
+    /// Return the cached target FPS for a connected physical device, if present.
+    #[must_use]
+    pub fn cached_target_fps(&self, backend_id: &str, device_id: DeviceId) -> Option<u32> {
+        self.device_fps_cache
+            .get(&(backend_id.to_owned(), device_id))
+            .copied()
     }
 
     /// Build a debug snapshot of queue and routing internals.
@@ -948,6 +955,16 @@ impl BackendManager {
             orphaned_queues,
         }
     }
+}
+
+fn interval_for_target_fps(target_fps: u32) -> Option<Interval> {
+    if target_fps == 0 {
+        return None;
+    }
+
+    let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(target_fps)));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    Some(interval)
 }
 
 fn remap_zone_colors<'a>(
