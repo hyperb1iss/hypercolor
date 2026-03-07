@@ -28,7 +28,7 @@ use super::e131::{
 const REALTIME_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
 const REALTIME_PRIME_FRAMES: usize = 3;
 const REALTIME_PRIME_DELAY: Duration = Duration::from_millis(50);
-const DEDUP_THRESHOLD: u8 = 2;
+const DEFAULT_DEDUP_THRESHOLD: u8 = 2;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -208,6 +208,8 @@ pub struct WledDevice {
     e131_cid: uuid::Uuid,
     /// Starting E1.31 universe number for this device.
     e131_start_universe: u16,
+    /// Per-device threshold for fuzzy frame deduplication.
+    dedup_threshold: u8,
     /// Last pixel data successfully sent.
     last_sent_pixels: Option<Vec<u8>>,
     /// Rolling count of consecutive send failures.
@@ -235,10 +237,10 @@ impl WledDevice {
             .is_none_or(|last_frame_at| last_frame_at.elapsed() >= KEEPALIVE_INTERVAL);
 
         if !force_send
-            && self
-                .last_sent_pixels
-                .as_deref()
-                .is_some_and(|last| pixels_match_with_threshold(last, pixel_data, DEDUP_THRESHOLD))
+            && self.last_sent_pixels.as_deref().is_some_and(|last| {
+                self.dedup_threshold > 0
+                    && pixels_match_with_threshold(last, pixel_data, self.dedup_threshold)
+            })
         {
             return Ok(());
         }
@@ -549,6 +551,9 @@ pub struct WledBackend {
     /// Whether connect/disconnect should manage WLED realtime mode over HTTP.
     realtime_http_enabled: bool,
 
+    /// Global fuzzy deduplication threshold for connected devices.
+    dedup_threshold: u8,
+
     /// E1.31 sender CID (stable UUID per backend instance).
     e131_cid: uuid::Uuid,
 
@@ -579,6 +584,7 @@ impl WledBackend {
             default_protocol: WledProtocol::default(),
             shared_socket: None,
             realtime_http_enabled: true,
+            dedup_threshold: DEFAULT_DEDUP_THRESHOLD,
             e131_cid: uuid::Uuid::now_v7(),
             next_e131_universe: 1,
         }
@@ -592,6 +598,11 @@ impl WledBackend {
     /// Enable or disable HTTP realtime-mode lifecycle calls.
     pub fn set_realtime_http_enabled(&mut self, enabled: bool) {
         self.realtime_http_enabled = enabled;
+    }
+
+    /// Set the global fuzzy dedup threshold for newly connected devices.
+    pub fn set_dedup_threshold(&mut self, threshold: u8) {
+        self.dedup_threshold = threshold;
     }
 
     /// Seed the backend with a discovered device entry.
@@ -826,6 +837,7 @@ impl DeviceBackend for WledBackend {
             e131_sequences: E131SequenceTracker::default(),
             e131_cid: self.e131_cid,
             e131_start_universe,
+            dedup_threshold: self.dedup_threshold,
             last_sent_pixels: None,
             consecutive_failures: 0,
             last_success_at: None,

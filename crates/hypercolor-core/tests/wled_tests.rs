@@ -981,6 +981,50 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
 }
 
 #[tokio::test]
+async fn backend_write_colors_allows_duplicate_frames_when_dedup_is_disabled() {
+    let receiver = UdpSocket::bind("127.0.0.6:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let mut backend = WledBackend::new(vec![]);
+    backend.set_realtime_http_enabled(false);
+    backend.set_dedup_threshold(0);
+
+    let device_id = DeviceId::new();
+    backend.remember_device(
+        device_id,
+        "127.0.0.6".parse().expect("valid loopback IP"),
+        test_wled_info(2, false, 30, true),
+    );
+    backend
+        .connect(&device_id)
+        .await
+        .expect("connect should succeed");
+
+    let colors = [[7, 8, 9], [1, 2, 3]];
+    backend
+        .write_colors(&device_id, &colors)
+        .await
+        .expect("first write should succeed");
+    backend
+        .write_colors(&device_id, &colors)
+        .await
+        .expect("duplicate write should succeed when dedup is disabled");
+
+    let mut packet = [0_u8; 64];
+    let (first_len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+        .await
+        .expect("expected first DDP frame")
+        .expect("recv first DDP frame");
+    let (second_len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+        .await
+        .expect("expected second DDP frame")
+        .expect("recv second DDP frame");
+
+    assert_eq!(first_len, DDP_HEADER_SIZE + 6);
+    assert_eq!(second_len, DDP_HEADER_SIZE + 6);
+}
+
+#[tokio::test]
 async fn backend_write_colors_truncates_oversized_frames() {
     let receiver = UdpSocket::bind("127.0.0.5:4048")
         .await

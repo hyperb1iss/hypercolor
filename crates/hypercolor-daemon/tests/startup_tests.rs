@@ -138,6 +138,7 @@ fft_size = 2048
 default_protocol = "e131"
 known_ips = ["192.168.1.50"]
 realtime_http_enabled = false
+dedup_threshold = 0
 
 [features]
 wasm_plugins = true
@@ -152,6 +153,7 @@ wasm_plugins = true
     assert_eq!(config.wled.default_protocol, WledProtocolConfig::E131);
     assert_eq!(config.wled.known_ips.len(), 1);
     assert!(!config.wled.realtime_http_enabled);
+    assert_eq!(config.wled.dedup_threshold, 0);
     assert!(config.features.wasm_plugins);
 }
 
@@ -176,6 +178,7 @@ fn default_config_has_sane_values() {
     assert_eq!(config.wled.default_protocol, WledProtocolConfig::Ddp);
     assert!(config.wled.realtime_http_enabled);
     assert!(config.wled.known_ips.is_empty());
+    assert_eq!(config.wled.dedup_threshold, 2);
     assert!(config.include.is_empty());
 }
 

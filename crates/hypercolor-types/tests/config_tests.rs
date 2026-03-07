@@ -84,6 +84,7 @@ fn wled_defaults_match_spec() {
     assert!(w.known_ips.is_empty());
     assert_eq!(w.default_protocol, WledProtocolConfig::Ddp);
     assert!(w.realtime_http_enabled);
+    assert_eq!(w.dedup_threshold, 2);
 }
 
 #[test]
@@ -188,6 +189,7 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.tui.theme, "silkcircuit");
     assert_eq!(config.wled.default_protocol, WledProtocolConfig::Ddp);
     assert!(config.wled.realtime_http_enabled);
+    assert_eq!(config.wled.dedup_threshold, 2);
 }
 
 #[test]
@@ -222,6 +224,7 @@ fft_size = 2048
 default_protocol = "e131"
 known_ips = ["192.168.1.50"]
 realtime_http_enabled = false
+dedup_threshold = 0
 "#;
     let config: HypercolorConfig = toml::from_str(partial).expect("deserialize partial config");
     assert_eq!(config.daemon.port, 8080);
@@ -236,6 +239,7 @@ realtime_http_enabled = false
     assert_eq!(config.wled.default_protocol, WledProtocolConfig::E131);
     assert_eq!(config.wled.known_ips.len(), 1);
     assert!(!config.wled.realtime_http_enabled);
+    assert_eq!(config.wled.dedup_threshold, 0);
 }
 
 // ─── Enum Serialization ─────────────────────────────────────────────────────

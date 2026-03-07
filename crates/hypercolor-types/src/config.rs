@@ -90,6 +90,9 @@ mod defaults {
     pub fn openrgb_port() -> u16 {
         6742
     }
+    pub fn wled_dedup_threshold() -> u8 {
+        2
+    }
 
     // D-Bus
     pub fn bus_name() -> String {
@@ -471,6 +474,10 @@ pub struct WledConfig {
     /// Whether startup/shutdown should toggle WLED realtime mode over HTTP.
     #[serde(default = "defaults::bool_true")]
     pub realtime_http_enabled: bool,
+
+    /// Fuzzy frame dedup threshold (0 disables deduplication).
+    #[serde(default = "defaults::wled_dedup_threshold")]
+    pub dedup_threshold: u8,
 }
 
 impl Default for WledConfig {
@@ -479,6 +486,7 @@ impl Default for WledConfig {
             known_ips: Vec::new(),
             default_protocol: WledProtocolConfig::default(),
             realtime_http_enabled: defaults::bool_true(),
+            dedup_threshold: defaults::wled_dedup_threshold(),
         }
     }
 }

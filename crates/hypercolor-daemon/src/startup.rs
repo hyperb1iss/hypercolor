@@ -983,6 +983,7 @@ fn build_wled_backend(config: &HypercolorConfig) -> WledBackend {
     };
     backend.set_protocol(protocol);
     backend.set_realtime_http_enabled(config.wled.realtime_http_enabled);
+    backend.set_dedup_threshold(config.wled.dedup_threshold);
     backend
 }
 
