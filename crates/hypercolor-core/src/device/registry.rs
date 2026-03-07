@@ -49,6 +49,9 @@ struct RegistryInner {
 
     /// Reverse index for cleanup: `DeviceId` -> fingerprint.
     id_to_fingerprint: HashMap<DeviceId, DeviceFingerprint>,
+
+    /// Scanner-provided metadata keyed by canonical device ID.
+    metadata_by_id: HashMap<DeviceId, HashMap<String, String>>,
 }
 
 impl DeviceRegistry {
@@ -79,6 +82,18 @@ impl DeviceRegistry {
         info: DeviceInfo,
         fingerprint: DeviceFingerprint,
     ) -> DeviceId {
+        self.add_with_fingerprint_and_metadata(info, fingerprint, HashMap::new())
+            .await
+    }
+
+    /// Register a device using a stable scanner-provided fingerprint plus
+    /// transport metadata such as IP address or hostname.
+    pub async fn add_with_fingerprint_and_metadata(
+        &self,
+        info: DeviceInfo,
+        fingerprint: DeviceFingerprint,
+        metadata: HashMap<String, String>,
+    ) -> DeviceId {
         let mut inner = self.inner.write().await;
 
         // Check for existing device by fingerprint
@@ -96,6 +111,9 @@ impl DeviceRegistry {
                 inner
                     .id_to_fingerprint
                     .insert(existing_id, fingerprint.clone());
+                if !metadata.is_empty() {
+                    inner.metadata_by_id.insert(existing_id, metadata);
+                }
                 return existing_id;
             }
 
@@ -127,6 +145,9 @@ impl DeviceRegistry {
 
         inner.fingerprints.insert(fingerprint.clone(), id);
         inner.id_to_fingerprint.insert(id, fingerprint);
+        if !metadata.is_empty() {
+            inner.metadata_by_id.insert(id, metadata);
+        }
         inner.devices.insert(id, tracked);
 
         info!(device_id = %id, name = %name, "Device added to registry");
@@ -148,6 +169,7 @@ impl DeviceRegistry {
                 let fallback = DeviceFingerprint(id.as_uuid().to_string());
                 inner.fingerprints.remove(&fallback);
             }
+            inner.metadata_by_id.remove(id);
             info!(device_id = %id, "Device removed from registry");
         } else {
             warn!(device_id = %id, "Attempted to remove unknown device");
@@ -192,6 +214,20 @@ impl DeviceRegistry {
             warn!(device_id = %id, "State update for unknown device");
             false
         }
+    }
+
+    /// Replace the stored metadata for a tracked device while preserving its
+    /// canonical ID and lifecycle state.
+    pub async fn update_info(&self, id: &DeviceId, info: DeviceInfo) -> Option<TrackedDevice> {
+        let mut inner = self.inner.write().await;
+        let entry = inner.devices.get_mut(id)?;
+
+        let mut updated_info = info;
+        updated_info.id = *id;
+        entry.info = updated_info;
+
+        debug!(device_id = %id, "Updated device metadata in registry");
+        Some(entry.clone())
     }
 
     /// Update user-facing mutable settings for a tracked device.
@@ -257,6 +293,12 @@ impl DeviceRegistry {
     pub async fn fingerprint_for_id(&self, id: &DeviceId) -> Option<DeviceFingerprint> {
         let inner = self.inner.read().await;
         inner.id_to_fingerprint.get(id).cloned()
+    }
+
+    /// Look up scanner-provided transport metadata by device ID.
+    pub async fn metadata_for_id(&self, id: &DeviceId) -> Option<HashMap<String, String>> {
+        let inner = self.inner.read().await;
+        inner.metadata_by_id.get(id).cloned()
     }
 
     /// Snapshot of the fingerprint index (`fingerprint -> device_id`).

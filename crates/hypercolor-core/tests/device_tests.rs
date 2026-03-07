@@ -460,6 +460,28 @@ async fn registry_fingerprint_lookup_round_trips_device_id() {
 }
 
 #[tokio::test]
+async fn registry_preserves_scanner_metadata() {
+    let registry = DeviceRegistry::new();
+    let fingerprint = DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned());
+    let info = mock_device_info("Metadata Device");
+    let mut metadata = HashMap::new();
+    metadata.insert("ip".to_owned(), "192.168.1.42".to_owned());
+    metadata.insert("hostname".to_owned(), "wled-desk".to_owned());
+
+    let id = registry
+        .add_with_fingerprint_and_metadata(info, fingerprint, metadata.clone())
+        .await;
+
+    assert_eq!(
+        registry
+            .metadata_for_id(&id)
+            .await
+            .expect("metadata should exist"),
+        metadata
+    );
+}
+
+#[tokio::test]
 async fn registry_remove() {
     let registry = DeviceRegistry::new();
     let device = mock_device_info("Temporary Device");

@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{debug, trace, warn};
 
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -26,6 +26,7 @@ use super::traits::DeviceBackend;
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type BackendDeviceKey = (String, DeviceId);
+const UNMAPPED_LAYOUT_WARN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Contiguous LED range on a physical device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,6 +372,9 @@ pub struct BackendManager {
 
     /// Reference-counted direct-control locks that suppress queued frame writes.
     direct_control_locks: HashMap<BackendDeviceKey, usize>,
+
+    /// Last warning time for layout device IDs that had no live mapping.
+    last_unmapped_warn_at: HashMap<String, Instant>,
 }
 
 /// Internal mapping from a layout device identifier to a backend + device.
@@ -463,6 +467,7 @@ impl BackendManager {
             segment_length = segment.map(|s| s.length),
             "mapped device"
         );
+        self.last_unmapped_warn_at.remove(&layout_id);
         self.device_map.insert(
             layout_id,
             DeviceMapping {
@@ -542,6 +547,34 @@ impl BackendManager {
             device_id,
         );
         Ok(())
+    }
+
+    /// Query refreshed metadata for a connected physical device.
+    ///
+    /// Backends can use this to expose connect-time topology discovery back
+    /// to the daemon after a successful handshake.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend is missing or metadata retrieval fails.
+    pub async fn connected_device_info(
+        &self,
+        backend_id: &str,
+        device_id: DeviceId,
+    ) -> Result<Option<DeviceInfo>> {
+        let Some(backend) = self.backends.get(backend_id).cloned() else {
+            bail!("backend '{backend_id}' is not registered");
+        };
+
+        let backend = backend.lock().await;
+        backend
+            .connected_device_info(&device_id)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to fetch connected device metadata for {device_id} using backend '{backend_id}'"
+                )
+            })
     }
 
     /// Disconnect a physical device and unmap its layout device identifier.
@@ -781,7 +814,23 @@ impl BackendManager {
             );
 
             let Some(mapping) = self.device_map.get(*layout_device_id) else {
-                // Not mapped — device may not be connected. Silent skip.
+                let layout_device_id = *layout_device_id;
+                let should_warn =
+                    self.last_unmapped_warn_at
+                        .get(layout_device_id)
+                        .is_none_or(|last_warn_at| {
+                            last_warn_at.elapsed() >= UNMAPPED_LAYOUT_WARN_INTERVAL
+                        });
+
+                if should_warn {
+                    warn!(
+                        zone_id = %zc.zone_id,
+                        layout_device_id = %layout_device_id,
+                        "zone skipped because the target layout device is not mapped to a connected backend device"
+                    );
+                    self.last_unmapped_warn_at
+                        .insert(layout_device_id.to_owned(), Instant::now());
+                }
                 continue;
             };
 

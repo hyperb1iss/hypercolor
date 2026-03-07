@@ -444,6 +444,12 @@ async fn maybe_idle_throttle(
         return None;
     }
 
+    if can_idle_throttle && !*idle_black_pushed {
+        debug!(
+            "No active effect or capture input; layout changes render black until an effect or input source starts"
+        );
+    }
+
     if can_idle_throttle && *idle_black_pushed {
         {
             let mut rl = state.render_loop.write().await;

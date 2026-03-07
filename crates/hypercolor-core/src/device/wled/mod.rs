@@ -43,6 +43,7 @@ async fn fetch_wled_info(ip: IpAddr) -> Result<backend::WledDeviceInfo> {
         .get(&url)
         .send()
         .await
+        .and_then(reqwest::Response::error_for_status)
         .with_context(|| format!("HTTP request to {url} failed"))?;
 
     let json: serde_json::Value = resp

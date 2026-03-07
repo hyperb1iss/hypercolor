@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use hypercolor_types::config::{HypercolorConfig, LogLevel};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -24,8 +25,8 @@ struct DaemonArgs {
     bind: Option<String>,
 
     /// Log level (trace, debug, info, warn, error).
-    #[arg(long, default_value = "info")]
-    log_level: String,
+    #[arg(long)]
+    log_level: Option<String>,
 
     /// Serve the web UI from this directory (static files with SPA fallback).
     #[arg(long)]
@@ -42,21 +43,24 @@ struct DaemonArgs {
 async fn main() -> Result<()> {
     let args = DaemonArgs::parse();
 
+    // Load configuration before tracing so we can honor config-driven log
+    // levels when the CLI flag is omitted.
+    let (config, config_path) = load_config(args.config.as_deref()).await?;
+    let log_level = resolve_log_level(args.log_level.as_deref(), &config);
+
     // 1. Initialize tracing with the requested log level.
     //    The `RUST_LOG` env var takes precedence if set.
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(default_env_filter(&args.log_level)));
+        .unwrap_or_else(|_| EnvFilter::new(default_env_filter(&log_level)));
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     info!(
         version = env!("CARGO_PKG_VERSION"),
         bind = ?args.bind,
+        log_level = %log_level,
         "Hypercolor daemon starting"
     );
-
-    // 2. Load configuration.
-    let (config, config_path) = load_config(args.config.as_deref()).await?;
 
     info!(
         schema_version = config.schema_version,
@@ -149,4 +153,51 @@ fn default_env_filter(log_level: &str) -> String {
     }
 
     normalized
+}
+
+fn resolve_log_level(cli_log_level: Option<&str>, config: &HypercolorConfig) -> String {
+    cli_log_level.map_or_else(
+        || config_log_level_name(&config.daemon.log_level).to_owned(),
+        |value| value.trim().to_ascii_lowercase(),
+    )
+}
+
+const fn config_log_level_name(level: &LogLevel) -> &'static str {
+    match level {
+        LogLevel::Trace => "trace",
+        LogLevel::Debug => "debug",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_env_filter, resolve_log_level};
+    use hypercolor_types::config::{HypercolorConfig, LogLevel};
+
+    #[test]
+    fn resolve_log_level_prefers_cli_flag() {
+        let mut config = HypercolorConfig::default();
+        config.daemon.log_level = LogLevel::Warn;
+
+        assert_eq!(resolve_log_level(Some("debug"), &config), "debug");
+    }
+
+    #[test]
+    fn resolve_log_level_falls_back_to_config() {
+        let mut config = HypercolorConfig::default();
+        config.daemon.log_level = LogLevel::Debug;
+
+        assert_eq!(resolve_log_level(None, &config), "debug");
+    }
+
+    #[test]
+    fn default_env_filter_scopes_hypercolor_debug_logs() {
+        assert_eq!(
+            default_env_filter("debug"),
+            "warn,hypercolor=debug,hypercolor_daemon=debug,hypercolor_core=debug,hypercolor_hal=debug,hypercolor_types=debug"
+        );
+    }
 }

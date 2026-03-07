@@ -426,6 +426,7 @@ async fn post_realtime_state(ip: IpAddr, body: serde_json::Value) -> Result<()> 
         .json(&body)
         .send()
         .await
+        .and_then(reqwest::Response::error_for_status)
         .with_context(|| format!("Failed to update WLED realtime state for {ip}"))?;
 
     Ok(())

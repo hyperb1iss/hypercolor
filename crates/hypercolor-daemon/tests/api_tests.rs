@@ -18,8 +18,8 @@ use uuid::Uuid;
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-    DeviceState, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
+    DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
@@ -2703,6 +2703,61 @@ async fn list_devices_supports_filters() {
     let query_json = body_json(query_response).await;
     assert_eq!(query_json["data"]["pagination"]["total"], 1);
     assert_eq!(query_json["data"]["items"][0]["name"], "Desk Strip");
+}
+
+#[tokio::test]
+async fn list_devices_includes_network_metadata_when_available() {
+    let state = Arc::new(AppState::new());
+    let info = DeviceInfo {
+        id: DeviceId::new(),
+        name: "Desk Strip".to_owned(),
+        vendor: "test-vendor".to_owned(),
+        family: DeviceFamily::Wled,
+        model: None,
+        connection_type: ConnectionType::Network,
+        zones: vec![ZoneInfo {
+            name: "Main".to_owned(),
+            led_count: 60,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: Some("0.1.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 60,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 60,
+        },
+    };
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("ip".to_owned(), "192.168.1.42".to_owned());
+    metadata.insert("hostname".to_owned(), "wled-desk".to_owned());
+    let _ = state
+        .device_registry
+        .add_with_fingerprint_and_metadata(
+            info,
+            DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned()),
+            metadata,
+        )
+        .await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/devices")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["items"][0]["network_ip"], "192.168.1.42");
+    assert_eq!(json["data"]["items"][0]["network_hostname"], "wled-desk");
 }
 
 #[tokio::test]

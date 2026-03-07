@@ -63,6 +63,8 @@ pub struct DeviceSummary {
     pub backend: String,
     pub status: String,
     pub firmware_version: Option<String>,
+    pub network_ip: Option<String>,
+    pub network_hostname: Option<String>,
     pub total_leds: u32,
     pub zones: Vec<ZoneSummary>,
 }
@@ -80,8 +82,13 @@ pub struct ZoneSummary {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ZoneTopologySummary {
     Strip,
-    Matrix { rows: u32, cols: u32 },
-    Ring { count: u32 },
+    Matrix {
+        rows: u32,
+        cols: u32,
+    },
+    Ring {
+        count: u32,
+    },
     Point,
     Display {
         width: u32,
@@ -288,10 +295,15 @@ pub async fn list_devices(
             tracked.info.total_led_count(),
         )
         .await;
+        let metadata = state
+            .device_registry
+            .metadata_for_id(&tracked.info.id)
+            .await;
         items.push(summarize_device(
             &tracked.info,
             &tracked.state,
             layout_device_id,
+            metadata.as_ref(),
         ));
     }
     items.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
@@ -340,11 +352,16 @@ pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         tracked.info.total_led_count(),
     )
     .await;
+    let metadata = state
+        .device_registry
+        .metadata_for_id(&tracked.info.id)
+        .await;
 
     ApiResponse::ok(summarize_device(
         &tracked.info,
         &tracked.state,
         layout_device_id,
+        metadata.as_ref(),
     ))
 }
 
@@ -389,11 +406,16 @@ pub async fn update_device(
         updated.info.total_led_count(),
     )
     .await;
+    let metadata = state
+        .device_registry
+        .metadata_for_id(&updated.info.id)
+        .await;
 
     ApiResponse::ok(summarize_device(
         &updated.info,
         &updated.state,
         layout_device_id,
+        metadata.as_ref(),
     ))
 }
 
@@ -677,6 +699,13 @@ pub async fn identify_device(
     }
 
     let backend_id = backend_id_for_family(&tracked.info.family);
+    let network_metadata = state.device_registry.metadata_for_id(&device_id).await;
+    let network_ip = network_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("ip").cloned());
+    let network_hostname = network_metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("hostname").cloned());
     let manager = Arc::clone(&state.backend_manager);
     let on_frame = vec![identify_rgb; led_count];
     {
@@ -686,6 +715,8 @@ pub async fn identify_device(
             device_id = %device_id,
             led_count,
             color = ?identify_rgb,
+            network_ip = ?network_ip,
+            network_hostname = ?network_hostname,
             "identify enabling direct control and issuing initial on-frame"
         );
         manager.begin_direct_control(&backend_id, device_id);
@@ -714,6 +745,8 @@ pub async fn identify_device(
         led_count,
         duration_ms,
         color = ?identify_rgb,
+        network_ip = ?network_ip,
+        network_hostname = ?network_hostname,
         "Identify flash started"
     );
     tokio::spawn(run_identify_flash(
@@ -1250,6 +1283,7 @@ fn summarize_device(
     info: &DeviceInfo,
     state: &DeviceState,
     layout_device_id: String,
+    metadata: Option<&HashMap<String, String>>,
 ) -> DeviceSummary {
     DeviceSummary {
         id: info.id.to_string(),
@@ -1258,6 +1292,8 @@ fn summarize_device(
         backend: format!("{}", info.family),
         status: state.variant_name().to_lowercase(),
         firmware_version: info.firmware_version.clone(),
+        network_ip: metadata.and_then(|values| values.get("ip").cloned()),
+        network_hostname: metadata.and_then(|values| values.get("hostname").cloned()),
         total_leds: info.total_led_count(),
         zones: info
             .zones

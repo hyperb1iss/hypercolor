@@ -247,7 +247,11 @@ impl DiscoveryOrchestrator {
 
             let id = self
                 .registry
-                .add_with_fingerprint(discovered.info, fingerprint)
+                .add_with_fingerprint_and_metadata(
+                    discovered.info,
+                    fingerprint,
+                    discovered.metadata,
+                )
                 .await;
 
             if previously_known.is_some() {
