@@ -354,7 +354,7 @@ impl OutputQueue {
 /// one payload per device to a non-blocking output queue.
 #[derive(Default)]
 pub struct BackendManager {
-    /// Registered backends, keyed by `BackendInfo.id` (e.g., `"wled"`, `"openrgb"`).
+    /// Registered backends, keyed by `BackendInfo.id` (e.g., `"wled"`, `"usb"`).
     backends: HashMap<String, BackendHandle>,
 
     /// Maps spatial layout `DeviceZone.device_id` strings to `(backend_id, DeviceId)`.
@@ -659,6 +659,36 @@ impl BackendManager {
             .with_context(|| {
                 format!(
                     "failed to set brightness {brightness} on device {device_id} using backend '{backend_id}'"
+                )
+            })
+    }
+
+    /// Write one immediate JPEG display payload to a specific physical device.
+    ///
+    /// This bypasses spatial routing and targets display-capable backends
+    /// directly for screen/LCD updates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend is missing or the backend write fails.
+    pub async fn write_device_display_frame(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        jpeg_data: &[u8],
+    ) -> Result<()> {
+        let Some(backend) = self.backends.get(backend_id).cloned() else {
+            bail!("backend '{backend_id}' is not registered");
+        };
+
+        let mut backend = backend.lock().await;
+        backend
+            .write_display_frame(&device_id, jpeg_data)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to write {} display bytes to device {device_id} using backend '{backend_id}'",
+                    jpeg_data.len()
                 )
             })
     }

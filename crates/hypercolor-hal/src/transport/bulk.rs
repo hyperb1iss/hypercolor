@@ -27,7 +27,6 @@ pub struct UsbBulkTransport {
     report_id: u8,
     out_endpoint_address: u8,
     in_endpoint_address: u8,
-    out_max_packet_size: usize,
     in_max_packet_size: usize,
     out_endpoint: Arc<Mutex<nusb::Endpoint<Bulk, Out>>>,
     in_endpoint: Arc<Mutex<nusb::Endpoint<Bulk, In>>>,
@@ -114,7 +113,6 @@ impl UsbBulkTransport {
             report_id,
             out_endpoint_address: out_address,
             in_endpoint_address: in_address,
-            out_max_packet_size,
             in_max_packet_size,
             out_endpoint: Arc::new(Mutex::new(out_handle)),
             in_endpoint: Arc::new(Mutex::new(in_handle)),
@@ -133,19 +131,18 @@ impl UsbBulkTransport {
     }
 
     fn send_bulk_locked(&self, data: &[u8]) -> Result<(), TransportError> {
-        let packet = normalize_packet(data, self.out_max_packet_size)?;
         let mut endpoint = lock_mutex(&self.out_endpoint, "bulk OUT endpoint")?;
 
         trace!(
             interface_number = self.interface_number,
             endpoint = format_args!("0x{:02X}", self.out_endpoint_address),
-            packet_len = packet.len(),
-            packet_hex = %format_hex_preview(&packet, 32),
+            packet_len = data.len(),
+            packet_hex = %format_hex_preview(data, 32),
             "usb bulk send"
         );
 
         endpoint
-            .transfer_blocking(packet.into(), DEFAULT_IO_TIMEOUT)
+            .transfer_blocking(data.to_vec().into(), DEFAULT_IO_TIMEOUT)
             .into_result()
             .map(|_| ())
             .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
@@ -308,26 +305,6 @@ impl Transport for UsbBulkTransport {
         self.closed.store(true, Ordering::Release);
         Ok(())
     }
-}
-
-fn normalize_packet(data: &[u8], endpoint_packet_size: usize) -> Result<Vec<u8>, TransportError> {
-    if data.len() > endpoint_packet_size {
-        return Err(TransportError::IoError {
-            detail: format!(
-                "packet too large for endpoint ({} > {})",
-                data.len(),
-                endpoint_packet_size
-            ),
-        });
-    }
-
-    if data.len() == endpoint_packet_size {
-        return Ok(data.to_vec());
-    }
-
-    let mut padded = vec![0_u8; endpoint_packet_size];
-    padded[..data.len()].copy_from_slice(data);
-    Ok(padded)
 }
 
 fn lock_mutex<'a, T>(

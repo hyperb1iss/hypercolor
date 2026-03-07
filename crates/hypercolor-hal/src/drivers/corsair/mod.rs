@@ -4,11 +4,19 @@ use std::time::Duration;
 
 pub mod devices;
 pub mod framing;
+pub mod lcd;
 pub mod lighting_node;
 pub mod link;
 pub mod types;
 
 pub use devices::descriptors;
+pub use lcd::devices::{
+    CORSAIR_LCD_INTERFACE, CORSAIR_LCD_REPORT_ID, PID_ELITE_CAPELLIX_LCD,
+    PID_ELITE_CAPELLIX_LCD_ALT, PID_ICUE_LINK_LCD, PID_NAUTILUS_RS_LCD, PID_XD6_ELITE_LCD,
+    build_elite_capellix_lcd_protocol, build_icue_link_lcd_protocol,
+    build_nautilus_rs_lcd_protocol, build_xd6_elite_lcd_protocol,
+};
+pub use lcd::protocol::CorsairLcdProtocol;
 pub use lighting_node::devices::{
     PID_1000D_OBSIDIAN, PID_COMMANDER_PRO, PID_LIGHTING_NODE_CORE, PID_LIGHTING_NODE_PRO,
     PID_LS100_STARTER_KIT, PID_LT100_TOWER, PID_SPEC_OMEGA_RGB, build_1000d_obsidian_protocol,

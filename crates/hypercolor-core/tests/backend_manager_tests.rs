@@ -334,6 +334,101 @@ impl DeviceBackend for MetadataRefreshingBackend {
     }
 }
 
+struct DisplayRecordingBackend {
+    expected_device_id: DeviceId,
+    connected: bool,
+    display_writes: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl DisplayRecordingBackend {
+    fn new(expected_device_id: DeviceId, display_writes: Arc<Mutex<Vec<Vec<u8>>>>) -> Self {
+        Self {
+            expected_device_id,
+            connected: false,
+            display_writes,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for DisplayRecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "display".to_owned(),
+            name: "Display Recording Backend".to_owned(),
+            description: "Records display payloads for tests".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(vec![DeviceInfo {
+            id: self.expected_device_id,
+            name: "Display Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::Custom("Test".to_owned()),
+            model: None,
+            connection_type: ConnectionType::Network,
+            zones: vec![ZoneInfo {
+                name: "Display".to_owned(),
+                led_count: 0,
+                topology: DeviceTopologyHint::Display {
+                    width: 480,
+                    height: 480,
+                    circular: true,
+                },
+                color_format: DeviceColorFormat::Jpeg,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities {
+                led_count: 0,
+                supports_direct: false,
+                supports_brightness: false,
+                has_display: true,
+                display_resolution: Some((480, 480)),
+                max_fps: 30,
+            },
+        }])
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connected = true;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connected = false;
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        Ok(())
+    }
+
+    async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected {
+            bail!("display write while disconnected");
+        }
+
+        self.display_writes.lock().await.push(jpeg_data.to_vec());
+        Ok(())
+    }
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn make_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
@@ -738,6 +833,26 @@ async fn connected_device_info_returns_backend_metadata() {
     );
     assert_eq!(info.capabilities.led_count, 12);
     assert_eq!(info.capabilities.max_fps, 30);
+}
+
+#[tokio::test]
+async fn write_device_display_frame_targets_backend_directly() {
+    let device_id = DeviceId::new();
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+
+    let mut backend = DisplayRecordingBackend::new(device_id, Arc::clone(&display_writes));
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+
+    let jpeg_data = vec![0xFF, 0xD8, 0xFF, 0xDB];
+    manager
+        .write_device_display_frame("display", device_id, &jpeg_data)
+        .await
+        .expect("display write should succeed");
+
+    assert_eq!(*display_writes.lock().await, vec![jpeg_data]);
 }
 
 #[tokio::test]

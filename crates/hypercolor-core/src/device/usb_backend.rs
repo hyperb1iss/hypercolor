@@ -636,6 +636,40 @@ impl DeviceBackend for UsbBackend {
         .with_context(|| format!("USB frame write failed for device {id}"))
     }
 
+    async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+        let Some(device) = self.connected.get(id) else {
+            bail!("device {id} is not connected");
+        };
+
+        let commands = device
+            .protocol
+            .encode_display_frame(jpeg_data)
+            .with_context(|| {
+                format!("USB protocol does not support display output for device {id}")
+            })?;
+        let first_packet = commands.first().map_or_else(
+            || "<none>".to_owned(),
+            |command| describe_packet(&command.data),
+        );
+        debug!(
+            device_id = %id,
+            protocol = device.protocol.name(),
+            transport = device.transport.name(),
+            jpeg_bytes = jpeg_data.len(),
+            command_count = commands.len(),
+            first_packet = %first_packet,
+            "usb display write requested"
+        );
+
+        Self::run_commands(
+            device.protocol.as_ref(),
+            device.transport.as_ref(),
+            commands,
+        )
+        .await
+        .with_context(|| format!("USB display write failed for device {id}"))
+    }
+
     async fn set_brightness(&mut self, id: &DeviceId, brightness: u8) -> Result<()> {
         let Some(device) = self.connected.get(id) else {
             bail!("device {id} is not connected");

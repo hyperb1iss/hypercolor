@@ -1,6 +1,6 @@
 //! Core device backend and plugin traits.
 //!
-//! Every hardware protocol (WLED/DDP, USB HID, `OpenRGB` SDK TCP, Philips Hue)
+//! Every hardware protocol (WLED/DDP, USB HID, Philips Hue)
 //! implements [`DeviceBackend`] for communication and [`DevicePlugin`] for
 //! lifecycle registration with the engine.
 
@@ -19,12 +19,12 @@ use crate::types::device::{DeviceId, DeviceInfo};
 pub struct BackendInfo {
     /// Unique backend identifier used in configuration and feature gating.
     ///
-    /// Examples: `"wled"`, `"hid"`, `"openrgb"`, `"hue"`.
+    /// Examples: `"wled"`, `"hid"`, `"hue"`.
     pub id: String,
 
     /// Human-readable backend name for logging and UI display.
     ///
-    /// Examples: `"WLED (DDP)"`, `"USB HID (PrismRGB)"`, `"OpenRGB (TCP)"`.
+    /// Examples: `"WLED (DDP)"`, `"USB HID (PrismRGB)"`, `"Philips Hue"`.
     pub name: String,
 
     /// Short description of what this backend supports.
@@ -91,7 +91,6 @@ pub trait DeviceBackend: Send + Sync {
     ///
     /// For USB HID: opens the HID device file, runs initialization sequence.
     /// For WLED: verifies reachability via HTTP `/json/info`, caches metadata.
-    /// For `OpenRGB`: registers as a client for the specified controller.
     /// For Hue: authenticates with the bridge, establishes Entertainment stream.
     ///
     /// # Errors
@@ -103,8 +102,8 @@ pub trait DeviceBackend: Send + Sync {
     /// Cleanly disconnect from a device.
     ///
     /// For USB HID: sends the shutdown color, activates hardware mode, closes
-    /// the device file. For WLED: no action needed (stateless UDP). For
-    /// `OpenRGB`: releases the controller. For Hue: tears down Entertainment.
+    /// the device file. For WLED: no action needed (stateless UDP). For Hue:
+    /// tears down Entertainment.
     ///
     /// # Errors
     ///
@@ -126,6 +125,23 @@ pub trait DeviceBackend: Send + Sync {
     ///
     /// Returns an error if the device is disconnected or the write fails.
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()>;
+
+    /// Push a JPEG-compressed display frame to a connected device, if supported.
+    ///
+    /// This is used by display-capable devices such as LCD pump heads that
+    /// consume image data instead of per-LED color buffers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device is disconnected, display output is
+    /// unsupported, or the write fails.
+    async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+        let _ = (id, jpeg_data);
+        bail!(
+            "backend '{}' does not support device display output",
+            self.info().id
+        );
+    }
 
     /// Adjust hardware brightness for a connected device, if supported.
     ///
@@ -165,7 +181,7 @@ pub trait DeviceBackend: Send + Sync {
 /// 1. In [`build`](DevicePlugin::build): returns a boxed [`DeviceBackend`]
 ///    implementation for the engine to register.
 /// 2. In [`ready`](DevicePlugin::ready): verifies runtime dependencies
-///    (hidapi available, network reachable, `OpenRGB` SDK reachable).
+///    (hidapi available, network reachable, credentials present).
 /// 3. In [`teardown`](DevicePlugin::teardown): releases any OS-level resources.
 pub trait DevicePlugin: Send + Sync {
     /// Human-readable plugin name for logging and display.

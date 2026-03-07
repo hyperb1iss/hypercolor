@@ -1,10 +1,13 @@
 use std::time::Duration;
 
-use hypercolor_hal::drivers::corsair::framing::{LINK_WRITE_BUF_SIZE, build_link_packet};
-use hypercolor_hal::drivers::corsair::{
-    CORSAIR_KEEPALIVE_INTERVAL, CorsairLightingNodeProtocol, CorsairLinkProtocol, EP_GET_DEVICES,
+use hypercolor_hal::drivers::corsair::framing::{
+    LCD_PACKET_SIZE, LINK_WRITE_BUF_SIZE, build_link_packet,
 };
-use hypercolor_hal::protocol::{Protocol, ResponseStatus};
+use hypercolor_hal::drivers::corsair::{
+    CORSAIR_KEEPALIVE_INTERVAL, CorsairLcdProtocol, CorsairLightingNodeProtocol,
+    CorsairLinkProtocol, EP_GET_DEVICES,
+};
+use hypercolor_hal::protocol::{Protocol, ResponseStatus, TransferType};
 use hypercolor_types::device::DeviceTopologyHint;
 
 fn link_enumeration_response(records: &[(u8, u8, &str)]) -> Vec<u8> {
@@ -179,4 +182,106 @@ fn lighting_node_brightness_keepalive_and_shutdown_are_supported() {
     assert!(capabilities.supports_direct);
     assert!(capabilities.supports_brightness);
     assert_eq!(protocol.total_leds(), 408);
+}
+
+#[test]
+fn lcd_init_sequence_uses_hid_reports_and_reports_display_capabilities() {
+    let protocol = CorsairLcdProtocol::new("Test LCD", 480, 480, 0x40, 0x40, true, 0);
+    let commands = protocol.init_sequence();
+
+    assert_eq!(commands.len(), 4);
+    assert!(commands.iter().all(|command| command.expects_response));
+    assert!(commands.iter().all(|command| command.data.len() == 32));
+    assert!(
+        commands
+            .iter()
+            .all(|command| command.transfer_type == TransferType::HidReport)
+    );
+    assert_eq!(&commands[0].data[..4], &[0x03, 0x1D, 0x01, 0x00]);
+    assert_eq!(&commands[1].data[..2], &[0x03, 0x19]);
+    assert_eq!(
+        &commands[2].data[..6],
+        &[0x03, 0x20, 0x00, 0x19, 0x79, 0xE7]
+    );
+    assert_eq!(
+        &commands[3].data[..6],
+        &[0x03, 0x0B, 0x40, 0x01, 0x79, 0xE7]
+    );
+
+    let zones = protocol.zones();
+    assert_eq!(zones.len(), 1);
+    assert_eq!(zones[0].led_count, 0);
+    assert_eq!(
+        zones[0].topology,
+        DeviceTopologyHint::Display {
+            width: 480,
+            height: 480,
+            circular: true,
+        }
+    );
+
+    let capabilities = protocol.capabilities();
+    assert_eq!(capabilities.led_count, 0);
+    assert!(!capabilities.supports_direct);
+    assert!(capabilities.has_display);
+    assert_eq!(capabilities.display_resolution, Some((480, 480)));
+}
+
+#[test]
+fn lcd_encode_display_frame_chunks_bulk_packets_and_appends_keepalive() {
+    let protocol = CorsairLcdProtocol::new("Test LCD", 480, 480, 0x40, 0x40, true, 0);
+    let jpeg = (0_u16..1_500_u16)
+        .map(|value| u8::try_from(value % 251).unwrap_or_default())
+        .collect::<Vec<_>>();
+
+    let commands = protocol
+        .encode_display_frame(&jpeg)
+        .expect("display frames should be supported");
+
+    assert_eq!(commands.len(), 3);
+    assert_eq!(commands[0].transfer_type, TransferType::Bulk);
+    assert_eq!(commands[1].transfer_type, TransferType::Bulk);
+    assert_eq!(commands[2].transfer_type, TransferType::HidReport);
+    assert_eq!(commands[0].data.len(), LCD_PACKET_SIZE);
+    assert_eq!(
+        &commands[0].data[..8],
+        &[0x02, 0x05, 0x40, 0x00, 0x00, 0x00, 0xF8, 0x03]
+    );
+    assert_eq!(&commands[0].data[8..11], &[0x00, 0x01, 0x02]);
+    assert_eq!(
+        &commands[1].data[..8],
+        &[0x02, 0x05, 0x40, 0x01, 0x01, 0x00, 0xF8, 0x03]
+    );
+    assert_eq!(commands[1].data[492], 0);
+    assert_eq!(
+        &commands[2].data[..8],
+        &[0x03, 0x19, 0x40, 0x01, 0x02, 0x00, 0xF8, 0x03]
+    );
+}
+
+#[test]
+fn lcd_keepalive_and_shutdown_use_hid_reports() {
+    let protocol = CorsairLcdProtocol::new("Test LCD", 480, 480, 0x01, 0x40, true, 0);
+
+    let keepalive = protocol
+        .keepalive()
+        .expect("LCD protocol should expose keepalive");
+    assert_eq!(keepalive.interval, Duration::from_secs(30));
+    assert!(keepalive.commands.is_empty());
+
+    let keepalive_commands = protocol.keepalive_commands();
+    assert_eq!(keepalive_commands.len(), 1);
+    assert_eq!(keepalive_commands[0].transfer_type, TransferType::HidReport);
+    assert_eq!(
+        &keepalive_commands[0].data[..8],
+        &[0x03, 0x19, 0x40, 0x01, 0x00, 0x00, 0x00, 0x00]
+    );
+
+    let shutdown = protocol.shutdown_sequence();
+    assert_eq!(shutdown.len(), 1);
+    assert_eq!(shutdown[0].transfer_type, TransferType::HidReport);
+    assert_eq!(
+        &shutdown[0].data[..8],
+        &[0x03, 0x1E, 0x40, 0x01, 0x43, 0x00, 0x69, 0x00]
+    );
 }

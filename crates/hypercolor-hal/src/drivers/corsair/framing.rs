@@ -15,6 +15,15 @@ pub const LN_WRITE_BUF_SIZE: usize = 65;
 /// Lighting Node read buffer size.
 pub const LN_READ_BUF_SIZE: usize = 17;
 
+/// Corsair LCD bulk packet size.
+pub const LCD_PACKET_SIZE: usize = 1_024;
+
+/// JPEG payload capacity per LCD bulk packet.
+pub const LCD_DATA_PER_PACKET: usize = 1_016;
+
+/// Corsair LCD HID report size.
+pub const LCD_REPORT_SIZE: usize = 32;
+
 /// Pad a byte slice to a fixed length with zeros.
 #[must_use]
 pub fn pad_to(data: &[u8], len: usize) -> Vec<u8> {
@@ -60,4 +69,35 @@ pub fn build_link_write_buffer(data_type: [u8; 2], payload: &[u8]) -> Vec<u8> {
 #[must_use]
 pub fn chunk_bytes(data: &[u8], chunk_size: usize) -> Vec<Vec<u8>> {
     data.chunks(chunk_size).map(<[u8]>::to_vec).collect()
+}
+
+/// Build a fixed-size Corsair LCD display packet.
+#[must_use]
+pub fn build_lcd_display_packet(
+    zone_byte: u8,
+    final_packet: bool,
+    packet_number: u8,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut packet = vec![0_u8; LCD_PACKET_SIZE];
+    packet[0] = 0x02;
+    packet[1] = 0x05;
+    packet[2] = zone_byte;
+    packet[3] = u8::from(final_packet);
+    packet[4] = packet_number;
+    packet[6..8].copy_from_slice(
+        &u16::try_from(LCD_DATA_PER_PACKET)
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
+
+    let copy_len = payload.len().min(LCD_DATA_PER_PACKET);
+    packet[8..8 + copy_len].copy_from_slice(&payload[..copy_len]);
+    packet
+}
+
+/// Build a fixed-size Corsair LCD HID feature report.
+#[must_use]
+pub fn build_lcd_report(payload: &[u8]) -> Vec<u8> {
+    pad_to(payload, LCD_REPORT_SIZE)
 }
