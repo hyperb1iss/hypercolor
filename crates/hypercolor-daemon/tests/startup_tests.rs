@@ -9,6 +9,7 @@ use hypercolor_daemon::startup::{
     DaemonState, default_config, install_signal_handlers, load_config, parse_config_toml,
 };
 use hypercolor_daemon::{layout_store, runtime_state};
+use hypercolor_types::config::WledProtocolConfig;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
@@ -121,7 +122,7 @@ fn parse_config_toml_minimal() {
 
 #[test]
 fn parse_config_toml_with_overrides() {
-    let toml_str = r"
+    let toml_str = r#"
 schema_version = 3
 
 [daemon]
@@ -133,9 +134,14 @@ canvas_height = 400
 enabled = false
 fft_size = 2048
 
+[wled]
+default_protocol = "e131"
+known_ips = ["192.168.1.50"]
+realtime_http_enabled = false
+
 [features]
 wasm_plugins = true
-";
+"#;
 
     let config = parse_config_toml(toml_str).expect("config with overrides should parse");
     assert_eq!(config.daemon.target_fps, 45);
@@ -143,6 +149,9 @@ wasm_plugins = true
     assert_eq!(config.daemon.canvas_height, 400);
     assert!(!config.audio.enabled);
     assert_eq!(config.audio.fft_size, 2048);
+    assert_eq!(config.wled.default_protocol, WledProtocolConfig::E131);
+    assert_eq!(config.wled.known_ips.len(), 1);
+    assert!(!config.wled.realtime_http_enabled);
     assert!(config.features.wasm_plugins);
 }
 
@@ -164,6 +173,9 @@ fn default_config_has_sane_values() {
     assert_eq!(config.daemon.listen_address, "127.0.0.1");
     assert_eq!(config.daemon.canvas_width, 320);
     assert_eq!(config.daemon.canvas_height, 200);
+    assert_eq!(config.wled.default_protocol, WledProtocolConfig::Ddp);
+    assert!(config.wled.realtime_http_enabled);
+    assert!(config.wled.known_ips.is_empty());
     assert!(config.include.is_empty());
 }
 

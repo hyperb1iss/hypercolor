@@ -23,7 +23,7 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::openrgb::{ClientConfig as OpenRgbClientConfig, OpenRgbBackend};
-use hypercolor_core::device::wled::WledBackend;
+use hypercolor_core::device::wled::{WledBackend, WledProtocol};
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbBackend, UsbHotplugEvent,
     UsbHotplugMonitor,
@@ -42,7 +42,7 @@ use hypercolor_core::input::{InputManager, InteractionInput};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::config::{HypercolorConfig, WledProtocolConfig};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
@@ -260,8 +260,7 @@ impl DaemonState {
             },
         )));
         if config.discovery.wled_scan {
-            backend_manager_inner
-                .register_backend(Box::new(WledBackend::with_mdns_fallback(Vec::new(), true)));
+            backend_manager_inner.register_backend(Box::new(build_wled_backend(config)));
         }
         backend_manager_inner.register_backend(Box::new(UsbBackend::new()));
         let backend_manager = Arc::new(Mutex::new(backend_manager_inner));
@@ -971,6 +970,20 @@ fn build_input_manager(config: &HypercolorConfig) -> InputManager {
     }
 
     input_manager
+}
+
+fn build_wled_backend(config: &HypercolorConfig) -> WledBackend {
+    let mut backend = WledBackend::with_mdns_fallback(
+        config.wled.known_ips.clone(),
+        config.discovery.mdns_enabled,
+    );
+    let protocol = match config.wled.default_protocol {
+        WledProtocolConfig::Ddp => WledProtocol::Ddp,
+        WledProtocolConfig::E131 => WledProtocol::E131,
+    };
+    backend.set_protocol(protocol);
+    backend.set_realtime_http_enabled(config.wled.realtime_http_enabled);
+    backend
 }
 
 fn audio_source_from_device(device: &str) -> AudioSourceType {

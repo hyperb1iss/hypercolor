@@ -2,7 +2,8 @@
 
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
-    FeatureFlags, HypercolorConfig, LogLevel, ShutdownBehavior, TuiConfig, WebConfig,
+    FeatureFlags, HypercolorConfig, LogLevel, ShutdownBehavior, TuiConfig, WebConfig, WledConfig,
+    WledProtocolConfig,
 };
 use hypercolor_types::session::SessionConfig;
 
@@ -78,6 +79,14 @@ fn discovery_defaults_match_spec() {
 }
 
 #[test]
+fn wled_defaults_match_spec() {
+    let w = WledConfig::default();
+    assert!(w.known_ips.is_empty());
+    assert_eq!(w.default_protocol, WledProtocolConfig::Ddp);
+    assert!(w.realtime_http_enabled);
+}
+
+#[test]
 fn dbus_defaults_match_spec() {
     let d = DbusConfig::default();
     assert!(d.enabled);
@@ -144,6 +153,7 @@ fn full_config_toml_roundtrip() {
         audio: AudioConfig::default(),
         capture: CaptureConfig::default(),
         discovery: DiscoveryConfig::default(),
+        wled: WledConfig::default(),
         dbus: DbusConfig::default(),
         tui: TuiConfig::default(),
         features: FeatureFlags::default(),
@@ -176,6 +186,8 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.audio.device, "default");
     assert!(!config.capture.enabled);
     assert_eq!(config.tui.theme, "silkcircuit");
+    assert_eq!(config.wled.default_protocol, WledProtocolConfig::Ddp);
+    assert!(config.wled.realtime_http_enabled);
 }
 
 #[test]
@@ -195,7 +207,7 @@ some_future_field = "hello from the future"
 
 #[test]
 fn override_specific_defaults() {
-    let partial = r"
+    let partial = r#"
 schema_version = 2
 
 [daemon]
@@ -205,7 +217,12 @@ target_fps = 120
 [audio]
 enabled = false
 fft_size = 2048
-";
+
+[wled]
+default_protocol = "e131"
+known_ips = ["192.168.1.50"]
+realtime_http_enabled = false
+"#;
     let config: HypercolorConfig = toml::from_str(partial).expect("deserialize partial config");
     assert_eq!(config.daemon.port, 8080);
     assert_eq!(config.daemon.target_fps, 120);
@@ -216,6 +233,9 @@ fft_size = 2048
     assert_eq!(config.audio.fft_size, 2048);
     // Audio fields not overridden keep defaults
     assert!((config.audio.smoothing - 0.8).abs() < f32::EPSILON);
+    assert_eq!(config.wled.default_protocol, WledProtocolConfig::E131);
+    assert_eq!(config.wled.known_ips.len(), 1);
+    assert!(!config.wled.realtime_http_enabled);
 }
 
 // ─── Enum Serialization ─────────────────────────────────────────────────────

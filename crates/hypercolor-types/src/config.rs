@@ -4,6 +4,7 @@
 //! every optional section for forward/backward compatibility. A fresh install with
 //! zero config files boots the daemon entirely from compile-time defaults.
 
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -148,6 +149,9 @@ pub struct HypercolorConfig {
     pub discovery: DiscoveryConfig,
 
     #[serde(default)]
+    pub wled: WledConfig,
+
+    #[serde(default)]
     pub dbus: DbusConfig,
 
     #[serde(default)]
@@ -174,6 +178,7 @@ impl Default for HypercolorConfig {
             audio: AudioConfig::default(),
             capture: CaptureConfig::default(),
             discovery: DiscoveryConfig::default(),
+            wled: WledConfig::default(),
             dbus: DbusConfig::default(),
             tui: TuiConfig::default(),
             session: SessionConfig::default(),
@@ -435,6 +440,45 @@ impl Default for DiscoveryConfig {
             hue_scan: defaults::bool_true(),
             openrgb_host: defaults::openrgb_host(),
             openrgb_port: defaults::openrgb_port(),
+        }
+    }
+}
+
+// ─── WLED ───────────────────────────────────────────────────────────────────
+
+/// Default protocol for WLED realtime streaming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WledProtocolConfig {
+    /// Distributed Display Protocol (preferred).
+    #[default]
+    Ddp,
+    /// E1.31 / sACN output.
+    E131,
+}
+
+/// Global WLED backend settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WledConfig {
+    /// IPs that are always probed during WLED discovery.
+    #[serde(default)]
+    pub known_ips: Vec<IpAddr>,
+
+    /// Default realtime transport for newly connected WLED devices.
+    #[serde(default)]
+    pub default_protocol: WledProtocolConfig,
+
+    /// Whether startup/shutdown should toggle WLED realtime mode over HTTP.
+    #[serde(default = "defaults::bool_true")]
+    pub realtime_http_enabled: bool,
+}
+
+impl Default for WledConfig {
+    fn default() -> Self {
+        Self {
+            known_ips: Vec::new(),
+            default_protocol: WledProtocolConfig::default(),
+            realtime_http_enabled: defaults::bool_true(),
         }
     }
 }
