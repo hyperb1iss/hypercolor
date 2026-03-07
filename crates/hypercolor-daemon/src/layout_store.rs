@@ -64,3 +64,88 @@ pub fn save(path: &Path, store: &HashMap<String, SpatialLayout>) -> anyhow::Resu
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use hypercolor_types::spatial::{
+        DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+        StripDirection, ZoneGroup,
+    };
+    use tempfile::TempDir;
+
+    use super::{load, save};
+
+    fn sample_layout() -> SpatialLayout {
+        SpatialLayout {
+            id: "layout_saved".into(),
+            name: "Saved Layout".into(),
+            description: Some("Persisted for restore".into()),
+            canvas_width: 320,
+            canvas_height: 200,
+            zones: vec![DeviceZone {
+                id: "zone-1".into(),
+                name: "Desk Strip".into(),
+                device_id: "wled:desk".into(),
+                zone_name: None,
+                group_id: Some("desk".into()),
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(0.4, 0.1),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Strip {
+                    count: 30,
+                    direction: StripDirection::LeftToRight,
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: None,
+                edge_behavior: None,
+                shape: None,
+                shape_preset: None,
+                attachment: None,
+            }],
+            groups: vec![ZoneGroup {
+                id: "desk".into(),
+                name: "Desk".into(),
+                color: Some("#80ffea".into()),
+            }],
+            default_sampling_mode: SamplingMode::Bilinear,
+            default_edge_behavior: EdgeBehavior::Clamp,
+            spaces: None,
+            version: 1,
+        }
+    }
+
+    #[test]
+    fn load_returns_empty_store_when_file_is_missing() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("layouts.json");
+
+        let loaded = load(&path).expect("missing layout store should load as empty");
+
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn save_and_load_round_trip_layouts_with_groups() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("layouts.json");
+        let layout = sample_layout();
+        let mut store = HashMap::new();
+        store.insert(layout.id.clone(), layout.clone());
+
+        save(&path, &store).expect("save layout store");
+        let loaded = load(&path).expect("load layout store");
+        let recovered = loaded
+            .get(&layout.id)
+            .expect("saved layout should round-trip");
+
+        assert_eq!(recovered.name, layout.name);
+        assert_eq!(recovered.groups.len(), 1);
+        assert_eq!(recovered.groups[0].id, "desk");
+        assert_eq!(recovered.zones[0].group_id.as_deref(), Some("desk"));
+    }
+}

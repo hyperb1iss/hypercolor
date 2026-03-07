@@ -2,14 +2,55 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
+use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::startup::{
     DaemonState, default_config, install_signal_handlers, load_config, parse_config_toml,
 };
+use hypercolor_daemon::{layout_store, runtime_state};
+use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 use tempfile::NamedTempFile;
+use tokio::sync::Mutex;
 
 /// Minimal TOML content that `ConfigManager` can parse.
 const MINIMAL_TOML: &str = "schema_version = 3\n";
+
+static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+struct TestDataDirGuard {
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+    _dir: tempfile::TempDir,
+    data_dir: PathBuf,
+}
+
+impl TestDataDirGuard {
+    async fn new() -> Self {
+        let lock = DATA_DIR_LOCK.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let data_dir = dir.path().join("data");
+        ConfigManager::set_data_dir_override(Some(data_dir.clone()));
+        Self {
+            _lock: lock,
+            _dir: dir,
+            data_dir,
+        }
+    }
+
+    fn layouts_path(&self) -> PathBuf {
+        self.data_dir.join("layouts.json")
+    }
+
+    fn runtime_state_path(&self) -> PathBuf {
+        self.data_dir.join("runtime-state.json")
+    }
+}
+
+impl Drop for TestDataDirGuard {
+    fn drop(&mut self) {
+        ConfigManager::set_data_dir_override(None);
+    }
+}
 
 /// Create a temp file pre-populated with valid minimal TOML config.
 fn temp_config_file() -> NamedTempFile {
@@ -256,6 +297,57 @@ async fn shutdown_is_idempotent() {
         .shutdown()
         .await
         .expect("second shutdown should succeed");
+}
+
+#[tokio::test]
+async fn daemon_start_restores_persisted_active_layout_from_disk() {
+    let guard = TestDataDirGuard::new().await;
+    let mut layouts = std::collections::HashMap::new();
+    let restored_layout = SpatialLayout {
+        id: "layout_restored".into(),
+        name: "Restored Layout".into(),
+        description: Some("Persisted layout".into()),
+        canvas_width: 640,
+        canvas_height: 360,
+        zones: vec![],
+        groups: vec![],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    layouts.insert(restored_layout.id.clone(), restored_layout.clone());
+    layout_store::save(&guard.layouts_path(), &layouts).expect("layout store should save");
+    runtime_state::save(
+        &guard.runtime_state_path(),
+        &runtime_state::RuntimeSessionSnapshot {
+            active_effect_id: None,
+            active_preset_id: None,
+            control_values: std::collections::HashMap::new(),
+            active_layout_id: Some(restored_layout.id.clone()),
+        },
+    )
+    .expect("runtime state should save");
+
+    let mut config = default_config();
+    config.daemon.start_profile = "last".into();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("initialization should succeed");
+
+    assert_eq!(state.layouts_path, guard.layouts_path());
+    assert_eq!(state.runtime_state_path, guard.runtime_state_path());
+
+    state.start().await.expect("start should succeed");
+
+    let active_layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().clone()
+    };
+    assert_eq!(active_layout.id, restored_layout.id);
+    assert_eq!(active_layout.name, restored_layout.name);
+
+    state.shutdown().await.expect("shutdown should succeed");
 }
 
 #[tokio::test]

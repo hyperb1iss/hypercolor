@@ -1669,7 +1669,7 @@ async fn layout_crud_lifecycle() {
 
 #[tokio::test]
 async fn layout_apply_updates_active_layout() {
-    let state = Arc::new(AppState::new());
+    let (state, _tmp) = test_state_with_temp_layout_and_runtime_store();
     let app = test_app_with_state(Arc::clone(&state));
 
     let create_response = app
@@ -1738,6 +1738,12 @@ async fn layout_apply_updates_active_layout() {
     assert_eq!(list_json["data"]["pagination"]["total"], 1);
     assert_eq!(list_json["data"]["items"][0]["id"], layout_id);
     assert_eq!(list_json["data"]["items"][0]["is_active"], true);
+
+    let runtime_raw = std::fs::read_to_string(&state.runtime_state_path)
+        .expect("runtime state file should exist after apply");
+    let runtime_json: serde_json::Value =
+        serde_json::from_str(&runtime_raw).expect("runtime state should be valid JSON");
+    assert_eq!(runtime_json["active_layout_id"], layout_id);
 }
 
 #[tokio::test]
@@ -2022,6 +2028,14 @@ fn test_state_with_temp_layout_store() -> (Arc<AppState>, tempfile::TempDir) {
     let mut state = AppState::new();
     let dir = tempfile::tempdir().expect("tempdir should be created");
     state.layouts_path = dir.path().join("layouts.json");
+    (Arc::new(state), dir)
+}
+
+fn test_state_with_temp_layout_and_runtime_store() -> (Arc<AppState>, tempfile::TempDir) {
+    let mut state = AppState::new();
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    state.layouts_path = dir.path().join("layouts.json");
+    state.runtime_state_path = dir.path().join("runtime-state.json");
     (Arc::new(state), dir)
 }
 

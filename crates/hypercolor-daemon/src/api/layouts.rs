@@ -16,7 +16,7 @@ use tracing::warn;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::persist_layouts;
+use crate::api::{persist_layouts, persist_runtime_session};
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -299,6 +299,7 @@ pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<Str
         let mut spatial = state.spatial_engine.write().await;
         spatial.update_layout(layout.clone());
     }
+    persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "layout": layout,
