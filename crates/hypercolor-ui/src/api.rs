@@ -192,6 +192,10 @@ pub struct LayoutSummary {
     pub canvas_width: u32,
     pub canvas_height: u32,
     pub zone_count: usize,
+    #[serde(default)]
+    pub group_count: usize,
+    #[serde(default)]
+    pub is_active: bool,
 }
 
 /// Paginated layout list response.
@@ -225,6 +229,8 @@ pub struct UpdateLayoutApiRequest {
     pub canvas_height: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zones: Option<Vec<hypercolor_types::spatial::DeviceZone>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<hypercolor_types::spatial::ZoneGroup>>,
 }
 
 // ── Fetch Functions ─────────────────────────────────────────────────────────

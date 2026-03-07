@@ -14,6 +14,7 @@ use crate::components::shell::Shell;
 use crate::pages::dashboard::DashboardPage;
 use crate::pages::devices::DevicesPage;
 use crate::pages::effects::EffectsPage;
+use crate::pages::layout::LayoutPage;
 use crate::ws::{CanvasFrame, ConnectionState, WsManager};
 
 /// Global WebSocket state provided via Leptos context.
@@ -247,6 +248,7 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/") view=DashboardPage />
                     <Route path=path!("/effects") view=EffectsPage />
                     <Route path=path!("/effects/:id") view=EffectsPage />
+                    <Route path=path!("/layout") view=LayoutPage />
                     <Route path=path!("/devices") view=DevicesPage />
                 </Routes>
             </Shell>

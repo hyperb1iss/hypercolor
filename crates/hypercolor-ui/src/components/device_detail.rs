@@ -214,7 +214,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                 let rgb = rgb.clone();
                                 view! {
                                     <div class="pt-3 border-t border-edge-subtle">
-                                        <h4 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary mb-2">"Zones"</h4>
+                                        <h4 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary mb-2">"Zones"</h4>
                                         <div class="space-y-1">
                                             {zones.into_iter().map(|zone| {
                                                 let zone_rgb = rgb.clone();
@@ -382,7 +382,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                                                             })}
                                                                         </div>
                                                                         <div class="flex items-center gap-2">
-                                                                            <span class="text-[10px] font-mono text-fg-tertiary tabular-nums">
+                                                                            <span class="text-[11px] font-mono text-fg-tertiary tabular-nums">
                                                                                 {seg.led_start} "\u{2013}" {seg.led_end} " (" {seg.led_count} ")"
                                                                             </span>
                                                                             {(!is_default).then(|| {
@@ -435,7 +435,7 @@ fn detail_field(label: &'static str, value: &str) -> impl IntoView + use<> {
     let value = value.to_string();
     view! {
         <div>
-            <div class="text-[10px] font-mono uppercase tracking-wider text-fg-tertiary mb-0.5">{label}</div>
+            <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary mb-0.5">{label}</div>
             <div class="text-xs text-fg-primary font-mono capitalize">{value}</div>
         </div>
     }

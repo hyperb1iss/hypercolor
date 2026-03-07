@@ -11,7 +11,7 @@ pub fn StatusBar() -> impl IntoView {
     let ws = expect_context::<WsContext>();
 
     view! {
-        <div class="flex items-center gap-3 text-[11px] font-mono text-fg-tertiary">
+        <div class="flex items-center gap-3 text-[10px] font-mono text-fg-tertiary">
             // Connection indicator
             <div class="flex items-center gap-1.5">
                 <div

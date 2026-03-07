@@ -32,12 +32,12 @@ pub fn LayoutBuilder() -> impl IntoView {
     let zone_id_signal = Signal::derive(move || selected_zone_id.get());
     let has_layout = Signal::derive(move || layout.with(|current| current.is_some()));
 
-    // Derive dirty state by comparing working layout zones to saved snapshot.
+    // Derive dirty state by comparing working layout to saved snapshot.
     let is_dirty = Signal::derive(move || {
         let current = layout.get();
         let saved = saved_layout.get();
         match (current, saved) {
-            (Some(c), Some(s)) => c.zones != s.zones,
+            (Some(c), Some(s)) => c.zones != s.zones || c.groups != s.groups,
             _ => false,
         }
     });
@@ -133,6 +133,7 @@ pub fn LayoutBuilder() -> impl IntoView {
         };
         let id = l.id.clone();
         let zones = l.zones.clone();
+        let groups = l.groups.clone();
         let saved_copy = l.clone();
         let layouts_resource = ctx.layouts_resource;
         leptos::task::spawn_local(async move {
@@ -142,6 +143,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                 canvas_width: None,
                 canvas_height: None,
                 zones: Some(zones),
+                groups: Some(groups),
             };
             if api::update_layout(&id, &req).await.is_ok() {
                 toasts::toast_success("Layout saved");
@@ -205,57 +207,70 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     view! {
         <div class="flex flex-col flex-1 overflow-hidden">
-            // Toolbar
-            <div class="shrink-0 px-6 py-3 flex items-center gap-3 bg-surface-base border-b border-edge-subtle">
+            // Toolbar — glass background with edge glow
+            <div class="shrink-0 px-5 py-2.5 flex items-center gap-3 glass-subtle border-b border-edge-subtle">
                 // Layout selector
-                <Suspense fallback=|| ()>
-                    {move || {
-                        ctx.layouts_resource.get().map(|result| {
-                            let layouts = result.unwrap_or_default();
-                            view! {
-                                <select
-                                    class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
-                                           focus:outline-none focus:border-accent-muted min-w-[180px]"
-                                    on:change=move |ev| {
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
-                                        if let Some(el) = target {
-                                            let val = el.value();
-                                            if val.is_empty() {
-                                                set_selected_layout_id.set(None);
-                                            } else {
-                                                set_selected_layout_id.set(Some(val));
+                <div class="flex items-center gap-2">
+                    <span class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Layout"</span>
+                    <Suspense fallback=|| ()>
+                        {move || {
+                            ctx.layouts_resource.get().map(|result| {
+                                let layouts = result.unwrap_or_default();
+                                view! {
+                                    <select
+                                        class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
+                                               focus:outline-none focus:border-accent-muted glow-ring min-w-[180px] transition-all"
+                                        on:change=move |ev| {
+                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
+                                            if let Some(el) = target {
+                                                let val = el.value();
+                                                if val.is_empty() {
+                                                    set_selected_layout_id.set(None);
+                                                } else {
+                                                    set_selected_layout_id.set(Some(val));
+                                                }
                                             }
                                         }
-                                    }
-                                >
-                                    <option value="" selected=move || selected_layout_id.get().is_none()>"Select layout..."</option>
-                                    {layouts.into_iter().map(|l| {
-                                        let lid = l.id.clone();
-                                        let lid2 = l.id.clone();
-                                        view! {
-                                            <option
-                                                value=lid
-                                                selected=move || selected_layout_id.get().as_deref() == Some(&lid2)
-                                            >
-                                                {l.name} " (" {l.zone_count} " zones)"
-                                            </option>
-                                        }
-                                    }).collect_view()}
-                                </select>
-                            }
-                        })
-                    }}
-                </Suspense>
+                                    >
+                                        <option value="" selected=move || selected_layout_id.get().is_none()>"Select layout..."</option>
+                                        {layouts.into_iter().map(|l| {
+                                            let lid = l.id.clone();
+                                            let lid2 = l.id.clone();
+                                            let label = if l.is_active {
+                                                format!("{} ({} zones) *", l.name, l.zone_count)
+                                            } else {
+                                                format!("{} ({} zones)", l.name, l.zone_count)
+                                            };
+                                            view! {
+                                                <option
+                                                    value=lid
+                                                    selected=move || selected_layout_id.get().as_deref() == Some(&lid2)
+                                                >
+                                                    {label}
+                                                </option>
+                                            }
+                                        }).collect_view()}
+                                    </select>
+                                }
+                            })
+                        }}
+                    </Suspense>
 
-                // New layout button / form
+                    // Dirty indicator
+                    <Show when=move || is_dirty.get()>
+                        <div class="w-2 h-2 rounded-full bg-electric-yellow dot-alive" title="Unsaved changes" />
+                    </Show>
+                </div>
+
+                // New layout button / inline form
                 {move || if creating.get() {
                     view! {
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-center gap-2 animate-slide-down">
                             <input
                                 type="text"
                                 placeholder="Layout name"
                                 class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
-                                       placeholder-fg-tertiary focus:outline-none focus:border-accent-muted w-40"
+                                       placeholder-fg-tertiary focus:outline-none focus:border-accent-muted glow-ring w-40 transition-all"
                                 prop:value=move || new_layout_name.get()
                                 on:input=move |ev| {
                                     let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -267,8 +282,8 @@ pub fn LayoutBuilder() -> impl IntoView {
                                 }
                             />
                             <button
-                                class="px-3 py-1.5 rounded-lg text-xs font-medium bg-status-success/[0.1] border border-status-success/20
-                                       text-status-success hover:bg-status-success/[0.2] transition-all btn-press"
+                                class="px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                style="background: rgba(80, 250, 123, 0.1); border-color: rgba(80, 250, 123, 0.2); color: rgb(80, 250, 123)"
                                 on:click=move |_| create_layout()
                             >"Create"</button>
                             <button
@@ -281,12 +296,12 @@ pub fn LayoutBuilder() -> impl IntoView {
                 } else {
                     view! {
                         <button
-                            class="px-3 py-1.5 rounded-lg text-xs font-medium bg-electric-purple/[0.08] border border-electric-purple/20
-                                   text-electric-purple hover:bg-electric-purple/[0.15] transition-all btn-press"
+                            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                            style="background: rgba(225, 53, 255, 0.08); border-color: rgba(225, 53, 255, 0.2); color: rgb(225, 53, 255)"
                             on:click=move |_| set_creating.set(true)
                         >
                             <Icon icon=LuPlus width="14px" height="14px" />
-                            " New Layout"
+                            " New"
                         </button>
                     }.into_any()
                 }}
@@ -297,7 +312,8 @@ pub fn LayoutBuilder() -> impl IntoView {
                 {move || layout.get().map(|_| {
                     let dirty = is_dirty.get();
                     let save_style = if dirty {
-                        "background: rgba(80, 250, 123, 0.1); border-color: rgba(80, 250, 123, 0.2); color: rgb(80, 250, 123)"
+                        "background: rgba(80, 250, 123, 0.12); border-color: rgba(80, 250, 123, 0.3); color: rgb(80, 250, 123); \
+                         box-shadow: 0 0 12px rgba(80, 250, 123, 0.15)"
                     } else {
                         "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
                     };
@@ -327,8 +343,9 @@ pub fn LayoutBuilder() -> impl IntoView {
                                 "Save"
                             </button>
                             <button
-                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-status-error/[0.08] border border-status-error/20
-                                       text-status-error hover:bg-status-error/[0.15] transition-all btn-press"
+                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press
+                                       text-status-error/40 hover:text-status-error"
+                                style="background: rgba(255, 99, 99, 0.04); border-color: rgba(255, 99, 99, 0.12)"
                                 on:click=move |_| delete_layout()
                             >
                                 <Icon icon=LuTrash2 width="14px" height="14px" />
@@ -345,9 +362,10 @@ pub fn LayoutBuilder() -> impl IntoView {
                 fallback=move || {
                     view! {
                         <div class="flex-1 flex items-center justify-center">
-                            <div class="text-center space-y-2">
+                            <div class="text-center space-y-3 animate-fade-in">
+                                <Icon icon=LuLayoutTemplate width="48px" height="48px" style="color: rgba(139, 133, 160, 0.15)" />
                                 <div class="text-fg-tertiary text-sm">"Select or create a layout to begin"</div>
-                                <div class="text-fg-tertiary/50 text-xs">"Drag devices onto the canvas to build your spatial mapping"</div>
+                                <div class="text-fg-tertiary/40 text-xs">"Drag devices onto the canvas to build your spatial mapping"</div>
                             </div>
                         </div>
                     }
@@ -355,7 +373,7 @@ pub fn LayoutBuilder() -> impl IntoView {
             >
                 <div class="flex flex-1 overflow-hidden">
                     // Left palette
-                    <div class="w-[200px] shrink-0 border-r border-edge-subtle overflow-y-auto">
+                    <div class="w-[220px] shrink-0 border-r border-edge-subtle overflow-y-auto">
                         <LayoutPalette
                             layout=layout_signal
                             set_layout=set_layout

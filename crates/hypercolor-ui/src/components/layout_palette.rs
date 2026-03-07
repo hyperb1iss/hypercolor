@@ -1,4 +1,4 @@
-//! Layout palette — available devices to add to the layout.
+//! Layout palette — available devices + zone group management.
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -11,10 +11,15 @@ use crate::components::device_card::backend_accent_rgb;
 use crate::icons::*;
 use hypercolor_types::spatial::{
     Corner, DeviceZone, LedTopology, NormalizedPosition, Orientation, SpatialLayout,
-    StripDirection, Winding, ZoneShape,
+    StripDirection, Winding, ZoneGroup, ZoneShape,
 };
 
-/// Device palette for adding zones to the layout.
+/// Group color presets — works in both dark and light themes.
+const GROUP_COLORS: &[&str] = &[
+    "#e135ff", "#80ffea", "#ff6ac1", "#f1fa8c", "#50fa7b", "#82AAFF", "#ff9e64", "#c792ea",
+];
+
+/// Device palette for adding zones to the layout, with group management.
 #[component]
 pub fn LayoutPalette(
     #[prop(into)] layout: Signal<Option<SpatialLayout>>,
@@ -24,71 +29,273 @@ pub fn LayoutPalette(
 ) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
 
+    // Track which devices are collapsed
+    let (collapsed_devices, set_collapsed_devices) =
+        signal(std::collections::HashSet::<String>::new());
+
+    // Derive group list from layout
+    let groups = Signal::derive(move || {
+        layout.with(|current| {
+            current
+                .as_ref()
+                .map(|l| l.groups.clone())
+                .unwrap_or_default()
+        })
+    });
+
+    // Count zones per group
+    let group_zone_counts = Signal::derive(move || {
+        layout.with(|current| {
+            let Some(l) = current.as_ref() else {
+                return std::collections::HashMap::new();
+            };
+            let mut counts = std::collections::HashMap::new();
+            for zone in &l.zones {
+                if let Some(gid) = &zone.group_id {
+                    *counts.entry(gid.clone()).or_insert(0usize) += 1;
+                }
+            }
+            counts
+        })
+    });
+
+    // Create a new group
+    let create_group = move || {
+        let current_groups = groups.get();
+        let color_idx = current_groups.len() % GROUP_COLORS.len();
+        let new_group = ZoneGroup {
+            id: format!("group_{}", uuid_v4_hex()),
+            name: format!("Group {}", current_groups.len() + 1),
+            color: Some(GROUP_COLORS[color_idx].to_string()),
+        };
+        set_layout.update(|l| {
+            if let Some(layout) = l {
+                layout.groups.push(new_group);
+            }
+        });
+        set_is_dirty.set(true);
+    };
+
+    // Delete a group (ungroups all zones)
+    let delete_group = move |group_id: String| {
+        set_layout.update(|l| {
+            if let Some(layout) = l {
+                layout.groups.retain(|g| g.id != group_id);
+                for zone in &mut layout.zones {
+                    if zone.group_id.as_deref() == Some(&group_id) {
+                        zone.group_id = None;
+                    }
+                }
+            }
+        });
+        set_is_dirty.set(true);
+    };
+
     view! {
-        <div class="p-3 space-y-3">
-            <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Devices"</h3>
+        <div class="p-3 space-y-4">
+            // Groups section
+            <div class="space-y-2">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary flex items-center gap-1.5">
+                        <Icon icon=LuGroup width="12px" height="12px" />
+                        "Groups"
+                    </h3>
+                    <button
+                        class="px-1.5 py-0.5 rounded text-[10px] font-medium border transition-all btn-press"
+                        style="background: rgba(225, 53, 255, 0.06); border-color: rgba(225, 53, 255, 0.15); color: rgb(225, 53, 255)"
+                        on:click=move |_| create_group()
+                    >
+                        <Icon icon=LuPlus width="10px" height="10px" />
+                        " New"
+                    </button>
+                </div>
 
-            <Suspense fallback=|| view! {
-                <div class="text-xs text-fg-tertiary animate-pulse">"Loading..."</div>
-            }>
                 {move || {
-                    ctx.devices_resource.get().map(|result| {
-                        let devices = result.unwrap_or_default();
-                        if devices.is_empty() {
-                            return view! {
-                                <div class="text-xs text-fg-tertiary">"No devices connected"</div>
-                            }.into_any();
-                        }
-
-                        // Group by backend
-                        let mut backends: std::collections::BTreeMap<String, Vec<_>> = std::collections::BTreeMap::new();
-                        for dev in &devices {
-                            backends.entry(dev.backend.clone()).or_default().push(dev.clone());
-                        }
-
+                    let current_groups = groups.get();
+                    let counts = group_zone_counts.get();
+                    if current_groups.is_empty() {
                         view! {
-                            <div class="space-y-3">
-                                {backends.into_iter().map(|(backend, devs)| {
-                                    let rgb = backend_accent_rgb(&backend).to_string();
-                                    let badge_style = format!(
-                                        "color: rgb({rgb}); border-color: rgba({rgb}, 0.2); background: rgba({rgb}, 0.06)"
-                                    );
+                            <div class="text-[10px] text-fg-tertiary/50 italic">"No groups yet"</div>
+                        }.into_any()
+                    } else {
+                        view! {
+                            <div class="flex flex-wrap gap-1.5">
+                                {current_groups.into_iter().map(|group| {
+                                    let gid_delete = group.id.clone();
+                                    let color = group.color.clone().unwrap_or_else(|| "#e135ff".to_string());
+                                    let rgb = hex_to_rgb(&color);
+                                    let count = counts.get(&group.id).copied().unwrap_or(0);
                                     view! {
-                                        <div>
+                                        <div
+                                            class="flex items-center gap-1 px-2 py-1 rounded-full text-[13px] font-medium border
+                                                   chip-interactive cursor-pointer group/chip"
+                                            style=format!(
+                                                "color: rgb({rgb}); border-color: rgba({rgb}, 0.25); background: rgba({rgb}, 0.08); \
+                                                 --glow-rgb: {rgb}"
+                                            )
+                                        >
                                             <div
-                                                class="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border mb-1.5 inline-block"
-                                                style=badge_style
+                                                class="w-2 h-2 rounded-full shrink-0"
+                                                style=format!("background: rgb({rgb})")
+                                            />
+                                            {group.name}
+                                            <span class="text-[9px] opacity-60">{count}</span>
+                                            <button
+                                                class="ml-0.5 opacity-0 group-hover/chip:opacity-60 hover:opacity-100 transition-opacity"
+                                                on:click=move |ev| {
+                                                    ev.stop_propagation();
+                                                    delete_group(gid_delete.clone());
+                                                }
                                             >
-                                                {backend}
-                                            </div>
-                                            <div class="space-y-1">
-                                                {devs.into_iter().map(|dev| {
-                                                    let device_id = dev.layout_device_id.clone();
-                                                    let device_name = dev.name.clone();
-                                                    let fallback_leds = dev.total_leds;
-                                                    let mut entries: Vec<(Option<api::ZoneSummary>, String, usize)> = if dev.zones.is_empty() {
-                                                        vec![(None, dev.name.clone(), dev.total_leds)]
-                                                    } else {
-                                                        dev.zones
-                                                            .iter()
-                                                            .cloned()
-                                                            .map(|zone| {
-                                                                let display_name = if dev.zones.len() > 1 {
-                                                                    format!("{} · {}", dev.name, zone.name)
-                                                                } else {
-                                                                    dev.name.clone()
-                                                                };
-                                                                let leds = zone.led_count;
-                                                                (Some(zone), display_name, leds)
-                                                            })
-                                                            .collect()
-                                                    };
-                                                    entries.sort_by(|left, right| left.1.cmp(&right.1));
+                                                <Icon icon=LuX width="10px" height="10px" />
+                                            </button>
+                                        </div>
+                                    }
+                                }).collect_view()}
+                            </div>
+                        }.into_any()
+                    }
+                }}
+            </div>
 
-                                                    entries
-                                                        .into_iter()
-                                                        .map(|(zone_summary, display_name, led_count)| {
-                                                            let zone_name_key = zone_summary.as_ref().map(|z| z.name.clone());
+            // Separator
+            <div class="h-px bg-edge-subtle" />
+
+            // Devices section
+            <div class="space-y-2">
+                <h3 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary flex items-center gap-1.5">
+                    <Icon icon=LuCpu width="12px" height="12px" />
+                    "Devices"
+                </h3>
+
+                <Suspense fallback=|| view! {
+                    <div class="space-y-2">
+                        {(0..3).map(|_| view! {
+                            <div class="rounded-lg border border-edge-subtle bg-surface-overlay/20 p-2 animate-pulse h-12" />
+                        }).collect_view()}
+                    </div>
+                }>
+                    {move || {
+                        ctx.devices_resource.get().map(|result| {
+                            let devices = result.unwrap_or_default();
+                            if devices.is_empty() {
+                                return view! {
+                                    <div class="flex flex-col items-center py-6 space-y-2">
+                                        <Icon icon=LuCpu width="24px" height="24px" style="color: rgba(139, 133, 160, 0.2)" />
+                                        <div class="text-[10px] text-fg-tertiary">"No devices connected"</div>
+                                    </div>
+                                }.into_any();
+                            }
+
+                            view! {
+                                <div class="space-y-2">
+                                    {devices.into_iter().enumerate().map(|(idx, dev)| {
+                                        let device_id = dev.layout_device_id.clone();
+                                        let device_name = dev.name.clone();
+                                        let backend = dev.backend.clone();
+                                        let rgb = backend_accent_rgb(&backend).to_string();
+                                        let rgb_for_zones = rgb.clone();
+                                        let fallback_leds = dev.total_leds;
+                                        let has_multi_zones = dev.zones.len() > 1;
+                                        let collapse_key = dev.layout_device_id.clone();
+                                        let collapse_key2 = dev.layout_device_id.clone();
+
+                                        let is_collapsed = {
+                                            let key = collapse_key.clone();
+                                            Signal::derive(move || collapsed_devices.get().contains(&key))
+                                        };
+
+                                        let stagger = format!("animation-delay: {}ms", idx * 40);
+
+                                        let mut entries: Vec<(Option<api::ZoneSummary>, String, usize)> = if dev.zones.is_empty() {
+                                            vec![(None, dev.name.clone(), dev.total_leds)]
+                                        } else {
+                                            dev.zones
+                                                .iter()
+                                                .cloned()
+                                                .map(|zone| {
+                                                    let display_name = if dev.zones.len() > 1 {
+                                                        zone.name.clone()
+                                                    } else {
+                                                        dev.name.clone()
+                                                    };
+                                                    let leds = zone.led_count;
+                                                    (Some(zone), display_name, leds)
+                                                })
+                                                .collect()
+                                        };
+                                        entries.sort_by(|left, right| left.1.cmp(&right.1));
+
+                                        view! {
+                                            <div
+                                                class="rounded-xl border border-edge-subtle bg-surface-overlay/30 overflow-hidden
+                                                       transition-all card-hover animate-fade-in-up"
+                                                style=format!("--glow-rgb: {rgb}; {stagger}")
+                                            >
+                                                // Device header
+                                                <button
+                                                    class="w-full flex items-center gap-2 px-2.5 py-2 text-left transition-colors
+                                                           hover:bg-surface-hover/30"
+                                                    on:click=move |_| {
+                                                        if has_multi_zones {
+                                                            set_collapsed_devices.update(|set| {
+                                                                if set.contains(&collapse_key2) {
+                                                                    set.remove(&collapse_key2);
+                                                                } else {
+                                                                    set.insert(collapse_key2.clone());
+                                                                }
+                                                            });
+                                                        }
+                                                    }
+                                                >
+                                                    // Backend accent strip
+                                                    <div
+                                                        class="w-1 self-stretch rounded-full shrink-0"
+                                                        style=format!("background: rgb({rgb})")
+                                                    />
+                                                    <div class="flex-1 min-w-0">
+                                                        <div class="flex items-center gap-1.5">
+                                                            <span class="text-[11px] font-medium text-fg-primary truncate">{device_name}</span>
+                                                            <span
+                                                                class="text-[8px] font-mono uppercase tracking-wider px-1 py-0.5 rounded border shrink-0"
+                                                                style=format!(
+                                                                    "color: rgba({rgb}, 0.8); border-color: rgba({rgb}, 0.2); background: rgba({rgb}, 0.06)"
+                                                                )
+                                                            >{backend}</span>
+                                                        </div>
+                                                        <div class="text-[10px] text-fg-tertiary font-mono flex items-center gap-1.5 mt-0.5">
+                                                            <span>{fallback_leds} " LEDs"</span>
+                                                            {has_multi_zones.then(|| view! {
+                                                                <>
+                                                                    <span class="opacity-40">"·"</span>
+                                                                    <span>{dev.zones.len()} " zones"</span>
+                                                                </>
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                    {has_multi_zones.then(|| view! {
+                                                        <div
+                                                            class="text-fg-tertiary shrink-0"
+                                                            style=move || if is_collapsed.get() {
+                                                                "transform: rotate(-90deg); transition: transform 0.2s ease"
+                                                            } else {
+                                                                "transition: transform 0.2s ease"
+                                                            }
+                                                        >
+                                                            <Icon icon=LuChevronDown width="14px" height="14px" />
+                                                        </div>
+                                                    })}
+                                                </button>
+
+                                                // Zone rows (hidden via CSS when collapsed)
+                                                <div
+                                                    class="border-t border-edge-subtle/50 px-1.5 py-1 space-y-0.5 overflow-hidden transition-all duration-200"
+                                                    style=move || if is_collapsed.get() { "max-height: 0; opacity: 0; padding: 0; border: none" } else { "max-height: 500px; opacity: 1" }
+                                                >
+                                                    {entries
+                                                            .into_iter()
+                                                            .map(|(zone_summary, display_name, led_count)| {
+                                                                let zone_name_key = zone_summary.as_ref().map(|z| z.name.clone());
                                                                 let in_layout = {
                                                                     let did = device_id.clone();
                                                                     let zone_name = zone_name_key.clone();
@@ -112,76 +319,101 @@ pub fn LayoutPalette(
                                                                     })
                                                                 };
 
-                                                            let topology_chip = zone_summary
-                                                                .as_ref()
-                                                                .map(topology_label)
-                                                                .unwrap_or_else(|| "strip".to_owned());
-                                                            let zone_for_add = zone_summary.clone();
-                                                            let did_for_add = device_id.clone();
-                                                            let dname_for_add = device_name.clone();
-                                                            let display_led_count = led_count;
+                                                                let topo_icon = topology_icon(zone_summary.as_ref());
+                                                                let zone_for_add = zone_summary.clone();
+                                                                let did_for_add = device_id.clone();
+                                                                let dname_for_add = dev.name.clone();
+                                                                let zone_rgb = rgb_for_zones.clone();
 
-                                                            view! {
-                                                                <div class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg bg-surface-overlay/40 border border-edge-subtle
-                                                                            hover:bg-surface-hover/40 hover:border-edge-default transition-all group">
-                                                                    <div class="flex-1 min-w-0">
-                                                                        <div class="text-[11px] text-fg-primary truncate">{display_name}</div>
-                                                                        <div class="text-[9px] text-fg-tertiary font-mono flex items-center gap-1.5">
-                                                                            <span>{display_led_count} " LEDs"</span>
-                                                                            <span class="opacity-60">"·"</span>
-                                                                            <span class="uppercase tracking-wide">{topology_chip}</span>
+                                                                view! {
+                                                                    <div class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg
+                                                                                hover:bg-surface-hover/30 transition-all group/zone">
+                                                                        // Topology icon
+                                                                        <div class="text-fg-tertiary/50 shrink-0">
+                                                                            {topo_icon}
                                                                         </div>
+                                                                        <div class="flex-1 min-w-0">
+                                                                            <div class="text-[11px] text-fg-primary truncate">{display_name}</div>
+                                                                            <div class="text-[8px] text-fg-tertiary/60 font-mono tabular-nums">
+                                                                                {led_count} " LEDs"
+                                                                            </div>
+                                                                        </div>
+                                                                        {move || {
+                                                                            if in_layout.get() {
+                                                                                view! {
+                                                                                    <div class="shrink-0">
+                                                                                        <Icon icon=LuCheck width="12px" height="12px"
+                                                                                            style="color: rgba(80, 250, 123, 0.5)" />
+                                                                                    </div>
+                                                                                }.into_any()
+                                                                            } else {
+                                                                                let zone_entry = zone_for_add.clone();
+                                                                                let did = did_for_add.clone();
+                                                                                let dname = dname_for_add.clone();
+                                                                                view! {
+                                                                                    <button
+                                                                                        class="px-1.5 py-0.5 rounded text-[8px] font-medium
+                                                                                               border transition-all opacity-0
+                                                                                               group-hover/zone:opacity-100 shrink-0 btn-press"
+                                                                                        style=format!(
+                                                                                            "background: rgba({zone_rgb}, 0.08); border-color: rgba({zone_rgb}, 0.2); color: rgb({zone_rgb})"
+                                                                                        )
+                                                                                        on:click=move |_| {
+                                                                                            let zone = create_default_zone(
+                                                                                                &did,
+                                                                                                &dname,
+                                                                                                zone_entry.as_ref(),
+                                                                                                fallback_leds,
+                                                                                            );
+                                                                                            let zone_id = zone.id.clone();
+                                                                                            set_layout.update(|l| {
+                                                                                                if let Some(layout) = l {
+                                                                                                    layout.zones.push(zone);
+                                                                                                }
+                                                                                            });
+                                                                                            set_selected_zone_id.set(Some(zone_id));
+                                                                                            set_is_dirty.set(true);
+                                                                                        }
+                                                                                    >"Add"</button>
+                                                                                }.into_any()
+                                                                            }
+                                                                        }}
                                                                     </div>
-                                                                    {move || {
-                                                                        if in_layout.get() {
-                                                                            view! {
-                                                                                <Icon icon=LuCheck width="14px" height="14px" style="color: rgba(80, 250, 123, 0.6); flex-shrink: 0" />
-                                                                            }.into_any()
-                                                                        } else {
-                                                                            let zone_entry = zone_for_add.clone();
-                                                                            let did = did_for_add.clone();
-                                                                            let dname = dname_for_add.clone();
-                                                                            view! {
-                                                                                <button
-                                                                                    class="px-1.5 py-0.5 rounded text-[9px] font-medium text-electric-purple
-                                                                                           bg-electric-purple/[0.08] border border-electric-purple/20
-                                                                                           hover:bg-electric-purple/[0.15] transition-all opacity-0
-                                                                                           group-hover:opacity-100 shrink-0"
-                                                                                    on:click=move |_| {
-                                                                                        let zone = create_default_zone(
-                                                                                            &did,
-                                                                                            &dname,
-                                                                                            zone_entry.as_ref(),
-                                                                                            fallback_leds,
-                                                                                        );
-                                                                                        let zone_id = zone.id.clone();
-                                                                                        set_layout.update(|l| {
-                                                                                            if let Some(layout) = l {
-                                                                                                layout.zones.push(zone);
-                                                                                            }
-                                                                                        });
-                                                                                        set_selected_zone_id.set(Some(zone_id));
-                                                                                        set_is_dirty.set(true);
-                                                                                    }
-                                                                                >"Add"</button>
-                                                                            }.into_any()
-                                                                        }
-                                                                    }}
-                                                                </div>
-                                                            }
-                                                        })
-                                                        .collect_view()
-                                                }).collect_view()}
+                                                                }
+                                                            })
+                                                            .collect_view()}
+                                                </div>
                                             </div>
-                                        </div>
-                                    }
-                                }).collect_view()}
-                            </div>
-                        }.into_any()
-                    })
-                }}
-            </Suspense>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                            }.into_any()
+                        })
+                    }}
+                </Suspense>
+            </div>
         </div>
+    }
+}
+
+/// Return an appropriate icon view based on zone topology.
+fn topology_icon(zone: Option<&api::ZoneSummary>) -> leptos::prelude::AnyView {
+    match zone.and_then(|z| z.topology_hint.as_ref()) {
+        Some(ZoneTopologySummary::Strip) => {
+            view! { <Icon icon=LuMinus width="12px" height="12px" /> }.into_any()
+        }
+        Some(ZoneTopologySummary::Matrix { .. }) => {
+            view! { <Icon icon=LuGrid2x2 width="12px" height="12px" /> }.into_any()
+        }
+        Some(ZoneTopologySummary::Ring { .. }) => {
+            view! { <Icon icon=LuCircle width="12px" height="12px" /> }.into_any()
+        }
+        Some(ZoneTopologySummary::Point) => {
+            view! { <Icon icon=LuCircleDot width="12px" height="12px" /> }.into_any()
+        }
+        _ => {
+            view! { <Icon icon=LuMinus width="12px" height="12px" /> }.into_any()
+        }
     }
 }
 
@@ -223,6 +455,7 @@ fn create_default_zone(
         edge_behavior: None,
         shape: defaults.shape,
         shape_preset: defaults.shape_preset,
+        group_id: None,
     }
 }
 
@@ -248,7 +481,6 @@ fn defaults_for_zone(zone: Option<&api::ZoneSummary>, fallback_led_count: u32) -
     let topology_hint = zone.and_then(|z| z.topology_hint.clone());
 
     // Keyword-first overrides for hardware families commonly exposed as "custom"
-    // by SDKs: strimer cables, fan rings, and AIO pump/radiator zones.
     if zone_name.contains("strimer") || zone_name.contains("cable") {
         let rows = if led_count >= 48 { 4 } else { 2 };
         let cols = (led_count / rows).max(8);
@@ -357,17 +589,6 @@ fn ring_defaults(count: u32, shape_preset: Option<&str>) -> ZoneDefaults {
     }
 }
 
-fn topology_label(zone: &api::ZoneSummary) -> String {
-    match zone.topology_hint.as_ref() {
-        Some(ZoneTopologySummary::Strip) => "strip".to_owned(),
-        Some(ZoneTopologySummary::Matrix { rows, cols }) => format!("matrix {rows}x{cols}"),
-        Some(ZoneTopologySummary::Ring { count }) => format!("ring {count}"),
-        Some(ZoneTopologySummary::Point) => "point".to_owned(),
-        Some(ZoneTopologySummary::Custom) => "custom".to_owned(),
-        None => zone.topology.clone(),
-    }
-}
-
 /// Generate a short pseudo-random hex ID.
 fn uuid_v4_hex() -> String {
     let r = js_sys::Math::random();
@@ -378,4 +599,16 @@ fn uuid_v4_hex() -> String {
     )]
     let n = (r * 4_294_967_295.0) as u32;
     format!("{n:08x}")
+}
+
+/// Convert a hex color like "#e135ff" to "225, 53, 255" RGB string.
+fn hex_to_rgb(hex: &str) -> String {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() < 6 {
+        return "225, 53, 255".to_string();
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(225);
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(53);
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255);
+    format!("{r}, {g}, {b}")
 }

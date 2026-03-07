@@ -130,7 +130,7 @@ pub fn DeviceCard(
                 </div>
 
                 // Metrics row
-                <div class="flex items-center gap-4 text-[11px] font-mono tabular-nums text-fg-tertiary">
+                <div class="flex items-center gap-4 text-[10px] font-mono tabular-nums text-fg-tertiary">
                     <div class="flex items-center gap-1.5">
                         <Icon icon=LuCircleDot width="12px" height="12px" style="opacity: 0.4" />
                         <span>{total_leds} " LEDs"</span>

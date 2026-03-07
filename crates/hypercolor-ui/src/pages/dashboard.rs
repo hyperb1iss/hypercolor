@@ -43,7 +43,7 @@ pub fn DashboardPage() -> impl IntoView {
                 // Live preview
                 <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
                     <div class="px-4 py-3 border-b border-edge-subtle flex items-center justify-between">
-                        <h2 class="text-[13px] font-medium text-fg-secondary">"Live Preview"</h2>
+                        <h2 class="text-[14px] font-medium text-fg-secondary">"Live Preview"</h2>
                         {move || ws.active_effect.get().map(|name| {
                             view! {
                                 <div class="flex items-center gap-1.5">
@@ -65,7 +65,7 @@ pub fn DashboardPage() -> impl IntoView {
                 // Quick switch
                 <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle">
                     <div class="px-4 py-3 border-b border-edge-subtle">
-                        <h2 class="text-[13px] font-medium text-fg-secondary">"Quick Switch"</h2>
+                        <h2 class="text-[14px] font-medium text-fg-secondary">"Quick Switch"</h2>
                     </div>
                     <div class="p-3">
                         <Suspense fallback=move || view! {
