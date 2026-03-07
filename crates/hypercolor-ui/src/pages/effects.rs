@@ -32,7 +32,6 @@ fn category_accent_rgb(category: &str) -> &'static str {
 const CATEGORIES: &[&str] = &[
     "all",
     "ambient",
-    "audio",
     "gaming",
     "reactive",
     "generative",
