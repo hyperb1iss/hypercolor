@@ -3,25 +3,32 @@
 //! These tests prove that the render thread correctly orchestrates:
 //! Effect render → Spatial sample → Device push → Bus publish.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use tokio::sync::{Mutex, RwLock, watch};
 
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig, MockEffectRenderer};
-use hypercolor_core::device::{BackendManager, DeviceBackend};
+use hypercolor_core::device::{
+    BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry, ReconnectPolicy,
+};
 use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::event::{HypercolorEvent, ZoneColors};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
 };
 
+use hypercolor_daemon::discovery::DiscoveryRuntime;
+use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::render_thread::{RenderThread, RenderThreadState};
 use hypercolor_daemon::session::OutputPowerState;
 
@@ -145,6 +152,7 @@ fn make_render_state(
         effect_engine: Arc::new(Mutex::new(effect_engine)),
         spatial_engine: Arc::new(RwLock::new(spatial_engine)),
         backend_manager: Arc::new(Mutex::new(backend_manager)),
+        discovery_runtime: None,
         event_bus: Arc::new(HypercolorBus::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
@@ -153,6 +161,32 @@ fn make_render_state(
         canvas_height: 200,
         screen_capture_enabled: false,
     }
+}
+
+async fn wait_for_device_state(
+    lifecycle_manager: &Arc<Mutex<DeviceLifecycleManager>>,
+    device_id: DeviceId,
+    expected: DeviceState,
+    timeout: Duration,
+) {
+    let result = tokio::time::timeout(timeout, async {
+        loop {
+            let state = {
+                let lifecycle = lifecycle_manager.lock().await;
+                lifecycle.state(device_id)
+            };
+            if state == Some(expected.clone()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "expected device {device_id} to reach {expected:?} within {timeout:?}"
+    );
 }
 
 // ── Render Thread Lifecycle Tests ───────────────────────────────────────────
@@ -344,6 +378,7 @@ async fn pipeline_renders_active_effect_to_devices() {
         effect_engine: Arc::new(Mutex::new(effect_engine)),
         spatial_engine: Arc::new(RwLock::new(spatial_engine)),
         backend_manager: Arc::new(Mutex::new(backend_manager)),
+        discovery_runtime: None,
         event_bus: Arc::new(HypercolorBus::new()),
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
@@ -387,6 +422,143 @@ async fn pipeline_renders_active_effect_to_devices() {
         frame_data.timestamp_ms > 0 || frame_data.frame_number > 0,
         "expected frames to have been rendered"
     );
+}
+
+#[tokio::test]
+async fn pipeline_async_write_failures_enter_reconnect_flow() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Failing Strip".into(),
+        led_count: 8,
+        topology: LedTopology::Strip {
+            count: 8,
+            direction: StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+
+    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    let info = backend
+        .device_infos()
+        .first()
+        .cloned()
+        .expect("mock backend should expose one device");
+    let layout_device_id = DeviceLifecycleManager::layout_device_id("mock", &info);
+
+    backend.connect(&device_id).await.expect("connect");
+    backend.fail_write = true;
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(backend));
+    backend_manager.map_device(&layout_device_id, "mock", device_id);
+    let backend_manager = Arc::new(Mutex::new(backend_manager));
+
+    let device_registry = DeviceRegistry::new();
+    let registered_id = device_registry.add(info.clone()).await;
+    assert_eq!(registered_id, device_id);
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::with_reconnect_policy(
+        ReconnectPolicy {
+            initial_delay: Duration::from_secs(5),
+            ..ReconnectPolicy::default()
+        },
+    )));
+    {
+        let mut lifecycle = lifecycle_manager.lock().await;
+        let _ = lifecycle.on_discovered(device_id, &info, "mock", None);
+        lifecycle
+            .on_connected(device_id)
+            .expect("connected state should be valid");
+        lifecycle
+            .on_frame_success(device_id)
+            .expect("frame success should move device to active");
+    }
+
+    let event_bus = Arc::new(HypercolorBus::new());
+    let discovery_runtime = DiscoveryRuntime {
+        device_registry: device_registry.clone(),
+        backend_manager: Arc::clone(&backend_manager),
+        lifecycle_manager: Arc::clone(&lifecycle_manager),
+        reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
+        event_bus: Arc::clone(&event_bus),
+        logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
+        in_progress: Arc::new(AtomicBool::new(false)),
+    };
+
+    let layout = test_layout(vec![strip_zone("zone_0", &layout_device_id, 8)]);
+    let spatial_engine = SpatialEngine::new(layout);
+
+    let mut effect_engine = EffectEngine::new();
+    let renderer = MockEffectRenderer::solid(255, 0, 0);
+    let metadata = MockEffectRenderer::sample_metadata("write-failure");
+    effect_engine
+        .activate(Box::new(renderer), metadata)
+        .expect("activate");
+
+    let (_, power_state) = watch::channel(OutputPowerState::default());
+    let state = RenderThreadState {
+        effect_engine: Arc::new(Mutex::new(effect_engine)),
+        spatial_engine: Arc::new(RwLock::new(spatial_engine)),
+        backend_manager,
+        discovery_runtime: Some(discovery_runtime.clone()),
+        event_bus,
+        render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
+        input_manager: Arc::new(Mutex::new(InputManager::new())),
+        power_state,
+        canvas_width: 320,
+        canvas_height: 200,
+        screen_capture_enabled: false,
+    };
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    wait_for_device_state(
+        &lifecycle_manager,
+        device_id,
+        DeviceState::Reconnecting,
+        Duration::from_millis(750),
+    )
+    .await;
+
+    let registry_state = tokio::time::timeout(Duration::from_millis(250), async {
+        loop {
+            let tracked = device_registry
+                .get(&device_id)
+                .await
+                .expect("device should remain in registry");
+            if tracked.state == DeviceState::Reconnecting {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        registry_state.is_ok(),
+        "expected registry state to sync to reconnecting"
+    );
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let reconnect_tasks = {
+        let mut tasks = discovery_runtime
+            .reconnect_tasks
+            .lock()
+            .expect("reconnect task map lock poisoned");
+        tasks.drain().map(|(_, handle)| handle).collect::<Vec<_>>()
+    };
+    for handle in reconnect_tasks {
+        handle.abort();
+    }
 }
 
 #[tokio::test]

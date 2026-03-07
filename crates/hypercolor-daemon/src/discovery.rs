@@ -10,8 +10,8 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::openrgb::{OpenRgbScanner, ScannerConfig as OpenRgbScannerConfig};
 use hypercolor_core::device::wled::WledScanner;
 use hypercolor_core::device::{
-    BackendManager, DeviceLifecycleManager, DeviceRegistry, DiscoveryOrchestrator, LifecycleAction,
-    ScannerScanReport, UsbScanner,
+    AsyncWriteFailure, BackendManager, DeviceLifecycleManager, DeviceRegistry,
+    DiscoveryOrchestrator, LifecycleAction, ScannerScanReport, UsbScanner,
 };
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{DeviceFamily, DeviceId};
@@ -575,6 +575,57 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
             }
             LifecycleAction::CancelReconnect { device_id } => {
                 cancel_reconnect_task(&runtime, device_id);
+            }
+        }
+    }
+}
+
+pub(crate) async fn handle_async_write_failures(
+    runtime: &DiscoveryRuntime,
+    failures: Vec<AsyncWriteFailure>,
+) {
+    let mut handled = HashSet::new();
+
+    for failure in failures {
+        if !handled.insert(failure.device_id) {
+            continue;
+        }
+
+        let should_handle = {
+            let lifecycle = runtime.lifecycle_manager.lock().await;
+            lifecycle
+                .state(failure.device_id)
+                .is_some_and(|state| state.is_renderable())
+        };
+
+        if !should_handle {
+            continue;
+        }
+
+        warn!(
+            backend_id = %failure.backend_id,
+            device_id = %failure.device_id,
+            error = %failure.error,
+            "async device write failed; entering reconnect flow"
+        );
+
+        let actions = {
+            let mut lifecycle = runtime.lifecycle_manager.lock().await;
+            lifecycle.on_comm_error(failure.device_id)
+        };
+
+        match actions {
+            Ok(actions) => {
+                execute_lifecycle_actions(runtime.clone(), actions).await;
+                sync_registry_state(runtime, failure.device_id).await;
+            }
+            Err(error) => {
+                warn!(
+                    backend_id = %failure.backend_id,
+                    device_id = %failure.device_id,
+                    error = %error,
+                    "failed to transition lifecycle after async device write error"
+                );
             }
         }
     }

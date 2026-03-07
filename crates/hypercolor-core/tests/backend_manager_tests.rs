@@ -347,6 +347,32 @@ fn map_and_unmap_device() {
     assert!(!manager.unmap_device("wled:strip_1"));
 }
 
+#[test]
+fn unmap_device_clears_cached_target_fps_when_last_mapping_is_removed() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(5),
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    )
+    .with_target_fps(33);
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+
+    let runtime = tokio::runtime::Runtime::new().expect("create tokio runtime");
+    runtime
+        .block_on(manager.connect_device("slow", device_id, "slow:cache-cleanup"))
+        .expect("connect should succeed");
+
+    assert_eq!(manager.cached_target_fps("slow", device_id), Some(33));
+    assert!(manager.unmap_device("slow:cache-cleanup"));
+    assert_eq!(manager.cached_target_fps("slow", device_id), None);
+}
+
 #[tokio::test]
 async fn connect_device_connects_backend_and_maps_layout_device() {
     let device_id = DeviceId::new();
@@ -763,6 +789,12 @@ async fn write_frame_backend_errors_are_not_reported_synchronously() {
             .contains("mock write failure"),
         "expected async queue error details for debugging"
     );
+
+    let failures = manager.async_write_failures();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].backend_id, "mock");
+    assert_eq!(failures[0].device_id, device_id);
+    assert!(failures[0].error.contains("mock write failure"));
 }
 
 #[tokio::test]

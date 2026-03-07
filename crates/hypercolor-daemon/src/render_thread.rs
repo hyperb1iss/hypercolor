@@ -33,6 +33,7 @@ use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 
+use crate::discovery::{DiscoveryRuntime, handle_async_write_failures};
 use crate::session::OutputPowerState;
 
 // ── RenderThread ────────────────────────────────────────────────────────────
@@ -61,6 +62,9 @@ pub struct RenderThreadState {
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
+
+    /// Discovery/lifecycle runtime used to react to async device write failures.
+    pub discovery_runtime: Option<DiscoveryRuntime>,
 
     /// System-wide event bus — frame data and timing events.
     pub event_bus: Arc<HypercolorBus>,
@@ -303,11 +307,17 @@ async fn execute_frame(
 
     // ── Stage 4: Device push → hardware ─────────────────────────
     let push_start = Instant::now();
-    let write_stats = {
+    let (write_stats, async_failures) = {
         let mut manager = state.backend_manager.lock().await;
-        manager.write_frame(&zone_colors, &layout).await
+        let write_stats = manager.write_frame(&zone_colors, &layout).await;
+        let async_failures = manager.async_write_failures();
+        (write_stats, async_failures)
     };
     let push_us = micros_u32(push_start.elapsed());
+
+    if let Some(runtime) = &state.discovery_runtime {
+        handle_async_write_failures(runtime, async_failures).await;
+    }
 
     // ── Stage 5: Publish to bus ─────────────────────────────────
     let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
@@ -465,11 +475,16 @@ async fn maybe_sleep_throttle(
     let sample_us = micros_u32(sample_start.elapsed());
 
     let push_start = Instant::now();
-    {
+    let async_failures = {
         let mut manager = state.backend_manager.lock().await;
         let _ = manager.write_frame(&zone_colors, &layout).await;
-    }
+        manager.async_write_failures()
+    };
     let push_us = micros_u32(push_start.elapsed());
+
+    if let Some(runtime) = &state.discovery_runtime {
+        handle_async_write_failures(runtime, async_failures).await;
+    }
 
     let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
     let frame_num_u32 = u64_to_u32(frame_number);

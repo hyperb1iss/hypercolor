@@ -481,6 +481,7 @@ impl DaemonState {
             effect_engine: Arc::clone(&self.effect_engine),
             spatial_engine: Arc::clone(&self.spatial_engine),
             backend_manager: Arc::clone(&self.backend_manager),
+            discovery_runtime: Some(self.discovery_runtime()),
             event_bus: Arc::clone(&self.event_bus),
             render_loop: Arc::clone(&self.render_loop),
             input_manager: Arc::clone(&self.input_manager),

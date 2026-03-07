@@ -150,6 +150,17 @@ pub struct OutputQueueDebugSnapshot {
     pub last_sequence: u64,
 }
 
+/// One async device write failure observed by an output queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsyncWriteFailure {
+    /// Backend ID that owns the queue.
+    pub backend_id: String,
+    /// Physical device ID targeted by the queue.
+    pub device_id: DeviceId,
+    /// Most recent async write error string.
+    pub error: String,
+}
+
 #[derive(Debug, Clone, Default)]
 struct OutputQueueMetrics {
     frames_received: u64,
@@ -669,6 +680,7 @@ impl BackendManager {
         if !still_used {
             let key = (mapping.backend_id, mapping.device_id);
             self.output_queues.remove(&key);
+            self.device_fps_cache.remove(&key);
             self.direct_control_locks.remove(&key);
         }
 
@@ -692,10 +704,10 @@ impl BackendManager {
             .values()
             .any(|mapping| mapping.backend_id == backend_id && mapping.device_id == device_id)
         {
-            self.output_queues
-                .remove(&(backend_id.to_owned(), device_id));
-            self.direct_control_locks
-                .remove(&(backend_id.to_owned(), device_id));
+            let key = (backend_id.to_owned(), device_id);
+            self.output_queues.remove(&key);
+            self.device_fps_cache.remove(&key);
+            self.direct_control_locks.remove(&key);
         }
 
         removed
@@ -865,6 +877,35 @@ impl BackendManager {
         self.device_fps_cache
             .get(&(backend_id.to_owned(), device_id))
             .copied()
+    }
+
+    /// Snapshot async write failures currently retained by output queues.
+    #[must_use]
+    pub fn async_write_failures(&self) -> Vec<AsyncWriteFailure> {
+        let mut failures = self
+            .output_queues
+            .iter()
+            .filter_map(|((backend_id, device_id), queue)| {
+                let error = queue
+                    .metrics
+                    .lock()
+                    .ok()
+                    .and_then(|metrics| metrics.last_error.clone())?;
+
+                Some(AsyncWriteFailure {
+                    backend_id: backend_id.clone(),
+                    device_id: *device_id,
+                    error,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        failures.sort_by(|left, right| {
+            left.backend_id
+                .cmp(&right.backend_id)
+                .then(left.device_id.to_string().cmp(&right.device_id.to_string()))
+        });
+        failures
     }
 
     /// Build a debug snapshot of queue and routing internals.
