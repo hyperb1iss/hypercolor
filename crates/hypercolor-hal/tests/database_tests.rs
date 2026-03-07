@@ -1,4 +1,8 @@
 use hypercolor_hal::database::ProtocolDatabase;
+use hypercolor_hal::drivers::corsair::{
+    CORSAIR_VID, PID_COMMANDER_PRO, PID_ICUE_LINK_SYSTEM_HUB, PID_LIGHTING_NODE_CORE,
+    PID_LIGHTING_NODE_PRO,
+};
 use hypercolor_hal::drivers::dygma::{DYGMA_VENDOR_ID, PID_DEFY_WIRED, PID_DEFY_WIRELESS};
 use hypercolor_hal::drivers::prismrgb::{
     NOLLIE_VENDOR_ID, PID_NOLLIE_8_V2, PID_PRISM_8, PID_PRISM_MINI, PID_PRISM_S,
@@ -58,6 +62,65 @@ fn lookup_returns_defy_wireless_descriptor() {
         descriptor.transport,
         TransportType::UsbSerial { baud_rate: 115_200 }
     );
+}
+
+#[test]
+fn lookup_returns_icue_link_system_hub_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(CORSAIR_VID, PID_ICUE_LINK_SYSTEM_HUB)
+        .expect("Corsair iCUE LINK System Hub descriptor should exist");
+
+    assert_eq!(descriptor.name, "Corsair iCUE LINK System Hub");
+    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(descriptor.protocol.id, "corsair/icue-link-system-hub");
+    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Corsair iCUE LINK System Hub");
+    assert_eq!(protocol.total_leds(), 0);
+    assert!(protocol.zones().is_empty());
+}
+
+#[test]
+fn lookup_returns_lighting_node_core_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(CORSAIR_VID, PID_LIGHTING_NODE_CORE)
+        .expect("Corsair Lighting Node Core descriptor should exist");
+
+    assert_eq!(descriptor.name, "Corsair Lighting Node Core");
+    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(descriptor.protocol.id, "corsair/lighting-node-core");
+    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Corsair Lighting Node Core");
+    assert_eq!(protocol.total_leds(), 204);
+    assert_eq!(protocol.zones().len(), 1);
+}
+
+#[test]
+fn lookup_returns_lighting_node_pro_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(CORSAIR_VID, PID_LIGHTING_NODE_PRO)
+        .expect("Corsair Lighting Node Pro descriptor should exist");
+
+    assert_eq!(descriptor.name, "Corsair Lighting Node Pro");
+    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(descriptor.protocol.id, "corsair/lighting-node-pro");
+    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Corsair Lighting Node Pro");
+    assert_eq!(protocol.total_leds(), 408);
+    assert_eq!(protocol.zones().len(), 2);
+}
+
+#[test]
+fn lookup_returns_commander_pro_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(CORSAIR_VID, PID_COMMANDER_PRO)
+        .expect("Corsair Commander Pro descriptor should exist");
+
+    assert_eq!(descriptor.name, "Corsair Commander Pro");
+    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(descriptor.protocol.id, "corsair/commander-pro");
+    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
 }
 
 #[test]
@@ -211,6 +274,10 @@ fn lookup_returns_seiren_emote_with_8x8_zone_topology() {
 #[test]
 fn known_vid_pid_contains_razer_entries() {
     let pairs = ProtocolDatabase::known_vid_pids();
+    assert!(pairs.contains(&(CORSAIR_VID, PID_ICUE_LINK_SYSTEM_HUB)));
+    assert!(pairs.contains(&(CORSAIR_VID, PID_LIGHTING_NODE_CORE)));
+    assert!(pairs.contains(&(CORSAIR_VID, PID_LIGHTING_NODE_PRO)));
+    assert!(pairs.contains(&(CORSAIR_VID, PID_COMMANDER_PRO)));
     assert!(pairs.contains(&(DYGMA_VENDOR_ID, PID_DEFY_WIRED)));
     assert!(pairs.contains(&(DYGMA_VENDOR_ID, PID_DEFY_WIRELESS)));
     assert!(pairs.contains(&(PRISM_VENDOR_ID, PID_PRISM_8)));
@@ -237,5 +304,5 @@ fn by_vendor_returns_only_razer_entries() {
 #[test]
 fn count_matches_static_descriptor_count() {
     assert_eq!(ProtocolDatabase::count(), ProtocolDatabase::all().len());
-    assert!(ProtocolDatabase::count() >= 13);
+    assert!(ProtocolDatabase::count() >= 21);
 }

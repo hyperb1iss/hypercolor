@@ -479,6 +479,19 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
 
                 let (follow_up, connected) = match result {
                     Ok(()) => {
+                        if let Err(error) =
+                            refresh_connected_device_info(&runtime, &backend_id, device_id).await
+                        {
+                            let device_label = device_log_label(&runtime, device_id).await;
+                            warn!(
+                                device = %device_label,
+                                device_id = %device_id,
+                                backend_id = %backend_id,
+                                error = %error,
+                                error_chain = %format_error_chain(&error),
+                                "failed to refresh device metadata after connect"
+                            );
+                        }
                         let mut lifecycle = runtime.lifecycle_manager.lock().await;
                         (lifecycle.on_connected(device_id), true)
                     }
@@ -745,6 +758,23 @@ async fn sync_registry_state(runtime: &DiscoveryRuntime, device_id: DeviceId) {
     if let Some(state) = state {
         let _ = runtime.device_registry.set_state(&device_id, state).await;
     }
+}
+
+async fn refresh_connected_device_info(
+    runtime: &DiscoveryRuntime,
+    backend_id: &str,
+    device_id: DeviceId,
+) -> anyhow::Result<()> {
+    let maybe_info = {
+        let manager = runtime.backend_manager.lock().await;
+        manager.connected_device_info(backend_id, device_id).await?
+    };
+
+    if let Some(info) = maybe_info {
+        let _ = runtime.device_registry.update_info(&device_id, info).await;
+    }
+
+    Ok(())
 }
 
 async fn ensure_default_logical_for_device(

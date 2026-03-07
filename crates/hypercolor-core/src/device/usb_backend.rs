@@ -17,7 +17,7 @@ use hypercolor_hal::transport::hid::UsbHidTransport;
 use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
-use hypercolor_types::device::DeviceId;
+use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
 use tracing::{debug, trace, warn};
 
 #[cfg(target_os = "linux")]
@@ -37,12 +37,14 @@ struct PendingUsbDevice {
     serial: Option<String>,
     usb_path: Option<String>,
     descriptor: &'static DeviceDescriptor,
+    info_template: DeviceInfo,
 }
 
 struct UsbDevice {
     protocol: Arc<dyn Protocol>,
     transport: Arc<dyn Transport>,
     keepalive_task: Option<tokio::task::JoinHandle<()>>,
+    info_template: DeviceInfo,
 }
 
 /// Core USB backend for HAL-managed device families.
@@ -564,6 +566,7 @@ impl DeviceBackend for UsbBackend {
                 protocol,
                 transport,
                 keepalive_task,
+                info_template: pending.info_template,
             },
         );
 
@@ -664,6 +667,18 @@ impl DeviceBackend for UsbBackend {
         .await
         .with_context(|| format!("USB brightness write failed for device {id}"))
     }
+
+    async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
+        let Some(device) = self.connected.get(id) else {
+            return Ok(None);
+        };
+
+        Ok(Some(build_connected_device_info(
+            *id,
+            &device.info_template,
+            device.protocol.as_ref(),
+        )))
+    }
 }
 
 fn pending_from_discovered(
@@ -679,6 +694,7 @@ fn pending_from_discovered(
         serial: discovered.metadata.get("serial").cloned(),
         usb_path: discovered.metadata.get("usb_path").cloned(),
         descriptor,
+        info_template: discovered.info.clone(),
     })
 }
 
@@ -779,5 +795,30 @@ fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
         "<empty>".to_owned()
     } else {
         rendered
+    }
+}
+
+fn build_connected_device_info(
+    device_id: DeviceId,
+    template: &DeviceInfo,
+    protocol: &dyn Protocol,
+) -> DeviceInfo {
+    let mut info = template.clone();
+    info.id = device_id;
+    info.zones = protocol
+        .zones()
+        .into_iter()
+        .map(protocol_zone_to_zone_info)
+        .collect();
+    info.capabilities = protocol.capabilities();
+    info
+}
+
+fn protocol_zone_to_zone_info(zone: hypercolor_hal::protocol::ProtocolZone) -> ZoneInfo {
+    ZoneInfo {
+        name: zone.name,
+        led_count: zone.led_count,
+        topology: zone.topology,
+        color_format: zone.color_format,
     }
 }

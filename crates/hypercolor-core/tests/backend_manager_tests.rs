@@ -217,6 +217,123 @@ impl DeviceBackend for DirectControlRecordingBackend {
     }
 }
 
+struct MetadataRefreshingBackend {
+    expected_device_id: DeviceId,
+    connected: bool,
+    refreshed_info: DeviceInfo,
+}
+
+impl MetadataRefreshingBackend {
+    fn new(expected_device_id: DeviceId) -> Self {
+        Self {
+            expected_device_id,
+            connected: false,
+            refreshed_info: DeviceInfo {
+                id: expected_device_id,
+                name: "Connected Metadata Device".to_owned(),
+                vendor: "Test".to_owned(),
+                family: DeviceFamily::Custom("Test".to_owned()),
+                model: Some("Connected".to_owned()),
+                connection_type: ConnectionType::Network,
+                zones: vec![
+                    ZoneInfo {
+                        name: "Pump Ring".to_owned(),
+                        led_count: 4,
+                        topology: DeviceTopologyHint::Ring { count: 4 },
+                        color_format: DeviceColorFormat::Rgb,
+                    },
+                    ZoneInfo {
+                        name: "Case Strip".to_owned(),
+                        led_count: 8,
+                        topology: DeviceTopologyHint::Strip,
+                        color_format: DeviceColorFormat::Rgb,
+                    },
+                ],
+                firmware_version: Some("2.0.0".to_owned()),
+                capabilities: DeviceCapabilities {
+                    led_count: 12,
+                    supports_direct: true,
+                    supports_brightness: false,
+                    has_display: false,
+                    display_resolution: None,
+                    max_fps: 30,
+                },
+            },
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for MetadataRefreshingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "metadata".to_owned(),
+            name: "Metadata Refreshing Backend".to_owned(),
+            description: "Returns connected-device metadata after handshake".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(vec![DeviceInfo {
+            id: self.expected_device_id,
+            name: "Initial Metadata Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::Custom("Test".to_owned()),
+            model: Some("Initial".to_owned()),
+            connection_type: ConnectionType::Network,
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 1,
+                topology: DeviceTopologyHint::Point,
+                color_format: DeviceColorFormat::Rgb,
+            }],
+            firmware_version: Some("1.0.0".to_owned()),
+            capabilities: DeviceCapabilities {
+                led_count: 1,
+                supports_direct: true,
+                supports_brightness: false,
+                has_display: false,
+                display_resolution: None,
+                max_fps: 60,
+            },
+        }])
+    }
+
+    async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        Ok(self.connected.then_some(self.refreshed_info.clone()))
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connected = true;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connected = false;
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        Ok(())
+    }
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn make_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
@@ -594,6 +711,33 @@ async fn set_device_brightness_targets_backend_directly() {
         "brightness should not write colors"
     );
     assert_eq!(*brightness_writes.lock().await, vec![128]);
+}
+
+#[tokio::test]
+async fn connected_device_info_returns_backend_metadata() {
+    let device_id = DeviceId::new();
+    let mut backend = MetadataRefreshingBackend::new(device_id);
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+
+    let info = manager
+        .connected_device_info("metadata", device_id)
+        .await
+        .expect("metadata lookup should succeed")
+        .expect("connected device metadata should exist");
+
+    assert_eq!(info.id, device_id);
+    assert_eq!(info.name, "Connected Metadata Device");
+    assert_eq!(info.firmware_version.as_deref(), Some("2.0.0"));
+    assert_eq!(info.zones.len(), 2);
+    assert_eq!(
+        info.zones[0].topology,
+        DeviceTopologyHint::Ring { count: 4 }
+    );
+    assert_eq!(info.capabilities.led_count, 12);
+    assert_eq!(info.capabilities.max_fps, 30);
 }
 
 #[tokio::test]

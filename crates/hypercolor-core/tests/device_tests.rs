@@ -541,6 +541,63 @@ async fn registry_set_state_unknown_returns_false() {
 }
 
 #[tokio::test]
+async fn registry_update_info_preserves_id_and_state() {
+    let registry = DeviceRegistry::new();
+    let device = mock_device_info("Original Device");
+    let id = device.id;
+
+    registry.add(device).await;
+    registry.set_state(&id, DeviceState::Connected).await;
+
+    let refreshed = DeviceInfo {
+        id: DeviceId::new(),
+        name: "Refreshed Device".to_owned(),
+        vendor: "Corsair".to_owned(),
+        family: DeviceFamily::Corsair,
+        model: Some("iCUE LINK".to_owned()),
+        connection_type: ConnectionType::Usb,
+        zones: vec![
+            ZoneInfo {
+                name: "Pump Ring".to_owned(),
+                led_count: 24,
+                topology: DeviceTopologyHint::Ring { count: 24 },
+                color_format: DeviceColorFormat::Rgb,
+            },
+            ZoneInfo {
+                name: "Radiator Fans".to_owned(),
+                led_count: 102,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            },
+        ],
+        firmware_version: Some("2.1.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 126,
+            supports_direct: true,
+            supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 30,
+        },
+    };
+
+    let updated = registry
+        .update_info(&id, refreshed)
+        .await
+        .expect("tracked device should update");
+    assert_eq!(updated.info.id, id);
+    assert_eq!(updated.info.name, "Refreshed Device");
+    assert_eq!(updated.state, DeviceState::Connected);
+
+    let tracked = registry.get(&id).await.expect("device should exist");
+    assert_eq!(tracked.info.id, id);
+    assert_eq!(tracked.info.vendor, "Corsair");
+    assert_eq!(tracked.info.zones.len(), 2);
+    assert_eq!(tracked.info.capabilities.led_count, 126);
+    assert_eq!(tracked.state, DeviceState::Connected);
+}
+
+#[tokio::test]
 async fn registry_list_by_state() {
     let registry = DeviceRegistry::new();
 

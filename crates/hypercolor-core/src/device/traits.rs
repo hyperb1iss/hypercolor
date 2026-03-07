@@ -1,6 +1,6 @@
 //! Core device backend and plugin traits.
 //!
-//! Every hardware protocol (WLED/DDP, USB HID, `OpenRGB` gRPC, Philips Hue)
+//! Every hardware protocol (WLED/DDP, USB HID, `OpenRGB` SDK TCP, Philips Hue)
 //! implements [`DeviceBackend`] for communication and [`DevicePlugin`] for
 //! lifecycle registration with the engine.
 
@@ -24,7 +24,7 @@ pub struct BackendInfo {
 
     /// Human-readable backend name for logging and UI display.
     ///
-    /// Examples: `"WLED (DDP)"`, `"USB HID (PrismRGB)"`, `"OpenRGB (gRPC)"`.
+    /// Examples: `"WLED (DDP)"`, `"USB HID (PrismRGB)"`, `"OpenRGB (TCP)"`.
     pub name: String,
 
     /// Short description of what this backend supports.
@@ -71,6 +71,21 @@ pub trait DeviceBackend: Send + Sync {
     /// Returns an error if the transport is unavailable or the scan fails
     /// (e.g., USB subsystem inaccessible, network unreachable).
     async fn discover(&mut self) -> Result<Vec<DeviceInfo>>;
+
+    /// Return refreshed metadata for a connected device, if available.
+    ///
+    /// Backends with dynamic topology or capabilities discovered during
+    /// connect-time handshakes can override this to surface the final
+    /// connected shape back to the registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device is connected but metadata retrieval
+    /// fails. The default implementation reports no refreshed metadata.
+    async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
+        let _ = id;
+        Ok(None)
+    }
 
     /// Establish a connection to a specific device.
     ///
@@ -150,7 +165,7 @@ pub trait DeviceBackend: Send + Sync {
 /// 1. In [`build`](DevicePlugin::build): returns a boxed [`DeviceBackend`]
 ///    implementation for the engine to register.
 /// 2. In [`ready`](DevicePlugin::ready): verifies runtime dependencies
-///    (hidapi available, network reachable, `OpenRGB` bridge process running).
+///    (hidapi available, network reachable, `OpenRGB` SDK reachable).
 /// 3. In [`teardown`](DevicePlugin::teardown): releases any OS-level resources.
 pub trait DevicePlugin: Send + Sync {
     /// Human-readable plugin name for logging and display.
