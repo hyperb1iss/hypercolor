@@ -9,6 +9,8 @@ pub mod layout_canvas;
 pub mod layout_palette;
 pub mod layout_zone_properties;
 pub mod preset_panel;
+pub mod settings_controls;
+pub mod settings_sections;
 pub mod shell;
 pub mod sidebar;
 pub mod status_bar;
