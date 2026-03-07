@@ -116,10 +116,25 @@ impl UsbBackend {
                         format!(
                             "failed to claim USB interface {interface} for control transport (report_id=0x{report_id:02X}); interface may be busy (kernel or another userspace driver)"
                         )
-                    })?;
+                })?;
                 Ok(Box::new(transport))
             }
-            TransportType::UsbHid { interface } => Ok(Box::new(UsbHidTransport::new(interface))),
+            TransportType::UsbHid { interface } => {
+                let device = usb.open().await.with_context(|| {
+                    format!(
+                        "failed to open USB device {:04X}:{:04X}",
+                        pending.vendor_id, pending.product_id
+                    )
+                })?;
+                let transport = UsbHidTransport::new(device, interface).await.with_context(
+                    || {
+                        format!(
+                            "failed to claim USB interface {interface} for HID interrupt transport"
+                        )
+                    },
+                )?;
+                Ok(Box::new(transport))
+            }
             TransportType::UsbVendor => Ok(Box::new(UsbVendorTransport::new())),
         }
     }

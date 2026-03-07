@@ -914,6 +914,42 @@ points = [[0, 0], [64, 10], [128, 50], [192, 130], [255, 255]]
 [device.shutdown]
 behavior = "static"                  # "off" | "static" | "hardware_default"
 color = "#1a1a2e"
+
+# ─── Attachment Slots & Bindings ──────────────────────────────
+
+# Slots are controller-facing attachment points. They are typically auto-derived
+# from discovered zones, but users can refine names, categories, and allowed
+# templates.
+[[device.attachments.slots]]
+id = "atx-strimer"
+name = "ATX Port"
+led_start = 0
+led_count = 120
+suggested_categories = ["strimer", "matrix"]
+allow_custom = true
+
+[[device.attachments.slots]]
+id = "gpu-strimer"
+name = "GPU Port"
+led_start = 120
+led_count = 162
+suggested_categories = ["strimer", "matrix"]
+allowed_templates = ["strimer-gpu-dual-8", "strimer-gpu-triple-8"]
+allow_custom = true
+
+# Bindings associate a slot with either a built-in preset or a user-authored
+# custom attachment template.
+[[device.attachments.bindings]]
+slot_id = "atx-strimer"
+template_id = "strimer-atx-24pin"
+name = "24-pin ATX Cable"
+enabled = true
+
+[[device.attachments.bindings]]
+slot_id = "gpu-strimer"
+template_id = "my-custom-gpu-sleeve"
+name = "4090 GPU Sleeve"
+enabled = true
 ```
 
 ### 6.2 WLED Network Device

@@ -2,6 +2,7 @@
 ///
 /// This crate contains all data types used across crate boundaries.
 /// No logic, no I/O, no async — pure data structures with serde derives.
+pub mod attachment;
 pub mod audio;
 pub mod canvas;
 pub mod config;

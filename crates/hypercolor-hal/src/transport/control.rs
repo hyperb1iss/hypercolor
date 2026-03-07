@@ -115,6 +115,51 @@ impl Transport for UsbControlTransport {
         self.check_open()?;
 
         let _guard = self.op_lock.lock().await;
+        self.receive_locked(timeout).await
+    }
+
+    async fn send_receive(
+        &self,
+        data: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, TransportError> {
+        self.check_open()?;
+
+        let _guard = self.op_lock.lock().await;
+        trace!(
+            interface_number = self.interface_number,
+            report_id = format_args!("0x{:02X}", self.report_id),
+            packet_len = data.len(),
+            packet_hex = %format_hex_preview(data, 32),
+            "usb control feature report send_receive"
+        );
+
+        self.interface
+            .control_out(
+                ControlOut {
+                    control_type: ControlType::Class,
+                    recipient: Recipient::Interface,
+                    request: 0x09,
+                    value: self.w_value(),
+                    index: u16::from(self.interface_number),
+                    data,
+                },
+                DEFAULT_IO_TIMEOUT,
+            )
+            .await
+            .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))?;
+
+        self.receive_locked(timeout).await
+    }
+
+    async fn close(&self) -> Result<(), TransportError> {
+        self.closed.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
+impl UsbControlTransport {
+    async fn receive_locked(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
         let length = u16::try_from(self.max_packet_len).map_err(|_| TransportError::IoError {
             detail: "configured packet length exceeds u16".to_owned(),
         })?;
@@ -151,11 +196,6 @@ impl Transport for UsbControlTransport {
         );
 
         Ok(response)
-    }
-
-    async fn close(&self) -> Result<(), TransportError> {
-        self.closed.store(true, Ordering::Release);
-        Ok(())
     }
 }
 

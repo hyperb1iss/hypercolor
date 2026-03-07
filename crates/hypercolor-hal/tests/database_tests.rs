@@ -1,10 +1,71 @@
 use hypercolor_hal::database::ProtocolDatabase;
+use hypercolor_hal::drivers::prismrgb::{
+    NOLLIE_VENDOR_ID, PID_NOLLIE_8_V2, PID_PRISM_8, PID_PRISM_MINI, PID_PRISM_S,
+    PRISM_GCS_VENDOR_ID, PRISM_VENDOR_ID,
+};
 use hypercolor_hal::drivers::razer::{
     PID_BASILISK_V3, PID_BLADE_14_2021, PID_BLADE_14_2023, PID_BLADE_15_2022,
     PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, PID_SEIREN_EMOTE, RAZER_VENDOR_ID,
 };
 use hypercolor_hal::registry::TransportType;
 use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};
+
+#[test]
+fn lookup_returns_prism_8_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(PRISM_VENDOR_ID, PID_PRISM_8)
+        .expect("Prism 8 descriptor should exist");
+
+    assert_eq!(descriptor.name, "PrismRGB Prism 8");
+    assert_eq!(descriptor.family, DeviceFamily::PrismRgb);
+    assert_eq!(descriptor.protocol.id, "prismrgb/prism-8");
+    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "PrismRGB Prism 8");
+    assert_eq!(protocol.total_leds(), 1_008);
+    assert_eq!(protocol.zones().len(), 8);
+}
+
+#[test]
+fn lookup_returns_nollie_8_v2_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(NOLLIE_VENDOR_ID, PID_NOLLIE_8_V2)
+        .expect("Nollie 8 v2 descriptor should exist");
+
+    assert_eq!(descriptor.name, "Nollie 8 v2");
+    assert_eq!(descriptor.family, DeviceFamily::PrismRgb);
+    assert_eq!(descriptor.protocol.id, "prismrgb/nollie-8-v2");
+    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+}
+
+#[test]
+fn lookup_returns_prism_s_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(PRISM_GCS_VENDOR_ID, PID_PRISM_S)
+        .expect("Prism S descriptor should exist");
+
+    assert_eq!(descriptor.name, "PrismRGB Prism S");
+    assert_eq!(descriptor.family, DeviceFamily::PrismRgb);
+    assert_eq!(descriptor.protocol.id, "prismrgb/prism-s");
+    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 2 });
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.total_leds(), 282);
+    assert_eq!(protocol.zones().len(), 2);
+}
+
+#[test]
+fn lookup_returns_prism_mini_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(PRISM_GCS_VENDOR_ID, PID_PRISM_MINI)
+        .expect("Prism Mini descriptor should exist");
+
+    assert_eq!(descriptor.name, "PrismRGB Prism Mini");
+    assert_eq!(descriptor.family, DeviceFamily::PrismRgb);
+    assert_eq!(descriptor.protocol.id, "prismrgb/prism-mini");
+    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 2 });
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.total_leds(), 128);
+    assert_eq!(protocol.zones().len(), 1);
+}
 
 #[test]
 fn lookup_returns_huntsman_descriptor() {
@@ -116,6 +177,10 @@ fn lookup_returns_seiren_emote_with_8x8_zone_topology() {
 #[test]
 fn known_vid_pid_contains_razer_entries() {
     let pairs = ProtocolDatabase::known_vid_pids();
+    assert!(pairs.contains(&(PRISM_VENDOR_ID, PID_PRISM_8)));
+    assert!(pairs.contains(&(NOLLIE_VENDOR_ID, PID_NOLLIE_8_V2)));
+    assert!(pairs.contains(&(PRISM_GCS_VENDOR_ID, PID_PRISM_S)));
+    assert!(pairs.contains(&(PRISM_GCS_VENDOR_ID, PID_PRISM_MINI)));
     assert!(pairs.contains(&(RAZER_VENDOR_ID, PID_HUNTSMAN_V2)));
     assert!(pairs.contains(&(RAZER_VENDOR_ID, PID_BASILISK_V3)));
     assert!(pairs.contains(&(RAZER_VENDOR_ID, PID_BLADE_14_2021)));
@@ -136,5 +201,5 @@ fn by_vendor_returns_only_razer_entries() {
 #[test]
 fn count_matches_static_descriptor_count() {
     assert_eq!(ProtocolDatabase::count(), ProtocolDatabase::all().len());
-    assert!(ProtocolDatabase::count() >= 7);
+    assert!(ProtocolDatabase::count() >= 11);
 }
