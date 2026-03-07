@@ -552,9 +552,10 @@ button:hover:not(:disabled) > .relative {
 /* ── Logo Animations ────────────────────────────────────────────────────── */
 
 .logo-circuit {
-    font-family: 'Orbitron', sans-serif;
     position: relative;
 }
+
+.logo-circuit { font-family: 'Orbitron', sans-serif; }
 
 /* Shared gradient base for all logo modes */
 .logo-circuit-text {

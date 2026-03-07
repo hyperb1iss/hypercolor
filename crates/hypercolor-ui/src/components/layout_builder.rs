@@ -206,7 +206,7 @@ pub fn LayoutBuilder() -> impl IntoView {
     };
 
     view! {
-        <div class="flex flex-col flex-1 overflow-hidden">
+        <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
             // Toolbar — glass background with edge glow
             <div class="shrink-0 px-5 py-2.5 flex items-center gap-3 glass-subtle border-b border-edge-subtle">
                 // Layout selector
@@ -371,9 +371,9 @@ pub fn LayoutBuilder() -> impl IntoView {
                     }
                 }
             >
-                <div class="flex flex-1 overflow-hidden">
+                <div class="flex min-h-0 flex-1 overflow-hidden">
                     // Left palette
-                    <div class="w-[220px] shrink-0 border-r border-edge-subtle overflow-y-auto">
+                    <div class="w-[220px] shrink-0 min-h-0 border-r border-edge-subtle overflow-y-auto">
                         <LayoutPalette
                             layout=layout_signal
                             set_layout=set_layout
@@ -382,26 +382,29 @@ pub fn LayoutBuilder() -> impl IntoView {
                         />
                     </div>
 
-                    // Center canvas
-                    <div class="flex-1 overflow-hidden relative">
-                        <LayoutCanvas
-                            layout=layout_signal
-                            selected_zone_id=zone_id_signal
-                            set_selected_zone_id=set_selected_zone_id
-                            set_layout=set_layout
-                            set_is_dirty=set_is_dirty
-                        />
-                    </div>
+                    // Main area: canvas above, zone properties below
+                    <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+                        // Canvas viewport flexes with the window; controls size themselves below.
+                        <div class="relative min-h-0 flex-1 overflow-hidden">
+                            <LayoutCanvas
+                                layout=layout_signal
+                                selected_zone_id=zone_id_signal
+                                set_selected_zone_id=set_selected_zone_id
+                                set_layout=set_layout
+                                set_is_dirty=set_is_dirty
+                            />
+                        </div>
 
-                    // Right properties
-                    <div class="w-[280px] shrink-0 border-l border-edge-subtle overflow-y-auto">
-                        <LayoutZoneProperties
-                            layout=layout_signal
-                            selected_zone_id=zone_id_signal
-                            set_layout=set_layout
-                            set_selected_zone_id=set_selected_zone_id
-                            set_is_dirty=set_is_dirty
-                        />
+                        // Zone properties — always visible, never pushed off-screen
+                        <div class="h-[clamp(4.5rem,18vh,11rem)] shrink-0 overflow-y-auto border-t border-edge-subtle bg-surface-base/95 backdrop-blur-sm">
+                            <LayoutZoneProperties
+                                layout=layout_signal
+                                selected_zone_id=zone_id_signal
+                                set_layout=set_layout
+                                set_selected_zone_id=set_selected_zone_id
+                                set_is_dirty=set_is_dirty
+                            />
+                        </div>
                     </div>
                 </div>
             </Show>

@@ -63,7 +63,7 @@ pub fn CanvasPreview(
     });
 
     view! {
-        <div class="relative bg-black animate-scale-in" style=move || wrapper_style.get()>
+        <div class="relative bg-black" style=move || wrapper_style.get()>
             <canvas
                 node_ref=canvas_ref
                 class="w-full h-full block bg-black"

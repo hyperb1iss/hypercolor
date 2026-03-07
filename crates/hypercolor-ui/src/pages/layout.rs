@@ -8,7 +8,7 @@ use crate::components::layout_builder::LayoutBuilder;
 #[component]
 pub fn LayoutPage() -> impl IntoView {
     view! {
-        <div class="flex flex-col h-full -m-6 animate-fade-in">
+        <div class="flex h-full min-h-0 flex-col overflow-hidden animate-fade-in">
             <LayoutBuilder />
         </div>
     }

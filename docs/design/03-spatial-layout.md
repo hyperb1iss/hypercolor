@@ -595,46 +595,71 @@ Custom Shape (arbitrary placement):
 
 ### Shape Definition Format
 
-```json
-{
-  "id": "strimer-atx-24pin",
-  "name": "Lian Li Strimer Plus V2 - 24-pin ATX",
-  "category": "strimer",
-  "topology": {
-    "type": "matrix",
-    "width": 20,
-    "height": 6
-  },
-  "default_size": {
-    "width": 80,
-    "height": 24
-  },
-  "led_positions": "computed",
-  "icon": "strimer-atx.svg",
-  "tags": ["lian-li", "strimer", "prism-s", "cable"],
-  "compatible_devices": ["PrismRGB Prism S"]
-}
+Implementation should use TOML manifests so built-in presets and user-authored
+custom attachments share the same format.
+
+```toml
+schema_version = 1
+id = "strimer-atx-24pin"
+name = "Lian Li Strimer Plus V2 - 24-pin ATX"
+category = "strimer"
+tags = ["lian-li", "strimer", "prism-s", "cable"]
+
+[default_size]
+width = 0.80
+height = 0.24
+
+[topology]
+type = "matrix"
+width = 20
+height = 6
+serpentine = false
+start_corner = "top_left"
+
+[[compatible_slots]]
+families = ["prismrgb"]
+models = ["prism_s"]
+slots = ["atx-strimer"]
 ```
 
-```json
-{
-  "id": "fan-120mm-16",
-  "name": "120mm Fan Ring (16 LED)",
-  "category": "fan",
-  "topology": {
-    "type": "ring",
-    "count": 16,
-    "start_angle": 0
-  },
-  "default_size": {
-    "width": 40,
-    "height": 40
-  },
-  "led_positions": "computed",
-  "icon": "fan-ring.svg",
-  "tags": ["fan", "120mm", "generic"],
-  "compatible_devices": ["*"]
-}
+```toml
+schema_version = 1
+id = "fan-120mm-16"
+name = "120mm Fan Ring (16 LED)"
+category = "fan"
+tags = ["fan", "120mm", "generic"]
+
+[default_size]
+width = 0.40
+height = 0.40
+
+[topology]
+type = "ring"
+count = 16
+start_angle = 0.0
+direction = "clockwise"
+```
+
+```toml
+schema_version = 1
+id = "my-custom-pump-cap"
+name = "Custom Pump Cap"
+category = "aio"
+origin = "user"
+tags = ["custom", "aio"]
+
+[default_size]
+width = 0.28
+height = 0.28
+
+[topology]
+type = "custom"
+positions = [
+  { x = 0.10, y = 0.50 },
+  { x = 0.50, y = 0.10 },
+  { x = 0.90, y = 0.50 },
+  { x = 0.50, y = 0.90 },
+]
 ```
 
 ---

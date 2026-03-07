@@ -1,4 +1,4 @@
-//! Layout zone properties panel — edit selected zone placement, topology, and group assignment.
+//! Layout zone properties panel — horizontal editor below canvas viewport.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -7,7 +7,7 @@ use wasm_bindgen::JsCast;
 use crate::icons::*;
 use hypercolor_types::spatial::SpatialLayout;
 
-/// Zone properties editor (right sidebar of layout builder).
+/// Zone properties editor (bottom panel of layout builder).
 #[component]
 pub fn LayoutZoneProperties(
     #[prop(into)] layout: Signal<Option<SpatialLayout>>,
@@ -51,13 +51,13 @@ pub fn LayoutZoneProperties(
         };
 
     view! {
-        <div class="p-3 space-y-3">
+        <div class="h-full px-4 py-2.5">
             {move || {
                 let Some(zone) = zone_snapshot.get() else {
                     return view! {
-                        <div class="flex flex-col items-center justify-center py-12 space-y-2">
-                            <Icon icon=LuMousePointerClick width="24px" height="24px" style="color: rgba(139, 133, 160, 0.15)" />
-                            <div class="text-[10px] text-fg-tertiary">"Select a zone to edit"</div>
+                        <div class="flex items-center justify-center py-3 gap-2">
+                            <Icon icon=LuMousePointerClick width="16px" height="16px" style="color: rgba(139, 133, 160, 0.15)" />
+                            <div class="text-[10px] text-fg-tertiary">"Click a zone on the canvas to edit its properties"</div>
                         </div>
                     }.into_any();
                 };
@@ -75,7 +75,6 @@ pub fn LayoutZoneProperties(
                 let topology_label = topology_name(&zone.topology);
                 let current_group_id = zone.group_id.clone();
 
-                // Clone zone_id for each closure that needs it
                 let zid_name = zone_id.clone();
                 let zid_pos_x = zone_id.clone();
                 let zid_pos_y = zone_id.clone();
@@ -87,185 +86,189 @@ pub fn LayoutZoneProperties(
                 let zid_remove = zone_id;
 
                 view! {
-                    <h3 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary flex items-center gap-1.5">
-                        <Icon icon=LuSettings2 width="12px" height="12px" />
-                        "Zone Properties"
-                    </h3>
-
-                    // Zone name
-                    <div class="space-y-1">
-                        <label class="text-[9px] text-fg-tertiary font-mono uppercase tracking-wider">"Name"</label>
-                        <input
-                            type="text"
-                            class="w-full bg-surface-sunken border border-edge-subtle rounded-lg px-2.5 py-1.5 text-xs text-fg-primary
-                                   placeholder-fg-tertiary focus:outline-none focus:border-accent-muted glow-ring transition-all"
-                            prop:value=zone_name
-                            on:change=move |ev| {
-                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                if let Some(el) = target {
-                                    let val = el.value();
-                                    let zid = zid_name.clone();
-                                    update_zone(zid, Box::new(move |z| z.name = val));
+                    <div class="space-y-3">
+                        // Header row: title + remove button
+                        <div class="flex items-center justify-between">
+                            <h3 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary flex items-center gap-1.5">
+                                <Icon icon=LuSettings2 width="12px" height="12px" />
+                                "Zone Properties"
+                            </h3>
+                            <button
+                                class="flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-medium
+                                       border transition-all btn-press text-status-error/50 hover:text-status-error"
+                                style="background: rgba(255, 99, 99, 0.04); border-color: rgba(255, 99, 99, 0.12)"
+                                on:click=move |_| {
+                                    let zid = zid_remove.clone();
+                                    set_layout.update(|l| {
+                                        if let Some(layout) = l {
+                                            layout.zones.retain(|z| z.id != zid);
+                                        }
+                                    });
+                                    set_selected_zone_id.set(None);
+                                    set_is_dirty.set(true);
                                 }
-                            }
-                        />
-                    </div>
-
-                    // Device ID (read-only)
-                    <div class="space-y-1">
-                        <label class="text-[9px] text-fg-tertiary font-mono uppercase tracking-wider">"Device"</label>
-                        <div class="text-xs text-fg-primary font-mono bg-surface-overlay/60 rounded-lg px-2.5 py-1.5 border border-edge-subtle truncate">
-                            {device_id_display}
+                            >
+                                <Icon icon=LuTrash2 width="10px" height="10px" />
+                                "Remove"
+                            </button>
                         </div>
-                    </div>
 
-                    // Topology info
-                    <div class="space-y-1">
-                        <label class="text-[9px] text-fg-tertiary font-mono uppercase tracking-wider">"Topology"</label>
-                        <div class="text-xs text-fg-primary bg-surface-overlay/60 rounded-lg px-2.5 py-1.5 border border-edge-subtle">
-                            {topology_label} " · " {led_count} " LEDs"
-                        </div>
-                    </div>
-
-                    // Group assignment
-                    <div class="space-y-1">
-                        <label class="text-[9px] text-fg-tertiary font-mono uppercase tracking-wider">"Group"</label>
-                        <select
-                            class="w-full bg-surface-sunken border border-edge-subtle rounded-lg px-2.5 py-1.5 text-xs text-fg-primary
-                                   focus:outline-none focus:border-accent-muted glow-ring transition-all"
-                            on:change=move |ev| {
-                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
-                                if let Some(el) = target {
-                                    let val = el.value();
-                                    let group_id = if val.is_empty() { None } else { Some(val) };
-                                    let zid = zid_group.clone();
-                                    update_zone(zid, Box::new(move |z| z.group_id = group_id));
-                                }
-                            }
-                        >
-                            <option value="" selected=current_group_id.is_none()>"None"</option>
-                            {available_groups.get().into_iter().map(|group| {
-                                let gid = group.id.clone();
-                                let is_current = current_group_id.as_deref() == Some(&gid);
-                                let color = group.color.clone().unwrap_or_else(|| "#e135ff".to_string());
-                                let rgb = hex_to_rgb(&color);
-                                view! {
-                                    <option
-                                        value=gid
-                                        selected=is_current
-                                        style=format!("color: rgb({rgb})")
-                                    >
-                                        {group.name}
-                                    </option>
-                                }
-                            }).collect_view()}
-                        </select>
-                    </div>
-
-                    // Separator
-                    <div class="h-px bg-edge-subtle" />
-
-                    // Position
-                    <div class="space-y-1">
-                        <label class="text-[9px] text-fg-tertiary font-mono uppercase tracking-wider">"Position"</label>
-                        <div class="grid grid-cols-2 gap-2">
-                            {zone_number_input("X", pos_x, {
-                                let zid = zid_pos_x;
-                                move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.x = val))
-                            })}
-                            {zone_number_input("Y", pos_y, {
-                                let zid = zid_pos_y;
-                                move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.y = val))
-                            })}
-                        </div>
-                    </div>
-
-                    // Size
-                    <div class="space-y-1">
-                        <label class="text-[9px] text-fg-tertiary font-mono uppercase tracking-wider">"Size"</label>
-                        <div class="grid grid-cols-2 gap-2">
-                            {zone_number_input("W", size_w, {
-                                let zid = zid_size_w;
-                                move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.size.x = val))
-                            })}
-                            {zone_number_input("H", size_h, {
-                                let zid = zid_size_h;
-                                move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.size.y = val))
-                            })}
-                        </div>
-                    </div>
-
-                    // Rotation
-                    <div class="space-y-1">
-                        <label class="text-[9px] text-fg-tertiary font-mono uppercase tracking-wider">"Rotation"</label>
-                        <div class="flex items-center gap-2">
-                            <input
-                                type="range"
-                                min="0" max="360" step="1"
-                                class="flex-1"
-                                prop:value=format!("{rotation_deg:.0}")
-                                on:input=move |ev| {
-                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                    if let Some(el) = target {
-                                        if let Ok(deg) = el.value().parse::<f32>() {
-                                            let rad = deg.to_radians();
-                                            let zid = zid_rotation.clone();
-                                            update_zone(zid, Box::new(move |z| z.rotation = rad));
+                        // Row 1: Identity — name, device, topology, group
+                        <div class="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-4">
+                            // Name
+                            <div class="space-y-0.5">
+                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Name"</label>
+                                <input
+                                    type="text"
+                                    class="w-full bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[11px] text-fg-primary
+                                           placeholder-fg-tertiary focus:outline-none focus:border-accent-muted glow-ring transition-all"
+                                    prop:value=zone_name
+                                    on:change=move |ev| {
+                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                        if let Some(el) = target {
+                                            let val = el.value();
+                                            let zid = zid_name.clone();
+                                            update_zone(zid, Box::new(move |z| z.name = val));
                                         }
                                     }
-                                }
-                            />
-                            <span class="text-[11px] font-mono text-fg-tertiary tabular-nums w-8 text-right">
-                                {format!("{rotation_deg:.0}")} "\u{00b0}"
-                            </span>
-                        </div>
-                    </div>
+                                />
+                            </div>
 
-                    // Scale
-                    <div class="space-y-1">
-                        <label class="text-[9px] text-fg-tertiary font-mono uppercase tracking-wider">"Scale"</label>
-                        <div class="flex items-center gap-2">
-                            <input
-                                type="range"
-                                min="0.5" max="3.0" step="0.1"
-                                class="flex-1"
-                                prop:value=format!("{scale:.1}")
-                                on:input=move |ev| {
-                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                    if let Some(el) = target {
-                                        if let Ok(s) = el.value().parse::<f32>() {
-                                            let zid = zid_scale.clone();
-                                            update_zone(zid, Box::new(move |z| z.scale = s));
+                            // Device (read-only)
+                            <div class="space-y-0.5">
+                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Device"</label>
+                                <div class="text-[11px] text-fg-primary font-mono bg-surface-overlay/60 rounded-md px-2 py-1 border border-edge-subtle truncate">
+                                    {device_id_display}
+                                </div>
+                            </div>
+
+                            // Topology (read-only)
+                            <div class="space-y-0.5">
+                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Topology"</label>
+                                <div class="text-[11px] text-fg-primary bg-surface-overlay/60 rounded-md px-2 py-1 border border-edge-subtle">
+                                    {topology_label} " · " {led_count} " LEDs"
+                                </div>
+                            </div>
+
+                            // Group
+                            <div class="space-y-0.5">
+                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Group"</label>
+                                <select
+                                    class="w-full bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[11px] text-fg-primary
+                                           focus:outline-none focus:border-accent-muted glow-ring transition-all"
+                                    on:change=move |ev| {
+                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
+                                        if let Some(el) = target {
+                                            let val = el.value();
+                                            let group_id = if val.is_empty() { None } else { Some(val) };
+                                            let zid = zid_group.clone();
+                                            update_zone(zid, Box::new(move |z| z.group_id = group_id));
                                         }
                                     }
-                                }
-                            />
-                            <span class="text-[11px] font-mono text-fg-tertiary tabular-nums w-8 text-right">
-                                {format!("{scale:.1}")} "x"
-                            </span>
+                                >
+                                    <option value="" selected=current_group_id.is_none()>"None"</option>
+                                    {available_groups.get().into_iter().map(|group| {
+                                        let gid = group.id.clone();
+                                        let is_current = current_group_id.as_deref() == Some(&gid);
+                                        let color = group.color.clone().unwrap_or_else(|| "#e135ff".to_string());
+                                        let rgb = hex_to_rgb(&color);
+                                        view! {
+                                            <option
+                                                value=gid
+                                                selected=is_current
+                                                style=format!("color: rgb({rgb})")
+                                            >
+                                                {group.name}
+                                            </option>
+                                        }
+                                    }).collect_view()}
+                                </select>
+                            </div>
                         </div>
-                    </div>
 
-                    // Remove button
-                    <div class="pt-3 border-t border-edge-subtle">
-                        <button
-                            class="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
-                                   border transition-all btn-press text-status-error/50 hover:text-status-error"
-                            style="background: rgba(255, 99, 99, 0.04); border-color: rgba(255, 99, 99, 0.12)"
-                            on:click=move |_| {
-                                let zid = zid_remove.clone();
-                                set_layout.update(|l| {
-                                    if let Some(layout) = l {
-                                        layout.zones.retain(|z| z.id != zid);
-                                    }
-                                });
-                                set_selected_zone_id.set(None);
-                                set_is_dirty.set(true);
-                            }
-                        >
-                            <Icon icon=LuTrash2 width="14px" height="14px" />
-                            " Remove from Layout"
-                        </button>
+                        // Row 2: Transform — position, size, rotation, scale
+                        <div class="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-[auto_auto_minmax(0,1fr)_minmax(0,1fr)] items-end">
+                            // Position
+                            <div class="space-y-0.5">
+                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Position"</label>
+                                <div class="flex items-center gap-1.5">
+                                    {zone_number_input("X", pos_x, {
+                                        let zid = zid_pos_x;
+                                        move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.x = val))
+                                    })}
+                                    {zone_number_input("Y", pos_y, {
+                                        let zid = zid_pos_y;
+                                        move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.y = val))
+                                    })}
+                                </div>
+                            </div>
+
+                            // Size
+                            <div class="space-y-0.5">
+                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Size"</label>
+                                <div class="flex items-center gap-1.5">
+                                    {zone_number_input("W", size_w, {
+                                        let zid = zid_size_w;
+                                        move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.size.x = val))
+                                    })}
+                                    {zone_number_input("H", size_h, {
+                                        let zid = zid_size_h;
+                                        move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.size.y = val))
+                                    })}
+                                </div>
+                            </div>
+
+                            // Rotation
+                            <div class="space-y-0.5">
+                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Rotation"</label>
+                                <div class="flex items-center gap-2">
+                                    <input
+                                        type="range"
+                                        min="0" max="360" step="1"
+                                        class="min-w-0 flex-1"
+                                        prop:value=format!("{rotation_deg:.0}")
+                                        on:input=move |ev| {
+                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                            if let Some(el) = target {
+                                                if let Ok(deg) = el.value().parse::<f32>() {
+                                                    let rad = deg.to_radians();
+                                                    let zid = zid_rotation.clone();
+                                                    update_zone(zid, Box::new(move |z| z.rotation = rad));
+                                                }
+                                            }
+                                        }
+                                    />
+                                    <span class="text-[10px] font-mono text-fg-tertiary tabular-nums w-7 text-right shrink-0">
+                                        {format!("{rotation_deg:.0}")} "\u{00b0}"
+                                    </span>
+                                </div>
+                            </div>
+
+                            // Scale
+                            <div class="space-y-0.5">
+                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Scale"</label>
+                                <div class="flex items-center gap-2">
+                                    <input
+                                        type="range"
+                                        min="0.5" max="3.0" step="0.1"
+                                        class="min-w-0 flex-1"
+                                        prop:value=format!("{scale:.1}")
+                                        on:input=move |ev| {
+                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                            if let Some(el) = target {
+                                                if let Ok(s) = el.value().parse::<f32>() {
+                                                    let zid = zid_scale.clone();
+                                                    update_zone(zid, Box::new(move |z| z.scale = s));
+                                                }
+                                            }
+                                        }
+                                    />
+                                    <span class="text-[10px] font-mono text-fg-tertiary tabular-nums w-7 text-right shrink-0">
+                                        {format!("{scale:.1}")} "x"
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 }.into_any()
             }}
@@ -280,15 +283,15 @@ fn zone_number_input(
     on_change: impl Fn(f32) + Clone + 'static,
 ) -> impl IntoView {
     view! {
-        <div class="flex items-center gap-1.5">
+        <div class="flex items-center gap-1">
             <span class="text-[8px] text-fg-tertiary font-mono w-3">{label}</span>
             <input
                 type="number"
                 step="0.01"
                 min="0"
                 max="1"
-                class="flex-1 bg-surface-sunken border border-edge-subtle rounded-lg px-2 py-1 text-[10px] text-fg-primary font-mono tabular-nums
-                       focus:outline-none focus:border-accent-muted glow-ring w-full transition-all"
+                class="w-16 bg-surface-sunken border border-edge-subtle rounded-md px-1.5 py-1 text-[10px] text-fg-primary font-mono tabular-nums
+                       focus:outline-none focus:border-accent-muted glow-ring transition-all"
                 prop:value=format!("{value:.3}")
                 on:change=move |ev| {
                     let on_change = on_change.clone();

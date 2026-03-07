@@ -2,6 +2,7 @@
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use leptos_router::hooks::use_location;
 use leptos_router::hooks::use_navigate;
 use wasm_bindgen::JsCast;
 
@@ -105,6 +106,8 @@ pub fn Shell(children: Children) -> impl IntoView {
     let (palette_open, set_palette_open) = signal(false);
     let (theme, set_theme) = signal(read_theme());
     let is_dark = Memo::new(move |_| theme.get() == "dark");
+    let location = use_location();
+    let is_layout_route = Memo::new(move |_| location.pathname.get() == "/layout");
 
     let toggle_theme = Callback::new(move |()| {
         let next = if is_dark.get() { "light" } else { "dark" };
@@ -181,12 +184,18 @@ pub fn Shell(children: Children) -> impl IntoView {
     view! {
         <div
             node_ref=shell_ref
-            class="flex h-screen bg-surface-base text-fg-primary overflow-hidden noise-overlay"
+            class="fixed inset-0 flex min-h-0 bg-surface-base text-fg-primary overflow-hidden noise-overlay"
             on:keydown=keydown_handler
             tabindex="-1"
         >
             <Sidebar />
-            <main class="flex-1 min-w-0 overflow-auto p-6">
+            <main class=move || {
+                if is_layout_route.get() {
+                    "flex-1 min-h-0 min-w-0 overflow-hidden"
+                } else {
+                    "flex-1 min-h-0 min-w-0 overflow-auto p-6"
+                }
+            }>
                 {children()}
             </main>
 

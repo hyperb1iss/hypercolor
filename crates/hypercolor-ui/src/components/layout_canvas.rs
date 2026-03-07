@@ -1,5 +1,6 @@
 //! Layout canvas — live effect preview with draggable zone overlays and group containers.
 
+use leptos::ev;
 use leptos::prelude::*;
 
 use crate::app::WsContext;
@@ -20,7 +21,9 @@ pub fn LayoutCanvas(
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
     let ws_fps = Signal::derive(move || ws.fps.get());
 
+    let canvas_slot_ref = NodeRef::<leptos::html::Div>::new();
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
+    let (canvas_slot_size, set_canvas_slot_size) = signal((0.0_f64, 0.0_f64));
 
     // Drag state
     let (interaction, set_interaction) = signal(None::<InteractionState>);
@@ -77,10 +80,7 @@ pub fn LayoutCanvas(
                     Some(GroupBounds {
                         id: group.id.clone(),
                         name: group.name.clone(),
-                        color: group
-                            .color
-                            .clone()
-                            .unwrap_or_else(|| "#e135ff".to_string()),
+                        color: group.color.clone().unwrap_or_else(|| "#e135ff".to_string()),
                         left: min_x,
                         top: min_y,
                         width: max_x - min_x,
@@ -92,18 +92,28 @@ pub fn LayoutCanvas(
         })
     });
 
-    let viewport_style = Signal::derive(move || {
+    let layout_ratio = Signal::derive(move || {
         layout
             .with(|current| {
                 current.as_ref().map(|layout| {
-                    format!(
-                        "aspect-ratio: {} / {};",
-                        layout.canvas_width.max(1),
-                        layout.canvas_height.max(1)
-                    )
+                    f64::from(layout.canvas_width.max(1)) / f64::from(layout.canvas_height.max(1))
                 })
             })
-            .unwrap_or_else(|| "aspect-ratio: 320 / 200;".to_string())
+            .unwrap_or(320.0 / 200.0)
+    });
+    let viewport_style = Signal::derive(move || {
+        let ratio = layout_ratio.get();
+        let (slot_width, slot_height) = canvas_slot_size.get();
+
+        if slot_width > 0.0 && slot_height > 0.0 && slot_width / slot_height > ratio {
+            format!(
+                "height: 100%; width: auto; max-width: 100%; max-height: 100%; aspect-ratio: {ratio};"
+            )
+        } else {
+            format!(
+                "width: 100%; height: auto; max-width: 100%; max-height: 100%; aspect-ratio: {ratio};"
+            )
+        }
     });
     let preview_aspect_ratio = Signal::derive(move || {
         layout
@@ -121,8 +131,29 @@ pub fn LayoutCanvas(
 
     let has_zones = Signal::derive(move || !zone_ids.get().is_empty());
 
+    let measure_canvas_slot = {
+        let canvas_slot_ref = canvas_slot_ref.clone();
+        move || {
+            if let Some(slot) = canvas_slot_ref.get() {
+                let rect = slot.get_bounding_client_rect();
+                set_canvas_slot_size.set((rect.width(), rect.height()));
+            }
+        }
+    };
+
+    Effect::new(move |_| {
+        if canvas_slot_ref.get().is_some() {
+            measure_canvas_slot();
+        }
+    });
+
+    let _resize_listener = window_event_listener(ev::resize, move |_| {
+        measure_canvas_slot();
+    });
+
     view! {
         <div
+            node_ref=canvas_slot_ref
             class="relative w-full h-full overflow-hidden"
             style="background: var(--color-surface-base)"
             on:mouseup=move |_| {
@@ -179,9 +210,9 @@ pub fn LayoutCanvas(
                 style="background-image: radial-gradient(circle, var(--color-text-tertiary) 1px, transparent 1px); background-size: 20px 20px;"
             />
 
-            <div class="absolute inset-0 flex items-center justify-center p-4">
+            <div class="absolute inset-0 flex items-start justify-center p-2 overflow-hidden">
                 <div
-                    class="relative h-full max-w-full shrink-0"
+                    class="relative rounded-lg overflow-hidden bg-black"
                     node_ref=viewport_ref
                     style=move || viewport_style.get()
                     on:click=move |_| {
@@ -189,7 +220,7 @@ pub fn LayoutCanvas(
                     }
                 >
                     // Live effect canvas background
-                    <div class="absolute inset-0 pointer-events-none rounded-lg overflow-hidden">
+                    <div class="absolute inset-0 pointer-events-none">
                         <CanvasPreview
                             frame=canvas_frame
                             fps=ws_fps
@@ -199,7 +230,7 @@ pub fn LayoutCanvas(
                     </div>
 
                     // Subtle border around the viewport
-                    <div class="absolute inset-0 rounded-lg border border-edge-subtle/50 pointer-events-none" />
+                    <div class="absolute inset-0 rounded-lg border border-edge-subtle/30 pointer-events-none" />
 
                     // Group containers — rendered behind zones
                     {move || {
@@ -442,12 +473,12 @@ pub fn LayoutCanvas(
                         }).collect::<Vec<_>>()
                     }}
 
-                    // Empty canvas state
+                    // Empty canvas hint — shown over the live effect when no zones are placed
                     <Show when=move || !has_zones.get()>
                         <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
-                            <div class="text-center space-y-2 animate-fade-in">
-                                <div class="text-fg-tertiary/30 text-sm font-medium">"Add devices from the palette"</div>
-                                <div class="text-fg-tertiary/20 text-xs">"Drag zones to position them on the canvas"</div>
+                            <div class="text-center space-y-1.5 px-4 py-3 rounded-xl bg-black/50 backdrop-blur-sm">
+                                <div class="text-white/40 text-sm font-medium">"Add devices from the palette"</div>
+                                <div class="text-white/25 text-xs">"Drag zones to position them on the canvas"</div>
                             </div>
                         </div>
                     </Show>
@@ -499,6 +530,7 @@ enum ResizeHandle {
     SouthEast,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn begin_resize(
     viewport_ref: &NodeRef<leptos::html::Div>,
     layout: &Signal<Option<SpatialLayout>>,

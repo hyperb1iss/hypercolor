@@ -10,8 +10,8 @@ use wasm_bindgen::Clamped;
 use wasm_bindgen::JsCast;
 
 use crate::app::{EffectsContext, WsContext};
-use crate::ws::ConnectionState;
 use crate::icons::*;
+use crate::ws::ConnectionState;
 
 /// Sidebar collapsed state, shared via context so the shell can react.
 #[derive(Clone, Copy)]
@@ -288,50 +288,33 @@ pub fn Sidebar() -> impl IntoView {
             class:w-56=move || !collapsed.get()
             class:w-14=move || collapsed.get()
         >
-            // Logo — click to cycle animation mode
-            {
-                let logo_mode_names = ["drift", "glitch", "breathe", "warp"];
-                let (logo_mode, set_logo_mode) = signal(0u8);
-                let mode_class = Memo::new(move |_| {
-                    match logo_mode.get() % 4 {
-                        0 => "logo-mode-drift",
-                        1 => "logo-mode-glitch",
-                        2 => "logo-mode-breathe",
-                        _ => "logo-mode-warp",
-                    }
-                });
+            // Logo
+            <div
+                class="w-full border-b border-edge-subtle transition-all duration-300"
+                class:h-14=move || collapsed.get()
+                class:h-32=move || !collapsed.get()
+            >
+                // Collapsed state: gradient mark
+                <div
+                    class="items-center justify-center h-full"
+                    style:display=move || if collapsed.get() { "flex" } else { "none" }
+                >
+                    <div class="w-8 h-8 rounded-lg logo-mark flex items-center justify-center animate-breathe" style="--glow-rgb: 225, 53, 255">
+                        <span class="text-xs font-bold text-white">"H"</span>
+                    </div>
+                </div>
 
-                view! {
-                    <button
-                        class="w-full border-b border-edge-subtle transition-all duration-300 cursor-pointer select-none"
-                        class:h-14=move || collapsed.get()
-                        class:h-32=move || !collapsed.get()
-                        on:click=move |_| set_logo_mode.update(|v| *v = (*v + 1) % 4)
-                        title=move || format!("Animation: {} (click to change)", logo_mode_names[logo_mode.get() as usize % 4])
-                    >
-                        // Collapsed state: gradient mark
-                        <div
-                            class="items-center justify-center h-full"
-                            style:display=move || if collapsed.get() { "flex" } else { "none" }
-                        >
-                            <div class="w-8 h-8 rounded-lg logo-mark flex items-center justify-center animate-breathe" style="--glow-rgb: 225, 53, 255">
-                                <span class="text-xs font-bold text-white">"H"</span>
-                            </div>
-                        </div>
-
-                        // Expanded state: Circuit Type logo
-                        <div
-                            class="flex-col items-center justify-center h-full px-3 py-4 overflow-hidden"
-                            style:display=move || if collapsed.get() { "none" } else { "flex" }
-                        >
-                            <div class=move || format!("logo-circuit flex flex-col items-center leading-none {}", mode_class.get())>
-                                <span class="logo-circuit-text text-[28px] font-bold tracking-[0.15em]">"HYPER"</span>
-                                <span class="logo-circuit-text text-[28px] font-medium tracking-[0.35em] mt-0.5">"COLOR"</span>
-                            </div>
-                        </div>
-                    </button>
-                }
-            }
+                // Expanded state: Orbitron logo with drift animation
+                <div
+                    class="flex-col items-center justify-center h-full px-3 py-4 overflow-hidden"
+                    style:display=move || if collapsed.get() { "none" } else { "flex" }
+                >
+                    <div class="logo-circuit logo-mode-drift flex flex-col items-center leading-none">
+                        <span class="logo-circuit-text text-[28px] font-bold tracking-[0.15em]">"HYPER"</span>
+                        <span class="logo-circuit-text text-[28px] font-medium tracking-[0.35em] mt-0.5">"COLOR"</span>
+                    </div>
+                </div>
+            </div>
 
             // Nav items
             <div class="flex-1 py-3 space-y-0.5 px-2">
