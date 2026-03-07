@@ -225,6 +225,16 @@ fn data_dir_ends_with_hypercolor() {
 }
 
 #[test]
+fn data_dir_override_replaces_default_resolution() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let override_path = dir.path().join("override-data");
+
+    ConfigManager::set_data_dir_override(Some(override_path.clone()));
+    assert_eq!(ConfigManager::data_dir(), override_path);
+    ConfigManager::set_data_dir_override(None);
+}
+
+#[test]
 fn cache_dir_contains_hypercolor() {
     let dir = ConfigManager::cache_dir();
     assert!(

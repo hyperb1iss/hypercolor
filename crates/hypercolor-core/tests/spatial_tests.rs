@@ -48,10 +48,12 @@ fn full_canvas_zone(id: &str, topology: LedTopology) -> DeviceZone {
         orientation: None,
         topology,
         led_positions: Vec::new(),
+        led_mapping: None,
         sampling_mode: None,
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        attachment: None,
     }
 }
 
@@ -76,10 +78,12 @@ fn custom_zone(
         orientation: None,
         topology,
         led_positions: Vec::new(),
+        led_mapping: None,
         sampling_mode,
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        attachment: None,
     }
 }
 

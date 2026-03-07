@@ -58,6 +58,7 @@ impl DeviceBackend for SlowRecordingBackend {
             name: "Slow Device".to_owned(),
             vendor: "Test".to_owned(),
             family: DeviceFamily::Custom("Test".to_owned()),
+            model: None,
             connection_type: ConnectionType::Network,
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
@@ -128,6 +129,7 @@ impl DeviceBackend for DirectControlRecordingBackend {
             name: "Recording Device".to_owned(),
             vendor: "Test".to_owned(),
             family: DeviceFamily::Custom("Test".to_owned()),
+            model: None,
             connection_type: ConnectionType::Network,
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),
@@ -223,10 +225,12 @@ fn make_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
             direction: hypercolor_types::spatial::StripDirection::LeftToRight,
         },
         led_positions: Vec::new(),
+        led_mapping: None,
         sampling_mode: None,
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        attachment: None,
     }
 }
 
@@ -802,6 +806,47 @@ async fn write_frame_places_colors_into_configured_segments() {
             [0, 0, 255],
         ]
     );
+}
+
+#[tokio::test]
+async fn write_frame_applies_zone_led_mapping_before_segment_copy() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(10),
+        writes.clone(),
+        write_count,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device_with_segment(
+        "mock:mapped-zone",
+        "slow",
+        device_id,
+        Some(SegmentRange::new(0, 3)),
+    );
+
+    let mut zone = make_zone("zone_mapped", "mock:mapped-zone", 3);
+    zone.led_mapping = Some(vec![2, 0, 1]);
+    let layout = make_layout(vec![zone]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_mapped".into(),
+        colors: vec![[10, 0, 0], [20, 0, 0], [30, 0, 0]],
+    }];
+
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 3);
+    assert!(stats.errors.is_empty());
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let writes = writes.lock().await;
+    let frame = writes.first().expect("one frame should be written");
+    assert_eq!(frame.as_slice(), &[[20, 0, 0], [30, 0, 0], [10, 0, 0]]);
 }
 
 #[tokio::test]

@@ -192,6 +192,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
         name: name.to_owned(),
         vendor: "test-vendor".to_owned(),
         family: DeviceFamily::Wled,
+        model: None,
         connection_type: ConnectionType::Network,
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),
@@ -246,6 +247,7 @@ async fn list_devices_includes_structured_zone_topology_hints() {
         name: "Matrix Panel".to_owned(),
         vendor: "test-vendor".to_owned(),
         family: DeviceFamily::OpenRgb,
+        model: None,
         connection_type: ConnectionType::Network,
         zones: vec![ZoneInfo {
             name: "Panel".to_owned(),

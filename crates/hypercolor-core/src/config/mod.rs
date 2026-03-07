@@ -135,6 +135,14 @@ impl ConfigManager {
         paths::data_dir()
     }
 
+    /// Override the resolved data directory.
+    ///
+    /// This is intended for integration tests that need isolated persistence.
+    #[doc(hidden)]
+    pub fn set_data_dir_override(path: Option<PathBuf>) {
+        paths::set_data_dir_override(path);
+    }
+
     /// Returns the platform-appropriate cache directory.
     ///
     /// Delegates to [`paths::cache_dir`].

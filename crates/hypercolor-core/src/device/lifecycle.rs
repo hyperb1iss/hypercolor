@@ -493,6 +493,7 @@ mod tests {
             name: name.to_owned(),
             vendor: "TestVendor".to_owned(),
             family,
+            model: None,
             connection_type: ConnectionType::Network,
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),

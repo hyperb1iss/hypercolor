@@ -34,6 +34,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
         name: name.to_string(),
         vendor: "TestCorp".to_string(),
         family: DeviceFamily::Wled,
+        model: None,
         connection_type: ConnectionType::Network,
         zones: vec![ZoneInfo {
             name: "main".to_string(),

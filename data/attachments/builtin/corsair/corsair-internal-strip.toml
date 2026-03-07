@@ -1,0 +1,21 @@
+schema_version = 1
+id = "corsair-internal-strip"
+name = "Corsair Internal Strip - 10 LED"
+category = "strip"
+origin = "built_in"
+description = "Corsair Internal Strip - 10 LED"
+vendor = "Corsair"
+compatible_slots = []
+tags = [
+    "horizontal",
+    "strip",
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.07999999821186066
+
+[topology]
+type = "strip"
+count = 10
+direction = "left_to_right"

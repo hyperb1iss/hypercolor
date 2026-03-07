@@ -1,0 +1,28 @@
+schema_version = 1
+id = "corsair-9000d-logo-strip"
+name = "Corsair LINK 9000D Logo - 4 LED"
+category = "strip"
+origin = "built_in"
+description = "Corsair LINK 9000D Logo - 4 LED"
+vendor = "Corsair"
+compatible_slots = []
+tags = [
+    "strip",
+]
+led_mapping = [
+    0,
+    2,
+    3,
+    1,
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.23999999463558197
+
+[topology]
+type = "matrix"
+width = 2
+height = 2
+serpentine = false
+start_corner = "top_left"

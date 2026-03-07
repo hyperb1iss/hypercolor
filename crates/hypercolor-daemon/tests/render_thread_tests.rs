@@ -60,10 +60,12 @@ fn strip_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
             direction: StripDirection::LeftToRight,
         },
         led_positions: Vec::new(),
+        led_mapping: None,
         sampling_mode: None,
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        attachment: None,
     }
 }
 
@@ -81,10 +83,12 @@ fn point_zone(id: &str, device_id: &str, x: f32, y: f32) -> DeviceZone {
         orientation: None,
         topology: LedTopology::Point,
         led_positions: Vec::new(),
+        led_mapping: None,
         sampling_mode: None,
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        attachment: None,
     }
 }
 

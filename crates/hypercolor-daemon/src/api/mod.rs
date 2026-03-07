@@ -10,6 +10,7 @@ pub mod devices;
 pub mod diagnose;
 pub mod effects;
 pub mod envelope;
+pub mod attachments;
 pub mod layouts;
 pub mod library;
 pub mod preview;
@@ -34,6 +35,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing::warn;
 
+use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{BackendManager, DeviceLifecycleManager, DeviceRegistry};
@@ -44,6 +46,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::spatial::SpatialLayout;
 
+use crate::attachment_profiles::AttachmentProfileStore;
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
 use crate::playlist_runtime::PlaylistRuntimeState;
@@ -105,6 +108,12 @@ pub struct AppState {
     /// In-memory profile store.
     pub profiles: RwLock<HashMap<String, profiles::Profile>>,
 
+    /// Attachment template registry (built-in plus user templates).
+    pub attachment_registry: Arc<RwLock<AttachmentRegistry>>,
+
+    /// Persistent per-device attachment profile store.
+    pub attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
+
     /// In-memory layout store (shared with `DaemonState`, persisted to layouts.json).
     pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
 
@@ -159,6 +168,31 @@ impl AppState {
             version: 1,
         };
 
+        let mut attachment_registry = AttachmentRegistry::new();
+        if let Err(error) = attachment_registry.load_builtins() {
+            warn!(%error, "Failed to load built-in attachment templates");
+        }
+
+        let attachment_templates_dir = ConfigManager::data_dir().join("attachments");
+        if let Err(error) = attachment_registry.load_user_dir(&attachment_templates_dir) {
+            warn!(
+                path = %attachment_templates_dir.display(),
+                %error,
+                "Failed to load user attachment templates"
+            );
+        }
+
+        let attachment_profiles_path = ConfigManager::data_dir().join("attachment-profiles.json");
+        let attachment_profiles =
+            AttachmentProfileStore::load(&attachment_profiles_path).unwrap_or_else(|error| {
+                warn!(
+                    path = %attachment_profiles_path.display(),
+                    %error,
+                    "Failed to load attachment profiles; starting with empty store"
+                );
+                AttachmentProfileStore::new(attachment_profiles_path)
+            });
+
         Self {
             device_registry: DeviceRegistry::new(),
             effect_registry: Arc::new(RwLock::new(EffectRegistry::default())),
@@ -173,6 +207,8 @@ impl AppState {
             config_manager: None,
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             profiles: RwLock::new(HashMap::new()),
+            attachment_registry: Arc::new(RwLock::new(attachment_registry)),
+            attachment_profiles: Arc::new(RwLock::new(attachment_profiles)),
             layouts: Arc::new(RwLock::new(HashMap::new())),
             layouts_path: ConfigManager::data_dir().join("layouts.json"),
             logical_devices: Arc::new(RwLock::new(HashMap::new())),
@@ -221,6 +257,8 @@ impl AppState {
             config_manager: Some(Arc::clone(&daemon.config_manager)),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: RwLock::new(HashMap::new()),
+            attachment_registry: Arc::clone(&daemon.attachment_registry),
+            attachment_profiles: Arc::clone(&daemon.attachment_profiles),
             layouts: Arc::clone(&daemon.layouts),
             layouts_path: daemon.layouts_path.clone(),
             logical_devices: Arc::clone(&daemon.logical_devices),
@@ -307,6 +345,16 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
                 .delete(devices::delete_device),
         )
         .route(
+            "/devices/{id}/attachments",
+            axum::routing::get(devices::get_attachments)
+                .put(devices::update_attachments)
+                .delete(devices::delete_attachments),
+        )
+        .route(
+            "/devices/{id}/attachments/preview",
+            axum::routing::post(devices::preview_attachments),
+        )
+        .route(
             "/devices/{id}/logical-devices",
             axum::routing::get(devices::list_device_logical_devices)
                 .post(devices::create_logical_device),
@@ -324,6 +372,26 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::get(devices::get_logical_device)
                 .put(devices::update_logical_device)
                 .delete(devices::delete_logical_device),
+        )
+        // ── Attachments ──────────────────────────────────────────────
+        .route(
+            "/attachments/templates",
+            axum::routing::get(attachments::list_templates)
+                .post(attachments::create_template),
+        )
+        .route(
+            "/attachments/templates/{id}",
+            axum::routing::get(attachments::get_template)
+                .put(attachments::update_template)
+                .delete(attachments::delete_template),
+        )
+        .route(
+            "/attachments/categories",
+            axum::routing::get(attachments::list_categories),
+        )
+        .route(
+            "/attachments/vendors",
+            axum::routing::get(attachments::list_vendors),
         )
         // ── Effects ──────────────────────────────────────────────────
         .route("/effects", axum::routing::get(effects::list_effects))

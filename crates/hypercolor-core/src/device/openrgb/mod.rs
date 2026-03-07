@@ -90,6 +90,7 @@ fn build_device_info(controller: &proto::ControllerData) -> DeviceInfo {
         name: controller.name.clone(),
         vendor: controller.vendor.clone(),
         family: DeviceFamily::OpenRgb,
+        model: None,
         connection_type: ConnectionType::Network,
         zones,
         firmware_version: if controller.version.is_empty() {

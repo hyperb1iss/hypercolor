@@ -6,6 +6,7 @@ use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::DevicesContext;
+use crate::components::attachment_panel::AttachmentPanel;
 use crate::components::device_card::backend_accent_rgb;
 use crate::icons::*;
 use crate::toasts;
@@ -43,6 +44,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
     let (seg_start, set_seg_start) = signal(String::new());
     let (seg_count, set_seg_count) = signal(String::new());
     let (identify_active, set_identify_active) = signal(false);
+    let device_signal = Signal::derive(move || device.get());
 
     // Save name handler
     let save_name = move || {
@@ -281,6 +283,8 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                             </div>
                         </div>
                     </div>
+
+                    <AttachmentPanel device_id=device_id device=device_signal />
 
                     // ── Segments ───────────────────────────────────────────
                     <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">

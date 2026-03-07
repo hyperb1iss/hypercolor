@@ -1,0 +1,21 @@
+schema_version = 1
+id = "lian-li-sl-unifan-fan"
+name = "Lian Li UNIFan SL120 - 16 LED"
+category = "fan"
+origin = "built_in"
+description = "Lian Li UNIFan SL120 - 16 LED"
+vendor = "Lian Li"
+compatible_slots = []
+tags = [
+    "fan",
+    "horizontal",
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.07999999821186066
+
+[topology]
+type = "strip"
+count = 16
+direction = "left_to_right"

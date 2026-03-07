@@ -17,6 +17,7 @@ fn sample_template() -> AttachmentTemplateManifest {
             category: AttachmentCategory::Strimer,
             origin: AttachmentOrigin::BuiltIn,
             description: "Prism S GPU cable template".into(),
+            vendor: "Lian Li".into(),
             default_size: AttachmentCanvasSize::default(),
             topology: LedTopology::Matrix {
                 width: 27,
@@ -30,6 +31,10 @@ fn sample_template() -> AttachmentTemplateManifest {
                 slots: vec!["gpu-strimer".into()],
             }],
             tags: vec!["gpu".into(), "cable".into()],
+            led_names: Some(vec!["Cable 1".into(), "Cable 2".into()]),
+            led_mapping: Some(vec![1, 0]),
+            image_url: Some("https://assets.hypercolor.dev/strimer.png".into()),
+            physical_size_mm: Some((324.0, 34.0)),
         },
     }
 }
@@ -40,6 +45,7 @@ fn sample_device() -> DeviceInfo {
         name: "Prism S".into(),
         vendor: "PrismRGB".into(),
         family: DeviceFamily::PrismRgb,
+        model: Some("prism_s".into()),
         connection_type: ConnectionType::Usb,
         zones: vec![
             ZoneInfo {
@@ -83,6 +89,7 @@ fn custom_attachment_template_preserves_positions() {
             category: AttachmentCategory::Aio,
             origin: AttachmentOrigin::User,
             description: String::new(),
+            vendor: "Custom".into(),
             default_size: AttachmentCanvasSize::default(),
             topology: LedTopology::Custom {
                 positions: vec![
@@ -94,6 +101,10 @@ fn custom_attachment_template_preserves_positions() {
             },
             compatible_slots: Vec::new(),
             tags: vec!["aio".into(), "custom".into()],
+            led_names: None,
+            led_mapping: None,
+            image_url: None,
+            physical_size_mm: None,
         },
     };
 
@@ -132,6 +143,38 @@ fn attachment_slot_supports_built_in_and_custom_templates() {
 }
 
 #[test]
+fn attachment_slot_accepts_any_other_category_bucket() {
+    let slot = AttachmentSlot {
+        id: "ambient".into(),
+        name: "Ambient".into(),
+        led_start: 0,
+        led_count: 32,
+        suggested_categories: vec![AttachmentCategory::Other("other".into())],
+        allowed_templates: Vec::new(),
+        allow_custom: true,
+    };
+
+    let template = AttachmentTemplate {
+        id: "hex-panel".into(),
+        name: "Hex Panel".into(),
+        category: AttachmentCategory::Other("panel".into()),
+        origin: AttachmentOrigin::BuiltIn,
+        description: String::new(),
+        vendor: "Misc".into(),
+        default_size: AttachmentCanvasSize::default(),
+        topology: LedTopology::Point,
+        compatible_slots: Vec::new(),
+        tags: Vec::new(),
+        led_names: None,
+        led_mapping: None,
+        image_url: None,
+        physical_size_mm: None,
+    };
+
+    assert!(slot.supports_template(&template));
+}
+
+#[test]
 fn device_info_derives_default_attachment_profile_from_zones() {
     let device = sample_device();
     let profile = device.default_attachment_profile();
@@ -155,6 +198,31 @@ fn device_info_derives_default_attachment_profile_from_zones() {
 }
 
 #[test]
+fn device_info_default_attachment_profile_deduplicates_slot_ids() {
+    let device = DeviceInfo {
+        zones: vec![
+            ZoneInfo {
+                name: "Channel 1".into(),
+                led_count: 16,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            },
+            ZoneInfo {
+                name: "Channel 1".into(),
+                led_count: 16,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            },
+        ],
+        ..sample_device()
+    };
+
+    let profile = device.default_attachment_profile();
+    assert_eq!(profile.slots[0].id, "channel-1");
+    assert_eq!(profile.slots[1].id, "channel-1-2");
+}
+
+#[test]
 fn attachment_compatibility_matches_family_model_and_slot() {
     let compatibility = AttachmentCompatibility {
         families: vec!["prismrgb".into()],
@@ -169,15 +237,43 @@ fn attachment_compatibility_matches_family_model_and_slot() {
 }
 
 #[test]
-fn attachment_binding_defaults_enabled() {
+fn attachment_binding_round_trips_defaults() {
     let binding = AttachmentBinding {
         slot_id: "gpu-strimer".into(),
         template_id: "strimer-gpu-triple-8".into(),
         name: Some("GPU Cable".into()),
         enabled: true,
+        instances: 3,
+        led_offset: 12,
     };
 
     let toml_str = toml::to_string_pretty(&binding).expect("toml serialize");
     let back: AttachmentBinding = toml::from_str(&toml_str).expect("toml deserialize");
     assert_eq!(back, binding);
+}
+
+#[test]
+fn attachment_binding_defaults_enabled_instances_and_offset() {
+    let back: AttachmentBinding = toml::from_str(
+        r#"
+slot_id = "gpu-strimer"
+template_id = "strimer-gpu-triple-8"
+"#,
+    )
+    .expect("toml deserialize");
+
+    assert!(back.enabled);
+    assert_eq!(back.instances, 1);
+    assert_eq!(back.led_offset, 0);
+}
+
+#[test]
+fn attachment_category_unknown_string_round_trips() {
+    let category = AttachmentCategory::Other("desk".into());
+    let serialized = serde_json::to_string(&category).expect("serialize category");
+    assert_eq!(serialized, "\"desk\"");
+
+    let restored: AttachmentCategory =
+        serde_json::from_str(&serialized).expect("deserialize category");
+    assert_eq!(restored, category);
 }

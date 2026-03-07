@@ -238,6 +238,7 @@ fn strip_direction_all_variants() {
 
 #[test]
 fn device_zone_construction() {
+    let expected_mapping: Vec<u32> = (0..24).rev().collect();
     let zone = DeviceZone {
         id: "zone-1".into(),
         name: "ATX Strimer".into(),
@@ -254,10 +255,12 @@ fn device_zone_construction() {
             direction: StripDirection::LeftToRight,
         },
         led_positions: Vec::new(),
+        led_mapping: Some(expected_mapping.clone()),
         sampling_mode: None,
         edge_behavior: None,
         shape: Some(ZoneShape::Rectangle),
         shape_preset: Some("strimer-atx-24pin".into()),
+        attachment: None,
     };
 
     assert_eq!(zone.id, "zone-1");
@@ -265,6 +268,7 @@ fn device_zone_construction() {
     assert_eq!(zone.zone_name.as_deref(), Some("atx"));
     assert_eq!(zone.group_id.as_deref(), Some("pc-case"));
     assert_eq!(zone.topology.led_count(), 24);
+    assert_eq!(zone.led_mapping.as_deref(), Some(expected_mapping.as_slice()));
     assert!((zone.scale - 1.0).abs() < f32::EPSILON);
 }
 
@@ -283,10 +287,12 @@ fn device_zone_optional_fields() {
         orientation: None,
         topology: LedTopology::Point,
         led_positions: Vec::new(),
+        led_mapping: None,
         sampling_mode: None,
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        attachment: None,
     };
 
     assert!(zone.zone_name.is_none());
@@ -296,6 +302,7 @@ fn device_zone_optional_fields() {
     assert!(zone.edge_behavior.is_none());
     assert!(zone.shape.is_none());
     assert!(zone.shape_preset.is_none());
+    assert!(zone.led_mapping.is_none());
 }
 
 // ── SpatialLayout ───────────────────────────────────────────────────────────
@@ -342,10 +349,12 @@ fn spatial_layout_with_zones() {
             direction: Winding::Clockwise,
         },
         led_positions: Vec::new(),
+        led_mapping: None,
         sampling_mode: Some(SamplingMode::Bilinear),
         edge_behavior: Some(EdgeBehavior::Clamp),
         shape: Some(ZoneShape::Ring),
         shape_preset: None,
+        attachment: None,
     };
 
     let layout = SpatialLayout {

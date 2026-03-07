@@ -1,0 +1,42 @@
+schema_version = 1
+id = "generic-argb-fan-16-leds"
+name = "Generic ARGB Fan - 16 LEDs"
+category = "fan"
+origin = "built_in"
+description = "Generic ARGB Fan - 16 LEDs"
+vendor = "Generic"
+compatible_slots = []
+tags = [
+    "fan",
+]
+led_names = [
+    "Led 1",
+    "Led 2",
+    "Led 3",
+    "Led 4",
+    "Led 6",
+    "Led 8",
+    "Led 10",
+    "Led 12",
+    "Led 16",
+    "Led 15",
+    "Led 14",
+    "Led 13",
+    "Led 11",
+    "Led 9",
+    "Led 7",
+    "Led 5",
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.23999999463558197
+
+[topology]
+type = "perimeter_loop"
+top = 4
+right = 4
+bottom = 4
+left = 4
+start_corner = "top_left"
+direction = "clockwise"

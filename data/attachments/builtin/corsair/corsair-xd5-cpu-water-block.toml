@@ -1,0 +1,60 @@
+schema_version = 1
+id = "corsair-xd5-cpu-water-block"
+name = "XD5 CPU Water Block - 16 Led"
+category = "water_block"
+origin = "built_in"
+description = "XD5 CPU Water Block - 16 Led"
+vendor = "Corsair"
+compatible_slots = []
+tags = [
+    "water-block",
+]
+led_names = [
+    "Led 1",
+    "Led 2",
+    "Led 3",
+    "Led 4",
+    "Led 6",
+    "Led 8",
+    "Led 10",
+    "Led 12",
+    "Led 16",
+    "Led 15",
+    "Led 14",
+    "Led 13",
+    "Led 11",
+    "Led 9",
+    "Led 7",
+    "Led 5",
+]
+led_mapping = [
+    9,
+    8,
+    7,
+    6,
+    5,
+    4,
+    3,
+    2,
+    1,
+    0,
+    15,
+    14,
+    13,
+    12,
+    11,
+    10,
+]
+
+[default_size]
+width = 0.1599999964237213
+height = 0.23999999463558197
+
+[topology]
+type = "perimeter_loop"
+top = 4
+right = 5
+bottom = 3
+left = 4
+start_corner = "top_left"
+direction = "clockwise"

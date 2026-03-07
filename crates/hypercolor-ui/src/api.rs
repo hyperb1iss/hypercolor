@@ -126,6 +126,33 @@ pub struct DeviceListResponse {
     pub items: Vec<DeviceSummary>,
 }
 
+/// Attachment binding summary from `GET /api/v1/devices/:id/attachments`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AttachmentBindingSummary {
+    pub slot_id: String,
+    pub template_id: String,
+    pub template_name: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub enabled: bool,
+    pub instances: u32,
+    pub led_offset: u32,
+    pub effective_led_count: u32,
+}
+
+/// Device attachment profile summary from `GET /api/v1/devices/:id/attachments`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeviceAttachmentsResponse {
+    pub device_id: String,
+    pub device_name: String,
+    #[serde(default)]
+    pub slots: Vec<hypercolor_types::attachment::AttachmentSlot>,
+    #[serde(default)]
+    pub bindings: Vec<AttachmentBindingSummary>,
+    #[serde(default)]
+    pub suggested_zones: Vec<hypercolor_types::attachment::AttachmentSuggestedZone>,
+}
+
 // ── Logical Device Types ────────────────────────────────────────────────────
 
 /// Logical device summary from device segmentation APIs.
@@ -466,6 +493,24 @@ pub async fn fetch_logical_devices(device_id: &str) -> Result<Vec<LogicalDeviceS
         resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
 
     Ok(envelope.data.items)
+}
+
+/// Fetch attachment bindings and import-ready zones for a physical device.
+pub async fn fetch_device_attachments(device_id: &str) -> Result<DeviceAttachmentsResponse, String> {
+    let url = format!("/api/v1/devices/{device_id}/attachments");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<DeviceAttachmentsResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
 }
 
 /// Create a logical device segment on a physical device.

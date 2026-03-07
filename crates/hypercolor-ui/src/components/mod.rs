@@ -1,3 +1,4 @@
+pub mod attachment_panel;
 pub mod canvas_preview;
 pub mod control_panel;
 pub mod device_card;

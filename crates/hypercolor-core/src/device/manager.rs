@@ -7,6 +7,7 @@
 //! device for asynchronous transmission.
 
 use std::collections::HashMap;
+use std::borrow::Cow;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -735,6 +736,11 @@ impl BackendManager {
             .iter()
             .map(|z| (z.id.as_str(), z.device_id.as_str()))
             .collect();
+        let zone_to_mapping: HashMap<&str, Option<&[u32]>> = layout
+            .zones
+            .iter()
+            .map(|zone| (zone.id.as_str(), zone.led_mapping.as_deref()))
+            .collect();
 
         #[allow(clippy::items_after_statements)]
         #[derive(Default)]
@@ -752,6 +758,14 @@ impl BackendManager {
                 warn!(zone_id = %zc.zone_id, "zone not found in spatial layout");
                 continue;
             };
+            let remapped_colors = remap_zone_colors(
+                &zc.zone_id,
+                &zc.colors,
+                zone_to_mapping
+                    .get(zc.zone_id.as_str())
+                    .copied()
+                    .flatten(),
+            );
 
             let Some(mapping) = self.device_map.get(*layout_device_id) else {
                 // Not mapped — device may not be connected. Silent skip.
@@ -768,18 +782,18 @@ impl BackendManager {
                     entry.values.resize(required_len, [0, 0, 0]);
                 }
 
-                let copy_len = segment.length.min(zc.colors.len());
+                let copy_len = segment.length.min(remapped_colors.len());
                 if copy_len > 0 {
                     let start = segment.start;
                     let end = start.saturating_add(copy_len);
-                    entry.values[start..end].copy_from_slice(&zc.colors[..copy_len]);
+                    entry.values[start..end].copy_from_slice(&remapped_colors[..copy_len]);
                 }
 
                 if copy_len != segment.length {
                     warn!(
                         zone_id = %zc.zone_id,
                         expected = segment.length,
-                        received = zc.colors.len(),
+                        received = remapped_colors.len(),
                         "zone color count does not match mapped segment length"
                     );
                 }
@@ -790,7 +804,7 @@ impl BackendManager {
                         "mixed segmented and non-segmented mappings for the same physical device"
                     );
                 }
-                entry.values.extend_from_slice(&zc.colors);
+                entry.values.extend_from_slice(&remapped_colors);
             }
         }
 
@@ -934,4 +948,48 @@ impl BackendManager {
             orphaned_queues,
         }
     }
+}
+
+fn remap_zone_colors<'a>(
+    zone_id: &str,
+    colors: &'a [[u8; 3]],
+    led_mapping: Option<&[u32]>,
+) -> Cow<'a, [[u8; 3]]> {
+    let Some(led_mapping) = led_mapping else {
+        return Cow::Borrowed(colors);
+    };
+
+    if led_mapping.len() != colors.len() {
+        warn!(
+            zone_id = %zone_id,
+            mapping_len = led_mapping.len(),
+            color_len = colors.len(),
+            "ignoring zone LED mapping because it does not match the sampled LED count"
+        );
+        return Cow::Borrowed(colors);
+    }
+
+    let mut reordered = vec![[0, 0, 0]; colors.len()];
+    for (spatial_index, &physical_index) in led_mapping.iter().enumerate() {
+        let Ok(physical_index) = usize::try_from(physical_index) else {
+            warn!(
+                zone_id = %zone_id,
+                mapping_index = physical_index,
+                "ignoring zone LED mapping because one physical index does not fit in usize"
+            );
+            return Cow::Borrowed(colors);
+        };
+        if physical_index >= reordered.len() {
+            warn!(
+                zone_id = %zone_id,
+                mapping_index = physical_index,
+                color_len = colors.len(),
+                "ignoring zone LED mapping because one physical index is out of bounds"
+            );
+            return Cow::Borrowed(colors);
+        }
+        reordered[physical_index] = colors[spatial_index];
+    }
+
+    Cow::Owned(reordered)
 }

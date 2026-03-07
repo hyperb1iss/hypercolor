@@ -1,0 +1,22 @@
+schema_version = 1
+id = "lian-li-gpu-strimer-4x27"
+name = "Lian Li GPU Dual 8 Pin Strimers - 108 LED"
+category = "strimer"
+origin = "built_in"
+description = "Lian Li GPU Dual 8 Pin Strimers - 108 LED"
+vendor = "Lian Li"
+compatible_slots = []
+tags = [
+    "cable",
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.07999999821186066
+
+[topology]
+type = "matrix"
+width = 27
+height = 4
+serpentine = false
+start_corner = "top_left"

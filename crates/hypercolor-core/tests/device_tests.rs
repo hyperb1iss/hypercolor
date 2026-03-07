@@ -29,6 +29,7 @@ fn mock_device_info(name: &str) -> DeviceInfo {
         name: name.to_owned(),
         vendor: "MockVendor".to_owned(),
         family: DeviceFamily::Wled,
+        model: None,
         connection_type: ConnectionType::Network,
         zones: vec![ZoneInfo {
             name: "Zone 1".to_owned(),

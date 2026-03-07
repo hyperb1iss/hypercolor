@@ -4,9 +4,13 @@
 //! path resolution. All paths append `"hypercolor"` as the final component.
 
 use std::path::PathBuf;
+use std::sync::{LazyLock, RwLock};
 
 /// Application directory name, appended to all platform base paths.
 const APP_DIR: &str = "hypercolor";
+
+static DATA_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> =
+    LazyLock::new(|| RwLock::new(None));
 
 /// Returns the platform-appropriate configuration directory.
 ///
@@ -36,6 +40,14 @@ pub fn config_dir() -> PathBuf {
 /// - **Linux:** `$XDG_DATA_HOME/hypercolor/` (default `~/.local/share/hypercolor/`)
 /// - **Windows:** `%LOCALAPPDATA%\hypercolor\`
 pub fn data_dir() -> PathBuf {
+    if let Some(override_path) = DATA_DIR_OVERRIDE
+        .read()
+        .expect("data dir override lock should not be poisoned")
+        .clone()
+    {
+        return override_path;
+    }
+
     #[cfg(target_os = "linux")]
     {
         std::env::var("XDG_DATA_HOME")
@@ -56,6 +68,18 @@ pub fn data_dir() -> PathBuf {
             .expect("data directory must be resolvable")
             .join(APP_DIR)
     }
+}
+
+/// Override the resolved data directory.
+///
+/// This exists primarily to keep integration tests hermetic without mutating
+/// process environment variables.
+#[doc(hidden)]
+pub fn set_data_dir_override(path: Option<PathBuf>) {
+    let mut override_path = DATA_DIR_OVERRIDE
+        .write()
+        .expect("data dir override lock should not be poisoned");
+    *override_path = path;
 }
 
 /// Returns the platform-appropriate cache directory.

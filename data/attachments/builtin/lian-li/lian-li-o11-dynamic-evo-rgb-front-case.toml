@@ -1,0 +1,21 @@
+schema_version = 1
+id = "lian-li-o11-dynamic-evo-rgb-front-case"
+name = "Lian Li O11 Dynamic Evo RGB Front Strip - 47 LED"
+category = "case"
+origin = "built_in"
+description = "Lian Li O11 Dynamic Evo RGB Front Strip - 47 LED"
+vendor = "Lian Li"
+compatible_slots = []
+tags = [
+    "case",
+    "horizontal",
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.07999999821186066
+
+[topology]
+type = "strip"
+count = 47
+direction = "left_to_right"

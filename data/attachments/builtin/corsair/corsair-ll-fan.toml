@@ -1,0 +1,66 @@
+schema_version = 1
+id = "corsair-ll-fan"
+name = "Corsair LL Fan - 16 LED"
+category = "fan"
+origin = "built_in"
+description = "Corsair LL Fan - 16 LED"
+vendor = "Corsair"
+compatible_slots = []
+tags = [
+    "fan",
+]
+led_names = [
+    "Ring Led 1",
+    "Ring Led 2",
+    "Ring Led 3",
+    "Ring Led 4",
+    "Ring Led 5",
+    "Ring Led 6",
+    "Ring Led 7",
+    "Ring Led 8",
+    "Ring Led 9",
+    "Ring Led 10",
+    "Ring Led 11",
+    "Ring Led 12",
+    "Center Led 1",
+    "Center Led 2",
+    "Center Led 3",
+    "Center Led 4",
+]
+led_mapping = [
+    4,
+    15,
+    14,
+    13,
+    5,
+    12,
+    11,
+    6,
+    10,
+    7,
+    8,
+    9,
+    0,
+    1,
+    3,
+    2,
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.23999999463558197
+
+[topology]
+type = "concentric_rings"
+
+[[topology.rings]]
+count = 12
+radius = 1.0
+start_angle = -2.388441324234009
+direction = "clockwise"
+
+[[topology.rings]]
+count = 4
+radius = 0.4520692825317383
+start_angle = -1.5707963705062866
+direction = "counter_clockwise"

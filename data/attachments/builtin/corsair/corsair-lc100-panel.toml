@@ -1,0 +1,54 @@
+schema_version = 1
+id = "corsair-lc100-panel"
+name = "Corsair LC100 Panel - 9 LED"
+category = "strip"
+origin = "built_in"
+description = "Corsair LC100 Panel - 9 LED"
+vendor = "Corsair"
+compatible_slots = []
+tags = [
+    "strip",
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.1371428519487381
+
+[topology]
+type = "custom"
+
+[[topology.positions]]
+x = 1.0
+y = 0.6666666865348816
+
+[[topology.positions]]
+x = 0.8333333134651184
+y = 0.3333333432674408
+
+[[topology.positions]]
+x = 0.6666666865348816
+y = 0.0
+
+[[topology.positions]]
+x = 0.3333333432674408
+y = 0.0
+
+[[topology.positions]]
+x = 0.1666666716337204
+y = 0.3333333432674408
+
+[[topology.positions]]
+x = 0.0
+y = 0.6666666865348816
+
+[[topology.positions]]
+x = 0.1666666716337204
+y = 1.0
+
+[[topology.positions]]
+x = 0.5
+y = 1.0
+
+[[topology.positions]]
+x = 0.8333333134651184
+y = 1.0

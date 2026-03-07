@@ -329,6 +329,7 @@ fn build_device_info(device_id: DeviceId, wled_info: &WledDeviceInfo, _ip: IpAdd
         name: wled_info.name.clone(),
         vendor: "WLED".to_owned(),
         family: DeviceFamily::Wled,
+        model: None,
         connection_type: ConnectionType::Network,
         zones: vec![ZoneInfo {
             name: "Main".to_owned(),

@@ -87,6 +87,7 @@ impl WledScanner {
             name: name.clone(),
             vendor: "WLED".to_owned(),
             family: DeviceFamily::Wled,
+            model: None,
             connection_type: ConnectionType::Network,
             zones: vec![ZoneInfo {
                 name: "Main".to_owned(),

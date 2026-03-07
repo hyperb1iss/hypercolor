@@ -63,6 +63,7 @@ impl UsbScanner {
             name: descriptor.name.to_owned(),
             vendor,
             family: descriptor.family.clone(),
+            model: descriptor_model_id(descriptor),
             connection_type: ConnectionType::Usb,
             zones,
             firmware_version: Some(hex_version(usb.device_version())),
@@ -161,6 +162,11 @@ fn vendor_name_for_family(family: &DeviceFamily) -> &'static str {
 
 fn hex_version(version: u16) -> String {
     format!("{version:#06X}")
+}
+
+fn descriptor_model_id(descriptor: &DeviceDescriptor) -> Option<String> {
+    let (_, raw_model) = descriptor.protocol.id.split_once('/')?;
+    Some(raw_model.replace('-', "_"))
 }
 
 fn usb_path(usb: &nusb::DeviceInfo) -> String {

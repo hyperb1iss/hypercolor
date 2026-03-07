@@ -648,11 +648,13 @@ fn create_default_zone(
         orientation: defaults.orientation,
         topology: defaults.topology,
         led_positions: Vec::new(),
+        led_mapping: None,
         sampling_mode: None,
         edge_behavior: None,
         shape: defaults.shape,
         shape_preset: defaults.shape_preset,
         group_id: None,
+        attachment: None,
     }
 }
 

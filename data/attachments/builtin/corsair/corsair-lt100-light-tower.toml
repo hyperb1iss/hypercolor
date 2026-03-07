@@ -1,0 +1,21 @@
+schema_version = 1
+id = "corsair-lt100-light-tower"
+name = "Corsair LT100 Light Tower - 27 LED"
+category = "tower"
+origin = "built_in"
+description = "Corsair LT100 Light Tower - 27 LED"
+vendor = "Corsair"
+compatible_slots = []
+tags = [
+    "tower",
+    "vertical",
+]
+
+[default_size]
+width = 0.07999999821186066
+height = 0.23999999463558197
+
+[topology]
+type = "strip"
+count = 27
+direction = "bottom_to_top"

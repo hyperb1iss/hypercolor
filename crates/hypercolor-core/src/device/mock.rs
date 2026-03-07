@@ -528,6 +528,7 @@ fn build_device_info(
         name: name.to_owned(),
         vendor: "Hypercolor Mock".to_owned(),
         family: DeviceFamily::Custom("Mock".to_owned()),
+        model: None,
         connection_type: ConnectionType::Network,
         zones: vec![ZoneInfo {
             name: format!("{name} Zone"),

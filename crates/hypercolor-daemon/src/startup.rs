@@ -18,6 +18,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::mock::MockDeviceBackend;
@@ -46,6 +47,7 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
+use crate::attachment_profiles::AttachmentProfileStore;
 use crate::effect_layouts;
 use crate::logical_devices::LogicalDevice;
 use crate::render_thread::{RenderThread, RenderThreadState};
@@ -113,6 +115,12 @@ pub struct DaemonState {
 
     /// Persistent JSON file for user-defined logical segment devices.
     pub logical_devices_path: PathBuf,
+
+    /// Attachment template registry (built-in plus user-defined).
+    pub attachment_registry: Arc<RwLock<AttachmentRegistry>>,
+
+    /// Persistent per-device attachment profiles.
+    pub attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
 
     /// Persisted effect -> layout association map.
     pub effect_layout_links: Arc<RwLock<HashMap<String, String>>>,
@@ -289,6 +297,44 @@ impl DaemonState {
         let logical_devices = Arc::new(RwLock::new(persisted_segments));
         info!(path = %logical_devices_path.display(), "Logical device store ready");
 
+        // ── Attachment Template Registry ─────────────────────────────
+        let attachment_templates_dir = ConfigManager::data_dir().join("attachments");
+        let mut attachment_registry_inner = AttachmentRegistry::new();
+        let builtin_count = attachment_registry_inner.load_builtins().unwrap_or_else(|error| {
+            warn!(%error, "Failed to load built-in attachment templates");
+            0
+        });
+        let user_count = attachment_registry_inner
+            .load_user_dir(&attachment_templates_dir)
+            .unwrap_or_else(|error| {
+                warn!(
+                    path = %attachment_templates_dir.display(),
+                    %error,
+                    "Failed to load user attachment templates; starting without them"
+                );
+                0
+            });
+        let attachment_registry = Arc::new(RwLock::new(attachment_registry_inner));
+        info!(
+            builtin = builtin_count,
+            user = user_count,
+            "Attachment template registry ready"
+        );
+
+        // ── Attachment Profile Store ─────────────────────────────────
+        let attachment_profiles_path = ConfigManager::data_dir().join("attachment-profiles.json");
+        let attachment_profiles_inner = AttachmentProfileStore::load(&attachment_profiles_path)
+            .unwrap_or_else(|error| {
+                warn!(
+                    path = %attachment_profiles_path.display(),
+                    %error,
+                    "Failed to load attachment profiles; starting with empty store"
+                );
+                AttachmentProfileStore::new(attachment_profiles_path)
+            });
+        let attachment_profiles = Arc::new(RwLock::new(attachment_profiles_inner));
+        info!("Attachment profile store ready");
+
         // ── Effect/Layout Association Store ──────────────────────────
         let effect_layout_links_path = ConfigManager::data_dir().join("effect-layouts.json");
         let persisted_links = match effect_layouts::load(&effect_layout_links_path) {
@@ -350,6 +396,8 @@ impl DaemonState {
             input_manager,
             logical_devices,
             logical_devices_path,
+            attachment_registry,
+            attachment_profiles,
             effect_layout_links,
             effect_layout_links_path,
             layouts_path,

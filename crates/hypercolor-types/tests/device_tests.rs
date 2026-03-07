@@ -61,6 +61,7 @@ fn sample_device_info() -> DeviceInfo {
         name: "Test Strip".into(),
         vendor: "WLED".into(),
         family: DeviceFamily::Wled,
+        model: Some("strip".into()),
         connection_type: ConnectionType::Network,
         zones: vec![
             ZoneInfo {
@@ -109,6 +110,7 @@ fn device_info_empty_zones_yields_zero_leds() {
         name: "Empty".into(),
         vendor: "Test".into(),
         family: DeviceFamily::Custom("test".into()),
+        model: None,
         connection_type: ConnectionType::Bridge,
         zones: vec![],
         firmware_version: None,

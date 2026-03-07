@@ -1,0 +1,226 @@
+schema_version = 1
+id = "corsair-ql-fan"
+name = "Corsair QL Fan - 34 LED"
+category = "fan"
+origin = "built_in"
+description = "Corsair QL Fan - 34 LED"
+vendor = "Corsair"
+compatible_slots = []
+tags = [
+    "fan",
+]
+led_names = [
+    "Front Ring Led 1",
+    "Front Ring Led 2",
+    "Front Ring Led 3",
+    "Front Ring Led 12",
+    "Front Center Led 1",
+    "Front Ring Led 4",
+    "Front Ring Led 11",
+    "Front Center Led 4",
+    "Front Center Led 2",
+    "Front Ring Led 5",
+    "Front Ring Led 10",
+    "Front Center Led 3",
+    "Front Ring Led 6",
+    "Front Ring Led 9",
+    "Front Ring Led 8",
+    "Front Ring Led 7",
+    "Back Ring Led 1",
+    "Back Ring Led 2",
+    "Back Ring Led 3",
+    "Back Ring Led 12",
+    "Back Center Led 1",
+    "Back Center Led 2",
+    "Back Ring Led 4",
+    "Back Ring Led 11",
+    "Back Center Led 6",
+    "Back Center Led 3",
+    "Back Ring Led 5",
+    "Back Ring Led 10",
+    "Back Center Led 5",
+    "Back Center Led 4",
+    "Back Ring Led 6",
+    "Back Ring Led 9",
+    "Back Ring Led 8",
+    "Back Ring Led 7",
+]
+led_mapping = [
+    10,
+    11,
+    12,
+    21,
+    0,
+    13,
+    20,
+    3,
+    1,
+    14,
+    19,
+    2,
+    15,
+    18,
+    17,
+    16,
+    22,
+    23,
+    24,
+    33,
+    9,
+    4,
+    25,
+    32,
+    8,
+    5,
+    26,
+    31,
+    7,
+    6,
+    27,
+    30,
+    29,
+    28,
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.23999999463558197
+
+[topology]
+type = "custom"
+
+[[topology.positions]]
+x = 0.375
+y = 0.125
+
+[[topology.positions]]
+x = 0.625
+y = 0.125
+
+[[topology.positions]]
+x = 0.75
+y = 0.25
+
+[[topology.positions]]
+x = 0.25
+y = 0.25
+
+[[topology.positions]]
+x = 0.5
+y = 0.375
+
+[[topology.positions]]
+x = 0.875
+y = 0.375
+
+[[topology.positions]]
+x = 0.125
+y = 0.375
+
+[[topology.positions]]
+x = 0.375
+y = 0.5
+
+[[topology.positions]]
+x = 0.625
+y = 0.5
+
+[[topology.positions]]
+x = 0.875
+y = 0.625
+
+[[topology.positions]]
+x = 0.125
+y = 0.625
+
+[[topology.positions]]
+x = 0.5
+y = 0.625
+
+[[topology.positions]]
+x = 0.75
+y = 0.75
+
+[[topology.positions]]
+x = 0.25
+y = 0.75
+
+[[topology.positions]]
+x = 0.375
+y = 0.875
+
+[[topology.positions]]
+x = 0.625
+y = 0.875
+
+[[topology.positions]]
+x = 0.25
+y = 0.125
+
+[[topology.positions]]
+x = 0.5
+y = 0.0
+
+[[topology.positions]]
+x = 0.75
+y = 0.125
+
+[[topology.positions]]
+x = 0.125
+y = 0.25
+
+[[topology.positions]]
+x = 0.375
+y = 0.375
+
+[[topology.positions]]
+x = 0.625
+y = 0.375
+
+[[topology.positions]]
+x = 0.875
+y = 0.25
+
+[[topology.positions]]
+x = 0.0
+y = 0.5
+
+[[topology.positions]]
+x = 0.25
+y = 0.5
+
+[[topology.positions]]
+x = 0.75
+y = 0.5
+
+[[topology.positions]]
+x = 1.0
+y = 0.5
+
+[[topology.positions]]
+x = 0.125
+y = 0.75
+
+[[topology.positions]]
+x = 0.375
+y = 0.625
+
+[[topology.positions]]
+x = 0.625
+y = 0.625
+
+[[topology.positions]]
+x = 0.875
+y = 0.75
+
+[[topology.positions]]
+x = 0.25
+y = 0.875
+
+[[topology.positions]]
+x = 0.5
+y = 1.0
+
+[[topology.positions]]
+x = 0.75
+y = 0.875

@@ -1,0 +1,21 @@
+schema_version = 1
+id = "corsair-350mm-strip"
+name = "Corsair 350mm Strip - 21 LED"
+category = "strip"
+origin = "built_in"
+description = "Corsair 350mm Strip - 21 LED"
+vendor = "Corsair"
+compatible_slots = []
+tags = [
+    "horizontal",
+    "strip",
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.07999999821186066
+
+[topology]
+type = "strip"
+count = 21
+direction = "left_to_right"

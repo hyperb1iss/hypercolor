@@ -1,0 +1,21 @@
+schema_version = 1
+id = "corsair-gpu-water-block"
+name = "GPU Water Block - 16 Led"
+category = "water_block"
+origin = "built_in"
+description = "GPU Water Block - 16 Led"
+vendor = "Corsair"
+compatible_slots = []
+tags = [
+    "horizontal",
+    "water-block",
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.07999999821186066
+
+[topology]
+type = "strip"
+count = 16
+direction = "left_to_right"

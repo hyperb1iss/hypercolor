@@ -174,6 +174,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
         name: name.to_string(),
         vendor: "TestCorp".to_string(),
         family: DeviceFamily::Wled,
+        model: None,
         connection_type: ConnectionType::Network,
         zones: vec![ZoneInfo {
             name: "main".to_string(),
@@ -235,10 +236,12 @@ fn make_strip_zone(id: &str, led_count: u32) -> DeviceZone {
             direction: hypercolor_types::spatial::StripDirection::LeftToRight,
         },
         led_positions: positions,
+        led_mapping: None,
         sampling_mode: None,
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        attachment: None,
     }
 }
 
@@ -1406,6 +1409,7 @@ async fn multiple_scanners_aggregate_results() {
             name: "USB HID Controller".to_string(),
             vendor: "PrismRGB".to_string(),
             family: DeviceFamily::Custom("prism".to_string()),
+            model: None,
             connection_type: ConnectionType::Usb,
             zones: vec![ZoneInfo {
                 name: "channel-1".to_string(),

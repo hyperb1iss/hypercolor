@@ -1,0 +1,49 @@
+schema_version = 1
+id = "lian-li-tl-fan"
+name = "Lian Li TL - 26 LED"
+category = "fan"
+origin = "built_in"
+description = "Lian Li TL - 26 LED"
+vendor = "Lian Li"
+compatible_slots = []
+tags = [
+    "fan",
+]
+led_mapping = [
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    15,
+    23,
+    14,
+    24,
+    13,
+    25,
+    0,
+    12,
+    1,
+    11,
+    2,
+    10,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.23999999463558197
+
+[topology]
+type = "ring"
+count = 26
+start_angle = -2.0344438552856445
+direction = "clockwise"

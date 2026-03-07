@@ -1,0 +1,21 @@
+schema_version = 1
+id = "lian-li-o11-dynamic-evo-xl-front-case"
+name = "Lian Li O11 Dynamic Evo XL Front Strip - 25 LED"
+category = "case"
+origin = "built_in"
+description = "Lian Li O11 Dynamic Evo XL Front Strip - 25 LED"
+vendor = "Lian Li"
+compatible_slots = []
+tags = [
+    "case",
+    "vertical",
+]
+
+[default_size]
+width = 0.07999999821186066
+height = 0.23999999463558197
+
+[topology]
+type = "strip"
+count = 25
+direction = "top_to_bottom"

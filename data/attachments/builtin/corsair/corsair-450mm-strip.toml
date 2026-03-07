@@ -1,0 +1,21 @@
+schema_version = 1
+id = "corsair-450mm-strip"
+name = "Corsair 450mm Strip - 27 LED"
+category = "strip"
+origin = "built_in"
+description = "Corsair 450mm Strip - 27 LED"
+vendor = "Corsair"
+compatible_slots = []
+tags = [
+    "horizontal",
+    "strip",
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.07999999821186066
+
+[topology]
+type = "strip"
+count = 27
+direction = "left_to_right"

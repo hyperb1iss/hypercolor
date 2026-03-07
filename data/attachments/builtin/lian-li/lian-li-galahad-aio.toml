@@ -1,0 +1,35 @@
+schema_version = 1
+id = "lian-li-galahad-aio"
+name = "Lian Li Galahad AIO - 12 LED"
+category = "aio"
+origin = "built_in"
+description = "Lian Li Galahad AIO - 12 LED"
+vendor = "Lian Li"
+compatible_slots = []
+tags = [
+    "aio",
+]
+led_mapping = [
+    0,
+    11,
+    1,
+    10,
+    2,
+    9,
+    3,
+    8,
+    4,
+    7,
+    5,
+    6,
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.23999999463558197
+
+[topology]
+type = "ring"
+count = 12
+start_angle = -1.768191933631897
+direction = "clockwise"

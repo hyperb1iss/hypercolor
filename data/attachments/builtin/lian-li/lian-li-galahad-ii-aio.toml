@@ -1,0 +1,98 @@
+schema_version = 1
+id = "lian-li-galahad-ii-aio"
+name = "Lian Li Galahad II AIO - 20 LED"
+category = "aio"
+origin = "built_in"
+description = "Lian Li Galahad II AIO - 20 LED"
+vendor = "Lian Li"
+compatible_slots = []
+tags = [
+    "aio",
+]
+
+[default_size]
+width = 0.17142857611179352
+height = 0.23999999463558197
+
+[topology]
+type = "custom"
+
+[[topology.positions]]
+x = 0.5
+y = 0.0
+
+[[topology.positions]]
+x = 0.25
+y = 0.1666666716337204
+
+[[topology.positions]]
+x = 0.5
+y = 0.1666666716337204
+
+[[topology.positions]]
+x = 0.75
+y = 0.1666666716337204
+
+[[topology.positions]]
+x = 0.0
+y = 0.3333333432674408
+
+[[topology.positions]]
+x = 0.25
+y = 0.3333333432674408
+
+[[topology.positions]]
+x = 0.75
+y = 0.3333333432674408
+
+[[topology.positions]]
+x = 1.0
+y = 0.3333333432674408
+
+[[topology.positions]]
+x = 0.0
+y = 0.5
+
+[[topology.positions]]
+x = 0.25
+y = 0.5
+
+[[topology.positions]]
+x = 0.75
+y = 0.5
+
+[[topology.positions]]
+x = 1.0
+y = 0.5
+
+[[topology.positions]]
+x = 0.0
+y = 0.6666666865348816
+
+[[topology.positions]]
+x = 0.25
+y = 0.6666666865348816
+
+[[topology.positions]]
+x = 0.75
+y = 0.6666666865348816
+
+[[topology.positions]]
+x = 1.0
+y = 0.6666666865348816
+
+[[topology.positions]]
+x = 0.25
+y = 0.8333333134651184
+
+[[topology.positions]]
+x = 0.5
+y = 0.8333333134651184
+
+[[topology.positions]]
+x = 0.75
+y = 0.8333333134651184
+
+[[topology.positions]]
+x = 0.5
+y = 1.0

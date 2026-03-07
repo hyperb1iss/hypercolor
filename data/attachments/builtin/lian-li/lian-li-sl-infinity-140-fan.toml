@@ -1,0 +1,98 @@
+schema_version = 1
+id = "lian-li-sl-infinity-140-fan"
+name = "Lian Li UNIFan SL140 Infinity - 20 LED"
+category = "fan"
+origin = "built_in"
+description = "Lian Li UNIFan SL140 Infinity - 20 LED"
+vendor = "Lian Li"
+compatible_slots = []
+tags = [
+    "fan",
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.17999999225139618
+
+[topology]
+type = "custom"
+
+[[topology.positions]]
+x = 0.3636363744735718
+y = 0.75
+
+[[topology.positions]]
+x = 0.4545454680919647
+y = 0.625
+
+[[topology.positions]]
+x = 0.5454545617103577
+y = 0.625
+
+[[topology.positions]]
+x = 0.6363636255264282
+y = 0.75
+
+[[topology.positions]]
+x = 0.6363636255264282
+y = 0.875
+
+[[topology.positions]]
+x = 0.5454545617103577
+y = 1.0
+
+[[topology.positions]]
+x = 0.4545454680919647
+y = 1.0
+
+[[topology.positions]]
+x = 0.3636363744735718
+y = 0.875
+
+[[topology.positions]]
+x = 0.0
+y = 0.25
+
+[[topology.positions]]
+x = 0.09090909361839294
+y = 0.125
+
+[[topology.positions]]
+x = 0.1818181872367859
+y = 0.0
+
+[[topology.positions]]
+x = 0.27272728085517883
+y = 0.0
+
+[[topology.positions]]
+x = 0.3636363744735718
+y = 0.0
+
+[[topology.positions]]
+x = 0.4545454680919647
+y = 0.0
+
+[[topology.positions]]
+x = 0.5454545617103577
+y = 0.0
+
+[[topology.positions]]
+x = 0.6363636255264282
+y = 0.0
+
+[[topology.positions]]
+x = 0.7272727489471436
+y = 0.0
+
+[[topology.positions]]
+x = 0.8181818127632141
+y = 0.0
+
+[[topology.positions]]
+x = 0.9090909361839294
+y = 0.125
+
+[[topology.positions]]
+x = 1.0
+y = 0.25

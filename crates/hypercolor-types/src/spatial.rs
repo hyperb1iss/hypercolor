@@ -314,6 +314,21 @@ pub struct ZoneGroup {
     pub color: Option<String>,
 }
 
+/// Attachment metadata carried by imported layout zones.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ZoneAttachment {
+    /// Bound attachment template identifier.
+    pub template_id: String,
+    /// Source slot ID on the physical controller.
+    pub slot_id: String,
+    /// Zero-based attachment instance index within the binding.
+    #[serde(default)]
+    pub instance: u32,
+    /// Optional spatial-order -> physical-order LED remapping.
+    #[serde(default)]
+    pub led_mapping: Option<Vec<u32>>,
+}
+
 // ── DeviceZone ──────────────────────────────────────────────────────────────
 
 /// A device zone: the spatial binding between a physical device and a
@@ -371,6 +386,13 @@ pub struct DeviceZone {
     #[serde(skip)]
     pub led_positions: Vec<NormalizedPosition>,
 
+    /// Optional spatial-index -> physical-index remap applied before device writes.
+    ///
+    /// Attachment templates use this to preserve non-sequential wiring orders
+    /// without baking transport details into topology coordinates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub led_mapping: Option<Vec<u32>>,
+
     // ── Sampling ──────────────────────────────────────────────────────
     /// Per-zone sampling mode. `None` inherits from layout default.
     pub sampling_mode: Option<SamplingMode>,
@@ -384,6 +406,10 @@ pub struct DeviceZone {
 
     /// Shape preset ID from the device library (e.g., `"strimer-atx-24pin"`).
     pub shape_preset: Option<String>,
+
+    /// Attachment metadata for zones imported from attachment profiles.
+    #[serde(default)]
+    pub attachment: Option<ZoneAttachment>,
 }
 
 fn default_scale() -> f32 {

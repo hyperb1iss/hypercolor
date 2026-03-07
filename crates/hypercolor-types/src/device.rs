@@ -88,6 +88,10 @@ pub struct DeviceInfo {
     /// Device family classification.
     pub family: DeviceFamily,
 
+    /// Optional device model identifier for compatibility matching.
+    #[serde(default)]
+    pub model: Option<String>,
+
     /// Transport / connection type.
     pub connection_type: ConnectionType,
 

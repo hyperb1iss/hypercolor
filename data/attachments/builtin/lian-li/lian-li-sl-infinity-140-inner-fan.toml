@@ -1,0 +1,44 @@
+schema_version = 1
+id = "lian-li-sl-infinity-140-inner-fan"
+name = "LianLi UNIFan SL140 Infinity Inner - 8 LED"
+category = "fan"
+origin = "built_in"
+description = "LianLi UNIFan SL140 Infinity Inner - 8 LED"
+vendor = "Lian Li"
+compatible_slots = []
+tags = [
+    "fan",
+]
+led_names = [
+    "Led2",
+    "Led3",
+    "Led4",
+    "Led5",
+    "Led6",
+    "Led7",
+    "Led8",
+    "Led1",
+]
+led_mapping = [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    0,
+]
+
+[default_size]
+width = 0.23999999463558197
+height = 0.23999999463558197
+
+[topology]
+type = "perimeter_loop"
+top = 2
+right = 2
+bottom = 2
+left = 2
+start_corner = "top_left"
+direction = "clockwise"
