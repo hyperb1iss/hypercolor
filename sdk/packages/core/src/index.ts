@@ -3,9 +3,6 @@
  *
  * TypeScript SDK for creating Hypercolor RGB lighting effects.
  *
- * Two APIs:
- *
- * **New (recommended):** `effect()` and `canvas()` — declarative, zero boilerplate.
  * ```typescript
  * import { effect } from '@hypercolor/sdk'
  * import shader from './fragment.glsl'
@@ -16,15 +13,13 @@
  * })
  * ```
  *
- * **Legacy:** Decorators + class inheritance (still supported, not recommended for new effects).
- *
  * @packageDocumentation
  */
 
 // Runtime type declarations (side-effect import)
 import './runtime'
 
-// ── New Declarative API ──────────────────────────────────────────────────
+// ── Declarative API ─────────────────────────────────────────────────────
 
 // Effect functions
 export { effect } from './effects'
@@ -43,50 +38,31 @@ export type { PaletteEntry, PaletteFn } from './palette'
 // Audio (pull model for canvas effects)
 export { getAudioData as audio } from './audio'
 
-// ── Legacy API (decorator-based) ────────────────────────────────────────
+// ── Control helpers ─────────────────────────────────────────────────────
 
 export type {
     BaseControls,
     BooleanControlDefinition,
-    BooleanControlOptions,
     ColorControlDefinition,
-    ColorControlOptions,
     ComboboxControlDefinition,
-    ComboboxControlOptions,
-    ControlDecoratorOptions,
     ControlDefinition,
     ControlDefinitionType,
     ControlValues,
-    EffectOptions,
     HueControlDefinition,
-    HueControlOptions,
     NumberControlDefinition,
-    NumberControlOptions,
     TextFieldControlDefinition,
-    TextFieldControlOptions,
 } from './controls'
 
 export {
-    BooleanControl,
     boolToInt,
-    ColorControl,
-    ComboboxControl,
     comboboxValueToIndex,
-    Effect,
-    extractControlsFromClass,
-    extractEffectMetadata,
     getAllControls,
-    getControlForProperty,
     getControlValue,
-    HueControl,
-    METADATA_KEYS,
     normalizePercentage,
     normalizeSpeed,
-    NumberControl,
-    TextFieldControl,
 } from './controls'
 
-// ── Base Classes ─────────────────────────────────────────────────────────
+// ── Base Classes ────────────────────────────────────────────────────────
 
 export type { EffectConfig } from './effects'
 export { BaseEffect } from './effects'

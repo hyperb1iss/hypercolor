@@ -20,9 +20,7 @@
         "dev": "tsup --watch",
         "typecheck": "tsc --noEmit"
     },
-    "dependencies": {
-        "reflect-metadata": "^0.2.2"
-    },
+    "dependencies": {},
     "devDependencies": {
         "tsup": "^8.5.0",
         "typescript": "^5.9.3"
@@ -38,7 +36,7 @@
         "webgl",
         "shader",
         "typescript",
-        "decorators"
+        "canvas"
     ],
     "author": "Stefanie Jane <stef@hyperbliss.tech>",
     "license": "Apache-2.0",

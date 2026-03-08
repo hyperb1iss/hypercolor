@@ -4,7 +4,7 @@ export default defineConfig({
     clean: true,
     dts: true,
     entry: ['src/index.ts'],
-    external: ['reflect-metadata'],
+    external: [],
     format: ['esm'],
     sourcemap: true,
     target: 'es2024',

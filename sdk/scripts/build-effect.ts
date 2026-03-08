@@ -11,7 +11,6 @@
 import * as esbuild from 'esbuild'
 import { basename, dirname, join, resolve } from 'node:path'
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
-import { extractControlsFromClass, extractEffectMetadata } from '@hypercolor/sdk'
 
 const SDK_ROOT = resolve(import.meta.dirname, '..')
 const DEFAULT_OUT = resolve(SDK_ROOT, '..', 'effects', 'hypercolor')
@@ -171,30 +170,8 @@ async function extractMetadata(entryPath: string) {
             }
         }
 
-        // ── Legacy decorator path ────────────────────────────────────
-        const effectInstance =
-            (globalThis as any).__hypercolorEffectInstance__ ??
-            (globalThis as any).effectInstance ??
-            mod.default
-
-        if (!effectInstance) {
-            // Try to find any class instance in the module's exports
-            for (const val of Object.values(mod)) {
-                if (val && typeof val === 'object' && val.constructor) {
-                    const meta = extractEffectMetadata(val.constructor)
-                    if (meta) {
-                        const controls = extractControlsFromClass(val.constructor)
-                        return { effect: meta, controls }
-                    }
-                }
-            }
-            console.warn(`  Warning: could not extract metadata from ${entryPath}`)
-            return { effect: null, controls: [] }
-        }
-
-        const effect = extractEffectMetadata(effectInstance.constructor)
-        const controls = extractControlsFromClass(effectInstance.constructor)
-        return { effect, controls }
+        console.warn(`  Warning: could not extract metadata from ${entryPath} (no __hypercolorEffectDefs__)`)
+        return { effect: null, controls: [] }
     } catch (err) {
         if (err instanceof Error && err.message.startsWith('Shader binding validation failed')) {
             throw err

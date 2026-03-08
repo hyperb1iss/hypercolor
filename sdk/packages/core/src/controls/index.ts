@@ -11,31 +11,6 @@ export type {
     TextFieldControlDefinition,
 } from './definitions'
 
-export type {
-    BooleanControlOptions,
-    ColorControlOptions,
-    ComboboxControlOptions,
-    ControlDecoratorOptions,
-    EffectOptions,
-    HueControlOptions,
-    NumberControlOptions,
-    TextFieldControlOptions,
-} from './decorators'
-
-export {
-    BooleanControl,
-    ColorControl,
-    ComboboxControl,
-    Effect,
-    extractControlsFromClass,
-    extractEffectMetadata,
-    getControlForProperty,
-    HueControl,
-    METADATA_KEYS,
-    NumberControl,
-    TextFieldControl,
-} from './decorators'
-
 export {
     boolToInt,
     comboboxValueToIndex,
@@ -45,7 +20,7 @@ export {
     normalizeSpeed,
 } from './helpers'
 
-// ── New declarative control API ──────────────────────────────────────────
+// ── Declarative control API ──────────────────────────────────────────
 export { num, combo, toggle, color, hue, text, isControlSpec } from './specs'
 export type { ControlSpec, ControlTypeName, NormalizeHint } from './specs'
 export { inferControl } from './infer'
