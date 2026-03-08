@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use hidapi::{HidApi, HidDevice};
 use tracing::{debug, trace};
 
+use crate::registry::HidRawReportMode;
 use crate::transport::{Transport, TransportError};
 
 const DEFAULT_MAX_PACKET_LEN: usize = 90;
@@ -32,6 +33,7 @@ struct HidrawCandidate {
 pub struct UsbHidRawTransport {
     device_path: String,
     report_id: u8,
+    report_mode: HidRawReportMode,
     max_packet_len: usize,
     device: Arc<Mutex<HidDevice>>,
     closed: AtomicBool,
@@ -50,6 +52,7 @@ impl UsbHidRawTransport {
         product_id: u16,
         interface_number: u8,
         report_id: u8,
+        report_mode: HidRawReportMode,
         serial: Option<&str>,
         usb_path: Option<&str>,
         usage_page: Option<u16>,
@@ -141,6 +144,7 @@ impl UsbHidRawTransport {
             product_id = format_args!("{product_id:04X}"),
             interface_number,
             report_id = format_args!("0x{report_id:02X}"),
+            report_mode = ?report_mode,
             device_path = %device_path,
             serial = serial.unwrap_or("<none>"),
             usb_path = usb_path.unwrap_or("<unknown>"),
@@ -152,6 +156,7 @@ impl UsbHidRawTransport {
         Ok(Self {
             device_path,
             report_id,
+            report_mode,
             max_packet_len: DEFAULT_MAX_PACKET_LEN,
             device: Arc::new(Mutex::new(device)),
             closed: AtomicBool::new(false),
@@ -170,7 +175,10 @@ impl UsbHidRawTransport {
 #[async_trait]
 impl Transport for UsbHidRawTransport {
     fn name(&self) -> &'static str {
-        "USB HIDRAW (Feature Report)"
+        match self.report_mode {
+            HidRawReportMode::FeatureReport => "USB HIDRAW (Feature Report)",
+            HidRawReportMode::OutputReport => "USB HIDRAW (Output/Input Report)",
+        }
     }
 
     async fn send(&self, data: &[u8]) -> Result<(), TransportError> {
@@ -179,55 +187,111 @@ impl Transport for UsbHidRawTransport {
         let _guard = self.op_lock.lock().await;
         let device = Arc::clone(&self.device);
         let report_id = self.report_id;
+        let report_mode = self.report_mode;
         let packet = encode_feature_report_packet(data, report_id);
 
-        trace!(
-            device_path = %self.device_path,
-            report_id = format_args!("0x{report_id:02X}"),
-            packet_len = packet.len(),
-            packet_hex = %format_hex_preview(&packet, 32),
-            "hidraw feature report send"
-        );
+        match report_mode {
+            HidRawReportMode::FeatureReport => {
+                trace!(
+                    device_path = %self.device_path,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    packet_len = packet.len(),
+                    packet_hex = %format_hex_preview(&packet, 32),
+                    "hidraw feature report send"
+                );
 
-        tokio::task::spawn_blocking(move || send_feature_report_locked(device.as_ref(), &packet))
-            .await
-            .map_err(|error| TransportError::IoError {
-                detail: format!("hidraw send task failed: {error}"),
-            })?
+                tokio::task::spawn_blocking(move || {
+                    send_feature_report_locked(device.as_ref(), &packet)
+                })
+                .await
+                .map_err(|error| TransportError::IoError {
+                    detail: format!("hidraw send task failed: {error}"),
+                })?
+            }
+            HidRawReportMode::OutputReport => {
+                trace!(
+                    device_path = %self.device_path,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    packet_len = packet.len(),
+                    packet_hex = %format_hex_preview(&packet, 32),
+                    "hidraw output report send"
+                );
+
+                tokio::task::spawn_blocking(move || {
+                    send_output_report_locked(device.as_ref(), &packet)
+                })
+                .await
+                .map_err(|error| TransportError::IoError {
+                    detail: format!("hidraw send task failed: {error}"),
+                })?
+            }
+        }
     }
 
-    async fn receive(&self, _timeout: Duration) -> Result<Vec<u8>, TransportError> {
+    async fn receive(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
         self.check_open()?;
 
         let _guard = self.op_lock.lock().await;
         let device = Arc::clone(&self.device);
         let report_id = self.report_id;
         let max_packet_len = self.max_packet_len;
+        let report_mode = self.report_mode;
 
-        trace!(
-            device_path = %self.device_path,
-            report_id = format_args!("0x{report_id:02X}"),
-            max_packet_len,
-            "hidraw feature report receive requested"
-        );
+        match report_mode {
+            HidRawReportMode::FeatureReport => {
+                trace!(
+                    device_path = %self.device_path,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    max_packet_len,
+                    "hidraw feature report receive requested"
+                );
 
-        let response = tokio::task::spawn_blocking(move || {
-            receive_feature_report_locked(device.as_ref(), report_id, max_packet_len)
-        })
-        .await
-        .map_err(|error| TransportError::IoError {
-            detail: format!("hidraw receive task failed: {error}"),
-        })??;
+                let response = tokio::task::spawn_blocking(move || {
+                    receive_feature_report_locked(device.as_ref(), report_id, max_packet_len)
+                })
+                .await
+                .map_err(|error| TransportError::IoError {
+                    detail: format!("hidraw receive task failed: {error}"),
+                })??;
 
-        trace!(
-            device_path = %self.device_path,
-            report_id = format_args!("0x{report_id:02X}"),
-            response_len = response.len(),
-            response_hex = %format_hex_preview(&response, 32),
-            "hidraw feature report received"
-        );
+                trace!(
+                    device_path = %self.device_path,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    response_len = response.len(),
+                    response_hex = %format_hex_preview(&response, 32),
+                    "hidraw feature report received"
+                );
 
-        Ok(response)
+                Ok(response)
+            }
+            HidRawReportMode::OutputReport => {
+                trace!(
+                    device_path = %self.device_path,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    max_packet_len,
+                    timeout_ms = timeout.as_millis(),
+                    "hidraw input report receive requested"
+                );
+
+                let response = tokio::task::spawn_blocking(move || {
+                    receive_input_report_locked(device.as_ref(), max_packet_len, timeout)
+                })
+                .await
+                .map_err(|error| TransportError::IoError {
+                    detail: format!("hidraw receive task failed: {error}"),
+                })??;
+
+                trace!(
+                    device_path = %self.device_path,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    response_len = response.len(),
+                    response_hex = %format_hex_preview(&response, 32),
+                    "hidraw input report received"
+                );
+
+                Ok(response)
+            }
+        }
     }
 
     async fn send_receive(
@@ -241,39 +305,88 @@ impl Transport for UsbHidRawTransport {
         let device = Arc::clone(&self.device);
         let report_id = self.report_id;
         let max_packet_len = self.max_packet_len;
+        let report_mode = self.report_mode;
         let packet = encode_feature_report_packet(data, report_id);
 
-        trace!(
-            device_path = %self.device_path,
-            report_id = format_args!("0x{report_id:02X}"),
-            packet_len = packet.len(),
-            packet_hex = %format_hex_preview(&packet, 32),
-            "hidraw feature report send"
-        );
-        trace!(
-            device_path = %self.device_path,
-            report_id = format_args!("0x{report_id:02X}"),
-            max_packet_len,
-            "hidraw feature report receive requested"
-        );
+        match report_mode {
+            HidRawReportMode::FeatureReport => {
+                trace!(
+                    device_path = %self.device_path,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    packet_len = packet.len(),
+                    packet_hex = %format_hex_preview(&packet, 32),
+                    "hidraw feature report send"
+                );
+                trace!(
+                    device_path = %self.device_path,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    max_packet_len,
+                    "hidraw feature report receive requested"
+                );
 
-        let response = tokio::task::spawn_blocking(move || {
-            send_receive_feature_report_locked(device.as_ref(), &packet, report_id, max_packet_len)
-        })
-        .await
-        .map_err(|error| TransportError::IoError {
-            detail: format!("hidraw send/receive task failed: {error}"),
-        })??;
+                let response = tokio::task::spawn_blocking(move || {
+                    send_receive_feature_report_locked(
+                        device.as_ref(),
+                        &packet,
+                        report_id,
+                        max_packet_len,
+                    )
+                })
+                .await
+                .map_err(|error| TransportError::IoError {
+                    detail: format!("hidraw send/receive task failed: {error}"),
+                })??;
 
-        trace!(
-            device_path = %self.device_path,
-            report_id = format_args!("0x{report_id:02X}"),
-            response_len = response.len(),
-            response_hex = %format_hex_preview(&response, 32),
-            "hidraw feature report received"
-        );
+                trace!(
+                    device_path = %self.device_path,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    response_len = response.len(),
+                    response_hex = %format_hex_preview(&response, 32),
+                    "hidraw feature report received"
+                );
 
-        Ok(response)
+                Ok(response)
+            }
+            HidRawReportMode::OutputReport => {
+                trace!(
+                    device_path = %self.device_path,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    packet_len = packet.len(),
+                    packet_hex = %format_hex_preview(&packet, 32),
+                    "hidraw output report send"
+                );
+                trace!(
+                    device_path = %self.device_path,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    max_packet_len,
+                    timeout_ms = _timeout.as_millis(),
+                    "hidraw input report receive requested"
+                );
+
+                let response = tokio::task::spawn_blocking(move || {
+                    send_receive_output_report_locked(
+                        device.as_ref(),
+                        &packet,
+                        max_packet_len,
+                        _timeout,
+                    )
+                })
+                .await
+                .map_err(|error| TransportError::IoError {
+                    detail: format!("hidraw send/receive task failed: {error}"),
+                })??;
+
+                trace!(
+                    device_path = %self.device_path,
+                    report_id = format_args!("0x{report_id:02X}"),
+                    response_len = response.len(),
+                    response_hex = %format_hex_preview(&response, 32),
+                    "hidraw input report received"
+                );
+
+                Ok(response)
+            }
+        }
     }
 
     async fn close(&self) -> Result<(), TransportError> {
@@ -298,6 +411,26 @@ fn send_feature_report_locked(
     device
         .send_feature_report(packet)
         .map_err(|error| map_hidapi_error(&error))
+}
+
+fn send_output_report_locked(
+    device: &Mutex<HidDevice>,
+    packet: &[u8],
+) -> Result<(), TransportError> {
+    let device = lock_hidraw_device(device)?;
+    let written = device
+        .write(packet)
+        .map_err(|error| map_hidapi_error(&error))?;
+    if written == packet.len() {
+        Ok(())
+    } else {
+        Err(TransportError::IoError {
+            detail: format!(
+                "short hidraw output write: wrote {written} of {} bytes",
+                packet.len()
+            ),
+        })
+    }
 }
 
 fn receive_feature_report_locked(
@@ -345,6 +478,31 @@ fn send_receive_feature_report_locked(
         report_id,
         max_packet_len,
     ))
+}
+
+fn receive_input_report_locked(
+    device: &Mutex<HidDevice>,
+    max_packet_len: usize,
+    timeout: Duration,
+) -> Result<Vec<u8>, TransportError> {
+    let device = lock_hidraw_device(device)?;
+    let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    let mut buffer = vec![0_u8; max_packet_len.saturating_add(1)];
+    let read = device
+        .read_timeout(&mut buffer, timeout_ms)
+        .map_err(|error| map_hidapi_error(&error))?;
+    buffer.truncate(read);
+    Ok(buffer)
+}
+
+fn send_receive_output_report_locked(
+    device: &Mutex<HidDevice>,
+    packet: &[u8],
+    max_packet_len: usize,
+    timeout: Duration,
+) -> Result<Vec<u8>, TransportError> {
+    send_output_report_locked(device, packet)?;
+    receive_input_report_locked(device, max_packet_len, timeout)
 }
 
 fn c_string_for_path(path: &str) -> Result<CString, TransportError> {

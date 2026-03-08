@@ -17,7 +17,7 @@ use hypercolor_hal::drivers::razer::{
     PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, PID_SEIREN_EMOTE, PID_SEIREN_V3_CHROMA,
     RAZER_VENDOR_ID,
 };
-use hypercolor_hal::registry::TransportType;
+use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};
 
 #[test]
@@ -33,6 +33,7 @@ fn lookup_returns_asus_motherboard_descriptor() {
         TransportType::UsbHidRaw {
             interface: 2,
             report_id: AURA_REPORT_ID,
+            report_mode: HidRawReportMode::OutputReport,
             usage_page: None,
             usage: None,
         }
@@ -283,6 +284,7 @@ fn lookup_returns_huntsman_descriptor() {
         TransportType::UsbHidRaw {
             interface: 3,
             report_id: 0x00,
+            report_mode: HidRawReportMode::FeatureReport,
             usage_page: Some(0x000C),
             usage: Some(0x0001),
         }
@@ -305,6 +307,7 @@ fn lookup_returns_basilisk_descriptor() {
         TransportType::UsbHidRaw {
             interface: 3,
             report_id: 0x00,
+            report_mode: HidRawReportMode::FeatureReport,
             usage_page: Some(0x000C),
             usage: Some(0x0001),
         }
@@ -389,6 +392,7 @@ fn lookup_returns_seiren_v3_chroma_descriptor() {
         TransportType::UsbHidRaw {
             interface: 3,
             report_id: 0x07,
+            report_mode: HidRawReportMode::FeatureReport,
             usage_page: Some(0xFF53),
             usage: Some(0x0004),
         }

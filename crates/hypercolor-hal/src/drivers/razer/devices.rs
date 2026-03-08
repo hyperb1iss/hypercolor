@@ -3,7 +3,7 @@
 use hypercolor_types::device::DeviceFamily;
 
 use crate::protocol::Protocol;
-use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
+use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
 
 use super::protocol::RazerProtocol;
 use super::seiren_v3::SeirenV3Protocol;
@@ -182,6 +182,7 @@ macro_rules! razer_descriptor {
             transport: TransportType::UsbHidRaw {
                 interface: $interface,
                 report_id: 0x00,
+                report_mode: HidRawReportMode::FeatureReport,
                 usage_page: None,
                 usage: None,
             },
@@ -203,6 +204,7 @@ static RAZER_DESCRIPTORS: &[DeviceDescriptor] = &[
         transport: TransportType::UsbHidRaw {
             interface: 3,
             report_id: 0x00,
+            report_mode: HidRawReportMode::FeatureReport,
             usage_page: Some(RAZER_CONSUMER_USAGE_PAGE),
             usage: Some(RAZER_CONSUMER_USAGE),
         },
@@ -220,6 +222,7 @@ static RAZER_DESCRIPTORS: &[DeviceDescriptor] = &[
         transport: TransportType::UsbHidRaw {
             interface: 3,
             report_id: 0x00,
+            report_mode: HidRawReportMode::FeatureReport,
             usage_page: Some(RAZER_CONSUMER_USAGE_PAGE),
             usage: Some(RAZER_CONSUMER_USAGE),
         },
@@ -244,6 +247,7 @@ static RAZER_DESCRIPTORS: &[DeviceDescriptor] = &[
         transport: TransportType::UsbHidRaw {
             interface: 3,
             report_id: 0x07,
+            report_mode: HidRawReportMode::FeatureReport,
             usage_page: Some(RAZER_VENDOR_USAGE_PAGE),
             usage: Some(RAZER_VENDOR_USAGE),
         },

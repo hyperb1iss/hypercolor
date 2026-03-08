@@ -71,6 +71,9 @@ pub enum TransportType {
         interface: u8,
         /// HID report ID.
         report_id: u8,
+        /// Whether hidraw I/O should use HID feature ioctls or raw report
+        /// read/write semantics.
+        report_mode: HidRawReportMode,
         /// Optional HID usage page filter for devices that expose multiple
         /// collections on the same interface.
         usage_page: Option<u16>,
@@ -107,4 +110,14 @@ pub enum TransportType {
 
     /// Vendor-specific control transfer transport.
     UsbVendor,
+}
+
+/// HID report path used by the Linux hidraw transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HidRawReportMode {
+    /// Send and receive HID feature reports via hidapi feature-report ioctls.
+    FeatureReport,
+    /// Send output reports with `hid_write()` and receive input reports with
+    /// `hid_read_timeout()`.
+    OutputReport,
 }

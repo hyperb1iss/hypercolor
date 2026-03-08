@@ -3,7 +3,7 @@
 use hypercolor_types::device::DeviceFamily;
 
 use crate::protocol::Protocol;
-use crate::registry::{DeviceDescriptor, ProtocolBinding, TransportType};
+use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
 
 use super::protocol::AuraUsbProtocol;
 use super::types::{ASUS_VID, AURA_REPORT_ID, AuraControllerGen};
@@ -96,6 +96,7 @@ macro_rules! asus_descriptor {
             transport: TransportType::UsbHidRaw {
                 interface: 2,
                 report_id: AURA_REPORT_ID,
+                report_mode: HidRawReportMode::OutputReport,
                 usage_page: None,
                 usage: None,
             },

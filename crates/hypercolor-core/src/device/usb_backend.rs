@@ -292,6 +292,7 @@ impl UsbBackend {
             TransportType::UsbHidRaw {
                 interface,
                 report_id,
+                report_mode,
                 usage_page,
                 usage,
             } => {
@@ -302,6 +303,7 @@ impl UsbBackend {
                         pending.product_id,
                         interface,
                         report_id,
+                        report_mode,
                         pending.serial.as_deref(),
                         pending.usb_path.as_deref(),
                         usage_page,
@@ -324,6 +326,7 @@ impl UsbBackend {
                         product_id = format_args!("{:04X}", pending.product_id),
                         interface,
                         report_id = format_args!("0x{report_id:02X}"),
+                        report_mode = ?report_mode,
                         usage_page = usage_page
                             .map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
                         usage = usage
