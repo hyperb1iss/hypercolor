@@ -25,6 +25,7 @@ struct RecordingDisplayBackend {
     expected_device_id: DeviceId,
     connected: bool,
     display_writes: Arc<Mutex<Vec<Vec<u8>>>>,
+    write_delay: Duration,
 }
 
 impl RecordingDisplayBackend {
@@ -33,7 +34,13 @@ impl RecordingDisplayBackend {
             expected_device_id,
             connected: false,
             display_writes,
+            write_delay: Duration::ZERO,
         }
+    }
+
+    fn with_write_delay(mut self, write_delay: Duration) -> Self {
+        self.write_delay = write_delay;
+        self
     }
 }
 
@@ -83,6 +90,10 @@ impl DeviceBackend for RecordingDisplayBackend {
         }
         if !self.connected {
             bail!("display write while disconnected");
+        }
+
+        if !self.write_delay.is_zero() {
+            tokio::time::sleep(self.write_delay).await;
         }
 
         self.display_writes.lock().await.push(jpeg_data.to_vec());
@@ -202,6 +213,12 @@ fn split_color_canvas() -> Canvas {
             canvas.set_pixel(x, y, color);
         }
     }
+    canvas
+}
+
+fn solid_canvas(color: Rgba) -> Canvas {
+    let mut canvas = Canvas::new(320, 200);
+    canvas.fill(color);
     canvas
 }
 
@@ -438,6 +455,98 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     assert!(
         pixel[2] < 80,
         "expected viewport to exclude blue half, got {pixel:?}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            &format!("device:{device_id}"),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(
+        RecordingDisplayBackend::new(device_id, Arc::clone(&display_writes))
+            .with_write_delay(Duration::from_millis(180)),
+    ));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 200, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+    });
+
+    let red = solid_canvas(Rgba::new(255, 0, 0, 255));
+    let green = solid_canvas(Rgba::new(0, 255, 0, 255));
+    let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
+
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&red, 1, 16));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&green, 2, 32));
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&blue, 3, 48));
+
+    tokio::time::sleep(Duration::from_millis(550)).await;
+
+    let writes = display_writes.lock().await.clone();
+    assert!(
+        !writes.is_empty(),
+        "slow display backend should still receive frames"
+    );
+    assert!(
+        writes.len() <= 2,
+        "expected latest-only display worker to drop stale frames, got {} writes",
+        writes.len()
+    );
+
+    let final_image = decode_jpeg(writes.last().expect("expected at least one display frame"));
+    let pixel = final_image.get_pixel(final_image.width() / 2, final_image.height() / 2);
+    assert!(
+        pixel[2] > 200,
+        "expected final display frame to be blue, got {pixel:?}"
+    );
+    assert!(
+        pixel[0] < 80,
+        "expected final display frame to drop stale red, got {pixel:?}"
+    );
+    assert!(
+        pixel[1] < 80,
+        "expected final display frame to drop stale green, got {pixel:?}"
     );
 
     thread.shutdown().await.expect("display thread should stop");

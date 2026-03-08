@@ -3,19 +3,21 @@
 //! This task renders the latest canvas into layout-mapped display zones without
 //! disturbing the existing LED frame routing path.
 
-use std::collections::HashMap;
+use std::any::Any;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, RgbaImage};
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, RwLock, oneshot, watch};
 use tokio::task::JoinHandle;
-use tracing::{debug, trace, warn};
+use tokio::time::{Interval, MissedTickBehavior};
+use tracing::{debug, info, trace, warn};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
-use hypercolor_core::device::{BackendManager, DeviceRegistry};
+use hypercolor_core::device::{BackendIo, BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
@@ -24,11 +26,13 @@ use crate::discovery::backend_id_for_family;
 use crate::logical_devices::{self, LogicalDevice};
 
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
+const DISPLAY_OUTPUT_MAX_FPS: u32 = 15;
 const JPEG_QUALITY: u8 = 85;
 
 /// Handle to the automatic display output task.
 pub struct DisplayOutputThread {
-    join_handle: Option<JoinHandle<()>>,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    join_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 /// Shared state for the automatic display output task.
@@ -58,8 +62,23 @@ struct DisplayTarget {
     backend_id: String,
     device_id: DeviceId,
     name: String,
+    target_fps: u32,
     geometry: DisplayGeometry,
     viewport: DisplayViewport,
+}
+
+type DisplayWorkerKey = (String, DeviceId);
+
+#[derive(Clone)]
+struct DisplayWorkItem {
+    source: Arc<RgbaImage>,
+    target: DisplayTarget,
+}
+
+struct DisplayWorkerHandle {
+    tx: watch::Sender<Option<Arc<DisplayWorkItem>>>,
+    join_handle: JoinHandle<()>,
+    target_fps: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -71,14 +90,56 @@ struct DisplayViewport {
     edge_behavior: EdgeBehavior,
 }
 
+impl DisplayWorkerHandle {
+    fn spawn(target: &DisplayTarget, backend_io: BackendIo) -> Self {
+        let (tx, rx) = watch::channel(None::<Arc<DisplayWorkItem>>);
+        let worker_backend_id = target.backend_id.clone();
+        let worker_device_id = target.device_id;
+        let target_fps = target.target_fps;
+        let join_handle = tokio::spawn(run_display_worker(
+            backend_io,
+            worker_backend_id,
+            worker_device_id,
+            target_fps,
+            rx,
+        ));
+
+        Self {
+            tx,
+            join_handle,
+            target_fps,
+        }
+    }
+
+    fn push(&self, work: DisplayWorkItem) {
+        self.tx.send_replace(Some(Arc::new(work)));
+    }
+
+    async fn shutdown(self) {
+        drop(self.tx);
+        let _ = self.join_handle.await;
+    }
+}
+
 impl DisplayOutputThread {
     /// Spawn the automatic display output task.
     #[must_use]
     pub fn spawn(state: DisplayOutputState) -> Self {
         let canvas_rx = state.event_bus.canvas_receiver();
-        let join_handle = tokio::spawn(run_display_output(state, canvas_rx));
-        debug!("display output task spawned");
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let join_handle = std::thread::Builder::new()
+            .name("hypercolor-display".to_owned())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("display output runtime should initialize");
+                runtime.block_on(run_display_output(state, canvas_rx, shutdown_rx));
+            })
+            .expect("display output thread should spawn");
+        info!("display output thread spawned");
         Self {
+            shutdown_tx: Some(shutdown_tx),
             join_handle: Some(join_handle),
         }
     }
@@ -92,30 +153,48 @@ impl DisplayOutputThread {
     ///
     /// Returns an error if task shutdown fails unexpectedly.
     pub async fn shutdown(&mut self) -> Result<()> {
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
+
         let Some(handle) = self.join_handle.take() else {
             return Ok(());
         };
 
-        handle.abort();
-        match handle.await {
-            Ok(()) => Ok(()),
-            Err(error) if error.is_cancelled() => Ok(()),
-            Err(error) => Err(anyhow::Error::from(error))
-                .context("display output task failed during shutdown"),
-        }
+        tokio::task::spawn_blocking(move || {
+            handle.join().map_err(|panic| {
+                anyhow!(
+                    "display output thread panicked: {}",
+                    panic_payload_message(panic)
+                )
+            })
+        })
+        .await
+        .context("failed to join display output thread")??;
+        info!("display output thread stopped");
+        Ok(())
     }
 }
 
 async fn run_display_output(
     state: DisplayOutputState,
     mut canvas_rx: watch::Receiver<CanvasFrame>,
+    mut shutdown_rx: oneshot::Receiver<()>,
 ) {
-    let mut last_warned_at: HashMap<(String, DeviceId), Instant> = HashMap::new();
+    let mut workers = HashMap::<DisplayWorkerKey, DisplayWorkerHandle>::new();
 
     loop {
-        if canvas_rx.changed().await.is_err() {
-            debug!("display output task exiting because canvas stream closed");
-            break;
+        tokio::select! {
+            _ = &mut shutdown_rx => {
+                debug!("display output task shutting down");
+                break;
+            }
+            changed = canvas_rx.changed() => {
+                if changed.is_err() {
+                    debug!("display output task exiting because canvas stream closed");
+                    break;
+                }
+            }
         }
 
         let frame = canvas_rx.borrow_and_update().clone();
@@ -129,6 +208,7 @@ async fn run_display_output(
             &state.logical_devices,
         )
         .await;
+        reconcile_display_workers(&state, &mut workers, &targets).await;
         if targets.is_empty() {
             continue;
         }
@@ -144,44 +224,155 @@ async fn run_display_output(
             );
             continue;
         };
+        let source = Arc::new(source);
 
         for target in targets {
-            let jpeg = match encode_canvas_frame(&source, &target.viewport, &target.geometry) {
-                Ok(encoded) => encoded,
-                Err(error) => {
-                    warn!(
-                        device = %target.name,
-                        backend_id = %target.backend_id,
-                        device_id = %target.device_id,
-                        error = %error,
-                        "failed to encode display frame"
-                    );
-                    continue;
-                }
-            };
-
-            let backend_io = {
-                let manager = state.backend_manager.lock().await;
-                manager.backend_io(&target.backend_id)
-            };
-
-            let result = match backend_io {
-                Some(backend_io) => {
-                    backend_io
-                        .write_display_frame(target.device_id, &jpeg)
-                        .await
-                }
-                None => Err(anyhow::anyhow!(
-                    "backend '{}' is not registered",
-                    target.backend_id
-                )),
-            };
-
-            if let Err(error) = result {
-                maybe_warn_display_error(&mut last_warned_at, &target, &error);
+            let key = display_worker_key(&target);
+            if let Some(worker) = workers.get(&key) {
+                worker.push(DisplayWorkItem {
+                    source: Arc::clone(&source),
+                    target,
+                });
             }
         }
     }
+
+    for (_, worker) in workers {
+        worker.shutdown().await;
+    }
+}
+
+async fn reconcile_display_workers(
+    state: &DisplayOutputState,
+    workers: &mut HashMap<DisplayWorkerKey, DisplayWorkerHandle>,
+    targets: &[DisplayTarget],
+) {
+    let expected_keys = targets
+        .iter()
+        .map(display_worker_key)
+        .collect::<HashSet<_>>();
+    let stale_keys = workers
+        .keys()
+        .filter(|key| !expected_keys.contains(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for key in stale_keys {
+        if let Some(worker) = workers.remove(&key) {
+            worker.shutdown().await;
+        }
+    }
+
+    for target in targets {
+        let key = display_worker_key(target);
+        let needs_restart = workers
+            .get(&key)
+            .is_some_and(|worker| worker.target_fps != target.target_fps);
+        if needs_restart && let Some(worker) = workers.remove(&key) {
+            worker.shutdown().await;
+        }
+
+        if workers.contains_key(&key) {
+            continue;
+        }
+
+        let backend_io = {
+            let manager = state.backend_manager.lock().await;
+            manager.backend_io(&target.backend_id)
+        };
+
+        match backend_io {
+            Some(backend_io) => {
+                workers.insert(key, DisplayWorkerHandle::spawn(target, backend_io));
+            }
+            None => {
+                warn!(
+                    device = %target.name,
+                    backend_id = %target.backend_id,
+                    device_id = %target.device_id,
+                    "display target backend is not registered"
+                );
+            }
+        }
+    }
+}
+
+async fn run_display_worker(
+    backend_io: BackendIo,
+    backend_id: String,
+    device_id: DeviceId,
+    target_fps: u32,
+    mut rx: watch::Receiver<Option<Arc<DisplayWorkItem>>>,
+) {
+    let mut interval = interval_for_target_fps(target_fps);
+    let mut last_warned_at = None::<Instant>;
+
+    loop {
+        if rx.changed().await.is_err() {
+            break;
+        }
+
+        let Some(work) = rx.borrow_and_update().clone() else {
+            continue;
+        };
+
+        if let Some(ref mut limiter) = interval {
+            limiter.tick().await;
+        }
+
+        let source = Arc::clone(&work.source);
+        let viewport = work.target.viewport.clone();
+        let geometry = work.target.geometry.clone();
+        let target = work.target.clone();
+        let encode_result = tokio::task::spawn_blocking(move || {
+            encode_canvas_frame(source.as_ref(), &viewport, &geometry)
+        })
+        .await;
+
+        let jpeg = match encode_result {
+            Ok(Ok(encoded)) => encoded,
+            Ok(Err(error)) => {
+                maybe_warn_display_error(&mut last_warned_at, &target, &error);
+                continue;
+            }
+            Err(error) => {
+                maybe_warn_display_error(
+                    &mut last_warned_at,
+                    &target,
+                    &anyhow!("display encode worker failed: {error}"),
+                );
+                continue;
+            }
+        };
+
+        if let Err(error) = backend_io.write_display_frame(device_id, &jpeg).await {
+            maybe_warn_display_error(&mut last_warned_at, &target, &error);
+            continue;
+        }
+
+        trace!(
+            device = %target.name,
+            backend_id = %backend_id,
+            device_id = %device_id,
+            jpeg_bytes = jpeg.len(),
+            target_fps,
+            "display frame delivered"
+        );
+    }
+}
+
+fn display_worker_key(target: &DisplayTarget) -> DisplayWorkerKey {
+    (target.backend_id.clone(), target.device_id)
+}
+
+fn interval_for_target_fps(target_fps: u32) -> Option<Interval> {
+    if target_fps == 0 {
+        return None;
+    }
+
+    let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(target_fps)));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    Some(interval)
 }
 
 async fn display_targets(
@@ -218,6 +409,7 @@ async fn display_targets(
                 backend_id: backend_id_for_family(&tracked.info.family),
                 device_id: tracked.info.id,
                 name: tracked.info.name,
+                target_fps: capped_display_target_fps(tracked.info.capabilities.max_fps),
                 geometry,
                 viewport,
             })
@@ -498,15 +690,23 @@ fn apply_circular_mask(image: &mut RgbaImage) {
     }
 }
 
+fn capped_display_target_fps(device_max_fps: u32) -> u32 {
+    let device_limit = if device_max_fps == 0 {
+        DISPLAY_OUTPUT_MAX_FPS
+    } else {
+        device_max_fps
+    };
+
+    device_limit.clamp(1, DISPLAY_OUTPUT_MAX_FPS)
+}
+
 fn maybe_warn_display_error(
-    last_warned_at: &mut HashMap<(String, DeviceId), Instant>,
+    last_warned_at: &mut Option<Instant>,
     target: &DisplayTarget,
     error: &anyhow::Error,
 ) {
-    let key = (target.backend_id.clone(), target.device_id);
-    let should_warn = last_warned_at
-        .get(&key)
-        .is_none_or(|last| last.elapsed() >= DISPLAY_ERROR_WARN_INTERVAL);
+    let should_warn =
+        last_warned_at.is_none_or(|last| last.elapsed() >= DISPLAY_ERROR_WARN_INTERVAL);
     if !should_warn {
         trace!(
             device = %target.name,
@@ -518,7 +718,7 @@ fn maybe_warn_display_error(
         return;
     }
 
-    last_warned_at.insert(key, Instant::now());
+    *last_warned_at = Some(Instant::now());
     warn!(
         device = %target.name,
         backend_id = %target.backend_id,
@@ -526,4 +726,14 @@ fn maybe_warn_display_error(
         error = %error,
         "failed to push automatic display frame"
     );
+}
+
+fn panic_payload_message(panic: Box<dyn Any + Send + 'static>) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_owned()
+    }
 }
