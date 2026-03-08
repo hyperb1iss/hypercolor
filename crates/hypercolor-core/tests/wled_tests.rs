@@ -1117,11 +1117,11 @@ async fn backend_write_colors_preserves_chroma_on_rgbw_devices() {
         .expect("expected DDP frame")
         .expect("recv DDP frame");
 
-    assert_eq!(len, DDP_HEADER_SIZE + 8);
+    assert_eq!(len, DDP_HEADER_SIZE + 6);
     assert_eq!(
-        &packet[10..18],
-        &[255, 0, 255, 0, 0, 4, 10, 240],
-        "saturated magenta should not leak into white, near-neutral colors may use white"
+        &packet[10..16],
+        &[255, 0, 255, 240, 244, 250],
+        "DDP should preserve RGB color data for RGBW WLED devices"
     );
 }
 

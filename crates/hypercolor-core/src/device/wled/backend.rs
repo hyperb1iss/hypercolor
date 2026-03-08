@@ -31,8 +31,6 @@ const REALTIME_PRIME_DELAY: Duration = Duration::from_millis(50);
 const DEFAULT_DEDUP_THRESHOLD: u8 = 2;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_secs(60);
-const RGBW_NEAR_NEUTRAL_RATIO_NUMERATOR: u16 = 235;
-const RGBW_NEAR_NEUTRAL_RATIO_DENOMINATOR: u16 = 255;
 
 // ── Protocol Selection ──────────────────────────────────────────────────
 
@@ -273,6 +271,16 @@ pub struct WledDevice {
 }
 
 impl WledDevice {
+    fn ddp_wire_format(&self) -> WledColorFormat {
+        match self.color_format {
+            // Preserve hue fidelity for WLED RGBW strips in DDP mode by
+            // sending RGB-only payloads and letting WLED handle white-channel
+            // behavior locally. WLED accepts RGB24 DDP for RGBW outputs.
+            WledColorFormat::Rgbw => WledColorFormat::Rgb,
+            WledColorFormat::Rgb => WledColorFormat::Rgb,
+        }
+    }
+
     /// Send a frame of raw pixel bytes to this device.
     ///
     /// # Errors
@@ -318,7 +326,7 @@ impl WledDevice {
     async fn send_ddp(&mut self, pixel_data: &[u8]) -> Result<()> {
         let packets = build_ddp_frame(
             pixel_data,
-            self.color_format.ddp_data_type(),
+            self.ddp_wire_format().ddp_data_type(),
             &mut self.ddp_sequence,
         );
 
@@ -677,8 +685,14 @@ async fn exit_realtime_mode(ip: IpAddr) -> Result<()> {
 /// Bypasses dedup intentionally — all three frames are identical black
 /// but must actually be sent to ensure WLED fully transitions to realtime.
 async fn prime_device(device: &mut WledDevice) -> Result<()> {
-    let black_frame =
-        vec![0_u8; usize::from(device.led_count) * device.color_format.bytes_per_pixel()];
+    let black_frame = vec![
+        0_u8;
+        usize::from(device.led_count)
+            * match device.protocol {
+                WledProtocol::Ddp => device.ddp_wire_format().bytes_per_pixel(),
+                WledProtocol::E131 => device.color_format.bytes_per_pixel(),
+            }
+    ];
 
     for _ in 0..REALTIME_PRIME_FRAMES {
         // Send directly via protocol, bypassing send_frame() dedup logic
@@ -723,19 +737,7 @@ fn encode_colors(
             let mut pixel_data = Vec::with_capacity(expected_led_count * 4);
             for index in 0..expected_led_count {
                 let color = colors.get(index).copied().unwrap_or([0, 0, 0]);
-                let max = color[0].max(color[1]).max(color[2]);
-                let min = color[0].min(color[1]).min(color[2]);
-                // Only route energy to the dedicated white die for near-neutral
-                // colors; using `min(r,g,b)` for saturated colors visibly washes
-                // out RGBW strips toward white.
-                let white = if max > 0
-                    && u16::from(min) * RGBW_NEAR_NEUTRAL_RATIO_DENOMINATOR
-                        >= u16::from(max) * RGBW_NEAR_NEUTRAL_RATIO_NUMERATOR
-                {
-                    min
-                } else {
-                    0
-                };
+                let white = color[0].min(color[1]).min(color[2]);
                 pixel_data.extend_from_slice(&[
                     color[0] - white,
                     color[1] - white,
@@ -1155,7 +1157,11 @@ impl DeviceBackend for WledBackend {
             }
         }
 
-        let pixel_data = encode_colors(colors, device.color_format, expected_led_count);
+        let wire_format = match device.protocol {
+            WledProtocol::Ddp => device.ddp_wire_format(),
+            WledProtocol::E131 => device.color_format,
+        };
+        let pixel_data = encode_colors(colors, wire_format, expected_led_count);
 
         device.send_frame(&pixel_data).await
     }

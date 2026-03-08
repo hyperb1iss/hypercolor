@@ -209,37 +209,42 @@ pub fn CanvasPreview(
             let loop_window = window.clone();
             let animation_handle = Rc::clone(&animation);
             let presenter_handle = Rc::clone(&presenter);
-            let canvas_ref = canvas_ref.clone();
+            let canvas_handle = canvas.clone();
             let latest_frame = Rc::clone(&latest_frame);
             let last_presented_frame = Rc::clone(&last_presented_frame);
 
             let callback = Closure::<dyn FnMut(f64)>::new(move |_| {
-                if let Some(canvas) = canvas_ref.get() {
-                    if let Some(frame) = latest_frame.borrow().clone()
-                        && Some(frame.frame_number) != *last_presented_frame.borrow()
-                    {
-                        if let Some(presenter) = presenter_handle.borrow_mut().as_mut() {
-                            presenter.render(&canvas, &frame);
-                            *last_presented_frame.borrow_mut() = Some(frame.frame_number);
-                        }
-                    }
+                if !canvas_handle.is_connected() {
+                    animation_handle.borrow_mut().take();
+                    presenter_handle.borrow_mut().take();
+                    last_presented_frame.borrow_mut().take();
+                    return;
+                }
 
-                    if let Some(callback) = animation_handle.borrow().as_ref()
-                        && loop_window
-                            .request_animation_frame(callback.as_ref().unchecked_ref())
-                            .is_ok()
-                    {
+                if let Some(frame) = latest_frame.borrow().clone()
+                    && Some(frame.frame_number) != *last_presented_frame.borrow()
+                {
+                    if let Some(presenter) = presenter_handle.borrow_mut().as_mut() {
+                        presenter.render(&canvas_handle, &frame);
+                        *last_presented_frame.borrow_mut() = Some(frame.frame_number);
                     }
+                }
+
+                if let Some(callback) = animation_handle.borrow().as_ref()
+                    && let Ok(frame_id) =
+                        loop_window.request_animation_frame(callback.as_ref().unchecked_ref())
+                {
+                    let _ = frame_id;
                 }
             });
 
             *animation.borrow_mut() = Some(callback);
 
             if let Some(callback) = animation.borrow().as_ref()
-                && window
-                    .request_animation_frame(callback.as_ref().unchecked_ref())
-                    .is_ok()
+                && let Ok(frame_id) =
+                    window.request_animation_frame(callback.as_ref().unchecked_ref())
             {
+                let _ = frame_id;
             }
         }
     });
