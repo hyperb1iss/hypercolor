@@ -2,11 +2,12 @@ use std::time::Duration;
 
 use hypercolor_hal::drivers::asus::smbus::{
     AURA_GPU_MAGIC, AuraSmBusProtocol, ENE_ADDRESS_REGISTER, ENE_APPLY_VAL, ENE_BLOCK_WRITE_LIMIT,
-    ENE_BLOCK_WRITE_REGISTER, ENE_DRAM_I2C_ADDRESS_REGISTER, ENE_DRAM_SLOT_INDEX_REGISTER,
-    ENE_OPERATION_DELAY, ENE_READ_REGISTER, ENE_SAVE_VAL, EneSmBusOperation,
-    decode_ene_transaction, encode_ene_transaction, ene_byte_swap, ene_direct_color_writes,
-    ene_dram_remap_sequence, ene_permute_color, ene_read_register_range, ene_write_register,
-    ene_write_register_block, lookup_ene_firmware_variant, simple_gpu_magic, supports_mode_14,
+    ENE_BLOCK_WRITE_REGISTER, ENE_DRAM_COLOR_APPLY_REGISTER, ENE_DRAM_I2C_ADDRESS_REGISTER,
+    ENE_DRAM_SLOT_INDEX_REGISTER, ENE_OPERATION_DELAY, ENE_READ_REGISTER, ENE_SAVE_VAL,
+    EneSmBusOperation, decode_ene_transaction, encode_ene_transaction, ene_byte_swap,
+    ene_direct_color_writes, ene_dram_remap_sequence, ene_permute_color, ene_read_register_range,
+    ene_write_register, ene_write_register_block, lookup_ene_firmware_variant, simple_gpu_magic,
+    supports_mode_14,
 };
 use hypercolor_hal::protocol::{Protocol, ResponseStatus};
 
@@ -35,6 +36,10 @@ fn lookup_firmware_variant_covers_known_usb_and_dram_firmwares() {
 
     let dram = lookup_ene_firmware_variant("AUDA0-E6K5-0101").expect("dram firmware should exist");
     assert_eq!(dram.direct_reg, 0x8100);
+    assert_eq!(
+        dram.frame_apply_register,
+        Some(ENE_DRAM_COLOR_APPLY_REGISTER)
+    );
     assert!(dram.may_support_mode_14);
 }
 
@@ -336,4 +341,28 @@ fn smbus_protocol_frame_encoding_uses_serialized_direct_writes() {
         operations,
         ene_direct_color_writes(variant, &[[0x10, 0x20, 0x30], [0xAA, 0xBB, 0xCC]])
     );
+}
+
+#[test]
+fn smbus_protocol_frame_encoding_appends_dram_apply_latch() {
+    let protocol = AuraSmBusProtocol::new();
+    let mut firmware = [0_u8; 16];
+    firmware[..15].copy_from_slice(b"AUDA0-E6K5-0101");
+    protocol
+        .parse_response(&firmware)
+        .expect("firmware response should parse");
+
+    let commands = protocol.encode_frame(&[[0x10, 0x20, 0x30], [0xAA, 0xBB, 0xCC]]);
+    assert_eq!(commands.len(), 1);
+    let operations =
+        decode_ene_transaction(&commands[0].data).expect("frame transaction should decode");
+    let variant = lookup_ene_firmware_variant("AUDA0-E6K5-0101").expect("variant should resolve");
+
+    let mut expected = ene_direct_color_writes(variant, &[[0x10, 0x20, 0x30], [0xAA, 0xBB, 0xCC]]);
+    expected.extend(ene_write_register(
+        ENE_DRAM_COLOR_APPLY_REGISTER,
+        ENE_APPLY_VAL,
+    ));
+
+    assert_eq!(operations, expected);
 }

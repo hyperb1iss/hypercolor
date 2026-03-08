@@ -46,6 +46,9 @@ pub const ENE_DIRECTION_REGISTER: u16 = 0x8023;
 /// ENE apply/save register.
 pub const ENE_APPLY_REGISTER: u16 = 0x80A0;
 
+/// ENE DRAM frame-apply register used by Aura DIMMs.
+pub const ENE_DRAM_COLOR_APPLY_REGISTER: u16 = 0x802F;
+
 /// ENE DRAM remap slot-index register.
 pub const ENE_DRAM_SLOT_INDEX_REGISTER: u16 = 0x80F8;
 
@@ -75,6 +78,8 @@ pub struct EneFirmwareVariant {
     pub channel_cfg_offset: usize,
     /// Config-table offset of the LED-count byte.
     pub led_count_offset: usize,
+    /// Optional register that must be poked after one direct frame upload.
+    pub frame_apply_register: Option<u16>,
     /// Whether this firmware can expose mode 14.
     pub may_support_mode_14: bool,
 }
@@ -148,9 +153,10 @@ fn decode_ene_firmware_name(data: &[u8]) -> Result<String, ProtocolError> {
         });
     }
 
-    let firmware = String::from_utf8(filtered).map_err(|error| ProtocolError::MalformedResponse {
-        detail: format!("ENE firmware name could not be normalized into UTF-8: {error}"),
-    })?;
+    let firmware =
+        String::from_utf8(filtered).map_err(|error| ProtocolError::MalformedResponse {
+            detail: format!("ENE firmware name could not be normalized into UTF-8: {error}"),
+        })?;
     let firmware = firmware.trim().to_owned();
 
     if firmware.is_empty() {
@@ -171,6 +177,7 @@ pub fn lookup_ene_firmware_variant(name: &str) -> Option<EneFirmwareVariant> {
             effect_reg: 0x8010,
             channel_cfg_offset: 0x13,
             led_count_offset: 0x02,
+            frame_apply_register: None,
             may_support_mode_14: false,
         }),
         "AUMA0-E6K5-0104" | "AUMA0-E6K5-0105" | "AUMA0-E6K5-0106" | "AUMA0-E6K5-0107"
@@ -189,6 +196,7 @@ pub fn lookup_ene_firmware_variant(name: &str) -> Option<EneFirmwareVariant> {
                 } else {
                     0x02
                 },
+                frame_apply_register: None,
                 may_support_mode_14: false,
             })
         }
@@ -197,6 +205,7 @@ pub fn lookup_ene_firmware_variant(name: &str) -> Option<EneFirmwareVariant> {
             effect_reg: 0x8160,
             channel_cfg_offset: 0x13,
             led_count_offset: 0x03,
+            frame_apply_register: None,
             may_support_mode_14: false,
         }),
         "DIMM_LED-0102" => Some(EneFirmwareVariant {
@@ -204,6 +213,7 @@ pub fn lookup_ene_firmware_variant(name: &str) -> Option<EneFirmwareVariant> {
             effect_reg: 0x8010,
             channel_cfg_offset: 0x13,
             led_count_offset: 0x02,
+            frame_apply_register: Some(ENE_DRAM_COLOR_APPLY_REGISTER),
             may_support_mode_14: false,
         }),
         "AUDA0-E6K5-0101" => Some(EneFirmwareVariant {
@@ -211,6 +221,7 @@ pub fn lookup_ene_firmware_variant(name: &str) -> Option<EneFirmwareVariant> {
             effect_reg: 0x8160,
             channel_cfg_offset: 0x13,
             led_count_offset: 0x02,
+            frame_apply_register: Some(ENE_DRAM_COLOR_APPLY_REGISTER),
             may_support_mode_14: true,
         }),
         _ => None,
@@ -416,7 +427,10 @@ impl Protocol for AuraSmBusProtocol {
             return Vec::new();
         };
 
-        let operations = ene_direct_color_writes(variant, colors);
+        let mut operations = ene_direct_color_writes(variant, colors);
+        if let Some(register) = variant.frame_apply_register {
+            operations.extend(ene_write_register(register, ENE_APPLY_VAL));
+        }
         if operations.is_empty() {
             Vec::new()
         } else {
