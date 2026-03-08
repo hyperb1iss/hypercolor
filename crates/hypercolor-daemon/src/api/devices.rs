@@ -822,16 +822,18 @@ pub async fn list_logical_devices(
         None => None,
     };
 
-    let physical_index = build_physical_index(physical_devices.iter().map(|tracked| {
-        (
+    let mut physical_entries = Vec::with_capacity(physical_devices.len());
+    for tracked in &physical_devices {
+        physical_entries.push((
             tracked.info.id,
             PhysicalSnapshot {
                 name: tracked.info.name.clone(),
-                backend: backend_id_for_family(&tracked.info.family),
+                backend: resolved_backend_id(&state, tracked.info.id, &tracked.info.family).await,
                 status: tracked.state.variant_name().to_ascii_lowercase(),
             },
-        )
-    }));
+        ));
+    }
+    let physical_index = build_physical_index(physical_entries);
     let mut items: Vec<LogicalDeviceSummary> = {
         let store = state.logical_devices.read().await;
         store
@@ -892,7 +894,7 @@ pub async fn list_device_logical_devices(
         tracked.info.id,
         PhysicalSnapshot {
             name: tracked.info.name.clone(),
-            backend: backend_id_for_family(&tracked.info.family),
+            backend: resolved_backend_id(&state, tracked.info.id, &tracked.info.family).await,
             status: tracked.state.variant_name().to_ascii_lowercase(),
         },
     )));
@@ -979,7 +981,7 @@ pub async fn create_logical_device(
         tracked.info.id,
         PhysicalSnapshot {
             name: tracked.info.name.clone(),
-            backend: backend_id_for_family(&tracked.info.family),
+            backend: resolved_backend_id(&state, tracked.info.id, &tracked.info.family).await,
             status: tracked.state.variant_name().to_ascii_lowercase(),
         },
     )));
@@ -1000,16 +1002,18 @@ pub async fn get_logical_device(
     };
 
     let physical_devices = state.device_registry.list().await;
-    let physical_index = build_physical_index(physical_devices.iter().map(|tracked| {
-        (
+    let mut physical_entries = Vec::with_capacity(physical_devices.len());
+    for tracked in &physical_devices {
+        physical_entries.push((
             tracked.info.id,
             PhysicalSnapshot {
                 name: tracked.info.name.clone(),
-                backend: backend_id_for_family(&tracked.info.family),
+                backend: resolved_backend_id(&state, tracked.info.id, &tracked.info.family).await,
                 status: tracked.state.variant_name().to_ascii_lowercase(),
             },
-        )
-    }));
+        ));
+    }
+    let physical_index = build_physical_index(physical_entries);
     ApiResponse::ok(summarize_logical_device(&entry, &physical_index))
 }
 
@@ -1100,7 +1104,7 @@ pub async fn update_logical_device(
         tracked.info.id,
         PhysicalSnapshot {
             name: tracked.info.name.clone(),
-            backend: backend_id_for_family(&tracked.info.family),
+            backend: resolved_backend_id(&state, tracked.info.id, &tracked.info.family).await,
             status: tracked.state.variant_name().to_ascii_lowercase(),
         },
     )));
