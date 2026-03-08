@@ -1,3 +1,5 @@
+use std::fs;
+
 use hypercolor_core::device::{DeviceBackend, SmBusBackend, SmBusScanner, TransportScanner};
 use tempfile::tempdir;
 
@@ -13,6 +15,18 @@ async fn smbus_scanner_ignores_empty_dev_root() {
     let mut scanner = SmBusScanner::with_dev_root(tempdir.path());
 
     let devices = scanner.scan().await.expect("scan should succeed");
+    assert!(devices.is_empty());
+}
+
+#[tokio::test]
+async fn smbus_scanner_ignores_non_device_i2c_nodes() {
+    let tempdir = tempdir().expect("tempdir should create");
+    let fake_bus = tempdir.path().join("i2c-0");
+    fs::write(&fake_bus, b"not a real i2c bus").expect("fake i2c node should write");
+
+    let mut scanner = SmBusScanner::with_dev_root(tempdir.path());
+    let devices = scanner.scan().await.expect("scan should succeed");
+
     assert!(devices.is_empty());
 }
 
