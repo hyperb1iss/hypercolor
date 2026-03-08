@@ -6,10 +6,9 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_router::components::A;
 use leptos_router::hooks::use_location;
-use wasm_bindgen::Clamped;
-use wasm_bindgen::JsCast;
 
 use crate::app::{EffectsContext, WsContext};
+use crate::components::canvas_preview::CanvasPreview;
 use crate::icons::*;
 use crate::ws::ConnectionState;
 
@@ -187,7 +186,9 @@ pub fn Sidebar() -> impl IntoView {
 
     // ── Live canvas + palette from WebSocket frames ────────────────────
     let ws = use_context::<WsContext>();
-    let np_canvas_ref = NodeRef::<leptos::html::Canvas>::new();
+    let canvas_frame = Signal::derive(move || ws.and_then(|ctx| ctx.canvas_frame.get()));
+    let preview_fps = Signal::derive(move || ws.map_or(0.0, |ctx| ctx.preview_fps.get()));
+    let preview_target_fps = ws.map_or(0, |ctx| ctx.preview_target_fps);
     let (live_palette, set_live_palette) = signal(None::<LivePalette>);
     let (last_palette_time, set_last_palette_time) = signal(0.0_f64);
 
@@ -204,7 +205,7 @@ pub fn Sidebar() -> impl IntoView {
             }
             set_last_palette_time.set(now);
 
-            if let Some(new_palette) = extract_palette(&frame.pixels) {
+            if let Some(new_palette) = extract_palette(frame.pixels.as_ref()) {
                 let smoothed = match live_palette.get_untracked() {
                     Some(old) => LivePalette {
                         primary: lerp_rgb(old.primary, new_palette.primary, 0.3),
@@ -213,37 +214,6 @@ pub fn Sidebar() -> impl IntoView {
                     None => new_palette,
                 };
                 set_live_palette.set(Some(smoothed));
-            }
-        });
-
-        // Canvas painting — every frame, for smooth live thumbnail
-        Effect::new(move |_| {
-            let Some(frame) = ws.canvas_frame.get() else {
-                return;
-            };
-            let Some(canvas) = np_canvas_ref.get() else {
-                return;
-            };
-
-            if canvas.width() != frame.width || canvas.height() != frame.height {
-                canvas.set_width(frame.width);
-                canvas.set_height(frame.height);
-            }
-
-            let ctx = canvas
-                .get_context("2d")
-                .ok()
-                .flatten()
-                .and_then(|ctx| ctx.dyn_into::<web_sys::CanvasRenderingContext2d>().ok());
-
-            let Some(ctx) = ctx else { return };
-
-            if let Ok(data) = web_sys::ImageData::new_with_u8_clamped_array_and_sh(
-                Clamped(&frame.pixels),
-                frame.width,
-                frame.height,
-            ) {
-                let _ = ctx.put_image_data(&data, 0.0, 0.0);
             }
         });
     }
@@ -298,33 +268,150 @@ pub fn Sidebar() -> impl IntoView {
             class:w-56=move || !collapsed.get()
             class:w-14=move || collapsed.get()
         >
-            // Logo
-            <div
-                class="w-full border-b border-edge-subtle transition-all duration-300"
-                class:h-14=move || collapsed.get()
-                class:h-32=move || !collapsed.get()
-            >
-                // Collapsed state: gradient mark
-                <div
-                    class="items-center justify-center h-full"
-                    style:display=move || if collapsed.get() { "flex" } else { "none" }
-                >
-                    <div class="w-8 h-8 rounded-lg logo-mark flex items-center justify-center animate-breathe" style="--glow-rgb: 225, 53, 255">
-                        <span class="text-xs font-bold text-white">"H"</span>
-                    </div>
-                </div>
+            // Logo — click to cycle through modes
+            {
+                let logo_mode_count = 9_usize;
+                let (logo_mode, set_logo_mode) = signal(0_usize);
+                let cycle_logo = move |_| set_logo_mode.update(|m| *m = (*m + 1) % logo_mode_count);
 
-                // Expanded state: Orbitron logo with drift animation
-                <div
-                    class="flex-col items-center justify-center h-full px-3 py-4 overflow-hidden"
-                    style:display=move || if collapsed.get() { "none" } else { "flex" }
-                >
-                    <div class="logo-circuit logo-mode-drift flex flex-col items-center leading-none">
-                        <span class="logo-circuit-text text-[28px] font-bold tracking-[0.15em]">"HYPER"</span>
-                        <span class="logo-circuit-text text-[28px] font-medium tracking-[0.35em] mt-0.5">"COLOR"</span>
+                let mode_names = [
+                    "circuit", "silk", "bloom", "whisper", "prism",
+                    "script", "editorial", "neon", "glitch",
+                ];
+
+                view! {
+                    <div
+                        class="w-full border-b border-edge-subtle transition-all duration-300"
+                        class:h-14=move || collapsed.get()
+                        class:h-32=move || !collapsed.get()
+                    >
+                        // Collapsed state: gradient mark
+                        <div
+                            class="items-center justify-center h-full logo-container"
+                            style:display=move || if collapsed.get() { "flex" } else { "none" }
+                            on:click=cycle_logo
+                            title="Click to change logo style"
+                        >
+                            <div class="w-8 h-8 rounded-lg logo-mark flex items-center justify-center animate-breathe" style="--glow-rgb: 225, 53, 255">
+                                <span class="text-xs font-bold text-white">"H"</span>
+                            </div>
+                        </div>
+
+                        // Expanded state: cycling logo modes
+                        <div
+                            class="flex-col items-center justify-center h-full px-3 overflow-hidden logo-container"
+                            style:display=move || if collapsed.get() { "none" } else { "flex" }
+                            on:click=cycle_logo
+                            title="Click to change logo style"
+                        >
+                            // Ambient background glow — changes per mode
+                            <div class=move || {
+                                let bg = match logo_mode.get() {
+                                    0 => "logo-bg-circuit",
+                                    1 => "logo-bg-silk",
+                                    2 => "logo-bg-bloom",
+                                    3 => "logo-bg-whisper",
+                                    4 => "logo-bg-prism",
+                                    5 => "logo-bg-script",
+                                    6 => "logo-bg-editorial",
+                                    7 => "logo-bg-neon",
+                                    _ => "logo-bg-glitch",
+                                };
+                                format!("logo-bg {bg}")
+                            } />
+
+                            {move || {
+                                let mode = logo_mode.get();
+                                match mode {
+                                    // 0: Circuit — the OG
+                                    0 => view! {
+                                        <div class="logo-circuit flex flex-col items-center leading-none">
+                                            <span class="logo-gradient-text text-[28px] font-bold tracking-[0.15em]">"HYPER"</span>
+                                            <span class="logo-gradient-text text-[28px] font-medium tracking-[0.35em] mt-0.5">"COLOR"</span>
+                                        </div>
+                                    }.into_any(),
+
+                                    // 1: Silk — elegant weight contrast, thin over bold
+                                    1 => view! {
+                                        <div class="logo-silk flex flex-col items-center leading-none">
+                                            <span class="logo-gradient-text text-[26px] font-normal tracking-[0.25em]">"Hyper"</span>
+                                            <span class="logo-gradient-text text-[28px] font-bold tracking-[0.15em] -mt-0.5">"color"</span>
+                                        </div>
+                                    }.into_any(),
+
+                                    // 2: Bloom — sparkle divider, coral-pink breathe
+                                    2 => view! {
+                                        <div class="logo-bloom flex flex-col items-center leading-none gap-1">
+                                            <span class="logo-gradient-text text-[24px] font-semibold tracking-[0.2em]">"HYPER"</span>
+                                            <span class="logo-sparkle text-[14px] leading-none">"✦"</span>
+                                            <span class="logo-gradient-text text-[24px] font-semibold tracking-[0.2em]">"COLOR"</span>
+                                        </div>
+                                    }.into_any(),
+
+                                    // 3: Whisper — lowercase, ultra-wide, decorative lines
+                                    3 => view! {
+                                        <div class="logo-whisper flex flex-col items-center leading-none gap-2.5">
+                                            <div class="logo-whisper-line" />
+                                            <span class="logo-gradient-text text-[14px] font-normal tracking-[0.45em]">"hypercolor"</span>
+                                            <div class="logo-whisper-line" />
+                                        </div>
+                                    }.into_any(),
+
+                                    // 4: Prism — dramatic size contrast
+                                    4 => view! {
+                                        <div class="logo-prism flex flex-col items-center leading-none">
+                                            <span class="logo-gradient-text text-[14px] font-normal tracking-[0.5em]">"HYPER"</span>
+                                            <span class="logo-gradient-text text-[38px] font-black tracking-[0.08em] -mt-1">"COLOR"</span>
+                                        </div>
+                                    }.into_any(),
+
+                                    // 5: Script — Dancing Script cursive, full femme
+                                    5 => view! {
+                                        <div class="logo-script flex flex-col items-center leading-none">
+                                            <span class="logo-gradient-text text-[44px] font-bold tracking-[0.02em]">"Hyper"</span>
+                                            <span class="logo-gradient-text text-[34px] font-semibold tracking-[0.05em] -mt-3">"color"</span>
+                                        </div>
+                                    }.into_any(),
+
+                                    // 6: Editorial — Playfair Display, ruled lines
+                                    6 => view! {
+                                        <div class="logo-editorial flex flex-col items-center leading-none gap-1">
+                                            <div class="logo-editorial-rule" />
+                                            <span class="logo-gradient-text text-[38px] font-bold italic tracking-[0.04em]">"Hyper"</span>
+                                            <span class="logo-gradient-text text-[18px] font-normal tracking-[0.45em] -mt-1">"COLOR"</span>
+                                            <div class="logo-editorial-rule" />
+                                        </div>
+                                    }.into_any(),
+
+                                    // 7: Neon Mono — split-color hacker femme + cursor
+                                    7 => view! {
+                                        <div class="logo-neon flex flex-col items-center leading-none">
+                                            <span class="logo-neon-hyper text-[28px] font-semibold tracking-[0.12em]">"hyper"</span>
+                                            <div class="flex items-center mt-0.5">
+                                                <span class="logo-neon-color text-[28px] font-semibold tracking-[0.12em]">"color"</span>
+                                                <span class="logo-neon-cursor" />
+                                            </div>
+                                        </div>
+                                    }.into_any(),
+
+                                    // 8: Glitch — chromatic aberration, edgy
+                                    _ => view! {
+                                        <div class="logo-glitch flex flex-col items-center leading-none">
+                                            <span class="logo-gradient-text text-[28px] font-bold tracking-[0.15em]">"HYPER"</span>
+                                            <span class="logo-gradient-text text-[28px] font-medium tracking-[0.35em] mt-0.5">"COLOR"</span>
+                                        </div>
+                                    }.into_any(),
+                                }
+                            }}
+
+                            // Mode name hint — absolutely positioned, doesn't affect centering
+                            <div class="logo-mode-label text-fg-tertiary">
+                                {move || mode_names[logo_mode.get()]}
+                            </div>
+                        </div>
                     </div>
-                </div>
-            </div>
+                }
+            }
 
             // Nav items
             <div class="flex-1 py-3 space-y-0.5 px-2">
@@ -442,10 +529,12 @@ pub fn Sidebar() -> impl IntoView {
                                             format!("0 4px 20px rgba({p}, 0.25), 0 0 40px rgba({s}, 0.08)")
                                         }
                                     >
-                                        <canvas
-                                            node_ref=np_canvas_ref
-                                            class="w-full h-auto block"
-                                            style="image-rendering: pixelated;"
+                                        <CanvasPreview
+                                            frame=canvas_frame
+                                            fps=preview_fps
+                                            fps_target=preview_target_fps
+                                            max_width="100%".to_string()
+                                            aspect_ratio="320 / 200".to_string()
                                         />
                                     </div>
                                 </div>

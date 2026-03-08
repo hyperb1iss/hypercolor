@@ -74,7 +74,13 @@ pub fn ensure_default_logical_device(
         })
         .map(|entry| entry.id.clone());
 
-    let id = existing_default_id.unwrap_or_else(|| physical_layout_id.to_owned());
+    if let Some(existing_id) = existing_default_id.as_deref()
+        && existing_id != physical_layout_id
+    {
+        store.remove(existing_id);
+    }
+
+    let id = physical_layout_id.to_owned();
     let has_enabled_segments = store.values().any(|entry| {
         entry.physical_device_id == physical_device_id
             && entry.kind == LogicalDeviceKind::Segment
@@ -92,6 +98,30 @@ pub fn ensure_default_logical_device(
     };
     store.insert(id, entry.clone());
     entry
+}
+
+/// Return legacy default logical IDs that still point at this physical device.
+///
+/// This lets runtime routing preserve compatibility for layouts saved before
+/// the canonical lifecycle layout ID was known.
+#[must_use]
+pub fn legacy_default_ids_for_physical(
+    store: &HashMap<String, LogicalDevice>,
+    physical_device_id: DeviceId,
+    canonical_id: &str,
+) -> Vec<String> {
+    let mut legacy_ids: Vec<String> = store
+        .values()
+        .filter(|entry| {
+            entry.physical_device_id == physical_device_id
+                && entry.kind == LogicalDeviceKind::Default
+                && entry.id != canonical_id
+        })
+        .map(|entry| entry.id.clone())
+        .collect();
+    legacy_ids.sort();
+    legacy_ids.dedup();
+    legacy_ids
 }
 
 /// Return logical devices for one physical controller, sorted by start index.

@@ -2,6 +2,8 @@
 //!
 //! Handles both JSON events and binary canvas frames (0x03 header).
 
+use std::sync::Arc;
+
 use leptos::prelude::*;
 use serde::Deserialize;
 use wasm_bindgen::JsCast;
@@ -34,9 +36,10 @@ impl std::fmt::Display for ConnectionState {
 /// Decoded canvas frame from a binary WebSocket message.
 #[derive(Debug, Clone)]
 pub struct CanvasFrame {
+    pub frame_number: u32,
     pub width: u32,
     pub height: u32,
-    pub pixels: Vec<u8>,
+    pub pixels: Arc<[u8]>,
 }
 
 /// Live performance metrics streamed from the daemon.
@@ -154,9 +157,9 @@ impl WsManager {
 
         set_connection_state.set(ConnectionState::Connecting);
 
-        // Track frame timing for FPS calculation
-        let frame_count = StoredValue::new(0_u32);
-        let fps_update_time = StoredValue::new(0.0_f64);
+        // Track frame timing for a smoother preview-FPS readout.
+        let last_frame_time = StoredValue::new(0.0_f64);
+        let smoothed_fps = StoredValue::new(0.0_f64);
 
         // Create WebSocket
         let ws = web_sys::WebSocket::new_with_str(&ws_url, "hypercolor-v1");
@@ -178,7 +181,7 @@ impl WsManager {
 
         ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
-        let preview_target_fps = 30;
+        let preview_target_fps = 60;
 
         // onopen — subscribe to canvas + events + metrics
         let ws_clone = ws.clone();
@@ -189,7 +192,7 @@ impl WsManager {
                 "type": "subscribe",
                 "channels": ["canvas", "events", "metrics"],
                 "config": {
-                    "canvas": { "fps": preview_target_fps, "format": "rgb" },
+                    "canvas": { "fps": preview_target_fps, "format": "rgba" },
                     "metrics": { "interval_ms": 500 }
                 }
             });
@@ -222,20 +225,26 @@ impl WsManager {
                 if let Some(frame) = decode_canvas_frame(data) {
                     set_canvas_frame.set(Some(frame));
 
-                    // FPS calculation
+                    // Use a light EWMA so the displayed preview FPS reflects
+                    // sustained delivery instead of jumping between one-second buckets.
                     let now = js_sys::Date::now();
-                    frame_count.update_value(|c| *c += 1);
-
-                    let elapsed = now - fps_update_time.get_value();
-                    if elapsed >= 1000.0 {
-                        let count = frame_count.get_value();
-                        #[allow(clippy::cast_precision_loss)]
-                        let current_fps = (count as f64 / elapsed) * 1000.0;
-                        #[allow(clippy::cast_possible_truncation)]
-                        set_preview_fps.set(current_fps as f32);
-                        frame_count.set_value(0);
-                        fps_update_time.set_value(now);
+                    let last = last_frame_time.get_value();
+                    if last > 0.0 {
+                        let elapsed = now - last;
+                        if elapsed > 0.0 {
+                            let instant_fps = (1000.0 / elapsed).clamp(0.0, 120.0);
+                            let previous = smoothed_fps.get_value();
+                            let next = if previous <= 0.0 {
+                                instant_fps
+                            } else {
+                                previous * 0.82 + instant_fps * 0.18
+                            };
+                            smoothed_fps.set_value(next);
+                            #[allow(clippy::cast_possible_truncation)]
+                            set_preview_fps.set(next as f32);
+                        }
                     }
+                    last_frame_time.set_value(now);
                 }
                 return;
             }
@@ -285,7 +294,7 @@ fn build_ws_url() -> String {
 /// Decode a binary canvas frame.
 ///
 /// Format: `[0x03][frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8][pixels...]`
-fn decode_canvas_frame(mut data: Vec<u8>) -> Option<CanvasFrame> {
+fn decode_canvas_frame(data: Vec<u8>) -> Option<CanvasFrame> {
     if data.len() < 14 {
         return None;
     }
@@ -295,22 +304,20 @@ fn decode_canvas_frame(mut data: Vec<u8>) -> Option<CanvasFrame> {
         return None;
     }
 
-    // Skip frame_number (4 bytes) and timestamp (4 bytes)
+    let frame_number = u32::from_le_bytes(data[1..5].try_into().ok()?);
     let width = u16::from_le_bytes([data[9], data[10]]) as u32;
     let height = u16::from_le_bytes([data[11], data[12]]) as u32;
     let format = data[13]; // 0 = RGB, 1 = RGBA
-
-    let mut pixel_data = data.split_off(14);
     let expected_size = (width * height) as usize;
+    let pixel_data = &data[14..];
 
-    let rgba_pixels = if format == 1 {
+    let pixels = if format == 1 {
         // Already RGBA
         let expected_len = expected_size * 4;
         if pixel_data.len() < expected_len {
             return None;
         }
-        pixel_data.truncate(expected_len);
-        pixel_data
+        Arc::<[u8]>::from(&pixel_data[..expected_len])
     } else {
         // RGB → convert to RGBA
         let expected_len = expected_size * 3;
@@ -324,13 +331,14 @@ fn decode_canvas_frame(mut data: Vec<u8>) -> Option<CanvasFrame> {
             rgba.push(chunk[2]);
             rgba.push(255);
         }
-        rgba
+        Arc::<[u8]>::from(rgba)
     };
 
     Some(CanvasFrame {
+        frame_number,
         width,
         height,
-        pixels: rgba_pixels,
+        pixels,
     })
 }
 

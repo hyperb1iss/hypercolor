@@ -251,10 +251,15 @@ fn map_serial_open_error(error: &tokio_serial::Error, path: &str) -> TransportEr
 
 fn map_io_error(error: &std::io::Error, operation: &str) -> TransportError {
     let detail = format!("serial {operation} failed: {error}");
-    if error.kind() == std::io::ErrorKind::PermissionDenied {
-        TransportError::PermissionDenied { detail }
-    } else {
-        TransportError::IoError { detail }
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => TransportError::PermissionDenied { detail },
+        std::io::ErrorKind::TimedOut => TransportError::Timeout { timeout_ms: 0 },
+        std::io::ErrorKind::BrokenPipe
+        | std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::UnexpectedEof
+        | std::io::ErrorKind::NotConnected
+        | std::io::ErrorKind::NotFound => TransportError::NotFound { detail },
+        _ => TransportError::IoError { detail },
     }
 }
 

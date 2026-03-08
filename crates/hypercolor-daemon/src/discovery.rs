@@ -798,12 +798,18 @@ async fn sync_logical_mappings_for_device(
     let total_leds = tracked.info.total_led_count();
     ensure_default_logical_for_device(runtime, device_id, &tracked.info.name, total_leds).await;
 
-    let logical_entries = {
+    let (logical_entries, legacy_default_ids) = {
         let logical_store = runtime.logical_devices.read().await;
-        logical_devices::list_for_physical(&logical_store, device_id)
+        let legacy_ids = logical_devices::legacy_default_ids_for_physical(
+            &logical_store,
+            device_id,
+            fallback_layout_id,
+        );
+        let entries = logical_devices::list_for_physical(&logical_store, device_id)
             .into_iter()
             .filter(|entry| entry.enabled)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        (entries, legacy_ids)
     };
 
     let mut manager = runtime.backend_manager.lock().await;
@@ -855,6 +861,15 @@ async fn sync_logical_mappings_for_device(
             fallback,
         );
     }
+
+    for legacy_id in legacy_default_ids {
+        manager.map_device_with_segment(
+            legacy_id,
+            backend_id.to_owned(),
+            device_id,
+            Some(fallback),
+        );
+    }
 }
 
 fn map_physical_device_alias(
@@ -865,16 +880,24 @@ fn map_physical_device_alias(
     segment: hypercolor_core::device::SegmentRange,
 ) {
     let physical_alias = device_id.to_string();
-    if physical_alias == layout_device_id {
-        return;
+    if physical_alias != layout_device_id {
+        manager.map_device_with_segment(
+            physical_alias,
+            backend_id.to_owned(),
+            device_id,
+            Some(segment),
+        );
     }
 
-    manager.map_device_with_segment(
-        physical_alias,
-        backend_id.to_owned(),
-        device_id,
-        Some(segment),
-    );
+    let legacy_alias = format!("device:{device_id}");
+    if legacy_alias != layout_device_id {
+        manager.map_device_with_segment(
+            legacy_alias,
+            backend_id.to_owned(),
+            device_id,
+            Some(segment),
+        );
+    }
 }
 
 async fn device_log_label(runtime: &DiscoveryRuntime, device_id: DeviceId) -> String {

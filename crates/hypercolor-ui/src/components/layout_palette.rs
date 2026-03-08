@@ -110,12 +110,12 @@ pub fn LayoutPalette(
                         "Groups"
                     </h3>
                     <button
-                        class="px-1.5 py-0.5 rounded text-[10px] font-medium border transition-all btn-press"
+                        class="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border whitespace-nowrap transition-all btn-press"
                         style="background: rgba(225, 53, 255, 0.06); border-color: rgba(225, 53, 255, 0.15); color: rgb(225, 53, 255)"
                         on:click=move |_| create_group()
                     >
                         <Icon icon=LuPlus width="10px" height="10px" />
-                        " New"
+                        "New"
                     </button>
                 </div>
 

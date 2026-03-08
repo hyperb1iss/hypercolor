@@ -48,3 +48,44 @@ async fn receive_times_out_when_terminator_never_arrives() {
 
     assert!(matches!(error, TransportError::Timeout { .. }));
 }
+
+#[tokio::test]
+async fn receive_accepts_whitespace_wrapped_terminator_and_empty_ack() {
+    let (client, mut server) = tokio::io::duplex(64);
+    let transport = UsbSerialTransport::from_stream("test-empty-ack", client);
+
+    tokio::spawn(async move {
+        server
+            .write_all(b" \t.\r\n")
+            .await
+            .expect("server should write response");
+    });
+
+    let response = transport
+        .receive(Duration::from_millis(200))
+        .await
+        .expect("receive should succeed");
+
+    assert!(response.is_empty());
+}
+
+#[tokio::test]
+async fn receive_returns_closed_when_peer_disconnects_mid_response() {
+    let (client, mut server) = tokio::io::duplex(64);
+    let transport = UsbSerialTransport::from_stream("test-disconnect", client);
+
+    tokio::spawn(async move {
+        server
+            .write_all(b"partial line")
+            .await
+            .expect("server should write partial response");
+        drop(server);
+    });
+
+    let error = transport
+        .receive(Duration::from_millis(200))
+        .await
+        .expect_err("disconnect should fail");
+
+    assert!(matches!(error, TransportError::Closed));
+}

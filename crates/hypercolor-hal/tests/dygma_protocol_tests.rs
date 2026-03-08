@@ -44,7 +44,7 @@ fn shutdown_sequence_restores_palette_mode() {
 #[test]
 fn probe_response_switches_protocol_to_rgb_mode() {
     let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
-    assert_eq!(protocol.color_mode(), FocusColorMode::Rgbw);
+    assert_eq!(protocol.color_mode(), FocusColorMode::Rgb);
 
     protocol
         .parse_response(b"12 34 56")
@@ -55,8 +55,34 @@ fn probe_response_switches_protocol_to_rgb_mode() {
 }
 
 #[test]
+fn probe_response_switches_protocol_to_rgbw_mode() {
+    let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
+
+    protocol
+        .parse_response(b"1 2 3 4")
+        .expect("RGBW probe should parse");
+
+    assert_eq!(protocol.color_mode(), FocusColorMode::Rgbw);
+    assert_eq!(protocol.zones()[0].color_format, DeviceColorFormat::Rgbw);
+}
+
+#[test]
+fn non_probe_response_does_not_change_color_mode() {
+    let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
+
+    protocol
+        .parse_response(b"firmware-1.2.3")
+        .expect("firmware response should parse");
+
+    assert_eq!(protocol.color_mode(), FocusColorMode::Rgb);
+}
+
+#[test]
 fn rgbw_frame_extracts_white_channel_for_every_led() {
     let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
+    protocol
+        .parse_response(b"10 20 30 40")
+        .expect("RGBW probe should parse");
     let colors = vec![[255, 255, 255]; 176];
 
     let commands = protocol.encode_frame(&colors);
@@ -83,6 +109,18 @@ fn rgb_frame_uses_three_channels_after_probe() {
 
     assert_eq!(parts.len(), 1 + 176 * 3);
     assert_eq!(&parts[1..4], ["1", "2", "3"]);
+}
+
+#[test]
+fn partial_frame_is_padded_with_black_leds() {
+    let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
+    let commands = protocol.encode_frame(&[[1, 2, 3]]);
+    let payload = String::from_utf8(commands[0].data.clone()).expect("frame should be utf-8");
+    let parts = payload.split_whitespace().collect::<Vec<_>>();
+
+    assert_eq!(parts.len(), 1 + 176 * 3);
+    assert_eq!(&parts[1..4], ["1", "2", "3"]);
+    assert_eq!(&parts[4..7], ["0", "0", "0"]);
 }
 
 #[test]
@@ -120,6 +158,16 @@ fn parse_response_rejects_invalid_utf8() {
         .expect_err("invalid UTF-8 should fail");
 
     assert!(matches!(error, ProtocolError::MalformedResponse { .. }));
+}
+
+#[test]
+fn parse_response_accepts_empty_ack_payload() {
+    let protocol = build_defy_wired_protocol();
+    let response = protocol
+        .parse_response(b"   \r\n")
+        .expect("empty ack should parse");
+
+    assert!(response.data.is_empty());
 }
 
 #[test]

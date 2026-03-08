@@ -296,12 +296,12 @@ pub fn LayoutBuilder() -> impl IntoView {
                 } else {
                     view! {
                         <button
-                            class="px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                            class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium border whitespace-nowrap transition-all btn-press"
                             style="background: rgba(225, 53, 255, 0.08); border-color: rgba(225, 53, 255, 0.2); color: rgb(225, 53, 255)"
                             on:click=move |_| set_creating.set(true)
                         >
-                            <Icon icon=LuPlus width="14px" height="14px" />
-                            " New"
+                            <Icon icon=LuPlus width="12px" height="12px" />
+                            "New"
                         </button>
                     }.into_any()
                 }}

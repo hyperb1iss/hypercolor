@@ -1,9 +1,9 @@
-//! Settings page — config management with sectioned nav and live editing.
+//! Settings page — config management with horizontal tab nav and live editing.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 
 use hypercolor_types::config::HypercolorConfig;
 
@@ -13,7 +13,14 @@ use crate::icons::*;
 
 /// Section IDs for nav and scroll spy.
 const SECTION_IDS: &[&str] = &[
-    "audio", "capture", "engine", "network", "session", "discovery", "developer", "about",
+    "audio",
+    "capture",
+    "engine",
+    "network",
+    "session",
+    "discovery",
+    "developer",
+    "about",
 ];
 
 /// Apply a dotted-key config change to a `HypercolorConfig` via serde JSON round-trip.
@@ -47,8 +54,11 @@ fn apply_config_key(config: &mut HypercolorConfig, key: &str, value: &serde_json
 }
 
 /// Set up an IntersectionObserver via JS interop to track which section is visible.
+/// Uses a negative top margin to account for the sticky tab header (~100px).
 fn setup_scroll_spy(set_active: WriteSignal<String>) {
-    let Some(window) = web_sys::window() else { return };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
     let Some(doc) = window.document() else { return };
 
     let callback = Closure::wrap(Box::new(move |entries: wasm_bindgen::JsValue| {
@@ -74,11 +84,8 @@ fn setup_scroll_spy(set_active: WriteSignal<String>) {
 
     let opts = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&opts, &"threshold".into(), &0.2.into());
-    let _ = js_sys::Reflect::set(
-        &opts,
-        &"rootMargin".into(),
-        &"-5% 0px -65% 0px".into(),
-    );
+    // Offset top for sticky header height
+    let _ = js_sys::Reflect::set(&opts, &"rootMargin".into(), &"-100px 0px -60% 0px".into());
 
     let ctor = js_sys::Reflect::get(
         &wasm_bindgen::JsValue::from(&window),
@@ -202,7 +209,7 @@ pub fn SettingsPage() -> impl IntoView {
         });
     });
 
-    // Scroll to section on nav click
+    // Scroll to section on tab click
     let scroll_to = move |id: &str| {
         set_active_section.set(id.to_string());
         if let Some(window) = web_sys::window() {
@@ -214,89 +221,136 @@ pub fn SettingsPage() -> impl IntoView {
         }
     };
 
-    // Section nav data
-    struct NavEntry {
+    // Tab data
+    struct TabEntry {
         id: &'static str,
         label: &'static str,
         icon: icondata_core::Icon,
-        divider_before: bool,
+        separator_before: bool,
     }
 
-    let sections = vec![
-        NavEntry { id: "audio", label: "Audio", icon: LuAudioLines, divider_before: false },
-        NavEntry { id: "capture", label: "Capture", icon: LuMonitor, divider_before: false },
-        NavEntry { id: "engine", label: "Engine", icon: LuZap, divider_before: false },
-        NavEntry { id: "network", label: "Network", icon: LuGlobe, divider_before: false },
-        NavEntry { id: "session", label: "Session", icon: LuPower, divider_before: false },
-        NavEntry { id: "discovery", label: "Discovery", icon: LuRadar, divider_before: false },
-        NavEntry { id: "developer", label: "Developer", icon: LuCode, divider_before: true },
-        NavEntry { id: "about", label: "About", icon: LuInfo, divider_before: false },
+    let tabs = vec![
+        TabEntry {
+            id: "audio",
+            label: "Audio",
+            icon: LuAudioLines,
+            separator_before: false,
+        },
+        TabEntry {
+            id: "capture",
+            label: "Capture",
+            icon: LuMonitor,
+            separator_before: false,
+        },
+        TabEntry {
+            id: "engine",
+            label: "Engine",
+            icon: LuZap,
+            separator_before: false,
+        },
+        TabEntry {
+            id: "network",
+            label: "Network",
+            icon: LuGlobe,
+            separator_before: false,
+        },
+        TabEntry {
+            id: "session",
+            label: "Session",
+            icon: LuPower,
+            separator_before: false,
+        },
+        TabEntry {
+            id: "discovery",
+            label: "Discovery",
+            icon: LuRadar,
+            separator_before: false,
+        },
+        TabEntry {
+            id: "developer",
+            label: "Developer",
+            icon: LuCode,
+            separator_before: true,
+        },
+        TabEntry {
+            id: "about",
+            label: "About",
+            icon: LuInfo,
+            separator_before: false,
+        },
     ];
 
     view! {
-        <div class="flex h-full -m-6 animate-fade-in">
-            // Section nav rail — cyan-tinted to differentiate from main sidebar
-            <nav
-                class="w-48 shrink-0 border-r border-edge-subtle py-6 px-3 space-y-0.5"
-                style="background: linear-gradient(180deg, rgba(128, 255, 234, 0.015) 0%, rgba(20, 18, 28, 0.98) 100%)"
+        <div class="flex flex-col h-full -m-6 animate-fade-in">
+            // Sticky header with title + tab bar
+            <div
+                class="sticky top-0 z-10 border-b border-edge-subtle shrink-0"
+                style="background: rgba(20, 18, 28, 0.95); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px)"
             >
-                <div class="px-2 pb-4">
+                <div class="flex items-center justify-between px-6 pt-5 pb-3">
                     <h1 class="text-base font-medium text-fg-primary tracking-wide">"Settings"</h1>
                     <div
-                        class="h-px mt-3"
-                        style="background: linear-gradient(90deg, rgba(128, 255, 234, 0.2), transparent)"
-                    />
+                        class="flex items-center gap-1.5 text-xs"
+                        style="color: rgba(128, 255, 234, 0.4)"
+                    >
+                        <Icon icon=LuInfo width="12px" height="12px" />
+                        "Auto-saved. Restart daemon to apply."
+                    </div>
                 </div>
-                {sections.into_iter().map(|section| {
-                    let id = section.id;
-                    let is_active = Memo::new(move |_| active_section.get() == id);
 
-                    let item = view! {
-                        <button
-                            class="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-sm text-left transition-all duration-200 relative"
-                            style=move || if is_active.get() {
-                                "background: rgba(128, 255, 234, 0.06); color: rgb(230, 237, 243)"
-                            } else {
-                                "color: rgba(139, 133, 160, 0.7)"
-                            }
-                            on:click=move |_| scroll_to(id)
-                        >
-                            // Active indicator — cyan glow bar
-                            <div
-                                class="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-4 rounded-r-full transition-all duration-300"
-                                style=move || if is_active.get() {
-                                    "background: rgb(128, 255, 234); box-shadow: 0 0 8px rgba(128, 255, 234, 0.5); opacity: 1"
-                                } else {
-                                    "opacity: 0"
-                                }
-                            />
-                            <span
-                                class="w-4 h-4 flex items-center justify-center shrink-0 transition-colors duration-200"
-                                style=move || if is_active.get() {
-                                    "color: rgb(128, 255, 234)"
-                                } else {
-                                    ""
-                                }
-                            >
-                                <Icon icon=section.icon width="15px" height="15px" />
-                            </span>
-                            <span class="truncate">{section.label}</span>
-                        </button>
-                    };
+                // Tab bar
+                <div class="flex items-center gap-0.5 px-5 overflow-x-auto scrollbar-none">
+                    {tabs.into_iter().map(|tab| {
+                        let id = tab.id;
+                        let is_active = Memo::new(move |_| active_section.get() == id);
 
-                    if section.divider_before {
+                        let separator = if tab.separator_before {
+                            Some(view! {
+                                <div
+                                    class="w-px h-4 mx-1.5 shrink-0"
+                                    style="background: rgba(139, 133, 160, 0.15)"
+                                />
+                            })
+                        } else {
+                            None
+                        };
+
                         view! {
-                            <div
-                                class="h-px my-2.5 mx-2"
-                                style="background: linear-gradient(90deg, rgba(128, 255, 234, 0.1), transparent)"
-                            />
-                            {item}
-                        }.into_any()
-                    } else {
-                        item.into_any()
-                    }
-                }).collect_view()}
-            </nav>
+                            {separator}
+                            <button
+                                class="flex items-center gap-1.5 px-3 py-2.5 text-sm shrink-0 relative transition-colors duration-200 cursor-pointer"
+                                style=move || if is_active.get() {
+                                    "color: rgb(230, 237, 243)"
+                                } else {
+                                    "color: rgba(139, 133, 160, 0.6)"
+                                }
+                                on:click=move |_| scroll_to(id)
+                            >
+                                <span
+                                    class="w-4 h-4 flex items-center justify-center shrink-0"
+                                    style=move || if is_active.get() {
+                                        "color: rgb(128, 255, 234)"
+                                    } else {
+                                        ""
+                                    }
+                                >
+                                    <Icon icon=tab.icon width="14px" height="14px" />
+                                </span>
+                                <span class="whitespace-nowrap">{tab.label}</span>
+                                // Active underline — cyan glow
+                                <div
+                                    class="absolute bottom-0 left-2 right-2 h-[2px] rounded-full transition-all duration-300"
+                                    style=move || if is_active.get() {
+                                        "background: rgb(128, 255, 234); box-shadow: 0 0 10px rgba(128, 255, 234, 0.4); opacity: 1"
+                                    } else {
+                                        "opacity: 0"
+                                    }
+                                />
+                            </button>
+                        }
+                    }).collect_view()}
+                </div>
+            </div>
 
             // Scrollable content
             <div class="flex-1 overflow-y-auto scroll-smooth">
@@ -304,7 +358,7 @@ pub fn SettingsPage() -> impl IntoView {
                 {move || {
                     if !config_loaded.get() {
                         Some(view! {
-                            <div class="p-6 space-y-4 max-w-3xl">
+                            <div class="p-6 space-y-4 max-w-3xl mx-auto">
                                 {(0..5).map(|i| view! {
                                     <div
                                         class="rounded-xl border border-edge-subtle bg-surface-overlay/10 h-44 animate-pulse"
@@ -323,16 +377,7 @@ pub fn SettingsPage() -> impl IntoView {
                 // without causing DOM rebuild (no flicker on control changes).
                 {move || {
                     config_loaded.get().then(|| view! {
-                        <div class="p-6 space-y-4 max-w-3xl">
-                            // Deferred notice — all settings need daemon restart in v1
-                            <div
-                                class="flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs animate-fade-in"
-                                style="background: rgba(128, 255, 234, 0.02); border: 1px solid rgba(128, 255, 234, 0.06); color: rgba(128, 255, 234, 0.45)"
-                            >
-                                <Icon icon=LuInfo width="13px" height="13px" />
-                                "Changes are saved to disk automatically. All settings take effect after daemon restart."
-                            </div>
-
+                        <div class="p-6 space-y-4 max-w-3xl mx-auto">
                             <div style="animation: fade-in 0.4s ease-out 0.05s both">
                                 <AudioSection
                                     config=config_signal

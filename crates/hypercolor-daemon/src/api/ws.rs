@@ -160,7 +160,7 @@ impl ChannelConfig {
 
         if let Some(canvas) = patch.canvas {
             if let Some(fps) = canvas.fps {
-                validate_range(fps, 1, 30, "config.canvas.fps", "expected 1..=30")?;
+                validate_range(fps, 1, 60, "config.canvas.fps", "expected 1..=60")?;
                 self.canvas.fps = fps;
             }
             if let Some(format) = canvas.format {
@@ -849,34 +849,59 @@ async fn relay_canvas(
     binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
-    let mut last_sent = Instant::now()
-        .checked_sub(Duration::from_secs(1))
-        .unwrap_or_else(Instant::now);
+    let mut latest_canvas = canvas_rx.borrow().clone();
+    let mut last_sent_frame_number: Option<u32> = None;
+    let mut active_fps = 15_u32;
+    let mut ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        if canvas_rx.changed().await.is_err() {
-            break;
-        }
-
-        let canvas = canvas_rx.borrow().clone();
         let canvas_config = {
             let subs = subscriptions.read().await;
             if !subs.channels.contains(&WsChannel::Canvas) {
-                continue;
+                None
+            } else {
+                Some(subs.config.canvas.clone())
             }
-            subs.config.canvas.clone()
         };
 
-        if !should_emit(&mut last_sent, canvas_config.fps) {
+        let Some(canvas_config) = canvas_config else {
+            if canvas_rx.changed().await.is_err() {
+                break;
+            }
+            latest_canvas = canvas_rx.borrow().clone();
             continue;
+        };
+
+        if canvas_config.fps != active_fps {
+            active_fps = canvas_config.fps.max(1);
+            ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         }
 
-        if binary_tx
-            .try_send(encode_canvas_binary(&canvas, canvas_config.format))
-            .is_err()
-        {
-            enqueue_backpressure_notice(&json_tx, "canvas", canvas_config.fps);
-            debug!("Dropping binary canvas update for slow WebSocket consumer");
+        tokio::select! {
+            changed = canvas_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                latest_canvas = canvas_rx.borrow().clone();
+            }
+            _ = ticker.tick() => {
+                if last_sent_frame_number == Some(latest_canvas.frame_number) {
+                    continue;
+                }
+
+                if binary_tx
+                    .try_send(encode_canvas_binary(&latest_canvas, canvas_config.format))
+                    .is_err()
+                {
+                    enqueue_backpressure_notice(&json_tx, "canvas", canvas_config.fps);
+                    debug!("Dropping binary canvas update for slow WebSocket consumer");
+                    continue;
+                }
+
+                last_sent_frame_number = Some(latest_canvas.frame_number);
+            }
         }
     }
 }
@@ -1341,11 +1366,7 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
     let performance_snapshot = state.performance.read().await.snapshot();
     let target_fps = render_stats.tier.fps();
     let avg_frame_secs = render_stats.avg_frame_time.as_secs_f64();
-    let actual_fps = if render_stats.avg_frame_time.is_zero() {
-        f64::from(target_fps)
-    } else {
-        (1.0 / avg_frame_secs).max(0.0)
-    };
+    let actual_fps = paced_fps(avg_frame_secs, target_fps);
     let avg_ms = avg_frame_secs * 1000.0;
     let frame_time = frame_time_summary(performance_snapshot.frame_time, avg_ms);
     let latest_frame = performance_snapshot.latest_frame.unwrap_or_default();
@@ -1415,6 +1436,14 @@ fn round_1(value: f64) -> f64 {
 
 fn round_2(value: f64) -> f64 {
     (value * 100.0).round() / 100.0
+}
+
+fn paced_fps(avg_frame_secs: f64, target_fps: u32) -> f64 {
+    if avg_frame_secs <= 0.0 {
+        return f64::from(target_fps);
+    }
+
+    (1.0 / avg_frame_secs).clamp(0.0, f64::from(target_fps))
 }
 
 fn us_to_ms(value: u32) -> f64 {
@@ -1577,11 +1606,7 @@ fn epoch_to_utc(epoch_secs: u64) -> (u32, u32, u32, u32, u32, u32) {
 async fn build_hello_state(state: &AppState) -> HelloState {
     let render_snapshot = state.render_loop.read().await.stats();
     let target_fps = render_snapshot.tier.fps();
-    let actual_fps = if render_snapshot.avg_frame_time.is_zero() {
-        f64::from(target_fps)
-    } else {
-        (1.0 / render_snapshot.avg_frame_time.as_secs_f64()).max(0.0)
-    };
+    let actual_fps = paced_fps(render_snapshot.avg_frame_time.as_secs_f64(), target_fps);
 
     let active_effect = {
         let engine = state.effect_engine.lock().await;
@@ -1672,7 +1697,7 @@ mod tests {
         let patch: ChannelConfigPatch = serde_json::from_value(serde_json::json!({
             "frames": {"fps": 30, "format": "binary"},
             "spectrum": {"fps": 20, "bins": 32},
-            "canvas": {"fps": 10, "format": "rgba"},
+            "canvas": {"fps": 60, "format": "rgba"},
             "metrics": {"interval_ms": 500}
         }))
         .expect("valid json patch");
@@ -1682,6 +1707,7 @@ mod tests {
             .expect("full channel config patch should be accepted");
 
         let json = serde_json::to_value(config).expect("config serializes");
+        assert_eq!(json["canvas"]["fps"], 60);
         assert_eq!(json["canvas"]["format"], "rgba");
         assert_eq!(json["metrics"]["interval_ms"], 500);
     }

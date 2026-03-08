@@ -81,7 +81,9 @@ impl DygmaProtocol {
     pub const fn new(variant: DygmaVariant) -> Self {
         Self {
             variant,
-            color_mode: AtomicU8::new(COLOR_MODE_RGBW),
+            // Default to the documented Focus RGB format until the `led.at 0`
+            // probe proves that the device expects RGBW values on the wire.
+            color_mode: AtomicU8::new(COLOR_MODE_RGB),
         }
     }
 

@@ -208,6 +208,14 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                 {detail_field("Status", &capitalize(&dev.status))}
                                 {detail_field("LEDs", &dev.total_leds.to_string())}
                                 {detail_field("Firmware", &dev.firmware_version.clone().unwrap_or_else(|| "\u{2014}".to_string()))}
+                                {detail_field(
+                                    "Hostname",
+                                    &dev.network_hostname.clone().unwrap_or_else(|| "\u{2014}".to_string()),
+                                )}
+                                {detail_field(
+                                    "IP",
+                                    &dev.network_ip.clone().unwrap_or_else(|| "\u{2014}".to_string()),
+                                )}
                             </div>
 
                             // Zone list

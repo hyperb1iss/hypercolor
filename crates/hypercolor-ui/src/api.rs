@@ -115,6 +115,10 @@ pub struct DeviceSummary {
     pub status: String,
     #[serde(default)]
     pub firmware_version: Option<String>,
+    #[serde(default)]
+    pub network_ip: Option<String>,
+    #[serde(default)]
+    pub network_hostname: Option<String>,
     pub total_leds: usize,
     #[serde(default)]
     pub zones: Vec<ZoneSummary>,

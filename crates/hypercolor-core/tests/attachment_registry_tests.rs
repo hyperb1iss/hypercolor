@@ -53,7 +53,10 @@ fn builtins_drop_external_source_metadata() {
     let templates = registry.list(&TemplateFilter::default());
     assert!(!templates.is_empty());
     assert!(templates.iter().all(|template| {
-        !template.description.to_ascii_lowercase().contains("imported from")
+        !template
+            .description
+            .to_ascii_lowercase()
+            .contains("imported from")
     }));
 }
 

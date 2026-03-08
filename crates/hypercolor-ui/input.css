@@ -551,21 +551,36 @@ button:hover:not(:disabled) > .relative {
 
 /* ── Logo Animations ────────────────────────────────────────────────────── */
 
-.logo-circuit {
-    position: relative;
-}
-
-.logo-circuit { font-family: 'Orbitron', sans-serif; }
-
-/* Shared gradient base for all logo modes */
-.logo-circuit-text {
+/* Shared gradient text base */
+.logo-gradient-text {
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 
-/* ── Mode 0: Slow Drift — gentle oscillating gradient, very ambient ───── */
-.logo-mode-drift .logo-circuit-text {
+/* Click-to-cycle container — relative for absolute label positioning */
+.logo-container {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+}
+.logo-container:active { transform: scale(0.97); }
+
+/* Per-mode ambient background glow — sits behind the text */
+.logo-bg {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.5;
+    transition: opacity 0.6s ease;
+}
+
+/* ── 0: Circuit — the OG, stacked Orbitron, full SilkCircuit neon ────── */
+.logo-circuit {
+    position: relative;
+    font-family: 'Orbitron', sans-serif;
+}
+.logo-circuit .logo-gradient-text {
     background-image: linear-gradient(
         90deg,
         #e135ff 0%, #ff6ac1 25%, #80ffea 50%, #f1fa8c 75%, #e135ff 100%
@@ -575,6 +590,12 @@ button:hover:not(:disabled) > .relative {
     filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3))
             drop-shadow(0 0 5px rgba(128, 255, 234, 0.2));
 }
+.logo-bg-circuit {
+    background: radial-gradient(ellipse at 50% 50%,
+        rgba(225, 53, 255, 0.08) 0%,
+        rgba(128, 255, 234, 0.04) 40%,
+        transparent 70%);
+}
 
 @keyframes logoDrift {
     0%   { background-position: 0% 50%; }
@@ -582,8 +603,275 @@ button:hover:not(:disabled) > .relative {
     100% { background-position: 0% 50%; }
 }
 
-/* ── Mode 1: Chromatic Glitch — slow drift with brief RGB-split bursts ── */
-.logo-mode-glitch .logo-circuit-text {
+/* ── 1: Silk — elegant weight contrast, rose-lavender palette ────────── */
+.logo-silk {
+    font-family: 'Orbitron', sans-serif;
+}
+.logo-silk .logo-gradient-text {
+    background-image: linear-gradient(
+        90deg,
+        #e135ff 0%, #ff6ac1 30%, #c4b5fd 60%, #fda4af 85%, #e135ff 100%
+    );
+    background-size: 200% 100%;
+    animation: logoDrift 20s ease-in-out infinite;
+    filter: drop-shadow(0 0 14px rgba(225, 53, 255, 0.25))
+            drop-shadow(0 0 6px rgba(253, 164, 175, 0.2));
+}
+.logo-bg-silk {
+    background: radial-gradient(ellipse at 50% 50%,
+        rgba(253, 164, 175, 0.07) 0%,
+        rgba(196, 181, 253, 0.05) 40%,
+        transparent 70%);
+}
+
+/* ── 2: Bloom — sparkle divider, coral-pink breathe ──────────────────── */
+.logo-bloom {
+    font-family: 'Orbitron', sans-serif;
+}
+.logo-bloom .logo-gradient-text {
+    background-image: linear-gradient(
+        90deg,
+        #ff6ac1 0%, #fda4af 25%, #e135ff 50%, #c4b5fd 75%, #ff6ac1 100%
+    );
+    background-size: 300% 100%;
+    animation:
+        logoDrift 18s ease-in-out infinite,
+        logoBloom 5s ease-in-out infinite;
+}
+.logo-bloom .logo-sparkle {
+    display: inline-block;
+    background-image: linear-gradient(
+        90deg,
+        #ff6ac1 0%, #fda4af 50%, #e135ff 100%
+    );
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: logoDrift 12s ease-in-out infinite, logoSparklePulse 3s ease-in-out infinite;
+}
+.logo-bg-bloom {
+    background: radial-gradient(ellipse at 50% 50%,
+        rgba(255, 106, 193, 0.1) 0%,
+        rgba(253, 164, 175, 0.06) 35%,
+        transparent 65%);
+    animation: logoBgBreathe 5s ease-in-out infinite;
+}
+
+@keyframes logoBloom {
+    0%, 100% {
+        filter: drop-shadow(0 0 8px rgba(255, 106, 193, 0.2))
+                drop-shadow(0 0 3px rgba(253, 164, 175, 0.15));
+    }
+    50% {
+        filter: drop-shadow(0 0 24px rgba(255, 106, 193, 0.45))
+                drop-shadow(0 0 10px rgba(225, 53, 255, 0.3))
+                drop-shadow(0 0 40px rgba(253, 164, 175, 0.15));
+    }
+}
+
+@keyframes logoSparklePulse {
+    0%, 100% { transform: scale(1); opacity: 0.7; }
+    50% { transform: scale(1.2); opacity: 1; }
+}
+
+@keyframes logoBgBreathe {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.7; }
+}
+
+/* ── 3: Whisper — lowercase, Satoshi, ethereal ultra-wide ────────────── */
+.logo-whisper {
+    font-family: 'Satoshi', system-ui, sans-serif;
+}
+.logo-whisper .logo-gradient-text {
+    background-image: linear-gradient(
+        90deg,
+        #c4b5fd 0%, #e135ff 25%, #fda4af 50%, #80ffea 75%, #c4b5fd 100%
+    );
+    background-size: 300% 100%;
+    animation: logoWhisperDrift 30s ease-in-out infinite;
+    filter: drop-shadow(0 0 20px rgba(196, 181, 253, 0.25))
+            drop-shadow(0 0 8px rgba(225, 53, 255, 0.15));
+}
+/* Thin decorative line above and below */
+.logo-whisper-line {
+    width: 60px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(196, 181, 253, 0.3), transparent);
+}
+.logo-bg-whisper {
+    background: radial-gradient(ellipse at 50% 50%,
+        rgba(196, 181, 253, 0.06) 0%,
+        rgba(128, 255, 234, 0.03) 50%,
+        transparent 70%);
+}
+
+@keyframes logoWhisperDrift {
+    0%   { background-position: 0% 50%; }
+    33%  { background-position: 150% 50%; }
+    66%  { background-position: 50% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+/* ── 4: Prism — dramatic size contrast, big COLOR ────────────────────── */
+.logo-prism {
+    font-family: 'Orbitron', sans-serif;
+}
+.logo-prism .logo-gradient-text {
+    background-image: linear-gradient(
+        135deg,
+        #e135ff 0%, #ff6ac1 20%, #fda4af 40%, #c4b5fd 60%, #80ffea 80%, #e135ff 100%
+    );
+    background-size: 200% 200%;
+    animation: logoPrismShift 16s ease-in-out infinite;
+    filter: drop-shadow(0 0 16px rgba(225, 53, 255, 0.35))
+            drop-shadow(0 0 6px rgba(255, 106, 193, 0.25));
+}
+.logo-bg-prism {
+    background:
+        radial-gradient(ellipse at 30% 60%,
+            rgba(225, 53, 255, 0.06) 0%, transparent 50%),
+        radial-gradient(ellipse at 70% 40%,
+            rgba(128, 255, 234, 0.05) 0%, transparent 50%);
+    animation: logoBgPrism 16s ease-in-out infinite;
+}
+
+@keyframes logoPrismShift {
+    0%   { background-position: 0% 0%; }
+    25%  { background-position: 100% 0%; }
+    50%  { background-position: 100% 100%; }
+    75%  { background-position: 0% 100%; }
+    100% { background-position: 0% 0%; }
+}
+
+@keyframes logoBgPrism {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 0.8; }
+}
+
+/* ── 5: Script — Dancing Script cursive, peak femme ──────────────────── */
+.logo-script {
+    font-family: 'Dancing Script', cursive;
+}
+.logo-script .logo-gradient-text {
+    background-image: linear-gradient(
+        90deg,
+        #ff6ac1 0%, #e135ff 30%, #c4b5fd 60%, #fda4af 100%
+    );
+    background-size: 200% 100%;
+    animation: logoDrift 16s ease-in-out infinite, logoScriptFloat 8s ease-in-out infinite;
+    filter: drop-shadow(0 0 16px rgba(255, 106, 193, 0.35))
+            drop-shadow(0 0 8px rgba(225, 53, 255, 0.2));
+}
+.logo-bg-script {
+    background: radial-gradient(ellipse at 50% 60%,
+        rgba(255, 106, 193, 0.09) 0%,
+        rgba(225, 53, 255, 0.04) 40%,
+        transparent 65%);
+}
+
+@keyframes logoScriptFloat {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-2px); }
+}
+
+/* ── 6: Editorial — Playfair Display, high-fashion serif ─────────────── */
+.logo-editorial {
+    font-family: 'Playfair Display', Georgia, serif;
+}
+.logo-editorial .logo-gradient-text {
+    background-image: linear-gradient(
+        90deg,
+        #e135ff 0%, #ff6ac1 50%, #e135ff 100%
+    );
+    background-size: 200% 100%;
+    animation: logoDrift 20s ease-in-out infinite;
+    filter: drop-shadow(0 0 10px rgba(225, 53, 255, 0.3))
+            drop-shadow(0 0 4px rgba(255, 106, 193, 0.2));
+}
+/* Decorative rule lines for editorial vibe */
+.logo-editorial-rule {
+    width: 40px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(225, 53, 255, 0.25), transparent);
+}
+.logo-bg-editorial {
+    background: radial-gradient(ellipse at 50% 50%,
+        rgba(225, 53, 255, 0.05) 0%,
+        transparent 60%);
+}
+
+/* ── 7: Neon Mono — JetBrains Mono, split color, hacker-femme ────────── */
+.logo-neon {
+    font-family: 'JetBrains Mono', monospace;
+}
+.logo-neon .logo-neon-hyper {
+    background-image: linear-gradient(90deg, #e135ff, #ff6ac1);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.5));
+    animation: logoNeonPulseA 4s ease-in-out infinite;
+}
+.logo-neon .logo-neon-color {
+    background-image: linear-gradient(90deg, #80ffea, #c4b5fd);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 12px rgba(128, 255, 234, 0.5));
+    animation: logoNeonPulseB 4s ease-in-out infinite 2s;
+}
+/* Blinking cursor for that terminal vibe */
+.logo-neon-cursor {
+    display: inline-block;
+    width: 2px;
+    height: 24px;
+    background: rgba(128, 255, 234, 0.7);
+    margin-left: 4px;
+    animation: logoCursorBlink 1s step-end infinite;
+    vertical-align: middle;
+}
+.logo-bg-neon {
+    background:
+        radial-gradient(ellipse at 40% 40%,
+            rgba(225, 53, 255, 0.06) 0%, transparent 50%),
+        radial-gradient(ellipse at 60% 60%,
+            rgba(128, 255, 234, 0.05) 0%, transparent 50%);
+    /* Faint scanlines */
+    background-size: 100% 100%, 100% 100%;
+}
+.logo-bg-neon::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+        0deg,
+        transparent 0px,
+        transparent 3px,
+        rgba(128, 255, 234, 0.015) 3px,
+        rgba(128, 255, 234, 0.015) 4px
+    );
+}
+
+@keyframes logoNeonPulseA {
+    0%, 100% { filter: drop-shadow(0 0 8px rgba(225, 53, 255, 0.3)); }
+    50% { filter: drop-shadow(0 0 20px rgba(225, 53, 255, 0.6)) drop-shadow(0 0 40px rgba(225, 53, 255, 0.15)); }
+}
+@keyframes logoNeonPulseB {
+    0%, 100% { filter: drop-shadow(0 0 8px rgba(128, 255, 234, 0.3)); }
+    50% { filter: drop-shadow(0 0 20px rgba(128, 255, 234, 0.6)) drop-shadow(0 0 40px rgba(128, 255, 234, 0.15)); }
+}
+@keyframes logoCursorBlink {
+    0%, 50% { opacity: 1; }
+    50.01%, 100% { opacity: 0; }
+}
+
+/* ── 8: Glitch — chromatic aberration, the edgy one ──────────────────── */
+.logo-glitch {
+    font-family: 'Orbitron', sans-serif;
+}
+.logo-glitch .logo-gradient-text {
     background-image: linear-gradient(
         90deg,
         #e135ff 0%, #ff6ac1 25%, #80ffea 50%, #f1fa8c 75%, #e135ff 100%
@@ -593,6 +881,26 @@ button:hover:not(:disabled) > .relative {
         logoDrift 24s ease-in-out infinite,
         logoGlitch 12s step-end infinite;
 }
+.logo-bg-glitch {
+    background: radial-gradient(ellipse at 50% 50%,
+        rgba(225, 53, 255, 0.06) 0%,
+        rgba(128, 255, 234, 0.03) 40%,
+        transparent 70%);
+}
+/* Faint scanlines for CRT vibe */
+.logo-bg-glitch::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+        0deg,
+        transparent 0px,
+        transparent 2px,
+        rgba(225, 53, 255, 0.02) 2px,
+        rgba(225, 53, 255, 0.02) 3px
+    );
+    animation: logoScanlineDrift 8s linear infinite;
+}
 
 @keyframes logoGlitch {
     0%, 100% {
@@ -600,7 +908,6 @@ button:hover:not(:disabled) > .relative {
                 drop-shadow(0 0 5px rgba(128, 255, 234, 0.2));
         transform: none;
     }
-    /* Brief glitch at ~33% */
     32% { filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3)); transform: none; }
     32.5% {
         filter: drop-shadow(-2px 0 0 rgba(128, 255, 234, 0.7))
@@ -615,7 +922,6 @@ button:hover:not(:disabled) > .relative {
         transform: translateX(1px) skewX(0.5deg);
     }
     34% { filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3)); transform: none; }
-    /* Brief glitch at ~72% */
     71% { transform: none; }
     71.5% {
         filter: drop-shadow(2px 0 0 rgba(128, 255, 234, 0.8))
@@ -631,78 +937,32 @@ button:hover:not(:disabled) > .relative {
     72.5% { filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3)); transform: none; }
 }
 
-/* ── Mode 2: Prismatic Breathe — gradient + pulsing glow intensity ────── */
-.logo-mode-breathe .logo-circuit-text {
-    background-image: linear-gradient(
-        90deg,
-        #e135ff 0%, #80ffea 33%, #ff6ac1 66%, #e135ff 100%
-    );
-    background-size: 300% 100%;
-    animation:
-        logoDrift 30s ease-in-out infinite,
-        logoBreathe 6s ease-in-out infinite;
+@keyframes logoScanlineDrift {
+    0%   { transform: translateY(0); }
+    100% { transform: translateY(20px); }
 }
 
-@keyframes logoBreathe {
-    0%, 100% {
-        filter: drop-shadow(0 0 8px rgba(225, 53, 255, 0.2))
-                drop-shadow(0 0 3px rgba(128, 255, 234, 0.1));
-    }
-    50% {
-        filter: drop-shadow(0 0 20px rgba(225, 53, 255, 0.5))
-                drop-shadow(0 0 8px rgba(128, 255, 234, 0.35))
-                drop-shadow(0 0 40px rgba(255, 106, 193, 0.15));
-    }
+/* Logo mode label — absolutely positioned, doesn't affect centering */
+.logo-mode-label {
+    position: absolute;
+    bottom: 6px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
 }
-
-/* ── Mode 3: Warp Scan — gradient sweeps with perspective warp pulses ─── */
-.logo-mode-warp .logo-circuit-text {
-    background-image: linear-gradient(
-        90deg,
-        #e135ff 0%, #ff6ac1 20%, #80ffea 40%, #f1fa8c 60%, #50fa7b 80%, #e135ff 100%
-    );
-    background-size: 300% 100%;
-    animation:
-        logoWarpGradient 20s linear infinite,
-        logoWarp 16s ease-in-out infinite;
-    filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3))
-            drop-shadow(0 0 5px rgba(128, 255, 234, 0.2));
-}
-
-@keyframes logoWarpGradient {
-    0%   { background-position: 0% 50%; }
-    100% { background-position: 300% 50%; }
-}
-
-@keyframes logoWarp {
-    0%, 100% {
-        transform: perspective(500px) rotateY(0deg) scaleX(1);
-        filter: drop-shadow(0 0 12px rgba(225, 53, 255, 0.3))
-                drop-shadow(0 0 5px rgba(128, 255, 234, 0.2));
-    }
-    15% {
-        transform: perspective(500px) rotateY(2deg) scaleX(1.01);
-    }
-    30% {
-        transform: perspective(500px) rotateY(0deg) scaleX(1);
-    }
-    50% {
-        transform: perspective(500px) rotateY(-2.5deg) scaleX(0.99);
-        filter: drop-shadow(0 0 20px rgba(128, 255, 234, 0.45))
-                drop-shadow(0 0 8px rgba(225, 53, 255, 0.3));
-    }
-    65% {
-        transform: perspective(500px) rotateY(0deg) scaleX(1);
-    }
-    80% {
-        transform: perspective(500px) rotateY(1.5deg) scaleX(1.005);
-        filter: drop-shadow(0 0 16px rgba(255, 106, 193, 0.4))
-                drop-shadow(0 0 6px rgba(241, 250, 140, 0.2));
-    }
+.logo-container:hover .logo-mode-label {
+    opacity: 0.4;
 }
 
 /* ── Light mode overrides ─────────────────────────────────────────────── */
-[data-theme="light"] .logo-circuit-text {
+[data-theme="light"] .logo-gradient-text {
     background-image: linear-gradient(
         90deg,
         #b800d4 0%, #d4007a 25%, #009e8e 50%, #8a7600 75%, #b800d4 100%
@@ -710,6 +970,10 @@ button:hover:not(:disabled) > .relative {
     background-size: 200% 100%;
     filter: drop-shadow(0 0 8px rgba(180, 0, 210, 0.25))
             drop-shadow(0 0 3px rgba(0, 158, 142, 0.2));
+}
+[data-theme="light"] .logo-neon .logo-neon-hyper,
+[data-theme="light"] .logo-neon .logo-neon-color {
+    filter: drop-shadow(0 0 6px rgba(180, 0, 210, 0.3));
 }
 
 /* Shared: collapsed icon mark */
@@ -741,10 +1005,10 @@ button:hover:not(:disabled) > .relative {
     .animate-shimmer,
     .dot-alive,
     .card-glow,
-    .logo-mode-drift .logo-circuit-text,
-    .logo-mode-glitch .logo-circuit-text,
-    .logo-mode-breathe .logo-circuit-text,
-    .logo-mode-warp .logo-circuit-text,
+    .logo-gradient-text,
+    .logo-neon-hyper,
+    .logo-neon-color,
+    .logo-sparkle,
     .logo-mark {
         animation: none !important;
     }

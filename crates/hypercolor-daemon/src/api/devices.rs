@@ -1195,12 +1195,18 @@ async fn sync_live_logical_mappings_for_device(state: &AppState, physical_id: De
     .await;
 
     let backend_id = backend_id_for_family(&tracked.info.family);
-    let logical_entries = {
+    let (logical_entries, legacy_default_ids) = {
         let store = state.logical_devices.read().await;
-        logical_devices::list_for_physical(&store, physical_id)
+        let legacy_ids = logical_devices::legacy_default_ids_for_physical(
+            &store,
+            physical_id,
+            &fallback_layout_id,
+        );
+        let entries = logical_devices::list_for_physical(&store, physical_id)
             .into_iter()
             .filter(|entry| entry.enabled)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        (entries, legacy_ids)
     };
 
     let mut manager = state.backend_manager.lock().await;
@@ -1222,7 +1228,7 @@ async fn sync_live_logical_mappings_for_device(state: &AppState, physical_id: De
         );
         map_physical_device_alias(
             &mut manager,
-            backend_id,
+            &backend_id,
             physical_id,
             &fallback_layout_id,
             SegmentRange::new(
@@ -1251,13 +1257,26 @@ async fn sync_live_logical_mappings_for_device(state: &AppState, physical_id: De
     if default_enabled {
         map_physical_device_alias(
             &mut manager,
-            backend_id,
+            &backend_id,
             physical_id,
             &fallback_layout_id,
             SegmentRange::new(
                 0,
                 usize::try_from(tracked.info.total_led_count()).unwrap_or_default(),
             ),
+        );
+    }
+
+    let fallback_segment = SegmentRange::new(
+        0,
+        usize::try_from(tracked.info.total_led_count()).unwrap_or_default(),
+    );
+    for legacy_id in legacy_default_ids {
+        manager.map_device_with_segment(
+            legacy_id,
+            backend_id.clone(),
+            physical_id,
+            Some(fallback_segment),
         );
     }
 }
@@ -1611,6 +1630,14 @@ async fn active_layout_targets_device(
     if !logical_ids.iter().any(|id| id == default_layout_id) {
         logical_ids.push(default_layout_id.to_owned());
     }
+    let physical_alias = physical_id.to_string();
+    if !logical_ids.iter().any(|id| id == &physical_alias) {
+        logical_ids.push(physical_alias);
+    }
+    let legacy_alias = format!("device:{physical_id}");
+    if !logical_ids.iter().any(|id| id == &legacy_alias) {
+        logical_ids.push(legacy_alias);
+    }
 
     let spatial = state.spatial_engine.read().await;
     spatial.layout().zones.iter().any(|zone| {
@@ -1622,17 +1649,30 @@ async fn active_layout_targets_device(
 
 fn map_physical_device_alias(
     manager: &mut BackendManager,
-    backend_id: String,
+    backend_id: &str,
     physical_id: DeviceId,
     layout_device_id: &str,
     segment: SegmentRange,
 ) {
     let physical_alias = physical_id.to_string();
-    if physical_alias == layout_device_id {
-        return;
+    if physical_alias != layout_device_id {
+        manager.map_device_with_segment(
+            physical_alias,
+            backend_id.to_owned(),
+            physical_id,
+            Some(segment),
+        );
     }
 
-    manager.map_device_with_segment(physical_alias, backend_id, physical_id, Some(segment));
+    let legacy_alias = format!("device:{physical_id}");
+    if legacy_alias != layout_device_id {
+        manager.map_device_with_segment(
+            legacy_alias,
+            backend_id.to_owned(),
+            physical_id,
+            Some(segment),
+        );
+    }
 }
 
 fn summarize_zone_topology(topology: &DeviceTopologyHint) -> ZoneTopologySummary {

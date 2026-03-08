@@ -12,6 +12,7 @@ use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{BackendInfo, DeviceBackend};
+use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -3039,4 +3040,129 @@ async fn logical_devices_reject_overlapping_segments() {
     );
     let json = body_json(overlapping_create).await;
     assert_eq!(json["error"]["code"], "validation_error");
+}
+
+#[tokio::test]
+async fn logical_devices_migrate_legacy_default_ids_and_keep_legacy_aliases_mapped() {
+    let (state, _tmp) = test_state_with_temp_logical_store();
+    register_noop_backend(&state, "wled", "WLED Test").await;
+
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let tracked = state
+        .device_registry
+        .get(&device_id)
+        .await
+        .expect("device should exist");
+
+    let fingerprint = DeviceFingerprint("net:00:11:22:33:44:55".to_owned());
+    let canonical_layout_id = "wled:00:11:22:33:44:55".to_owned();
+    {
+        let mut lifecycle = state.lifecycle_manager.lock().await;
+        let _ = lifecycle.on_discovered(device_id, &tracked.info, "wled", Some(&fingerprint));
+        let _ = lifecycle
+            .on_connected(device_id)
+            .expect("connect transition should succeed");
+    }
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+
+    let legacy_layout_id = format!("device:{device_id}");
+    {
+        let mut store = state.logical_devices.write().await;
+        store.insert(
+            legacy_layout_id.clone(),
+            LogicalDevice {
+                id: legacy_layout_id.clone(),
+                physical_device_id: device_id,
+                name: "Desk Strip".to_owned(),
+                led_start: 0,
+                led_count: 60,
+                enabled: true,
+                kind: LogicalDeviceKind::Default,
+            },
+        );
+    }
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Desk Left","led_start":0,"led_count":20}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    let segment_id = create_json["data"]["id"]
+        .as_str()
+        .expect("segment id should be string")
+        .to_owned();
+
+    let delete_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/logical-devices/{segment_id}"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    let list_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_json = body_json(list_response).await;
+    let items = list_json["data"]["items"]
+        .as_array()
+        .expect("items should be array");
+    let default_entry = items
+        .iter()
+        .find(|item| item["kind"] == "default")
+        .expect("default entry should exist");
+    assert_eq!(default_entry["id"], canonical_layout_id);
+    assert!(
+        items.iter().all(|item| item["id"] != legacy_layout_id),
+        "legacy default logical id should be migrated away"
+    );
+
+    let manager = state.backend_manager.lock().await;
+    let routing = manager.routing_snapshot();
+    let mapped_layout_ids = routing
+        .mappings
+        .into_iter()
+        .filter(|entry| entry.backend_id == "wled" && entry.device_id == device_id.to_string())
+        .map(|entry| entry.layout_device_id)
+        .collect::<Vec<_>>();
+    assert!(
+        mapped_layout_ids.contains(&canonical_layout_id),
+        "canonical layout id should be mapped"
+    );
+    assert!(
+        mapped_layout_ids.contains(&legacy_layout_id),
+        "legacy device:<uuid> alias should stay mapped for compatibility"
+    );
+    assert!(
+        mapped_layout_ids.contains(&device_id.to_string()),
+        "raw physical uuid alias should stay mapped"
+    );
 }
