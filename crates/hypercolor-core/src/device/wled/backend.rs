@@ -31,6 +31,8 @@ const REALTIME_PRIME_DELAY: Duration = Duration::from_millis(50);
 const DEFAULT_DEDUP_THRESHOLD: u8 = 2;
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
 const SIZE_MISMATCH_WARN_INTERVAL: Duration = Duration::from_secs(60);
+const RGBW_NEAR_NEUTRAL_RATIO_NUMERATOR: u16 = 235;
+const RGBW_NEAR_NEUTRAL_RATIO_DENOMINATOR: u16 = 255;
 
 // ── Protocol Selection ──────────────────────────────────────────────────
 
@@ -648,7 +650,9 @@ async fn enter_realtime_mode(ip: IpAddr) -> Result<()> {
     post_realtime_state(
         ip,
         serde_json::json!({
-            "lor": 1,
+            // Let the incoming realtime protocol own pixel data instead of
+            // forcing WLED's local override state.
+            "lor": 0,
             "live": true,
             "transition": 0,
         }),
@@ -719,7 +723,19 @@ fn encode_colors(
             let mut pixel_data = Vec::with_capacity(expected_led_count * 4);
             for index in 0..expected_led_count {
                 let color = colors.get(index).copied().unwrap_or([0, 0, 0]);
-                let white = color[0].min(color[1]).min(color[2]);
+                let max = color[0].max(color[1]).max(color[2]);
+                let min = color[0].min(color[1]).min(color[2]);
+                // Only route energy to the dedicated white die for near-neutral
+                // colors; using `min(r,g,b)` for saturated colors visibly washes
+                // out RGBW strips toward white.
+                let white = if max > 0
+                    && u16::from(min) * RGBW_NEAR_NEUTRAL_RATIO_DENOMINATOR
+                        >= u16::from(max) * RGBW_NEAR_NEUTRAL_RATIO_NUMERATOR
+                {
+                    min
+                } else {
+                    0
+                };
                 pixel_data.extend_from_slice(&[
                     color[0] - white,
                     color[1] - white,

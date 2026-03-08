@@ -1087,6 +1087,45 @@ async fn backend_write_colors_allows_duplicate_frames_when_dedup_is_disabled() {
 }
 
 #[tokio::test]
+async fn backend_write_colors_preserves_chroma_on_rgbw_devices() {
+    let receiver = UdpSocket::bind("127.0.0.7:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let mut backend = WledBackend::new(vec![]);
+    backend.set_realtime_http_enabled(false);
+
+    let device_id = DeviceId::new();
+    backend.remember_device(
+        device_id,
+        "127.0.0.7".parse().expect("valid loopback IP"),
+        test_wled_info(2, true, 30, true),
+    );
+    backend
+        .connect(&device_id)
+        .await
+        .expect("connect should succeed");
+
+    let colors = [[255, 0, 255], [240, 244, 250]];
+    backend
+        .write_colors(&device_id, &colors)
+        .await
+        .expect("RGBW write should succeed");
+
+    let mut packet = [0_u8; 64];
+    let (len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+        .await
+        .expect("expected DDP frame")
+        .expect("recv DDP frame");
+
+    assert_eq!(len, DDP_HEADER_SIZE + 8);
+    assert_eq!(
+        &packet[10..18],
+        &[255, 0, 255, 0, 0, 4, 10, 240],
+        "saturated magenta should not leak into white, near-neutral colors may use white"
+    );
+}
+
+#[tokio::test]
 async fn backend_write_colors_truncates_oversized_frames() {
     let receiver = UdpSocket::bind("127.0.0.5:4048")
         .await
