@@ -19,6 +19,12 @@ const LEFT_UNDERGLOW: u32 = 53;
 const RIGHT_UNDERGLOW: u32 = 53;
 const COLOR_MODE_RGB: u8 = 3;
 const COLOR_MODE_RGBW: u8 = 4;
+const HYPERCOLOR_MAGIC: [u8; 3] = [0xFF, b'H', b'C'];
+const HYPERCOLOR_VERSION: u8 = 1;
+const HYPERCOLOR_FRAME_OPCODE: u8 = 0x10;
+const HYPERCOLOR_CAPABILITIES_COMMAND: &str = "hypercolor.capabilities";
+const HYPERCOLOR_CLEAR_COMMAND: &str = "hypercolor.clear";
+const HYPERCOLOR_FRAME_PAYLOAD_LEN: usize = 2 + (TOTAL_LEDS * 3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DygmaVariant {
@@ -73,7 +79,9 @@ impl FocusColorMode {
 pub struct DygmaProtocol {
     variant: DygmaVariant,
     color_mode: AtomicU8,
+    direct_stream_supported: AtomicBool,
     direct_stream_warned: AtomicBool,
+    next_sequence: AtomicU8,
 }
 
 impl DygmaProtocol {
@@ -84,7 +92,9 @@ impl DygmaProtocol {
             // Default to the documented Focus RGB format until the `led.at 0`
             // probe proves that the device expects RGBW values on the wire.
             color_mode: AtomicU8::new(COLOR_MODE_RGB),
+            direct_stream_supported: AtomicBool::new(false),
             direct_stream_warned: AtomicBool::new(false),
+            next_sequence: AtomicU8::new(0),
         }
     }
 
@@ -102,6 +112,15 @@ impl DygmaProtocol {
             FocusColorMode::Rgbw => COLOR_MODE_RGBW,
         };
         self.color_mode.store(stored, Ordering::Release);
+    }
+
+    fn supports_direct_stream(&self) -> bool {
+        self.direct_stream_supported.load(Ordering::Acquire)
+    }
+
+    fn set_direct_stream_supported(&self, supported: bool) {
+        self.direct_stream_supported
+            .store(supported, Ordering::Release);
     }
 
     fn normalize_colors(&self, colors: &[[u8; 3]]) -> Vec<[u8; 3]> {
@@ -139,6 +158,16 @@ impl DygmaProtocol {
         }
     }
 
+    fn binary_command(data: Vec<u8>) -> ProtocolCommand {
+        ProtocolCommand {
+            data,
+            expects_response: true,
+            response_delay: Duration::ZERO,
+            post_delay: Duration::ZERO,
+            transfer_type: TransferType::Primary,
+        }
+    }
+
     fn black_frame_command(post_delay: Duration) -> ProtocolCommand {
         Self::text_command("led.setAll 0 0 0", true, post_delay)
     }
@@ -157,6 +186,36 @@ impl DygmaProtocol {
             self.set_color_mode(mode);
         }
     }
+
+    fn update_capabilities_from_response(&self, response: &str) {
+        let Some(rest) = response.strip_prefix(HYPERCOLOR_CAPABILITIES_COMMAND) else {
+            return;
+        };
+
+        let supports_direct = rest
+            .split_whitespace()
+            .filter_map(|entry| entry.split_once('='))
+            .any(|(key, value)| key == "direct" && matches!(value, "1" | "true"));
+
+        self.set_direct_stream_supported(supports_direct);
+    }
+
+    fn encode_binary_frame(&self, colors: &[[u8; 3]]) -> ProtocolCommand {
+        let sequence = self.next_sequence.fetch_add(1, Ordering::AcqRel);
+        let colors = self.normalize_colors(colors);
+
+        let mut payload = Vec::with_capacity(HYPERCOLOR_FRAME_PAYLOAD_LEN);
+        payload.extend_from_slice(
+            &u16::try_from(TOTAL_LEDS)
+                .expect("TOTAL_LEDS should fit in u16")
+                .to_le_bytes(),
+        );
+        for color in colors {
+            payload.extend_from_slice(&color);
+        }
+
+        Self::binary_command(build_hypercolor_packet(sequence, &payload))
+    }
 }
 
 impl Protocol for DygmaProtocol {
@@ -169,21 +228,31 @@ impl Protocol for DygmaProtocol {
             Self::text_command("hardware.chip_id", true, Duration::ZERO),
             Self::text_command("hardware.firmware", true, Duration::ZERO),
             Self::text_command("led.at 0", true, Duration::ZERO),
-            Self::text_command("led.fade 0", true, Duration::ZERO),
-            Self::text_command("led.mode 0", true, Duration::ZERO),
-            Self::black_frame_command(Duration::from_millis(50)),
+            Self::text_command(HYPERCOLOR_CAPABILITIES_COMMAND, true, Duration::ZERO),
         ]
     }
 
     fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
-        vec![
-            Self::black_frame_command(Duration::ZERO),
-            Self::text_command("led.fade 1", true, Duration::ZERO),
-            Self::text_command("led.mode 0", true, Duration::ZERO),
-        ]
+        if self.supports_direct_stream() {
+            vec![Self::text_command(
+                HYPERCOLOR_CLEAR_COMMAND,
+                true,
+                Duration::ZERO,
+            )]
+        } else {
+            vec![
+                Self::black_frame_command(Duration::ZERO),
+                Self::text_command("led.fade 1", true, Duration::ZERO),
+                Self::text_command("led.mode 0", true, Duration::ZERO),
+            ]
+        }
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        if self.supports_direct_stream() {
+            return vec![self.encode_binary_frame(colors)];
+        }
+
         let _ = self.normalize_colors(colors);
 
         if !self.direct_stream_warned.swap(true, Ordering::AcqRel) {
@@ -208,12 +277,30 @@ impl Protocol for DygmaProtocol {
         ])
     }
 
+    fn connection_diagnostics(&self) -> Vec<ProtocolCommand> {
+        if self.supports_direct_stream() {
+            Vec::new()
+        } else {
+            vec![
+                Self::text_command("led.fade 0", true, Duration::ZERO),
+                Self::text_command("led.mode 0", true, Duration::ZERO),
+                Self::black_frame_command(Duration::from_millis(50)),
+            ]
+        }
+    }
+
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
         let text = std::str::from_utf8(data).map_err(|error| ProtocolError::MalformedResponse {
             detail: format!("invalid UTF-8: {error}"),
         })?;
         let trimmed = text.trim();
+        if trimmed.starts_with("hypercolor.error") {
+            return Err(ProtocolError::DeviceError {
+                status: ResponseStatus::Failed,
+            });
+        }
         self.update_color_mode_from_response(trimmed);
+        self.update_capabilities_from_response(trimmed);
 
         Ok(ProtocolResponse {
             status: ResponseStatus::Ok,
@@ -258,7 +345,7 @@ impl Protocol for DygmaProtocol {
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {
             led_count: self.total_leds(),
-            supports_direct: false,
+            supports_direct: self.supports_direct_stream(),
             supports_brightness: true,
             has_display: false,
             display_resolution: None,
@@ -279,4 +366,35 @@ impl Protocol for DygmaProtocol {
 pub fn rgb_to_rgbw(r: u8, g: u8, b: u8) -> (u8, u8, u8, u8) {
     let w = r.min(g).min(b);
     (r - w, g - w, b - w, w)
+}
+
+fn build_hypercolor_packet(sequence: u8, payload: &[u8]) -> Vec<u8> {
+    let payload_len = u16::try_from(payload.len()).expect("payload should fit in u16");
+    let mut packet = Vec::with_capacity(10 + payload.len());
+    packet.extend_from_slice(&HYPERCOLOR_MAGIC);
+    packet.push(HYPERCOLOR_VERSION);
+    packet.push(HYPERCOLOR_FRAME_OPCODE);
+    packet.push(sequence);
+    packet.extend_from_slice(&payload_len.to_le_bytes());
+    let mut crc_input = Vec::with_capacity(5 + payload.len());
+    crc_input.extend_from_slice(&packet[3..]);
+    crc_input.extend_from_slice(payload);
+    let crc = crc16_ccitt(&crc_input);
+    packet.extend_from_slice(&crc.to_le_bytes());
+    packet.extend_from_slice(payload);
+    packet
+}
+
+fn crc16_ccitt(bytes: &[u8]) -> u16 {
+    bytes.iter().fold(0xFFFF_u16, |crc, &byte| {
+        let mut crc = crc ^ (u16::from(byte) << 8);
+        for _ in 0..8 {
+            if (crc & 0x8000) != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+        crc
+    })
 }
