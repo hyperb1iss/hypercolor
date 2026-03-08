@@ -155,6 +155,25 @@ effects-build:
 effect-build name:
     cd sdk && bun scripts/build-effect.ts src/effects/{{ name }}/main.ts
 
+# ─── Setup ───────────────────────────────────────────────
+
+# Install all project dependencies (Rust targets, UI deps, SDK deps)
+setup:
+    @echo '→ Checking rustup targets...'
+    rustup target add wasm32-unknown-unknown
+    @echo '→ Installing UI dependencies...'
+    cd crates/hypercolor-ui && npm install
+    @echo '→ Installing SDK dependencies...'
+    cd sdk && bun install
+    @echo '✅ All dependencies installed'
+
+# Install udev rules for USB device access (requires sudo, replug or reboot after)
+udev-install:
+    sudo cp udev/99-hypercolor.rules /etc/udev/rules.d/
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger
+    @echo '✅ udev rules installed — replug USB devices or reboot for changes to take effect'
+
 # ─── Housekeeping ─────────────────────────────────────────
 
 # Clean build artifacts
