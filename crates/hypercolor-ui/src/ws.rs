@@ -8,6 +8,9 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::MessageEvent;
 
+pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 60;
+const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 12;
+
 // ── Connection State ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +183,7 @@ pub struct WsManager {
     pub active_effect: ReadSignal<Option<String>>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
     pub preview_target_fps: ReadSignal<u32>,
+    pub set_preview_cap: WriteSignal<u32>,
 }
 
 impl WsManager {
@@ -192,6 +196,9 @@ impl WsManager {
         let (active_effect, set_active_effect) = signal(None::<String>);
         let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
         let (preview_target_fps, set_preview_target_fps) = signal(0_u32);
+        let (engine_preview_target, set_engine_preview_target) = signal(0_u32);
+        let (preview_cap, set_preview_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
+        let (page_visible, set_page_visible) = signal(document_is_visible());
 
         // Build WebSocket URL relative to page origin
         let ws_url = build_ws_url();
@@ -219,33 +226,31 @@ impl WsManager {
                     active_effect,
                     last_device_event,
                     preview_target_fps,
+                    set_preview_cap,
                 };
             }
         };
 
         ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
-        let request_preview_fps = {
-            let ws = ws.clone();
-            move |engine_target_fps: u32| {
-                let desired_fps = engine_target_fps.clamp(1, 60);
-                if desired_fps == requested_preview_fps.get_value() {
-                    return;
-                }
-
-                requested_preview_fps.set_value(desired_fps);
-                set_preview_target_fps.set(desired_fps);
-
-                let subscribe_msg = serde_json::json!({
-                    "type": "subscribe",
-                    "channels": ["canvas"],
-                    "config": {
-                        "canvas": { "fps": desired_fps, "format": "rgba" }
-                    }
-                });
-                let _ = ws.send_with_str(&subscribe_msg.to_string());
+        let preview_ws = ws.clone();
+        Effect::new(move |_| {
+            let engine_target = engine_preview_target.get();
+            let client_cap = preview_cap.get();
+            let is_visible = page_visible.get();
+            if engine_target == 0 {
+                return;
             }
-        };
+
+            request_preview_subscription(
+                &preview_ws,
+                requested_preview_fps,
+                set_preview_target_fps,
+                engine_target,
+                client_cap,
+                is_visible,
+            );
+        });
 
         // onopen — subscribe to events + metrics, then pace preview after hello.
         let ws_clone = ws.clone();
@@ -277,6 +282,15 @@ impl WsManager {
         });
         ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
         on_error.forget();
+
+        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+            let visibility_document = document.clone();
+            let on_visibility_change = Closure::<dyn FnMut()>::new(move || {
+                set_page_visible.set(!visibility_document.hidden());
+            });
+            document.set_onvisibilitychange(Some(on_visibility_change.as_ref().unchecked_ref()));
+            on_visibility_change.forget();
+        }
 
         // onmessage — handle both JSON and binary frames
         let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
@@ -332,8 +346,8 @@ impl WsManager {
                         &set_metrics,
                         &set_backpressure_notice,
                         &set_last_device_event,
+                        &set_engine_preview_target,
                         &set_preview_target_fps,
-                        &request_preview_fps,
                     );
                 }
             }
@@ -350,6 +364,7 @@ impl WsManager {
             active_effect,
             last_device_event,
             preview_target_fps,
+            set_preview_cap,
         }
     }
 }
@@ -367,6 +382,47 @@ fn build_ws_url() -> String {
 
     let ws_protocol = if protocol == "https:" { "wss:" } else { "ws:" };
     format!("{ws_protocol}//{host}/api/v1/ws")
+}
+
+fn document_is_visible() -> bool {
+    web_sys::window()
+        .and_then(|window| window.document())
+        .is_none_or(|document| !document.hidden())
+}
+
+fn desired_preview_fps(engine_target_fps: u32, client_cap: u32, page_visible: bool) -> u32 {
+    let capped_target = engine_target_fps.clamp(1, 60).min(client_cap.clamp(1, 60));
+    if page_visible {
+        capped_target
+    } else {
+        capped_target.min(HIDDEN_TAB_PREVIEW_FPS_CAP)
+    }
+}
+
+fn request_preview_subscription(
+    ws: &web_sys::WebSocket,
+    requested_preview_fps: StoredValue<u32>,
+    set_preview_target_fps: WriteSignal<u32>,
+    engine_target_fps: u32,
+    client_cap: u32,
+    page_visible: bool,
+) {
+    let desired_fps = desired_preview_fps(engine_target_fps, client_cap, page_visible);
+    if desired_fps == requested_preview_fps.get_value() {
+        return;
+    }
+
+    requested_preview_fps.set_value(desired_fps);
+    set_preview_target_fps.set(desired_fps);
+
+    let subscribe_msg = serde_json::json!({
+        "type": "subscribe",
+        "channels": ["canvas"],
+        "config": {
+            "canvas": { "fps": desired_fps, "format": "rgba" }
+        }
+    });
+    let _ = ws.send_with_str(&subscribe_msg.to_string());
 }
 
 /// Decode a binary canvas frame.
@@ -447,8 +503,8 @@ fn handle_json_message(
     set_metrics: &WriteSignal<Option<PerformanceMetrics>>,
     set_backpressure_notice: &WriteSignal<Option<BackpressureNotice>>,
     set_last_device_event: &WriteSignal<Option<DeviceEventHint>>,
+    set_engine_preview_target: &WriteSignal<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
-    request_preview_fps: &impl Fn(u32),
 ) {
     let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
@@ -486,18 +542,14 @@ fn handle_json_message(
                 }
 
                 if target > 0 {
-                    let preview_target = target.min(60);
-                    set_preview_target_fps.set(preview_target);
-                    request_preview_fps(preview_target);
+                    set_engine_preview_target.set(target.min(60));
                 }
             }
         }
         "metrics" => {
             if let Ok(message) = serde_json::from_value::<MetricsMessage>(msg.clone()) {
                 if message.data.fps.target > 0 {
-                    let preview_target = message.data.fps.target.min(60);
-                    set_preview_target_fps.set(preview_target);
-                    request_preview_fps(preview_target);
+                    set_engine_preview_target.set(message.data.fps.target.min(60));
                 }
                 set_metrics.set(Some(message.data));
             }

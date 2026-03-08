@@ -32,7 +32,7 @@
 /* ── Base Resets ─────────────────────────────────────────────────────────── */
 
 html {
-    zoom: 1.2;
+    font-size: 112.5%;
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
@@ -545,6 +545,19 @@ button:hover:not(:disabled) > .relative {
     background-size: 256px 256px;
 }
 
+@media (prefers-reduced-motion: reduce) {
+    .noise-overlay::before {
+        display: none;
+    }
+
+    .glass,
+    .glass-dense,
+    .glass-subtle {
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+    }
+}
+
 /* ── Hidden scrollbar utility ────────────────────────────────────────────── */
 
 .scrollbar-none {
@@ -967,6 +980,355 @@ button:hover:not(:disabled) > .relative {
     opacity: 0.4;
 }
 
+/* ── Enhanced Logo Background Effects ──────────────────────────────────── */
+
+/* 0: Circuit — scanning beam + faint PCB grid traces */
+.logo-bg-circuit::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        0deg,
+        transparent 0%,
+        rgba(128, 255, 234, 0.04) 46%,
+        rgba(128, 255, 234, 0.14) 50%,
+        rgba(128, 255, 234, 0.04) 54%,
+        transparent 100%
+    );
+    background-size: 100% 200%;
+    animation: circuitScan 4s ease-in-out infinite;
+}
+.logo-bg-circuit::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+        repeating-linear-gradient(
+            0deg,
+            transparent 0px, transparent 15px,
+            rgba(225, 53, 255, 0.025) 15px, rgba(225, 53, 255, 0.025) 16px
+        ),
+        repeating-linear-gradient(
+            90deg,
+            transparent 0px, transparent 15px,
+            rgba(128, 255, 234, 0.018) 15px, rgba(128, 255, 234, 0.018) 16px
+        );
+    opacity: 0.7;
+}
+
+@keyframes circuitScan {
+    0%   { background-position: 0% 0%; }
+    100% { background-position: 0% 200%; }
+}
+
+/* 1: Silk — aurora ribbons flowing through */
+.logo-bg-silk::before {
+    content: '';
+    position: absolute;
+    inset: -20%;
+    background: linear-gradient(
+        140deg,
+        transparent 30%,
+        rgba(253, 164, 175, 0.08) 40%,
+        rgba(196, 181, 253, 0.1) 50%,
+        rgba(225, 53, 255, 0.06) 60%,
+        transparent 70%
+    );
+    animation: silkRibbon 12s ease-in-out infinite;
+}
+.logo-bg-silk::after {
+    content: '';
+    position: absolute;
+    inset: -20%;
+    background: linear-gradient(
+        -30deg,
+        transparent 35%,
+        rgba(196, 181, 253, 0.06) 42%,
+        rgba(253, 164, 175, 0.08) 50%,
+        rgba(128, 255, 234, 0.04) 58%,
+        transparent 65%
+    );
+    animation: silkRibbon 16s ease-in-out infinite reverse;
+}
+
+@keyframes silkRibbon {
+    0%   { transform: translateX(-30%) rotate(-5deg); }
+    50%  { transform: translateX(30%) rotate(5deg); }
+    100% { transform: translateX(-30%) rotate(-5deg); }
+}
+
+/* 2: Bloom — floating luminous orbs + sparkle dust motes */
+.logo-bg-bloom::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(circle 12px at 20% 30%, rgba(255, 106, 193, 0.15), transparent),
+        radial-gradient(circle 8px at 75% 60%, rgba(225, 53, 255, 0.12), transparent),
+        radial-gradient(circle 10px at 50% 80%, rgba(253, 164, 175, 0.1), transparent);
+    animation: bloomFloat 10s ease-in-out infinite;
+}
+.logo-bg-bloom::after {
+    content: '';
+    position: absolute;
+    width: 2px;
+    height: 2px;
+    top: 10%;
+    left: 15%;
+    background: rgba(255, 106, 193, 0.6);
+    border-radius: 50%;
+    box-shadow:
+        30px 8px 0 0 rgba(253, 164, 175, 0.5),
+        65px 20px 0 -0.5px rgba(225, 53, 255, 0.4),
+        120px 5px 0 0 rgba(196, 181, 253, 0.5),
+        150px 15px 0 -0.5px rgba(255, 106, 193, 0.3),
+        45px 60px 0 0 rgba(225, 53, 255, 0.4),
+        100px 55px 0 -0.5px rgba(253, 164, 175, 0.5),
+        140px 70px 0 0 rgba(196, 181, 253, 0.3),
+        20px 85px 0 0 rgba(255, 106, 193, 0.4),
+        80px 90px 0 -0.5px rgba(225, 53, 255, 0.35),
+        160px 80px 0 0 rgba(253, 164, 175, 0.45);
+    animation: bloomDust 6s ease-in-out infinite;
+}
+
+@keyframes bloomFloat {
+    0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.6; }
+    33% { transform: translate(5px, -3px) scale(1.05); opacity: 0.8; }
+    66% { transform: translate(-3px, 2px) scale(0.95); opacity: 0.5; }
+}
+@keyframes bloomDust {
+    0%, 100% { opacity: 0.4; transform: translateY(0); }
+    50% { opacity: 0.8; transform: translateY(-3px); }
+}
+
+/* 3: Whisper — starfield with parallax twinkling layers */
+.logo-bg-whisper::before {
+    content: '';
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    top: 0;
+    left: 0;
+    background: transparent;
+    box-shadow:
+        25px 12px 0 0 rgba(196, 181, 253, 0.7),
+        60px 8px 0 0 rgba(128, 255, 234, 0.5),
+        95px 22px 0 -0.5px rgba(196, 181, 253, 0.4),
+        135px 15px 0 0 rgba(225, 53, 255, 0.3),
+        170px 28px 0 0 rgba(128, 255, 234, 0.6),
+        15px 45px 0 -0.5px rgba(196, 181, 253, 0.35),
+        45px 38px 0 0 rgba(128, 255, 234, 0.45),
+        80px 50px 0 0 rgba(225, 53, 255, 0.5),
+        115px 42px 0 -0.5px rgba(196, 181, 253, 0.4),
+        150px 55px 0 0 rgba(128, 255, 234, 0.3),
+        30px 72px 0 0 rgba(225, 53, 255, 0.4),
+        70px 68px 0 -0.5px rgba(196, 181, 253, 0.55),
+        105px 78px 0 0 rgba(128, 255, 234, 0.35),
+        140px 65px 0 0 rgba(196, 181, 253, 0.45),
+        175px 75px 0 -0.5px rgba(225, 53, 255, 0.3),
+        50px 95px 0 0 rgba(128, 255, 234, 0.5),
+        90px 88px 0 0 rgba(196, 181, 253, 0.4),
+        130px 92px 0 -0.5px rgba(225, 53, 255, 0.35),
+        160px 100px 0 0 rgba(128, 255, 234, 0.45);
+    animation: whisperTwinkle 8s ease-in-out infinite;
+}
+.logo-bg-whisper::after {
+    content: '';
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    top: 0;
+    left: 0;
+    background: transparent;
+    box-shadow:
+        12px 20px 0 0.5px rgba(196, 181, 253, 0.3),
+        40px 55px 0 0.5px rgba(128, 255, 234, 0.25),
+        78px 35px 0 0.5px rgba(225, 53, 255, 0.2),
+        120px 70px 0 0.5px rgba(196, 181, 253, 0.3),
+        155px 45px 0 0.5px rgba(128, 255, 234, 0.2),
+        88px 85px 0 0.5px rgba(196, 181, 253, 0.25);
+    animation: whisperTwinkle 12s ease-in-out infinite 4s;
+}
+
+@keyframes whisperTwinkle {
+    0%, 100% { opacity: 0.3; }
+    25% { opacity: 0.7; }
+    50% { opacity: 0.4; }
+    75% { opacity: 0.8; }
+}
+
+/* 4: Prism — rotating conic gradient caustics + light flares */
+.logo-bg-prism::before {
+    content: '';
+    position: absolute;
+    inset: -50%;
+    background: conic-gradient(
+        from 0deg at 50% 50%,
+        rgba(225, 53, 255, 0.04) 0deg,
+        transparent 30deg,
+        rgba(128, 255, 234, 0.05) 60deg,
+        transparent 90deg,
+        rgba(255, 106, 193, 0.04) 120deg,
+        transparent 150deg,
+        rgba(241, 250, 140, 0.03) 180deg,
+        transparent 210deg,
+        rgba(196, 181, 253, 0.04) 240deg,
+        transparent 270deg,
+        rgba(128, 255, 234, 0.03) 300deg,
+        transparent 330deg,
+        rgba(225, 53, 255, 0.04) 360deg
+    );
+    animation: prismRotate 20s linear infinite;
+}
+.logo-bg-prism::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(circle 20px at 30% 40%, rgba(225, 53, 255, 0.08), transparent),
+        radial-gradient(circle 15px at 70% 65%, rgba(128, 255, 234, 0.06), transparent),
+        radial-gradient(circle 10px at 55% 25%, rgba(255, 106, 193, 0.07), transparent);
+    animation: prismFlare 8s ease-in-out infinite;
+}
+
+@keyframes prismRotate {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+}
+@keyframes prismFlare {
+    0%, 100% { opacity: 0.3; transform: scale(1); }
+    50% { opacity: 0.7; transform: scale(1.1); }
+}
+
+/* 5: Script — rising sparkle motes + soft bokeh circles */
+.logo-bg-script::before {
+    content: '';
+    position: absolute;
+    width: 2px;
+    height: 2px;
+    bottom: 0;
+    left: 10%;
+    background: rgba(255, 106, 193, 0.6);
+    border-radius: 50%;
+    box-shadow:
+        20px 0 0 0 rgba(225, 53, 255, 0.5),
+        55px -10px 0 -0.5px rgba(255, 106, 193, 0.4),
+        90px 5px 0 0 rgba(196, 181, 253, 0.5),
+        125px -5px 0 0 rgba(253, 164, 175, 0.4),
+        155px 0 0 -0.5px rgba(225, 53, 255, 0.3);
+    animation: scriptRise 6s ease-in-out infinite;
+}
+.logo-bg-script::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(circle 18px at 25% 50%, rgba(255, 106, 193, 0.06), transparent),
+        radial-gradient(circle 25px at 70% 40%, rgba(225, 53, 255, 0.05), transparent),
+        radial-gradient(circle 14px at 50% 75%, rgba(253, 164, 175, 0.07), transparent);
+    animation: scriptBokeh 10s ease-in-out infinite;
+}
+
+@keyframes scriptRise {
+    0%   { transform: translateY(0); opacity: 0.6; }
+    50%  { transform: translateY(-20px); opacity: 0.9; }
+    100% { transform: translateY(-40px); opacity: 0; }
+}
+@keyframes scriptBokeh {
+    0%, 100% { opacity: 0.3; transform: scale(1); }
+    50% { opacity: 0.6; transform: scale(1.08); }
+}
+
+/* 6: Editorial — halftone dot pattern + diagonal shimmer sweep */
+.logo-bg-editorial::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle 1px at 50% 50%, rgba(225, 53, 255, 0.08), transparent);
+    background-size: 8px 8px;
+    opacity: 0.5;
+}
+.logo-bg-editorial::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        -45deg,
+        transparent 30%,
+        rgba(225, 53, 255, 0.06) 45%,
+        rgba(255, 106, 193, 0.08) 50%,
+        rgba(225, 53, 255, 0.06) 55%,
+        transparent 70%
+    );
+    background-size: 300% 300%;
+    animation: editorialShimmer 8s ease-in-out infinite;
+}
+
+@keyframes editorialShimmer {
+    0%   { background-position: 100% 100%; }
+    50%  { background-position: 0% 0%; }
+    100% { background-position: 100% 100%; }
+}
+
+/* 7: Neon — vertical digital rain streaks (::after already has scanlines) */
+.logo-bg-neon::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+        90deg,
+        transparent 0px, transparent 11px,
+        rgba(128, 255, 234, 0.035) 11px, rgba(128, 255, 234, 0.035) 12px
+    );
+    -webkit-mask-image: linear-gradient(
+        0deg,
+        rgba(0,0,0,0.8) 0%, transparent 40%,
+        rgba(0,0,0,0.4) 60%, transparent 100%
+    );
+    mask-image: linear-gradient(
+        0deg,
+        rgba(0,0,0,0.8) 0%, transparent 40%,
+        rgba(0,0,0,0.4) 60%, transparent 100%
+    );
+    animation: neonRain 3s linear infinite;
+}
+
+@keyframes neonRain {
+    0%   { transform: translateY(-100%); }
+    100% { transform: translateY(100%); }
+}
+
+/* 8: Glitch — horizontal noise bands + RGB tear (::after already has scanlines) */
+.logo-bg-glitch::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        0deg,
+        transparent 0%,
+        rgba(225, 53, 255, 0.04) 10%, transparent 12%,
+        transparent 25%,
+        rgba(128, 255, 234, 0.05) 26%, transparent 28%,
+        transparent 45%,
+        rgba(241, 250, 140, 0.03) 46%, transparent 48%,
+        transparent 60%,
+        rgba(255, 106, 193, 0.04) 61%, transparent 63%,
+        transparent 80%,
+        rgba(128, 255, 234, 0.03) 81%, transparent 83%,
+        transparent 100%
+    );
+    animation: glitchNoise 4s step-end infinite;
+}
+
+@keyframes glitchNoise {
+    0%   { transform: translateY(0); opacity: 0.8; }
+    20%  { transform: translateY(-10px); opacity: 0.6; }
+    40%  { transform: translateY(5px); opacity: 0.9; }
+    60%  { transform: translateY(-3px); opacity: 0.5; }
+    80%  { transform: translateY(8px); opacity: 0.7; }
+    100% { transform: translateY(0); opacity: 0.8; }
+}
+
 /* ── Light mode overrides ─────────────────────────────────────────────── */
 [data-theme="light"] .logo-gradient-text {
     background-image: linear-gradient(
@@ -1015,7 +1377,21 @@ button:hover:not(:disabled) > .relative {
     .logo-neon-hyper,
     .logo-neon-color,
     .logo-sparkle,
-    .logo-mark {
+    .logo-mark,
+    .logo-bg-circuit::before,
+    .logo-bg-silk::before,
+    .logo-bg-silk::after,
+    .logo-bg-bloom::before,
+    .logo-bg-bloom::after,
+    .logo-bg-whisper::before,
+    .logo-bg-whisper::after,
+    .logo-bg-prism::before,
+    .logo-bg-prism::after,
+    .logo-bg-script::before,
+    .logo-bg-script::after,
+    .logo-bg-editorial::after,
+    .logo-bg-neon::before,
+    .logo-bg-glitch::before {
         animation: none !important;
     }
 

@@ -14,6 +14,8 @@ use crate::components::preset_panel::PresetToolbar;
 use crate::icons::*;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
+const EFFECTS_PREVIEW_FPS_CAP: u32 = 36;
+
 /// Category -> accent RGB string for inline styles.
 fn category_accent_rgb(category: &str) -> &'static str {
     match category {
@@ -46,6 +48,11 @@ const CATEGORIES: &[&str] = &[
 pub fn EffectsPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let fx = expect_context::<EffectsContext>();
+
+    Effect::new(move |_| {
+        ws.set_preview_cap.set(EFFECTS_PREVIEW_FPS_CAP);
+    });
+    on_cleanup(move || ws.set_preview_cap.set(crate::ws::DEFAULT_PREVIEW_FPS_CAP));
 
     // Restore persisted filter state from localStorage
     let storage = web_sys::window().and_then(|w| w.local_storage().ok().flatten());
