@@ -4,6 +4,7 @@
 //! Save persists to disk. Revert restores to the last saved state.
 
 use leptos::prelude::*;
+use leptos_use::use_debounce_fn_with_arg;
 use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
@@ -96,6 +97,14 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (_dirty_marker, set_is_dirty) = signal(false);
 
     // Auto-select the active layout (or first available, or create a default) on mount
+    let preview_layout = use_debounce_fn_with_arg(
+        |layout: SpatialLayout| {
+            leptos::task::spawn_local(async move {
+                let _ = api::preview_layout(&layout).await;
+            });
+        },
+        75.0,
+    );
     Effect::new(move |_| {
         if initialized.get() {
             return;
@@ -157,21 +166,25 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     // Push live preview to spatial engine whenever the layout changes (debounced).
     Effect::new(
-        move |prev_zones: Option<Option<Vec<hypercolor_types::spatial::DeviceZone>>>| {
+        move |prev_snapshot: Option<
+            Option<(
+                Vec<hypercolor_types::spatial::DeviceZone>,
+                Vec<hypercolor_types::spatial::ZoneGroup>,
+            )>,
+        >| {
             let current = layout.get();
-            let current_zones = current.as_ref().map(|l| l.zones.clone());
+            let current_snapshot = current
+                .as_ref()
+                .map(|current| (current.zones.clone(), current.groups.clone()));
 
-            // Only push preview if zones actually changed (avoid initial no-op).
-            if current_zones != prev_zones.flatten() {
+            // Only push preview if spatial data actually changed (avoid initial no-op).
+            if current_snapshot != prev_snapshot.flatten() {
                 if let Some(layout) = current.as_ref() {
-                    let layout_clone = layout.clone();
-                    leptos::task::spawn_local(async move {
-                        let _ = api::preview_layout(&layout_clone).await;
-                    });
+                    preview_layout(layout.clone());
                 }
             }
 
-            current.map(|l| l.zones.clone())
+            current_snapshot
         },
     );
 

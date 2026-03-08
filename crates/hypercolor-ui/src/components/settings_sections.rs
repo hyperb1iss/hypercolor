@@ -9,21 +9,32 @@ use crate::api;
 use crate::components::settings_controls::*;
 use crate::icons::*;
 
+fn read_config<T>(
+    config: Signal<Option<HypercolorConfig>>,
+    selector: impl FnOnce(&HypercolorConfig) -> T,
+) -> T
+where
+    T: Default,
+{
+    config.with(|cfg| cfg.as_ref().map(selector).unwrap_or_default())
+}
+
 // ── Audio ──────────────────────────────────────────────────────────────────
 
 #[component]
 pub fn AudioSection(
-    config: Signal<HypercolorConfig>,
+    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
     on_change: Callback<(String, serde_json::Value)>,
     on_reset: Callback<String>,
     #[prop(into)] audio_devices: Signal<Vec<(String, String)>>,
 ) -> impl IntoView {
-    let enabled = Signal::derive(move || config.get().audio.enabled);
-    let device = Signal::derive(move || config.get().audio.device.clone());
-    let fft_size = Signal::derive(move || config.get().audio.fft_size.to_string());
-    let smoothing = Signal::derive(move || f64::from(config.get().audio.smoothing));
-    let noise_gate = Signal::derive(move || f64::from(config.get().audio.noise_gate));
-    let beat_sensitivity = Signal::derive(move || f64::from(config.get().audio.beat_sensitivity));
+    let enabled = Signal::derive(move || read_config(config, |cfg| cfg.audio.enabled));
+    let device = Signal::derive(move || read_config(config, |cfg| cfg.audio.device.clone()));
+    let fft_size = Signal::derive(move || read_config(config, |cfg| cfg.audio.fft_size.to_string()));
+    let smoothing = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.audio.smoothing)));
+    let noise_gate = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.audio.noise_gate)));
+    let beat_sensitivity =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.audio.beat_sensitivity)));
 
     let fft_options = vec![
         ("256".to_string(), "256".to_string()),
@@ -95,14 +106,15 @@ pub fn AudioSection(
 
 #[component]
 pub fn CaptureSection(
-    config: Signal<HypercolorConfig>,
+    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
     on_change: Callback<(String, serde_json::Value)>,
     on_reset: Callback<String>,
 ) -> impl IntoView {
-    let enabled = Signal::derive(move || config.get().capture.enabled);
-    let source = Signal::derive(move || config.get().capture.source.clone());
-    let capture_fps = Signal::derive(move || f64::from(config.get().capture.capture_fps));
-    let monitor = Signal::derive(move || f64::from(config.get().capture.monitor));
+    let enabled = Signal::derive(move || read_config(config, |cfg| cfg.capture.enabled));
+    let source = Signal::derive(move || read_config(config, |cfg| cfg.capture.source.clone()));
+    let capture_fps =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.capture_fps)));
+    let monitor = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.capture.monitor)));
 
     let source_options = vec![
         ("auto".to_string(), "Auto".to_string()),
@@ -157,24 +169,29 @@ pub fn CaptureSection(
 
 #[component]
 pub fn EngineSection(
-    config: Signal<HypercolorConfig>,
+    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
     on_change: Callback<(String, serde_json::Value)>,
     on_reset: Callback<String>,
 ) -> impl IntoView {
-    let renderer = Signal::derive(move || config.get().effect_engine.preferred_renderer.clone());
-    let servo = Signal::derive(move || config.get().effect_engine.servo_enabled);
-    let wgpu = Signal::derive(move || config.get().effect_engine.wgpu_backend.clone());
-    let extra_dirs = Signal::derive(move || {
-        config
-            .get()
-            .effect_engine
-            .extra_effect_dirs
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
+    let renderer = Signal::derive(move || {
+        read_config(config, |cfg| cfg.effect_engine.preferred_renderer.clone())
     });
-    let watch_effects = Signal::derive(move || config.get().effect_engine.watch_effects);
-    let watch_config = Signal::derive(move || config.get().effect_engine.watch_config);
+    let servo = Signal::derive(move || read_config(config, |cfg| cfg.effect_engine.servo_enabled));
+    let wgpu =
+        Signal::derive(move || read_config(config, |cfg| cfg.effect_engine.wgpu_backend.clone()));
+    let extra_dirs = Signal::derive(move || {
+        read_config(config, |cfg| {
+            cfg.effect_engine
+                .extra_effect_dirs
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+        })
+    });
+    let watch_effects =
+        Signal::derive(move || read_config(config, |cfg| cfg.effect_engine.watch_effects));
+    let watch_config =
+        Signal::derive(move || read_config(config, |cfg| cfg.effect_engine.watch_config));
 
     let renderer_options = vec![
         ("auto".to_string(), "Auto".to_string()),
@@ -248,15 +265,16 @@ pub fn EngineSection(
 
 #[component]
 pub fn NetworkSection(
-    config: Signal<HypercolorConfig>,
+    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
     on_change: Callback<(String, serde_json::Value)>,
     on_reset: Callback<String>,
 ) -> impl IntoView {
-    let listen_addr = Signal::derive(move || config.get().daemon.listen_address.clone());
-    let port = Signal::derive(move || f64::from(config.get().daemon.port));
-    let target_fps = Signal::derive(move || f64::from(config.get().daemon.target_fps));
-    let ws_fps = Signal::derive(move || f64::from(config.get().web.websocket_fps));
-    let open_browser = Signal::derive(move || config.get().web.open_browser);
+    let listen_addr = Signal::derive(move || read_config(config, |cfg| cfg.daemon.listen_address.clone()));
+    let port = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.port)));
+    let target_fps =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.target_fps)));
+    let ws_fps = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.web.websocket_fps)));
+    let open_browser = Signal::derive(move || read_config(config, |cfg| cfg.web.open_browser));
 
     view! {
         <section id="section-network" class="rounded-xl bg-surface-raised border border-edge-subtle p-5 space-y-0">
@@ -324,14 +342,16 @@ pub fn NetworkSection(
 
 #[component]
 pub fn SessionSection(
-    config: Signal<HypercolorConfig>,
+    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
     on_change: Callback<(String, serde_json::Value)>,
     on_reset: Callback<String>,
 ) -> impl IntoView {
-    let enabled = Signal::derive(move || config.get().session.enabled);
-    let idle_enabled = Signal::derive(move || config.get().session.idle_enabled);
-    let dim_timeout = Signal::derive(move || config.get().session.idle_dim_timeout_secs as f64);
-    let off_timeout = Signal::derive(move || config.get().session.idle_off_timeout_secs as f64);
+    let enabled = Signal::derive(move || read_config(config, |cfg| cfg.session.enabled));
+    let idle_enabled = Signal::derive(move || read_config(config, |cfg| cfg.session.idle_enabled));
+    let dim_timeout =
+        Signal::derive(move || read_config(config, |cfg| cfg.session.idle_dim_timeout_secs as f64));
+    let off_timeout =
+        Signal::derive(move || read_config(config, |cfg| cfg.session.idle_off_timeout_secs as f64));
 
     view! {
         <section id="section-session" class="rounded-xl bg-surface-raised border border-edge-subtle p-5 space-y-0">
@@ -375,14 +395,15 @@ pub fn SessionSection(
 
 #[component]
 pub fn DiscoverySection(
-    config: Signal<HypercolorConfig>,
+    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
     on_change: Callback<(String, serde_json::Value)>,
     on_reset: Callback<String>,
 ) -> impl IntoView {
-    let mdns = Signal::derive(move || config.get().discovery.mdns_enabled);
-    let scan_interval = Signal::derive(move || config.get().discovery.scan_interval_secs as f64);
-    let wled = Signal::derive(move || config.get().discovery.wled_scan);
-    let hue = Signal::derive(move || config.get().discovery.hue_scan);
+    let mdns = Signal::derive(move || read_config(config, |cfg| cfg.discovery.mdns_enabled));
+    let scan_interval =
+        Signal::derive(move || read_config(config, |cfg| cfg.discovery.scan_interval_secs as f64));
+    let wled = Signal::derive(move || read_config(config, |cfg| cfg.discovery.wled_scan));
+    let hue = Signal::derive(move || read_config(config, |cfg| cfg.discovery.hue_scan));
     view! {
         <section id="section-discovery" class="rounded-xl bg-surface-raised border border-edge-subtle p-5 space-y-0">
             <SectionHeader title="Device Discovery" icon=LuRadar />
@@ -425,18 +446,23 @@ pub fn DiscoverySection(
 
 #[component]
 pub fn DeveloperSection(
-    config: Signal<HypercolorConfig>,
+    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
     on_change: Callback<(String, serde_json::Value)>,
     on_reset: Callback<String>,
 ) -> impl IntoView {
-    let log_level =
-        Signal::derive(move || format!("{:?}", config.get().daemon.log_level).to_lowercase());
-    let canvas_width = Signal::derive(move || f64::from(config.get().daemon.canvas_width));
-    let canvas_height = Signal::derive(move || f64::from(config.get().daemon.canvas_height));
-    let max_devices = Signal::derive(move || f64::from(config.get().daemon.max_devices));
-    let wasm_plugins = Signal::derive(move || config.get().features.wasm_plugins);
-    let hue_entertainment = Signal::derive(move || config.get().features.hue_entertainment);
-    let midi_input = Signal::derive(move || config.get().features.midi_input);
+    let log_level = Signal::derive(move || {
+        read_config(config, |cfg| format!("{:?}", cfg.daemon.log_level).to_lowercase())
+    });
+    let canvas_width =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.canvas_width)));
+    let canvas_height =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.canvas_height)));
+    let max_devices =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.max_devices)));
+    let wasm_plugins = Signal::derive(move || read_config(config, |cfg| cfg.features.wasm_plugins));
+    let hue_entertainment =
+        Signal::derive(move || read_config(config, |cfg| cfg.features.hue_entertainment));
+    let midi_input = Signal::derive(move || read_config(config, |cfg| cfg.features.midi_input));
 
     let log_options = vec![
         ("trace".to_string(), "Trace".to_string()),

@@ -138,9 +138,6 @@ pub fn SettingsPage() -> impl IntoView {
     // closures reading this won't re-run on every config update.
     let config_loaded = Memo::new(move |_| config.get().is_some());
 
-    // Stable config signal — created once, fine-grained updates flow through.
-    let config_signal = Signal::derive(move || config.get().unwrap_or_default());
-
     // Seed config signal from resource
     Effect::new(move |_| {
         if let Some(Ok(cfg)) = config_resource.get() {
@@ -377,29 +374,29 @@ pub fn SettingsPage() -> impl IntoView {
                         <div class="p-6 space-y-4 max-w-3xl mx-auto">
                             <div style="animation: fade-in 0.4s ease-out 0.05s both">
                                 <AudioSection
-                                    config=config_signal
+                                    config=config
                                     on_change=on_change
                                     on_reset=on_reset
                                     audio_devices=Signal::derive(move || audio_devices.get())
                                 />
                             </div>
                             <div style="animation: fade-in 0.4s ease-out 0.1s both">
-                                <CaptureSection config=config_signal on_change=on_change on_reset=on_reset />
+                                <CaptureSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div style="animation: fade-in 0.4s ease-out 0.15s both">
-                                <EngineSection config=config_signal on_change=on_change on_reset=on_reset />
+                                <EngineSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div style="animation: fade-in 0.4s ease-out 0.2s both">
-                                <NetworkSection config=config_signal on_change=on_change on_reset=on_reset />
+                                <NetworkSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div style="animation: fade-in 0.4s ease-out 0.25s both">
-                                <SessionSection config=config_signal on_change=on_change on_reset=on_reset />
+                                <SessionSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div style="animation: fade-in 0.4s ease-out 0.3s both">
-                                <DiscoverySection config=config_signal on_change=on_change on_reset=on_reset />
+                                <DiscoverySection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div style="animation: fade-in 0.4s ease-out 0.35s both">
-                                <DeveloperSection config=config_signal on_change=on_change on_reset=on_reset />
+                                <DeveloperSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div style="animation: fade-in 0.4s ease-out 0.4s both">
                                 <AboutSection config_path=Signal::derive(move || config_path.get()) />
