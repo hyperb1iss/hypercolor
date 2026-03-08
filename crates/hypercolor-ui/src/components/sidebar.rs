@@ -276,11 +276,25 @@ pub fn Sidebar() -> impl IntoView {
             class:w-56=move || !collapsed.get()
             class:w-14=move || collapsed.get()
         >
-            // Logo — click to cycle through modes
+            // Logo — click to cycle through modes, persisted to localStorage
             {
                 let logo_mode_count = 9_usize;
-                let (logo_mode, set_logo_mode) = signal(0_usize);
-                let cycle_logo = move |_| set_logo_mode.update(|m| *m = (*m + 1) % logo_mode_count);
+                let default_mode = 4_usize; // Prism
+                let initial_mode = web_sys::window()
+                    .and_then(|w| w.local_storage().ok().flatten())
+                    .and_then(|s| s.get_item("hc-logo-mode").ok().flatten())
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .filter(|m| *m < logo_mode_count)
+                    .unwrap_or(default_mode);
+                let (logo_mode, set_logo_mode) = signal(initial_mode);
+                let cycle_logo = move |_| set_logo_mode.update(|m| {
+                    *m = (*m + 1) % logo_mode_count;
+                    if let Some(storage) = web_sys::window()
+                        .and_then(|w| w.local_storage().ok().flatten())
+                    {
+                        let _ = storage.set_item("hc-logo-mode", &m.to_string());
+                    }
+                });
 
                 let mode_names = [
                     "circuit", "silk", "bloom", "whisper", "prism",
