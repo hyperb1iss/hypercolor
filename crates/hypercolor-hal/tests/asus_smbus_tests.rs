@@ -304,6 +304,21 @@ fn smbus_protocol_parses_firmware_and_config_responses() {
 }
 
 #[test]
+fn smbus_protocol_tolerates_non_utf8_noise_in_firmware_name() {
+    let protocol = AuraSmBusProtocol::new();
+    let mut firmware = [0_u8; 16];
+    firmware[..16].copy_from_slice(b"AUDA0\xff-E6K5-0101");
+
+    let parsed = protocol
+        .parse_response(&firmware)
+        .expect("firmware response with one noisy byte should parse");
+
+    assert_eq!(parsed.status, ResponseStatus::Ok);
+    assert_eq!(protocol.firmware_name().as_deref(), Some("AUDA0-E6K5-0101"));
+    assert!(protocol.firmware_variant().is_some());
+}
+
+#[test]
 fn smbus_protocol_frame_encoding_uses_serialized_direct_writes() {
     let protocol = AuraSmBusProtocol::new();
     let mut firmware = [0_u8; 16];

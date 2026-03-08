@@ -39,7 +39,9 @@ const ASUS_DRAM_SMBUS_ADDRESSES: &[u16] = &[
 ];
 const INTEL_VENDOR_ID: u16 = 0x8086;
 const AMD_VENDOR_ID: u16 = 0x1022;
-const DRAM_SMBUS_ADAPTER_IDS: &[(u16, u16)] = &[
+const AMD_GPU_VENDOR_ID: u16 = 0x1002;
+const NVIDIA_VENDOR_ID: u16 = 0x10DE;
+const SYSTEM_SMBUS_ADAPTER_IDS: &[(u16, u16)] = &[
     (AMD_VENDOR_ID, 0x790B),
     (INTEL_VENDOR_ID, 0x3A30),
     (INTEL_VENDOR_ID, 0xA123),
@@ -51,9 +53,6 @@ const DRAM_SMBUS_ADAPTER_IDS: &[(u16, u16)] = &[
     (INTEL_VENDOR_ID, 0x43A3),
     (INTEL_VENDOR_ID, 0x7AA3),
     (INTEL_VENDOR_ID, 0x7A23),
-    (INTEL_VENDOR_ID, 0x7A4C),
-    (INTEL_VENDOR_ID, 0x7A4D),
-    (INTEL_VENDOR_ID, 0x7A4E),
     (INTEL_VENDOR_ID, 0x7F23),
 ];
 
@@ -150,20 +149,46 @@ pub(crate) async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<
         let mut discovered = Vec::new();
 
         for bus_path in i2c_bus_paths_in(dev_root)? {
-            for &(address, controller_kind) in ASUS_MOTHERBOARD_SMBUS_ADDRESSES
-                .iter()
-                .chain(ASUS_GPU_SMBUS_ADDRESSES.iter())
-            {
-                if let Some(probe) = probe_bus_address(&bus_path, address, controller_kind).await? {
-                    discovered.push(probe);
+            let pci_id = bus_pci_id(&bus_path);
+
+            if motherboard_capable_bus_pci_id(pci_id) {
+                for &(address, controller_kind) in ASUS_MOTHERBOARD_SMBUS_ADDRESSES {
+                    if let Some(probe) =
+                        probe_bus_address(&bus_path, address, controller_kind).await?
+                    {
+                        discovered.push(probe);
+                    }
                 }
+            } else {
+                trace!(
+                    bus_path,
+                    pci_id = ?pci_id,
+                    "skipping ASUS Aura motherboard SMBus probe on incompatible i2c adapter"
+                );
             }
 
-            if dram_capable_bus(&bus_path) {
+            if gpu_capable_bus_pci_id(pci_id) {
+                for &(address, controller_kind) in ASUS_GPU_SMBUS_ADDRESSES {
+                    if let Some(probe) =
+                        probe_bus_address(&bus_path, address, controller_kind).await?
+                    {
+                        discovered.push(probe);
+                    }
+                }
+            } else {
+                trace!(
+                    bus_path,
+                    pci_id = ?pci_id,
+                    "skipping ASUS Aura GPU SMBus probe on non-GPU i2c adapter"
+                );
+            }
+
+            if dram_capable_bus_pci_id(pci_id) {
                 discovered.extend(probe_dram_bus(&bus_path).await?);
             } else {
                 trace!(
                     bus_path,
+                    pci_id = ?pci_id,
                     "skipping ASUS Aura DRAM probe on non-chipset i2c adapter"
                 );
             }
@@ -280,9 +305,25 @@ async fn probe_bus_address(
     address: u16,
     controller_kind: SmBusControllerKind,
 ) -> Result<Option<SmBusProbe>> {
+    trace!(
+        bus_path,
+        address = format_args!("0x{address:02X}"),
+        controller_kind = controller_kind.display_name(),
+        "probing ASUS Aura SMBus candidate"
+    );
+
     let transport = match SmBusTransport::open(bus_path, address) {
         Ok(transport) => transport,
-        Err(_) => return Ok(None),
+        Err(error) => {
+            trace!(
+                bus_path,
+                address = format_args!("0x{address:02X}"),
+                controller_kind = controller_kind.display_name(),
+                error = %error,
+                "failed to open ASUS Aura SMBus candidate"
+            );
+            return Ok(None);
+        }
     };
 
     let probed = probe_with_transport(&transport, bus_path, address, controller_kind).await;
@@ -308,13 +349,39 @@ async fn probe_with_transport(
         .await
     {
         Ok(response) => response,
-        Err(_) => return Ok(None),
+        Err(error) => {
+            trace!(
+                bus_path,
+                address = format_args!("0x{address:02X}"),
+                controller_kind = controller_kind.display_name(),
+                error = %error,
+                "ASUS Aura SMBus firmware query failed"
+            );
+            return Ok(None);
+        }
     };
     let firmware_status = match protocol.parse_response(&firmware_response) {
         Ok(response) => response.status,
-        Err(_) => return Ok(None),
+        Err(error) => {
+            trace!(
+                bus_path,
+                address = format_args!("0x{address:02X}"),
+                controller_kind = controller_kind.display_name(),
+                error = %error,
+                "ASUS Aura SMBus firmware response parse failed"
+            );
+            return Ok(None);
+        }
     };
     if firmware_status != ResponseStatus::Ok || protocol.firmware_variant().is_none() {
+        trace!(
+            bus_path,
+            address = format_args!("0x{address:02X}"),
+            controller_kind = controller_kind.display_name(),
+            firmware_status = ?firmware_status,
+            firmware_variant = ?protocol.firmware_variant(),
+            "ASUS Aura SMBus firmware probe rejected candidate"
+        );
         return Ok(None);
     }
 
@@ -326,13 +393,39 @@ async fn probe_with_transport(
         .await
     {
         Ok(response) => response,
-        Err(_) => return Ok(None),
+        Err(error) => {
+            trace!(
+                bus_path,
+                address = format_args!("0x{address:02X}"),
+                controller_kind = controller_kind.display_name(),
+                error = %error,
+                "ASUS Aura SMBus config query failed"
+            );
+            return Ok(None);
+        }
     };
     let config_status = match protocol.parse_response(&config_response) {
         Ok(response) => response.status,
-        Err(_) => return Ok(None),
+        Err(error) => {
+            trace!(
+                bus_path,
+                address = format_args!("0x{address:02X}"),
+                controller_kind = controller_kind.display_name(),
+                error = %error,
+                "ASUS Aura SMBus config response parse failed"
+            );
+            return Ok(None);
+        }
     };
     if config_status != ResponseStatus::Ok || protocol.total_leds() == 0 {
+        trace!(
+            bus_path,
+            address = format_args!("0x{address:02X}"),
+            controller_kind = controller_kind.display_name(),
+            config_status = ?config_status,
+            total_leds = protocol.total_leds(),
+            "ASUS Aura SMBus config probe rejected candidate"
+        );
         return Ok(None);
     }
 
@@ -395,15 +488,6 @@ fn i2c_bus_paths_in(dev_root: &Path) -> Result<Vec<String>> {
 }
 
 #[cfg(target_os = "linux")]
-fn dram_capable_bus(bus_path: &str) -> bool {
-    let Some((vendor_id, device_id)) = bus_pci_id(bus_path) else {
-        return false;
-    };
-
-    dram_capable_pci_id(vendor_id, device_id)
-}
-
-#[cfg(target_os = "linux")]
 fn bus_pci_id(bus_path: &str) -> Option<(u16, u16)> {
     let bus_name = Path::new(bus_path).file_name()?;
     let sysfs_root = Path::new("/sys/class/i2c-dev")
@@ -423,7 +507,34 @@ fn read_sysfs_hex_u16(path: &Path) -> Option<u16> {
 #[doc(hidden)]
 #[must_use]
 pub fn dram_capable_pci_id(vendor_id: u16, device_id: u16) -> bool {
-    DRAM_SMBUS_ADAPTER_IDS.contains(&(vendor_id, device_id))
+    SYSTEM_SMBUS_ADAPTER_IDS.contains(&(vendor_id, device_id))
+}
+
+#[cfg(target_os = "linux")]
+fn dram_capable_bus_pci_id(pci_id: Option<(u16, u16)>) -> bool {
+    let Some((vendor_id, device_id)) = pci_id else {
+        return false;
+    };
+
+    dram_capable_pci_id(vendor_id, device_id)
+}
+
+#[cfg(target_os = "linux")]
+fn motherboard_capable_bus_pci_id(pci_id: Option<(u16, u16)>) -> bool {
+    let Some((vendor_id, device_id)) = pci_id else {
+        return false;
+    };
+
+    SYSTEM_SMBUS_ADAPTER_IDS.contains(&(vendor_id, device_id))
+}
+
+#[cfg(target_os = "linux")]
+fn gpu_capable_bus_pci_id(pci_id: Option<(u16, u16)>) -> bool {
+    let Some((vendor_id, _)) = pci_id else {
+        return false;
+    };
+
+    matches!(vendor_id, AMD_GPU_VENDOR_ID | NVIDIA_VENDOR_ID)
 }
 
 #[doc(hidden)]

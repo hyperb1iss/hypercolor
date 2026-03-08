@@ -71,10 +71,10 @@ fn smbus_scanner_walks_up_sysfs_tree_for_parent_pci_id() {
 }
 
 #[test]
-fn smbus_scanner_accepts_rpl_designware_system_buses_for_dram_scan() {
+fn smbus_scanner_matches_openrgb_dram_bus_allowlist() {
     assert!(dram_capable_pci_id(0x8086, 0x7A23));
-    assert!(dram_capable_pci_id(0x8086, 0x7A4C));
-    assert!(dram_capable_pci_id(0x8086, 0x7A4D));
-    assert!(dram_capable_pci_id(0x8086, 0x7A4E));
+    assert!(!dram_capable_pci_id(0x8086, 0x7A4C));
+    assert!(!dram_capable_pci_id(0x8086, 0x7A4D));
+    assert!(!dram_capable_pci_id(0x8086, 0x7A4E));
     assert!(!dram_capable_pci_id(0x10DE, 0x2783));
 }

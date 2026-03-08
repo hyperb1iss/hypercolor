@@ -134,6 +134,34 @@ fn protocol_malformed_response(error: TransportError) -> ProtocolError {
     }
 }
 
+fn decode_ene_firmware_name(data: &[u8]) -> Result<String, ProtocolError> {
+    let filtered = data
+        .iter()
+        .copied()
+        .take_while(|byte| *byte != 0)
+        .filter(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_' | b'.' | b' '))
+        .collect::<Vec<_>>();
+
+    if filtered.is_empty() {
+        return Err(ProtocolError::MalformedResponse {
+            detail: "ENE firmware name did not contain any ASCII identifier bytes".to_owned(),
+        });
+    }
+
+    let firmware = String::from_utf8(filtered).map_err(|error| ProtocolError::MalformedResponse {
+        detail: format!("ENE firmware name could not be normalized into UTF-8: {error}"),
+    })?;
+    let firmware = firmware.trim().to_owned();
+
+    if firmware.is_empty() {
+        return Err(ProtocolError::MalformedResponse {
+            detail: "ENE firmware name normalized to an empty string".to_owned(),
+        });
+    }
+
+    Ok(firmware)
+}
+
 /// Resolve one known ENE firmware string to its register layout.
 #[must_use]
 pub fn lookup_ene_firmware_variant(name: &str) -> Option<EneFirmwareVariant> {
@@ -399,12 +427,7 @@ impl Protocol for AuraSmBusProtocol {
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
         match data.len() {
             ENE_FIRMWARE_NAME_LEN => {
-                let firmware = String::from_utf8(data.to_vec()).map_err(|error| {
-                    ProtocolError::MalformedResponse {
-                        detail: format!("ENE firmware name is not valid UTF-8: {error}"),
-                    }
-                })?;
-                let firmware = firmware.trim_end_matches('\0').trim().to_owned();
+                let firmware = decode_ene_firmware_name(data)?;
                 let variant = lookup_ene_firmware_variant(&firmware);
 
                 let mut state = self
