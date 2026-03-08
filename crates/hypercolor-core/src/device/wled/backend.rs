@@ -176,6 +176,52 @@ impl WledSegmentInfo {
     }
 }
 
+/// Minimal realtime receiver settings from WLED `/json/cfg`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct WledLiveReceiverConfig {
+    /// Whether realtime receive is enabled.
+    pub enabled: bool,
+    /// Whether realtime mode is enabled in WLED.
+    pub realtime_mode_enabled: bool,
+    /// UDP port for the selected realtime receiver.
+    pub port: u16,
+    /// DMX start address (1-based for E1.31/Art-Net).
+    pub dmx_address: Option<u16>,
+    /// Starting E1.31 universe.
+    pub dmx_universe: Option<u16>,
+    /// WLED DMX mode enum.
+    pub dmx_mode: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WledCfgRoot {
+    #[serde(rename = "if")]
+    interfaces: Option<WledCfgInterfaces>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WledCfgInterfaces {
+    live: Option<WledCfgLive>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WledCfgLive {
+    #[serde(default)]
+    en: bool,
+    #[serde(default)]
+    rlm: bool,
+    #[serde(default)]
+    port: u16,
+    dmx: Option<WledCfgLiveDmx>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WledCfgLiveDmx {
+    uni: Option<u16>,
+    addr: Option<u16>,
+    mode: Option<u8>,
+}
+
 // ── Per-Device Handle ───────────────────────────────────────────────────
 
 /// Runtime handle for a single connected WLED device.
@@ -382,6 +428,27 @@ pub fn parse_wled_segments(json: &serde_json::Value) -> Result<Vec<WledSegmentIn
     Ok(result)
 }
 
+/// Parse WLED realtime receiver settings from `/json/cfg`.
+pub fn parse_wled_live_receiver_config(
+    json: &serde_json::Value,
+) -> Result<Option<WledLiveReceiverConfig>> {
+    let cfg: WledCfgRoot =
+        serde_json::from_value(json.clone()).context("Failed to parse WLED /json/cfg")?;
+
+    let Some(live) = cfg.interfaces.and_then(|interfaces| interfaces.live) else {
+        return Ok(None);
+    };
+
+    Ok(Some(WledLiveReceiverConfig {
+        enabled: live.en,
+        realtime_mode_enabled: live.rlm,
+        port: live.port,
+        dmx_address: live.dmx.as_ref().and_then(|dmx| dmx.addr),
+        dmx_universe: live.dmx.as_ref().and_then(|dmx| dmx.uni),
+        dmx_mode: live.dmx.and_then(|dmx| dmx.mode),
+    }))
+}
+
 /// Build a [`DeviceInfo`] from parsed WLED data.
 fn build_device_info(device_id: DeviceId, wled_info: &WledDeviceInfo, _ip: IpAddr) -> DeviceInfo {
     let color_format = if wled_info.rgbw {
@@ -430,6 +497,152 @@ async fn post_realtime_state(ip: IpAddr, body: serde_json::Value) -> Result<()> 
         .with_context(|| format!("Failed to update WLED realtime state for {ip}"))?;
 
     Ok(())
+}
+
+async fn fetch_wled_live_receiver_config(ip: IpAddr) -> Result<Option<WledLiveReceiverConfig>> {
+    let client = reqwest::Client::builder()
+        .timeout(REALTIME_HTTP_TIMEOUT)
+        .build()
+        .context("Failed to build WLED HTTP client")?;
+
+    let json: serde_json::Value = client
+        .get(format!("http://{ip}/json/cfg"))
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .with_context(|| format!("Failed to fetch WLED config for {ip}"))?
+        .json()
+        .await
+        .with_context(|| format!("Failed to parse WLED config JSON for {ip}"))?;
+
+    parse_wled_live_receiver_config(&json)
+}
+
+const fn expected_wled_e131_mode(color_format: WledColorFormat) -> u8 {
+    match color_format {
+        WledColorFormat::Rgb => 4,
+        WledColorFormat::Rgbw => 6,
+    }
+}
+
+const fn wled_e131_mode_name(mode: u8) -> &'static str {
+    match mode {
+        0 => "disabled",
+        1 => "single_rgb",
+        2 => "single_drgb",
+        3 => "effect",
+        4 => "multiple_rgb",
+        5 => "multiple_drgb",
+        6 => "multiple_rgbw",
+        7 => "effect_w",
+        8 => "effect_segment",
+        9 => "effect_segment_w",
+        10 => "preset",
+        _ => "unknown",
+    }
+}
+
+async fn validate_wled_receiver_config(
+    ip: IpAddr,
+    protocol: WledProtocol,
+    color_format: WledColorFormat,
+    e131_start_universe: u16,
+) {
+    let config = match fetch_wled_live_receiver_config(ip).await {
+        Ok(Some(config)) => config,
+        Ok(None) => {
+            debug!(ip = %ip, "WLED /json/cfg did not expose realtime receiver settings");
+            return;
+        }
+        Err(error) => {
+            debug!(
+                ip = %ip,
+                error = %error,
+                "Failed to validate WLED realtime receiver config"
+            );
+            return;
+        }
+    };
+
+    let mut mismatches = Vec::new();
+
+    if !config.enabled {
+        mismatches.push("live receiver disabled".to_owned());
+    }
+    if !config.realtime_mode_enabled {
+        mismatches.push("realtime mode disabled".to_owned());
+    }
+
+    match protocol {
+        WledProtocol::Ddp => {
+            if config.port != DDP_PORT {
+                mismatches.push(format!(
+                    "expected DDP port {DDP_PORT}, WLED is set to {}",
+                    config.port
+                ));
+            }
+        }
+        WledProtocol::E131 => {
+            let expected_mode = expected_wled_e131_mode(color_format);
+            if config.port != E131_PORT {
+                mismatches.push(format!(
+                    "expected E1.31 port {E131_PORT}, WLED is set to {}",
+                    config.port
+                ));
+            }
+            match config.dmx_universe {
+                Some(actual) if actual != e131_start_universe => mismatches.push(format!(
+                    "expected start universe {e131_start_universe}, WLED is set to {actual}"
+                )),
+                None => mismatches.push("missing E1.31 start universe".to_owned()),
+                _ => {}
+            }
+            match config.dmx_address {
+                Some(1) => {}
+                Some(actual) => mismatches.push(format!(
+                    "expected DMX start address 1, WLED is set to {actual}"
+                )),
+                None => mismatches.push("missing DMX start address".to_owned()),
+            }
+            match config.dmx_mode {
+                Some(actual) if actual != expected_mode => mismatches.push(format!(
+                    "expected DMX mode {} ({}), WLED is set to {} ({})",
+                    expected_mode,
+                    wled_e131_mode_name(expected_mode),
+                    actual,
+                    wled_e131_mode_name(actual)
+                )),
+                None => mismatches.push("missing E1.31 DMX mode".to_owned()),
+                _ => {}
+            }
+        }
+    }
+
+    if mismatches.is_empty() {
+        debug!(
+            ip = %ip,
+            protocol = ?protocol,
+            port = config.port,
+            dmx_address = config.dmx_address,
+            dmx_universe = config.dmx_universe,
+            dmx_mode = config.dmx_mode,
+            "WLED realtime receiver config matches Hypercolor streaming configuration"
+        );
+    } else {
+        warn!(
+            ip = %ip,
+            protocol = ?protocol,
+            port = config.port,
+            dmx_address = config.dmx_address,
+            dmx_universe = config.dmx_universe,
+            dmx_mode = config.dmx_mode,
+            expected_universe = e131_start_universe,
+            expected_mode = expected_wled_e131_mode(color_format),
+            expected_mode_name = wled_e131_mode_name(expected_wled_e131_mode(color_format)),
+            mismatches = %mismatches.join("; "),
+            "WLED realtime receiver config does not match Hypercolor output"
+        );
+    }
 }
 
 async fn enter_realtime_mode(ip: IpAddr) -> Result<()> {
@@ -839,6 +1052,10 @@ impl DeviceBackend for WledBackend {
         let protocol = self.default_protocol;
         let e131_start_universe =
             self.allocate_e131_start_universe(color_format, wled_info.led_count, protocol);
+
+        if self.realtime_http_enabled {
+            validate_wled_receiver_config(ip, protocol, color_format, e131_start_universe).await;
+        }
 
         let mut device = WledDevice {
             device_id: *id,

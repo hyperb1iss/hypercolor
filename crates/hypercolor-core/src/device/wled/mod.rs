@@ -14,7 +14,8 @@ mod e131;
 mod scanner;
 
 pub use backend::{
-    WledBackend, WledColorFormat, WledDevice, WledDeviceInfo, WledProtocol, WledSegmentInfo,
+    WledBackend, WledColorFormat, WledDevice, WledDeviceInfo, WledLiveReceiverConfig, WledProtocol,
+    WledSegmentInfo,
 };
 pub use ddp::{DdpPacket, DdpSequence, build_ddp_frame};
 pub use e131::{

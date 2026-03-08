@@ -23,11 +23,15 @@ const DDP_VERSION: u8 = 0x40;
 /// DDP flag: push (latch frame on final packet).
 const DDP_FLAG_PUSH: u8 = 0x01;
 
-/// DDP data type: RGB, 8-bit per channel (TTT=001, BBB=010).
-pub const DDP_DTYPE_RGB8: u8 = 0x0A;
+/// DDP data type: RGB, 8-bit per channel (TTT=001, BBB=011).
+///
+/// WLED's DDP receiver expects `0x0B` (`DDP_TYPE_RGB24`).
+pub const DDP_DTYPE_RGB8: u8 = 0x0B;
 
-/// DDP data type: RGBW, 8-bit per channel (TTT=011, BBB=010).
-pub const DDP_DTYPE_RGBW8: u8 = 0x1A;
+/// DDP data type: RGBW, 8-bit per channel (TTT=011, BBB=011).
+///
+/// WLED's DDP receiver expects `0x1B` (`DDP_TYPE_RGBW32`).
+pub const DDP_DTYPE_RGBW8: u8 = 0x1B;
 
 /// DDP destination: default output device.
 const DDP_ID_DEFAULT: u8 = 0x01;

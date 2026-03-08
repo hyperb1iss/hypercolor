@@ -4,8 +4,6 @@ use leptos::prelude::*;
 use leptos_meta::*;
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::path;
-use wasm_bindgen::JsCast;
-use wasm_bindgen::closure::Closure;
 
 use hypercolor_types::effect::{ControlDefinition, ControlValue};
 
@@ -16,7 +14,10 @@ use crate::pages::devices::DevicesPage;
 use crate::pages::effects::EffectsPage;
 use crate::pages::layout::LayoutPage;
 use crate::pages::settings::SettingsPage;
-use crate::ws::{BackpressureNotice, CanvasFrame, ConnectionState, PerformanceMetrics, WsManager};
+use crate::ws::{
+    BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint, PerformanceMetrics,
+    WsManager,
+};
 
 /// Global WebSocket state provided via Leptos context.
 #[derive(Clone, Copy)]
@@ -28,6 +29,7 @@ pub struct WsContext {
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
+    pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
 }
 
 /// Shared active-effect state — accessible from sidebar, effects page, etc.
@@ -151,6 +153,7 @@ pub fn App() -> impl IntoView {
         metrics: ws.metrics,
         backpressure_notice: ws.backpressure_notice,
         active_effect: ws.active_effect,
+        last_device_event: ws.last_device_event,
     };
     provide_context(ws_ctx);
 
@@ -202,22 +205,35 @@ pub fn App() -> impl IntoView {
         layouts_resource,
     });
 
-    // Keep devices list fresh so startup discovery results appear in the UI
-    // without requiring a manual refresh/scan click.
+    // Refresh devices reactively from daemon lifecycle events instead of
+    // rebuilding the grid on a fixed timer.
     Effect::new(move |_| {
-        let Some(window) = web_sys::window() else {
+        let Some(event) = ws_ctx.last_device_event.get() else {
             return;
         };
-        let devices_resource = devices_resource;
-        let callback = Closure::<dyn FnMut()>::new(move || {
-            devices_resource.refetch();
-        });
 
-        let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
-            callback.as_ref().unchecked_ref(),
-            5_000,
-        );
-        callback.forget();
+        let current_devices = devices_resource
+            .get()
+            .and_then(|result| result.ok())
+            .unwrap_or_default();
+
+        let should_refetch = match event.event_type.as_str() {
+            "device_discovered" => event.device_id.as_ref().is_some_and(|device_id| {
+                !current_devices.iter().any(|device| &device.id == device_id)
+            }),
+            "device_disconnected" | "device_state_changed" => event
+                .device_id
+                .as_ref()
+                .is_some_and(|device_id| current_devices.iter().any(|device| &device.id == device_id)),
+            "device_discovery_completed" => {
+                current_devices.is_empty() && event.found_count.is_some_and(|count| count > 0)
+            }
+            _ => false,
+        };
+
+        if should_refetch {
+            devices_resource.refetch();
+        }
     });
 
     // Initialize active effect from API on load

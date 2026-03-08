@@ -28,6 +28,143 @@ type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type BackendDeviceKey = (String, DeviceId);
 const UNMAPPED_LAYOUT_WARN_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Lightweight handle for backend I/O that can outlive the manager lock.
+///
+/// Clone this from [`BackendManager::backend_io`] while holding the manager
+/// briefly, then perform the awaited backend call after releasing the outer
+/// manager mutex.
+#[derive(Clone)]
+pub struct BackendIo {
+    backend_id: String,
+    backend: BackendHandle,
+}
+
+impl BackendIo {
+    /// Connect a device, retrying once after backend discovery refresh.
+    ///
+    /// Returns the backend's preferred output FPS for the connected device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend connect call fails both before and
+    /// after discovery refresh.
+    pub async fn connect_with_refresh(&self, device_id: DeviceId) -> Result<u32> {
+        let mut backend = self.backend.lock().await;
+
+        if let Err(initial_error) = backend.connect(&device_id).await {
+            let initial_message = initial_error.to_string();
+            debug!(
+                backend_id = %self.backend_id,
+                %device_id,
+                error = %initial_message,
+                "initial connect failed; refreshing backend discovery state and retrying"
+            );
+
+            backend.discover().await.with_context(|| {
+                format!(
+                    "backend '{}' discovery refresh failed after initial connect failure for device {device_id}: {initial_message}",
+                    self.backend_id
+                )
+            })?;
+
+            if let Err(retry_error) = backend.connect(&device_id).await {
+                let retry_message = retry_error.to_string();
+                debug!(
+                    backend_id = %self.backend_id,
+                    %device_id,
+                    error = %retry_message,
+                    "connect still failing after discovery refresh"
+                );
+                return Err(retry_error).with_context(|| {
+                    format!(
+                        "failed to connect device {device_id} using backend '{}' after discovery refresh (initial error: {initial_message})",
+                        self.backend_id
+                    )
+                });
+            }
+
+            debug!(
+                backend_id = %self.backend_id,
+                %device_id,
+                "connect succeeded after discovery refresh"
+            );
+        }
+
+        Ok(backend.target_fps(&device_id).unwrap_or(60))
+    }
+
+    /// Fetch refreshed metadata for a connected device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if metadata retrieval fails.
+    pub async fn connected_device_info(&self, device_id: DeviceId) -> Result<Option<DeviceInfo>> {
+        let backend = self.backend.lock().await;
+        backend
+            .connected_device_info(&device_id)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to fetch connected device metadata for {device_id} using backend '{}'",
+                    self.backend_id
+                )
+            })
+    }
+
+    /// Disconnect a device from the backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend disconnect call fails.
+    pub async fn disconnect(&self, device_id: DeviceId) -> Result<()> {
+        let mut backend = self.backend.lock().await;
+        backend.disconnect(&device_id).await.with_context(|| {
+            format!(
+                "failed to disconnect device {device_id} using backend '{}'",
+                self.backend_id
+            )
+        })
+    }
+
+    /// Write immediate LED colors directly to the backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the backend write fails.
+    pub async fn write_colors(&self, device_id: DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        let mut backend = self.backend.lock().await;
+        backend
+            .write_colors(&device_id, colors)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to write {} colors to device {device_id} using backend '{}'",
+                    colors.len(),
+                    self.backend_id
+                )
+            })
+    }
+
+    /// Write immediate display bytes directly to the backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the display write fails.
+    pub async fn write_display_frame(&self, device_id: DeviceId, jpeg_data: &[u8]) -> Result<()> {
+        let mut backend = self.backend.lock().await;
+        backend
+            .write_display_frame(&device_id, jpeg_data)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to write {} display bytes to device {device_id} using backend '{}'",
+                    jpeg_data.len(),
+                    self.backend_id
+                )
+            })
+    }
+}
+
 /// Contiguous LED range on a physical device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentRange {
@@ -433,6 +570,18 @@ impl BackendManager {
             .insert(backend_id, Arc::new(Mutex::new(backend)));
     }
 
+    /// Clone a backend I/O handle without holding the manager across awaits.
+    #[must_use]
+    pub fn backend_io(&self, backend_id: &str) -> Option<BackendIo> {
+        self.backends
+            .get(backend_id)
+            .cloned()
+            .map(|backend| BackendIo {
+                backend_id: backend_id.to_owned(),
+                backend,
+            })
+    }
+
     /// Map a spatial layout `device_id` to a `(backend_id, DeviceId)` pair.
     ///
     /// Call this after device discovery to link a zone's device reference
@@ -493,53 +642,12 @@ impl BackendManager {
         device_id: DeviceId,
         layout_device_id: &str,
     ) -> Result<()> {
-        let Some(backend) = self.backends.get(backend_id).cloned() else {
+        let Some(io) = self.backend_io(backend_id) else {
             bail!("backend '{backend_id}' is not registered");
         };
-
-        {
-            let mut backend = backend.lock().await;
-            if let Err(initial_error) = backend.connect(&device_id).await {
-                let initial_message = initial_error.to_string();
-                debug!(
-                    backend_id = %backend_id,
-                    %device_id,
-                    error = %initial_message,
-                    "initial connect failed; refreshing backend discovery state and retrying"
-                );
-
-                backend.discover().await.with_context(|| {
-                    format!(
-                        "backend '{backend_id}' discovery refresh failed after initial connect failure for device {device_id}: {initial_message}"
-                    )
-                })?;
-
-                if let Err(retry_error) = backend.connect(&device_id).await {
-                    let retry_message = retry_error.to_string();
-                    debug!(
-                        backend_id = %backend_id,
-                        %device_id,
-                        error = %retry_message,
-                        "connect still failing after discovery refresh"
-                    );
-                    return Err(retry_error).with_context(|| {
-                        format!(
-                            "failed to connect device {device_id} using backend '{backend_id}' after discovery refresh (initial error: {initial_message})"
-                        )
-                    });
-                }
-
-                debug!(
-                    backend_id = %backend_id,
-                    %device_id,
-                    "connect succeeded after discovery refresh"
-                );
-            }
-
-            let target_fps = backend.target_fps(&device_id).unwrap_or(60);
-            self.device_fps_cache
-                .insert((backend_id.to_owned(), device_id), target_fps);
-        }
+        let target_fps = io.connect_with_refresh(device_id).await?;
+        self.device_fps_cache
+            .insert((backend_id.to_owned(), device_id), target_fps);
 
         self.map_device(
             layout_device_id.to_owned(),
@@ -562,19 +670,10 @@ impl BackendManager {
         backend_id: &str,
         device_id: DeviceId,
     ) -> Result<Option<DeviceInfo>> {
-        let Some(backend) = self.backends.get(backend_id).cloned() else {
+        let Some(io) = self.backend_io(backend_id) else {
             bail!("backend '{backend_id}' is not registered");
         };
-
-        let backend = backend.lock().await;
-        backend
-            .connected_device_info(&device_id)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to fetch connected device metadata for {device_id} using backend '{backend_id}'"
-                )
-            })
+        io.connected_device_info(device_id).await
     }
 
     /// Disconnect a physical device and unmap its layout device identifier.
@@ -588,20 +687,12 @@ impl BackendManager {
         device_id: DeviceId,
         _layout_device_id: &str,
     ) -> Result<()> {
-        let Some(backend) = self.backends.get(backend_id).cloned() else {
+        let Some(io) = self.backend_io(backend_id) else {
             bail!("backend '{backend_id}' is not registered");
         };
-
-        {
-            let mut backend = backend.lock().await;
-            backend.disconnect(&device_id).await.with_context(|| {
-                format!("failed to disconnect device {device_id} using backend '{backend_id}'")
-            })?;
-        }
+        io.disconnect(device_id).await?;
 
         let _ = self.remove_device_mappings_for_physical(backend_id, device_id);
-        self.device_fps_cache
-            .remove(&(backend_id.to_owned(), device_id));
         Ok(())
     }
 
@@ -619,20 +710,10 @@ impl BackendManager {
         device_id: DeviceId,
         colors: &[[u8; 3]],
     ) -> Result<()> {
-        let Some(backend) = self.backends.get(backend_id).cloned() else {
+        let Some(io) = self.backend_io(backend_id) else {
             bail!("backend '{backend_id}' is not registered");
         };
-
-        let mut backend = backend.lock().await;
-        backend
-            .write_colors(&device_id, colors)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to write {} colors to device {device_id} using backend '{backend_id}'",
-                    colors.len()
-                )
-            })
+        io.write_colors(device_id, colors).await
     }
 
     /// Adjust hardware brightness for a specific physical device.
@@ -677,20 +758,21 @@ impl BackendManager {
         device_id: DeviceId,
         jpeg_data: &[u8],
     ) -> Result<()> {
-        let Some(backend) = self.backends.get(backend_id).cloned() else {
+        let Some(io) = self.backend_io(backend_id) else {
             bail!("backend '{backend_id}' is not registered");
         };
+        io.write_display_frame(device_id, jpeg_data).await
+    }
 
-        let mut backend = backend.lock().await;
-        backend
-            .write_display_frame(&device_id, jpeg_data)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to write {} display bytes to device {device_id} using backend '{backend_id}'",
-                    jpeg_data.len()
-                )
-            })
+    /// Cache a backend-provided output FPS for a physical device.
+    pub fn set_cached_target_fps(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        target_fps: u32,
+    ) {
+        self.device_fps_cache
+            .insert((backend_id.to_owned(), device_id), target_fps);
     }
 
     /// Suppress queued frame writes for a specific physical device.

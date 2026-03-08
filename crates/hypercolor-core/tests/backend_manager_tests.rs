@@ -350,6 +350,102 @@ impl DisplayRecordingBackend {
     }
 }
 
+struct DiscoverRetryBackend {
+    expected_device_id: DeviceId,
+    connected: bool,
+    connect_attempts: u32,
+    discover_count: u32,
+    target_fps: u32,
+}
+
+impl DiscoverRetryBackend {
+    fn new(expected_device_id: DeviceId, target_fps: u32) -> Self {
+        Self {
+            expected_device_id,
+            connected: false,
+            connect_attempts: 0,
+            discover_count: 0,
+            target_fps,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for DiscoverRetryBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "retry".to_owned(),
+            name: "Discover Retry Backend".to_owned(),
+            description: "Fails the first connect and succeeds after discover".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        self.discover_count = self.discover_count.saturating_add(1);
+        Ok(vec![DeviceInfo {
+            id: self.expected_device_id,
+            name: "Retry Device".to_owned(),
+            vendor: "Test".to_owned(),
+            family: DeviceFamily::Custom("Test".to_owned()),
+            model: None,
+            connection_type: ConnectionType::Network,
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 4,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            }],
+            firmware_version: None,
+            capabilities: DeviceCapabilities {
+                led_count: 4,
+                supports_direct: true,
+                supports_brightness: false,
+                has_display: false,
+                display_resolution: None,
+                max_fps: self.target_fps,
+            },
+        }])
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connect_attempts = self.connect_attempts.saturating_add(1);
+        if self.connect_attempts == 1 {
+            bail!("first connect attempt should fail");
+        }
+
+        self.connected = true;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+
+        self.connected = false;
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected {
+            bail!("write while disconnected");
+        }
+
+        Ok(())
+    }
+
+    fn target_fps(&self, id: &DeviceId) -> Option<u32> {
+        (*id == self.expected_device_id && self.connected).then_some(self.target_fps)
+    }
+}
+
 #[async_trait::async_trait]
 impl DeviceBackend for DisplayRecordingBackend {
     fn info(&self) -> BackendInfo {
@@ -764,6 +860,130 @@ async fn write_device_colors_writes_immediately_to_connected_device() {
         .write_device_colors("mock", device_id, &[[1, 2, 3]; 4])
         .await
         .expect("direct write should succeed");
+}
+
+#[tokio::test]
+async fn backend_io_connect_with_refresh_retries_and_caches_target_fps() {
+    let device_id = DeviceId::new();
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(DiscoverRetryBackend::new(device_id, 48)));
+
+    let io = manager
+        .backend_io("retry")
+        .expect("backend io handle should exist");
+    let target_fps = io
+        .connect_with_refresh(device_id)
+        .await
+        .expect("connect with refresh should succeed");
+
+    manager.set_cached_target_fps("retry", device_id, target_fps);
+    manager.map_device("retry:device", "retry", device_id);
+
+    assert_eq!(target_fps, 48);
+    assert_eq!(manager.cached_target_fps("retry", device_id), Some(48));
+}
+
+#[tokio::test]
+async fn backend_io_write_colors_targets_backend_directly() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let brightness_writes = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(DirectControlRecordingBackend::new(
+        device_id,
+        Arc::clone(&writes),
+        Arc::clone(&brightness_writes),
+    )));
+
+    let io = manager
+        .backend_io("recording")
+        .expect("backend io handle should exist");
+    io.connect_with_refresh(device_id)
+        .await
+        .expect("connect should succeed");
+    io.write_colors(device_id, &[[9, 8, 7]; 4])
+        .await
+        .expect("direct write should succeed");
+
+    assert_eq!(*writes.lock().await, vec![vec![[9, 8, 7]; 4]]);
+    assert!(brightness_writes.lock().await.is_empty());
+}
+
+#[tokio::test]
+async fn backend_io_disconnect_stops_future_direct_writes() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let brightness_writes = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(DirectControlRecordingBackend::new(
+        device_id,
+        Arc::clone(&writes),
+        Arc::clone(&brightness_writes),
+    )));
+
+    let io = manager
+        .backend_io("recording")
+        .expect("backend io handle should exist");
+    io.connect_with_refresh(device_id)
+        .await
+        .expect("connect should succeed");
+    io.disconnect(device_id)
+        .await
+        .expect("disconnect should succeed");
+
+    let error = io
+        .write_colors(device_id, &[[1, 2, 3]; 4])
+        .await
+        .expect_err("writes should fail after disconnect");
+    assert!(error.to_string().contains("failed to write"));
+}
+
+#[tokio::test]
+async fn backend_io_connected_device_info_returns_backend_metadata() {
+    let device_id = DeviceId::new();
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(MetadataRefreshingBackend::new(device_id)));
+
+    let io = manager
+        .backend_io("metadata")
+        .expect("backend io handle should exist");
+    io.connect_with_refresh(device_id)
+        .await
+        .expect("connect should succeed");
+
+    let info = io
+        .connected_device_info(device_id)
+        .await
+        .expect("metadata refresh should succeed")
+        .expect("connected metadata should exist");
+
+    assert_eq!(info.name, "Connected Metadata Device");
+    assert_eq!(info.capabilities.led_count, 12);
+}
+
+#[tokio::test]
+async fn backend_io_write_display_frame_targets_backend_directly() {
+    let device_id = DeviceId::new();
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(DisplayRecordingBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+
+    let io = manager
+        .backend_io("display")
+        .expect("backend io handle should exist");
+    io.connect_with_refresh(device_id)
+        .await
+        .expect("connect should succeed");
+
+    let jpeg_data = vec![0xFF, 0xD8, 0xFF, 0xD9];
+    io.write_display_frame(device_id, &jpeg_data)
+        .await
+        .expect("display write should succeed");
+
+    assert_eq!(*display_writes.lock().await, vec![jpeg_data]);
 }
 
 #[tokio::test]

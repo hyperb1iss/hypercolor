@@ -326,9 +326,9 @@ pub async fn preview_layout(
 
 /// `DELETE /api/v1/layouts/:id` — Delete a layout.
 pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let active_layout_id = {
+    let active_layout = {
         let spatial = state.spatial_engine.read().await;
-        spatial.layout().id.clone()
+        spatial.layout().clone()
     };
     let mut layouts = state.layouts.write().await;
     let key = match resolve_layout_key(&layouts, &id) {
@@ -339,18 +339,51 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
         }
     };
 
-    if key == active_layout_id {
-        return ApiError::conflict("Cannot delete the active layout");
+    layouts.remove(&key);
+    let next_active_layout = if key == active_layout.id {
+        let mut candidates: Vec<SpatialLayout> = layouts.values().cloned().collect();
+        candidates.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
+        Some(
+            candidates
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| empty_default_layout(&active_layout)),
+        )
+    } else {
+        None
+    };
+    drop(layouts);
+
+    if let Some(layout) = next_active_layout {
+        {
+            let mut spatial = state.spatial_engine.write().await;
+            spatial.update_layout(layout);
+        }
+        persist_runtime_session(&state).await;
     }
 
-    layouts.remove(&key);
-    drop(layouts);
     persist_layouts(&state).await;
 
     ApiResponse::ok(serde_json::json!({
         "id": key,
         "deleted": true,
     }))
+}
+
+fn empty_default_layout(previous: &SpatialLayout) -> SpatialLayout {
+    SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: previous.canvas_width,
+        canvas_height: previous.canvas_height,
+        zones: Vec::new(),
+        groups: Vec::new(),
+        default_sampling_mode: previous.default_sampling_mode.clone(),
+        default_edge_behavior: previous.default_edge_behavior.clone(),
+        spaces: previous.spaces.clone(),
+        version: previous.version,
+    }
 }
 
 fn resolve_layout_key(

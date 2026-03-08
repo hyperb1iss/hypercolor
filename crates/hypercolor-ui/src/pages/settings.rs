@@ -283,10 +283,7 @@ pub fn SettingsPage() -> impl IntoView {
     view! {
         <div class="flex flex-col h-full -m-6 animate-fade-in">
             // Sticky header with title + tab bar
-            <div
-                class="sticky top-0 z-10 border-b border-edge-subtle shrink-0"
-                style="background: rgba(20, 18, 28, 0.95); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px)"
-            >
+            <div class="sticky top-0 z-10 shrink-0 glass-dense">
                 <div class="flex items-center justify-between px-6 pt-5 pb-3">
                     <h1 class="text-base font-medium text-fg-primary tracking-wide">"Settings"</h1>
                     <div

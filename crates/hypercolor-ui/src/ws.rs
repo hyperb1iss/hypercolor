@@ -114,6 +114,15 @@ pub struct BackpressureNotice {
     pub suggested_fps: u32,
 }
 
+/// Lightweight device event hint used to decide whether the devices list
+/// actually needs a refetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceEventHint {
+    pub event_type: String,
+    pub device_id: Option<String>,
+    pub found_count: Option<usize>,
+}
+
 #[derive(Debug, Deserialize)]
 struct MetricsMessage {
     data: PerformanceMetrics,
@@ -140,6 +149,7 @@ pub struct WsManager {
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
+    pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
     pub preview_target_fps: u32,
 }
 
@@ -151,6 +161,7 @@ impl WsManager {
         let (metrics, set_metrics) = signal(None::<PerformanceMetrics>);
         let (backpressure_notice, set_backpressure_notice) = signal(None::<BackpressureNotice>);
         let (active_effect, set_active_effect) = signal(None::<String>);
+        let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
 
         // Build WebSocket URL relative to page origin
         let ws_url = build_ws_url();
@@ -174,6 +185,7 @@ impl WsManager {
                     metrics,
                     backpressure_notice,
                     active_effect,
+                    last_device_event,
                     preview_target_fps: 0,
                 };
             }
@@ -257,6 +269,7 @@ impl WsManager {
                         &set_active_effect,
                         &set_metrics,
                         &set_backpressure_notice,
+                        &set_last_device_event,
                     );
                 }
             }
@@ -271,6 +284,7 @@ impl WsManager {
             metrics,
             backpressure_notice,
             active_effect,
+            last_device_event,
             preview_target_fps,
         }
     }
@@ -348,6 +362,7 @@ fn handle_json_message(
     set_active: &WriteSignal<Option<String>>,
     set_metrics: &WriteSignal<Option<PerformanceMetrics>>,
     set_backpressure_notice: &WriteSignal<Option<BackpressureNotice>>,
+    set_last_device_event: &WriteSignal<Option<DeviceEventHint>>,
 ) {
     let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
@@ -401,7 +416,6 @@ fn handle_json_message(
             }
         }
         "event" => {
-            // Handle effect change events
             if let Some(event_type) = msg.get("event").and_then(|e| e.as_str()) {
                 if event_type == "effect_activated" || event_type == "effect_changed" {
                     let name = msg
@@ -412,6 +426,28 @@ fn handle_json_message(
                     set_active.set(name);
                 } else if event_type == "effect_deactivated" || event_type == "effect_stopped" {
                     set_active.set(None);
+                } else if matches!(
+                    event_type,
+                    "device_discovered"
+                        | "device_disconnected"
+                        | "device_state_changed"
+                        | "device_discovery_completed"
+                ) {
+                    let device_id = msg
+                        .get("data")
+                        .and_then(|data| data.get("device_id"))
+                        .and_then(|id| id.as_str())
+                        .map(String::from);
+                    let found_count = msg
+                        .get("data")
+                        .and_then(|data| data.get("found"))
+                        .and_then(|found| found.as_array())
+                        .map(std::vec::Vec::len);
+                    set_last_device_event.set(Some(DeviceEventHint {
+                        event_type: event_type.to_owned(),
+                        device_id,
+                        found_count,
+                    }));
                 }
             }
         }

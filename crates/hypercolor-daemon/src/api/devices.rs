@@ -11,7 +11,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use hypercolor_core::device::{BackendManager, SegmentRange};
+use hypercolor_core::device::{BackendIo, BackendManager, SegmentRange};
 use hypercolor_core::spatial::generate_positions;
 use hypercolor_types::attachment::{
     AttachmentBinding, AttachmentSlot, AttachmentSuggestedZone, AttachmentTemplate,
@@ -708,8 +708,14 @@ pub async fn identify_device(
         .and_then(|metadata| metadata.get("hostname").cloned());
     let manager = Arc::clone(&state.backend_manager);
     let on_frame = vec![identify_rgb; led_count];
-    {
+    let backend_io = {
         let mut manager = manager.lock().await;
+        let Some(backend_io) = manager.backend_io(&backend_id) else {
+            return ApiError::internal(format!(
+                "Failed to start identify flash for {}: backend '{backend_id}' is not registered",
+                tracked.info.name
+            ));
+        };
         debug!(
             backend_id = %backend_id,
             device_id = %device_id,
@@ -720,22 +726,22 @@ pub async fn identify_device(
             "identify enabling direct control and issuing initial on-frame"
         );
         manager.begin_direct_control(&backend_id, device_id);
-        if let Err(error) = manager
-            .write_device_colors(&backend_id, device_id, &on_frame)
-            .await
-        {
-            manager.end_direct_control(&backend_id, device_id);
-            warn!(
-                backend_id = %backend_id,
-                device_id = %device_id,
-                error = %error,
-                "identify initial write failed"
-            );
-            return ApiError::internal(format!(
-                "Failed to start identify flash for {}: {error}",
-                tracked.info.name
-            ));
-        }
+        backend_io
+    };
+
+    if let Err(error) = backend_io.write_colors(device_id, &on_frame).await {
+        let mut manager = manager.lock().await;
+        manager.end_direct_control(&backend_id, device_id);
+        warn!(
+            backend_id = %backend_id,
+            device_id = %device_id,
+            error = %error,
+            "identify initial write failed"
+        );
+        return ApiError::internal(format!(
+            "Failed to start identify flash for {}: {error}",
+            tracked.info.name
+        ));
     }
 
     tracing::info!(
@@ -751,6 +757,7 @@ pub async fn identify_device(
     );
     tokio::spawn(run_identify_flash(
         manager,
+        backend_io,
         backend_id,
         device_id,
         led_count,
@@ -810,6 +817,7 @@ pub async fn list_logical_devices(
         let store = state.logical_devices.read().await;
         store
             .values()
+            .filter(|entry| entry.kind != LogicalDeviceKind::LegacyDefault)
             .filter(|entry| {
                 physical_filter.is_none_or(|physical_id| entry.physical_device_id == physical_id)
             })
@@ -872,6 +880,7 @@ pub async fn list_device_logical_devices(
 
     let items: Vec<LogicalDeviceSummary> = logical_entries
         .iter()
+        .filter(|entry| entry.kind != LogicalDeviceKind::LegacyDefault)
         .map(|entry| summarize_logical_device(entry, &physical_index))
         .collect();
 
@@ -1014,6 +1023,9 @@ pub async fn update_logical_device(
     {
         return ApiError::validation("Default logical devices always span the full physical range");
     }
+    if existing.kind == LogicalDeviceKind::LegacyDefault {
+        return ApiError::conflict("Cannot edit compatibility logical aliases");
+    }
 
     let Some(tracked) = state
         .device_registry
@@ -1092,6 +1104,9 @@ pub async fn delete_logical_device(
     if existing.kind == LogicalDeviceKind::Default {
         return ApiError::conflict("Cannot delete the default logical device");
     }
+    if existing.kind == LogicalDeviceKind::LegacyDefault {
+        return ApiError::conflict("Cannot delete compatibility logical aliases");
+    }
 
     {
         let mut store = state.logical_devices.write().await;
@@ -1143,6 +1158,7 @@ fn summarize_logical_device(
         name: entry.name.clone(),
         kind: match entry.kind {
             LogicalDeviceKind::Default => "default",
+            LogicalDeviceKind::LegacyDefault => "legacy_default",
             LogicalDeviceKind::Segment => "segment",
         }
         .to_owned(),
@@ -1784,6 +1800,7 @@ fn parse_status_filter(raw: Option<&str>) -> Result<Option<String>, String> {
 
 async fn run_identify_flash(
     manager: Arc<tokio::sync::Mutex<BackendManager>>,
+    backend_io: BackendIo,
     backend_id: String,
     device_id: DeviceId,
     led_count: usize,
@@ -1820,12 +1837,7 @@ async fn run_identify_flash(
             frame_leds = frame.len(),
             "identify issuing flash phase"
         );
-        let result = {
-            let mut manager = manager.lock().await;
-            manager
-                .write_device_colors(&backend_id, device_id, frame)
-                .await
-        };
+        let result = backend_io.write_colors(device_id, frame).await;
 
         if let Err(error) = result {
             warn!(
@@ -1848,12 +1860,7 @@ async fn run_identify_flash(
             elapsed_ms = started_at.elapsed().as_millis(),
             "identify issuing final clear frame"
         );
-        let clear_result = {
-            let mut manager = manager.lock().await;
-            manager
-                .write_device_colors(&backend_id, device_id, &off_frame)
-                .await
-        };
+        let clear_result = backend_io.write_colors(device_id, &off_frame).await;
         if let Err(error) = clear_result {
             warn!(
                 backend_id = %backend_id,

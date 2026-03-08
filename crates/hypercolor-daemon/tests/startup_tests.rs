@@ -5,12 +5,19 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::manager::{
+    BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
+};
 use hypercolor_daemon::startup::{
-    DaemonState, default_config, install_signal_handlers, load_config, parse_config_toml,
+    DaemonState, collect_unmapped_prefixed_layout_targets, default_config, install_signal_handlers,
+    load_config, parse_config_toml,
 };
 use hypercolor_daemon::{layout_store, runtime_state};
 use hypercolor_types::config::WledProtocolConfig;
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+use hypercolor_types::spatial::{
+    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    StripDirection,
+};
 use tempfile::NamedTempFile;
 use tokio::sync::Mutex;
 
@@ -386,4 +393,114 @@ async fn event_bus_receives_startup_event() {
         ),
         "first event should be DaemonStarted"
     );
+}
+
+#[test]
+fn collect_unmapped_prefixed_layout_targets_returns_only_missing_matching_prefixes() {
+    let layout = SpatialLayout {
+        id: "layout_test".to_owned(),
+        name: "Test".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![
+            test_zone("zone_usb", "usb:laptop"),
+            test_zone("zone_wled_mapped", "wled:desk"),
+            test_zone("zone_wled_missing", "wled:wall"),
+            test_zone("zone_wled_missing_dup", "wled:wall"),
+            test_zone("zone_hue", "hue:bridge"),
+        ],
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    let routing = BackendRoutingDebugSnapshot {
+        backend_ids: vec!["usb".to_owned(), "wled".to_owned()],
+        mapping_count: 2,
+        queue_count: 2,
+        mappings: vec![
+            LayoutRoutingDebugEntry {
+                layout_device_id: "usb:laptop".to_owned(),
+                backend_id: "usb".to_owned(),
+                device_id: "device_usb".to_owned(),
+                backend_registered: true,
+                queue_active: true,
+            },
+            LayoutRoutingDebugEntry {
+                layout_device_id: "wled:desk".to_owned(),
+                backend_id: "wled".to_owned(),
+                device_id: "device_wled".to_owned(),
+                backend_registered: true,
+                queue_active: true,
+            },
+        ],
+        orphaned_queues: Vec::<OrphanedQueueDebugEntry>::new(),
+    };
+
+    let unmapped = collect_unmapped_prefixed_layout_targets(&layout, &routing, "wled:");
+    assert_eq!(unmapped, vec!["wled:wall".to_owned()]);
+}
+
+#[test]
+fn collect_unmapped_prefixed_layout_targets_ignores_unmatched_prefixes() {
+    let layout = SpatialLayout {
+        id: "layout_test".to_owned(),
+        name: "Test".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![
+            test_zone("zone_usb", "usb:laptop"),
+            test_zone("zone_hue", "hue:bridge"),
+        ],
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    let routing = BackendRoutingDebugSnapshot {
+        backend_ids: vec!["usb".to_owned()],
+        mapping_count: 1,
+        queue_count: 1,
+        mappings: vec![LayoutRoutingDebugEntry {
+            layout_device_id: "usb:laptop".to_owned(),
+            backend_id: "usb".to_owned(),
+            device_id: "device_usb".to_owned(),
+            backend_registered: true,
+            queue_active: true,
+        }],
+        orphaned_queues: Vec::<OrphanedQueueDebugEntry>::new(),
+    };
+
+    let unmapped = collect_unmapped_prefixed_layout_targets(&layout, &routing, "wled:");
+    assert!(unmapped.is_empty());
+}
+
+fn test_zone(id: &str, device_id: &str) -> DeviceZone {
+    DeviceZone {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        device_id: device_id.to_owned(),
+        zone_name: None,
+        group_id: None,
+        position: NormalizedPosition { x: 0.5, y: 0.5 },
+        size: NormalizedPosition { x: 0.25, y: 0.1 },
+        rotation: 0.0,
+        scale: 1.0,
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: 30,
+            direction: StripDirection::LeftToRight,
+        },
+        led_positions: Vec::new(),
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+        led_mapping: None,
+    }
 }

@@ -20,7 +20,7 @@ pub use discovery::{
     DiscoveredDevice, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport, TransportScanner,
 };
 pub use lifecycle::{DeviceLifecycleManager, LifecycleAction};
-pub use manager::{AsyncWriteFailure, BackendManager, SegmentRange};
+pub use manager::{AsyncWriteFailure, BackendIo, BackendManager, SegmentRange};
 pub use registry::DeviceRegistry;
 pub use state_machine::{
     DeviceStateMachine, DeviceStateMachineDebugSnapshot, ReconnectPolicy, ReconnectStatus,

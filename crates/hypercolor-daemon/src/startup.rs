@@ -6,7 +6,7 @@
 //! [`start`](DaemonState::start) and [`shutdown`](DaemonState::shutdown) for
 //! lifecycle management.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::manager::BackendRoutingDebugSnapshot;
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::wled::{WledBackend, WledProtocol};
 use hypercolor_core::device::{
@@ -60,6 +61,8 @@ use crate::{discovery, discovery::DiscoveryBackend};
 
 /// Default configuration file name within the config directory.
 const CONFIG_FILE_NAME: &str = "hypercolor.toml";
+const STARTUP_WLED_RECOVERY_ATTEMPTS: usize = 3;
+const STARTUP_WLED_RECOVERY_INTERVAL_SECS: u64 = 5;
 
 // ── DaemonState ─────────────────────────────────────────────────────────────
 
@@ -777,6 +780,7 @@ impl DaemonState {
             reconnect_tasks: Arc::clone(&self.reconnect_tasks),
             event_bus: Arc::clone(&self.event_bus),
             config_manager: Arc::clone(&self.config_manager),
+            spatial_engine: Arc::clone(&self.spatial_engine),
             logical_devices: Arc::clone(&self.logical_devices),
             in_progress: Arc::clone(&self.discovery_in_progress),
         };
@@ -815,6 +819,7 @@ impl DaemonState {
                     "Skipping initial discovery scan; scan already in progress",
                 )
                 .await;
+            worker.run_startup_wled_recovery_scans().await;
 
             let mut ticker = tokio::time::interval(scan_interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -881,6 +886,7 @@ struct DiscoveryWorkerContext {
     reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
     event_bus: Arc<HypercolorBus>,
     config_manager: Arc<ConfigManager>,
+    spatial_engine: Arc<RwLock<SpatialEngine>>,
     logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
     in_progress: Arc<AtomicBool>,
 }
@@ -955,6 +961,95 @@ impl DiscoveryWorkerContext {
         )
         .await;
     }
+
+    async fn run_startup_wled_recovery_scans(&self) {
+        let latest_config = Arc::clone(&self.config_manager.get());
+        if !should_retry_unmapped_wled_targets(&latest_config) {
+            return;
+        }
+
+        for attempt in 1..=STARTUP_WLED_RECOVERY_ATTEMPTS {
+            let unmapped = self.active_layout_unmapped_wled_targets().await;
+            if unmapped.is_empty() {
+                return;
+            }
+
+            info!(
+                attempt,
+                max_attempts = STARTUP_WLED_RECOVERY_ATTEMPTS,
+                retry_after_secs = STARTUP_WLED_RECOVERY_INTERVAL_SECS,
+                unmapped_layout_device_ids = ?unmapped,
+                "Active layout still has unmapped WLED targets after startup scan; retrying discovery"
+            );
+
+            tokio::time::sleep(std::time::Duration::from_secs(
+                STARTUP_WLED_RECOVERY_INTERVAL_SECS,
+            ))
+            .await;
+
+            self.run_scan_if_idle(
+                Arc::clone(&latest_config),
+                vec![DiscoveryBackend::Wled],
+                "Skipping startup WLED recovery scan; discovery already in progress",
+            )
+            .await;
+        }
+
+        let unmapped = self.active_layout_unmapped_wled_targets().await;
+        if !unmapped.is_empty() {
+            warn!(
+                retry_attempts = STARTUP_WLED_RECOVERY_ATTEMPTS,
+                unmapped_layout_device_ids = ?unmapped,
+                scan_interval_secs = latest_config.discovery.scan_interval_secs.max(1),
+                "Startup recovery scans exhausted; active layout still has unmapped WLED targets"
+            );
+        }
+    }
+
+    async fn active_layout_unmapped_wled_targets(&self) -> Vec<String> {
+        let layout = {
+            let spatial = self.spatial_engine.read().await;
+            spatial.layout().clone()
+        };
+        let routing = {
+            let manager = self.backend_manager.lock().await;
+            manager.routing_snapshot()
+        };
+
+        collect_unmapped_prefixed_layout_targets(&layout, &routing, "wled:")
+    }
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn collect_unmapped_prefixed_layout_targets(
+    layout: &SpatialLayout,
+    routing: &BackendRoutingDebugSnapshot,
+    prefix: &str,
+) -> Vec<String> {
+    let mapped_ids: HashSet<&str> = routing
+        .mappings
+        .iter()
+        .map(|entry| entry.layout_device_id.as_str())
+        .collect();
+
+    let mut unmapped = layout
+        .zones
+        .iter()
+        .filter_map(|zone| {
+            let layout_device_id = zone.device_id.as_str();
+            (layout_device_id.starts_with(prefix) && !mapped_ids.contains(layout_device_id))
+                .then(|| zone.device_id.clone())
+        })
+        .collect::<Vec<_>>();
+
+    unmapped.sort();
+    unmapped.dedup();
+    unmapped
+}
+
+fn should_retry_unmapped_wled_targets(config: &HypercolorConfig) -> bool {
+    config.discovery.wled_scan && config.discovery.mdns_enabled && config.wled.known_ips.is_empty()
 }
 
 fn build_input_manager(config: &HypercolorConfig) -> InputManager {

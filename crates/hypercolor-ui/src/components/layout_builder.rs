@@ -16,6 +16,42 @@ use crate::icons::*;
 use crate::toasts;
 use hypercolor_types::spatial::SpatialLayout;
 
+fn preferred_replacement_layout(
+    layouts: &[api::LayoutSummary],
+    removed_layout_id: &str,
+) -> Option<api::LayoutSummary> {
+    layouts
+        .iter()
+        .find(|layout| layout.id != removed_layout_id && layout.is_active)
+        .cloned()
+        .or_else(|| {
+            layouts
+                .iter()
+                .find(|layout| layout.id != removed_layout_id)
+                .cloned()
+        })
+}
+
+fn replacement_layout_name(layouts: &[api::LayoutSummary]) -> String {
+    let base = "Default Layout";
+    let existing_names: Vec<&str> = layouts.iter().map(|layout| layout.name.as_str()).collect();
+    if !existing_names.iter().any(|name| name.eq_ignore_ascii_case(base)) {
+        return base.to_owned();
+    }
+
+    let mut suffix = 2_u32;
+    loop {
+        let candidate = format!("{base} {suffix}");
+        if !existing_names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&candidate))
+        {
+            return candidate;
+        }
+        suffix = suffix.saturating_add(1);
+    }
+}
+
 /// Layout builder — wraps toolbar, palette, canvas viewport, and zone properties.
 #[component]
 pub fn LayoutBuilder() -> impl IntoView {
@@ -31,6 +67,16 @@ pub fn LayoutBuilder() -> impl IntoView {
     let layout_signal = Signal::derive(move || layout.get());
     let zone_id_signal = Signal::derive(move || selected_zone_id.get());
     let has_layout = Signal::derive(move || layout.with(|current| current.is_some()));
+    let selected_layout_summary = Signal::derive(move || {
+        let selected_id = selected_layout_id.get()?;
+        let layouts = ctx.layouts_resource.get()?.ok()?;
+        layouts.into_iter().find(|entry| entry.id == selected_id)
+    });
+    let selected_layout_is_active = Signal::derive(move || {
+        selected_layout_summary
+            .get()
+            .is_some_and(|entry| entry.is_active)
+    });
 
     // Derive dirty state by comparing working layout to saved snapshot.
     let is_dirty = Signal::derive(move || {
@@ -164,19 +210,78 @@ pub fn LayoutBuilder() -> impl IntoView {
         toasts::toast_info("Layout reverted");
     };
 
+    let apply_layout = move || {
+        let Some(current) = layout.get() else { return };
+        let id = current.id.clone();
+        let layouts_resource = ctx.layouts_resource;
+        leptos::task::spawn_local(async move {
+            match api::apply_layout(&id).await {
+                Ok(()) => {
+                    toasts::toast_success("Layout applied");
+                    layouts_resource.refetch();
+                }
+                Err(error) => {
+                    toasts::toast_error(&format!("Apply failed: {error}"));
+                }
+            }
+        });
+    };
+
     // Delete handler
     let delete_layout = move || {
-        let Some(l) = layout.get() else { return };
-        let id = l.id.clone();
+        let Some(current_layout) = layout.get() else {
+            return;
+        };
+        let layouts = ctx
+            .layouts_resource
+            .get()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        let id = current_layout.id.clone();
+        let name = current_layout.name.clone();
+        let selected_summary = layouts.iter().find(|entry| entry.id == id).cloned();
+        let fallback_layout = preferred_replacement_layout(&layouts, &id);
         let layouts_resource = ctx.layouts_resource;
-        set_selected_layout_id.set(None);
-        set_layout.set(None);
-        set_saved_layout.set(None);
         leptos::task::spawn_local(async move {
-            if api::delete_layout(&id).await.is_ok() {
-                toasts::toast_info("Layout deleted");
+            let mut next_selection = fallback_layout.clone();
+
+            let delete_result: Result<(), String> = async {
+                if selected_summary.as_ref().is_some_and(|entry| entry.is_active) {
+                    let replacement = match fallback_layout {
+                        Some(layout) => layout,
+                        None => api::create_layout(&api::CreateLayoutRequest {
+                            name: replacement_layout_name(&layouts),
+                            description: None,
+                            canvas_width: None,
+                            canvas_height: None,
+                        })
+                        .await?,
+                    };
+                    api::apply_layout(&replacement.id).await?;
+                    next_selection = Some(replacement);
+                }
+
+                api::delete_layout(&id).await
             }
-            layouts_resource.refetch();
+            .await;
+
+            match delete_result {
+                Ok(()) => {
+                    set_selected_layout_id.set(next_selection.as_ref().map(|layout| layout.id.clone()));
+                    if let Some(layout) = next_selection {
+                        toasts::toast_info(&format!("Deleted {name}; switched to {}", layout.name));
+                    } else {
+                        set_layout.set(None);
+                        set_saved_layout.set(None);
+                        toasts::toast_info("Layout deleted");
+                    }
+                    layouts_resource.refetch();
+                }
+                Err(e) => {
+                    toasts::toast_error(&format!("Delete failed: {e}"));
+                    layouts_resource.refetch();
+                }
+            }
         });
     };
 
@@ -311,6 +416,12 @@ pub fn LayoutBuilder() -> impl IntoView {
                 // Save / Revert / Delete buttons — only when a layout is loaded
                 {move || layout.get().map(|_| {
                     let dirty = is_dirty.get();
+                    let is_active = selected_layout_is_active.get();
+                    let apply_style = if is_active || dirty {
+                        "background: var(--color-surface-overlay); border-color: var(--color-border-subtle); color: var(--color-text-tertiary); opacity: 0.4; pointer-events: none"
+                    } else {
+                        "background: rgba(128, 255, 234, 0.1); border-color: rgba(128, 255, 234, 0.2); color: rgb(128, 255, 234)"
+                    };
                     let save_style = if dirty {
                         "background: rgba(80, 250, 123, 0.12); border-color: rgba(80, 250, 123, 0.3); color: rgb(80, 250, 123); \
                          box-shadow: 0 0 12px rgba(80, 250, 123, 0.15)"
@@ -324,6 +435,15 @@ pub fn LayoutBuilder() -> impl IntoView {
                     };
                     view! {
                         <div class="flex items-center gap-2">
+                            <button
+                                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
+                                style=apply_style
+                                on:click=move |_| apply_layout()
+                                disabled=move || is_dirty.get() || selected_layout_is_active.get()
+                            >
+                                <Icon icon=LuCheck width="14px" height="14px" />
+                                {move || if selected_layout_is_active.get() { "Active" } else { "Apply" }}
+                            </button>
                             <button
                                 class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all btn-press"
                                 style=revert_style

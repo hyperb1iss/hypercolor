@@ -1882,7 +1882,7 @@ async fn layout_apply_updates_active_layout() {
 }
 
 #[tokio::test]
-async fn layout_delete_active_returns_conflict() {
+async fn layout_delete_active_falls_back_to_default_layout() {
     let state = Arc::new(AppState::new());
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -1905,7 +1905,7 @@ async fn layout_delete_active_returns_conflict() {
         .expect("id should be string")
         .to_owned();
 
-    let _ = app
+    let apply_response = app
         .clone()
         .oneshot(
             Request::builder()
@@ -1916,8 +1916,10 @@ async fn layout_delete_active_returns_conflict() {
         )
         .await
         .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
 
     let delete_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("DELETE")
@@ -1927,9 +1929,28 @@ async fn layout_delete_active_returns_conflict() {
         )
         .await
         .expect("failed to execute request");
-    assert_eq!(delete_response.status(), StatusCode::CONFLICT);
-    let delete_json = body_json(delete_response).await;
-    assert_eq!(delete_json["error"]["code"], "conflict");
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    let active_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/layouts/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(active_response.status(), StatusCode::OK);
+    let active_json = body_json(active_response).await;
+    assert_eq!(active_json["data"]["id"], "default");
+    assert_eq!(active_json["data"]["name"], "Default Layout");
+
+    let runtime_raw = std::fs::read_to_string(&state.runtime_state_path)
+        .expect("runtime state file should exist after delete");
+    let runtime_json: serde_json::Value =
+        serde_json::from_str(&runtime_raw).expect("runtime state should be valid JSON");
+    assert_eq!(runtime_json["active_layout_id"], "default");
 }
 
 #[tokio::test]

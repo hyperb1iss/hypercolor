@@ -713,7 +713,13 @@ pub async fn delete_layout(id: &str) -> Result<(), String> {
         .map_err(|e| format!("Network error: {e}"))?;
 
     if resp.status() != 200 {
-        return Err(format!("HTTP {}", resp.status()));
+        let msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v["error"]["message"].as_str().map(String::from))
+            .unwrap_or_else(|| format!("HTTP {}", resp.status()));
+        return Err(msg);
     }
     Ok(())
 }

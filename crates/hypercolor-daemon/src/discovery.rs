@@ -6,10 +6,11 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use anyhow::Context;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::wled::WledScanner;
 use hypercolor_core::device::{
-    AsyncWriteFailure, BackendManager, DeviceLifecycleManager, DeviceRegistry,
+    AsyncWriteFailure, BackendIo, BackendManager, DeviceLifecycleManager, DeviceRegistry,
     DiscoveryOrchestrator, LifecycleAction, ScannerScanReport, UsbScanner,
 };
 use hypercolor_types::config::HypercolorConfig;
@@ -455,12 +456,9 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
                 backend_id,
                 layout_device_id,
             } => {
-                let result = {
-                    let mut manager = runtime.backend_manager.lock().await;
-                    manager
-                        .connect_device(&backend_id, device_id, &layout_device_id)
-                        .await
-                };
+                let result =
+                    connect_backend_device(&runtime, &backend_id, device_id, &layout_device_id)
+                        .await;
 
                 let (follow_up, connected) = match result {
                     Ok(()) => {
@@ -532,7 +530,7 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
                         .map(ToOwned::to_owned)
                 };
 
-                let Some(layout_device_id) = layout_device_id else {
+                let Some(_layout_device_id) = layout_device_id else {
                     warn!(
                         device_id = %device_id,
                         backend_id = %backend_id,
@@ -541,12 +539,7 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
                     continue;
                 };
 
-                let result = {
-                    let mut manager = runtime.backend_manager.lock().await;
-                    manager
-                        .disconnect_device(&backend_id, device_id, &layout_device_id)
-                        .await
-                };
+                let result = { disconnect_backend_device(&runtime, &backend_id, device_id).await };
                 if let Err(error) = result {
                     warn!(
                         device_id = %device_id,
@@ -668,9 +661,7 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
         );
 
         let connect_result = {
-            let mut manager = runtime_for_task.backend_manager.lock().await;
-            manager
-                .connect_device(&backend_id, device_id, &layout_device_id)
+            connect_backend_device(&runtime_for_task, &backend_id, device_id, &layout_device_id)
                 .await
         };
 
@@ -750,15 +741,56 @@ async fn refresh_connected_device_info(
     backend_id: &str,
     device_id: DeviceId,
 ) -> anyhow::Result<()> {
-    let maybe_info = {
-        let manager = runtime.backend_manager.lock().await;
-        manager.connected_device_info(backend_id, device_id).await?
-    };
+    let maybe_info = backend_io(runtime, backend_id)
+        .await?
+        .connected_device_info(device_id)
+        .await?;
 
     if let Some(info) = maybe_info {
         let _ = runtime.device_registry.update_info(&device_id, info).await;
     }
 
+    Ok(())
+}
+
+async fn backend_io(runtime: &DiscoveryRuntime, backend_id: &str) -> anyhow::Result<BackendIo> {
+    let manager = runtime.backend_manager.lock().await;
+    manager
+        .backend_io(backend_id)
+        .with_context(|| format!("backend '{backend_id}' is not registered"))
+}
+
+async fn connect_backend_device(
+    runtime: &DiscoveryRuntime,
+    backend_id: &str,
+    device_id: DeviceId,
+    layout_device_id: &str,
+) -> anyhow::Result<()> {
+    let io = backend_io(runtime, backend_id).await?;
+    let target_fps = io.connect_with_refresh(device_id).await?;
+
+    let mut manager = runtime.backend_manager.lock().await;
+    manager.set_cached_target_fps(backend_id, device_id, target_fps);
+    manager.map_device(
+        layout_device_id.to_owned(),
+        backend_id.to_owned(),
+        device_id,
+    );
+    Ok(())
+}
+
+async fn disconnect_backend_device(
+    runtime: &DiscoveryRuntime,
+    backend_id: &str,
+    device_id: DeviceId,
+) -> anyhow::Result<()> {
+    backend_io(runtime, backend_id)
+        .await?
+        .disconnect(device_id)
+        .await?;
+
+    let mut manager = runtime.backend_manager.lock().await;
+    let _ = manager.remove_device_mappings_for_physical(backend_id, device_id);
     Ok(())
 }
 

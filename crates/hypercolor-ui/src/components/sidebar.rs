@@ -150,6 +150,10 @@ pub fn Sidebar() -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
 
     let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
+    let uses_sidebar_preview = Signal::derive(move || {
+        let path = location.pathname.get();
+        !(path == "/" || path.starts_with("/effects") || path.starts_with("/layout"))
+    });
 
     let nav_items = vec![
         NavItem {
@@ -195,6 +199,10 @@ pub fn Sidebar() -> impl IntoView {
     if let Some(ws) = ws {
         // Palette extraction — throttled ~2x/sec for ambient styling
         Effect::new(move |_| {
+            if uses_sidebar_preview.get() {
+                return;
+            }
+
             let Some(frame) = ws.canvas_frame.get() else {
                 return;
             };
@@ -489,17 +497,25 @@ pub fn Sidebar() -> impl IntoView {
                 // Derived signals for palette RGB — read inside style: closures, not here
                 let primary_rgb = move || {
                     let cat = fx.active_effect_category.get();
-                    live_palette.get().map_or_else(
-                        || category_accent_rgb(&cat).to_string(),
-                        |p| rgb_string(p.primary),
-                    )
+                    if uses_sidebar_preview.get() {
+                        category_accent_rgb(&cat).to_string()
+                    } else {
+                        live_palette.get().map_or_else(
+                            || category_accent_rgb(&cat).to_string(),
+                            |p| rgb_string(p.primary),
+                        )
+                    }
                 };
                 let secondary_rgb = move || {
                     let cat = fx.active_effect_category.get();
-                    live_palette.get().map_or_else(
-                        || category_accent_rgb(&cat).to_string(),
-                        |p| rgb_string(p.secondary),
-                    )
+                    if uses_sidebar_preview.get() {
+                        category_accent_rgb(&cat).to_string()
+                    } else {
+                        live_palette.get().map_or_else(
+                            || category_accent_rgb(&cat).to_string(),
+                            |p| rgb_string(p.secondary),
+                        )
+                    }
                 };
 
                 Some(view! {
@@ -517,9 +533,7 @@ pub fn Sidebar() -> impl IntoView {
 
                         // Live canvas thumbnail — only on pages without their own preview
                         {move || {
-                            let path = location.pathname.get();
-                            let has_preview = path == "/" || path.starts_with("/effects") || path.starts_with("/layout");
-                            (!has_preview).then(|| view! {
+                            uses_sidebar_preview.get().then(|| view! {
                                 <div class="px-3 animate-fade-in">
                                     <div
                                         class="relative rounded-lg overflow-hidden bg-black/40"

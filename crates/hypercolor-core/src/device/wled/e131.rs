@@ -144,7 +144,7 @@ impl E131Packet {
     /// not the full 638-byte buffer.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        let total = E131_HEADER_SIZE + 1 + usize::from(self.channel_count);
+        let total = E131_HEADER_SIZE + usize::from(self.channel_count);
         &self.buf[..total]
     }
 

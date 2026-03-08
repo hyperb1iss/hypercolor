@@ -8,7 +8,8 @@ use std::time::Duration;
 use hypercolor_core::device::DeviceBackend;
 use hypercolor_core::device::wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
-    WledDeviceInfo, WledProtocol, WledSegmentInfo, build_ddp_frame, universes_needed,
+    WledDeviceInfo, WledLiveReceiverConfig, WledProtocol, WledSegmentInfo, build_ddp_frame,
+    universes_needed,
 };
 use hypercolor_types::device::DeviceId;
 use tokio::net::UdpSocket;
@@ -19,8 +20,8 @@ use tokio::time::timeout;
 const DDP_HEADER_SIZE: usize = 10;
 const DDP_VERSION: u8 = 0x40;
 const DDP_FLAG_PUSH: u8 = 0x01;
-const DDP_DTYPE_RGB8: u8 = 0x0A;
-const DDP_DTYPE_RGBW8: u8 = 0x1A;
+const DDP_DTYPE_RGB8: u8 = 0x0B;
+const DDP_DTYPE_RGBW8: u8 = 0x1B;
 const DDP_ID_DEFAULT: u8 = 0x01;
 
 // ── DDP Header Layout Tests ────────────────────────────────────────────
@@ -69,7 +70,7 @@ fn ddp_header_byte_2_data_type_rgb8() {
     let packet = DdpPacket::new(&[0x00; 3], 0, true, 1, DDP_DTYPE_RGB8);
     let bytes = packet.as_bytes();
 
-    assert_eq!(bytes[2], 0x0A, "byte 2: RGB 8-bit data type");
+    assert_eq!(bytes[2], 0x0B, "byte 2: RGB 8-bit data type");
 }
 
 #[test]
@@ -77,7 +78,7 @@ fn ddp_header_byte_2_data_type_rgbw8() {
     let packet = DdpPacket::new(&[0x00; 4], 0, true, 1, DDP_DTYPE_RGBW8);
     let bytes = packet.as_bytes();
 
-    assert_eq!(bytes[2], 0x1A, "byte 2: RGBW 8-bit data type");
+    assert_eq!(bytes[2], 0x1B, "byte 2: RGBW 8-bit data type");
 }
 
 #[test]
@@ -447,6 +448,17 @@ fn e131_packet_set_channels() {
 }
 
 #[test]
+fn e131_packet_max_channels_fits_buffer() {
+    let cid = uuid::Uuid::nil();
+    let mut packet = E131Packet::new("Hypercolor", cid, 1, 150);
+    let channels = vec![0x7f; 512];
+
+    packet.set_channels(&channels, 7);
+
+    assert_eq!(packet.as_bytes().len(), 638);
+}
+
+#[test]
 fn e131_packet_length_fields_updated() {
     let cid = uuid::Uuid::nil();
     let mut packet = E131Packet::new("Hypercolor", cid, 1, 150);
@@ -718,6 +730,56 @@ fn parse_wled_segments_missing_seg_array_fails() {
 
     let result = hypercolor_core::device::wled::backend::parse_wled_segments(&json);
     assert!(result.is_err(), "missing 'seg' array should fail");
+}
+
+#[test]
+fn parse_wled_live_receiver_config_e131() {
+    let json = serde_json::json!({
+        "if": {
+            "live": {
+                "en": true,
+                "rlm": true,
+                "port": 5568,
+                "dmx": {
+                    "uni": 3,
+                    "addr": 1,
+                    "mode": 6
+                }
+            }
+        }
+    });
+
+    let config = hypercolor_core::device::wled::backend::parse_wled_live_receiver_config(&json)
+        .expect("parse live config")
+        .expect("live config present");
+
+    assert_eq!(
+        config,
+        WledLiveReceiverConfig {
+            enabled: true,
+            realtime_mode_enabled: true,
+            port: 5568,
+            dmx_address: Some(1),
+            dmx_universe: Some(3),
+            dmx_mode: Some(6),
+        }
+    );
+}
+
+#[test]
+fn parse_wled_live_receiver_config_missing_live_returns_none() {
+    let json = serde_json::json!({
+        "if": {
+            "sync": {
+                "port0": 21324
+            }
+        }
+    });
+
+    let config = hypercolor_core::device::wled::backend::parse_wled_live_receiver_config(&json)
+        .expect("parse config");
+
+    assert!(config.is_none(), "missing live block should return none");
 }
 
 // ── WledSegmentInfo pixel_count Tests ──────────────────────────────────

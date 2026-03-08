@@ -141,11 +141,21 @@ async fn run_display_output(
                 }
             };
 
-            let result = {
-                let mut manager = state.backend_manager.lock().await;
-                manager
-                    .write_device_display_frame(&target.backend_id, target.device_id, &jpeg)
-                    .await
+            let backend_io = {
+                let manager = state.backend_manager.lock().await;
+                manager.backend_io(&target.backend_id)
+            };
+
+            let result = match backend_io {
+                Some(backend_io) => {
+                    backend_io
+                        .write_display_frame(target.device_id, &jpeg)
+                        .await
+                }
+                None => Err(anyhow::anyhow!(
+                    "backend '{}' is not registered",
+                    target.backend_id
+                )),
             };
 
             if let Err(error) = result {
