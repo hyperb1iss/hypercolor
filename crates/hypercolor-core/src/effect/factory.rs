@@ -14,12 +14,18 @@ use super::traits::EffectRenderer;
 /// Returns an error when the effect source has no runnable renderer path.
 pub fn create_renderer_for_metadata(metadata: &EffectMetadata) -> Result<Box<dyn EffectRenderer>> {
     match &metadata.source {
-        EffectSource::Native { .. } => create_builtin_renderer(&metadata.name).with_context(|| {
-            format!(
-                "native effect '{}' is registered but has no built-in renderer implementation",
-                metadata.name
-            )
-        }),
+        EffectSource::Native { .. } => {
+            let native_key = metadata
+                .source
+                .source_stem()
+                .unwrap_or(metadata.name.as_str());
+            create_builtin_renderer(native_key).with_context(|| {
+                format!(
+                    "native effect '{}' is registered but has no built-in renderer implementation",
+                    metadata.name
+                )
+            })
+        }
         EffectSource::Html { .. } => {
             #[cfg(feature = "servo")]
             {

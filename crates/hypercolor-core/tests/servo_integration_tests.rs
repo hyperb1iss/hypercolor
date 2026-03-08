@@ -72,6 +72,12 @@ fn frame_contains_red_pixel(canvas: &Canvas) -> bool {
         .any(|[r, g, b, _]| r >= 200 && g <= 80 && b <= 80)
 }
 
+fn frame_contains_green_pixel(canvas: &Canvas) -> bool {
+    canvas
+        .pixels()
+        .any(|[r, g, b, _]| g >= 200 && r <= 80 && b <= 80)
+}
+
 fn frame_has_spatial_variance(canvas: &Canvas) -> bool {
     let top_left = canvas.get_pixel(0, 0);
     let top_right = canvas.get_pixel(canvas.width() - 1, 0);
@@ -160,6 +166,75 @@ ctx.fillRect(0, 0, canvas.width, canvas.height);
     assert!(
         frames.iter().any(frame_contains_red_pixel),
         "expected at least one frame to contain strong red output from smoke effect"
+    );
+}
+
+#[test]
+#[ignore = "requires full Servo runtime and is expensive in CI/dev loops"]
+fn servo_renderer_smoke_switches_between_html_effects() {
+    let tmp = tempdir().expect("tempdir should create");
+    let first_path = tmp.path().join("first.html");
+    let second_path = tmp.path().join("second.html");
+
+    std::fs::write(
+        &first_path,
+        r#"<!doctype html>
+<html>
+<body style="margin:0;background:black;">
+<canvas id="fx" width="320" height="200"></canvas>
+<script>
+const canvas = document.getElementById('fx');
+const ctx = canvas.getContext('2d');
+ctx.fillStyle = 'rgb(255,0,0)';
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+</script>
+</body>
+</html>"#,
+    )
+    .expect("first html write should work");
+
+    std::fs::write(
+        &second_path,
+        r#"<!doctype html>
+<html>
+<body style="margin:0;background:black;">
+<canvas id="fx" width="320" height="200"></canvas>
+<script>
+const canvas = document.getElementById('fx');
+const ctx = canvas.getContext('2d');
+ctx.fillStyle = 'rgb(0,255,0)';
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+</script>
+</body>
+</html>"#,
+    )
+    .expect("second html write should work");
+
+    let mut engine = EffectEngine::new();
+    engine
+        .activate_metadata(html_metadata(first_path))
+        .expect("first servo activation should succeed");
+
+    let first_frame = engine
+        .tick(FRAME_DT_SECONDS, &AudioData::silence())
+        .expect("first servo tick should produce a frame");
+    assert_dimensions(&first_frame);
+    assert!(
+        frame_contains_red_pixel(&first_frame),
+        "expected the first effect to render a red frame"
+    );
+
+    engine
+        .activate_metadata(html_metadata(second_path))
+        .expect("second servo activation should succeed after reusing the worker");
+
+    let second_frame = engine
+        .tick(FRAME_DT_SECONDS, &AudioData::silence())
+        .expect("second servo tick should produce a frame");
+    assert_dimensions(&second_frame);
+    assert!(
+        frame_contains_green_pixel(&second_frame),
+        "expected the second effect to render a green frame after effect switching"
     );
 }
 

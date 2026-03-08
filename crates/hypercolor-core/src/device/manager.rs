@@ -519,8 +519,8 @@ pub struct BackendManager {
     /// Reference-counted direct-control locks that suppress queued frame writes.
     direct_control_locks: HashMap<BackendDeviceKey, usize>,
 
-    /// Last warning time for layout device IDs that had no live mapping.
-    last_unmapped_warn_at: HashMap<String, Instant>,
+    /// Layout device IDs already warned as unmapped in the current layout state.
+    warned_unmapped_layout_devices: HashSet<String>,
 
     /// Last warning time for zone-to-segment color length mismatches.
     last_segment_mismatch_warn_at: HashMap<String, Instant>,
@@ -635,7 +635,7 @@ impl BackendManager {
             segment_length = segment.map(|s| s.length),
             "mapped device"
         );
-        self.last_unmapped_warn_at.remove(&layout_id);
+        self.warned_unmapped_layout_devices.remove(&layout_id);
         self.device_map.insert(
             layout_id,
             DeviceMapping {
@@ -998,7 +998,7 @@ impl BackendManager {
     /// Push frame color data to all mapped devices with optional per-device
     /// output brightness scalars.
     #[allow(clippy::unused_async)]
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
         reason = "frame routing keeps mapping, remap, segmented writes, queue dispatch together so the hot-path ordering stays readable"
     )]
@@ -1008,6 +1008,16 @@ impl BackendManager {
         layout: &SpatialLayout,
         device_brightness: Option<&HashMap<DeviceId, f32>>,
     ) -> FrameWriteStats {
+        let active_layout_device_ids = layout
+            .zones
+            .iter()
+            .map(|zone| zone.device_id.as_str())
+            .collect::<HashSet<_>>();
+        self.warned_unmapped_layout_devices
+            .retain(|layout_device_id| {
+                active_layout_device_ids.contains(layout_device_id.as_str())
+            });
+
         let mut stats = FrameWriteStats::default();
 
         // Build zone_id → routing metadata lookup from the spatial layout.
@@ -1091,24 +1101,20 @@ impl BackendManager {
             let remapped_colors = remap_zone_colors(&zc.zone_id, &zc.colors, led_mapping);
 
             let Some(mapping) = self.device_map.get(layout_device_id) else {
-                let should_warn =
-                    self.last_unmapped_warn_at
-                        .get(layout_device_id)
-                        .is_none_or(|last_warn_at| {
-                            last_warn_at.elapsed() >= UNMAPPED_LAYOUT_WARN_INTERVAL
-                        });
-
-                if should_warn {
+                if self
+                    .warned_unmapped_layout_devices
+                    .insert(layout_device_id.to_owned())
+                {
                     warn!(
                         zone_id = %zc.zone_id,
                         layout_device_id = %layout_device_id,
                         "zone skipped because the target layout device is not mapped to a connected backend device"
                     );
-                    self.last_unmapped_warn_at
-                        .insert(layout_device_id.to_owned(), Instant::now());
                 }
                 continue;
             };
+
+            self.warned_unmapped_layout_devices.remove(layout_device_id);
 
             let key = (mapping.backend_id.clone(), mapping.device_id);
             let entry = device_colors.entry(key).or_default();

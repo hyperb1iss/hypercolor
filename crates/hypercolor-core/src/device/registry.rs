@@ -107,6 +107,11 @@ impl DeviceRegistry {
                 let mut updated_info = info;
                 // Keep the canonical registry ID stable across rediscovery.
                 updated_info.id = existing_id;
+                preserve_renderable_device_shape(
+                    &mut updated_info,
+                    &entry.info,
+                    entry.state.clone(),
+                );
                 apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
                 debug!(
                     device_id = %existing_id,
@@ -371,4 +376,28 @@ fn apply_user_settings_to_info(info: &mut DeviceInfo, settings: &DeviceUserSetti
     if let Some(name) = settings.name.as_ref() {
         info.name = name.clone();
     }
+}
+
+fn preserve_renderable_device_shape(
+    incoming: &mut DeviceInfo,
+    existing: &DeviceInfo,
+    state: DeviceState,
+) {
+    if !state.is_renderable() {
+        return;
+    }
+
+    let incoming_has_shape = !incoming.zones.is_empty()
+        || incoming.capabilities.led_count > 0
+        || incoming.capabilities.has_display;
+    let existing_has_shape = !existing.zones.is_empty()
+        || existing.capabilities.led_count > 0
+        || existing.capabilities.has_display;
+
+    if incoming_has_shape || !existing_has_shape {
+        return;
+    }
+
+    incoming.zones.clone_from(&existing.zones);
+    incoming.capabilities = existing.capabilities;
 }

@@ -1,6 +1,8 @@
 //! Tests for the `BackendManager` — device routing and frame dispatch.
 
+use std::io;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -17,6 +19,7 @@ use hypercolor_types::spatial::{
     ZoneAttachment,
 };
 use tokio::sync::Mutex;
+use tracing_subscriber::fmt::writer::MakeWriter;
 
 // ── Slow Test Backend ────────────────────────────────────────────────────────
 
@@ -527,6 +530,49 @@ impl DeviceBackend for DisplayRecordingBackend {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Default)]
+struct SharedLogBuffer(Arc<StdMutex<Vec<u8>>>);
+
+struct SharedLogWriter {
+    buffer: Arc<StdMutex<Vec<u8>>>,
+}
+
+impl SharedLogBuffer {
+    fn contents(&self) -> String {
+        String::from_utf8(
+            self.0
+                .lock()
+                .expect("shared log buffer lock should not be poisoned")
+                .clone(),
+        )
+        .expect("captured test logs should be valid UTF-8")
+    }
+}
+
+impl<'a> MakeWriter<'a> for SharedLogBuffer {
+    type Writer = SharedLogWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        SharedLogWriter {
+            buffer: Arc::clone(&self.0),
+        }
+    }
+}
+
+impl io::Write for SharedLogWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.buffer
+            .lock()
+            .expect("shared log buffer lock should not be poisoned")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 fn make_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
     SpatialLayout {
@@ -1264,6 +1310,42 @@ async fn write_frame_unmapped_zones_are_silently_skipped() {
     // No mapping for "wled:unknown_device" — silently skipped.
     assert_eq!(stats.devices_written, 0);
     assert!(stats.errors.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn write_frame_unmapped_zone_warns_once_until_mapping_changes() {
+    let buffer = SharedLogBuffer::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(buffer.clone())
+        .with_ansi(false)
+        .without_time()
+        .with_target(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(MockDeviceBackend::new()));
+
+    let layout_device_id = "wled:unknown_device";
+    let layout = make_layout(vec![make_zone("zone_0", layout_device_id, 5)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[0, 255, 0]; 5],
+    }];
+    let warning =
+        "zone skipped because the target layout device is not mapped to a connected backend device";
+
+    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout).await;
+
+    assert_eq!(buffer.contents().matches(warning).count(), 1);
+
+    manager.map_device(layout_device_id, "mock", DeviceId::new());
+    assert!(manager.unmap_device(layout_device_id));
+
+    manager.write_frame(&zone_colors, &layout).await;
+
+    assert_eq!(buffer.contents().matches(warning).count(), 2);
 }
 
 #[tokio::test]

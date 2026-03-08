@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,14 @@ const CONSOLE_SNIPPET_RADIUS: usize = 1;
 const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
 const JS_TIMER_MIN_DURATION_MS: i64 = 4;
 
+// Servo initializes process-global options once. Recreating the runtime after a
+// shutdown panics inside libservo, so Hypercolor keeps one shared worker alive
+// for the daemon lifetime and reuses it across HTML effect switches.
+static SERVO_WORKER: OnceLock<Mutex<Option<ServoWorker>>> = OnceLock::new();
+thread_local! {
+    static SERVO_WORKER_EXIT_GUARD: ServoWorkerExitGuard = const { ServoWorkerExitGuard };
+}
+
 /// Feature-gated renderer for HTML effects.
 pub struct ServoRenderer {
     html_source: Option<PathBuf>,
@@ -49,7 +58,7 @@ pub struct ServoRenderer {
     runtime: LightscriptRuntime,
     initialized: bool,
     pending_scripts: Vec<String>,
-    worker: Option<ServoWorker>,
+    worker: Option<ServoWorkerClient>,
     warned_fallback_frame: bool,
     include_audio_updates: bool,
 }
@@ -174,7 +183,7 @@ impl EffectRenderer for ServoRenderer {
                 )
             })?;
 
-        let worker = ServoWorker::spawn(DEFAULT_WIDTH, DEFAULT_HEIGHT)?;
+        let worker = acquire_servo_worker(DEFAULT_WIDTH, DEFAULT_HEIGHT)?;
         worker.load_effect(&runtime_source)?;
         self.worker = Some(worker);
         self.html_source = Some(path.clone());
@@ -223,11 +232,6 @@ impl EffectRenderer for ServoRenderer {
     }
 
     fn destroy(&mut self) {
-        if let Some(mut worker) = self.worker.take() {
-            if let Err(error) = worker.shutdown() {
-                warn!(%error, "Failed to shut down Servo worker cleanly");
-            }
-        }
         self.worker = None;
         self.pending_scripts.clear();
         self.controls.clear();
@@ -243,6 +247,66 @@ impl EffectRenderer for ServoRenderer {
 impl Default for ServoRenderer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+struct ServoWorkerExitGuard;
+
+impl Drop for ServoWorkerExitGuard {
+    fn drop(&mut self) {
+        if let Err(error) = shutdown_shared_servo_worker() {
+            warn!(%error, "Failed to shut down shared Servo worker cleanly");
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ServoWorkerClient {
+    command_tx: Sender<WorkerCommand>,
+}
+
+impl ServoWorkerClient {
+    fn load_effect(&self, html_path: &Path) -> Result<()> {
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        self.command_tx
+            .send(WorkerCommand::Load {
+                html_path: html_path.to_path_buf(),
+                response_tx,
+            })
+            .context("failed to send load command to Servo worker")?;
+
+        match response_rx.recv_timeout(WORKER_READY_TIMEOUT) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => bail!(
+                "timed out waiting for Servo page load after {}ms",
+                WORKER_READY_TIMEOUT.as_millis()
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("Servo worker disconnected before confirming page load")
+            }
+        }
+    }
+
+    fn render_frame(&self, scripts: Vec<String>, width: u32, height: u32) -> Result<Canvas> {
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        self.command_tx
+            .send(WorkerCommand::Render {
+                scripts,
+                width,
+                height,
+                response_tx,
+            })
+            .context("failed to send render command to Servo worker")?;
+        match response_rx.recv_timeout(RENDER_RESPONSE_TIMEOUT) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => bail!(
+                "timed out waiting for Servo frame response after {}ms",
+                RENDER_RESPONSE_TIMEOUT.as_millis()
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("Servo worker disconnected before sending frame response")
+            }
+        }
     }
 }
 
@@ -294,47 +358,10 @@ impl ServoWorker {
         })
     }
 
-    fn load_effect(&self, html_path: &Path) -> Result<()> {
-        let (response_tx, response_rx) = mpsc::sync_channel(1);
-        self.command_tx()?
-            .send(WorkerCommand::Load {
-                html_path: html_path.to_path_buf(),
-                response_tx,
-            })
-            .context("failed to send load command to Servo worker")?;
-
-        match response_rx.recv_timeout(WORKER_READY_TIMEOUT) {
-            Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => bail!(
-                "timed out waiting for Servo page load after {}ms",
-                WORKER_READY_TIMEOUT.as_millis()
-            ),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                bail!("Servo worker disconnected before confirming page load")
-            }
-        }
-    }
-
-    fn render_frame(&self, scripts: Vec<String>, width: u32, height: u32) -> Result<Canvas> {
-        let (response_tx, response_rx) = mpsc::sync_channel(1);
-        self.command_tx()?
-            .send(WorkerCommand::Render {
-                scripts,
-                width,
-                height,
-                response_tx,
-            })
-            .context("failed to send render command to Servo worker")?;
-        match response_rx.recv_timeout(RENDER_RESPONSE_TIMEOUT) {
-            Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => bail!(
-                "timed out waiting for Servo frame response after {}ms",
-                RENDER_RESPONSE_TIMEOUT.as_millis()
-            ),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                bail!("Servo worker disconnected before sending frame response")
-            }
-        }
+    fn client(&self) -> Result<ServoWorkerClient> {
+        Ok(ServoWorkerClient {
+            command_tx: self.command_tx()?.clone(),
+        })
     }
 
     fn shutdown(&mut self) -> Result<()> {
@@ -963,6 +990,48 @@ fn panic_payload_message(payload: &(dyn Any + Send + 'static)) -> String {
     "unknown panic payload".to_owned()
 }
 
+fn acquire_servo_worker(width: u32, height: u32) -> Result<ServoWorkerClient> {
+    SERVO_WORKER_EXIT_GUARD.with(|_| {});
+    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(None));
+    let mut guard = match slot.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    if let Some(worker) = guard.as_ref() {
+        return worker.client();
+    }
+
+    let worker = ServoWorker::spawn(width, height)?;
+    let client = worker.client()?;
+    *guard = Some(worker);
+    Ok(client)
+}
+
+fn shutdown_shared_servo_worker() -> Result<()> {
+    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(None));
+    let mut guard = match slot.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    let Some(mut worker) = guard.take() else {
+        return Ok(());
+    };
+    drop(guard);
+    worker.shutdown()
+}
+
+#[cfg(test)]
+fn replace_shared_servo_worker_for_test(worker: Option<ServoWorker>) -> Option<ServoWorker> {
+    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(None));
+    let mut guard = match slot.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    std::mem::replace(&mut *guard, worker)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -970,6 +1039,29 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use uuid::Uuid;
+
+    fn spawn_test_worker() -> (ServoWorker, Arc<AtomicBool>) {
+        let (command_tx, command_rx) = mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_clone = Arc::clone(&stopped);
+        let thread_handle = thread::spawn(move || {
+            while let Ok(command) = command_rx.recv() {
+                if let WorkerCommand::Shutdown { response_tx } = command {
+                    stopped_clone.store(true, Ordering::SeqCst);
+                    let _ = response_tx.send(());
+                    break;
+                }
+            }
+        });
+
+        (
+            ServoWorker {
+                command_tx: Some(command_tx),
+                thread_handle: Some(thread_handle),
+            },
+            stopped,
+        )
+    }
 
     #[test]
     fn control_preamble_assigns_all_defaults() {
@@ -1122,22 +1214,7 @@ mod tests {
 
     #[test]
     fn servo_worker_shutdown_joins_thread() {
-        let (command_tx, command_rx) = mpsc::channel();
-        let stopped = Arc::new(AtomicBool::new(false));
-        let stopped_clone = Arc::clone(&stopped);
-        let thread_handle = thread::spawn(move || {
-            while let Ok(command) = command_rx.recv() {
-                if let WorkerCommand::Shutdown { response_tx } = command {
-                    stopped_clone.store(true, Ordering::SeqCst);
-                    let _ = response_tx.send(());
-                    break;
-                }
-            }
-        });
-        let mut worker = ServoWorker {
-            command_tx: Some(command_tx),
-            thread_handle: Some(thread_handle),
-        };
+        let (mut worker, stopped) = spawn_test_worker();
 
         worker.shutdown().expect("worker shutdown should succeed");
 
@@ -1147,25 +1224,13 @@ mod tests {
     }
 
     #[test]
-    fn destroy_clears_renderer_state_and_shuts_down_worker() {
-        let (command_tx, command_rx) = mpsc::channel();
-        let stopped = Arc::new(AtomicBool::new(false));
-        let stopped_clone = Arc::clone(&stopped);
-        let thread_handle = thread::spawn(move || {
-            while let Ok(command) = command_rx.recv() {
-                if let WorkerCommand::Shutdown { response_tx } = command {
-                    stopped_clone.store(true, Ordering::SeqCst);
-                    let _ = response_tx.send(());
-                    break;
-                }
-            }
-        });
+    fn destroy_clears_renderer_state_without_shutting_down_shared_worker() {
+        let (worker, stopped) = spawn_test_worker();
+        let previous_worker = replace_shared_servo_worker_for_test(Some(worker));
 
         let mut renderer = ServoRenderer::new();
-        renderer.worker = Some(ServoWorker {
-            command_tx: Some(command_tx),
-            thread_handle: Some(thread_handle),
-        });
+        renderer.worker =
+            Some(acquire_servo_worker(DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("shared worker"));
         renderer.initialized = true;
         renderer.pending_scripts.push("tick()".to_owned());
         renderer
@@ -1179,7 +1244,7 @@ mod tests {
 
         renderer.destroy();
 
-        assert!(stopped.load(Ordering::SeqCst));
+        assert!(!stopped.load(Ordering::SeqCst));
         assert!(renderer.worker.is_none());
         assert!(renderer.pending_scripts.is_empty());
         assert!(renderer.controls.is_empty());
@@ -1189,5 +1254,9 @@ mod tests {
         assert!(!renderer.initialized);
         assert!(!renderer.warned_fallback_frame);
         assert!(renderer.include_audio_updates);
+
+        let removed_worker = replace_shared_servo_worker_for_test(previous_worker);
+        drop(removed_worker);
+        assert!(stopped.load(Ordering::SeqCst));
     }
 }

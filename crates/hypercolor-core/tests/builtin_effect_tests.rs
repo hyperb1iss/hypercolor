@@ -475,6 +475,47 @@ fn rainbow_has_spatial_variation() {
     );
 }
 
+#[test]
+fn rainbow_defaults_to_vivid_red_at_origin() {
+    let mut r = RainbowRenderer::new();
+    r.init(&make_metadata("rainbow")).expect("init");
+
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let origin = top_left(&canvas);
+
+    assert!(
+        origin.r >= 180,
+        "default rainbow should start with a strong red band, got {:?}",
+        origin
+    );
+    assert!(
+        origin.g <= 10 && origin.b <= 10,
+        "default rainbow should not wash red into pastel orange, got {:?}",
+        origin
+    );
+}
+
+#[test]
+fn rainbow_saturation_control_desaturates_to_grayscale() {
+    let mut r = RainbowRenderer::new();
+    r.init(&make_metadata("rainbow")).expect("init");
+
+    r.set_control("speed", &ControlValue::Float(0.0));
+    r.set_control("saturation", &ControlValue::Float(0.0));
+
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let origin = top_left(&canvas);
+
+    assert_eq!(
+        origin.r, origin.g,
+        "desaturated rainbow should have equal red and green channels"
+    );
+    assert_eq!(
+        origin.g, origin.b,
+        "desaturated rainbow should have equal green and blue channels"
+    );
+}
+
 // ── Full Lifecycle Tests ────────────────────────────────────────────────────
 
 #[test]
@@ -726,6 +767,34 @@ fn register_builtin_effects_populates_registry() {
 }
 
 #[test]
+fn registered_builtins_use_human_readable_names_and_stable_native_keys() {
+    let mut registry = EffectRegistry::default();
+    register_builtin_effects(&mut registry);
+
+    let expected = [
+        ("Solid Color", "solid_color"),
+        ("Gradient", "gradient"),
+        ("Rainbow", "rainbow"),
+        ("Breathing", "breathing"),
+        ("Audio Pulse", "audio_pulse"),
+        ("Color Wave", "color_wave"),
+    ];
+
+    for (display_name, source_key) in expected {
+        let (_, entry) = registry
+            .iter()
+            .find(|(_, entry)| entry.metadata.name == display_name)
+            .unwrap_or_else(|| panic!("missing built-in '{display_name}'"));
+
+        assert_eq!(entry.metadata.source.source_stem(), Some(source_key));
+        assert_eq!(
+            entry.source_path,
+            PathBuf::from(format!("builtin/{source_key}"))
+        );
+    }
+}
+
+#[test]
 fn registered_builtins_expose_controls_and_capitalized_author() {
     let mut registry = EffectRegistry::default();
     register_builtin_effects(&mut registry);
@@ -747,8 +816,8 @@ fn solid_color_metadata_includes_diagnostic_controls() {
 
     let (_, entry) = registry
         .iter()
-        .find(|(_, entry)| entry.metadata.name == "solid_color")
-        .expect("solid_color should be registered");
+        .find(|(_, entry)| entry.metadata.source.source_stem() == Some("solid_color"))
+        .expect("Solid Color should be registered");
     let ids: Vec<&str> = entry
         .metadata
         .controls
@@ -768,8 +837,8 @@ fn gradient_metadata_includes_geometry_and_motion_controls() {
 
     let (_, entry) = registry
         .iter()
-        .find(|(_, entry)| entry.metadata.name == "gradient")
-        .expect("gradient should be registered");
+        .find(|(_, entry)| entry.metadata.source.source_stem() == Some("gradient"))
+        .expect("Gradient should be registered");
     let ids: Vec<&str> = entry
         .metadata
         .controls
@@ -784,13 +853,35 @@ fn gradient_metadata_includes_geometry_and_motion_controls() {
 }
 
 #[test]
+fn rainbow_metadata_includes_color_controls() {
+    let mut registry = EffectRegistry::default();
+    register_builtin_effects(&mut registry);
+
+    let (_, entry) = registry
+        .iter()
+        .find(|(_, entry)| entry.metadata.source.source_stem() == Some("rainbow"))
+        .expect("Rainbow should be registered");
+    let ids: Vec<&str> = entry
+        .metadata
+        .controls
+        .iter()
+        .map(|control| control.control_id())
+        .collect();
+
+    assert!(ids.contains(&"speed"));
+    assert!(ids.contains(&"scale"));
+    assert!(ids.contains(&"saturation"));
+    assert!(ids.contains(&"brightness"));
+}
+
+#[test]
 fn registered_effects_searchable_by_name() {
     let mut registry = EffectRegistry::default();
     register_builtin_effects(&mut registry);
 
     let results = registry.search("rainbow");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].metadata.name, "rainbow");
+    assert_eq!(results[0].metadata.name, "Rainbow");
 }
 
 #[test]
@@ -800,5 +891,5 @@ fn registered_effects_searchable_by_tag() {
 
     let results = registry.search("reactive");
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].metadata.name, "audio_pulse");
+    assert_eq!(results[0].metadata.name, "Audio Pulse");
 }

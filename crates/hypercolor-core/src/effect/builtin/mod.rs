@@ -359,6 +359,16 @@ fn rainbow_controls() -> Vec<ControlDefinition> {
             "Lower values create broad rainbow bands; higher values add more stripes.",
         ),
         slider_control(
+            "saturation",
+            "Saturation",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Colors",
+            "Color intensity. Lower values soften the rainbow; 1.0 gives fully saturated hues.",
+        ),
+        slider_control(
             "brightness",
             "Brightness",
             0.75,
@@ -514,13 +524,13 @@ fn color_wave_controls() -> Vec<ControlDefinition> {
 
 /// Metadata definitions for all built-in effects.
 ///
-/// Each entry carries a stable name used as the factory key in
-/// [`create_builtin_renderer`].
+/// Each entry carries a human-readable display name while the stable factory
+/// key remains in the native source path (`builtin/<key>`).
 fn builtin_metadata() -> Vec<EffectMetadata> {
     vec![
         EffectMetadata {
             id: builtin_effect_id("solid_color"),
-            name: "solid_color".into(),
+            name: "Solid Color".into(),
             author: "Hypercolor".into(),
             version: "0.1.0".into(),
             description: "Solid fills plus split and checker diagnostic scene patterns".into(),
@@ -540,7 +550,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         },
         EffectMetadata {
             id: builtin_effect_id("gradient"),
-            name: "gradient".into(),
+            name: "Gradient".into(),
             author: "Hypercolor".into(),
             version: "0.1.0".into(),
             description:
@@ -562,10 +572,10 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         },
         EffectMetadata {
             id: builtin_effect_id("rainbow"),
-            name: "rainbow".into(),
+            name: "Rainbow".into(),
             author: "Hypercolor".into(),
             version: "0.1.0".into(),
-            description: "Cycling rainbow pattern using perceptual hue rotation".into(),
+            description: "Vivid full-spectrum rainbow cycle with animated hue bands".into(),
             category: EffectCategory::Ambient,
             tags: vec!["rainbow".into(), "hue".into(), "colorful".into()],
             controls: rainbow_controls(),
@@ -577,7 +587,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         },
         EffectMetadata {
             id: builtin_effect_id("breathing"),
-            name: "breathing".into(),
+            name: "Breathing".into(),
             author: "Hypercolor".into(),
             version: "0.1.0".into(),
             description: "Smooth sinusoidal brightness pulsation".into(),
@@ -592,7 +602,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         },
         EffectMetadata {
             id: builtin_effect_id("audio_pulse"),
-            name: "audio_pulse".into(),
+            name: "Audio Pulse".into(),
             author: "Hypercolor".into(),
             version: "0.1.0".into(),
             description: "Audio-reactive effect driven by RMS level and beat detection".into(),
@@ -612,7 +622,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         },
         EffectMetadata {
             id: builtin_effect_id("color_wave"),
-            name: "color_wave".into(),
+            name: "Color Wave".into(),
             author: "Hypercolor".into(),
             version: "0.1.0".into(),
             description: "Traveling sinusoidal wave of color across the canvas".into(),
@@ -654,7 +664,7 @@ fn builtin_effect_id(name: &str) -> EffectId {
 /// category filtering.
 pub fn register_builtin_effects(registry: &mut EffectRegistry) {
     for metadata in builtin_metadata() {
-        let source_path = PathBuf::from(format!("builtin/{}", metadata.name));
+        let source_path = metadata.source.path().to_path_buf();
         let entry = EffectEntry {
             metadata,
             source_path,

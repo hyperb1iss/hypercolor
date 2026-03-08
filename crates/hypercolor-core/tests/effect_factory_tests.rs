@@ -44,7 +44,9 @@ fn html_metadata() -> EffectMetadata {
 
 #[test]
 fn factory_creates_renderer_for_builtin_native() {
-    let renderer = create_renderer_for_metadata(&native_metadata("rainbow"));
+    let mut metadata = native_metadata("rainbow");
+    metadata.name = "Rainbow".to_owned();
+    let renderer = create_renderer_for_metadata(&metadata);
     assert!(renderer.is_ok());
 }
 
