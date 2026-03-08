@@ -20,6 +20,7 @@ pub fn LayoutCanvas(
     let ws = expect_context::<WsContext>();
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
     let preview_fps = Signal::derive(move || ws.preview_fps.get());
+    let preview_target_fps = Signal::derive(move || ws.preview_target_fps.get());
 
     let canvas_slot_ref = NodeRef::<leptos::html::Div>::new();
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
@@ -224,6 +225,7 @@ pub fn LayoutCanvas(
                         <CanvasPreview
                             frame=canvas_frame
                             fps=preview_fps
+                            fps_target=preview_target_fps
                             show_fps=false
                             aspect_ratio=preview_aspect_ratio.get()
                         />

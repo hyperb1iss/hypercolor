@@ -107,7 +107,7 @@ pub fn DashboardPage() -> impl IntoView {
 #[component]
 fn PerformancePanel(
     #[prop(into)] preview_fps: Signal<f32>,
-    preview_target_fps: u32,
+    #[prop(into)] preview_target_fps: Signal<u32>,
     #[prop(into)] metrics: Signal<Option<PerformanceMetrics>>,
     #[prop(into)] backpressure: Signal<Option<BackpressureNotice>>,
 ) -> impl IntoView {
@@ -148,10 +148,11 @@ fn PerformancePanel(
             .map(|metrics| format!("p95 {:.2} ms", metrics.frame_time.p95_ms))
             .unwrap_or_else(|| "collecting samples".to_string())
     });
-    let preview_text =
-        Signal::derive(move || format!("{:.1}/{} fps", preview_fps.get(), preview_target_fps));
+    let preview_text = Signal::derive(move || {
+        format!("{:.1}/{} fps", preview_fps.get(), preview_target_fps.get())
+    });
     let preview_hint = Signal::derive(move || {
-        if preview_target_fps <= 15 {
+        if preview_target_fps.get() <= 15 {
             "debug preview cap".to_string()
         } else {
             "canvas stream delivery".to_string()

@@ -192,7 +192,7 @@ pub fn Sidebar() -> impl IntoView {
     let ws = use_context::<WsContext>();
     let canvas_frame = Signal::derive(move || ws.and_then(|ctx| ctx.canvas_frame.get()));
     let preview_fps = Signal::derive(move || ws.map_or(0.0, |ctx| ctx.preview_fps.get()));
-    let preview_target_fps = ws.map_or(0, |ctx| ctx.preview_target_fps);
+    let preview_target_fps = Signal::derive(move || ws.map_or(0, |ctx| ctx.preview_target_fps.get()));
     let (live_palette, set_live_palette) = signal(None::<LivePalette>);
     let (last_palette_time, set_last_palette_time) = signal(0.0_f64);
 
@@ -638,7 +638,7 @@ pub fn Sidebar() -> impl IntoView {
                                             />
                                             <span>{move || ws.connection_state.get().to_string()}</span>
                                             <span class="text-fg-tertiary/50 ml-1">
-                                                {move || format!("preview {:.0}/{}", ws.preview_fps.get(), ws.preview_target_fps)}
+                                                {move || format!("preview {:.0}/{}", ws.preview_fps.get(), ws.preview_target_fps.get())}
                                             </span>
                                             <span class="text-fg-tertiary/50">
                                                 {move || {

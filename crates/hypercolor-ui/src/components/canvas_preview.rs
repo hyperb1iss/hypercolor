@@ -164,7 +164,7 @@ pub fn CanvasPreview(
     #[prop(into)] fps: Signal<f32>,
     #[prop(default = false)] show_fps: bool,
     #[prop(default = "Preview".to_string())] fps_label: String,
-    #[prop(optional)] fps_target: Option<u32>,
+    #[prop(into)] fps_target: Signal<u32>,
     #[prop(default = "100%".to_string())] max_width: String,
     #[prop(optional)] aspect_ratio: Option<String>,
 ) -> impl IntoView {
@@ -267,7 +267,8 @@ pub fn CanvasPreview(
                     <div class="absolute top-2 right-2 bg-black/70 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-mono text-fg-tertiary
                                 transition-all duration-300 animate-fade-in">
                         {move || {
-                            if let Some(target) = fps_target {
+                            let target = fps_target.get();
+                            if target > 0 {
                                 format!("{fps_label} {:.0}/{target} fps", fps.get())
                             } else {
                                 format!("{fps_label} {:.0} fps", fps.get())

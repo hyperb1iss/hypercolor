@@ -25,7 +25,7 @@ pub struct WsContext {
     pub canvas_frame: ReadSignal<Option<CanvasFrame>>,
     pub connection_state: ReadSignal<ConnectionState>,
     pub preview_fps: ReadSignal<f32>,
-    pub preview_target_fps: u32,
+    pub preview_target_fps: ReadSignal<u32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,

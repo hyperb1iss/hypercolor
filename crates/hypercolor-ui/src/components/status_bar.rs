@@ -34,7 +34,7 @@ pub fn StatusBar() -> impl IntoView {
             <div class="flex items-center gap-1.5">
                 <span class="text-fg-tertiary/60">"Preview"</span>
                 <span class="tabular-nums text-fg-secondary">
-                    {move || format!("{:.0}/{}", ws.preview_fps.get(), ws.preview_target_fps)}
+                    {move || format!("{:.0}/{}", ws.preview_fps.get(), ws.preview_target_fps.get())}
                 </span>
             </div>
 

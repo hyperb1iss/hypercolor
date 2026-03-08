@@ -4,6 +4,7 @@
 //! local network via `_wled._tcp.local.` service browsing.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -31,6 +32,10 @@ const DEFAULT_SCAN_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct WledScanner {
     /// How long to browse before returning results.
     scan_timeout: Duration,
+    /// Explicit IPs to probe over HTTP before or alongside mDNS.
+    known_ips: Vec<IpAddr>,
+    /// Whether to browse mDNS in addition to known-IP probing.
+    mdns_enabled: bool,
 }
 
 impl WledScanner {
@@ -39,6 +44,8 @@ impl WledScanner {
     pub fn new() -> Self {
         Self {
             scan_timeout: DEFAULT_SCAN_TIMEOUT,
+            known_ips: Vec::new(),
+            mdns_enabled: true,
         }
     }
 
@@ -47,6 +54,18 @@ impl WledScanner {
     pub fn with_timeout(timeout: Duration) -> Self {
         Self {
             scan_timeout: timeout,
+            known_ips: Vec::new(),
+            mdns_enabled: true,
+        }
+    }
+
+    /// Create a scanner that probes known IPs and optionally browses mDNS.
+    #[must_use]
+    pub fn with_known_ips(known_ips: Vec<IpAddr>, mdns_enabled: bool, timeout: Duration) -> Self {
+        Self {
+            scan_timeout: timeout,
+            known_ips,
+            mdns_enabled,
         }
     }
 
@@ -124,28 +143,18 @@ impl WledScanner {
             metadata,
         }
     }
-}
 
-impl Default for WledScanner {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+    async fn collect_mdns_candidates(&self) -> Result<HashMap<IpAddr, Option<String>>> {
+        if !self.mdns_enabled {
+            return Ok(HashMap::new());
+        }
 
-#[async_trait::async_trait]
-impl TransportScanner for WledScanner {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
-        "WLED mDNS"
-    }
-
-    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
         let daemon = ServiceDaemon::new().context("Failed to create mDNS daemon")?;
         let receiver = daemon
             .browse(WLED_SERVICE_TYPE)
             .context("Failed to start mDNS browse")?;
 
-        let mut discovered: Vec<DiscoveredDevice> = Vec::new();
+        let mut candidates = HashMap::new();
         let deadline = tokio::time::Instant::now() + self.scan_timeout;
 
         loop {
@@ -169,41 +178,68 @@ impl TransportScanner for WledScanner {
                     };
 
                     let hostname = info.get_hostname().trim_end_matches('.').to_owned();
-
                     info!(ip = %ip, hostname = %hostname, "Found WLED device via mDNS");
-
-                    // Try to enrich via HTTP
-                    let wled_info = match enrich_via_http(ip).await {
-                        Ok(info) => Some(info),
-                        Err(e) => {
-                            warn!(
-                                ip = %ip,
-                                hostname = %hostname,
-                                error = %e,
-                                "mDNS found WLED but HTTP enrichment failed"
-                            );
-                            None
-                        }
-                    };
-
-                    discovered.push(Self::build_discovered(&hostname, ip, wled_info.as_ref()));
+                    candidates.entry(ip).or_insert(Some(hostname));
                 }
-                Ok(Ok(_)) => {
-                    // SearchStarted, ServiceFound (not yet resolved), etc.
-                }
+                Ok(Ok(_)) => {}
                 Ok(Err(e)) => {
                     warn!(error = %e, "mDNS browse error");
                     break;
                 }
                 Err(_) => {
-                    // Timeout — done browsing
                     break;
                 }
             }
         }
 
-        // Shut down the daemon cleanly
         let _ = daemon.shutdown();
+        Ok(candidates)
+    }
+}
+
+impl Default for WledScanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl TransportScanner for WledScanner {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "WLED mDNS"
+    }
+
+    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+        let mut discovered: Vec<DiscoveredDevice> = Vec::new();
+        let mut candidates: HashMap<IpAddr, Option<String>> = self
+            .known_ips
+            .iter()
+            .copied()
+            .map(|ip| (ip, None))
+            .collect();
+
+        for (ip, hostname) in self.collect_mdns_candidates().await? {
+            candidates.entry(ip).or_insert(hostname);
+        }
+
+        for (ip, hostname) in candidates {
+            let host_label = hostname.unwrap_or_else(|| ip.to_string());
+            let wled_info = match enrich_via_http(ip).await {
+                Ok(info) => Some(info),
+                Err(e) => {
+                    warn!(
+                        ip = %ip,
+                        hostname = %host_label,
+                        error = %e,
+                        "WLED candidate found but HTTP enrichment failed"
+                    );
+                    None
+                }
+            };
+
+            discovered.push(Self::build_discovered(&host_label, ip, wled_info.as_ref()));
+        }
 
         info!(count = discovered.len(), "WLED mDNS scan complete");
         Ok(discovered)

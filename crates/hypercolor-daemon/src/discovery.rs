@@ -226,7 +226,7 @@ pub fn backend_names(backends: &[DiscoveryBackend]) -> Vec<String> {
 #[allow(clippy::too_many_lines)]
 pub async fn execute_discovery_scan(
     runtime: DiscoveryRuntime,
-    _config: Arc<HypercolorConfig>,
+    config: Arc<HypercolorConfig>,
     backends: Vec<DiscoveryBackend>,
     timeout: Duration,
 ) -> DiscoveryScanResult {
@@ -265,7 +265,11 @@ pub async fn execute_discovery_scan(
     for backend in backends {
         match backend {
             DiscoveryBackend::Wled => {
-                orchestrator.add_scanner(Box::new(WledScanner::with_timeout(timeout)));
+                orchestrator.add_scanner(Box::new(WledScanner::with_known_ips(
+                    config.wled.known_ips.clone(),
+                    config.discovery.mdns_enabled,
+                    timeout,
+                )));
             }
             DiscoveryBackend::Usb => {
                 orchestrator.add_scanner(Box::new(UsbScanner::new()));

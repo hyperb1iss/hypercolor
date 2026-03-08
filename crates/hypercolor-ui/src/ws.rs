@@ -37,6 +37,7 @@ impl std::fmt::Display for ConnectionState {
 #[derive(Debug, Clone)]
 pub struct CanvasFrame {
     pub frame_number: u32,
+    pub timestamp_ms: u32,
     pub width: u32,
     pub height: u32,
     pub pixels: Arc<[u8]>,
@@ -150,7 +151,7 @@ pub struct WsManager {
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
-    pub preview_target_fps: u32,
+    pub preview_target_fps: ReadSignal<u32>,
 }
 
 impl WsManager {
@@ -162,15 +163,18 @@ impl WsManager {
         let (backpressure_notice, set_backpressure_notice) = signal(None::<BackpressureNotice>);
         let (active_effect, set_active_effect) = signal(None::<String>);
         let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
+        let (preview_target_fps, set_preview_target_fps) = signal(0_u32);
 
         // Build WebSocket URL relative to page origin
         let ws_url = build_ws_url();
 
         set_connection_state.set(ConnectionState::Connecting);
 
-        // Track frame timing for a smoother preview-FPS readout.
-        let last_frame_time = StoredValue::new(0.0_f64);
+        // Track authoritative canvas cadence from backend frame metadata.
+        let last_frame_number = StoredValue::new(None::<u32>);
+        let last_frame_timestamp = StoredValue::new(None::<u32>);
         let smoothed_fps = StoredValue::new(0.0_f64);
+        let requested_preview_fps = StoredValue::new(0_u32);
 
         // Create WebSocket
         let ws = web_sys::WebSocket::new_with_str(&ws_url, "hypercolor-v1");
@@ -186,25 +190,44 @@ impl WsManager {
                     backpressure_notice,
                     active_effect,
                     last_device_event,
-                    preview_target_fps: 0,
+                    preview_target_fps,
                 };
             }
         };
 
         ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
-        let preview_target_fps = 60;
+        let request_preview_fps = {
+            let ws = ws.clone();
+            move |engine_target_fps: u32| {
+                let desired_fps = engine_target_fps.clamp(1, 60);
+                if desired_fps == requested_preview_fps.get_value() {
+                    return;
+                }
 
-        // onopen — subscribe to canvas + events + metrics
+                requested_preview_fps.set_value(desired_fps);
+                set_preview_target_fps.set(desired_fps);
+
+                let subscribe_msg = serde_json::json!({
+                    "type": "subscribe",
+                    "channels": ["canvas"],
+                    "config": {
+                        "canvas": { "fps": desired_fps, "format": "rgba" }
+                    }
+                });
+                let _ = ws.send_with_str(&subscribe_msg.to_string());
+            }
+        };
+
+        // onopen — subscribe to events + metrics, then pace preview after hello.
         let ws_clone = ws.clone();
         let on_open = Closure::<dyn FnMut()>::new(move || {
             set_connection_state.set(ConnectionState::Connected);
 
             let subscribe_msg = serde_json::json!({
                 "type": "subscribe",
-                "channels": ["canvas", "events", "metrics"],
+                "channels": ["events", "metrics"],
                 "config": {
-                    "canvas": { "fps": preview_target_fps, "format": "rgba" },
                     "metrics": { "interval_ms": 500 }
                 }
             });
@@ -235,16 +258,28 @@ impl WsManager {
                 let data = array.to_vec();
 
                 if let Some(frame) = decode_canvas_frame(data) {
+                    let current_frame_number = frame.frame_number;
+                    let current_timestamp_ms = frame.timestamp_ms;
                     set_canvas_frame.set(Some(frame));
 
-                    // Use a light EWMA so the displayed preview FPS reflects
-                    // sustained delivery instead of jumping between one-second buckets.
-                    let now = js_sys::Date::now();
-                    let last = last_frame_time.get_value();
-                    if last > 0.0 {
-                        let elapsed = now - last;
-                        if elapsed > 0.0 {
-                            let instant_fps = (1000.0 / elapsed).clamp(0.0, 120.0);
+                    if let (Some(previous_frame_number), Some(previous_timestamp_ms)) = (
+                        last_frame_number.get_value(),
+                        last_frame_timestamp.get_value(),
+                    ) {
+                        let frame_delta = current_frame_number.saturating_sub(previous_frame_number);
+                        let elapsed_ms =
+                            current_timestamp_ms.saturating_sub(previous_timestamp_ms);
+
+                        if frame_delta > 0 && elapsed_ms > 0 {
+                            let target_fps = preview_target_fps.get_untracked();
+                            let mut instant_fps =
+                                f64::from(frame_delta) * 1000.0 / f64::from(elapsed_ms);
+                            if target_fps > 0 {
+                                instant_fps = instant_fps.clamp(0.0, f64::from(target_fps));
+                            } else {
+                                instant_fps = instant_fps.clamp(0.0, 120.0);
+                            }
+
                             let previous = smoothed_fps.get_value();
                             let next = if previous <= 0.0 {
                                 instant_fps
@@ -256,7 +291,9 @@ impl WsManager {
                             set_preview_fps.set(next as f32);
                         }
                     }
-                    last_frame_time.set_value(now);
+
+                    last_frame_number.set_value(Some(current_frame_number));
+                    last_frame_timestamp.set_value(Some(current_timestamp_ms));
                 }
                 return;
             }
@@ -270,6 +307,8 @@ impl WsManager {
                         &set_metrics,
                         &set_backpressure_notice,
                         &set_last_device_event,
+                        &set_preview_target_fps,
+                        &request_preview_fps,
                     );
                 }
             }
@@ -319,6 +358,7 @@ fn decode_canvas_frame(data: Vec<u8>) -> Option<CanvasFrame> {
     }
 
     let frame_number = u32::from_le_bytes(data[1..5].try_into().ok()?);
+    let timestamp_ms = u32::from_le_bytes(data[5..9].try_into().ok()?);
     let width = u16::from_le_bytes([data[9], data[10]]) as u32;
     let height = u16::from_le_bytes([data[11], data[12]]) as u32;
     let format = data[13]; // 0 = RGB, 1 = RGBA
@@ -350,6 +390,7 @@ fn decode_canvas_frame(data: Vec<u8>) -> Option<CanvasFrame> {
 
     Some(CanvasFrame {
         frame_number,
+        timestamp_ms,
         width,
         height,
         pixels,
@@ -363,6 +404,8 @@ fn handle_json_message(
     set_metrics: &WriteSignal<Option<PerformanceMetrics>>,
     set_backpressure_notice: &WriteSignal<Option<BackpressureNotice>>,
     set_last_device_event: &WriteSignal<Option<DeviceEventHint>>,
+    set_preview_target_fps: &WriteSignal<u32>,
+    request_preview_fps: &impl Fn(u32),
 ) {
     let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
@@ -398,11 +441,34 @@ fn handle_json_message(
                         *metrics = Some(next);
                     });
                 }
+
+                if target > 0 {
+                    let preview_target = target.min(60);
+                    set_preview_target_fps.set(preview_target);
+                    request_preview_fps(preview_target);
+                }
             }
         }
         "metrics" => {
             if let Ok(message) = serde_json::from_value::<MetricsMessage>(msg.clone()) {
+                if message.data.fps.target > 0 {
+                    let preview_target = message.data.fps.target.min(60);
+                    set_preview_target_fps.set(preview_target);
+                    request_preview_fps(preview_target);
+                }
                 set_metrics.set(Some(message.data));
+            }
+        }
+        "subscribed" => {
+            let preview_target = msg
+                .get("config")
+                .and_then(|config| config.get("canvas"))
+                .and_then(|canvas| canvas.get("fps"))
+                .and_then(|fps| fps.as_u64())
+                .and_then(|fps| u32::try_from(fps).ok())
+                .unwrap_or_default();
+            if preview_target > 0 {
+                set_preview_target_fps.set(preview_target.min(60));
             }
         }
         "backpressure" => {
