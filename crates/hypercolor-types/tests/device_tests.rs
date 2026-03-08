@@ -244,6 +244,7 @@ fn device_family_display() {
     assert_eq!(DeviceFamily::Dygma.to_string(), "Dygma");
     assert_eq!(DeviceFamily::LianLi.to_string(), "Lian Li");
     assert_eq!(DeviceFamily::PrismRgb.to_string(), "PrismRGB");
+    assert_eq!(DeviceFamily::Asus.to_string(), "ASUS");
     assert_eq!(
         DeviceFamily::Custom("PrismRGB".into()).to_string(),
         "PrismRGB"
@@ -274,6 +275,7 @@ fn device_family_serde_round_trip() {
         DeviceFamily::Dygma,
         DeviceFamily::LianLi,
         DeviceFamily::PrismRgb,
+        DeviceFamily::Asus,
         DeviceFamily::Custom("PrismRGB".into()),
     ];
     for family in families {

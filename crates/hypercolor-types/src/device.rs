@@ -267,6 +267,9 @@ pub enum DeviceFamily {
     /// Native `PrismRGB` / `Nollie` USB controllers.
     PrismRgb,
 
+    /// Native ASUS Aura USB controllers.
+    Asus,
+
     /// Unknown or user-defined device family.
     Custom(String),
 }
@@ -281,6 +284,7 @@ impl fmt::Display for DeviceFamily {
             Self::Dygma => write!(f, "Dygma"),
             Self::LianLi => write!(f, "Lian Li"),
             Self::PrismRgb => write!(f, "PrismRGB"),
+            Self::Asus => write!(f, "ASUS"),
             Self::Custom(name) => write!(f, "{name}"),
         }
     }

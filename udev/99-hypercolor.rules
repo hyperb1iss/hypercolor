@@ -33,3 +33,6 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="16d0", MODE="0660
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="35ef", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="35ef", MODE="0660", GROUP="users", TAG+="uaccess"
 SUBSYSTEM=="tty", ATTRS{idVendor}=="35ef", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# ─── ASUS Aura ────────────────────────────────────────────────────────────────
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", MODE="0660", GROUP="users", TAG+="uaccess"

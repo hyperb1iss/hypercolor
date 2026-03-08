@@ -1812,7 +1812,8 @@ fn backend_id_for_family(family: &DeviceFamily) -> String {
         | DeviceFamily::Corsair
         | DeviceFamily::Dygma
         | DeviceFamily::LianLi
-        | DeviceFamily::PrismRgb => "usb".to_owned(),
+        | DeviceFamily::PrismRgb
+        | DeviceFamily::Asus => "usb".to_owned(),
         DeviceFamily::Custom(name) => name.to_ascii_lowercase(),
     }
 }
@@ -1826,6 +1827,7 @@ fn attachment_family_id(family: &DeviceFamily) -> String {
         DeviceFamily::Dygma => "dygma".to_owned(),
         DeviceFamily::LianLi => "lianli".to_owned(),
         DeviceFamily::PrismRgb => "prismrgb".to_owned(),
+        DeviceFamily::Asus => "asus".to_owned(),
         DeviceFamily::Custom(name) => name
             .chars()
             .filter(|character| {

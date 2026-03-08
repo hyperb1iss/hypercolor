@@ -1,4 +1,7 @@
 use hypercolor_hal::database::ProtocolDatabase;
+use hypercolor_hal::drivers::asus::{
+    ASUS_VID, AURA_REPORT_ID, PID_AURA_MOTHERBOARD_GEN3, PID_AURA_TERMINAL,
+};
 use hypercolor_hal::drivers::corsair::{
     CORSAIR_VID, PID_COMMANDER_PRO, PID_ELITE_CAPELLIX_LCD, PID_ELITE_CAPELLIX_LCD_ALT,
     PID_ICUE_LINK_LCD, PID_ICUE_LINK_SYSTEM_HUB, PID_LIGHTING_NODE_CORE, PID_LIGHTING_NODE_PRO,
@@ -16,6 +19,42 @@ use hypercolor_hal::drivers::razer::{
 };
 use hypercolor_hal::registry::TransportType;
 use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};
+
+#[test]
+fn lookup_returns_asus_motherboard_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(ASUS_VID, PID_AURA_MOTHERBOARD_GEN3)
+        .expect("ASUS motherboard descriptor should exist");
+
+    assert_eq!(descriptor.name, "ASUS Aura Motherboard (Gen 3)");
+    assert_eq!(descriptor.family, DeviceFamily::Asus);
+    assert_eq!(descriptor.protocol.id, "asus/motherboard-gen3");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbHidRaw {
+            interface: 2,
+            report_id: AURA_REPORT_ID,
+            usage_page: None,
+            usage: None,
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "ASUS Aura Motherboard");
+}
+
+#[test]
+fn lookup_returns_asus_terminal_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(ASUS_VID, PID_AURA_TERMINAL)
+        .expect("ASUS Aura Terminal descriptor should exist");
+
+    assert_eq!(descriptor.name, "ASUS Aura Terminal");
+    assert_eq!(descriptor.family, DeviceFamily::Asus);
+    assert_eq!(descriptor.protocol.id, "asus/terminal");
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.total_leds(), 361);
+    assert_eq!(protocol.zones().len(), 5);
+}
 
 #[test]
 fn lookup_returns_prism_8_descriptor() {
