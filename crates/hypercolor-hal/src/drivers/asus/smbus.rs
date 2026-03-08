@@ -1,6 +1,17 @@
 //! ASUS Aura ENE SMBus protocol helpers.
 
+use std::sync::RwLock;
 use std::time::Duration;
+
+use crate::transport::TransportError;
+use crate::transport::smbus::{SmBusOperation, decode_operations, encode_operations};
+
+use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+
+use crate::protocol::{
+    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
+    TransferType,
+};
 
 /// ENE indirect address register.
 pub const ENE_ADDRESS_REGISTER: u8 = 0x00;
@@ -50,6 +61,9 @@ pub const AURA_GPU_MAGIC: u16 = 0x1589;
 /// Delay between SMBus operations recommended by the spec.
 pub const ENE_OPERATION_DELAY: Duration = Duration::from_millis(1);
 
+const ENE_FIRMWARE_NAME_LEN: usize = 16;
+const ENE_CONFIG_TABLE_LEN: usize = 64;
+
 /// ENE firmware register layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EneFirmwareVariant {
@@ -66,39 +80,15 @@ pub struct EneFirmwareVariant {
 }
 
 /// Low-level SMBus operations emitted by ENE helper builders.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EneSmBusOperation {
-    /// `i2c_smbus_write_word_data(register, value)`.
-    WriteWordData {
-        /// SMBus command/register byte.
-        register: u8,
-        /// 16-bit value.
-        value: u16,
-    },
-    /// `i2c_smbus_write_byte_data(register, value)`.
-    WriteByteData {
-        /// SMBus command/register byte.
-        register: u8,
-        /// Byte payload.
-        value: u8,
-    },
-    /// `i2c_smbus_read_byte_data(register)`.
-    ReadByteData {
-        /// SMBus command/register byte.
-        register: u8,
-    },
-    /// `i2c_smbus_write_block_data(register, data)`.
-    WriteBlockData {
-        /// SMBus command/register byte.
-        register: u8,
-        /// Block payload. Must not exceed [`ENE_BLOCK_WRITE_LIMIT`].
-        data: Vec<u8>,
-    },
-    /// Required recovery delay between bus operations.
-    Delay {
-        /// Delay duration.
-        duration: Duration,
-    },
+/// ASUS ENE SMBus operation alias.
+pub type EneSmBusOperation = SmBusOperation;
+
+#[derive(Debug, Clone, Default)]
+struct AuraSmBusState {
+    firmware_name: Option<String>,
+    variant: Option<EneFirmwareVariant>,
+    led_count: u32,
+    supports_mode_14: bool,
 }
 
 /// Byte-swap a 16-bit ENE register address for the indirect address port.
@@ -113,6 +103,37 @@ pub const fn ene_permute_color(r: u8, g: u8, b: u8) -> [u8; 3] {
     [r, b, g]
 }
 
+/// Serialize one ENE transaction into the shared SMBus transport framing.
+///
+/// # Errors
+///
+/// Returns [`ProtocolError`] if an operation cannot be represented by the
+/// shared transport format.
+pub fn encode_ene_transaction(operations: &[EneSmBusOperation]) -> Result<Vec<u8>, ProtocolError> {
+    encode_operations(operations).map_err(protocol_encoding_error)
+}
+
+/// Decode one serialized ENE transaction.
+///
+/// # Errors
+///
+/// Returns [`ProtocolError`] when the frame is malformed.
+pub fn decode_ene_transaction(data: &[u8]) -> Result<Vec<EneSmBusOperation>, ProtocolError> {
+    decode_operations(data).map_err(protocol_malformed_response)
+}
+
+fn protocol_encoding_error(error: TransportError) -> ProtocolError {
+    ProtocolError::EncodingError {
+        detail: error.to_string(),
+    }
+}
+
+fn protocol_malformed_response(error: TransportError) -> ProtocolError {
+    ProtocolError::MalformedResponse {
+        detail: error.to_string(),
+    }
+}
+
 /// Resolve one known ENE firmware string to its register layout.
 #[must_use]
 pub fn lookup_ene_firmware_variant(name: &str) -> Option<EneFirmwareVariant> {
@@ -125,23 +146,24 @@ pub fn lookup_ene_firmware_variant(name: &str) -> Option<EneFirmwareVariant> {
             may_support_mode_14: false,
         }),
         "AUMA0-E6K5-0104" | "AUMA0-E6K5-0105" | "AUMA0-E6K5-0106" | "AUMA0-E6K5-0107"
-        | "AUMA0-E6K5-1107" | "AUMA0-E6K5-1110" | "AUMA0-E6K5-1111"
-        | "AUMA0-E6K5-1113" => Some(EneFirmwareVariant {
-            direct_reg: 0x8100,
-            effect_reg: 0x8160,
-            channel_cfg_offset: 0x1B,
-            led_count_offset: if name == "AUMA0-E6K5-0107"
-                || name == "AUMA0-E6K5-1107"
-                || name == "AUMA0-E6K5-1110"
-                || name == "AUMA0-E6K5-1111"
-                || name == "AUMA0-E6K5-1113"
-            {
-                0x03
-            } else {
-                0x02
-            },
-            may_support_mode_14: false,
-        }),
+        | "AUMA0-E6K5-1107" | "AUMA0-E6K5-1110" | "AUMA0-E6K5-1111" | "AUMA0-E6K5-1113" => {
+            Some(EneFirmwareVariant {
+                direct_reg: 0x8100,
+                effect_reg: 0x8160,
+                channel_cfg_offset: 0x1B,
+                led_count_offset: if name == "AUMA0-E6K5-0107"
+                    || name == "AUMA0-E6K5-1107"
+                    || name == "AUMA0-E6K5-1110"
+                    || name == "AUMA0-E6K5-1111"
+                    || name == "AUMA0-E6K5-1113"
+                {
+                    0x03
+                } else {
+                    0x02
+                },
+                may_support_mode_14: false,
+            })
+        }
         "AUMA0-E6K5-0008" => Some(EneFirmwareVariant {
             direct_reg: 0x8100,
             effect_reg: 0x8160,
@@ -276,4 +298,196 @@ pub fn ene_dram_remap_sequence(slot_index: u8, target_address: u8) -> Vec<EneSmB
 #[must_use]
 pub const fn simple_gpu_magic(hi: u8, lo: u8) -> u16 {
     ((hi as u16) << 8) | (lo as u16)
+}
+
+/// ASUS Aura ENE SMBus protocol with runtime firmware/config parsing.
+pub struct AuraSmBusProtocol {
+    state: RwLock<AuraSmBusState>,
+}
+
+impl AuraSmBusProtocol {
+    /// Create a fresh ENE SMBus protocol instance.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: RwLock::new(AuraSmBusState::default()),
+        }
+    }
+
+    fn command(operations: &[EneSmBusOperation], expects_response: bool) -> ProtocolCommand {
+        ProtocolCommand {
+            data: encode_ene_transaction(operations)
+                .expect("ENE transaction encoding should succeed for built-in operations"),
+            expects_response,
+            response_delay: Duration::ZERO,
+            post_delay: Duration::ZERO,
+            transfer_type: TransferType::Primary,
+        }
+    }
+
+    /// Snapshot the currently parsed firmware string.
+    #[must_use]
+    pub fn firmware_name(&self) -> Option<String> {
+        self.state
+            .read()
+            .expect("ENE SMBus state lock should not be poisoned")
+            .firmware_name
+            .clone()
+    }
+
+    /// Snapshot the currently resolved firmware layout.
+    #[must_use]
+    pub fn firmware_variant(&self) -> Option<EneFirmwareVariant> {
+        self.state
+            .read()
+            .expect("ENE SMBus state lock should not be poisoned")
+            .variant
+    }
+
+    /// Whether the parsed config table exposes mode 14.
+    #[must_use]
+    pub fn supports_mode_14(&self) -> bool {
+        self.state
+            .read()
+            .expect("ENE SMBus state lock should not be poisoned")
+            .supports_mode_14
+    }
+}
+
+impl Default for AuraSmBusProtocol {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Protocol for AuraSmBusProtocol {
+    fn name(&self) -> &str {
+        "ASUS Aura ENE SMBus"
+    }
+
+    fn init_sequence(&self) -> Vec<ProtocolCommand> {
+        vec![
+            Self::command(
+                &ene_read_register_range(0x1000, ENE_FIRMWARE_NAME_LEN),
+                true,
+            ),
+            Self::command(&ene_read_register_range(0x1C00, ENE_CONFIG_TABLE_LEN), true),
+            Self::command(
+                &ene_write_register(ENE_DIRECT_MODE_REGISTER, ENE_APPLY_VAL),
+                false,
+            ),
+        ]
+    }
+
+    fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
+    fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        let Some(variant) = self.firmware_variant() else {
+            return Vec::new();
+        };
+
+        let operations = ene_direct_color_writes(variant, colors);
+        if operations.is_empty() {
+            Vec::new()
+        } else {
+            vec![Self::command(&operations, false)]
+        }
+    }
+
+    fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
+        match data.len() {
+            ENE_FIRMWARE_NAME_LEN => {
+                let firmware = String::from_utf8(data.to_vec()).map_err(|error| {
+                    ProtocolError::MalformedResponse {
+                        detail: format!("ENE firmware name is not valid UTF-8: {error}"),
+                    }
+                })?;
+                let firmware = firmware.trim_end_matches('\0').trim().to_owned();
+                let variant = lookup_ene_firmware_variant(&firmware);
+
+                let mut state = self
+                    .state
+                    .write()
+                    .expect("ENE SMBus state lock should not be poisoned");
+                state.firmware_name = Some(firmware.clone());
+                state.variant = variant;
+
+                Ok(ProtocolResponse {
+                    status: ResponseStatus::Ok,
+                    data: firmware.into_bytes(),
+                })
+            }
+            ENE_CONFIG_TABLE_LEN => {
+                let mut state = self
+                    .state
+                    .write()
+                    .expect("ENE SMBus state lock should not be poisoned");
+                let Some(variant) = state.variant else {
+                    return Err(ProtocolError::MalformedResponse {
+                        detail: "ENE config table arrived before firmware variant was known"
+                            .to_owned(),
+                    });
+                };
+
+                let led_count = data.get(variant.led_count_offset).copied().ok_or_else(|| {
+                    ProtocolError::MalformedResponse {
+                        detail: "ENE config table missing LED count byte".to_owned(),
+                    }
+                })?;
+                state.led_count = u32::from(led_count);
+                state.supports_mode_14 = supports_mode_14(data, variant);
+
+                Ok(ProtocolResponse {
+                    status: ResponseStatus::Ok,
+                    data: data.to_vec(),
+                })
+            }
+            _ => Ok(ProtocolResponse {
+                status: ResponseStatus::Ok,
+                data: data.to_vec(),
+            }),
+        }
+    }
+
+    fn zones(&self) -> Vec<ProtocolZone> {
+        let state = self
+            .state
+            .read()
+            .expect("ENE SMBus state lock should not be poisoned");
+
+        if state.led_count == 0 {
+            return Vec::new();
+        }
+
+        vec![ProtocolZone {
+            name: "Lighting".to_owned(),
+            led_count: state.led_count,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+        }]
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        DeviceCapabilities {
+            led_count: self.total_leds(),
+            supports_direct: true,
+            supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 60,
+        }
+    }
+
+    fn total_leds(&self) -> u32 {
+        self.state
+            .read()
+            .expect("ENE SMBus state lock should not be poisoned")
+            .led_count
+    }
+
+    fn frame_interval(&self) -> Duration {
+        Duration::from_millis(16)
+    }
 }

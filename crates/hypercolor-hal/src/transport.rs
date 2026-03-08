@@ -12,6 +12,7 @@ pub mod hid;
 #[cfg(target_os = "linux")]
 pub mod hidraw;
 pub mod serial;
+pub mod smbus;
 pub mod vendor;
 
 /// Async byte-level I/O transport.

@@ -4,6 +4,8 @@ use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::registry::TransportType;
 
 const UDEV_RULES: &str = include_str!("../../../udev/99-hypercolor.rules");
+const I2C_UDEV_RULE: &str =
+    "SUBSYSTEM==\"i2c-dev\", KERNEL==\"i2c-[0-9]*\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\"";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum RequiredSubsystem {
@@ -41,6 +43,7 @@ fn udev_rules_cover_each_supported_vendor_transport_family() {
         match descriptor.transport {
             TransportType::UsbHidRaw { .. } => {
                 required.insert(RequiredSubsystem::Hidraw);
+                required.insert(RequiredSubsystem::Usb);
             }
             TransportType::UsbSerial { .. } => {
                 required.insert(RequiredSubsystem::Tty);
@@ -63,4 +66,12 @@ fn udev_rules_cover_each_supported_vendor_transport_family() {
             );
         }
     }
+}
+
+#[test]
+fn udev_rules_include_i2c_access_for_smbus_devices() {
+    assert!(
+        UDEV_RULES.contains(I2C_UDEV_RULE),
+        "missing SMBus i2c-dev udev rule: {I2C_UDEV_RULE}"
+    );
 }

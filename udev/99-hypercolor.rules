@@ -36,3 +36,7 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="35ef", MODE="0660", GROUP="users", TAG+="uac
 
 # ─── ASUS Aura ────────────────────────────────────────────────────────────────
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0b05", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# ─── SMBus / I2C ──────────────────────────────────────────────────────────────
+SUBSYSTEM=="i2c-dev", KERNEL=="i2c-[0-9]*", MODE="0660", GROUP="users", TAG+="uaccess"
