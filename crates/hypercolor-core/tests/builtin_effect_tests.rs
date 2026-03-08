@@ -245,6 +245,30 @@ fn gradient_direction_control() {
 }
 
 #[test]
+fn solid_color_split_pattern_uses_secondary_color() {
+    let mut r = SolidColorRenderer::new();
+    r.init(&make_metadata("solid_color")).expect("init");
+
+    r.set_control("pattern", &ControlValue::Enum("Vertical Split".into()));
+    r.set_control("position", &ControlValue::Float(0.5));
+    r.set_control("color", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    r.set_control(
+        "secondary_color",
+        &ControlValue::Color([0.0, 0.0, 1.0, 1.0]),
+    );
+
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let left = canvas.get_pixel(0, 0);
+    let right = canvas.get_pixel(W - 1, 0);
+
+    assert!(left.r > left.b, "left side should favor the primary color");
+    assert!(
+        right.b > right.r,
+        "right side should favor the secondary color"
+    );
+}
+
+#[test]
 fn rainbow_speed_control() {
     let mut r = RainbowRenderer::new();
     r.init(&make_metadata("rainbow")).expect("init");
@@ -376,6 +400,47 @@ fn gradient_vertical_varies_along_y() {
     assert_ne!(
         top, bottom,
         "vertical gradient should differ between top and bottom"
+    );
+}
+
+#[test]
+fn gradient_middle_color_changes_midpoint_output() {
+    let mut r = GradientRenderer::new();
+    r.init(&make_metadata("gradient")).expect("init");
+
+    r.set_control("speed", &ControlValue::Float(0.0));
+    r.set_control("use_mid_color", &ControlValue::Boolean(true));
+    r.set_control("color_start", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    r.set_control("color_mid", &ControlValue::Color([0.0, 1.0, 0.0, 1.0]));
+    r.set_control("color_end", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
+    r.set_control("midpoint", &ControlValue::Float(0.5));
+
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let center = canvas.get_pixel(W / 2, H / 2);
+
+    assert!(
+        center.g >= center.r && center.g >= center.b,
+        "middle stop should influence the canvas center"
+    );
+}
+
+#[test]
+fn gradient_repeat_mode_wraps_offset() {
+    let mut r = GradientRenderer::new();
+    r.init(&make_metadata("gradient")).expect("init");
+
+    r.set_control("speed", &ControlValue::Float(0.0));
+    r.set_control("repeat_mode", &ControlValue::Enum("Repeat".into()));
+    r.set_control("offset", &ControlValue::Float(1.0));
+    let wrapped = r.tick(&frame(0.0, 0)).expect("wrapped tick");
+
+    r.set_control("offset", &ControlValue::Float(0.0));
+    let baseline = r.tick(&frame(0.0, 1)).expect("baseline tick");
+
+    assert_eq!(
+        top_left(&wrapped),
+        top_left(&baseline),
+        "repeat mode should wrap a full-cycle offset"
     );
 }
 
@@ -595,6 +660,26 @@ fn color_wave_has_spatial_variation() {
     );
 }
 
+#[test]
+fn color_wave_wave_count_accepts_float_slider_values() {
+    let mut r = ColorWaveRenderer::new();
+    r.init(&make_metadata("color_wave")).expect("init");
+
+    r.set_control("speed", &ControlValue::Float(0.0));
+    r.set_control("wave_count", &ControlValue::Float(6.0));
+    let dense = r.tick(&frame(0.0, 0)).expect("dense tick");
+
+    r.set_control("wave_count", &ControlValue::Float(1.0));
+    let sparse = r.tick(&frame(0.0, 1)).expect("sparse tick");
+
+    let dense_mid = dense.get_pixel(W / 4, 0);
+    let sparse_mid = sparse.get_pixel(W / 4, 0);
+    assert_ne!(
+        dense_mid, sparse_mid,
+        "float-backed slider updates should change wave density"
+    );
+}
+
 // ── Factory & Registry Tests ────────────────────────────────────────────────
 
 #[test]
@@ -638,6 +723,64 @@ fn register_builtin_effects_populates_registry() {
 
     let audio = registry.by_category(EffectCategory::Audio);
     assert_eq!(audio.len(), 1, "1 audio effect expected");
+}
+
+#[test]
+fn registered_builtins_expose_controls_and_capitalized_author() {
+    let mut registry = EffectRegistry::default();
+    register_builtin_effects(&mut registry);
+
+    for (_, entry) in registry.iter() {
+        assert_eq!(entry.metadata.author, "Hypercolor");
+        assert!(
+            !entry.metadata.controls.is_empty(),
+            "built-in '{}' should expose controls",
+            entry.metadata.name
+        );
+    }
+}
+
+#[test]
+fn solid_color_metadata_includes_diagnostic_controls() {
+    let mut registry = EffectRegistry::default();
+    register_builtin_effects(&mut registry);
+
+    let (_, entry) = registry
+        .iter()
+        .find(|(_, entry)| entry.metadata.name == "solid_color")
+        .expect("solid_color should be registered");
+    let ids: Vec<&str> = entry
+        .metadata
+        .controls
+        .iter()
+        .map(|control| control.control_id())
+        .collect();
+
+    assert!(ids.contains(&"pattern"));
+    assert!(ids.contains(&"secondary_color"));
+    assert!(ids.contains(&"softness"));
+}
+
+#[test]
+fn gradient_metadata_includes_geometry_and_motion_controls() {
+    let mut registry = EffectRegistry::default();
+    register_builtin_effects(&mut registry);
+
+    let (_, entry) = registry
+        .iter()
+        .find(|(_, entry)| entry.metadata.name == "gradient")
+        .expect("gradient should be registered");
+    let ids: Vec<&str> = entry
+        .metadata
+        .controls
+        .iter()
+        .map(|control| control.control_id())
+        .collect();
+
+    assert!(ids.contains(&"mode"));
+    assert!(ids.contains(&"angle"));
+    assert!(ids.contains(&"repeat_mode"));
+    assert!(ids.contains(&"use_mid_color"));
 }
 
 #[test]

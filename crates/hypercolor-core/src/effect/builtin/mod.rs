@@ -1,20 +1,19 @@
 //! Built-in native effect renderers.
 //!
 //! These renderers produce real [`Canvas`](hypercolor_types::canvas::Canvas) frames
-//! entirely in Rust — no GPU shaders or web engines required. They serve as the
-//! foundation layer: always available, zero external dependencies, and fast enough
-//! to run at 60 fps on any hardware.
+//! entirely in Rust, with no GPU shaders or web engines required. They serve as the
+//! always-available utility layer for fallback visuals, diagnostics, and basic scenes.
 //!
 //! # Available Effects
 //!
-//! | Name            | Category       | Description                          |
-//! |-----------------|----------------|--------------------------------------|
-//! | `solid_color`   | Ambient        | Single color fill                    |
-//! | `gradient`      | Ambient        | Animated two-color gradient          |
-//! | `rainbow`       | Ambient        | Cycling rainbow hue sweep            |
-//! | `breathing`     | Ambient        | Sinusoidal brightness pulsation      |
-//! | `audio_pulse`   | Audio          | RMS + beat-reactive color modulation |
-//! | `color_wave`    | Ambient        | Traveling sinusoidal wave            |
+//! | Name            | Category       | Description                                   |
+//! |-----------------|----------------|-----------------------------------------------|
+//! | `solid_color`   | Ambient        | Solid fills plus split and checker diagnostics |
+//! | `gradient`      | Ambient        | Configurable linear/radial gradient utility    |
+//! | `rainbow`       | Ambient        | Cycling rainbow hue sweep                      |
+//! | `breathing`     | Ambient        | Sinusoidal brightness pulsation                |
+//! | `audio_pulse`   | Audio          | RMS + beat-reactive color modulation           |
+//! | `color_wave`    | Ambient        | Traveling sinusoidal wave                      |
 
 mod audio_pulse;
 mod breathing;
@@ -37,10 +36,481 @@ pub use self::solid_color::SolidColorRenderer;
 use super::registry::{EffectEntry, EffectRegistry};
 use super::traits::EffectRenderer;
 use hypercolor_types::effect::{
-    EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
+    ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
+    EffectMetadata, EffectSource, EffectState,
 };
 
 // ── Registry Helpers ────────────────────────────────────────────────────────
+
+fn color_control(
+    id: &str,
+    name: &str,
+    default_value: [f32; 4],
+    group: &str,
+    tooltip: &str,
+) -> ControlDefinition {
+    ControlDefinition {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        kind: ControlKind::Color,
+        control_type: ControlType::ColorPicker,
+        default_value: ControlValue::Color(default_value),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
+        group: Some(group.to_owned()),
+        tooltip: Some(tooltip.to_owned()),
+    }
+}
+
+fn slider_control(
+    id: &str,
+    name: &str,
+    default_value: f32,
+    min: f32,
+    max: f32,
+    step: f32,
+    group: &str,
+    tooltip: &str,
+) -> ControlDefinition {
+    ControlDefinition {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        kind: ControlKind::Number,
+        control_type: ControlType::Slider,
+        default_value: ControlValue::Float(default_value),
+        min: Some(min),
+        max: Some(max),
+        step: Some(step),
+        labels: Vec::new(),
+        group: Some(group.to_owned()),
+        tooltip: Some(tooltip.to_owned()),
+    }
+}
+
+fn toggle_control(
+    id: &str,
+    name: &str,
+    default_value: bool,
+    group: &str,
+    tooltip: &str,
+) -> ControlDefinition {
+    ControlDefinition {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        kind: ControlKind::Boolean,
+        control_type: ControlType::Toggle,
+        default_value: ControlValue::Boolean(default_value),
+        min: None,
+        max: None,
+        step: None,
+        labels: Vec::new(),
+        group: Some(group.to_owned()),
+        tooltip: Some(tooltip.to_owned()),
+    }
+}
+
+fn dropdown_control(
+    id: &str,
+    name: &str,
+    default_value: &str,
+    labels: &[&str],
+    group: &str,
+    tooltip: &str,
+) -> ControlDefinition {
+    ControlDefinition {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        kind: ControlKind::Combobox,
+        control_type: ControlType::Dropdown,
+        default_value: ControlValue::Enum(default_value.to_owned()),
+        min: None,
+        max: None,
+        step: None,
+        labels: labels.iter().map(|label| (*label).to_owned()).collect(),
+        group: Some(group.to_owned()),
+        tooltip: Some(tooltip.to_owned()),
+    }
+}
+
+fn solid_color_controls() -> Vec<ControlDefinition> {
+    vec![
+        dropdown_control(
+            "pattern",
+            "Pattern",
+            "Solid",
+            &[
+                "Solid",
+                "Vertical Split",
+                "Horizontal Split",
+                "Checker",
+                "Quadrants",
+            ],
+            "Pattern",
+            "Switch between a plain fill and simple diagnostic scene layouts.",
+        ),
+        color_control(
+            "color",
+            "Primary Color",
+            [1.0, 1.0, 1.0, 1.0],
+            "Colors",
+            "Main fill color for the scene.",
+        ),
+        color_control(
+            "secondary_color",
+            "Secondary Color",
+            [0.0, 0.0, 0.0, 1.0],
+            "Colors",
+            "Used for split, checker, and quadrant diagnostic patterns.",
+        ),
+        slider_control(
+            "position",
+            "Split Position",
+            0.5,
+            0.0,
+            1.0,
+            0.01,
+            "Pattern",
+            "Boundary position for split and quadrant patterns.",
+        ),
+        slider_control(
+            "softness",
+            "Blend Softness",
+            0.0,
+            0.0,
+            0.35,
+            0.01,
+            "Pattern",
+            "Feather the split boundary into a soft scene blend.",
+        ),
+        slider_control(
+            "scale",
+            "Pattern Scale",
+            6.0,
+            1.0,
+            16.0,
+            1.0,
+            "Pattern",
+            "Checker cell count across the canvas width.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness.",
+        ),
+    ]
+}
+
+fn gradient_controls() -> Vec<ControlDefinition> {
+    vec![
+        color_control(
+            "color_start",
+            "Color A",
+            [0.88, 0.21, 1.0, 1.0],
+            "Colors",
+            "Start color for the gradient.",
+        ),
+        toggle_control(
+            "use_mid_color",
+            "Use Middle Color",
+            false,
+            "Colors",
+            "Insert a third color stop between Color A and Color C.",
+        ),
+        color_control(
+            "color_mid",
+            "Color B",
+            [1.0, 0.42, 0.76, 1.0],
+            "Colors",
+            "Optional middle color stop for three-color gradients.",
+        ),
+        slider_control(
+            "midpoint",
+            "Middle Position",
+            0.5,
+            0.05,
+            0.95,
+            0.01,
+            "Colors",
+            "Placement of the middle color stop along the gradient.",
+        ),
+        color_control(
+            "color_end",
+            "Color C",
+            [0.5, 1.0, 0.92, 1.0],
+            "Colors",
+            "End color for the gradient.",
+        ),
+        dropdown_control(
+            "mode",
+            "Gradient Type",
+            "Linear",
+            &["Linear", "Radial"],
+            "Shape",
+            "Choose a directional sweep or a center-out radial gradient.",
+        ),
+        slider_control(
+            "angle",
+            "Angle",
+            0.0,
+            0.0,
+            360.0,
+            1.0,
+            "Shape",
+            "Direction of the linear gradient in degrees.",
+        ),
+        slider_control(
+            "center_x",
+            "Center X",
+            0.5,
+            0.0,
+            1.0,
+            0.01,
+            "Shape",
+            "Horizontal origin for radial gradients and linear gradient pivots.",
+        ),
+        slider_control(
+            "center_y",
+            "Center Y",
+            0.5,
+            0.0,
+            1.0,
+            0.01,
+            "Shape",
+            "Vertical origin for radial gradients and linear gradient pivots.",
+        ),
+        slider_control(
+            "scale",
+            "Scale",
+            1.0,
+            0.1,
+            2.5,
+            0.01,
+            "Shape",
+            "Tighten or spread the gradient without changing the colors.",
+        ),
+        dropdown_control(
+            "repeat_mode",
+            "Repeat",
+            "Clamp",
+            &["Clamp", "Repeat", "Mirror"],
+            "Motion",
+            "Control how the gradient behaves beyond its natural 0-1 range.",
+        ),
+        slider_control(
+            "offset",
+            "Offset",
+            0.0,
+            -1.0,
+            1.0,
+            0.01,
+            "Motion",
+            "Static shift along the gradient axis or radius.",
+        ),
+        slider_control(
+            "speed",
+            "Scroll Speed",
+            0.0,
+            -1.0,
+            1.0,
+            0.01,
+            "Motion",
+            "Animate the gradient position; negative values reverse direction.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness.",
+        ),
+    ]
+}
+
+fn rainbow_controls() -> Vec<ControlDefinition> {
+    vec![
+        slider_control(
+            "speed",
+            "Speed",
+            60.0,
+            -180.0,
+            180.0,
+            1.0,
+            "Motion",
+            "Hue rotation speed in degrees per second.",
+        ),
+        slider_control(
+            "scale",
+            "Band Density",
+            1.0,
+            0.1,
+            4.0,
+            0.01,
+            "Shape",
+            "Lower values create broad rainbow bands; higher values add more stripes.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            0.75,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness.",
+        ),
+    ]
+}
+
+fn breathing_controls() -> Vec<ControlDefinition> {
+    vec![
+        color_control(
+            "color",
+            "Color",
+            [1.0, 0.6, 0.2, 1.0],
+            "Colors",
+            "Base color that breathes in and out.",
+        ),
+        slider_control(
+            "speed",
+            "Speed",
+            15.0,
+            1.0,
+            120.0,
+            1.0,
+            "Motion",
+            "Breathing rate in beats per minute.",
+        ),
+        slider_control(
+            "min_brightness",
+            "Minimum Brightness",
+            0.1,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Brightness at the trough of the cycle.",
+        ),
+        slider_control(
+            "max_brightness",
+            "Maximum Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Brightness at the peak of the cycle.",
+        ),
+    ]
+}
+
+fn audio_pulse_controls() -> Vec<ControlDefinition> {
+    vec![
+        color_control(
+            "base_color",
+            "Base Color",
+            [0.0, 0.1, 0.3, 1.0],
+            "Colors",
+            "Color shown during silence or very quiet audio.",
+        ),
+        color_control(
+            "peak_color",
+            "Peak Color",
+            [1.0, 0.2, 0.5, 1.0],
+            "Colors",
+            "Color reached at peak RMS intensity.",
+        ),
+        slider_control(
+            "sensitivity",
+            "Sensitivity",
+            2.0,
+            0.1,
+            4.0,
+            0.01,
+            "Audio",
+            "Higher values react harder to quieter input.",
+        ),
+        slider_control(
+            "beat_decay",
+            "Beat Decay",
+            0.85,
+            0.5,
+            0.99,
+            0.01,
+            "Audio",
+            "How long the beat flash lingers after a detected beat.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness.",
+        ),
+    ]
+}
+
+fn color_wave_controls() -> Vec<ControlDefinition> {
+    vec![
+        color_control(
+            "color",
+            "Color",
+            [0.5, 1.0, 0.92, 1.0],
+            "Colors",
+            "Wave color at peak intensity.",
+        ),
+        slider_control(
+            "speed",
+            "Speed",
+            1.0,
+            0.0,
+            6.0,
+            0.01,
+            "Motion",
+            "Wave travel speed in cycles per second.",
+        ),
+        slider_control(
+            "wave_count",
+            "Wave Count",
+            3.0,
+            1.0,
+            12.0,
+            1.0,
+            "Shape",
+            "How many wave peaks are visible across the canvas.",
+        ),
+        dropdown_control(
+            "direction",
+            "Direction",
+            "Right",
+            &["Right", "Left"],
+            "Motion",
+            "Travel direction of the wave.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness.",
+        ),
+    ]
+}
 
 /// Metadata definitions for all built-in effects.
 ///
@@ -51,12 +521,17 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         EffectMetadata {
             id: builtin_effect_id("solid_color"),
             name: "solid_color".into(),
-            author: "hypercolor".into(),
+            author: "Hypercolor".into(),
             version: "0.1.0".into(),
-            description: "Fills the canvas with a single solid color".into(),
+            description: "Solid fills plus split and checker diagnostic scene patterns".into(),
             category: EffectCategory::Ambient,
-            tags: vec!["solid".into(), "color".into(), "basic".into()],
-            controls: Vec::new(),
+            tags: vec![
+                "solid".into(),
+                "scene".into(),
+                "diagnostic".into(),
+                "utility".into(),
+            ],
+            controls: solid_color_controls(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/solid_color"),
@@ -66,12 +541,19 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         EffectMetadata {
             id: builtin_effect_id("gradient"),
             name: "gradient".into(),
-            author: "hypercolor".into(),
+            author: "Hypercolor".into(),
             version: "0.1.0".into(),
-            description: "Animated two-color gradient with configurable direction".into(),
+            description:
+                "Configurable linear or radial gradient with motion, tiling, and output controls"
+                    .into(),
             category: EffectCategory::Ambient,
-            tags: vec!["gradient".into(), "ambient".into(), "smooth".into()],
-            controls: Vec::new(),
+            tags: vec![
+                "gradient".into(),
+                "scene".into(),
+                "diagnostic".into(),
+                "smooth".into(),
+            ],
+            controls: gradient_controls(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/gradient"),
@@ -81,12 +563,12 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         EffectMetadata {
             id: builtin_effect_id("rainbow"),
             name: "rainbow".into(),
-            author: "hypercolor".into(),
+            author: "Hypercolor".into(),
             version: "0.1.0".into(),
             description: "Cycling rainbow pattern using perceptual hue rotation".into(),
             category: EffectCategory::Ambient,
             tags: vec!["rainbow".into(), "hue".into(), "colorful".into()],
-            controls: Vec::new(),
+            controls: rainbow_controls(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/rainbow"),
@@ -96,12 +578,12 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         EffectMetadata {
             id: builtin_effect_id("breathing"),
             name: "breathing".into(),
-            author: "hypercolor".into(),
+            author: "Hypercolor".into(),
             version: "0.1.0".into(),
             description: "Smooth sinusoidal brightness pulsation".into(),
             category: EffectCategory::Ambient,
             tags: vec!["breathing".into(), "pulse".into(), "calm".into()],
-            controls: Vec::new(),
+            controls: breathing_controls(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/breathing"),
@@ -111,7 +593,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         EffectMetadata {
             id: builtin_effect_id("audio_pulse"),
             name: "audio_pulse".into(),
-            author: "hypercolor".into(),
+            author: "Hypercolor".into(),
             version: "0.1.0".into(),
             description: "Audio-reactive effect driven by RMS level and beat detection".into(),
             category: EffectCategory::Audio,
@@ -121,7 +603,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
                 "beat".into(),
                 "pulse".into(),
             ],
-            controls: Vec::new(),
+            controls: audio_pulse_controls(),
             audio_reactive: true,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/audio_pulse"),
@@ -131,12 +613,12 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
         EffectMetadata {
             id: builtin_effect_id("color_wave"),
             name: "color_wave".into(),
-            author: "hypercolor".into(),
+            author: "Hypercolor".into(),
             version: "0.1.0".into(),
             description: "Traveling sinusoidal wave of color across the canvas".into(),
             category: EffectCategory::Ambient,
             tags: vec!["wave".into(), "animation".into(), "pattern".into()],
-            controls: Vec::new(),
+            controls: color_wave_controls(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/color_wave"),

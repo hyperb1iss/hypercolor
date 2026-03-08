@@ -21,6 +21,8 @@ pub struct AudioPulseRenderer {
     beat_decay: f32,
     /// Current beat flash intensity (decays over frames).
     beat_flash: f32,
+    /// Master output brightness.
+    brightness: f32,
 }
 
 impl AudioPulseRenderer {
@@ -33,6 +35,7 @@ impl AudioPulseRenderer {
             sensitivity: 2.0,
             beat_decay: 0.85,
             beat_flash: 0.0,
+            brightness: 1.0,
         }
     }
 }
@@ -78,7 +81,10 @@ impl EffectRenderer for AudioPulseRenderer {
 
         // Blend base → peak by RMS, then mix in beat flash
         let rms_color = RgbaF32::lerp(&base, &peak, rms_t);
-        let final_color = RgbaF32::lerp(&rms_color, &white, self.beat_flash * 0.6);
+        let mut final_color = RgbaF32::lerp(&rms_color, &white, self.beat_flash * 0.6);
+        final_color.r *= self.brightness;
+        final_color.g *= self.brightness;
+        final_color.b *= self.brightness;
 
         canvas.fill(final_color.to_srgba());
         Ok(canvas)
@@ -99,6 +105,16 @@ impl EffectRenderer for AudioPulseRenderer {
             "sensitivity" => {
                 if let Some(v) = value.as_f32() {
                     self.sensitivity = v.max(0.01);
+                }
+            }
+            "beat_decay" => {
+                if let Some(v) = value.as_f32() {
+                    self.beat_decay = v.clamp(0.0, 0.99);
+                }
+            }
+            "brightness" => {
+                if let Some(v) = value.as_f32() {
+                    self.brightness = v.clamp(0.0, 1.0);
                 }
             }
             _ => {}
