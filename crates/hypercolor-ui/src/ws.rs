@@ -8,8 +8,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::MessageEvent;
 
-pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 60;
-const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 12;
+pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 30;
+const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
 
 // ── Connection State ────────────────────────────────────────────────────────
 
@@ -41,36 +41,67 @@ pub struct CanvasFrame {
     pub timestamp_ms: u32,
     pub width: u32,
     pub height: u32,
+    format: CanvasPixelFormat,
     pixels: js_sys::Uint8Array,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanvasPixelFormat {
+    Rgb,
+    Rgba,
+}
+
+impl CanvasPixelFormat {
+    fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Rgb => 3,
+            Self::Rgba => 4,
+        }
+    }
+}
+
 impl CanvasFrame {
-    /// Number of RGBA pixels in the frame.
+    /// Number of pixels in the frame.
     pub fn pixel_count(&self) -> usize {
         let width = usize::try_from(self.width).unwrap_or(0);
         let height = usize::try_from(self.height).unwrap_or(0);
         width.saturating_mul(height)
     }
 
-    /// Sample an RGBA pixel by flat index without copying the full buffer.
+    /// Sample a pixel as RGBA without copying the full buffer.
     pub fn rgba_at(&self, pixel_index: usize) -> Option<[u8; 4]> {
-        let offset = u32::try_from(pixel_index.checked_mul(4)?).ok()?;
-        let last_component = offset.checked_add(3)?;
+        let offset = u32::try_from(pixel_index.checked_mul(self.format.bytes_per_pixel())?).ok()?;
+        let last_component = offset.checked_add(match self.format {
+            CanvasPixelFormat::Rgb => 2,
+            CanvasPixelFormat::Rgba => 3,
+        })?;
         if last_component >= self.pixels.length() {
             return None;
         }
 
-        Some([
-            self.pixels.get_index(offset),
-            self.pixels.get_index(offset + 1),
-            self.pixels.get_index(offset + 2),
-            self.pixels.get_index(offset + 3),
-        ])
+        Some(match self.format {
+            CanvasPixelFormat::Rgb => [
+                self.pixels.get_index(offset),
+                self.pixels.get_index(offset + 1),
+                self.pixels.get_index(offset + 2),
+                255,
+            ],
+            CanvasPixelFormat::Rgba => [
+                self.pixels.get_index(offset),
+                self.pixels.get_index(offset + 1),
+                self.pixels.get_index(offset + 2),
+                self.pixels.get_index(offset + 3),
+            ],
+        })
     }
 
-    /// Borrow the upload-ready RGBA pixel buffer for WebGL.
+    /// Borrow the upload-ready pixel buffer for WebGL.
     pub fn pixels_js(&self) -> &js_sys::Uint8Array {
         &self.pixels
+    }
+
+    pub fn pixel_format(&self) -> CanvasPixelFormat {
+        self.format
     }
 }
 
@@ -197,7 +228,8 @@ impl WsManager {
         let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
         let (preview_target_fps, set_preview_target_fps) = signal(0_u32);
         let (engine_preview_target, set_engine_preview_target) = signal(0_u32);
-        let (preview_cap, set_preview_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
+        let (preview_page_cap, set_preview_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
+        let (preview_transport_cap, set_preview_transport_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
         let (page_visible, set_page_visible) = signal(document_is_visible());
 
         // Build WebSocket URL relative to page origin
@@ -236,7 +268,7 @@ impl WsManager {
         let preview_ws = ws.clone();
         Effect::new(move |_| {
             let engine_target = engine_preview_target.get();
-            let client_cap = preview_cap.get();
+            let client_cap = preview_page_cap.get().min(preview_transport_cap.get());
             let is_visible = page_visible.get();
             if engine_target == 0 {
                 return;
@@ -250,6 +282,10 @@ impl WsManager {
                 client_cap,
                 is_visible,
             );
+        });
+
+        Effect::new(move |_| {
+            set_preview_transport_cap.set(preview_page_cap.get());
         });
 
         // onopen — subscribe to events + metrics, then pace preview after hello.
@@ -348,6 +384,7 @@ impl WsManager {
                         &set_last_device_event,
                         &set_engine_preview_target,
                         &set_preview_target_fps,
+                        &set_preview_transport_cap,
                     );
                 }
             }
@@ -419,7 +456,7 @@ fn request_preview_subscription(
         "type": "subscribe",
         "channels": ["canvas"],
         "config": {
-            "canvas": { "fps": desired_fps, "format": "rgba" }
+            "canvas": { "fps": desired_fps, "format": "rgb" }
         }
     });
     let _ = ws.send_with_str(&subscribe_msg.to_string());
@@ -453,47 +490,28 @@ fn decode_canvas_frame(buffer: js_sys::ArrayBuffer) -> Option<CanvasFrame> {
     ]);
     let width = u16::from_le_bytes([data.get_index(9), data.get_index(10)]) as u32;
     let height = u16::from_le_bytes([data.get_index(11), data.get_index(12)]) as u32;
-    let format = data.get_index(13); // 0 = RGB, 1 = RGBA
+    let format = match data.get_index(13) {
+        0 => CanvasPixelFormat::Rgb,
+        1 => CanvasPixelFormat::Rgba,
+        _ => return None,
+    };
     let expected_size = usize::try_from(width)
         .ok()?
         .checked_mul(usize::try_from(height).ok()?)?;
     let pixel_offset = 14_u32;
-
-    let pixels = if format == 1 {
-        // Already RGBA
-        let expected_len = expected_size * 4;
-        let expected_len = u32::try_from(expected_len).ok()?;
-        let end = pixel_offset.checked_add(expected_len)?;
-        if data.length() < end {
-            return None;
-        }
-        data.subarray(pixel_offset, end)
-    } else {
-        // RGB → convert to RGBA
-        let expected_len = expected_size * 3;
-        let expected_len = u32::try_from(expected_len).ok()?;
-        let end = pixel_offset.checked_add(expected_len)?;
-        if data.length() < end {
-            return None;
-        }
-        let mut rgba = Vec::with_capacity(expected_size * 4);
-        let rgb = data.subarray(pixel_offset, end);
-        let mut offset = 0_u32;
-        while offset < rgb.length() {
-            rgba.push(rgb.get_index(offset));
-            rgba.push(rgb.get_index(offset + 1));
-            rgba.push(rgb.get_index(offset + 2));
-            rgba.push(255);
-            offset += 3;
-        }
-        js_sys::Uint8Array::from(rgba.as_slice())
-    };
+    let expected_len = u32::try_from(expected_size.checked_mul(format.bytes_per_pixel())?).ok()?;
+    let end = pixel_offset.checked_add(expected_len)?;
+    if data.length() < end {
+        return None;
+    }
+    let pixels = data.subarray(pixel_offset, end);
 
     Some(CanvasFrame {
         frame_number,
         timestamp_ms,
         width,
         height,
+        format,
         pixels,
     })
 }
@@ -507,6 +525,7 @@ fn handle_json_message(
     set_last_device_event: &WriteSignal<Option<DeviceEventHint>>,
     set_engine_preview_target: &WriteSignal<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
+    set_preview_transport_cap: &WriteSignal<u32>,
 ) {
     let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
 
@@ -570,6 +589,13 @@ fn handle_json_message(
         }
         "backpressure" => {
             if let Ok(message) = serde_json::from_value::<BackpressureMessage>(msg.clone()) {
+                if message.channel == "canvas"
+                    && message.recommendation == "reduce_fps"
+                    && message.suggested_fps > 0
+                {
+                    set_preview_transport_cap
+                        .update(|current| *current = (*current).min(message.suggested_fps));
+                }
                 set_backpressure_notice.set(Some(BackpressureNotice {
                     dropped_frames: message.dropped_frames,
                     channel: message.channel,

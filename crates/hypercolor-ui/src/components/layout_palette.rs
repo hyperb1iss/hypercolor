@@ -795,9 +795,9 @@ fn remove_device_zone(
 ) {
     set_layout.update(|l| {
         if let Some(layout) = l {
-            layout.zones.retain(|z| {
-                !(z.device_id == device_id && z.zone_name.as_deref() == zone_name)
-            });
+            layout
+                .zones
+                .retain(|z| !(z.device_id == device_id && z.zone_name.as_deref() == zone_name));
         }
     });
     set_selected_zone_id.set(None);

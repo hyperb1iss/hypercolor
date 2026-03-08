@@ -463,7 +463,7 @@ pub fn Sidebar() -> impl IntoView {
                             attr:class=move || {
                                 let base = "flex items-center h-10 px-3 rounded-lg nav-item-hover group relative";
                                 if is_active.get() {
-                                    format!("{base} bg-accent-muted text-fg-primary")
+                                    format!("{base} text-fg-primary")
                                 } else {
                                     format!("{base} text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/30")
                                 }

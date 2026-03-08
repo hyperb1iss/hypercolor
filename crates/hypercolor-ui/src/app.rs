@@ -90,7 +90,7 @@ pub struct DevicesContext {
 
 impl EffectsContext {
     fn effect_summary(&self, id: &str) -> Option<api::EffectSummary> {
-        self.effects_index.with(|effects| {
+        self.effects_index.with_untracked(|effects| {
             effects
                 .iter()
                 .find(|entry| entry.effect.id == id)

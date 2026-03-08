@@ -60,6 +60,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
             let req = api::UpdateDeviceRequest {
                 name: Some(new_name),
                 enabled: None,
+                brightness: None,
             };
             let _ = api::update_device(&id, &req).await;
             devices_resource.refetch();
@@ -76,6 +77,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
             let req = api::UpdateDeviceRequest {
                 name: None,
                 enabled: Some(!currently_active),
+                brightness: None,
             };
             let _ = api::update_device(&id, &req).await;
             devices_resource.refetch();
@@ -83,6 +85,24 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                 toasts::toast_info("Device disabled");
             } else {
                 toasts::toast_success("Device enabled");
+            }
+        });
+    };
+
+    // Device brightness
+    let set_brightness = move |brightness: u8| {
+        let Some(dev) = device.get() else { return };
+        let id = dev.id.clone();
+        let devices_resource = ctx.devices_resource;
+        leptos::task::spawn_local(async move {
+            let req = api::UpdateDeviceRequest {
+                name: None,
+                enabled: None,
+                brightness: Some(brightness),
+            };
+            match api::update_device(&id, &req).await {
+                Ok(_) => devices_resource.refetch(),
+                Err(error) => toasts::toast_error(&format!("Brightness update failed: {error}")),
             }
         });
     };
@@ -216,6 +236,39 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                     "IP",
                                     &dev.network_ip.clone().unwrap_or_else(|| "\u{2014}".to_string()),
                                 )}
+                            </div>
+
+                            <div class="pt-3 border-t border-edge-subtle space-y-2">
+                                <div class="flex items-center justify-between gap-3">
+                                    <div>
+                                        <h4 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">
+                                            "Device Brightness"
+                                        </h4>
+                                        <p class="text-[11px] text-fg-tertiary mt-1">
+                                            "Scales this device after global output brightness."
+                                        </p>
+                                    </div>
+                                    <span class="text-sm font-mono tabular-nums text-fg-primary">
+                                        {format!("{}%", dev.brightness)}
+                                    </span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="0"
+                                    max="100"
+                                    step="1"
+                                    class="w-full h-1 rounded-full appearance-none cursor-pointer"
+                                    style="accent-color: rgb(225, 53, 255); background: rgba(139, 133, 160, 0.15)"
+                                    prop:value=dev.brightness.to_string()
+                                    on:change=move |ev| {
+                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                        if let Some(el) = target
+                                            && let Ok(brightness) = el.value().parse::<u8>()
+                                        {
+                                            set_brightness(brightness);
+                                        }
+                                    }
+                                />
                             </div>
 
                             // Zone list

@@ -79,6 +79,7 @@ pub struct SystemStatus {
     pub device_count: usize,
     pub effect_count: usize,
     pub active_effect: Option<String>,
+    pub global_brightness: u8,
 }
 
 // ── Device Types ────────────────────────────────────────────────────────────
@@ -123,6 +124,7 @@ pub struct DeviceSummary {
     pub name: String,
     pub backend: String,
     pub status: String,
+    pub brightness: u8,
     #[serde(default)]
     pub firmware_version: Option<String>,
     #[serde(default)]
@@ -223,6 +225,14 @@ pub struct UpdateDeviceRequest {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<u8>,
+}
+
+/// Global brightness payload from `/api/v1/settings/brightness`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrightnessSettingsResponse {
+    pub brightness: u8,
 }
 
 // ── Layout Types ────────────────────────────────────────────────────────────
@@ -377,6 +387,23 @@ pub async fn fetch_status() -> Result<SystemStatus, String> {
     Ok(envelope.data)
 }
 
+/// Fetch the current global brightness.
+pub async fn fetch_global_brightness() -> Result<u8, String> {
+    let resp = Request::get("/api/v1/settings/brightness")
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<BrightnessSettingsResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.brightness)
+}
+
 // ── Device Fetch Functions ──────────────────────────────────────────────────
 
 /// Fetch all tracked devices.
@@ -446,7 +473,7 @@ pub async fn fetch_device(id: &str) -> Result<DeviceSummary, String> {
     Ok(envelope.data)
 }
 
-/// Update a device (name, enabled).
+/// Update a device (name, enabled, brightness).
 pub async fn update_device(id: &str, req: &UpdateDeviceRequest) -> Result<DeviceSummary, String> {
     let url = format!("/api/v1/devices/{id}");
     let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
@@ -467,6 +494,27 @@ pub async fn update_device(id: &str, req: &UpdateDeviceRequest) -> Result<Device
         resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
 
     Ok(envelope.data)
+}
+
+/// Update the global output brightness.
+pub async fn set_global_brightness(brightness: u8) -> Result<u8, String> {
+    let body = serde_json::json!({ "brightness": brightness });
+    let resp = Request::put("/api/v1/settings/brightness")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&body).map_err(|e| format!("Serialize error: {e}"))?)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<BrightnessSettingsResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.brightness)
 }
 
 /// Identify a device by flashing its LEDs.

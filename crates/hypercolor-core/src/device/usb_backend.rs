@@ -1063,6 +1063,23 @@ impl DeviceBackend for UsbBackend {
             })?;
 
         let transport_name = transport.name();
+        let resolved_info =
+            build_connected_device_info(*id, &pending.info_template, protocol.as_ref());
+        let zone_summary = resolved_info
+            .zones
+            .iter()
+            .map(|zone| format!("{}:{}:{:?}", zone.name, zone.led_count, zone.topology))
+            .collect::<Vec<_>>();
+        debug!(
+            device_id = %id,
+            descriptor = pending.descriptor.name,
+            protocol = protocol.name(),
+            transport = transport_name,
+            total_leds = resolved_info.total_led_count(),
+            zone_count = resolved_info.zones.len(),
+            zones = ?zone_summary,
+            "USB connect resolved protocol topology"
+        );
         let target_fps = fps_from_frame_interval(protocol.frame_interval());
         let (frame_tx, frame_rx) = watch::channel(None::<Arc<UsbFramePayload>>);
         let (display_tx, display_rx) = watch::channel(None::<Arc<UsbDisplayPayload>>);

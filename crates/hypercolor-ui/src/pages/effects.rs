@@ -14,7 +14,7 @@ use crate::components::preset_panel::PresetToolbar;
 use crate::icons::*;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
-const EFFECTS_PREVIEW_FPS_CAP: u32 = 36;
+const EFFECTS_PREVIEW_FPS_CAP: u32 = 24;
 
 /// Category -> accent RGB string for inline styles.
 fn category_accent_rgb(category: &str) -> &'static str {

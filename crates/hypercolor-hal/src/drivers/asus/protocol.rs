@@ -5,6 +5,7 @@ use std::sync::RwLock;
 use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+use tracing::debug;
 
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
@@ -372,13 +373,39 @@ impl Protocol for AuraUsbProtocol {
                     .topology
                     .write()
                     .expect("ASUS topology lock should not be poisoned");
+                let board_name = self
+                    .board_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let firmware_override = lookup_firmware_override(&firmware);
+                let board_override = board_name.and_then(lookup_board_name_override);
+                let override_source = if firmware_override.is_some() {
+                    "firmware"
+                } else if board_override.is_some() {
+                    "board_name"
+                } else {
+                    "none"
+                };
                 topology.firmware = Some(firmware.clone());
                 topology.init_phase = AuraInitPhase::FirmwareReceived;
 
-                if let Some(override_entry) = lookup_override(&firmware, self.board_name.as_deref())
-                {
+                if let Some(override_entry) = firmware_override.or(board_override) {
                     self.apply_override(&mut topology, override_entry);
                 }
+
+                debug!(
+                    controller = self.controller_name(),
+                    firmware = %firmware,
+                    board_name = board_name.unwrap_or("<unknown>"),
+                    override_source,
+                    mainboard_leds = topology.mainboard_leds,
+                    argb_channels = topology.argb_led_counts.len(),
+                    argb_led_counts = ?topology.argb_led_counts,
+                    rgb_headers = topology.rgb_header_count,
+                    init_phase = ?topology.init_phase,
+                    "ASUS Aura firmware response parsed"
+                );
 
                 Ok(ProtocolResponse {
                     status: ResponseStatus::Ok,
@@ -387,6 +414,9 @@ impl Protocol for AuraUsbProtocol {
             }
             CONFIG_RESPONSE_MARKER => {
                 let table = parse_config_table(payload)?;
+                let discovered_argb_channels = usize::from(table[0x02]);
+                let discovered_mainboard_leds = u32::from(table[0x1B]);
+                let discovered_rgb_headers = u32::from(table[0x1D]);
                 let mut topology = self
                     .topology
                     .write()
@@ -394,12 +424,27 @@ impl Protocol for AuraUsbProtocol {
 
                 if !topology.overrides_applied {
                     topology.argb_led_counts =
-                        self.resolved_argb_led_counts(usize::from(table[0x02]));
-                    topology.mainboard_leds = u32::from(table[0x1B]);
-                    topology.rgb_header_count = u32::from(table[0x1D]);
+                        self.resolved_argb_led_counts(discovered_argb_channels);
+                    topology.mainboard_leds = discovered_mainboard_leds;
+                    topology.rgb_header_count = discovered_rgb_headers;
                 }
 
                 topology.init_phase = AuraInitPhase::Configured;
+
+                debug!(
+                    controller = self.controller_name(),
+                    firmware = topology.firmware.as_deref().unwrap_or("<unknown>"),
+                    discovered_mainboard_leds,
+                    discovered_argb_channels,
+                    discovered_rgb_headers,
+                    resolved_mainboard_leds = topology.mainboard_leds,
+                    resolved_argb_channels = topology.argb_led_counts.len(),
+                    resolved_argb_led_counts = ?topology.argb_led_counts,
+                    resolved_rgb_headers = topology.rgb_header_count,
+                    overrides_applied = topology.overrides_applied,
+                    init_phase = ?topology.init_phase,
+                    "ASUS Aura config response parsed"
+                );
 
                 Ok(ProtocolResponse {
                     status: ResponseStatus::Ok,
@@ -641,11 +686,6 @@ fn read_dmi_board_name() -> Option<String> {
     {
         None
     }
-}
-
-fn lookup_override(firmware: &str, board_name: Option<&str>) -> Option<BoardTopologyOverride> {
-    lookup_firmware_override(firmware)
-        .or_else(|| board_name.and_then(|board_name| lookup_board_name_override(board_name.trim())))
 }
 
 fn lookup_firmware_override(firmware: &str) -> Option<BoardTopologyOverride> {

@@ -12,7 +12,7 @@ use web_sys::{
     WebGlTexture,
 };
 
-use crate::ws::CanvasFrame;
+use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 const PREVIEW_VERTEX_SHADER: &str = r#"
 attribute vec2 a_position;
@@ -42,6 +42,7 @@ struct WebGlPreview {
     texture: WebGlTexture,
     width: u32,
     height: u32,
+    format: CanvasPixelFormat,
 }
 
 impl WebGlPreview {
@@ -95,15 +96,18 @@ impl WebGlPreview {
             texture,
             width: 0,
             height: 0,
+            format: CanvasPixelFormat::Rgb,
         })
     }
 
     fn render(&mut self, canvas: &HtmlCanvasElement, frame: &CanvasFrame) {
-        if self.width != frame.width || self.height != frame.height {
+        let frame_format = frame.pixel_format();
+        if self.width != frame.width || self.height != frame.height || self.format != frame_format {
             canvas.set_width(frame.width);
             canvas.set_height(frame.height);
             self.width = frame.width;
             self.height = frame.height;
+            self.format = frame_format;
 
             let Ok(width) = i32::try_from(frame.width) else {
                 return;
@@ -111,17 +115,21 @@ impl WebGlPreview {
             let Ok(height) = i32::try_from(frame.height) else {
                 return;
             };
+            let gl_format = match frame_format {
+                CanvasPixelFormat::Rgb => Gl::RGB,
+                CanvasPixelFormat::Rgba => Gl::RGBA,
+            };
 
             let _ = self
                 .gl
                 .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_js_u8_array(
                     Gl::TEXTURE_2D,
                     0,
-                    Gl::RGBA as i32,
+                    gl_format as i32,
                     width,
                     height,
                     0,
-                    Gl::RGBA,
+                    gl_format,
                     Gl::UNSIGNED_BYTE,
                     None,
                 );
@@ -140,6 +148,10 @@ impl WebGlPreview {
             .bind_buffer(Gl::ARRAY_BUFFER, Some(&self.vertex_buffer));
         self.gl.active_texture(Gl::TEXTURE0);
         self.gl.bind_texture(Gl::TEXTURE_2D, Some(&self.texture));
+        let gl_format = match frame_format {
+            CanvasPixelFormat::Rgb => Gl::RGB,
+            CanvasPixelFormat::Rgba => Gl::RGBA,
+        };
 
         let _ = self
             .gl
@@ -150,7 +162,7 @@ impl WebGlPreview {
                 0,
                 width,
                 height,
-                Gl::RGBA,
+                gl_format,
                 Gl::UNSIGNED_BYTE,
                 Some(frame.pixels_js()),
             );
