@@ -25,6 +25,7 @@ use tokio::sync::Mutex;
 const MINIMAL_TOML: &str = "schema_version = 3\n";
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 struct TestDataDirGuard {
     _lock: tokio::sync::MutexGuard<'static, ()>,
@@ -60,6 +61,30 @@ impl Drop for TestDataDirGuard {
     }
 }
 
+struct TestConfigDirGuard {
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+    _dir: tempfile::TempDir,
+}
+
+impl TestConfigDirGuard {
+    async fn new() -> Self {
+        let lock = CONFIG_DIR_LOCK.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let config_dir = dir.path().join("config");
+        ConfigManager::set_config_dir_override(Some(config_dir));
+        Self {
+            _lock: lock,
+            _dir: dir,
+        }
+    }
+}
+
+impl Drop for TestConfigDirGuard {
+    fn drop(&mut self) {
+        ConfigManager::set_config_dir_override(None);
+    }
+}
+
 /// Create a temp file pre-populated with valid minimal TOML config.
 fn temp_config_file() -> NamedTempFile {
     let mut f = NamedTempFile::new().expect("failed to create temp file");
@@ -73,6 +98,8 @@ fn temp_config_file() -> NamedTempFile {
 
 #[tokio::test]
 async fn load_config_falls_back_to_defaults_when_no_file() {
+    let _guard = TestConfigDirGuard::new().await;
+
     // When no explicit path is provided and no file exists at the default
     // location, load_config should succeed with defaults.
     let (config, _path) = load_config(None).await.expect("default config should load");

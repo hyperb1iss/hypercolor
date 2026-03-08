@@ -5,8 +5,11 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::time::Duration;
 
+use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::runtime_state::{self, RuntimeSessionSnapshot};
 use hypercolor_daemon::startup::{DaemonState, default_config, load_config};
 use hypercolor_types::config::CURRENT_SCHEMA_VERSION;
@@ -16,9 +19,39 @@ use hypercolor_types::device::{
 };
 use hypercolor_types::effect::EffectSource;
 use tempfile::NamedTempFile;
+use tokio::sync::Mutex;
 
 /// Minimal TOML that parses into a valid `HypercolorConfig`.
 const MINIMAL_TOML: &str = "schema_version = 3\n";
+
+static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+struct TestConfigDirGuard {
+    _lock: tokio::sync::MutexGuard<'static, ()>,
+    _dir: tempfile::TempDir,
+    #[allow(dead_code)]
+    config_dir: PathBuf,
+}
+
+impl TestConfigDirGuard {
+    async fn new() -> Self {
+        let lock = CONFIG_DIR_LOCK.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let config_dir = dir.path().join("config");
+        ConfigManager::set_config_dir_override(Some(config_dir.clone()));
+        Self {
+            _lock: lock,
+            _dir: dir,
+            config_dir,
+        }
+    }
+}
+
+impl Drop for TestConfigDirGuard {
+    fn drop(&mut self) {
+        ConfigManager::set_config_dir_override(None);
+    }
+}
 
 fn temp_config_file() -> NamedTempFile {
     let mut f = NamedTempFile::new().expect("failed to create temp file");
@@ -207,6 +240,7 @@ async fn daemon_start_restores_last_runtime_session() {
 
 #[tokio::test]
 async fn config_loading_defaults_have_correct_schema() {
+    let _guard = TestConfigDirGuard::new().await;
     let (config, _path) = load_config(None).await.expect("should load defaults");
 
     assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
@@ -220,6 +254,7 @@ async fn config_loading_defaults_have_correct_schema() {
 
 #[tokio::test]
 async fn config_loading_all_sub_configs_have_defaults() {
+    let _guard = TestConfigDirGuard::new().await;
     let (config, _path) = load_config(None).await.expect("should load defaults");
 
     // Audio config defaults

@@ -10,7 +10,7 @@ use crate::effect::traits::{EffectRenderer, FrameInput};
 
 /// Fills every pixel with a single color, modulated by brightness.
 pub struct SolidColorRenderer {
-    /// Current color in linear RGBA.
+    /// Current color in normalized sRGB RGBA.
     color: [f32; 4],
     /// Brightness multiplier (0.0 = black, 1.0 = full color).
     brightness: f32,
@@ -47,7 +47,7 @@ impl EffectRenderer for SolidColorRenderer {
             self.color[2] * self.brightness,
             self.color[3],
         )
-        .to_srgba();
+        .to_rgba();
 
         canvas.fill(pixel);
         Ok(canvas)

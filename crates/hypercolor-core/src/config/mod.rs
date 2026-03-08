@@ -128,6 +128,14 @@ impl ConfigManager {
         paths::config_dir()
     }
 
+    /// Override the resolved configuration directory.
+    ///
+    /// This is intended for integration tests that need isolated config state.
+    #[doc(hidden)]
+    pub fn set_config_dir_override(path: Option<PathBuf>) {
+        paths::set_config_dir_override(path);
+    }
+
     /// Returns the platform-appropriate data directory.
     ///
     /// Delegates to [`paths::data_dir`].
