@@ -2958,6 +2958,34 @@ async fn identify_device_requires_connected_state() {
 }
 
 #[tokio::test]
+async fn identify_device_uses_discovered_smbus_backend_for_asus_devices() {
+    let state = Arc::new(AppState::new());
+    register_noop_backend(&state, "smbus", "SMBus Test Backend").await;
+    let device_id = insert_test_asus_smbus_device(&state, "Aura GPU").await;
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/devices/{device_id}/identify"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["device_id"], device_id.to_string());
+    assert_eq!(json["data"]["identifying"], true);
+}
+
+#[tokio::test]
 async fn get_device_by_ambiguous_name_returns_conflict() {
     let state = Arc::new(AppState::new());
     let _ = insert_test_device(&state, "Same Name").await;
