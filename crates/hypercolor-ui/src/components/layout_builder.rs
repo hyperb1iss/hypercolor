@@ -3,9 +3,10 @@
 //! Edits are pushed to the spatial engine immediately for live preview.
 //! Save persists to disk. Revert restores to the last saved state.
 
+use leptos::ev;
 use leptos::prelude::*;
-use leptos_use::use_debounce_fn_with_arg;
 use leptos_icons::Icon;
+use leptos_use::use_debounce_fn_with_arg;
 use wasm_bindgen::JsCast;
 
 use crate::api;
@@ -16,6 +17,35 @@ use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::icons::*;
 use crate::toasts;
 use hypercolor_types::spatial::SpatialLayout;
+
+// Panel size defaults and constraints
+const SIDEBAR_DEFAULT: f64 = 280.0;
+const SIDEBAR_MIN: f64 = 180.0;
+const SIDEBAR_MAX: f64 = 480.0;
+const BOTTOM_DEFAULT: f64 = 160.0;
+const BOTTOM_MIN: f64 = 72.0;
+const BOTTOM_MAX: f64 = 400.0;
+
+const LS_KEY_SIDEBAR: &str = "hc-layout-sidebar-width";
+const LS_KEY_BOTTOM: &str = "hc-layout-bottom-height";
+
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window().and_then(|w| w.local_storage().ok().flatten())
+}
+
+fn load_panel_size(key: &str, default: f64, min: f64, max: f64) -> f64 {
+    storage()
+        .and_then(|s| s.get_item(key).ok().flatten())
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(min, max))
+        .unwrap_or(default)
+}
+
+fn save_panel_size(key: &str, value: f64) {
+    if let Some(s) = storage() {
+        let _ = s.set_item(key, &format!("{value:.0}"));
+    }
+}
 
 fn preferred_replacement_layout(
     layouts: &[api::LayoutSummary],
@@ -68,9 +98,72 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (creating, set_creating) = signal(false);
     let (new_layout_name, set_new_layout_name) = signal(String::new());
     let (initialized, set_initialized) = signal(false);
+    let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(true);
     let layout_signal = Signal::derive(move || layout.get());
     let zone_id_signal = Signal::derive(move || selected_zone_id.get());
+    let keep_aspect_ratio_signal = Signal::derive(move || keep_aspect_ratio.get());
     let has_layout = Signal::derive(move || layout.with(|current| current.is_some()));
+
+    // --- Resizable panel state ---
+    let (sidebar_width, set_sidebar_width) = signal(load_panel_size(
+        LS_KEY_SIDEBAR,
+        SIDEBAR_DEFAULT,
+        SIDEBAR_MIN,
+        SIDEBAR_MAX,
+    ));
+    let (bottom_height, set_bottom_height) = signal(load_panel_size(
+        LS_KEY_BOTTOM,
+        BOTTOM_DEFAULT,
+        BOTTOM_MIN,
+        BOTTOM_MAX,
+    ));
+
+    // Which panel edge is being dragged (if any)
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum PanelDrag {
+        Sidebar,
+        Bottom,
+    }
+    let (dragging, set_dragging) = signal(None::<PanelDrag>);
+    let container_ref = NodeRef::<leptos::html::Div>::new();
+
+    // Global mousemove / mouseup listeners for drag (registered once)
+    let _drag_move = window_event_listener(ev::mousemove, move |ev| {
+        let Some(drag) = dragging.get_untracked() else {
+            return;
+        };
+        let Some(container) = container_ref.try_get_untracked().flatten() else {
+            return;
+        };
+        let rect = container.get_bounding_client_rect();
+
+        match drag {
+            PanelDrag::Sidebar => {
+                let x = f64::from(ev.client_x()) - rect.left();
+                let clamped = x.clamp(SIDEBAR_MIN, SIDEBAR_MAX.min(rect.width() - 200.0));
+                set_sidebar_width.set(clamped);
+            }
+            PanelDrag::Bottom => {
+                let y = f64::from(ev.client_y()) - rect.top();
+                let panel_h = rect.height() - y;
+                let clamped = panel_h.clamp(BOTTOM_MIN, BOTTOM_MAX.min(rect.height() - 120.0));
+                set_bottom_height.set(clamped);
+            }
+        }
+    });
+
+    let _drag_end = window_event_listener(ev::mouseup, move |_| {
+        if let Some(drag) = dragging.get_untracked() {
+            set_dragging.set(None);
+            // Persist on release
+            match drag {
+                PanelDrag::Sidebar => {
+                    save_panel_size(LS_KEY_SIDEBAR, sidebar_width.get_untracked())
+                }
+                PanelDrag::Bottom => save_panel_size(LS_KEY_BOTTOM, bottom_height.get_untracked()),
+            }
+        }
+    });
     let selected_layout_summary = Signal::derive(move || {
         let selected_id = selected_layout_id.get()?;
         let layouts = ctx.layouts_resource.get()?.ok()?;
@@ -95,8 +188,6 @@ pub fn LayoutBuilder() -> impl IntoView {
     // Child components still expect a writable dirty signal even though the
     // actual dirty state is derived from layout vs saved_layout comparison.
     let (_dirty_marker, set_is_dirty) = signal(false);
-
-    // Auto-select the active layout (or first available, or create a default) on mount
     let preview_layout = use_debounce_fn_with_arg(
         |layout: SpatialLayout| {
             leptos::task::spawn_local(async move {
@@ -105,6 +196,8 @@ pub fn LayoutBuilder() -> impl IntoView {
         },
         75.0,
     );
+
+    // Auto-select the active layout (or first available, or create a default) on mount
     Effect::new(move |_| {
         if initialized.get() {
             return;
@@ -227,7 +320,9 @@ pub fn LayoutBuilder() -> impl IntoView {
     };
 
     let apply_layout = move || {
-        let Some(current) = layout.get() else { return };
+        let Some(current) = layout.get_untracked() else {
+            return;
+        };
         let id = current.id.clone();
         let layouts_resource = ctx.layouts_resource;
         leptos::task::spawn_local(async move {
@@ -245,12 +340,12 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     // Delete handler
     let delete_layout = move || {
-        let Some(current_layout) = layout.get() else {
+        let Some(current_layout) = layout.get_untracked() else {
             return;
         };
         let layouts = ctx
             .layouts_resource
-            .get()
+            .get_untracked()
             .and_then(Result::ok)
             .unwrap_or_default();
         let id = current_layout.id.clone();
@@ -309,7 +404,7 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     // Create handler
     let create_layout = move || {
-        let name = new_layout_name.get();
+        let name = new_layout_name.get_untracked();
         if name.trim().is_empty() {
             return;
         }
@@ -513,9 +608,22 @@ pub fn LayoutBuilder() -> impl IntoView {
                     }
                 }
             >
-                <div class="flex min-h-0 flex-1 overflow-hidden">
-                    // Left palette
-                    <div class="w-[220px] shrink-0 min-h-0 border-r border-edge-subtle overflow-y-auto">
+                <div
+                    class="flex min-h-0 flex-1 overflow-hidden"
+                    node_ref=container_ref
+                    style=move || {
+                        match dragging.get() {
+                            Some(PanelDrag::Sidebar) => "cursor: col-resize; user-select: none",
+                            Some(PanelDrag::Bottom) => "cursor: row-resize; user-select: none",
+                            None => "",
+                        }
+                    }
+                >
+                    // Left palette — resizable width
+                    <div
+                        class="shrink-0 min-h-0 overflow-y-auto"
+                        style=move || format!("width: {:.0}px", sidebar_width.get())
+                    >
                         <LayoutPalette
                             layout=layout_signal
                             set_layout=set_layout
@@ -524,25 +632,59 @@ pub fn LayoutBuilder() -> impl IntoView {
                         />
                     </div>
 
+                    // Sidebar resize handle
+                    <div
+                        class="shrink-0 w-1 cursor-col-resize group/handle relative hover:bg-accent-muted/20
+                               active:bg-accent-muted/30 transition-colors border-r border-edge-subtle"
+                        on:mousedown=move |ev| {
+                            ev.prevent_default();
+                            set_dragging.set(Some(PanelDrag::Sidebar));
+                        }
+                    >
+                        <div class="absolute inset-y-0 -left-0.5 -right-0.5" />
+                        <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-0.5 h-8
+                                    rounded-full bg-fg-tertiary/20 group-hover/handle:bg-accent-muted/60 transition-colors" />
+                    </div>
+
                     // Main area: canvas above, zone properties below
                     <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-                        // Canvas viewport flexes with the window; controls size themselves below.
+                        // Canvas viewport — flexes to fill remaining space
                         <div class="relative min-h-0 flex-1 overflow-hidden">
                             <LayoutCanvas
                                 layout=layout_signal
                                 selected_zone_id=zone_id_signal
+                                keep_aspect_ratio=keep_aspect_ratio_signal
                                 set_selected_zone_id=set_selected_zone_id
                                 set_layout=set_layout
                                 set_is_dirty=set_is_dirty
                             />
                         </div>
 
-                        // Zone properties — always visible, never pushed off-screen
-                        <div class="h-[clamp(4.5rem,18vh,11rem)] shrink-0 overflow-y-auto border-t border-edge-subtle bg-surface-base/95 backdrop-blur-sm">
+                        // Bottom panel resize handle
+                        <div
+                            class="shrink-0 h-1 cursor-row-resize group/handle relative hover:bg-accent-muted/20
+                                   active:bg-accent-muted/30 transition-colors border-t border-edge-subtle"
+                            on:mousedown=move |ev| {
+                                ev.prevent_default();
+                                set_dragging.set(Some(PanelDrag::Bottom));
+                            }
+                        >
+                            <div class="absolute inset-x-0 -top-0.5 -bottom-0.5" />
+                            <div class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-0.5 w-8
+                                        rounded-full bg-fg-tertiary/20 group-hover/handle:bg-accent-muted/60 transition-colors" />
+                        </div>
+
+                        // Zone properties — resizable height
+                        <div
+                            class="shrink-0 overflow-y-auto bg-surface-base/95 backdrop-blur-sm"
+                            style=move || format!("height: {:.0}px", bottom_height.get())
+                        >
                             <LayoutZoneProperties
                                 layout=layout_signal
                                 selected_zone_id=zone_id_signal
+                                keep_aspect_ratio=keep_aspect_ratio_signal
                                 set_layout=set_layout
+                                set_keep_aspect_ratio=set_keep_aspect_ratio
                                 set_selected_zone_id=set_selected_zone_id
                                 set_is_dirty=set_is_dirty
                             />

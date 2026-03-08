@@ -1,7 +1,5 @@
 //! Layout palette — available devices + zone group management.
 
-use std::f32::consts::FRAC_PI_2;
-
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
@@ -9,10 +7,8 @@ use crate::api::{self, ZoneTopologySummary};
 use crate::app::DevicesContext;
 use crate::components::device_card::backend_accent_rgb;
 use crate::icons::*;
-use hypercolor_types::spatial::{
-    Corner, DeviceZone, LedTopology, NormalizedPosition, Orientation, SpatialLayout,
-    StripDirection, Winding, ZoneGroup, ZoneShape,
-};
+use crate::layout_geometry;
+use hypercolor_types::spatial::{DeviceZone, NormalizedPosition, SpatialLayout, ZoneGroup};
 
 /// Group color presets — works in both dark and light themes.
 const GROUP_COLORS: &[&str] = &[
@@ -629,9 +625,7 @@ fn create_default_zone(
     zone: Option<&api::ZoneSummary>,
     total_leds: usize,
 ) -> DeviceZone {
-    #[allow(clippy::cast_possible_truncation)]
-    let fallback_led_count = total_leds as u32;
-    let defaults = defaults_for_zone(zone, fallback_led_count);
+    let defaults = layout_geometry::default_zone_visuals(device_name, zone, total_leds);
     let zone_name = zone.map(|z| z.name.clone());
     let display_name = zone.map_or_else(
         || device_name.to_owned(),
@@ -663,139 +657,6 @@ fn create_default_zone(
         shape_preset: defaults.shape_preset,
         group_id: None,
         attachment: None,
-    }
-}
-
-#[derive(Debug)]
-struct ZoneDefaults {
-    topology: LedTopology,
-    size: NormalizedPosition,
-    orientation: Option<Orientation>,
-    shape: Option<ZoneShape>,
-    shape_preset: Option<String>,
-}
-
-fn defaults_for_zone(zone: Option<&api::ZoneSummary>, fallback_led_count: u32) -> ZoneDefaults {
-    #[allow(clippy::cast_possible_truncation)]
-    let led_count = zone
-        .map(|z| z.led_count)
-        .map(|count| count as u32)
-        .unwrap_or(fallback_led_count)
-        .max(1);
-    let zone_name = zone
-        .map(|z| z.name.to_ascii_lowercase())
-        .unwrap_or_default();
-    let topology_hint = zone.and_then(|z| z.topology_hint.clone());
-
-    // Keyword-first overrides for hardware families commonly exposed as "custom"
-    if zone_name.contains("strimer") || zone_name.contains("cable") {
-        let rows = if led_count >= 48 { 4 } else { 2 };
-        let cols = (led_count / rows).max(8);
-        return matrix_defaults(rows, cols, Some("strimer-generic"));
-    }
-    if zone_name.contains("fan") {
-        return ring_defaults(led_count.max(12), Some("fan-ring"));
-    }
-    if zone_name.contains("aio") || zone_name.contains("pump") {
-        return ring_defaults(led_count.max(12), Some("aio-pump-ring"));
-    }
-    if zone_name.contains("radiator") || zone_name.contains("rad") {
-        return ZoneDefaults {
-            topology: LedTopology::Strip {
-                count: led_count,
-                direction: StripDirection::LeftToRight,
-            },
-            size: NormalizedPosition::new(0.35, 0.08),
-            orientation: Some(Orientation::Horizontal),
-            shape: Some(ZoneShape::Rectangle),
-            shape_preset: Some("aio-radiator-strip".to_owned()),
-        };
-    }
-
-    match topology_hint {
-        Some(ZoneTopologySummary::Strip) => ZoneDefaults {
-            topology: LedTopology::Strip {
-                count: led_count,
-                direction: StripDirection::LeftToRight,
-            },
-            size: NormalizedPosition::new(if led_count > 80 { 0.4 } else { 0.26 }, 0.05),
-            orientation: Some(Orientation::Horizontal),
-            shape: Some(ZoneShape::Rectangle),
-            shape_preset: None,
-        },
-        Some(ZoneTopologySummary::Matrix { rows, cols }) => matrix_defaults(rows, cols, None),
-        Some(ZoneTopologySummary::Ring { count }) => ring_defaults(count, None),
-        Some(ZoneTopologySummary::Point) => ZoneDefaults {
-            topology: LedTopology::Point,
-            size: NormalizedPosition::new(0.08, 0.08),
-            orientation: None,
-            shape: Some(ZoneShape::Ring),
-            shape_preset: None,
-        },
-        Some(ZoneTopologySummary::Display { width, height, .. }) => {
-            matrix_defaults(height, width, Some("lcd-display"))
-        }
-        Some(ZoneTopologySummary::Custom) | None => {
-            if led_count <= 1 {
-                ZoneDefaults {
-                    topology: LedTopology::Point,
-                    size: NormalizedPosition::new(0.08, 0.08),
-                    orientation: None,
-                    shape: Some(ZoneShape::Ring),
-                    shape_preset: None,
-                }
-            } else {
-                ZoneDefaults {
-                    topology: LedTopology::Strip {
-                        count: led_count,
-                        direction: StripDirection::LeftToRight,
-                    },
-                    size: NormalizedPosition::new(0.24, 0.05),
-                    orientation: Some(Orientation::Horizontal),
-                    shape: Some(ZoneShape::Rectangle),
-                    shape_preset: Some("generic-strip".to_owned()),
-                }
-            }
-        }
-    }
-}
-
-fn matrix_defaults(rows: u32, cols: u32, shape_preset: Option<&str>) -> ZoneDefaults {
-    let clamped_rows = rows.max(1);
-    let clamped_cols = cols.max(1);
-    let aspect = clamped_cols as f32 / clamped_rows as f32;
-    let width = (0.16 * aspect).clamp(0.12, 0.45);
-    let height = (width / aspect).clamp(0.06, 0.25);
-
-    ZoneDefaults {
-        topology: LedTopology::Matrix {
-            width: clamped_cols,
-            height: clamped_rows,
-            serpentine: false,
-            start_corner: Corner::TopLeft,
-        },
-        size: NormalizedPosition::new(width, height),
-        orientation: Some(if aspect >= 1.0 {
-            Orientation::Horizontal
-        } else {
-            Orientation::Vertical
-        }),
-        shape: Some(ZoneShape::Rectangle),
-        shape_preset: shape_preset.map(str::to_owned),
-    }
-}
-
-fn ring_defaults(count: u32, shape_preset: Option<&str>) -> ZoneDefaults {
-    ZoneDefaults {
-        topology: LedTopology::Ring {
-            count: count.max(1),
-            start_angle: -FRAC_PI_2,
-            direction: Winding::Clockwise,
-        },
-        size: NormalizedPosition::new(0.16, 0.16),
-        orientation: Some(Orientation::Radial),
-        shape: Some(ZoneShape::Ring),
-        shape_preset: shape_preset.map(str::to_owned),
     }
 }
 

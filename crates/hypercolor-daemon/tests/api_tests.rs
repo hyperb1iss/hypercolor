@@ -3,6 +3,7 @@
 //! Tests use `axum::Router` directly with tower's `ServiceExt` and
 //! `Request::builder()` — no TCP server needed.
 
+use std::fs;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::SystemTime;
@@ -122,6 +123,30 @@ async fn health_check_returns_200() {
     assert_eq!(json["status"], "healthy");
     assert!(json["version"].is_string());
     assert!(json["checks"]["render_loop"].is_string());
+}
+
+#[tokio::test]
+async fn spa_fallback_serves_index_html_for_client_routes() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let index_path = tempdir.path().join("index.html");
+    fs::write(&index_path, "<!doctype html><title>hypercolor</title>")
+        .expect("index.html should be written");
+
+    let app = api::build_router(Arc::new(AppState::new()), Some(tempdir.path()));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/layout")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_text(response).await;
+    assert!(body.contains("<title>hypercolor</title>"));
 }
 
 #[tokio::test]

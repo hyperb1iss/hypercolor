@@ -5,6 +5,7 @@ use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use crate::icons::*;
+use crate::layout_geometry::{self, SizeAxis};
 use hypercolor_types::spatial::SpatialLayout;
 
 /// Zone properties editor (bottom panel of layout builder).
@@ -12,7 +13,9 @@ use hypercolor_types::spatial::SpatialLayout;
 pub fn LayoutZoneProperties(
     #[prop(into)] layout: Signal<Option<SpatialLayout>>,
     #[prop(into)] selected_zone_id: Signal<Option<String>>,
+    #[prop(into)] keep_aspect_ratio: Signal<bool>,
     set_layout: WriteSignal<Option<SpatialLayout>>,
+    set_keep_aspect_ratio: WriteSignal<bool>,
     set_selected_zone_id: WriteSignal<Option<String>>,
     set_is_dirty: WriteSignal<bool>,
 ) -> impl IntoView {
@@ -192,11 +195,11 @@ pub fn LayoutZoneProperties(
                             <div class="space-y-0.5">
                                 <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Position"</label>
                                 <div class="flex items-center gap-1.5">
-                                    {zone_number_input("X", pos_x, {
+                                    {zone_number_input("X", pos_x, "0.01", 3, {
                                         let zid = zid_pos_x;
                                         move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.x = val))
                                     })}
-                                    {zone_number_input("Y", pos_y, {
+                                    {zone_number_input("Y", pos_y, "0.01", 3, {
                                         let zid = zid_pos_y;
                                         move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.y = val))
                                     })}
@@ -205,15 +208,61 @@ pub fn LayoutZoneProperties(
 
                             // Size
                             <div class="space-y-0.5">
-                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Size"</label>
+                                <div class="flex items-center justify-between gap-2">
+                                    <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Size"</label>
+                                    <button
+                                        class="flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.08em] transition-all btn-press"
+                                        style=move || {
+                                            if keep_aspect_ratio.get() {
+                                                "background: rgba(128, 255, 234, 0.08); border-color: rgba(128, 255, 234, 0.2); color: rgb(128, 255, 234)".to_string()
+                                            } else {
+                                                "background: rgba(139, 133, 160, 0.06); border-color: rgba(139, 133, 160, 0.16); color: rgba(139, 133, 160, 0.9)".to_string()
+                                            }
+                                        }
+                                        on:click=move |_| {
+                                            set_keep_aspect_ratio.update(|locked| *locked = !*locked);
+                                        }
+                                    >
+                                        {move || if keep_aspect_ratio.get() { "Linked" } else { "Free" }}
+                                        {move || if keep_aspect_ratio.get() {
+                                            view! {
+                                                <Icon icon=LuCheck width="10px" height="10px" />
+                                            }.into_any()
+                                        } else {
+                                            view! {
+                                                <Icon icon=LuX width="10px" height="10px" />
+                                            }.into_any()
+                                        }}
+                                    </button>
+                                </div>
                                 <div class="flex items-center gap-1.5">
-                                    {zone_number_input("W", size_w, {
+                                    {zone_number_input("W", size_w, "0.0001", 4, {
                                         let zid = zid_size_w;
-                                        move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.size.x = val))
+                                        move |val: f32| {
+                                            let locked = keep_aspect_ratio.get_untracked();
+                                            update_zone(zid.clone(), Box::new(move |z| {
+                                                z.size = layout_geometry::update_zone_size(
+                                                    z.size,
+                                                    SizeAxis::Width,
+                                                    val,
+                                                    locked,
+                                                );
+                                            }))
+                                        }
                                     })}
-                                    {zone_number_input("H", size_h, {
+                                    {zone_number_input("H", size_h, "0.0001", 4, {
                                         let zid = zid_size_h;
-                                        move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.size.y = val))
+                                        move |val: f32| {
+                                            let locked = keep_aspect_ratio.get_untracked();
+                                            update_zone(zid.clone(), Box::new(move |z| {
+                                                z.size = layout_geometry::update_zone_size(
+                                                    z.size,
+                                                    SizeAxis::Height,
+                                                    val,
+                                                    locked,
+                                                );
+                                            }))
+                                        }
                                     })}
                                 </div>
                             </div>
@@ -280,6 +329,8 @@ pub fn LayoutZoneProperties(
 fn zone_number_input(
     label: &'static str,
     value: f32,
+    step: &'static str,
+    precision: usize,
     on_change: impl Fn(f32) + Clone + 'static,
 ) -> impl IntoView {
     view! {
@@ -287,12 +338,12 @@ fn zone_number_input(
             <span class="text-[8px] text-fg-tertiary font-mono w-3">{label}</span>
             <input
                 type="number"
-                step="0.01"
+                step=step
                 min="0"
                 max="1"
                 class="w-16 bg-surface-sunken border border-edge-subtle rounded-md px-1.5 py-1 text-[10px] text-fg-primary font-mono tabular-nums
                        focus:outline-none focus:border-accent-muted glow-ring transition-all"
-                prop:value=format!("{value:.3}")
+                prop:value=format!("{value:.precision$}")
                 on:change=move |ev| {
                     let on_change = on_change.clone();
                     let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());

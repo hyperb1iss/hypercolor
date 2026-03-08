@@ -7,10 +7,11 @@ use std::cmp::min;
 use std::ffi::{CStr, CString};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hidapi::HidApi;
+use hidapi::{HidApi, HidDevice};
 use tracing::{debug, trace};
 
 use crate::transport::{Transport, TransportError};
@@ -30,6 +31,7 @@ pub struct UsbHidRawTransport {
     device_path: String,
     report_id: u8,
     max_packet_len: usize,
+    device: Arc<Mutex<HidDevice>>,
     closed: AtomicBool,
     op_lock: tokio::sync::Mutex<()>,
 }
@@ -110,7 +112,7 @@ impl UsbHidRawTransport {
 
         let device_path = chosen.path;
         let c_path = c_string_for_path(&device_path)?;
-        let _ = api
+        let device = api
             .open_path(&c_path)
             .map_err(|error| map_hidapi_error(&error))?;
 
@@ -129,6 +131,7 @@ impl UsbHidRawTransport {
             device_path,
             report_id,
             max_packet_len: DEFAULT_MAX_PACKET_LEN,
+            device: Arc::new(Mutex::new(device)),
             closed: AtomicBool::new(false),
             op_lock: tokio::sync::Mutex::new(()),
         })
@@ -152,7 +155,7 @@ impl Transport for UsbHidRawTransport {
         self.check_open()?;
 
         let _guard = self.op_lock.lock().await;
-        let device_path = self.device_path.clone();
+        let device = Arc::clone(&self.device);
         let report_id = self.report_id;
         let packet = encode_feature_report_packet(data, report_id);
 
@@ -164,30 +167,18 @@ impl Transport for UsbHidRawTransport {
             "hidraw feature report send"
         );
 
-        tokio::task::spawn_blocking(move || {
-            let api = HidApi::new().map_err(|error| map_hidapi_error(&error))?;
-            let c_path = c_string_for_path(&device_path)?;
-            let device = api
-                .open_path(&c_path)
-                .map_err(|error| map_hidapi_error(&error))?;
-
-            device
-                .send_feature_report(&packet)
-                .map_err(|error| map_hidapi_error(&error))?;
-
-            Ok(())
-        })
-        .await
-        .map_err(|error| TransportError::IoError {
-            detail: format!("hidraw send task failed: {error}"),
-        })?
+        tokio::task::spawn_blocking(move || send_feature_report_locked(device.as_ref(), &packet))
+            .await
+            .map_err(|error| TransportError::IoError {
+                detail: format!("hidraw send task failed: {error}"),
+            })?
     }
 
     async fn receive(&self, _timeout: Duration) -> Result<Vec<u8>, TransportError> {
         self.check_open()?;
 
         let _guard = self.op_lock.lock().await;
-        let device_path = self.device_path.clone();
+        let device = Arc::clone(&self.device);
         let report_id = self.report_id;
         let max_packet_len = self.max_packet_len;
 
@@ -199,25 +190,7 @@ impl Transport for UsbHidRawTransport {
         );
 
         let response = tokio::task::spawn_blocking(move || {
-            let api = HidApi::new().map_err(|error| map_hidapi_error(&error))?;
-            let c_path = c_string_for_path(&device_path)?;
-            let device = api
-                .open_path(&c_path)
-                .map_err(|error| map_hidapi_error(&error))?;
-
-            let mut buffer = vec![0_u8; max_packet_len.saturating_add(1)];
-            buffer[0] = report_id;
-
-            let read = device
-                .get_feature_report(&mut buffer)
-                .map_err(|error| map_hidapi_error(&error))?;
-            buffer.truncate(read);
-
-            Ok(decode_feature_report_packet(
-                &buffer,
-                report_id,
-                max_packet_len,
-            ))
+            receive_feature_report_locked(device.as_ref(), report_id, max_packet_len)
         })
         .await
         .map_err(|error| TransportError::IoError {
@@ -235,10 +208,121 @@ impl Transport for UsbHidRawTransport {
         Ok(response)
     }
 
+    async fn send_receive(
+        &self,
+        data: &[u8],
+        _timeout: Duration,
+    ) -> Result<Vec<u8>, TransportError> {
+        self.check_open()?;
+
+        let _guard = self.op_lock.lock().await;
+        let device = Arc::clone(&self.device);
+        let report_id = self.report_id;
+        let max_packet_len = self.max_packet_len;
+        let packet = encode_feature_report_packet(data, report_id);
+
+        trace!(
+            device_path = %self.device_path,
+            report_id = format_args!("0x{report_id:02X}"),
+            packet_len = packet.len(),
+            packet_hex = %format_hex_preview(&packet, 32),
+            "hidraw feature report send"
+        );
+        debug!(
+            device_path = %self.device_path,
+            report_id = format_args!("0x{report_id:02X}"),
+            max_packet_len,
+            "hidraw feature report receive requested"
+        );
+
+        let response = tokio::task::spawn_blocking(move || {
+            send_receive_feature_report_locked(device.as_ref(), &packet, report_id, max_packet_len)
+        })
+        .await
+        .map_err(|error| TransportError::IoError {
+            detail: format!("hidraw send/receive task failed: {error}"),
+        })??;
+
+        trace!(
+            device_path = %self.device_path,
+            report_id = format_args!("0x{report_id:02X}"),
+            response_len = response.len(),
+            response_hex = %format_hex_preview(&response, 32),
+            "hidraw feature report received"
+        );
+
+        Ok(response)
+    }
+
     async fn close(&self) -> Result<(), TransportError> {
         self.closed.store(true, Ordering::Release);
         Ok(())
     }
+}
+
+fn lock_hidraw_device(
+    device: &Mutex<HidDevice>,
+) -> Result<std::sync::MutexGuard<'_, HidDevice>, TransportError> {
+    device.lock().map_err(|_| TransportError::IoError {
+        detail: "hidraw device lock poisoned".to_owned(),
+    })
+}
+
+fn send_feature_report_locked(
+    device: &Mutex<HidDevice>,
+    packet: &[u8],
+) -> Result<(), TransportError> {
+    let device = lock_hidraw_device(device)?;
+    device
+        .send_feature_report(packet)
+        .map_err(|error| map_hidapi_error(&error))
+}
+
+fn receive_feature_report_locked(
+    device: &Mutex<HidDevice>,
+    report_id: u8,
+    max_packet_len: usize,
+) -> Result<Vec<u8>, TransportError> {
+    let device = lock_hidraw_device(device)?;
+    let mut buffer = vec![0_u8; max_packet_len.saturating_add(1)];
+    buffer[0] = report_id;
+
+    let read = device
+        .get_feature_report(&mut buffer)
+        .map_err(|error| map_hidapi_error(&error))?;
+    buffer.truncate(read);
+
+    Ok(decode_feature_report_packet(
+        &buffer,
+        report_id,
+        max_packet_len,
+    ))
+}
+
+fn send_receive_feature_report_locked(
+    device: &Mutex<HidDevice>,
+    packet: &[u8],
+    report_id: u8,
+    max_packet_len: usize,
+) -> Result<Vec<u8>, TransportError> {
+    let device = lock_hidraw_device(device)?;
+    device
+        .send_feature_report(packet)
+        .map_err(|error| map_hidapi_error(&error))?;
+
+    let mut buffer = vec![0_u8; max_packet_len.saturating_add(1)];
+    buffer[0] = report_id;
+
+    let read = device
+        .get_feature_report(&mut buffer)
+        .map_err(|error| map_hidapi_error(&error))?;
+    buffer.truncate(read);
+
+    Ok(decode_feature_report_packet(
+        &buffer,
+        report_id,
+        max_packet_len,
+    ))
 }
 
 fn c_string_for_path(path: &str) -> Result<CString, TransportError> {

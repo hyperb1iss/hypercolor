@@ -531,6 +531,122 @@ pub async fn fetch_device_attachments(
     Ok(envelope.data)
 }
 
+// ── Attachment Template Types ──────────────────────────────────────────────
+
+/// Template summary from `GET /api/v1/attachments/templates`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TemplateSummary {
+    pub id: String,
+    pub name: String,
+    pub vendor: String,
+    pub category: hypercolor_types::attachment::AttachmentCategory,
+    pub led_count: u32,
+    pub description: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Paginated template list response.
+#[derive(Debug, Deserialize)]
+pub struct TemplateListResponse {
+    pub items: Vec<TemplateSummary>,
+}
+
+/// Request body for `PUT /api/v1/devices/:id/attachments`.
+#[derive(Debug, Serialize)]
+pub struct UpdateAttachmentsRequest {
+    pub bindings: Vec<AttachmentBindingRequest>,
+}
+
+/// A single binding entry sent to the update endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct AttachmentBindingRequest {
+    pub slot_id: String,
+    pub template_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default = "bool_true")]
+    pub enabled: bool,
+    #[serde(default = "default_instances")]
+    pub instances: u32,
+    #[serde(default)]
+    pub led_offset: u32,
+}
+
+fn bool_true() -> bool {
+    true
+}
+
+fn default_instances() -> u32 {
+    1
+}
+
+/// Fetch attachment templates, optionally filtered by category.
+pub async fn fetch_attachment_templates(
+    category: Option<&str>,
+) -> Result<Vec<TemplateSummary>, String> {
+    let mut url = "/api/v1/attachments/templates?limit=200".to_string();
+    if let Some(cat) = category {
+        url.push_str(&format!("&category={cat}"));
+    }
+
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<TemplateListResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.items)
+}
+
+/// Update attachment bindings for a device.
+pub async fn update_device_attachments(
+    device_id: &str,
+    req: &UpdateAttachmentsRequest,
+) -> Result<DeviceAttachmentsResponse, String> {
+    let url = format!("/api/v1/devices/{device_id}/attachments");
+    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::put(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<DeviceAttachmentsResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Delete all attachment bindings for a device.
+pub async fn delete_device_attachments(device_id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/devices/{device_id}/attachments");
+
+    let resp = Request::delete(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    Ok(())
+}
+
 /// Create a logical device segment on a physical device.
 pub async fn create_logical_device(
     device_id: &str,

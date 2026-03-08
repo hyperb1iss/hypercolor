@@ -49,3 +49,4 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"],
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
+log = "0.4"

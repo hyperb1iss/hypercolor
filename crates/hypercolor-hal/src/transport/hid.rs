@@ -5,13 +5,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use nusb::transfer::{Buffer, In, Interrupt, Out, TransferError};
+use nusb::MaybeFuture;
+use nusb::transfer::{
+    Buffer, ControlIn, ControlOut, ControlType, In, Interrupt, Out, Recipient, TransferError,
+};
 use tracing::{debug, trace};
 
+use crate::protocol::TransferType;
 use crate::transport::{Transport, TransportError};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_millis(1_000);
 const HID_REPORT_SIZE: usize = 65;
+const HID_REPORT_TYPE_FEATURE: u16 = 0x03;
 
 /// USB HID interrupt transport.
 ///
@@ -19,7 +24,7 @@ const HID_REPORT_SIZE: usize = 65;
 /// interrupt IN/OUT endpoints.
 pub struct UsbHidTransport {
     _device: nusb::Device,
-    _interface: nusb::Interface,
+    interface: nusb::Interface,
     interface_number: u8,
     out_endpoint_address: u8,
     in_endpoint_address: u8,
@@ -99,7 +104,7 @@ impl UsbHidTransport {
 
         Ok(Self {
             _device: device,
-            _interface: interface,
+            interface,
             interface_number,
             out_endpoint_address: out_address,
             in_endpoint_address: in_address,
@@ -120,7 +125,7 @@ impl UsbHidTransport {
     }
 
     fn send_locked(&self, data: &[u8]) -> Result<(), TransportError> {
-        let packet = normalize_outgoing_packet(data, self.out_max_packet_size)?;
+        let packet = normalize_outgoing_packet(data, self.out_max_packet_size);
         let mut endpoint = lock_mutex(&self.out_endpoint, "OUT endpoint")?;
 
         trace!(
@@ -158,6 +163,73 @@ impl UsbHidTransport {
 
         Ok(normalized)
     }
+
+    fn send_feature_report_locked(&self, data: &[u8]) -> Result<(), TransportError> {
+        let Some(&report_id) = data.first() else {
+            return Err(TransportError::IoError {
+                detail: "feature report payload must include a report ID byte".to_owned(),
+            });
+        };
+
+        trace!(
+            interface_number = self.interface_number,
+            report_id = format_args!("0x{report_id:02X}"),
+            packet_len = data.len(),
+            packet_hex = %format_hex_preview(data, 32),
+            "usb hid feature report send"
+        );
+
+        self.interface
+            .control_out(
+                ControlOut {
+                    control_type: ControlType::Class,
+                    recipient: Recipient::Interface,
+                    request: 0x09,
+                    value: feature_w_value(report_id),
+                    index: u16::from(self.interface_number),
+                    data,
+                },
+                DEFAULT_IO_TIMEOUT,
+            )
+            .wait()
+            .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
+    }
+
+    fn receive_feature_report_locked(
+        &self,
+        timeout: Duration,
+        report_id: u8,
+        report_len: usize,
+    ) -> Result<Vec<u8>, TransportError> {
+        let length = u16::try_from(report_len).map_err(|_| TransportError::IoError {
+            detail: "feature report length exceeds u16".to_owned(),
+        })?;
+        let response = self
+            .interface
+            .control_in(
+                ControlIn {
+                    control_type: ControlType::Class,
+                    recipient: Recipient::Interface,
+                    request: 0x01,
+                    value: feature_w_value(report_id),
+                    index: u16::from(self.interface_number),
+                    length,
+                },
+                timeout,
+            )
+            .wait()
+            .map_err(|error| map_transfer_error(error, timeout))?;
+
+        trace!(
+            interface_number = self.interface_number,
+            report_id = format_args!("0x{report_id:02X}"),
+            response_len = response.len(),
+            response_hex = %format_hex_preview(&response, 32),
+            "usb hid feature report receive"
+        );
+
+        Ok(response)
+    }
 }
 
 #[async_trait]
@@ -167,17 +239,11 @@ impl Transport for UsbHidTransport {
     }
 
     async fn send(&self, data: &[u8]) -> Result<(), TransportError> {
-        self.check_open()?;
-
-        let _guard = lock_mutex(&self.op_lock, "operation lock")?;
-        self.send_locked(data)
+        self.send_with_type(data, TransferType::Primary).await
     }
 
     async fn receive(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
-        self.check_open()?;
-
-        let _guard = lock_mutex(&self.op_lock, "operation lock")?;
-        self.receive_locked(timeout)
+        self.receive_with_type(timeout, TransferType::Primary).await
     }
 
     async fn send_receive(
@@ -185,11 +251,65 @@ impl Transport for UsbHidTransport {
         data: &[u8],
         timeout: Duration,
     ) -> Result<Vec<u8>, TransportError> {
+        self.send_receive_with_type(data, timeout, TransferType::Primary)
+            .await
+    }
+
+    async fn send_with_type(
+        &self,
+        data: &[u8],
+        transfer_type: TransferType,
+    ) -> Result<(), TransportError> {
         self.check_open()?;
 
         let _guard = lock_mutex(&self.op_lock, "operation lock")?;
-        self.send_locked(data)?;
-        self.receive_locked(timeout)
+        match transfer_type {
+            TransferType::Primary | TransferType::Bulk => self.send_locked(data),
+            TransferType::HidReport => self.send_feature_report_locked(data),
+        }
+    }
+
+    async fn receive_with_type(
+        &self,
+        timeout: Duration,
+        transfer_type: TransferType,
+    ) -> Result<Vec<u8>, TransportError> {
+        self.check_open()?;
+
+        let _guard = lock_mutex(&self.op_lock, "operation lock")?;
+        match transfer_type {
+            TransferType::Primary | TransferType::Bulk => self.receive_locked(timeout),
+            TransferType::HidReport => Err(TransportError::UnsupportedTransfer {
+                transport: self.name().to_owned(),
+                transfer_type,
+            }),
+        }
+    }
+
+    async fn send_receive_with_type(
+        &self,
+        data: &[u8],
+        timeout: Duration,
+        transfer_type: TransferType,
+    ) -> Result<Vec<u8>, TransportError> {
+        self.check_open()?;
+
+        let _guard = lock_mutex(&self.op_lock, "operation lock")?;
+        match transfer_type {
+            TransferType::Primary | TransferType::Bulk => {
+                self.send_locked(data)?;
+                self.receive_locked(timeout)
+            }
+            TransferType::HidReport => {
+                let Some(&report_id) = data.first() else {
+                    return Err(TransportError::IoError {
+                        detail: "feature report payload must include a report ID byte".to_owned(),
+                    });
+                };
+                self.send_feature_report_locked(data)?;
+                self.receive_feature_report_locked(timeout, report_id, data.len())
+            }
+        }
     }
 
     async fn close(&self) -> Result<(), TransportError> {
@@ -198,35 +318,26 @@ impl Transport for UsbHidTransport {
     }
 }
 
-fn normalize_outgoing_packet(
-    data: &[u8],
-    endpoint_packet_size: usize,
-) -> Result<Vec<u8>, TransportError> {
+fn normalize_outgoing_packet(data: &[u8], endpoint_packet_size: usize) -> Vec<u8> {
     if data.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
 
     if data.len() == endpoint_packet_size {
-        return Ok(data.to_vec());
+        return data.to_vec();
     }
 
     if data.len() == endpoint_packet_size + 1 && data[0] == 0 {
-        return Ok(data[1..].to_vec());
+        return data[1..].to_vec();
     }
 
     if data.len() <= endpoint_packet_size {
         let mut padded = vec![0_u8; endpoint_packet_size];
         padded[..data.len()].copy_from_slice(data);
-        return Ok(padded);
+        return padded;
     }
 
-    Err(TransportError::IoError {
-        detail: format!(
-            "packet length {} exceeds interrupt endpoint packet size {}",
-            data.len(),
-            endpoint_packet_size
-        ),
-    })
+    data.to_vec()
 }
 
 fn normalize_incoming_packet(data: &[u8], endpoint_packet_size: usize) -> Vec<u8> {
@@ -261,6 +372,10 @@ fn map_nusb_error(error: &nusb::Error) -> TransportError {
             detail: error.to_string(),
         },
     }
+}
+
+fn feature_w_value(report_id: u8) -> u16 {
+    (HID_REPORT_TYPE_FEATURE << 8) | u16::from(report_id)
 }
 
 fn map_transfer_error(error: TransferError, timeout: Duration) -> TransportError {

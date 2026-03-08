@@ -502,6 +502,8 @@ impl DaemonState {
         self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {
             backend_manager: Arc::clone(&self.backend_manager),
             device_registry: self.device_registry.clone(),
+            spatial_engine: Arc::clone(&self.spatial_engine),
+            logical_devices: Arc::clone(&self.logical_devices),
             event_bus: Arc::clone(&self.event_bus),
         }));
 
@@ -535,9 +537,10 @@ impl DaemonState {
     /// Sequence:
     /// 1. Stop render loop (no more frames produced)
     /// 2. Wait for render thread to exit
-    /// 3. Deactivate the effect engine (release renderer resources)
-    /// 4. Scene manager cleanup
-    /// 5. Log final state
+    /// 3. Persist the current runtime session snapshot
+    /// 4. Deactivate the effect engine (release renderer resources)
+    /// 5. Scene manager cleanup
+    /// 6. Log final state
     ///
     /// # Errors
     ///
@@ -594,25 +597,29 @@ impl DaemonState {
         }
         info!("Input sources stopped");
 
-        // 4. Deactivate effect engine.
+        // 4. Persist the current runtime session before tearing down effect state.
+        self.persist_runtime_session_snapshot().await;
+        info!("Runtime session snapshot persisted");
+
+        // 5. Deactivate effect engine.
         {
             let mut engine_guard = self.effect_engine.lock().await;
             engine_guard.deactivate();
         }
         info!("Effect engine deactivated");
 
-        // 5. Scene manager — deactivate current scene.
+        // 6. Scene manager — deactivate current scene.
         {
             let mut scene_guard = self.scene_manager.write().await;
             scene_guard.deactivate_current();
         }
         info!("Scene manager cleaned up");
 
-        // 6. Log final device count.
+        // 7. Log final device count.
         let device_count = self.device_registry.len().await;
         info!(devices = device_count, "Device registry final state");
 
-        // 7. Publish shutdown event.
+        // 8. Publish shutdown event.
         self.event_bus
             .publish(hypercolor_types::event::HypercolorEvent::DaemonShutdown {
                 reason: "signal".to_string(),
@@ -620,6 +627,26 @@ impl DaemonState {
 
         info!("Graceful shutdown complete");
         Ok(())
+    }
+
+    async fn persist_runtime_session_snapshot(&self) {
+        let mut snapshot = {
+            let engine = self.effect_engine.lock().await;
+            runtime_state::snapshot_from_engine(&engine)
+        };
+
+        {
+            let spatial = self.spatial_engine.read().await;
+            snapshot.active_layout_id = Some(spatial.layout().id.clone());
+        }
+
+        if let Err(error) = runtime_state::save(&self.runtime_state_path, &snapshot) {
+            warn!(
+                path = %self.runtime_state_path.display(),
+                %error,
+                "Failed to persist runtime session snapshot"
+            );
+        }
     }
 
     async fn restore_runtime_session_if_configured(&self, config: &HypercolorConfig) {

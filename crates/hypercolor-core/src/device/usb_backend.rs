@@ -647,7 +647,7 @@ impl DeviceBackend for UsbBackend {
             || "<none>".to_owned(),
             |command| describe_packet(&command.data),
         );
-        debug!(
+        trace!(
             device_id = %id,
             protocol = device.protocol.name(),
             transport = device.transport.name(),

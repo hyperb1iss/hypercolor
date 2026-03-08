@@ -857,11 +857,13 @@ async fn sync_logical_mappings_for_device(
     );
 
     if logical_entries.is_empty() {
-        manager.map_device_with_segment(
+        map_device_with_zone_segments(
+            &mut manager,
             fallback_layout_id.to_owned(),
             backend_id.to_owned(),
             device_id,
             Some(fallback),
+            &tracked.info,
         );
         map_physical_device_alias(
             &mut manager,
@@ -869,6 +871,7 @@ async fn sync_logical_mappings_for_device(
             device_id,
             fallback_layout_id,
             fallback,
+            &tracked.info,
         );
         return;
     }
@@ -880,11 +883,13 @@ async fn sync_logical_mappings_for_device(
         if logical.id == fallback_layout_id {
             default_enabled = true;
         }
-        manager.map_device_with_segment(
+        map_device_with_zone_segments(
+            &mut manager,
             logical.id,
             backend_id.to_owned(),
             device_id,
             Some(hypercolor_core::device::SegmentRange::new(start, length)),
+            &tracked.info,
         );
     }
 
@@ -895,17 +900,33 @@ async fn sync_logical_mappings_for_device(
             device_id,
             fallback_layout_id,
             fallback,
+            &tracked.info,
         );
     }
 
     for legacy_id in legacy_default_ids {
-        manager.map_device_with_segment(
+        map_device_with_zone_segments(
+            &mut manager,
             legacy_id,
             backend_id.to_owned(),
             device_id,
             Some(fallback),
+            &tracked.info,
         );
     }
+}
+
+fn map_device_with_zone_segments(
+    manager: &mut BackendManager,
+    layout_device_id: impl Into<String>,
+    backend_id: impl Into<String>,
+    device_id: DeviceId,
+    segment: Option<hypercolor_core::device::SegmentRange>,
+    device_info: &hypercolor_types::device::DeviceInfo,
+) {
+    let layout_device_id = layout_device_id.into();
+    manager.map_device_with_segment(layout_device_id.clone(), backend_id, device_id, segment);
+    let _ = manager.set_device_zone_segments(&layout_device_id, device_info);
 }
 
 fn map_physical_device_alias(
@@ -914,24 +935,29 @@ fn map_physical_device_alias(
     device_id: DeviceId,
     layout_device_id: &str,
     segment: hypercolor_core::device::SegmentRange,
+    device_info: &hypercolor_types::device::DeviceInfo,
 ) {
     let physical_alias = device_id.to_string();
     if physical_alias != layout_device_id {
-        manager.map_device_with_segment(
+        map_device_with_zone_segments(
+            manager,
             physical_alias,
             backend_id.to_owned(),
             device_id,
             Some(segment),
+            device_info,
         );
     }
 
     let legacy_alias = format!("device:{device_id}");
     if legacy_alias != layout_device_id {
-        manager.map_device_with_segment(
+        map_device_with_zone_segments(
+            manager,
             legacy_alias,
             backend_id.to_owned(),
             device_id,
             Some(segment),
+            device_info,
         );
     }
 }

@@ -1387,6 +1387,186 @@ async fn write_frame_places_colors_into_configured_segments() {
 }
 
 #[tokio::test]
+async fn write_frame_routes_multi_zone_device_by_zone_name() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(10),
+        writes.clone(),
+        write_count,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device_with_segment(
+        "usb:dygma-defy",
+        "slow",
+        device_id,
+        Some(SegmentRange::new(0, 6)),
+    );
+    assert!(manager.set_device_zone_segments(
+        "usb:dygma-defy",
+        &DeviceInfo {
+            id: device_id,
+            name: "Dygma Defy".to_owned(),
+            vendor: "Dygma".to_owned(),
+            family: DeviceFamily::Dygma,
+            model: Some("defy_wired".to_owned()),
+            connection_type: ConnectionType::Usb,
+            zones: vec![
+                ZoneInfo {
+                    name: "Left Keys".to_owned(),
+                    led_count: 2,
+                    topology: DeviceTopologyHint::Custom,
+                    color_format: DeviceColorFormat::Rgb,
+                },
+                ZoneInfo {
+                    name: "Right Keys".to_owned(),
+                    led_count: 4,
+                    topology: DeviceTopologyHint::Custom,
+                    color_format: DeviceColorFormat::Rgb,
+                },
+            ],
+            firmware_version: None,
+            capabilities: DeviceCapabilities {
+                led_count: 6,
+                supports_direct: true,
+                supports_brightness: true,
+                has_display: false,
+                display_resolution: None,
+                max_fps: 10,
+            },
+        }
+    ));
+
+    let mut left_zone = make_zone("zone_left_keys", "usb:dygma-defy", 2);
+    left_zone.zone_name = Some("Left Keys".to_owned());
+    let mut right_zone = make_zone("zone_right_keys", "usb:dygma-defy", 4);
+    right_zone.zone_name = Some("Right Keys".to_owned());
+
+    let layout = make_layout(vec![left_zone, right_zone]);
+    let zone_colors = vec![
+        ZoneColors {
+            zone_id: "zone_left_keys".into(),
+            colors: vec![[255, 0, 0]; 2],
+        },
+        ZoneColors {
+            zone_id: "zone_right_keys".into(),
+            colors: vec![[0, 0, 255]; 4],
+        },
+    ];
+
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 6);
+    assert!(stats.errors.is_empty());
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let writes = writes.lock().await;
+    let frame = writes.first().expect("one frame should be written");
+    assert_eq!(
+        frame.as_slice(),
+        &[
+            [255, 0, 0],
+            [255, 0, 0],
+            [0, 0, 255],
+            [0, 0, 255],
+            [0, 0, 255],
+            [0, 0, 255],
+        ]
+    );
+}
+
+#[tokio::test]
+async fn write_frame_pads_single_multi_zone_write_to_full_device_length() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(10),
+        writes.clone(),
+        write_count,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device_with_segment(
+        "usb:dygma-defy",
+        "slow",
+        device_id,
+        Some(SegmentRange::new(0, 6)),
+    );
+    assert!(manager.set_device_zone_segments(
+        "usb:dygma-defy",
+        &DeviceInfo {
+            id: device_id,
+            name: "Dygma Defy".to_owned(),
+            vendor: "Dygma".to_owned(),
+            family: DeviceFamily::Dygma,
+            model: Some("defy_wired".to_owned()),
+            connection_type: ConnectionType::Usb,
+            zones: vec![
+                ZoneInfo {
+                    name: "Left Keys".to_owned(),
+                    led_count: 2,
+                    topology: DeviceTopologyHint::Custom,
+                    color_format: DeviceColorFormat::Rgb,
+                },
+                ZoneInfo {
+                    name: "Right Keys".to_owned(),
+                    led_count: 4,
+                    topology: DeviceTopologyHint::Custom,
+                    color_format: DeviceColorFormat::Rgb,
+                },
+            ],
+            firmware_version: None,
+            capabilities: DeviceCapabilities {
+                led_count: 6,
+                supports_direct: true,
+                supports_brightness: true,
+                has_display: false,
+                display_resolution: None,
+                max_fps: 10,
+            },
+        }
+    ));
+
+    let mut left_zone = make_zone("zone_left_keys", "usb:dygma-defy", 2);
+    left_zone.zone_name = Some("Left Keys".to_owned());
+
+    let layout = make_layout(vec![left_zone]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_left_keys".into(),
+        colors: vec![[255, 0, 0]; 2],
+    }];
+
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 6);
+    assert!(stats.errors.is_empty());
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let writes = writes.lock().await;
+    let frame = writes.first().expect("one frame should be written");
+    assert_eq!(
+        frame.as_slice(),
+        &[
+            [255, 0, 0],
+            [255, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0],
+            [0, 0, 0],
+        ]
+    );
+}
+
+#[tokio::test]
 async fn write_frame_applies_zone_led_mapping_before_segment_copy() {
     let device_id = DeviceId::new();
     let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
@@ -1475,6 +1655,49 @@ async fn write_frame_uses_attachment_led_range_within_mapped_device() {
     assert_eq!(frame.len(), 280);
     assert!(frame[..120].iter().all(|color| *color == [0, 0, 0]));
     assert!(frame[120..280].iter().all(|color| *color == [0, 0, 255]));
+}
+
+#[tokio::test]
+async fn write_frame_uses_sampled_led_count_when_attachment_metadata_is_stale() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(10),
+        writes.clone(),
+        write_count,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("usb:corsair-aio", "slow", device_id);
+
+    let mut zone = make_zone("zone_aio", "usb:corsair-aio", 24);
+    zone.attachment = Some(ZoneAttachment {
+        template_id: "stale-aio-template".into(),
+        slot_id: "pump".into(),
+        instance: 0,
+        led_start: Some(0),
+        led_count: Some(44),
+        led_mapping: None,
+    });
+    let layout = make_layout(vec![zone]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_aio".into(),
+        colors: vec![[12, 34, 56]; 24],
+    }];
+
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 24);
+    assert!(stats.errors.is_empty());
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let writes = writes.lock().await;
+    let frame = writes.first().expect("one frame should be written");
+    assert_eq!(frame.len(), 24);
+    assert!(frame.iter().all(|color| *color == [12, 34, 56]));
 }
 
 #[tokio::test]

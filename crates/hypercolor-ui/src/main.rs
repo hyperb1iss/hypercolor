@@ -2,6 +2,7 @@ mod api;
 mod app;
 mod components;
 mod icons;
+mod layout_geometry;
 mod pages;
 mod toasts;
 mod ws;

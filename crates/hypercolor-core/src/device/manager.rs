@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{debug, trace, warn};
 
-use hypercolor_types::device::{DeviceId, DeviceInfo};
+use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{SpatialLayout, ZoneAttachment};
 
@@ -26,7 +26,12 @@ use super::traits::DeviceBackend;
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type BackendDeviceKey = (String, DeviceId);
-type ZoneRoute<'a> = (&'a str, Option<&'a [u32]>, Option<&'a ZoneAttachment>);
+type ZoneRoute<'a> = (
+    &'a str,
+    Option<&'a str>,
+    Option<&'a [u32]>,
+    Option<&'a ZoneAttachment>,
+);
 const UNMAPPED_LAYOUT_WARN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Lightweight handle for backend I/O that can outlive the manager lock.
@@ -521,6 +526,8 @@ struct DeviceMapping {
     backend_id: String,
     device_id: DeviceId,
     segment: Option<SegmentRange>,
+    zone_segments: HashMap<String, SegmentRange>,
+    physical_led_count: Option<usize>,
 }
 
 // ── FrameWriteStats ─────────────────────────────────────────────────────────
@@ -624,8 +631,29 @@ impl BackendManager {
                 backend_id: backend,
                 device_id,
                 segment,
+                zone_segments: HashMap::new(),
+                physical_led_count: None,
             },
         );
+    }
+
+    /// Attach hardware zone segment metadata to an existing layout-device mapping.
+    ///
+    /// This lets spatial zones that share one `device_id` but differ by
+    /// `zone_name` target the correct physical LED ranges on multi-zone devices.
+    #[must_use]
+    pub fn set_device_zone_segments(
+        &mut self,
+        layout_device_id: &str,
+        device_info: &DeviceInfo,
+    ) -> bool {
+        let Some(mapping) = self.device_map.get_mut(layout_device_id) else {
+            return false;
+        };
+
+        mapping.zone_segments = zone_segments_from_device_info(device_info);
+        mapping.physical_led_count = device_output_len(device_info);
+        true
     }
 
     /// Connect a physical device and map it to a layout device identifier.
@@ -905,6 +933,7 @@ impl BackendManager {
                     zone.id.as_str(),
                     (
                         zone.device_id.as_str(),
+                        zone.zone_name.as_deref(),
                         zone.led_mapping.as_deref(),
                         zone.attachment.as_ref(),
                     ),
@@ -917,6 +946,7 @@ impl BackendManager {
         struct AccumulatedColors {
             values: Vec<[u8; 3]>,
             has_segmented_write: bool,
+            required_len: usize,
         }
 
         // Group colors by (backend_id, device_id). Owned keys to avoid
@@ -924,7 +954,7 @@ impl BackendManager {
         let mut device_colors: HashMap<(String, DeviceId), AccumulatedColors> = HashMap::new();
 
         for zc in zone_colors {
-            let Some((layout_device_id, led_mapping, attachment)) =
+            let Some((layout_device_id, zone_name, led_mapping, attachment)) =
                 zone_routes.get(zc.zone_id.as_str()).copied()
             else {
                 warn!(zone_id = %zc.zone_id, "zone not found in spatial layout");
@@ -954,8 +984,16 @@ impl BackendManager {
 
             let key = (mapping.backend_id.clone(), mapping.device_id);
             let entry = device_colors.entry(key).or_default();
+            entry.required_len = entry
+                .required_len
+                .max(mapping.physical_led_count.unwrap_or_default());
 
-            let segment = attachment_segment_for_zone(&zc.zone_id, mapping.segment, attachment);
+            let segment = attachment_segment_for_zone(
+                &zc.zone_id,
+                mapped_segment_for_zone_name(&zc.zone_id, zone_name, mapping),
+                attachment,
+                remapped_colors.len(),
+            );
 
             if let Some(segment) = segment {
                 entry.has_segmented_write = true;
@@ -992,6 +1030,15 @@ impl BackendManager {
 
         // Dispatch to output queues.
         for ((backend_id, device_id), colors) in device_colors {
+            let AccumulatedColors {
+                mut values,
+                has_segmented_write: _,
+                required_len,
+            } = colors;
+            if values.len() < required_len {
+                values.resize(required_len, [0, 0, 0]);
+            }
+
             if self.is_direct_control_active(backend_id.as_str(), device_id) {
                 trace!(
                     backend_id = %backend_id,
@@ -1016,8 +1063,8 @@ impl BackendManager {
             };
 
             stats.devices_written += 1;
-            stats.total_leds += colors.values.len();
-            queue.push(colors.values);
+            stats.total_leds += values.len();
+            queue.push(values);
         }
 
         stats
@@ -1221,10 +1268,109 @@ fn remap_zone_colors<'a>(
     Cow::Owned(reordered)
 }
 
+fn zone_segments_from_device_info(device_info: &DeviceInfo) -> HashMap<String, SegmentRange> {
+    let mut next_start = 0_usize;
+    let mut segments = HashMap::with_capacity(device_info.zones.len());
+
+    for zone in &device_info.zones {
+        let Some(segment) = next_zone_segment(zone, next_start) else {
+            continue;
+        };
+        next_start = segment.end();
+        segments.insert(zone.name.clone(), segment);
+    }
+
+    segments
+}
+
+fn device_output_len(device_info: &DeviceInfo) -> Option<usize> {
+    let total_leds = device_info
+        .total_led_count()
+        .max(device_info.capabilities.led_count);
+    let Ok(total_leds) = usize::try_from(total_leds) else {
+        warn!(
+            device = %device_info.name,
+            device_led_count = total_leds,
+            "ignoring device output length because led_count does not fit in usize"
+        );
+        return None;
+    };
+
+    Some(total_leds)
+}
+
+fn next_zone_segment(zone: &ZoneInfo, start: usize) -> Option<SegmentRange> {
+    let Ok(length) = usize::try_from(zone.led_count) else {
+        warn!(
+            zone_name = %zone.name,
+            zone_led_count = zone.led_count,
+            "ignoring device zone segment because led_count does not fit in usize"
+        );
+        return None;
+    };
+
+    Some(SegmentRange::new(start, length))
+}
+
+fn mapped_segment_for_zone_name(
+    zone_id: &str,
+    zone_name: Option<&str>,
+    mapping: &DeviceMapping,
+) -> Option<SegmentRange> {
+    let Some(zone_name) = zone_name else {
+        return mapping.segment;
+    };
+    let Some(zone_segment) = mapping.zone_segments.get(zone_name).copied() else {
+        return mapping.segment;
+    };
+
+    let Some(base_segment) = mapping.segment else {
+        return Some(zone_segment);
+    };
+
+    if zone_segment.start >= base_segment.start && zone_segment.end() <= base_segment.end() {
+        return Some(zone_segment);
+    }
+
+    if base_segment.start >= zone_segment.start && base_segment.end() <= zone_segment.end() {
+        return Some(base_segment);
+    }
+
+    let overlap_start = base_segment.start.max(zone_segment.start);
+    let overlap_end = base_segment.end().min(zone_segment.end());
+    if overlap_start < overlap_end {
+        warn!(
+            zone_id = %zone_id,
+            zone_name = %zone_name,
+            base_segment_start = base_segment.start,
+            base_segment_length = base_segment.length,
+            zone_segment_start = zone_segment.start,
+            zone_segment_length = zone_segment.length,
+            "using the overlap between the logical device segment and the hardware zone segment"
+        );
+        return Some(SegmentRange::new(
+            overlap_start,
+            overlap_end.saturating_sub(overlap_start),
+        ));
+    }
+
+    warn!(
+        zone_id = %zone_id,
+        zone_name = %zone_name,
+        base_segment_start = base_segment.start,
+        base_segment_length = base_segment.length,
+        zone_segment_start = zone_segment.start,
+        zone_segment_length = zone_segment.length,
+        "ignoring hardware zone segment because it does not overlap the mapped logical segment"
+    );
+    Some(base_segment)
+}
+
 fn attachment_segment_for_zone(
     zone_id: &str,
     base_segment: Option<SegmentRange>,
     attachment: Option<&ZoneAttachment>,
+    sampled_led_count: usize,
 ) -> Option<SegmentRange> {
     let Some(attachment) = attachment else {
         return base_segment;
@@ -1249,13 +1395,25 @@ fn attachment_segment_for_zone(
         );
         return base_segment;
     };
+    let resolved_led_count = if sampled_led_count > 0 && sampled_led_count != led_count {
+        debug!(
+            zone_id = %zone_id,
+            attachment_led_count = led_count,
+            sampled_led_count,
+            "attachment segment length differs from sampled zone length; using sampled LED count"
+        );
+        sampled_led_count
+    } else {
+        led_count
+    };
 
     if let Some(base_segment) = base_segment {
-        if led_start.saturating_add(led_count) > base_segment.length {
+        if led_start.saturating_add(resolved_led_count) > base_segment.length {
             warn!(
                 zone_id = %zone_id,
                 attachment_led_start = led_start,
                 attachment_led_count = led_count,
+                resolved_led_count,
                 base_segment_start = base_segment.start,
                 base_segment_length = base_segment.length,
                 "ignoring attachment segment override because it exceeds the mapped segment"
@@ -1265,9 +1423,9 @@ fn attachment_segment_for_zone(
 
         return Some(SegmentRange::new(
             base_segment.start.saturating_add(led_start),
-            led_count,
+            resolved_led_count,
         ));
     }
 
-    Some(SegmentRange::new(led_start, led_count))
+    Some(SegmentRange::new(led_start, resolved_led_count))
 }

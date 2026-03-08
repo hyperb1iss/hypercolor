@@ -14,6 +14,7 @@ use hypercolor_daemon::startup::{
 };
 use hypercolor_daemon::{layout_store, runtime_state};
 use hypercolor_types::config::WledProtocolConfig;
+use hypercolor_types::effect::EffectSource;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -397,6 +398,46 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
     assert_eq!(active_layout.name, restored_layout.name);
 
     state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn daemon_shutdown_persists_active_runtime_session() {
+    let guard = TestDataDirGuard::new().await;
+    let config = default_config();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("initialization should succeed");
+
+    assert_eq!(state.runtime_state_path, guard.runtime_state_path());
+    state.start().await.expect("start should succeed");
+
+    let metadata = {
+        let registry = state.effect_registry.read().await;
+        let (_, entry) = registry
+            .iter()
+            .find(|(_, entry)| matches!(entry.metadata.source, EffectSource::Native { .. }))
+            .expect("expected at least one native effect in registry");
+        entry.metadata.clone()
+    };
+
+    {
+        let mut engine = state.effect_engine.lock().await;
+        engine
+            .activate_metadata(metadata.clone())
+            .expect("native effect should activate");
+        engine.set_active_preset_id("shutdown-preset".to_owned());
+    }
+
+    state.shutdown().await.expect("shutdown should succeed");
+
+    let snapshot = runtime_state::load(&state.runtime_state_path)
+        .expect("runtime state should load")
+        .expect("runtime state snapshot should exist");
+    assert_eq!(snapshot.active_effect_id, Some(metadata.id.to_string()));
+    assert_eq!(
+        snapshot.active_preset_id,
+        Some("shutdown-preset".to_owned())
+    );
 }
 
 #[tokio::test]

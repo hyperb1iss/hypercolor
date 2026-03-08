@@ -5,7 +5,7 @@ use leptos::prelude::*;
 
 use crate::app::WsContext;
 use crate::components::canvas_preview::CanvasPreview;
-use crate::components::device_card::backend_accent_rgb;
+use crate::layout_geometry::{self, ResizeHandle};
 use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout};
 
 /// Canvas viewport with zone overlay divs and group containers.
@@ -13,6 +13,7 @@ use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout};
 pub fn LayoutCanvas(
     #[prop(into)] layout: Signal<Option<SpatialLayout>>,
     #[prop(into)] selected_zone_id: Signal<Option<String>>,
+    #[prop(into)] keep_aspect_ratio: Signal<bool>,
     set_selected_zone_id: WriteSignal<Option<String>>,
     set_layout: WriteSignal<Option<SpatialLayout>>,
     set_is_dirty: WriteSignal<bool>,
@@ -132,24 +133,14 @@ pub fn LayoutCanvas(
 
     let has_zones = Signal::derive(move || !zone_ids.get().is_empty());
 
-    let measure_canvas_slot = {
-        let canvas_slot_ref = canvas_slot_ref.clone();
-        move || {
-            if let Some(slot) = canvas_slot_ref.get() {
-                let rect = slot.get_bounding_client_rect();
-                set_canvas_slot_size.set((rect.width(), rect.height()));
-            }
-        }
-    };
-
-    Effect::new(move |_| {
-        if canvas_slot_ref.get().is_some() {
-            measure_canvas_slot();
+    canvas_slot_ref.on_load({
+        move |_| {
+            update_canvas_slot_size(canvas_slot_ref, set_canvas_slot_size);
         }
     });
 
     let _resize_listener = window_event_listener(ev::resize, move |_| {
-        measure_canvas_slot();
+        update_canvas_slot_size(canvas_slot_ref, set_canvas_slot_size);
     });
 
     view! {
@@ -164,8 +155,12 @@ pub fn LayoutCanvas(
                 set_interaction.set(None);
             }
             on:mousemove=move |ev| {
-                let Some(interaction_state) = interaction.get() else { return };
-                let Some(viewport) = viewport_ref.get() else { return };
+                let Some(interaction_state) = interaction.get_untracked() else {
+                    return;
+                };
+                let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
+                    return;
+                };
                 let rect = viewport.get_bounding_client_rect();
                 let cw = rect.width();
                 let ch = rect.height();
@@ -193,10 +188,20 @@ pub fn LayoutCanvas(
                     }
                     InteractionState::Resize(resize) => {
                         let zone_id = resize.zone_id.clone();
+                        let keep_ratio = keep_aspect_ratio.get_untracked();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
                                 if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
-                                    resize_zone(zone, &resize, mouse_norm);
+                                    let (position, size) = layout_geometry::resize_zone_from_handle(
+                                        resize.start_center,
+                                        resize.start_size,
+                                        resize.start_mouse,
+                                        resize.handle,
+                                        mouse_norm,
+                                        keep_ratio,
+                                    );
+                                    zone.position = position;
+                                    zone.size = size;
                                 }
                             }
                         });
@@ -227,7 +232,7 @@ pub fn LayoutCanvas(
                             fps=preview_fps
                             fps_target=preview_target_fps
                             show_fps=false
-                            aspect_ratio=preview_aspect_ratio.get()
+                            aspect_ratio=preview_aspect_ratio.get_untracked()
                         />
                     </div>
 
@@ -289,30 +294,32 @@ pub fn LayoutCanvas(
                                         let h_pct = zone.size.y * 100.0;
                                         let rotation = zone.rotation.to_degrees();
 
-                                        // Use group color if available, else backend accent
-                                        let rgb = zone
+                                        // Use group color if available, else unique per-device color
+                                        let (primary, secondary) = zone
                                             .group_id
                                             .as_deref()
                                             .and_then(|gid| {
                                                 layout.groups.iter().find(|g| g.id == gid)
                                             })
                                             .and_then(|g| g.color.as_deref())
-                                            .map(hex_to_rgb)
+                                            .map(|hex| {
+                                                let rgb = hex_to_rgb(hex);
+                                                (rgb.clone(), rgb)
+                                            })
                                             .unwrap_or_else(|| {
-                                                let backend =
-                                                    zone.device_id.split(':').next().unwrap_or("");
-                                                backend_accent_rgb(backend).to_string()
+                                                device_accent_colors(&zone.device_id)
                                             });
 
-                                        Some((
-                                            format!(
+                                        Some(ZoneRenderData {
+                                            position_style: format!(
                                                 "left: {x_pct:.2}%; top: {y_pct:.2}%; width: {w_pct:.2}%; height: {h_pct:.2}%; \
                                                  transform: translate(-50%, -50%) rotate({rotation:.1}deg)"
                                             ),
-                                            rgb,
-                                            zone.name.clone(),
-                                            zone.topology.led_count(),
-                                        ))
+                                            primary_rgb: primary,
+                                            secondary_rgb: secondary,
+                                            name: zone.name.clone(),
+                                            led_count: zone.topology.led_count(),
+                                        })
                                     })
                                 }
                             });
@@ -326,29 +333,46 @@ pub fn LayoutCanvas(
                                 <div
                                     class="absolute border-2 rounded-md cursor-move group transition-[border-color,box-shadow] duration-200"
                                     style=move || {
-                                        let Some((base, rgb, _, _)) = zone_style.get() else {
+                                        let Some(zd) = zone_style.get() else {
                                             return "display: none".to_string();
                                         };
                                         let selected = is_selected.get();
-                                        let border_opacity = if selected { "0.9" } else { "0.5" };
+                                        let border_opacity = if selected { "0.9" } else { "0.45" };
                                         let bg = if selected {
-                                            format!("background: rgba({rgb}, 0.06)")
+                                            format!(
+                                                "background: linear-gradient(135deg, rgba({}, 0.10), rgba({}, 0.06))",
+                                                zd.primary_rgb, zd.secondary_rgb
+                                            )
                                         } else {
-                                            format!("background: rgba({rgb}, 0.02)")
+                                            format!(
+                                                "background: linear-gradient(135deg, rgba({}, 0.05), rgba({}, 0.02))",
+                                                zd.primary_rgb, zd.secondary_rgb
+                                            )
                                         };
                                         let shadow = if selected {
-                                            format!("box-shadow: 0 0 20px rgba({rgb}, 0.35), 0 0 4px rgba({rgb}, 0.5)")
+                                            format!(
+                                                "box-shadow: 0 0 24px rgba({}, 0.35), 0 0 6px rgba({}, 0.5), inset 0 0 20px rgba({}, 0.04)",
+                                                zd.primary_rgb, zd.secondary_rgb, zd.primary_rgb
+                                            )
                                         } else {
-                                            String::new()
+                                            format!(
+                                                "box-shadow: inset 0 0 12px rgba({}, 0.03)",
+                                                zd.primary_rgb
+                                            )
                                         };
-                                        format!("{base}; border-color: rgba({rgb}, {border_opacity}); {bg}; {shadow}")
+                                        format!(
+                                            "{}; border-color: rgba({}, {}); {}; {}",
+                                            zd.position_style, zd.primary_rgb, border_opacity, bg, shadow
+                                        )
                                     }
                                     on:mousedown=move |ev| {
                                         ev.stop_propagation();
                                         ev.prevent_default();
                                         set_selected_zone_id.set(Some(zid_select.clone()));
 
-                                        let Some(viewport) = viewport_ref.get() else { return };
+                                        let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
+                                            return;
+                                        };
                                         let rect = viewport.get_bounding_client_rect();
                                         let cw = rect.width();
                                         let ch = rect.height();
@@ -360,7 +384,8 @@ pub fn LayoutCanvas(
                                         let mouse_norm_y = ((f64::from(ev.client_y()) - rect.top()) / ch) as f32;
 
                                         // Read zone position without tracking
-                                        let zone_pos = layout.get_untracked()
+                                        let zone_pos = layout.try_get_untracked()
+                                            .flatten()
                                             .and_then(|l| l.zones.iter().find(|z| z.id == zid_drag).map(|z| (z.position.x, z.position.y)));
 
                                         if let Some((zx, zy)) = zone_pos {
@@ -375,18 +400,18 @@ pub fn LayoutCanvas(
                                         ev.stop_propagation();
                                     }
                                 >
-                                    // Zone label — glass micro-panel
+                                    // Zone label — glass micro-panel (hover)
                                     <div
                                         class="absolute -top-6 left-0 text-[9px] font-mono whitespace-nowrap
                                                 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none
                                                 px-2 py-0.5 rounded glass-subtle"
                                         style=move || {
                                             zone_style.get()
-                                                .map(|(_, rgb, _, _)| format!("color: rgba({rgb}, 0.9)"))
+                                                .map(|zd| format!("color: rgba({}, 0.9)", zd.primary_rgb))
                                                 .unwrap_or_default()
                                         }
                                     >
-                                        {move || zone_style.get().map(|(_, _, name, count)| format!("{name} · {count} LEDs")).unwrap_or_default()}
+                                        {move || zone_style.get().map(|zd| format!("{} · {} LEDs", zd.name, zd.led_count)).unwrap_or_default()}
                                     </div>
 
                                     // Resize handles (selected only) — small circles with accent glow
@@ -401,9 +426,10 @@ pub fn LayoutCanvas(
 
                                         let handle_style = move || {
                                             zone_style.get()
-                                                .map(|(_, rgb, _, _)| format!(
-                                                    "background: rgba({rgb}, 0.9); border-color: rgba(255,255,255,0.6); \
-                                                     box-shadow: 0 0 8px rgba({rgb}, 0.4)"
+                                                .map(|zd| format!(
+                                                    "background: rgba({}, 0.9); border-color: rgba(255,255,255,0.6); \
+                                                     box-shadow: 0 0 8px rgba({}, 0.4)",
+                                                    zd.primary_rgb, zd.primary_rgb
                                                 ))
                                                 .unwrap_or_default()
                                         };
@@ -464,10 +490,20 @@ pub fn LayoutCanvas(
                                         }
                                     })}
 
-                                    // LED count indicator
-                                    <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
-                                        <div class="text-[8px] font-mono text-white/25 select-none tabular-nums">
-                                            {move || zone_style.get().map(|(_, _, _, count)| count).unwrap_or(0)}
+                                    // Zone identity — device name + LED count
+                                    <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none overflow-hidden px-1">
+                                        <div
+                                            class="text-[9px] font-medium leading-tight text-center truncate max-w-full select-none"
+                                            style=move || {
+                                                zone_style.get()
+                                                    .map(|zd| format!("color: rgba({}, 0.55)", zd.primary_rgb))
+                                                    .unwrap_or_default()
+                                            }
+                                        >
+                                            {move || zone_style.get().map(|zd| zd.name.clone()).unwrap_or_default()}
+                                        </div>
+                                        <div class="text-[7px] font-mono text-white/20 select-none tabular-nums">
+                                            {move || zone_style.get().map(|zd| format!("{} LEDs", zd.led_count)).unwrap_or_default()}
                                         </div>
                                     </div>
                                 </div>
@@ -488,6 +524,16 @@ pub fn LayoutCanvas(
             </div>
         </div>
     }
+}
+
+/// Per-zone render data extracted from layout signal.
+#[derive(Clone, Debug, PartialEq)]
+struct ZoneRenderData {
+    position_style: String,
+    primary_rgb: String,
+    secondary_rgb: String,
+    name: String,
+    led_count: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -524,14 +570,6 @@ enum InteractionState {
     Resize(ResizeState),
 }
 
-#[derive(Clone, Copy, Debug)]
-enum ResizeHandle {
-    NorthWest,
-    NorthEast,
-    SouthWest,
-    SouthEast,
-}
-
 #[allow(clippy::too_many_arguments)]
 fn begin_resize(
     viewport_ref: &NodeRef<leptos::html::Div>,
@@ -543,7 +581,7 @@ fn begin_resize(
     client_x: i32,
     client_y: i32,
 ) {
-    let Some(viewport) = viewport_ref.get() else {
+    let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
         return;
     };
     let rect = viewport.get_bounding_client_rect();
@@ -559,7 +597,7 @@ fn begin_resize(
         ((f64::from(client_y) - rect.top()) / ch) as f32,
     );
 
-    let zone_snapshot = layout.get_untracked().and_then(|current| {
+    let zone_snapshot = layout.try_get_untracked().flatten().and_then(|current| {
         current
             .zones
             .iter()
@@ -581,49 +619,15 @@ fn begin_resize(
     })));
 }
 
-fn resize_zone(
-    zone: &mut hypercolor_types::spatial::DeviceZone,
-    resize: &ResizeState,
-    current_mouse: NormalizedPosition,
+fn update_canvas_slot_size(
+    canvas_slot_ref: NodeRef<leptos::html::Div>,
+    set_canvas_slot_size: WriteSignal<(f64, f64)>,
 ) {
-    const MIN_SIZE: f32 = 0.04;
-
-    let start_left = resize.start_center.x - resize.start_size.x * 0.5;
-    let start_right = resize.start_center.x + resize.start_size.x * 0.5;
-    let start_top = resize.start_center.y - resize.start_size.y * 0.5;
-    let start_bottom = resize.start_center.y + resize.start_size.y * 0.5;
-
-    let dx = current_mouse.x - resize.start_mouse.x;
-    let dy = current_mouse.y - resize.start_mouse.y;
-
-    let (mut left, mut right, mut top, mut bottom) =
-        (start_left, start_right, start_top, start_bottom);
-
-    match resize.handle {
-        ResizeHandle::NorthWest => {
-            left = (start_left + dx).clamp(0.0, start_right - MIN_SIZE);
-            top = (start_top + dy).clamp(0.0, start_bottom - MIN_SIZE);
-        }
-        ResizeHandle::NorthEast => {
-            right = (start_right + dx).clamp(start_left + MIN_SIZE, 1.0);
-            top = (start_top + dy).clamp(0.0, start_bottom - MIN_SIZE);
-        }
-        ResizeHandle::SouthWest => {
-            left = (start_left + dx).clamp(0.0, start_right - MIN_SIZE);
-            bottom = (start_bottom + dy).clamp(start_top + MIN_SIZE, 1.0);
-        }
-        ResizeHandle::SouthEast => {
-            right = (start_right + dx).clamp(start_left + MIN_SIZE, 1.0);
-            bottom = (start_bottom + dy).clamp(start_top + MIN_SIZE, 1.0);
-        }
+    if let Some(slot) = canvas_slot_ref.try_get_untracked().flatten() {
+        let rect = slot.get_bounding_client_rect();
+        set_canvas_slot_size.set((rect.width(), rect.height()));
     }
-
-    zone.position.x = ((left + right) * 0.5).clamp(0.0, 1.0);
-    zone.position.y = ((top + bottom) * 0.5).clamp(0.0, 1.0);
-    zone.size.x = (right - left).max(MIN_SIZE);
-    zone.size.y = (bottom - top).max(MIN_SIZE);
 }
-
 /// Convert a hex color like "#e135ff" to "225, 53, 255" RGB string.
 fn hex_to_rgb(hex: &str) -> String {
     let hex = hex.trim_start_matches('#');
@@ -633,5 +637,56 @@ fn hex_to_rgb(hex: &str) -> String {
     let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(225);
     let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(53);
     let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255);
+    format!("{r}, {g}, {b}")
+}
+
+/// Generate unique primary + secondary accent colors for a device based on its ID.
+///
+/// Uses a simple FNV-1a hash to pick a hue, then derives a complementary secondary
+/// hue shifted 40° for a rich gradient effect. High saturation + controlled lightness
+/// keeps colors vivid against dark backgrounds.
+fn device_accent_colors(device_id: &str) -> (String, String) {
+    // FNV-1a hash for good distribution
+    let mut hash: u32 = 2_166_136_261;
+    for byte in device_id.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+
+    // Primary hue from hash, secondary shifted 40° for analogous harmony
+    #[allow(clippy::cast_possible_truncation)]
+    let hue = (hash % 360) as f32;
+    let secondary_hue = (hue + 40.0) % 360.0;
+
+    // Vary saturation and lightness slightly per device for more distinction
+    let sat = 75.0 + (((hash >> 8) % 20) as f32); // 75–94%
+    let lit = 62.0 + (((hash >> 16) % 12) as f32); // 62–73%
+
+    let primary = hsl_to_rgb_string(hue, sat, lit);
+    let secondary = hsl_to_rgb_string(secondary_hue, sat.min(90.0), lit + 4.0);
+    (primary, secondary)
+}
+
+/// Convert HSL (h: 0–360, s: 0–100, l: 0–100) to an "r, g, b" string.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn hsl_to_rgb_string(h: f32, s: f32, l: f32) -> String {
+    let s = s / 100.0;
+    let l = l / 100.0;
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+
+    let (r1, g1, b1) = match h as u32 {
+        0..60 => (c, x, 0.0),
+        60..120 => (x, c, 0.0),
+        120..180 => (0.0, c, x),
+        180..240 => (0.0, x, c),
+        240..300 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+
+    let r = ((r1 + m) * 255.0).round() as u8;
+    let g = ((g1 + m) * 255.0).round() as u8;
+    let b = ((b1 + m) * 255.0).round() as u8;
     format!("{r}, {g}, {b}")
 }

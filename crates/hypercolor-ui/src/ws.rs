@@ -454,7 +454,9 @@ fn decode_canvas_frame(buffer: js_sys::ArrayBuffer) -> Option<CanvasFrame> {
     let width = u16::from_le_bytes([data.get_index(9), data.get_index(10)]) as u32;
     let height = u16::from_le_bytes([data.get_index(11), data.get_index(12)]) as u32;
     let format = data.get_index(13); // 0 = RGB, 1 = RGBA
-    let expected_size = usize::try_from(width).ok()?.checked_mul(usize::try_from(height).ok()?)?;
+    let expected_size = usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?;
     let pixel_offset = 14_u32;
 
     let pixels = if format == 1 {

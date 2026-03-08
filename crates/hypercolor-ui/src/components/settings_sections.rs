@@ -30,9 +30,12 @@ pub fn AudioSection(
 ) -> impl IntoView {
     let enabled = Signal::derive(move || read_config(config, |cfg| cfg.audio.enabled));
     let device = Signal::derive(move || read_config(config, |cfg| cfg.audio.device.clone()));
-    let fft_size = Signal::derive(move || read_config(config, |cfg| cfg.audio.fft_size.to_string()));
-    let smoothing = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.audio.smoothing)));
-    let noise_gate = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.audio.noise_gate)));
+    let fft_size =
+        Signal::derive(move || read_config(config, |cfg| cfg.audio.fft_size.to_string()));
+    let smoothing =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.audio.smoothing)));
+    let noise_gate =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.audio.noise_gate)));
     let beat_sensitivity =
         Signal::derive(move || read_config(config, |cfg| f64::from(cfg.audio.beat_sensitivity)));
 
@@ -269,11 +272,13 @@ pub fn NetworkSection(
     on_change: Callback<(String, serde_json::Value)>,
     on_reset: Callback<String>,
 ) -> impl IntoView {
-    let listen_addr = Signal::derive(move || read_config(config, |cfg| cfg.daemon.listen_address.clone()));
+    let listen_addr =
+        Signal::derive(move || read_config(config, |cfg| cfg.daemon.listen_address.clone()));
     let port = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.port)));
     let target_fps =
         Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.target_fps)));
-    let ws_fps = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.web.websocket_fps)));
+    let ws_fps =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.web.websocket_fps)));
     let open_browser = Signal::derive(move || read_config(config, |cfg| cfg.web.open_browser));
 
     view! {
@@ -451,7 +456,9 @@ pub fn DeveloperSection(
     on_reset: Callback<String>,
 ) -> impl IntoView {
     let log_level = Signal::derive(move || {
-        read_config(config, |cfg| format!("{:?}", cfg.daemon.log_level).to_lowercase())
+        read_config(config, |cfg| {
+            format!("{:?}", cfg.daemon.log_level).to_lowercase()
+        })
     });
     let canvas_width =
         Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.canvas_width)));

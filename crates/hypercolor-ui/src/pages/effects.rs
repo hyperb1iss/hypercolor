@@ -1,8 +1,8 @@
 //! Effects browse page — grid of effect cards with filtering and detail panel.
 
 use leptos::prelude::*;
-use leptos_use::use_debounce_fn;
 use leptos_icons::Icon;
+use leptos_use::use_debounce_fn;
 use wasm_bindgen::JsCast;
 
 use crate::api;
@@ -147,29 +147,28 @@ pub fn EffectsPage() -> impl IntoView {
         let audio_only = audio_reactive_only.get();
         let fav_ids = fx.favorite_ids.get();
 
-        fx.effects_index
-            .with(|effects| {
-                effects
-                    .iter()
-                    .filter(|entry| {
-                        let effect = &entry.effect;
-                        if cat != "all" && effect.category != cat {
-                            return false;
-                        }
-                        if !sel_authors.is_empty() && !sel_authors.contains(&effect.author) {
-                            return false;
-                        }
-                        if fav_only && !fav_ids.contains(&effect.id) {
-                            return false;
-                        }
-                        if audio_only && !effect.audio_reactive {
-                            return false;
-                        }
-                        entry.matches_search(&search_term)
-                    })
-                    .map(|entry| entry.effect.clone())
-                    .collect::<Vec<_>>()
-            })
+        fx.effects_index.with(|effects| {
+            effects
+                .iter()
+                .filter(|entry| {
+                    let effect = &entry.effect;
+                    if cat != "all" && effect.category != cat {
+                        return false;
+                    }
+                    if !sel_authors.is_empty() && !sel_authors.contains(&effect.author) {
+                        return false;
+                    }
+                    if fav_only && !fav_ids.contains(&effect.id) {
+                        return false;
+                    }
+                    if audio_only && !effect.audio_reactive {
+                        return false;
+                    }
+                    entry.matches_search(&search_term)
+                })
+                .map(|entry| entry.effect.clone())
+                .collect::<Vec<_>>()
+        })
     });
 
     let effect_count = Memo::new(move |_| filtered_effects.get().len());

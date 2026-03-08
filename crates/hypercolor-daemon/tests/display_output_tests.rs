@@ -1,19 +1,25 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, DeviceRegistry};
+use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
     DeviceState, DeviceTopologyHint, ZoneInfo,
 };
+use hypercolor_types::spatial::{
+    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+};
 
 use hypercolor_daemon::display_output::{DisplayOutputState, DisplayOutputThread};
+use hypercolor_daemon::logical_devices::LogicalDevice;
 
 struct RecordingDisplayBackend {
     expected_device_id: DeviceId,
@@ -84,15 +90,21 @@ impl DeviceBackend for RecordingDisplayBackend {
     }
 }
 
-fn display_device_info(device_id: DeviceId, has_display: bool) -> DeviceInfo {
+fn display_device_info(
+    device_id: DeviceId,
+    has_display: bool,
+    width: u32,
+    height: u32,
+    circular: bool,
+) -> DeviceInfo {
     let zones = if has_display {
         vec![ZoneInfo {
             name: "Display".to_owned(),
             led_count: 0,
             topology: DeviceTopologyHint::Display {
-                width: 480,
-                height: 480,
-                circular: true,
+                width,
+                height,
+                circular,
             },
             color_format: DeviceColorFormat::Jpeg,
         }]
@@ -119,9 +131,52 @@ fn display_device_info(device_id: DeviceId, has_display: bool) -> DeviceInfo {
             supports_direct: !has_display,
             supports_brightness: false,
             has_display,
-            display_resolution: has_display.then_some((480, 480)),
+            display_resolution: has_display.then_some((width, height)),
             max_fps: 30,
         },
+    }
+}
+
+fn layout_with_zones(zones: Vec<DeviceZone>) -> SpatialLayout {
+    SpatialLayout {
+        id: "layout-test".to_owned(),
+        name: "Layout Test".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones,
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
+
+fn display_zone(
+    device_id: &str,
+    position: NormalizedPosition,
+    size: NormalizedPosition,
+) -> DeviceZone {
+    DeviceZone {
+        id: "zone-display".to_owned(),
+        name: "Display Zone".to_owned(),
+        device_id: device_id.to_owned(),
+        zone_name: None,
+        group_id: None,
+        position,
+        size,
+        rotation: 0.0,
+        scale: 1.0,
+        orientation: None,
+        topology: LedTopology::Point,
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
     }
 }
 
@@ -132,6 +187,21 @@ fn sample_canvas() -> Canvas {
     canvas.set_pixel(319, 0, Rgba::new(0, 255, 0, 255));
     canvas.set_pixel(0, 199, Rgba::new(0, 0, 255, 255));
     canvas.set_pixel(319, 199, Rgba::new(255, 255, 255, 255));
+    canvas
+}
+
+fn split_color_canvas() -> Canvas {
+    let mut canvas = Canvas::new(320, 200);
+    for y in 0..200 {
+        for x in 0..320 {
+            let color = if x < 160 {
+                Rgba::new(255, 0, 0, 255)
+            } else {
+                Rgba::new(0, 0, 255, 255)
+            };
+            canvas.set_pixel(x, y, color);
+        }
+    }
     canvas
 }
 
@@ -150,12 +220,29 @@ async fn wait_for_display_writes(display_writes: &Arc<Mutex<Vec<Vec<u8>>>>) -> V
     .expect("display output should arrive within timeout")
 }
 
+fn decode_jpeg(bytes: &[u8]) -> image::RgbaImage {
+    image::load_from_memory(bytes)
+        .expect("display output should decode as an image")
+        .into_rgba8()
+}
+
 #[tokio::test]
-async fn automatic_display_output_mirrors_canvas_to_connected_display_devices() {
+async fn automatic_display_output_mirrors_canvas_to_layout_mapped_display_devices() {
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            &format!("device:{device_id}"),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
 
     let mut backend_manager = BackendManager::new();
     backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
@@ -168,7 +255,7 @@ async fn automatic_display_output_mirrors_canvas_to_connected_display_devices() 
         .expect("backend should connect");
 
     let tracked_id = device_registry
-        .add(display_device_info(device_id, true))
+        .add(display_device_info(device_id, true, 480, 480, true))
         .await;
     assert_eq!(tracked_id, device_id);
     assert!(
@@ -180,6 +267,8 @@ async fn automatic_display_output_mirrors_canvas_to_connected_display_devices() 
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
     });
 
@@ -199,6 +288,8 @@ async fn automatic_display_output_mirrors_canvas_to_connected_display_devices() 
 async fn automatic_display_output_skips_devices_without_display_capabilities() {
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
     let display_writes = Arc::new(Mutex::new(Vec::new()));
     let device_id = DeviceId::new();
 
@@ -209,7 +300,7 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     )));
 
     let tracked_id = device_registry
-        .add(display_device_info(device_id, false))
+        .add(display_device_info(device_id, false, 480, 480, true))
         .await;
     assert_eq!(tracked_id, device_id);
     assert!(
@@ -221,6 +312,8 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
         backend_manager: Arc::new(Mutex::new(backend_manager)),
         device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
         event_bus: Arc::clone(&event_bus),
     });
 
@@ -231,6 +324,121 @@ async fn automatic_display_output_skips_devices_without_display_capabilities() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(display_writes.lock().await.is_empty());
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_skips_display_devices_that_are_not_in_layout() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 200, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+    });
+
+    let canvas = sample_canvas();
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(display_writes.lock().await.is_empty());
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_uses_layout_zone_viewport() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            &format!("device:{device_id}"),
+            NormalizedPosition::new(0.25, 0.5),
+            NormalizedPosition::new(0.5, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 200, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+    });
+
+    let canvas = split_color_canvas();
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+
+    let writes = wait_for_display_writes(&display_writes).await;
+    let image = decode_jpeg(&writes[0]);
+    let pixel = image.get_pixel(image.width() / 2, image.height() / 2);
+
+    assert!(
+        pixel[0] > 200,
+        "expected red-dominant viewport, got {pixel:?}"
+    );
+    assert!(
+        pixel[2] < 80,
+        "expected viewport to exclude blue half, got {pixel:?}"
+    );
 
     thread.shutdown().await.expect("display thread should stop");
 }

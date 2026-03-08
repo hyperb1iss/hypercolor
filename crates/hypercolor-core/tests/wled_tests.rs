@@ -3,16 +3,18 @@
 //! Tests use parsing/unit checks plus local loopback UDP for streaming behavior.
 
 use std::net::IpAddr;
+use std::sync::{Mutex, Once, OnceLock};
 use std::time::Duration;
 
-use hypercolor_core::device::DeviceBackend;
 use hypercolor_core::device::wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
-    WledDeviceInfo, WledLiveReceiverConfig, WledProtocol, WledSegmentInfo, build_ddp_frame,
-    universes_needed,
+    WledDeviceInfo, WledLiveReceiverConfig, WledProtocol, WledScanner, WledSegmentInfo,
+    build_ddp_frame, universes_needed,
 };
+use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_types::device::DeviceId;
 use tokio::net::UdpSocket;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 
 // ── DDP Constants ───────────────────────────────────────────────────────
@@ -1220,6 +1222,74 @@ fn wled_device_info_serializable() {
     assert_eq!(restored.led_count, 300);
     assert_eq!(restored.firmware_version, "0.15.3");
     assert!(restored.is_wifi);
+}
+
+static MDNS_TEST_LOGGER: MdnsTestLogger = MdnsTestLogger;
+static MDNS_TEST_LOGGER_INIT: Once = Once::new();
+static MDNS_TEST_LOG_MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+static MDNS_TEST_LOG_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
+
+struct MdnsTestLogger;
+
+impl log::Log for MdnsTestLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        metadata.level() <= log::Level::Error && metadata.target().starts_with("mdns_sd")
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+
+        mdns_test_log_messages()
+            .lock()
+            .expect("mDNS test log store should not be poisoned")
+            .push(format!("{} {}", record.target(), record.args()));
+    }
+
+    fn flush(&self) {}
+}
+
+fn mdns_test_log_messages() -> &'static Mutex<Vec<String>> {
+    MDNS_TEST_LOG_MESSAGES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn init_mdns_test_logger() {
+    MDNS_TEST_LOGGER_INIT.call_once(|| {
+        log::set_logger(&MDNS_TEST_LOGGER).expect("mDNS test logger should install once");
+        log::set_max_level(log::LevelFilter::Trace);
+    });
+}
+
+fn mdns_test_log_lock() -> &'static AsyncMutex<()> {
+    MDNS_TEST_LOG_LOCK.get_or_init(|| AsyncMutex::new(()))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scanner_shutdown_drains_mdns_status_receiver() {
+    let _guard = mdns_test_log_lock().lock().await;
+    init_mdns_test_logger();
+    mdns_test_log_messages()
+        .lock()
+        .expect("mDNS test log store should not be poisoned")
+        .clear();
+
+    let mut scanner = WledScanner::with_known_ips(Vec::new(), true, Duration::from_millis(50));
+    scanner
+        .scan()
+        .await
+        .expect("WLED scan should complete without mDNS shutdown errors");
+
+    let messages = mdns_test_log_messages()
+        .lock()
+        .expect("mDNS test log store should not be poisoned")
+        .clone();
+    assert!(
+        messages
+            .iter()
+            .all(|message| !message.contains("failed to send response of shutdown")),
+        "unexpected mdns shutdown error logs: {messages:?}"
+    );
 }
 
 fn test_wled_info(led_count: u16, rgbw: bool, fps: u8, is_wifi: bool) -> WledDeviceInfo {

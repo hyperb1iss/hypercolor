@@ -29,5 +29,8 @@ bun.lock
 effects/community/
 /effects/hypercolor/
 
+# Trunk dev output
+crates/hypercolor-ui/.dist-dev/
+
 # Debug
 *.pdb

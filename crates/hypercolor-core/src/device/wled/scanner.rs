@@ -22,6 +22,8 @@ const WLED_SERVICE_TYPE: &str = "_wled._tcp.local.";
 
 /// Default scan timeout for mDNS browsing.
 const DEFAULT_SCAN_TIMEOUT: Duration = Duration::from_secs(5);
+/// Best-effort wait for the mDNS daemon to acknowledge shutdown.
+const MDNS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 // ── WledScanner ─────────────────────────────────────────────────────────
 
@@ -192,7 +194,27 @@ impl WledScanner {
             }
         }
 
-        let _ = daemon.shutdown();
+        // Drain the shutdown status receiver so `mdns-sd` does not log an
+        // internal error when it reports daemon exit on a dropped channel.
+        match daemon.shutdown() {
+            Ok(receiver) => {
+                match tokio::time::timeout(MDNS_SHUTDOWN_TIMEOUT, receiver.recv_async()).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => {
+                        debug!(error = %error, "mDNS daemon shutdown channel closed");
+                    }
+                    Err(_) => {
+                        debug!(
+                            timeout_ms = MDNS_SHUTDOWN_TIMEOUT.as_millis(),
+                            "timed out waiting for mDNS daemon shutdown"
+                        );
+                    }
+                }
+            }
+            Err(error) => {
+                debug!(error = %error, "failed to request mDNS daemon shutdown");
+            }
+        }
         Ok(candidates)
     }
 }
