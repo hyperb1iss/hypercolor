@@ -9,6 +9,8 @@ mod lifecycle;
 pub mod manager;
 pub mod mock;
 mod registry;
+pub mod smbus_backend;
+pub mod smbus_scanner;
 mod state_machine;
 mod traits;
 pub mod usb_backend;
@@ -22,6 +24,8 @@ pub use discovery::{
 pub use lifecycle::{DeviceLifecycleManager, LifecycleAction};
 pub use manager::{AsyncWriteFailure, BackendIo, BackendManager, SegmentRange};
 pub use registry::DeviceRegistry;
+pub use smbus_backend::SmBusBackend;
+pub use smbus_scanner::SmBusScanner;
 pub use state_machine::{
     DeviceStateMachine, DeviceStateMachineDebugSnapshot, ReconnectPolicy, ReconnectStatus,
     StateTransitionRecord,
