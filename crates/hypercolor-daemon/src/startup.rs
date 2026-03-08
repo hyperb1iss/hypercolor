@@ -1193,7 +1193,7 @@ fn should_retry_unmapped_wled_targets(config: &HypercolorConfig) -> bool {
     config.discovery.wled_scan && config.discovery.mdns_enabled && config.wled.known_ips.is_empty()
 }
 
-fn build_input_manager(config: &HypercolorConfig) -> InputManager {
+pub(crate) fn build_input_manager(config: &HypercolorConfig) -> InputManager {
     let mut input_manager = InputManager::new();
     input_manager.add_source(Box::new(InteractionInput::new()));
 
@@ -1283,7 +1283,7 @@ fn resolve_effect_metadata_for_restore(
 
     registry
         .iter()
-        .find(|(_, entry)| entry.metadata.name.eq_ignore_ascii_case(id_or_name))
+        .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
         .map(|(_, entry)| entry.metadata.clone())
 }
 

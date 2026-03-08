@@ -2,15 +2,18 @@
 
 use std::sync::Arc;
 
+use anyhow::anyhow;
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::response::Response;
 use serde::Deserialize;
+use tracing::warn;
 
 use hypercolor_types::config::HypercolorConfig;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
+use crate::startup::build_input_manager;
 
 #[derive(Debug, Deserialize)]
 pub struct GetConfigQuery {
@@ -92,10 +95,12 @@ pub async fn set_config_value(
         return ApiError::internal(format!("Failed to persist config: {e}"));
     }
 
+    let live_applied = maybe_apply_audio_config_change(&state, Some(&body.key)).await;
+
     ApiResponse::ok(serde_json::json!({
         "key": body.key,
         "value": parsed_value,
-        "live": body.live.unwrap_or(false),
+        "live": live_applied,
         "path": manager.path().display().to_string(),
     }))
 }
@@ -140,9 +145,12 @@ pub async fn reset_config_value(
         return ApiError::internal(format!("Failed to persist config: {e}"));
     }
 
+    let live_applied = maybe_apply_audio_config_change(&state, body.key.as_deref()).await;
+
     ApiResponse::ok(serde_json::json!({
         "key": body.key,
         "reset": true,
+        "live": live_applied,
         "path": manager.path().display().to_string(),
     }))
 }
@@ -186,4 +194,56 @@ fn set_json_path(root: &mut serde_json::Value, key: &str, value: serde_json::Val
     }
 
     false
+}
+
+fn should_reconfigure_audio_inputs(key: Option<&str>) -> bool {
+    key.is_none_or(|value| value == "audio" || value.starts_with("audio."))
+}
+
+async fn maybe_apply_audio_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
+    if !should_reconfigure_audio_inputs(key) {
+        return false;
+    }
+
+    match reconfigure_input_manager(state).await {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(
+                key = key.unwrap_or("<all>"),
+                %error,
+                "Failed to apply live audio config; change will take effect after daemon restart"
+            );
+            false
+        }
+    }
+}
+
+async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> {
+    let Some(manager) = state.config_manager.as_ref() else {
+        return Ok(());
+    };
+
+    let latest_config = manager.get();
+    let mut replacement = build_input_manager(latest_config.as_ref());
+    let mut input_manager = state.input_manager.lock().await;
+    let mut previous = std::mem::take(&mut *input_manager);
+
+    previous.stop_all();
+    match replacement.start_all() {
+        Ok(()) => {
+            *input_manager = replacement;
+            Ok(())
+        }
+        Err(error) => {
+            if let Err(restart_error) = previous.start_all() {
+                *input_manager = previous;
+                return Err(anyhow!(
+                    "failed to start rebuilt input sources: {error}; previous input sources could not be restarted cleanly: {restart_error}"
+                ));
+            }
+
+            *input_manager = previous;
+            Err(anyhow!("failed to start rebuilt input sources: {error}"))
+        }
+    }
 }

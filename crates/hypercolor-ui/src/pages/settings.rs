@@ -170,7 +170,14 @@ pub fn SettingsPage() -> impl IntoView {
             .map(|data| {
                 data.devices
                     .into_iter()
-                    .map(|d| (d.id, d.name))
+                    .map(|d| {
+                        let label = if d.description.is_empty() || d.description == d.name {
+                            d.name
+                        } else {
+                            format!("{} - {}", d.name, d.description)
+                        };
+                        (d.id, label)
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_else(|| vec![("default".to_string(), "Default".to_string())])

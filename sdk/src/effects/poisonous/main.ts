@@ -22,6 +22,8 @@ interface RingParticle {
     direction: 1 | -1
 }
 
+const FULL_CIRCLE = Math.PI * 2
+
 const THEMES = ['Poison', 'Blacklight', 'Radioactive', 'Nightshade', 'Cotton Candy', 'Custom'] as const
 
 const THEME_PALETTES: Record<(typeof THEMES)[number], ThemePalette> = {
@@ -84,6 +86,20 @@ function mixRgb(a: RGB, b: RGB, t: number): RGB {
         g: Math.round(a.g + (b.g - a.g) * ratio),
         b: Math.round(a.b + (b.b - a.b) * ratio),
     }
+}
+
+function fillRingBand(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    innerRadius: number,
+    outerRadius: number,
+): void {
+    ctx.beginPath()
+    ctx.arc(x, y, outerRadius, 0, FULL_CIRCLE)
+    ctx.arc(x, y, innerRadius, 0, FULL_CIRCLE, true)
+    ctx.closePath()
+    ctx.fill('evenodd')
 }
 
 function resolveThemePalette(controls: Record<string, unknown>): ThemePalette {
@@ -196,21 +212,21 @@ export default canvas.stateful('Poisonous', {
             const base = palette[particle.colorIndex] ?? palette[0]
             const accent = palette[(particle.colorIndex + 1) % palette.length] ?? mixRgb(base, { r: 255, g: 255, b: 255 }, 0.18)
             const ringStep = Math.max(3.6, particle.radius * 0.26)
+            const ringGap = Math.max(0.8, ringStep * 0.24)
 
             for (let ringIndex = 0; ringIndex < ringCount; ringIndex++) {
                 const ringRadius = particle.radius - ringIndex * ringStep
-                if (ringRadius <= 1) break
+                if (ringRadius <= 0.75) break
 
                 const blend = ringCount <= 1 ? 0 : ringIndex / Math.max(1, ringCount - 1)
                 const ringColor = mixRgb(base, accent, blend * 0.72)
-                const alpha = clamp(0.62 - ringIndex * 0.10, 0.20, 0.62)
-                const lineWidth = Math.max(1.4, particle.lineWidth * (1 - ringIndex * 0.18))
+                const targetBandWidth = Math.max(1.5, particle.lineWidth * (1 - ringIndex * 0.18))
+                const bandWidth = Math.min(targetBandWidth, Math.max(1.5, ringStep - ringGap))
+                const innerRadius = Math.max(0, ringRadius - bandWidth / 2)
+                const outerRadius = ringRadius + bandWidth / 2
 
-                ctx.strokeStyle = rgba(ringColor, alpha)
-                ctx.lineWidth = lineWidth
-                ctx.beginPath()
-                ctx.arc(particle.x, particle.y, ringRadius, 0, Math.PI * 2)
-                ctx.stroke()
+                ctx.fillStyle = rgba(ringColor, 1)
+                fillRingBand(ctx, particle.x, particle.y, innerRadius, outerRadius)
             }
 
             particle.x += particle.speedX * speedScale

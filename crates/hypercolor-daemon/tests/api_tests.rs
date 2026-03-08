@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
     DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
@@ -384,8 +385,91 @@ async fn audio_devices_returns_default_option_and_current_value() {
         "devices should include the default option"
     );
     assert_eq!(devices[0]["id"], "default");
-    assert_eq!(devices[0]["name"], "Default");
+    assert_eq!(devices[0]["name"], "System Monitor (Auto)");
+    assert_eq!(devices[1]["id"], "microphone");
+    assert_eq!(devices[2]["id"], "none");
     assert_eq!(json["data"]["current"], "default");
+}
+
+#[tokio::test]
+async fn audio_devices_normalize_legacy_aliases() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path).expect("config manager should build"));
+    let mut config = HypercolorConfig::default();
+    config.audio.device = "mic".to_owned();
+    config_manager.update(config);
+
+    let mut state = AppState::new();
+    state.config_manager = Some(config_manager);
+    let app = test_app_with_state(Arc::new(state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/audio/devices")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["current"], "microphone");
+}
+
+#[tokio::test]
+async fn config_set_audio_device_rebuilds_live_input_manager() {
+    let tempdir = tempfile::tempdir().expect("tempdir should build");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    let config_manager =
+        Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
+
+    let mut state = AppState::new();
+    state.config_manager = Some(config_manager);
+    let state = Arc::new(state);
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/config/set")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"key":"audio.device","value":"\"microphone\""}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["key"], "audio.device");
+    assert_eq!(json["data"]["value"], "microphone");
+    assert_eq!(json["data"]["live"], true);
+
+    {
+        let input_manager = state.input_manager.lock().await;
+        assert_eq!(input_manager.source_count(), 2);
+        assert!(
+            input_manager
+                .source_names()
+                .iter()
+                .any(|name| name == "AudioInput(microphone)"),
+            "rebuilt input manager should include the selected audio source"
+        );
+    }
+
+    let config_raw = fs::read_to_string(&config_path).expect("config file should be written");
+    let config: HypercolorConfig =
+        toml::from_str(&config_raw).expect("saved config should deserialize");
+    assert_eq!(config.audio.device, "microphone");
 }
 
 #[tokio::test]

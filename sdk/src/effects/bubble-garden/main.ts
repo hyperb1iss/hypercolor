@@ -145,7 +145,7 @@ function createBubbles(count: number, width: number, height: number): Bubble[] {
             vx: randomVelocity(),
             vy: randomVelocity(),
             baseSize: radius,
-            alpha: 0.34 + (i / Math.max(1, count - 1)) * 0.34,
+            alpha: 0.22 + (i / Math.max(1, count - 1)) * 0.24,
             mix: Math.random(),
             phase: Math.random() * Math.PI * 2,
             driftBias: 0.84 + Math.random() * 0.44,
@@ -376,13 +376,13 @@ export default canvas.stateful('Bubble Garden', {
             }
 
             const colors = resolveBubbleColors(bubble, colorMode, theme, palette, color)
-            const bodyAlpha = bubble.alpha * 0.96
-            const auraAlpha = bubble.alpha * 0.42
-            const innerAlpha = bubble.alpha * 0.42
+            const bodyAlpha = bubble.alpha * 0.82
+            const auraAlpha = bubble.alpha * 0.22
+            const innerAlpha = bubble.alpha * 0.28
 
             ctx.fillStyle = rgba(colors.aura, auraAlpha)
             ctx.beginPath()
-            ctx.arc(bubble.x, bubble.y, radius * 1.55, 0, Math.PI * 2)
+            ctx.arc(bubble.x, bubble.y, radius * 1.2, 0, Math.PI * 2)
             ctx.fill()
 
             ctx.fillStyle = rgba(colors.body, bodyAlpha)
@@ -395,13 +395,13 @@ export default canvas.stateful('Bubble Garden', {
             ctx.arc(bubble.x - radius * 0.18, bubble.y - radius * 0.22, radius * 0.62, 0, Math.PI * 2)
             ctx.fill()
 
-            ctx.strokeStyle = rgba(colors.rim, 0.48 + bubble.alpha * 0.22)
+            ctx.strokeStyle = rgba(colors.rim, 0.38 + bubble.alpha * 0.16)
             ctx.lineWidth = Math.max(1, radius * 0.12)
             ctx.beginPath()
             ctx.arc(bubble.x, bubble.y, Math.max(1, radius - 0.5), 0, Math.PI * 2)
             ctx.stroke()
 
-            ctx.fillStyle = rgba(colors.gloss, 0.26 + bubble.alpha * 0.20)
+            ctx.fillStyle = rgba(colors.gloss, 0.18 + bubble.alpha * 0.14)
             ctx.beginPath()
             ctx.arc(bubble.x - radius * 0.30, bubble.y - radius * 0.32, Math.max(1, radius * 0.18), 0, Math.PI * 2)
             ctx.fill()

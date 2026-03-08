@@ -222,6 +222,8 @@ fn manager_default_is_empty() {
     let mut mgr = InputManager::default();
     let samples = mgr.sample_all();
     assert!(samples.is_empty());
+    assert_eq!(mgr.source_count(), 0);
+    assert!(mgr.source_names().is_empty());
 }
 
 #[test]
@@ -229,6 +231,9 @@ fn manager_samples_multiple_sources() {
     let mut mgr = InputManager::new();
     mgr.add_source(Box::new(MockAudioSource::new(0.5)));
     mgr.add_source(Box::new(MockScreenSource::new(2)));
+
+    assert_eq!(mgr.source_count(), 2);
+    assert_eq!(mgr.source_names(), vec!["MockAudio", "MockScreen"]);
 
     let samples = mgr.sample_all();
     assert_eq!(samples.len(), 2);

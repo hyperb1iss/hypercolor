@@ -96,12 +96,16 @@ pub(crate) const fn capture_input_available() -> bool {
 fn current_audio_device_id(state: &AppState) -> String {
     state.config_manager.as_ref().map_or_else(
         || "default".to_owned(),
-        |manager| manager.get().audio.device.clone(),
+        |manager| normalize_audio_device_id(&manager.get().audio.device),
     )
 }
 
 fn audio_device_options(current: &str) -> Vec<AudioDeviceInfo> {
-    let mut devices = vec![default_audio_device()];
+    let mut devices = vec![
+        default_audio_device(),
+        microphone_audio_device(),
+        disabled_audio_device(),
+    ];
 
     match enumerate_audio_input_devices() {
         Ok(mut enumerated) => devices.append(&mut enumerated),
@@ -123,8 +127,13 @@ fn audio_device_options(current: &str) -> Vec<AudioDeviceInfo> {
 
     dedupe_audio_devices(&mut devices);
     devices.sort_by_cached_key(|device| {
-        let default_rank = i32::from(device.id != "default");
-        (default_rank, device.name.to_ascii_lowercase())
+        let rank = match device.id.as_str() {
+            "default" => 0,
+            "microphone" => 1,
+            "none" => 2,
+            _ => 3,
+        };
+        (rank, device.name.to_ascii_lowercase())
     });
     devices
 }
@@ -163,8 +172,24 @@ fn enumerate_audio_input_devices() -> anyhow::Result<Vec<AudioDeviceInfo>> {
 fn default_audio_device() -> AudioDeviceInfo {
     AudioDeviceInfo {
         id: "default".to_owned(),
-        name: "Default".to_owned(),
-        description: "System default input or monitor".to_owned(),
+        name: "System Monitor (Auto)".to_owned(),
+        description: "Prefer the active system output monitor source".to_owned(),
+    }
+}
+
+fn microphone_audio_device() -> AudioDeviceInfo {
+    AudioDeviceInfo {
+        id: "microphone".to_owned(),
+        name: "Default Microphone".to_owned(),
+        description: "Capture from the default input device".to_owned(),
+    }
+}
+
+fn disabled_audio_device() -> AudioDeviceInfo {
+    AudioDeviceInfo {
+        id: "none".to_owned(),
+        name: "Disabled".to_owned(),
+        description: "Send silence to audio-reactive effects".to_owned(),
     }
 }
 
@@ -178,6 +203,19 @@ fn should_include_current_device(current: &str, devices: &[AudioDeviceInfo]) -> 
 fn dedupe_audio_devices(devices: &mut Vec<AudioDeviceInfo>) {
     let mut seen = HashSet::new();
     devices.retain(|device| seen.insert(device.id.to_ascii_lowercase()));
+}
+
+fn normalize_audio_device_id(device: &str) -> String {
+    let trimmed = device.trim();
+    if trimmed.eq_ignore_ascii_case("default") || trimmed.eq_ignore_ascii_case("auto") {
+        "default".to_owned()
+    } else if trimmed.eq_ignore_ascii_case("mic") || trimmed.eq_ignore_ascii_case("microphone") {
+        "microphone".to_owned()
+    } else if trimmed.eq_ignore_ascii_case("none") {
+        "none".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 fn brightness_percent(brightness: f32) -> u8 {

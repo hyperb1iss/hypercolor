@@ -64,7 +64,6 @@ pub fn AudioSection(
                 value=device
                 options=audio_devices
                 on_change=on_change
-                restart_required=true
             />
             <SettingDropdown
                 label="FFT Size"
@@ -73,7 +72,6 @@ pub fn AudioSection(
                 value=fft_size
                 options=Signal::stored(fft_options)
                 on_change=on_change
-                restart_required=true
                 numeric=true
             />
             <SettingSlider

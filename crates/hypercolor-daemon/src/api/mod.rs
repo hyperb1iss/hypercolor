@@ -44,6 +44,7 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::effect::{EffectEngine, EffectRegistry};
 use hypercolor_core::engine::RenderLoop;
+use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::DeviceId;
@@ -114,6 +115,9 @@ pub struct AppState {
 
     /// Configuration manager for config API endpoints.
     pub config_manager: Option<Arc<ConfigManager>>,
+
+    /// Live input graph shared with the daemon render thread.
+    pub input_manager: Arc<Mutex<InputManager>>,
 
     /// Global discovery scan lock flag shared across startup/API entrypoints.
     pub discovery_in_progress: Arc<AtomicBool>,
@@ -247,6 +251,7 @@ impl AppState {
             lifecycle_manager: Arc::new(Mutex::new(DeviceLifecycleManager::new())),
             reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
             config_manager: None,
+            input_manager: Arc::new(Mutex::new(InputManager::new())),
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             profiles: RwLock::new(HashMap::new()),
             attachment_registry: Arc::new(RwLock::new(attachment_registry)),
@@ -304,6 +309,7 @@ impl AppState {
             lifecycle_manager: Arc::clone(&daemon.lifecycle_manager),
             reconnect_tasks: Arc::clone(&daemon.reconnect_tasks),
             config_manager: Some(Arc::clone(&daemon.config_manager)),
+            input_manager: Arc::clone(&daemon.input_manager),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
             profiles: RwLock::new(HashMap::new()),
             attachment_registry: Arc::clone(&daemon.attachment_registry),

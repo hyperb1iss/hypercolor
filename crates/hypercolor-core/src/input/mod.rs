@@ -57,6 +57,21 @@ impl InputManager {
         self.sources.push(source);
     }
 
+    /// Number of registered input sources.
+    #[must_use]
+    pub fn source_count(&self) -> usize {
+        self.sources.len()
+    }
+
+    /// Snapshot of source names in registration order.
+    #[must_use]
+    pub fn source_names(&self) -> Vec<String> {
+        self.sources
+            .iter()
+            .map(|source| source.name().to_owned())
+            .collect()
+    }
+
     /// Sample every registered source, collecting one [`InputData`] per source.
     ///
     /// Sources that fail to sample emit a warning and produce [`InputData::None`]
