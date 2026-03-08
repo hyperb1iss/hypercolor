@@ -171,9 +171,9 @@ setup:
 udev-install:
     sudo cp udev/99-hypercolor.rules /etc/udev/rules.d/
     sudo udevadm control --reload-rules
-    sudo udevadm trigger --action=change --subsystem-match=hidraw
-    sudo udevadm trigger --action=change --subsystem-match=usb
-    sudo udevadm trigger --action=change --subsystem-match=tty
+    sudo udevadm trigger --action=add --subsystem-match=hidraw
+    sudo udevadm trigger --action=add --subsystem-match=usb
+    sudo udevadm trigger --action=add --subsystem-match=tty
     @echo '✅ udev rules installed and applied'
 
 # ─── Housekeeping ─────────────────────────────────────────
