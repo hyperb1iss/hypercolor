@@ -21,6 +21,8 @@ pub const PID_ELITE_CAPELLIX_LCD_ALT: u16 = 0x0C33;
 pub const PID_ICUE_LINK_LCD: u16 = 0x0C4E;
 /// Nautilus RS LCD PID.
 pub const PID_NAUTILUS_RS_LCD: u16 = 0x0C55;
+/// XC7 RGB Elite LCD PID.
+pub const PID_XC7_RGB_ELITE_LCD: u16 = 0x0C42;
 /// XD6 Elite LCD PID.
 pub const PID_XD6_ELITE_LCD: u16 = 0x0C43;
 
@@ -53,6 +55,11 @@ pub fn build_icue_link_lcd_protocol() -> Box<dyn Protocol> {
 /// Build a Nautilus RS LCD protocol instance.
 pub fn build_nautilus_rs_lcd_protocol() -> Box<dyn Protocol> {
     build_protocol("Corsair Nautilus RS LCD", 0x40, 0x40)
+}
+
+/// Build an XC7 RGB Elite LCD protocol instance.
+pub fn build_xc7_rgb_elite_lcd_protocol() -> Box<dyn Protocol> {
+    Box::new(CorsairLcdProtocol::new_xc7("Corsair XC7 RGB Elite LCD"))
 }
 
 /// Build an XD6 Elite LCD protocol instance.
@@ -109,6 +116,12 @@ static LCD_DESCRIPTORS: &[DeviceDescriptor] = &[
         name: "Corsair Nautilus RS LCD",
         protocol_id: "corsair/nautilus-rs-lcd",
         builder: build_nautilus_rs_lcd_protocol
+    ),
+    lcd_descriptor!(
+        pid: PID_XC7_RGB_ELITE_LCD,
+        name: "Corsair XC7 RGB Elite LCD",
+        protocol_id: "corsair/xc7-rgb-elite-lcd",
+        builder: build_xc7_rgb_elite_lcd_protocol
     ),
     lcd_descriptor!(
         pid: PID_XD6_ELITE_LCD,

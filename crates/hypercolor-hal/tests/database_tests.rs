@@ -2,7 +2,7 @@ use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::drivers::corsair::{
     CORSAIR_VID, PID_COMMANDER_PRO, PID_ELITE_CAPELLIX_LCD, PID_ELITE_CAPELLIX_LCD_ALT,
     PID_ICUE_LINK_LCD, PID_ICUE_LINK_SYSTEM_HUB, PID_LIGHTING_NODE_CORE, PID_LIGHTING_NODE_PRO,
-    PID_NAUTILUS_RS_LCD, PID_XD6_ELITE_LCD,
+    PID_NAUTILUS_RS_LCD, PID_XC7_RGB_ELITE_LCD, PID_XD6_ELITE_LCD,
 };
 use hypercolor_hal::drivers::dygma::{DYGMA_VENDOR_ID, PID_DEFY_WIRED, PID_DEFY_WIRELESS};
 use hypercolor_hal::drivers::prismrgb::{
@@ -171,6 +171,35 @@ fn lookup_returns_xd6_elite_lcd_descriptor() {
 }
 
 #[test]
+fn lookup_returns_xc7_rgb_elite_lcd_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(CORSAIR_VID, PID_XC7_RGB_ELITE_LCD)
+        .expect("Corsair XC7 RGB Elite LCD descriptor should exist");
+
+    assert_eq!(descriptor.name, "Corsair XC7 RGB Elite LCD");
+    assert_eq!(descriptor.family, DeviceFamily::Corsair);
+    assert_eq!(descriptor.protocol.id, "corsair/xc7-rgb-elite-lcd");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbBulk {
+            interface: 0,
+            report_id: 0x03,
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Corsair XC7 RGB Elite LCD");
+    assert_eq!(protocol.total_leds(), 31);
+    assert_eq!(protocol.zones().len(), 2);
+    assert!(protocol.capabilities().has_display);
+    assert!(protocol.capabilities().supports_direct);
+    assert_eq!(protocol.capabilities().display_resolution, Some((480, 480)));
+    assert_eq!(
+        protocol.zones()[1].topology,
+        DeviceTopologyHint::Ring { count: 31 }
+    );
+}
+
+#[test]
 fn lookup_returns_nollie_8_v2_descriptor() {
     let descriptor = ProtocolDatabase::lookup(NOLLIE_VENDOR_ID, PID_NOLLIE_8_V2)
         .expect("Nollie 8 v2 descriptor should exist");
@@ -325,6 +354,7 @@ fn known_vid_pid_contains_razer_entries() {
     assert!(pairs.contains(&(CORSAIR_VID, PID_ELITE_CAPELLIX_LCD_ALT)));
     assert!(pairs.contains(&(CORSAIR_VID, PID_ICUE_LINK_LCD)));
     assert!(pairs.contains(&(CORSAIR_VID, PID_NAUTILUS_RS_LCD)));
+    assert!(pairs.contains(&(CORSAIR_VID, PID_XC7_RGB_ELITE_LCD)));
     assert!(pairs.contains(&(CORSAIR_VID, PID_XD6_ELITE_LCD)));
     assert!(pairs.contains(&(CORSAIR_VID, PID_ICUE_LINK_SYSTEM_HUB)));
     assert!(pairs.contains(&(CORSAIR_VID, PID_LIGHTING_NODE_CORE)));
@@ -356,5 +386,5 @@ fn by_vendor_returns_only_razer_entries() {
 #[test]
 fn count_matches_static_descriptor_count() {
     assert_eq!(ProtocolDatabase::count(), ProtocolDatabase::all().len());
-    assert!(ProtocolDatabase::count() >= 26);
+    assert!(ProtocolDatabase::count() >= 27);
 }

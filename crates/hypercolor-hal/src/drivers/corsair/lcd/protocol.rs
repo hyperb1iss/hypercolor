@@ -16,7 +16,15 @@ use crate::protocol::{
 const DEFAULT_TARGET_FPS: u32 = 30;
 const LCD_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const STANDARD_LCD_SHUTDOWN: [u8; 8] = [0x03, 0x1E, 0x40, 0x01, 0x43, 0x00, 0x69, 0x00];
+const XC7_LCD_SHUTDOWN_PRIMARY: [u8; 7] = [0x03, 0x1E, 0x19, 0x01, 0x04, 0x00, 0xA3];
+const XC7_LCD_SHUTDOWN_SECONDARY: [u8; 7] = [0x03, 0x1D, 0x00, 0x01, 0x04, 0x00, 0xA3];
 const LCD_VERSION_BYTES: [u8; 7] = [0x32, 0x2E, 0x30, 0x2E, 0x30, 0x2E, 0x33];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CorsairLcdInitMode {
+    Standard,
+    Xc7,
+}
 
 /// JPEG streaming protocol for Corsair LCD devices.
 pub struct CorsairLcdProtocol {
@@ -27,7 +35,8 @@ pub struct CorsairLcdProtocol {
     keepalive_zone_byte: u8,
     circular: bool,
     ring_led_count: u32,
-    shutdown_report: Vec<u8>,
+    init_mode: CorsairLcdInitMode,
+    shutdown_reports: Vec<Vec<u8>>,
     last_keepalive_at: RwLock<Option<Instant>>,
 }
 
@@ -43,6 +52,49 @@ impl CorsairLcdProtocol {
         circular: bool,
         ring_led_count: u32,
     ) -> Self {
+        Self::with_behavior(
+            name,
+            width,
+            height,
+            data_zone_byte,
+            keepalive_zone_byte,
+            circular,
+            ring_led_count,
+            CorsairLcdInitMode::Standard,
+            vec![STANDARD_LCD_SHUTDOWN.to_vec()],
+        )
+    }
+
+    /// Create an XC7 RGB Elite LCD protocol instance.
+    #[must_use]
+    pub fn new_xc7(name: &'static str) -> Self {
+        Self::with_behavior(
+            name,
+            480,
+            480,
+            0x1F,
+            0x1C,
+            true,
+            31,
+            CorsairLcdInitMode::Xc7,
+            vec![
+                XC7_LCD_SHUTDOWN_PRIMARY.to_vec(),
+                XC7_LCD_SHUTDOWN_SECONDARY.to_vec(),
+            ],
+        )
+    }
+
+    fn with_behavior(
+        name: &'static str,
+        width: u32,
+        height: u32,
+        data_zone_byte: u8,
+        keepalive_zone_byte: u8,
+        circular: bool,
+        ring_led_count: u32,
+        init_mode: CorsairLcdInitMode,
+        shutdown_reports: Vec<Vec<u8>>,
+    ) -> Self {
         Self {
             name,
             width,
@@ -51,7 +103,8 @@ impl CorsairLcdProtocol {
             keepalive_zone_byte,
             circular,
             ring_led_count,
-            shutdown_report: STANDARD_LCD_SHUTDOWN.to_vec(),
+            init_mode,
+            shutdown_reports,
             last_keepalive_at: RwLock::new(None),
         }
     }
@@ -146,16 +199,18 @@ impl Protocol for CorsairLcdProtocol {
     }
 
     fn init_sequence(&self) -> Vec<ProtocolCommand> {
-        vec![
-            Self::init_device_info_query(),
-            Self::init_status_query(),
-            Self::init_version_handshake(),
-            Self::init_auth_unlock(),
-        ]
+        let mut commands = vec![Self::init_device_info_query(), Self::init_status_query()];
+        if self.init_mode == CorsairLcdInitMode::Standard {
+            commands.extend([Self::init_version_handshake(), Self::init_auth_unlock()]);
+        }
+        commands
     }
 
     fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
-        vec![Self::hid_report(&self.shutdown_report, false)]
+        self.shutdown_reports
+            .iter()
+            .map(|report| Self::hid_report(report, false))
+            .collect()
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {

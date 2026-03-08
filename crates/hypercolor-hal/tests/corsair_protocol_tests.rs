@@ -285,3 +285,76 @@ fn lcd_keepalive_and_shutdown_use_hid_reports() {
         &[0x03, 0x1E, 0x40, 0x01, 0x43, 0x00, 0x69, 0x00]
     );
 }
+
+#[test]
+fn xc7_lcd_uses_short_init_and_model_specific_shutdown() {
+    let protocol = CorsairLcdProtocol::new_xc7("Corsair XC7 RGB Elite LCD");
+
+    let init = protocol.init_sequence();
+    assert_eq!(init.len(), 2);
+    assert_eq!(&init[0].data[..4], &[0x03, 0x1D, 0x01, 0x00]);
+    assert_eq!(&init[1].data[..2], &[0x03, 0x19]);
+    assert!(init.iter().all(|command| command.expects_response));
+    assert!(
+        init.iter()
+            .all(|command| command.transfer_type == TransferType::HidReport)
+    );
+
+    let shutdown = protocol.shutdown_sequence();
+    assert_eq!(shutdown.len(), 2);
+    assert_eq!(shutdown[0].transfer_type, TransferType::HidReport);
+    assert_eq!(shutdown[1].transfer_type, TransferType::HidReport);
+    assert_eq!(
+        &shutdown[0].data[..7],
+        &[0x03, 0x1E, 0x19, 0x01, 0x04, 0x00, 0xA3]
+    );
+    assert_eq!(
+        &shutdown[1].data[..7],
+        &[0x03, 0x1D, 0x00, 0x01, 0x04, 0x00, 0xA3]
+    );
+}
+
+#[test]
+fn xc7_lcd_supports_ring_zone_and_model_specific_keepalive() {
+    let protocol = CorsairLcdProtocol::new_xc7("Corsair XC7 RGB Elite LCD");
+    let ring_colors = (0_u8..31_u8)
+        .map(|value| [value, value.saturating_add(1), value.saturating_add(2)])
+        .collect::<Vec<_>>();
+
+    let ring_commands = protocol.encode_frame(&ring_colors);
+    assert_eq!(ring_commands.len(), 1);
+    assert_eq!(ring_commands[0].transfer_type, TransferType::Bulk);
+    assert_eq!(ring_commands[0].data.len(), LCD_PACKET_SIZE);
+    assert_eq!(
+        &ring_commands[0].data[..6],
+        &[0x02, 0x07, 0x1F, 0x00, 0x01, 0x02]
+    );
+
+    let jpeg = vec![0x55; 32];
+    let display_commands = protocol
+        .encode_display_frame(&jpeg)
+        .expect("XC7 should support display frames");
+    assert_eq!(display_commands.len(), 2);
+    assert_eq!(display_commands[0].transfer_type, TransferType::Bulk);
+    assert_eq!(display_commands[1].transfer_type, TransferType::HidReport);
+    assert_eq!(
+        &display_commands[0].data[..8],
+        &[0x02, 0x05, 0x1F, 0x01, 0x00, 0x00, 0xF8, 0x03]
+    );
+    assert_eq!(
+        &display_commands[1].data[..8],
+        &[0x03, 0x19, 0x1C, 0x01, 0x01, 0x00, 0xF8, 0x03]
+    );
+
+    let zones = protocol.zones();
+    assert_eq!(zones.len(), 2);
+    assert_eq!(zones[0].name, "Display");
+    assert_eq!(zones[1].name, "RGB Ring");
+    assert_eq!(zones[1].topology, DeviceTopologyHint::Ring { count: 31 });
+
+    let capabilities = protocol.capabilities();
+    assert_eq!(capabilities.led_count, 31);
+    assert!(capabilities.supports_direct);
+    assert!(capabilities.has_display);
+    assert_eq!(protocol.total_leds(), 31);
+}

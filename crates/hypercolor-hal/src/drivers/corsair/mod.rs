@@ -12,9 +12,9 @@ pub mod types;
 pub use devices::descriptors;
 pub use lcd::devices::{
     CORSAIR_LCD_INTERFACE, CORSAIR_LCD_REPORT_ID, PID_ELITE_CAPELLIX_LCD,
-    PID_ELITE_CAPELLIX_LCD_ALT, PID_ICUE_LINK_LCD, PID_NAUTILUS_RS_LCD, PID_XD6_ELITE_LCD,
-    build_elite_capellix_lcd_protocol, build_icue_link_lcd_protocol,
-    build_nautilus_rs_lcd_protocol, build_xd6_elite_lcd_protocol,
+    PID_ELITE_CAPELLIX_LCD_ALT, PID_ICUE_LINK_LCD, PID_NAUTILUS_RS_LCD, PID_XC7_RGB_ELITE_LCD,
+    PID_XD6_ELITE_LCD, build_elite_capellix_lcd_protocol, build_icue_link_lcd_protocol,
+    build_nautilus_rs_lcd_protocol, build_xc7_rgb_elite_lcd_protocol, build_xd6_elite_lcd_protocol,
 };
 pub use lcd::protocol::CorsairLcdProtocol;
 pub use lighting_node::devices::{
