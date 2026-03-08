@@ -71,6 +71,12 @@ pub enum TransportType {
         interface: u8,
         /// HID report ID.
         report_id: u8,
+        /// Optional HID usage page filter for devices that expose multiple
+        /// collections on the same interface.
+        usage_page: Option<u16>,
+        /// Optional HID usage filter for devices that expose multiple
+        /// collections on the same interface.
+        usage: Option<u16>,
     },
 
     /// HID interrupt endpoint transport.

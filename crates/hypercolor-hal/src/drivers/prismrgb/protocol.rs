@@ -481,6 +481,7 @@ fn command_from_packet(
     ProtocolCommand {
         data: packet.to_vec(),
         expects_response,
+        response_delay: Duration::ZERO,
         post_delay,
         transfer_type: TransferType::Primary,
     }

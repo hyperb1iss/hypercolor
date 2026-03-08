@@ -519,6 +519,9 @@ pub struct BackendManager {
     /// Last warning time for layout device IDs that had no live mapping.
     last_unmapped_warn_at: HashMap<String, Instant>,
 
+    /// Last warning time for zone-to-segment color length mismatches.
+    last_segment_mismatch_warn_at: HashMap<String, Instant>,
+
     /// Connected devices already reported as unused by the active layout.
     warned_inactive_layout_devices: HashSet<BackendDeviceKey>,
 }
@@ -1079,12 +1082,26 @@ impl BackendManager {
                 }
 
                 if copy_len != segment.length {
-                    warn!(
-                        zone_id = %zc.zone_id,
-                        expected = segment.length,
-                        received = remapped_colors.len(),
-                        "zone color count does not match mapped segment length"
-                    );
+                    let warn_key = format!("{layout_device_id}:{}", zc.zone_id);
+                    let should_warn = self
+                        .last_segment_mismatch_warn_at
+                        .get(&warn_key)
+                        .is_none_or(|last_warn_at| {
+                            last_warn_at.elapsed() >= UNMAPPED_LAYOUT_WARN_INTERVAL
+                        });
+
+                    if should_warn {
+                        warn!(
+                            zone_id = %zc.zone_id,
+                            layout_device_id = %layout_device_id,
+                            segment_start = segment.start,
+                            expected = segment.length,
+                            received = remapped_colors.len(),
+                            "zone color count does not match mapped segment length"
+                        );
+                        self.last_segment_mismatch_warn_at
+                            .insert(warn_key, Instant::now());
+                    }
                 }
             } else {
                 if entry.has_segmented_write {

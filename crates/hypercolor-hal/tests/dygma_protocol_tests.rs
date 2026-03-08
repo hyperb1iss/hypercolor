@@ -78,50 +78,15 @@ fn non_probe_response_does_not_change_color_mode() {
 }
 
 #[test]
-fn rgbw_frame_extracts_white_channel_for_every_led() {
+fn direct_frame_encoding_is_disabled_for_stock_defy_firmware() {
     let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
     protocol
         .parse_response(b"10 20 30 40")
-        .expect("RGBW probe should parse");
-    let colors = vec![[255, 255, 255]; 176];
+        .expect("probe should parse");
 
-    let commands = protocol.encode_frame(&colors);
-    assert_eq!(commands.len(), 1);
-    assert!(commands[0].expects_response);
-    let payload = String::from_utf8(commands[0].data.clone()).expect("frame should be utf-8");
-    let parts = payload.split_whitespace().collect::<Vec<_>>();
+    let commands = protocol.encode_frame(&[[255, 255, 255]; 176]);
 
-    assert_eq!(parts[0], "led.theme");
-    assert_eq!(parts.len(), 1 + 176 * 4);
-    assert_eq!(&parts[1..5], ["0", "0", "0", "255"]);
-}
-
-#[test]
-fn rgb_frame_uses_three_channels_after_probe() {
-    let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
-    protocol
-        .parse_response(b"5 10 15")
-        .expect("RGB probe should parse");
-
-    let colors = vec![[1, 2, 3]; 176];
-    let commands = protocol.encode_frame(&colors);
-    let payload = String::from_utf8(commands[0].data.clone()).expect("frame should be utf-8");
-    let parts = payload.split_whitespace().collect::<Vec<_>>();
-
-    assert_eq!(parts.len(), 1 + 176 * 3);
-    assert_eq!(&parts[1..4], ["1", "2", "3"]);
-}
-
-#[test]
-fn partial_frame_is_padded_with_black_leds() {
-    let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
-    let commands = protocol.encode_frame(&[[1, 2, 3]]);
-    let payload = String::from_utf8(commands[0].data.clone()).expect("frame should be utf-8");
-    let parts = payload.split_whitespace().collect::<Vec<_>>();
-
-    assert_eq!(parts.len(), 1 + 176 * 3);
-    assert_eq!(&parts[1..4], ["1", "2", "3"]);
-    assert_eq!(&parts[4..7], ["0", "0", "0"]);
+    assert!(commands.is_empty());
 }
 
 #[test]
@@ -186,7 +151,7 @@ fn zones_and_capabilities_match_defy_layout() {
 
     let capabilities = protocol.capabilities();
     assert_eq!(capabilities.led_count, 176);
-    assert!(capabilities.supports_direct);
+    assert!(!capabilities.supports_direct);
     assert!(capabilities.supports_brightness);
     assert_eq!(capabilities.max_fps, 10);
     assert_eq!(protocol.frame_interval(), Duration::from_millis(100));

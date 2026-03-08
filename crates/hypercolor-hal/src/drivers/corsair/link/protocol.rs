@@ -85,6 +85,7 @@ impl CorsairLinkProtocol {
         ProtocolCommand {
             data: build_link_packet(command.bytes(), data),
             expects_response,
+            response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
         }

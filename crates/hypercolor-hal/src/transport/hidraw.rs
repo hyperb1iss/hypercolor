@@ -24,6 +24,8 @@ struct HidrawCandidate {
     interface_number: i32,
     serial: Option<String>,
     usb_path: Option<String>,
+    usage_page: u16,
+    usage: u16,
 }
 
 /// HIDRAW transport backed by `hidapi` on Linux.
@@ -50,6 +52,8 @@ impl UsbHidRawTransport {
         report_id: u8,
         serial: Option<&str>,
         usb_path: Option<&str>,
+        usage_page: Option<u16>,
+        usage: Option<u16>,
     ) -> Result<Self, TransportError> {
         let api = HidApi::new().map_err(|error| map_hidapi_error(&error))?;
 
@@ -61,6 +65,8 @@ impl UsbHidRawTransport {
                 interface_number: device.interface_number(),
                 serial: device.serial_number().map(ToOwned::to_owned),
                 usb_path: hidraw_usb_path(device.path()),
+                usage_page: device.usage_page(),
+                usage: device.usage(),
             })
             .collect::<Vec<_>>();
 
@@ -81,15 +87,25 @@ impl UsbHidRawTransport {
             });
         }
 
+        if let Some(usage_page) = usage_page {
+            candidates.retain(|candidate| candidate.usage_page == usage_page);
+        }
+
+        if let Some(usage) = usage {
+            candidates.retain(|candidate| candidate.usage == usage);
+        }
+
         let Some(chosen) = candidates.into_iter().next() else {
             let sample_candidates = original_candidates
                 .iter()
                 .take(6)
                 .map(|candidate| {
                     format!(
-                        "{}(if={}, serial={}, usb_path={})",
+                        "{}(if={}, usage_page=0x{:04X}, usage=0x{:04X}, serial={}, usb_path={})",
                         candidate.path,
                         candidate.interface_number,
+                        candidate.usage_page,
+                        candidate.usage,
                         candidate.serial.as_deref().unwrap_or("<none>"),
                         candidate.usb_path.as_deref().unwrap_or("<unknown>")
                     )
@@ -99,18 +115,22 @@ impl UsbHidRawTransport {
 
             return Err(TransportError::NotFound {
                 detail: format!(
-                    "hidraw node not found for {:04X}:{:04X} interface {} (serial={}, usb_path={}); candidates=[{}]",
+                    "hidraw node not found for {:04X}:{:04X} interface {} (serial={}, usb_path={}, usage_page={}, usage={}); candidates=[{}]",
                     vendor_id,
                     product_id,
                     interface_number,
                     serial.unwrap_or("<none>"),
                     usb_path.unwrap_or("<unknown>"),
+                    usage_page.map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
+                    usage.map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
                     sample_candidates
                 ),
             });
         };
 
         let device_path = chosen.path;
+        let selected_usage_page = chosen.usage_page;
+        let selected_usage = chosen.usage;
         let c_path = c_string_for_path(&device_path)?;
         let device = api
             .open_path(&c_path)
@@ -124,6 +144,8 @@ impl UsbHidRawTransport {
             device_path = %device_path,
             serial = serial.unwrap_or("<none>"),
             usb_path = usb_path.unwrap_or("<unknown>"),
+            usage_page = format_args!("0x{selected_usage_page:04X}"),
+            usage = format_args!("0x{selected_usage:04X}"),
             "opened hidraw transport"
         );
 
@@ -182,7 +204,7 @@ impl Transport for UsbHidRawTransport {
         let report_id = self.report_id;
         let max_packet_len = self.max_packet_len;
 
-        debug!(
+        trace!(
             device_path = %self.device_path,
             report_id = format_args!("0x{report_id:02X}"),
             max_packet_len,
@@ -228,7 +250,7 @@ impl Transport for UsbHidRawTransport {
             packet_hex = %format_hex_preview(&packet, 32),
             "hidraw feature report send"
         );
-        debug!(
+        trace!(
             device_path = %self.device_path,
             report_id = format_args!("0x{report_id:02X}"),
             max_packet_len,

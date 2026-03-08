@@ -441,6 +441,7 @@ impl DaemonState {
             layouts_path: self.layouts_path.clone(),
             logical_devices: Arc::clone(&self.logical_devices),
             in_progress: Arc::clone(&self.discovery_in_progress),
+            task_spawner: tokio::runtime::Handle::current(),
         }
     }
 
@@ -938,6 +939,7 @@ impl DiscoveryWorkerContext {
             layouts_path: self.layouts_path.clone(),
             logical_devices: Arc::clone(&self.logical_devices),
             in_progress: Arc::clone(&self.in_progress),
+            task_spawner: tokio::runtime::Handle::current(),
         }
     }
 

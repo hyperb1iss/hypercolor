@@ -122,6 +122,7 @@ impl CorsairLcdProtocol {
         ProtocolCommand {
             data: build_lcd_report(payload),
             expects_response,
+            response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::HidReport,
         }
@@ -131,6 +132,7 @@ impl CorsairLcdProtocol {
         ProtocolCommand {
             data,
             expects_response: false,
+            response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Bulk,
         }

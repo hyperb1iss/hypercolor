@@ -1,8 +1,7 @@
 //! Pure Dygma Focus protocol encoder/decoder.
 
 use std::cmp::min;
-use std::fmt::Write as _;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
@@ -74,6 +73,7 @@ impl FocusColorMode {
 pub struct DygmaProtocol {
     variant: DygmaVariant,
     color_mode: AtomicU8,
+    direct_stream_warned: AtomicBool,
 }
 
 impl DygmaProtocol {
@@ -84,6 +84,7 @@ impl DygmaProtocol {
             // Default to the documented Focus RGB format until the `led.at 0`
             // probe proves that the device expects RGBW values on the wire.
             color_mode: AtomicU8::new(COLOR_MODE_RGB),
+            direct_stream_warned: AtomicBool::new(false),
         }
     }
 
@@ -132,6 +133,7 @@ impl DygmaProtocol {
         ProtocolCommand {
             data,
             expects_response,
+            response_delay: Duration::ZERO,
             post_delay,
             transfer_type: TransferType::Primary,
         }
@@ -182,30 +184,16 @@ impl Protocol for DygmaProtocol {
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
-        let normalized = self.normalize_colors(colors);
-        let color_mode = self.color_mode();
-        let mut payload =
-            String::with_capacity(10 + normalized.len() * (color_mode.channel_count() * 4));
-        payload.push_str("led.theme");
+        let _ = self.normalize_colors(colors);
 
-        for &[r, g, b] in &normalized {
-            match color_mode {
-                FocusColorMode::Rgb => {
-                    write!(&mut payload, " {r} {g} {b}")
-                        .expect("writing RGB frame to String should not fail");
-                }
-                FocusColorMode::Rgbw => {
-                    let (r, g, b, w) = rgb_to_rgbw(r, g, b);
-                    write!(&mut payload, " {r} {g} {b} {w}")
-                        .expect("writing RGBW frame to String should not fail");
-                }
-            }
+        if !self.direct_stream_warned.swap(true, Ordering::AcqRel) {
+            warn!(
+                device = self.variant.device_name(),
+                "stock Defy firmware does not expose a non-persistent direct LED streaming path; ignoring live frame writes"
+            );
         }
 
-        // FocusSerial always emits the `.` terminator after handling a command,
-        // even when `led.theme` writes return no payload. Drain that empty
-        // response to keep the serial stream aligned for subsequent commands.
-        vec![Self::text_command(payload, true, Duration::ZERO)]
+        Vec::new()
     }
 
     fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {
@@ -270,7 +258,7 @@ impl Protocol for DygmaProtocol {
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {
             led_count: self.total_leds(),
-            supports_direct: true,
+            supports_direct: false,
             supports_brightness: true,
             has_display: false,
             display_resolution: None,

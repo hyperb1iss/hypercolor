@@ -23,6 +23,7 @@ use hypercolor_types::spatial::{
     StripDirection, Winding, ZoneShape,
 };
 use serde::Serialize;
+use tokio::runtime::Handle;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -112,6 +113,9 @@ pub struct DiscoveryRuntime {
 
     /// Shared "scan in progress" lock flag.
     pub in_progress: Arc<AtomicBool>,
+
+    /// Main daemon runtime handle for detached background work.
+    pub task_spawner: Handle,
 }
 
 /// Discovery backends currently implemented in runtime scans.
@@ -742,7 +746,7 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
         "scheduled reconnect attempt"
     );
     let runtime_for_task = runtime.clone();
-    let task = tokio::spawn(async move {
+    let task = runtime.task_spawner.spawn(async move {
         tokio::time::sleep(delay).await;
 
         // Remove our own handle before executing follow-up logic so reschedules
@@ -1052,9 +1056,6 @@ async fn sync_active_layout_for_renderable_devices(
             .map(|(_, device_id)| device_id)
             .collect::<HashSet<_>>()
     };
-    if inactive_ids.is_empty() {
-        return;
-    }
 
     let tracked_devices = runtime.device_registry.list().await;
     let logical_store = runtime.logical_devices.read().await.clone();
@@ -1074,9 +1075,11 @@ async fn sync_active_layout_for_renderable_devices(
 
     let mut added_devices = Vec::new();
     let mut added_zone_count = 0_usize;
+    let mut repaired_devices = Vec::new();
+    let mut repaired_zone_count = 0_usize;
     for tracked in tracked_devices {
         let device_id = tracked.info.id;
-        if !tracked.state.is_renderable() || !inactive_ids.contains(&device_id) {
+        if !tracked.state.is_renderable() {
             continue;
         }
         if limit_to_devices.is_some_and(|allowed| !allowed.contains(&device_id)) {
@@ -1093,6 +1096,17 @@ async fn sync_active_layout_for_renderable_devices(
             continue;
         }
 
+        let repaired =
+            reconcile_auto_layout_zones_for_device(&mut layout, layout_device_id, &tracked.info);
+        if repaired > 0 {
+            repaired_zone_count = repaired_zone_count.saturating_add(repaired);
+            repaired_devices.push(format!("{} ({device_id})", tracked.info.name));
+        }
+
+        if !inactive_ids.contains(&device_id) {
+            continue;
+        }
+
         let added =
             append_auto_layout_zones_for_device(&mut layout, layout_device_id, &tracked.info);
         if added == 0 {
@@ -1103,7 +1117,7 @@ async fn sync_active_layout_for_renderable_devices(
         added_devices.push(format!("{} ({device_id})", tracked.info.name));
     }
 
-    if added_devices.is_empty() {
+    if added_devices.is_empty() && repaired_devices.is_empty() {
         return;
     }
 
@@ -1130,8 +1144,11 @@ async fn sync_active_layout_for_renderable_devices(
         layout_name = %layout.name,
         added_device_count = added_devices.len(),
         added_zone_count,
-        devices = ?added_devices,
-        "auto-added connected devices to active layout"
+        repaired_device_count = repaired_devices.len(),
+        repaired_zone_count,
+        added_devices = ?added_devices,
+        repaired_devices = ?repaired_devices,
+        "auto-synced connected devices in active layout"
     );
 }
 
@@ -1163,13 +1180,21 @@ pub fn append_auto_layout_zones_for_device(
     let slot_center = auto_layout_slot_center(existing_device_count);
 
     for (index, zone_info) in eligible_zones.iter().enumerate() {
-        let topology = spatial_topology_for_zone(zone_info);
-        let (position, size) = auto_layout_geometry(
+        let override_spec = auto_layout_override(layout_device_id, zone_info);
+        let topology = override_spec.as_ref().map_or_else(
+            || spatial_topology_for_zone(zone_info),
+            |spec| spec.topology.clone(),
+        );
+        let (position, default_size) = auto_layout_geometry(
             slot_center,
             index,
             eligible_zones.len(),
             &zone_info.topology,
         );
+        let size = override_spec
+            .as_ref()
+            .and_then(|spec| spec.size)
+            .unwrap_or(default_size);
         let zone_id = unique_auto_zone_id(layout, layout_device_id, &zone_info.name);
         let zone_name = if eligible_zones.len() == 1 {
             device_info.name.clone()
@@ -1193,13 +1218,97 @@ pub fn append_auto_layout_zones_for_device(
             led_mapping: None,
             sampling_mode: Some(SamplingMode::Bilinear),
             edge_behavior: Some(EdgeBehavior::Clamp),
-            shape: auto_layout_shape(&zone_info.topology),
+            shape: override_spec
+                .as_ref()
+                .and_then(|spec| spec.shape.clone())
+                .or_else(|| auto_layout_shape(&zone_info.topology)),
             shape_preset: None,
             attachment: None,
         });
     }
 
     eligible_zones.len()
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn reconcile_auto_layout_zones_for_device(
+    layout: &mut SpatialLayout,
+    layout_device_id: &str,
+    device_info: &DeviceInfo,
+) -> usize {
+    let eligible_zones = device_info
+        .zones
+        .iter()
+        .filter(|zone| {
+            zone.led_count > 0 && !matches!(zone.topology, DeviceTopologyHint::Display { .. })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if eligible_zones.is_empty() {
+        return 0;
+    }
+
+    let auto_zone_prefix = format!("auto-{}-", sanitize_auto_layout_component(layout_device_id));
+    let mut repaired = 0_usize;
+
+    for (index, zone_info) in eligible_zones.iter().enumerate() {
+        let Some(override_spec) = auto_layout_override(layout_device_id, zone_info) else {
+            continue;
+        };
+
+        let (_, default_size) = auto_layout_geometry(
+            NormalizedPosition::new(0.5, 0.5),
+            index,
+            eligible_zones.len(),
+            &zone_info.topology,
+        );
+        let expected_size = override_spec.size.unwrap_or(default_size);
+        let expected_name = if eligible_zones.len() == 1 {
+            device_info.name.clone()
+        } else {
+            format!("{}: {}", device_info.name, zone_info.name)
+        };
+        let expected_positions = generate_positions(&override_spec.topology);
+        let expected_shape = override_spec
+            .shape
+            .or_else(|| auto_layout_shape(&zone_info.topology));
+
+        for zone in layout.zones.iter_mut().filter(|zone| {
+            zone.device_id == layout_device_id
+                && zone.zone_name.as_deref() == Some(zone_info.name.as_str())
+                && zone.id.starts_with(&auto_zone_prefix)
+        }) {
+            let mut changed = false;
+
+            if zone.name != expected_name {
+                zone.name = expected_name.clone();
+                changed = true;
+            }
+            if zone.topology != override_spec.topology {
+                zone.topology = override_spec.topology.clone();
+                changed = true;
+            }
+            if zone.led_positions != expected_positions {
+                zone.led_positions = expected_positions.clone();
+                changed = true;
+            }
+            if zone.shape != expected_shape {
+                zone.shape = expected_shape.clone();
+                changed = true;
+            }
+            if zone.size != expected_size {
+                zone.size = expected_size;
+                changed = true;
+            }
+
+            if changed {
+                repaired = repaired.saturating_add(1);
+            }
+        }
+    }
+
+    repaired
 }
 
 fn auto_layout_slot_center(slot_index: usize) -> NormalizedPosition {
@@ -1268,6 +1377,90 @@ fn auto_layout_geometry(
     };
 
     (position, size)
+}
+
+#[derive(Clone)]
+struct AutoLayoutOverride {
+    topology: LedTopology,
+    size: Option<NormalizedPosition>,
+    shape: Option<ZoneShape>,
+}
+
+fn auto_layout_override(
+    layout_device_id: &str,
+    zone_info: &hypercolor_types::device::ZoneInfo,
+) -> Option<AutoLayoutOverride> {
+    if layout_device_id.starts_with("usb:1532:056f:") && zone_info.led_count == 10 {
+        return Some(AutoLayoutOverride {
+            topology: LedTopology::Custom {
+                positions: normalized_grid_positions(
+                    6,
+                    2,
+                    &[
+                        (1, 0),
+                        (2, 0),
+                        (3, 0),
+                        (4, 0),
+                        (0, 1),
+                        (1, 1),
+                        (2, 1),
+                        (3, 1),
+                        (4, 1),
+                        (5, 1),
+                    ],
+                ),
+            },
+            size: Some(NormalizedPosition::new(0.2, 0.08)),
+            shape: Some(ZoneShape::Rectangle),
+        });
+    }
+
+    if layout_device_id.starts_with("usb:1532:0099:") && zone_info.led_count == 11 {
+        return Some(AutoLayoutOverride {
+            topology: LedTopology::Custom {
+                positions: normalized_grid_positions(
+                    7,
+                    8,
+                    &[
+                        (3, 5),
+                        (3, 1),
+                        (1, 1),
+                        (0, 2),
+                        (0, 3),
+                        (0, 4),
+                        (2, 6),
+                        (4, 6),
+                        (5, 3),
+                        (6, 2),
+                        (6, 1),
+                    ],
+                ),
+            },
+            size: Some(NormalizedPosition::new(0.16, 0.18)),
+            shape: Some(ZoneShape::Rectangle),
+        });
+    }
+
+    None
+}
+
+fn normalized_grid_positions(
+    width: u32,
+    height: u32,
+    coordinates: &[(u32, u32)],
+) -> Vec<NormalizedPosition> {
+    let x_divisor = f32::from(u16::try_from(width.saturating_sub(1).max(1)).unwrap_or(u16::MAX));
+    let y_divisor = f32::from(u16::try_from(height.saturating_sub(1).max(1)).unwrap_or(u16::MAX));
+
+    coordinates
+        .iter()
+        .map(|&(x, y)| {
+            NormalizedPosition::new(
+                f32::from(u16::try_from(x).unwrap_or(u16::MAX)) / x_divisor,
+                f32::from(u16::try_from(y).unwrap_or(u16::MAX)) / y_divisor,
+            )
+        })
+        .collect()
 }
 
 fn spatial_topology_for_zone(zone_info: &hypercolor_types::device::ZoneInfo) -> LedTopology {

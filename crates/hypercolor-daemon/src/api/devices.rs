@@ -624,6 +624,7 @@ pub async fn discover_devices(
             layouts_path: state.layouts_path.clone(),
             logical_devices: Arc::clone(&state.logical_devices),
             in_progress: Arc::clone(&state.discovery_in_progress),
+            task_spawner: tokio::runtime::Handle::current(),
         };
         let result =
             discovery::execute_discovery_scan(runtime, config, resolved_backends, timeout).await;
@@ -648,6 +649,7 @@ pub async fn discover_devices(
             layouts_path: state_for_task.layouts_path.clone(),
             logical_devices: Arc::clone(&state_for_task.logical_devices),
             in_progress: Arc::clone(&state_for_task.discovery_in_progress),
+            task_spawner: tokio::runtime::Handle::current(),
         };
         let _ =
             discovery::execute_discovery_scan(runtime, config, resolved_backends, timeout).await;

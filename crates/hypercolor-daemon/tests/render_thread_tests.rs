@@ -496,6 +496,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         layouts_path: PathBuf::from("layouts.json"),
         logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
         in_progress: Arc::new(AtomicBool::new(false)),
+        task_spawner: tokio::runtime::Handle::current(),
     };
 
     let mut effect_engine = EffectEngine::new();

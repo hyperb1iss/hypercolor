@@ -18,7 +18,7 @@ use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
 use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 #[cfg(target_os = "linux")]
 use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
@@ -46,6 +46,7 @@ struct UsbDevice {
     keepalive_task: Option<tokio::task::JoinHandle<()>>,
     info_template: DeviceInfo,
     frame_diagnostics_emitted: bool,
+    non_black_frame_diagnostics_emitted: bool,
 }
 
 /// Core USB backend for HAL-managed device families.
@@ -70,6 +71,8 @@ impl UsbBackend {
             TransportType::UsbHidRaw {
                 interface,
                 report_id,
+                usage_page,
+                usage,
             } => {
                 #[cfg(target_os = "linux")]
                 {
@@ -80,11 +83,18 @@ impl UsbBackend {
                         report_id,
                         pending.serial.as_deref(),
                         pending.usb_path.as_deref(),
+                        usage_page,
+                        usage,
                     )
                     .with_context(|| {
                         format!(
-                            "failed to open hidraw transport for {:04X}:{:04X} interface {} (report_id=0x{report_id:02X})",
-                            pending.vendor_id, pending.product_id, interface
+                            "failed to open hidraw transport for {:04X}:{:04X} interface {} (report_id=0x{report_id:02X}, usage_page={}, usage={})",
+                            pending.vendor_id,
+                            pending.product_id,
+                            interface,
+                            usage_page
+                                .map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
+                            usage.map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}"))
                         )
                     })?;
 
@@ -93,6 +103,10 @@ impl UsbBackend {
                         product_id = format_args!("{:04X}", pending.product_id),
                         interface,
                         report_id = format_args!("0x{report_id:02X}"),
+                        usage_page = usage_page
+                            .map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
+                        usage = usage
+                            .map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
                         "using hidraw transport"
                     );
                     Ok(Box::new(transport))
@@ -315,23 +329,45 @@ impl UsbBackend {
         total_commands: usize,
         attempt: &mut u8,
     ) -> Result<bool> {
-        trace!(
-            protocol = protocol.name(),
-            transport = transport.name(),
-            command_index = command_position,
-            total_commands,
-            attempt = *attempt + 1,
-            transfer_type = ?command.transfer_type,
-            "usb send_receive starting"
-        );
-        let response = transport
-            .send_receive_with_type(
-                &command.data,
-                protocol.response_timeout(),
-                command.transfer_type,
-            )
-            .await
-            .map_err(map_transport_error)?;
+        let response = if command.response_delay.is_zero() {
+            trace!(
+                protocol = protocol.name(),
+                transport = transport.name(),
+                command_index = command_position,
+                total_commands,
+                attempt = *attempt + 1,
+                transfer_type = ?command.transfer_type,
+                "usb send_receive starting"
+            );
+            transport
+                .send_receive_with_type(
+                    &command.data,
+                    protocol.response_timeout(),
+                    command.transfer_type,
+                )
+                .await
+                .map_err(map_transport_error)?
+        } else {
+            trace!(
+                protocol = protocol.name(),
+                transport = transport.name(),
+                command_index = command_position,
+                total_commands,
+                attempt = *attempt + 1,
+                transfer_type = ?command.transfer_type,
+                response_delay_us = command.response_delay.as_micros(),
+                "usb send starting with delayed response read"
+            );
+            transport
+                .send_with_type(&command.data, command.transfer_type)
+                .await
+                .map_err(map_transport_error)?;
+            tokio::time::sleep(command.response_delay).await;
+            transport
+                .receive_with_type(protocol.response_timeout(), command.transfer_type)
+                .await
+                .map_err(map_transport_error)?
+        };
 
         trace!(
             protocol = protocol.name(),
@@ -565,6 +601,7 @@ impl DeviceBackend for UsbBackend {
                 keepalive_task,
                 info_template: pending.info_template,
                 frame_diagnostics_emitted: false,
+                non_black_frame_diagnostics_emitted: false,
             },
         );
 
@@ -612,6 +649,7 @@ impl DeviceBackend for UsbBackend {
         };
 
         let commands = device.protocol.encode_frame(colors);
+        let frame_stats = summarize_frame(colors);
         let first_packet = commands.first().map_or_else(
             || "<none>".to_owned(),
             |command| describe_packet(&command.data),
@@ -626,6 +664,10 @@ impl DeviceBackend for UsbBackend {
                 protocol = device.protocol.name(),
                 transport = device.transport.name(),
                 led_count = colors.len(),
+                lit_led_count = frame_stats.lit_led_count,
+                max_channel = frame_stats.max_channel,
+                first_lit = frame_stats.first_lit.as_deref().unwrap_or("<none>"),
+                sample = %frame_stats.sample,
                 command_count = commands.len(),
                 first_packet = %first_packet,
                 first_packet_hex = %first_packet_hex,
@@ -633,11 +675,26 @@ impl DeviceBackend for UsbBackend {
             );
             device.frame_diagnostics_emitted = true;
         }
+        if frame_stats.lit_led_count > 0 && !device.non_black_frame_diagnostics_emitted {
+            info!(
+                device_id = %id,
+                protocol = device.protocol.name(),
+                transport = device.transport.name(),
+                led_count = colors.len(),
+                lit_led_count = frame_stats.lit_led_count,
+                max_channel = frame_stats.max_channel,
+                first_lit = frame_stats.first_lit.as_deref().unwrap_or("<none>"),
+                sample = %frame_stats.sample,
+                "usb first non-black frame observed"
+            );
+            device.non_black_frame_diagnostics_emitted = true;
+        }
         trace!(
             device_id = %id,
             protocol = device.protocol.name(),
             transport = device.transport.name(),
             led_count = colors.len(),
+            lit_led_count = frame_stats.lit_led_count,
             command_count = commands.len(),
             first_packet = %first_packet,
             "usb frame write requested"
@@ -727,6 +784,46 @@ impl DeviceBackend for UsbBackend {
             &device.info_template,
             device.protocol.as_ref(),
         )))
+    }
+}
+
+struct FrameStats {
+    lit_led_count: usize,
+    max_channel: u8,
+    first_lit: Option<String>,
+    sample: String,
+}
+
+fn summarize_frame(colors: &[[u8; 3]]) -> FrameStats {
+    let lit_led_count = colors
+        .iter()
+        .filter(|color| color.iter().any(|component| *component > 0))
+        .count();
+    let max_channel = colors
+        .iter()
+        .flat_map(|color| color.iter())
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let first_lit = colors.iter().enumerate().find_map(|(index, color)| {
+        color
+            .iter()
+            .any(|component| *component > 0)
+            .then(|| format!("#{index}={:02X}{:02X}{:02X}", color[0], color[1], color[2]))
+    });
+    let sample = colors
+        .iter()
+        .take(4)
+        .enumerate()
+        .map(|(index, color)| format!("#{index}={:02X}{:02X}{:02X}", color[0], color[1], color[2]))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    FrameStats {
+        lit_led_count,
+        max_channel,
+        first_lit,
+        sample,
     }
 }
 

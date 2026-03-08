@@ -682,3 +682,169 @@ fn append_auto_layout_zones_for_device_skips_display_only_devices() {
     assert_eq!(added, 0);
     assert!(layout.zones.is_empty());
 }
+
+#[test]
+fn append_auto_layout_zones_for_seiren_v3_uses_custom_mic_geometry() {
+    let device_id = DeviceId::new();
+    let info = DeviceInfo {
+        id: device_id,
+        name: "Razer Seiren V3 Chroma".to_owned(),
+        vendor: "Razer".to_owned(),
+        family: DeviceFamily::Razer,
+        model: None,
+        connection_type: ConnectionType::Usb,
+        zones: vec![ZoneInfo {
+            name: "Main".to_owned(),
+            led_count: 10,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    let added =
+        discovery::append_auto_layout_zones_for_device(&mut layout, "usb:1532:056f:test", &info);
+
+    assert_eq!(added, 1);
+    match &layout.zones[0].topology {
+        LedTopology::Custom { positions } => {
+            assert_eq!(positions.len(), 10);
+            assert!((positions[0].x - 0.2).abs() < 0.001);
+            assert!((positions[0].y - 0.0).abs() < 0.001);
+            assert!((positions[9].x - 1.0).abs() < 0.001);
+            assert!((positions[9].y - 1.0).abs() < 0.001);
+        }
+        other => panic!("expected custom topology, got {other:?}"),
+    }
+    assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.2, 0.08));
+}
+
+#[test]
+fn append_auto_layout_zones_for_basilisk_v3_uses_custom_mouse_geometry() {
+    let device_id = DeviceId::new();
+    let info = DeviceInfo {
+        id: device_id,
+        name: "Razer Basilisk V3".to_owned(),
+        vendor: "Razer".to_owned(),
+        family: DeviceFamily::Razer,
+        model: None,
+        connection_type: ConnectionType::Usb,
+        zones: vec![ZoneInfo {
+            name: "Main".to_owned(),
+            led_count: 11,
+            topology: DeviceTopologyHint::Matrix { rows: 1, cols: 11 },
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    let added =
+        discovery::append_auto_layout_zones_for_device(&mut layout, "usb:1532:0099:test", &info);
+
+    assert_eq!(added, 1);
+    match &layout.zones[0].topology {
+        LedTopology::Custom { positions } => {
+            assert_eq!(positions.len(), 11);
+            assert!((positions[0].x - 0.5).abs() < 0.001);
+            assert!((positions[0].y - (5.0 / 7.0)).abs() < 0.001);
+            assert!((positions[10].x - 1.0).abs() < 0.001);
+            assert!((positions[10].y - (1.0 / 7.0)).abs() < 0.001);
+        }
+        other => panic!("expected custom topology, got {other:?}"),
+    }
+    assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.16, 0.18));
+}
+
+#[test]
+fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
+    let device_id = DeviceId::new();
+    let info = DeviceInfo {
+        id: device_id,
+        name: "Razer Seiren V3 Chroma".to_owned(),
+        vendor: "Razer".to_owned(),
+        family: DeviceFamily::Razer,
+        model: None,
+        connection_type: ConnectionType::Usb,
+        zones: vec![ZoneInfo {
+            name: "Main".to_owned(),
+            led_count: 10,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![DeviceZone {
+            id: "auto-usb-1532-056f-test-main".to_owned(),
+            name: "Razer Seiren V3 Chroma".to_owned(),
+            device_id: "usb:1532:056f:test".to_owned(),
+            zone_name: Some("Main".to_owned()),
+            group_id: None,
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(0.26, 0.1),
+            rotation: 0.0,
+            scale: 1.0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 10,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            sampling_mode: Some(SamplingMode::Bilinear),
+            edge_behavior: Some(EdgeBehavior::Clamp),
+            shape: Some(hypercolor_types::spatial::ZoneShape::Rectangle),
+            shape_preset: None,
+            attachment: None,
+            led_mapping: None,
+        }],
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    let repaired =
+        discovery::reconcile_auto_layout_zones_for_device(&mut layout, "usb:1532:056f:test", &info);
+
+    assert_eq!(repaired, 1);
+    match &layout.zones[0].topology {
+        LedTopology::Custom { positions } => assert_eq!(positions.len(), 10),
+        other => panic!("expected custom topology, got {other:?}"),
+    }
+    assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.2, 0.08));
+}

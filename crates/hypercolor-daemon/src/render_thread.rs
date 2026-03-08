@@ -1,6 +1,7 @@
 //! Frame pipeline render thread — the heartbeat of Hypercolor.
 //!
-//! Spawns a tokio task that runs the core render loop:
+//! Spawns a dedicated OS thread with its own Tokio runtime that runs the core
+//! render loop:
 //!
 //! ```text
 //! loop {
@@ -14,13 +15,13 @@
 //! }
 //! ```
 
+use std::any::Any;
 use std::cmp::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Mutex, RwLock, watch};
-use tokio::task::JoinHandle;
 use tracing::{debug, info, trace, warn};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
@@ -45,7 +46,7 @@ use crate::session::OutputPowerState;
 /// The render loop must be stopped first (via `RenderLoop::stop()`) — the
 /// thread will exit on the next `tick()` returning `false`.
 pub struct RenderThread {
-    join_handle: Option<JoinHandle<()>>,
+    join_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 /// All shared state the render thread needs.
@@ -93,12 +94,21 @@ pub struct RenderThreadState {
 }
 
 impl RenderThread {
-    /// Spawn the render thread as a tokio task.
+    /// Spawn the render thread on a dedicated OS thread.
     ///
     /// The thread runs until `RenderLoop::tick()` returns `false`
     /// (i.e., the render loop has been stopped or paused).
     pub fn spawn(state: RenderThreadState) -> Self {
-        let join_handle = tokio::spawn(run_pipeline(state));
+        let join_handle = std::thread::Builder::new()
+            .name("hypercolor-render".to_owned())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("render thread runtime should initialize");
+                runtime.block_on(run_pipeline(state));
+            })
+            .expect("render thread should spawn");
         info!("render thread spawned");
         Self {
             join_handle: Some(join_handle),
@@ -111,7 +121,13 @@ impl RenderThread {
     /// just awaits the task's completion.
     pub async fn shutdown(&mut self) -> Result<()> {
         if let Some(handle) = self.join_handle.take() {
-            handle.await?;
+            tokio::task::spawn_blocking(move || {
+                handle.join().map_err(|panic| {
+                    anyhow!("render thread panicked: {}", panic_payload_message(panic))
+                })
+            })
+            .await
+            .context("failed to join render thread")??;
             info!("render thread stopped");
         }
         Ok(())
@@ -606,6 +622,16 @@ fn brightness_factor(brightness: f32) -> u16 {
 fn scale_channel(channel: u8, factor: u16) -> u8 {
     let scaled = (u16::from(channel) * factor) / u16::from(u8::MAX);
     u8::try_from(scaled).expect("scaled brightness channel should remain within byte range")
+}
+
+fn panic_payload_message(panic: Box<dyn Any + Send + 'static>) -> String {
+    if let Some(message) = panic.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_owned()
+    }
 }
 
 /// Sample current input values for the frame.

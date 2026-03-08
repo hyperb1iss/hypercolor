@@ -11,7 +11,8 @@ use hypercolor_hal::drivers::prismrgb::{
 };
 use hypercolor_hal::drivers::razer::{
     PID_BASILISK_V3, PID_BLADE_14_2021, PID_BLADE_14_2023, PID_BLADE_15_2022,
-    PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, PID_SEIREN_EMOTE, RAZER_VENDOR_ID,
+    PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, PID_SEIREN_EMOTE, PID_SEIREN_V3_CHROMA,
+    RAZER_VENDOR_ID,
 };
 use hypercolor_hal::registry::TransportType;
 use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};
@@ -49,6 +50,7 @@ fn lookup_returns_defy_wired_descriptor() {
     assert_eq!(protocol.name(), "Dygma Defy");
     assert_eq!(protocol.total_leds(), 176);
     assert_eq!(protocol.zones().len(), 4);
+    assert!(!protocol.capabilities().supports_direct);
 }
 
 #[test]
@@ -237,6 +239,15 @@ fn lookup_returns_huntsman_descriptor() {
     assert_eq!(descriptor.name, "Razer Huntsman V2");
     assert_eq!(descriptor.family, DeviceFamily::Razer);
     assert_eq!(descriptor.protocol.id, "razer/huntsman-v2");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbHidRaw {
+            interface: 3,
+            report_id: 0x00,
+            usage_page: Some(0x000C),
+            usage: Some(0x0001),
+        }
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Razer Extended");
@@ -250,6 +261,15 @@ fn lookup_returns_basilisk_descriptor() {
 
     assert_eq!(descriptor.name, "Razer Basilisk V3");
     assert_eq!(descriptor.family, DeviceFamily::Razer);
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbHidRaw {
+            interface: 3,
+            report_id: 0x00,
+            usage_page: Some(0x000C),
+            usage: Some(0x0001),
+        }
+    );
 }
 
 #[test]
@@ -315,6 +335,30 @@ fn lookup_returns_blade_14_2023_descriptor() {
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Razer 0x1F Standard");
     assert_eq!(protocol.total_leds(), 96);
+}
+
+#[test]
+fn lookup_returns_seiren_v3_chroma_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_SEIREN_V3_CHROMA)
+        .expect("Seiren V3 Chroma descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Seiren V3 Chroma");
+    assert_eq!(descriptor.family, DeviceFamily::Razer);
+    assert_eq!(descriptor.protocol.id, "razer/seiren-v3-chroma");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbHidRaw {
+            interface: 3,
+            report_id: 0x07,
+            usage_page: Some(0xFF53),
+            usage: Some(0x0004),
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Razer Seiren V3");
+    assert_eq!(protocol.total_leds(), 10);
+    assert_eq!(protocol.zones()[0].topology, DeviceTopologyHint::Custom);
 }
 
 #[test]

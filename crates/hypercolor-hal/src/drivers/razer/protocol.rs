@@ -24,10 +24,10 @@ const COMMAND_ID_OFFSET: usize = 7;
 const ARGS_OFFSET: usize = 8;
 const ARGS_LEN: usize = 80;
 const CRC_OFFSET: usize = 88;
-// Razer matrix uploads declare fixed payload sizes even when the RGB payload is shorter.
 const STANDARD_MATRIX_FRAME_DATA_SIZE: u8 = 0x46;
-const EXTENDED_MATRIX_FRAME_DATA_SIZE: u8 = 0x47;
-const EXTENDED_CUSTOM_EFFECT_DATA_SIZE: u8 = 0x0C;
+// Modern custom-effect activation declares a 6-byte payload even though the
+// meaningful arguments only consume 5 bytes.
+const EXTENDED_CUSTOM_EFFECT_DATA_SIZE: u8 = 0x06;
 
 /// Pure packet encoder/decoder for Razer HID reports.
 #[derive(Debug, Clone)]
@@ -40,9 +40,15 @@ pub struct RazerProtocol {
     led_id: u8,
     brightness_led_id: u8,
     sends_device_mode_commands: bool,
+    mode_command_expects_response: bool,
     standard_storage: u8,
     frame_transaction_id: Option<u8>,
     keepalive_interval: Option<Duration>,
+    response_delay: Duration,
+    activate_custom_effect_in_init: bool,
+    frame_commands_expect_response: bool,
+    activation_expects_response: bool,
+    activation_post_delay: Duration,
 }
 
 impl RazerProtocol {
@@ -64,9 +70,15 @@ impl RazerProtocol {
             led_id,
             brightness_led_id: led_id,
             sends_device_mode_commands: true,
+            mode_command_expects_response: false,
             standard_storage: NOSTORE,
             frame_transaction_id: None,
             keepalive_interval: None,
+            response_delay: Duration::ZERO,
+            activate_custom_effect_in_init: false,
+            frame_commands_expect_response: true,
+            activation_expects_response: true,
+            activation_post_delay: Duration::ZERO,
         }
     }
 
@@ -81,6 +93,13 @@ impl RazerProtocol {
     #[must_use]
     pub const fn without_device_mode_commands(mut self) -> Self {
         self.sends_device_mode_commands = false;
+        self
+    }
+
+    /// Read and validate responses from `SET_DEVICE_MODE`.
+    #[must_use]
+    pub const fn with_acknowledged_device_mode_commands(mut self) -> Self {
+        self.mode_command_expects_response = true;
         self
     }
 
@@ -110,6 +129,38 @@ impl RazerProtocol {
     #[must_use]
     pub const fn with_device_mode_keepalive(mut self, interval: Duration) -> Self {
         self.keepalive_interval = Some(interval);
+        self
+    }
+
+    /// Wait before reading command responses for devices that acknowledge
+    /// writes asynchronously.
+    #[must_use]
+    pub const fn with_response_delay(mut self, response_delay: Duration) -> Self {
+        self.response_delay = response_delay;
+        self
+    }
+
+    /// Send the custom-frame activation command during initialization instead
+    /// of appending it to every rendered frame.
+    #[must_use]
+    pub const fn with_init_custom_effect(mut self) -> Self {
+        self.activate_custom_effect_in_init = true;
+        self
+    }
+
+    /// Stream frame uploads as write-only commands instead of request/response
+    /// transactions.
+    #[must_use]
+    pub const fn with_write_only_frame_uploads(mut self) -> Self {
+        self.frame_commands_expect_response = false;
+        self
+    }
+
+    /// Send the custom-effect activation as a fire-and-forget config write.
+    #[must_use]
+    pub const fn with_write_only_custom_effect_activation(mut self, post_delay: Duration) -> Self {
+        self.activation_expects_response = false;
+        self.activation_post_delay = post_delay;
         self
     }
 
@@ -176,9 +227,13 @@ impl RazerProtocol {
     }
 
     fn mode_command(&self, mode: u8, post_delay: Duration) -> Option<ProtocolCommand> {
-        // Many Razer devices accept this mode switch as a fire-and-forget
-        // feature report and do not return a stable response payload.
-        self.build_packet(0x00, 0x04, &[mode, 0x00], false, post_delay)
+        self.build_packet(
+            0x00,
+            0x04,
+            &[mode, 0x00],
+            self.mode_command_expects_response,
+            post_delay,
+        )
     }
 
     fn zone_name(&self) -> &'static str {
@@ -332,6 +387,11 @@ impl RazerProtocol {
         Some(ProtocolCommand {
             data: packet.to_vec(),
             expects_response,
+            response_delay: if expects_response {
+                self.response_delay
+            } else {
+                Duration::ZERO
+            },
             post_delay,
             transfer_type: TransferType::Primary,
         })
@@ -347,7 +407,7 @@ impl RazerProtocol {
                 0x03,
                 0x0A,
                 &[0x05, self.standard_storage],
-                false,
+                true,
                 Duration::ZERO,
             );
         }
@@ -355,11 +415,15 @@ impl RazerProtocol {
         self.build_packet_with_declared_size(
             0x0F,
             0x02,
-            &[NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME],
+            &[NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME, 0x00, 0x01],
             EXTENDED_CUSTOM_EFFECT_DATA_SIZE,
-            false,
-            Duration::ZERO,
+            self.activation_expects_response,
+            self.activation_post_delay,
         )
+    }
+
+    fn should_append_frame_activation(&self) -> bool {
+        !self.activate_custom_effect_in_init
     }
 
     fn encode_scalar(&self, color: [u8; 3]) -> Vec<ProtocolCommand> {
@@ -392,7 +456,7 @@ impl RazerProtocol {
             ),
         };
 
-        self.build_packet(command_class, command_id, &args, false, Duration::ZERO)
+        self.build_packet(command_class, command_id, &args, true, Duration::ZERO)
             .into_iter()
             .collect()
     }
@@ -429,13 +493,15 @@ impl RazerProtocol {
             0x03,
             0x0C,
             &args,
-            false,
+            self.frame_commands_expect_response,
             Duration::from_millis(1),
         ) {
             commands.push(packet);
         }
 
-        if let Some(activation) = self.activation_command() {
+        if self.should_append_frame_activation()
+            && let Some(activation) = self.activation_command()
+        {
             commands.push(activation);
         }
 
@@ -494,7 +560,7 @@ impl RazerProtocol {
                         command_id,
                         &args,
                         Some(STANDARD_MATRIX_FRAME_DATA_SIZE),
-                        false,
+                        self.frame_commands_expect_response,
                         Duration::from_millis(1),
                     ),
                     RazerLightingCommandSet::Extended => self.build_packet_with_options(
@@ -502,8 +568,8 @@ impl RazerProtocol {
                         command_class,
                         command_id,
                         &args,
-                        Some(EXTENDED_MATRIX_FRAME_DATA_SIZE),
-                        false,
+                        None,
+                        self.frame_commands_expect_response,
                         Duration::from_millis(1),
                     ),
                 };
@@ -514,7 +580,9 @@ impl RazerProtocol {
             }
         }
 
-        if let Some(activation) = self.activation_command() {
+        if self.should_append_frame_activation()
+            && let Some(activation) = self.activation_command()
+        {
             commands.push(activation);
         }
 
@@ -538,13 +606,21 @@ impl Protocol for RazerProtocol {
     }
 
     fn init_sequence(&self) -> Vec<ProtocolCommand> {
-        if !self.sends_device_mode_commands {
-            return Vec::new();
+        let mut commands = Vec::new();
+
+        if self.sends_device_mode_commands
+            && let Some(command) = self.mode_command(0x03, Duration::from_millis(7))
+        {
+            commands.push(command);
         }
 
-        self.mode_command(0x03, Duration::from_millis(7))
-            .into_iter()
-            .collect()
+        if self.activate_custom_effect_in_init
+            && let Some(command) = self.activation_command()
+        {
+            commands.push(command);
+        }
+
+        commands
     }
 
     fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
@@ -586,7 +662,7 @@ impl Protocol for RazerProtocol {
             command_class,
             command_id,
             &[storage, self.brightness_led_id, brightness],
-            false,
+            true,
             Duration::ZERO,
         )
         .map(|command| vec![command])
@@ -615,15 +691,6 @@ impl Protocol for RazerProtocol {
 
         let mut report = [0_u8; RAZER_REPORT_LEN];
         report.copy_from_slice(&data[..RAZER_REPORT_LEN]);
-
-        let expected_crc = razer_crc(&report);
-        let actual_crc = report[CRC_OFFSET];
-        if expected_crc != actual_crc {
-            return Err(ProtocolError::CrcMismatch {
-                expected: expected_crc,
-                actual: actual_crc,
-            });
-        }
 
         let status = Self::map_status(report[STATUS_OFFSET]);
         if status == ResponseStatus::Failed {

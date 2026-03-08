@@ -77,6 +77,7 @@ fn make_runtime(
         layouts_path,
         logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
         in_progress: Arc::new(AtomicBool::new(true)),
+        task_spawner: tokio::runtime::Handle::current(),
     }
 }
 

@@ -100,6 +100,9 @@ pub struct ProtocolCommand {
     /// Whether the caller should read a response after sending.
     pub expects_response: bool,
 
+    /// Minimum delay between sending the command and reading the response.
+    pub response_delay: Duration,
+
     /// Minimum delay after sending this command.
     pub post_delay: Duration,
 
