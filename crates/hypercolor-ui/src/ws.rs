@@ -2,8 +2,6 @@
 //!
 //! Handles both JSON events and binary canvas frames (0x03 header).
 
-use std::sync::Arc;
-
 use leptos::prelude::*;
 use serde::Deserialize;
 use wasm_bindgen::JsCast;
@@ -40,7 +38,37 @@ pub struct CanvasFrame {
     pub timestamp_ms: u32,
     pub width: u32,
     pub height: u32,
-    pub pixels: Arc<[u8]>,
+    pixels: js_sys::Uint8Array,
+}
+
+impl CanvasFrame {
+    /// Number of RGBA pixels in the frame.
+    pub fn pixel_count(&self) -> usize {
+        let width = usize::try_from(self.width).unwrap_or(0);
+        let height = usize::try_from(self.height).unwrap_or(0);
+        width.saturating_mul(height)
+    }
+
+    /// Sample an RGBA pixel by flat index without copying the full buffer.
+    pub fn rgba_at(&self, pixel_index: usize) -> Option<[u8; 4]> {
+        let offset = u32::try_from(pixel_index.checked_mul(4)?).ok()?;
+        let last_component = offset.checked_add(3)?;
+        if last_component >= self.pixels.length() {
+            return None;
+        }
+
+        Some([
+            self.pixels.get_index(offset),
+            self.pixels.get_index(offset + 1),
+            self.pixels.get_index(offset + 2),
+            self.pixels.get_index(offset + 3),
+        ])
+    }
+
+    /// Borrow the upload-ready RGBA pixel buffer for WebGL.
+    pub fn pixels_js(&self) -> &js_sys::Uint8Array {
+        &self.pixels
+    }
 }
 
 /// Live performance metrics streamed from the daemon.
@@ -254,10 +282,7 @@ impl WsManager {
         let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
             // Binary frame (ArrayBuffer)
             if let Ok(buffer) = event.data().dyn_into::<js_sys::ArrayBuffer>() {
-                let array = js_sys::Uint8Array::new(&buffer);
-                let data = array.to_vec();
-
-                if let Some(frame) = decode_canvas_frame(data) {
+                if let Some(frame) = decode_canvas_frame(buffer) {
                     let current_frame_number = frame.frame_number;
                     let current_timestamp_ms = frame.timestamp_ms;
                     set_canvas_frame.set(Some(frame));
@@ -347,45 +372,63 @@ fn build_ws_url() -> String {
 /// Decode a binary canvas frame.
 ///
 /// Format: `[0x03][frame_number:u32LE][timestamp:u32LE][width:u16LE][height:u16LE][format:u8][pixels...]`
-fn decode_canvas_frame(data: Vec<u8>) -> Option<CanvasFrame> {
-    if data.len() < 14 {
+fn decode_canvas_frame(buffer: js_sys::ArrayBuffer) -> Option<CanvasFrame> {
+    let data = js_sys::Uint8Array::new(&buffer);
+    if data.length() < 14 {
         return None;
     }
 
     // Magic byte check
-    if data[0] != 0x03 {
+    if data.get_index(0) != 0x03 {
         return None;
     }
 
-    let frame_number = u32::from_le_bytes(data[1..5].try_into().ok()?);
-    let timestamp_ms = u32::from_le_bytes(data[5..9].try_into().ok()?);
-    let width = u16::from_le_bytes([data[9], data[10]]) as u32;
-    let height = u16::from_le_bytes([data[11], data[12]]) as u32;
-    let format = data[13]; // 0 = RGB, 1 = RGBA
-    let expected_size = (width * height) as usize;
-    let pixel_data = &data[14..];
+    let frame_number = u32::from_le_bytes([
+        data.get_index(1),
+        data.get_index(2),
+        data.get_index(3),
+        data.get_index(4),
+    ]);
+    let timestamp_ms = u32::from_le_bytes([
+        data.get_index(5),
+        data.get_index(6),
+        data.get_index(7),
+        data.get_index(8),
+    ]);
+    let width = u16::from_le_bytes([data.get_index(9), data.get_index(10)]) as u32;
+    let height = u16::from_le_bytes([data.get_index(11), data.get_index(12)]) as u32;
+    let format = data.get_index(13); // 0 = RGB, 1 = RGBA
+    let expected_size = usize::try_from(width).ok()?.checked_mul(usize::try_from(height).ok()?)?;
+    let pixel_offset = 14_u32;
 
     let pixels = if format == 1 {
         // Already RGBA
         let expected_len = expected_size * 4;
-        if pixel_data.len() < expected_len {
+        let expected_len = u32::try_from(expected_len).ok()?;
+        let end = pixel_offset.checked_add(expected_len)?;
+        if data.length() < end {
             return None;
         }
-        Arc::<[u8]>::from(&pixel_data[..expected_len])
+        data.subarray(pixel_offset, end)
     } else {
         // RGB → convert to RGBA
         let expected_len = expected_size * 3;
-        if pixel_data.len() < expected_len {
+        let expected_len = u32::try_from(expected_len).ok()?;
+        let end = pixel_offset.checked_add(expected_len)?;
+        if data.length() < end {
             return None;
         }
         let mut rgba = Vec::with_capacity(expected_size * 4);
-        for chunk in pixel_data[..expected_len].chunks_exact(3) {
-            rgba.push(chunk[0]);
-            rgba.push(chunk[1]);
-            rgba.push(chunk[2]);
+        let rgb = data.subarray(pixel_offset, end);
+        let mut offset = 0_u32;
+        while offset < rgb.length() {
+            rgba.push(rgb.get_index(offset));
+            rgba.push(rgb.get_index(offset + 1));
+            rgba.push(rgb.get_index(offset + 2));
             rgba.push(255);
+            offset += 3;
         }
-        Arc::<[u8]>::from(rgba)
+        js_sys::Uint8Array::from(rgba.as_slice())
     };
 
     Some(CanvasFrame {

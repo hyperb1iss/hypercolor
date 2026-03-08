@@ -48,22 +48,24 @@ struct LivePalette {
 ///
 /// Samples ~200 pixels, groups by hue sector (12 sectors of 30 degrees each),
 /// skips dark/desaturated pixels, and returns averaged RGB for the top sectors.
-fn extract_palette(pixels: &[u8]) -> Option<LivePalette> {
-    if pixels.len() < 16 {
+fn extract_palette(frame: &crate::ws::CanvasFrame) -> Option<LivePalette> {
+    let pixel_count = frame.pixel_count();
+    if pixel_count < 4 {
         return None;
     }
 
-    let pixel_count = pixels.len() / 4;
     let step = (pixel_count / 200).max(1);
 
     // 12 hue sectors (30 deg each): (r_sum, g_sum, b_sum, count)
     let mut sectors = [(0.0_f64, 0.0_f64, 0.0_f64, 0_u32); 12];
 
     for i in (0..pixel_count).step_by(step) {
-        let off = i * 4;
-        let r = f64::from(pixels[off]);
-        let g = f64::from(pixels[off + 1]);
-        let b = f64::from(pixels[off + 2]);
+        let Some([r, g, b, _]) = frame.rgba_at(i) else {
+            continue;
+        };
+        let r = f64::from(r);
+        let g = f64::from(g);
+        let b = f64::from(b);
 
         let rf = r / 255.0;
         let gf = g / 255.0;
@@ -214,7 +216,7 @@ pub fn Sidebar() -> impl IntoView {
             }
             set_last_palette_time.set(now);
 
-            if let Some(new_palette) = extract_palette(frame.pixels.as_ref()) {
+            if let Some(new_palette) = extract_palette(&frame) {
                 let smoothed = match live_palette.get_untracked() {
                     Some(old) => LivePalette {
                         primary: lerp_rgb(old.primary, new_palette.primary, 0.3),

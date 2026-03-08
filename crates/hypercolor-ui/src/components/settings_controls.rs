@@ -48,7 +48,7 @@ pub fn SettingToggle(
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
-                    {restart_required.then(|| restart_badge())}
+                    {restart_required.then(restart_badge)}
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>
@@ -108,7 +108,7 @@ pub fn SettingSlider(
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
-                    {restart_required.then(|| restart_badge())}
+                    {restart_required.then(restart_badge)}
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>
@@ -162,7 +162,7 @@ pub fn SettingDropdown(
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
-                    {restart_required.then(|| restart_badge())}
+                    {restart_required.then(restart_badge)}
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>
@@ -212,7 +212,7 @@ pub fn SettingTextInput(
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
-                    {restart_required.then(|| restart_badge())}
+                    {restart_required.then(restart_badge)}
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>
@@ -253,19 +253,18 @@ pub fn SettingNumberInput(
     let key_inc = key.to_string();
     let commit = move |v: f64| {
         let clamped = v.clamp(min, max);
-        let val = if integer {
+        if integer {
             serde_json::json!(clamped as i64)
         } else {
             serde_json::json!(clamped)
-        };
-        val
+        }
     };
     view! {
         <div class="flex items-start justify-between gap-4 py-3 setting-row">
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
-                    {restart_required.then(|| restart_badge())}
+                    {restart_required.then(restart_badge)}
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>

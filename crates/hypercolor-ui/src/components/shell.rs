@@ -34,21 +34,24 @@ fn apply_theme(theme: &str) {
 
 /// Extract dominant hue (0..360) from RGBA pixel data by averaging sampled pixels.
 /// Samples every Nth pixel for performance — runs on a throttled timer, not every frame.
-fn extract_dominant_hue(pixels: &[u8]) -> Option<f64> {
-    if pixels.len() < 4 {
+fn extract_dominant_hue(frame: &crate::ws::CanvasFrame) -> Option<f64> {
+    let pixel_count = frame.pixel_count();
+    if pixel_count == 0 {
         return None;
     }
 
-    let step = (pixels.len() / 4 / 200).max(1); // ~200 samples max
+    let step = (pixel_count / 200).max(1); // ~200 samples max
     let mut hue_sin_sum = 0.0_f64;
     let mut hue_cos_sum = 0.0_f64;
     let mut count = 0u32;
 
-    for i in (0..pixels.len() / 4).step_by(step) {
-        let offset = i * 4;
-        let r = f64::from(pixels[offset]) / 255.0;
-        let g = f64::from(pixels[offset + 1]) / 255.0;
-        let b = f64::from(pixels[offset + 2]) / 255.0;
+    for i in (0..pixel_count).step_by(step) {
+        let Some([r, g, b, _]) = frame.rgba_at(i) else {
+            continue;
+        };
+        let r = f64::from(r) / 255.0;
+        let g = f64::from(g) / 255.0;
+        let b = f64::from(b) / 255.0;
 
         let max = r.max(g).max(b);
         let min = r.min(g).min(b);
@@ -142,7 +145,7 @@ pub fn Shell(children: Children) -> impl IntoView {
             }
             set_last_hue_update.set(now);
 
-            if let Some(hue) = extract_dominant_hue(frame.pixels.as_ref()) {
+            if let Some(hue) = extract_dominant_hue(&frame) {
                 if let Some(el) = shell_ref.get() {
                     let html_el: &web_sys::HtmlElement = &el;
                     let style = html_el.style();

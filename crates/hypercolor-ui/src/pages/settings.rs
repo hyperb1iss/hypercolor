@@ -69,7 +69,7 @@ fn setup_scroll_spy(set_active: WriteSignal<String>) {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if is_intersecting {
-                if let Some(target) = js_sys::Reflect::get(&entry, &"target".into()).ok() {
+                if let Ok(target) = js_sys::Reflect::get(&entry, &"target".into()) {
                     let id = js_sys::Reflect::get(&target, &"id".into())
                         .ok()
                         .and_then(|v| v.as_string())

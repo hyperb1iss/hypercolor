@@ -104,6 +104,27 @@ impl WebGlPreview {
             canvas.set_height(frame.height);
             self.width = frame.width;
             self.height = frame.height;
+
+            let Ok(width) = i32::try_from(frame.width) else {
+                return;
+            };
+            let Ok(height) = i32::try_from(frame.height) else {
+                return;
+            };
+
+            let _ = self
+                .gl
+                .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_js_u8_array(
+                    Gl::TEXTURE_2D,
+                    0,
+                    Gl::RGBA as i32,
+                    width,
+                    height,
+                    0,
+                    Gl::RGBA,
+                    Gl::UNSIGNED_BYTE,
+                    None,
+                );
         }
 
         let Ok(width) = i32::try_from(frame.width) else {
@@ -122,16 +143,16 @@ impl WebGlPreview {
 
         let _ = self
             .gl
-            .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
+            .tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_js_u8_array(
                 Gl::TEXTURE_2D,
                 0,
-                Gl::RGBA as i32,
+                0,
+                0,
                 width,
                 height,
-                0,
                 Gl::RGBA,
                 Gl::UNSIGNED_BYTE,
-                Some(frame.pixels.as_ref()),
+                Some(frame.pixels_js()),
             );
         self.gl.draw_arrays(Gl::TRIANGLE_STRIP, 0, 4);
     }
@@ -187,7 +208,6 @@ pub fn CanvasPreview(
 
     // Start a single browser-paced presentation loop when the canvas mounts.
     Effect::new({
-        let canvas_ref = canvas_ref.clone();
         let presenter = Rc::clone(&presenter);
         let animation = Rc::clone(&animation);
         let latest_frame = Rc::clone(&latest_frame);
@@ -253,13 +273,18 @@ pub fn CanvasPreview(
     });
 
     let canvas_style = format!("max-width: {max_width}; image-rendering: pixelated;");
+    let resolved_aspect_ratio = Memo::new(move |_| {
+        aspect_ratio.clone().unwrap_or_else(|| {
+            frame.with(|frame| {
+                frame
+                    .as_ref()
+                    .map(|frame| format!("{} / {}", frame.width.max(1), frame.height.max(1)))
+                    .unwrap_or_else(|| "320 / 200".to_string())
+            })
+        })
+    });
     let wrapper_style = Signal::derive(move || {
-        let ratio = aspect_ratio.clone().unwrap_or_else(|| {
-            frame
-                .get()
-                .map(|frame| format!("{} / {}", frame.width.max(1), frame.height.max(1)))
-                .unwrap_or_else(|| "320 / 200".to_string())
-        });
+        let ratio = resolved_aspect_ratio.get();
         format!("max-width: {max_width}; width: 100%; height: 100%; aspect-ratio: {ratio};")
     });
 
