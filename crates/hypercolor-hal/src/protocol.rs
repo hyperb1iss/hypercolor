@@ -26,6 +26,15 @@ pub trait Protocol: Send + Sync {
         None
     }
 
+    /// Optional one-shot commands used to verify a newly connected device.
+    ///
+    /// This is primarily useful for devices whose normal init/frame traffic is
+    /// entirely write-only, where a successful transport send does not confirm
+    /// that the device accepted or applied the command stream.
+    fn connection_diagnostics(&self) -> Vec<ProtocolCommand> {
+        Vec::new()
+    }
+
     /// Background keepalive traffic required to keep the device in direct mode.
     ///
     /// Most devices do not need this. Protocols that do can return a command

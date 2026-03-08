@@ -29,6 +29,19 @@ const STANDARD_MATRIX_FRAME_DATA_SIZE: u8 = 0x46;
 // meaningful arguments only consume 5 bytes.
 const EXTENDED_CUSTOM_EFFECT_DATA_SIZE: u8 = 0x06;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CustomEffectActivationStyle {
+    MatchCommandSet,
+    LegacyStandard {
+        storage: u8,
+    },
+    ExtendedMatrix {
+        declared_data_size: u8,
+        args: [u8; 5],
+        args_len: u8,
+    },
+}
+
 /// Pure packet encoder/decoder for Razer HID reports.
 #[derive(Debug, Clone)]
 pub struct RazerProtocol {
@@ -46,6 +59,7 @@ pub struct RazerProtocol {
     keepalive_interval: Option<Duration>,
     response_delay: Duration,
     activate_custom_effect_in_init: bool,
+    activation_style: CustomEffectActivationStyle,
     frame_commands_expect_response: bool,
     activation_expects_response: bool,
     activation_post_delay: Duration,
@@ -76,6 +90,7 @@ impl RazerProtocol {
             keepalive_interval: None,
             response_delay: Duration::ZERO,
             activate_custom_effect_in_init: false,
+            activation_style: CustomEffectActivationStyle::MatchCommandSet,
             frame_commands_expect_response: true,
             activation_expects_response: true,
             activation_post_delay: Duration::ZERO,
@@ -145,6 +160,34 @@ impl RazerProtocol {
     #[must_use]
     pub const fn with_init_custom_effect(mut self) -> Self {
         self.activate_custom_effect_in_init = true;
+        self
+    }
+
+    /// Force custom-frame activation to use the legacy standard effect packet.
+    ///
+    /// Some modern mice, including the Basilisk V3, accept extended matrix frame
+    /// uploads but still require the legacy `0x03/0x0A` effect switch to enter
+    /// software-controlled custom mode.
+    #[must_use]
+    pub const fn with_legacy_custom_effect_activation(mut self, storage: u8) -> Self {
+        self.activation_style = CustomEffectActivationStyle::LegacyStandard { storage };
+        self
+    }
+
+    /// Override the extended custom-effect payload shape for devices with a
+    /// vendor-specific apply packet.
+    #[must_use]
+    pub const fn with_extended_custom_effect_activation(
+        mut self,
+        declared_data_size: u8,
+        args: [u8; 5],
+        args_len: u8,
+    ) -> Self {
+        self.activation_style = CustomEffectActivationStyle::ExtendedMatrix {
+            declared_data_size,
+            args,
+            args_len,
+        };
         self
     }
 
@@ -401,25 +444,54 @@ impl RazerProtocol {
         self.build_packet_with_declared_size(0x00, 0x84, &[], 0x02, true, Duration::ZERO)
     }
 
+    fn serial_query_command(&self) -> Option<ProtocolCommand> {
+        self.build_packet_with_declared_size(0x00, 0x82, &[], 0x02, true, Duration::ZERO)
+    }
+
     fn activation_command(&self) -> Option<ProtocolCommand> {
-        if matches!(self.command_set, RazerLightingCommandSet::Standard) {
-            return self.build_packet(
+        match self.activation_style {
+            CustomEffectActivationStyle::LegacyStandard { storage } => self.build_packet(
                 0x03,
                 0x0A,
-                &[0x05, self.standard_storage],
-                true,
-                Duration::ZERO,
-            );
+                &[0x05, storage],
+                self.activation_expects_response,
+                self.activation_post_delay,
+            ),
+            CustomEffectActivationStyle::ExtendedMatrix {
+                declared_data_size,
+                args,
+                args_len,
+            } => {
+                let args_len = min(usize::from(args_len), args.len());
+                self.build_packet_with_declared_size(
+                    0x0F,
+                    0x02,
+                    &args[..args_len],
+                    declared_data_size,
+                    self.activation_expects_response,
+                    self.activation_post_delay,
+                )
+            }
+            CustomEffectActivationStyle::MatchCommandSet
+                if matches!(self.command_set, RazerLightingCommandSet::Standard) =>
+            {
+                self.build_packet(
+                    0x03,
+                    0x0A,
+                    &[0x05, self.standard_storage],
+                    self.activation_expects_response,
+                    self.activation_post_delay,
+                )
+            }
+            CustomEffectActivationStyle::MatchCommandSet => self.build_packet_with_declared_size(
+                0x0F,
+                0x02,
+                &[NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME, 0x00, 0x01],
+                EXTENDED_CUSTOM_EFFECT_DATA_SIZE,
+                self.activation_expects_response,
+                self.activation_post_delay,
+            ),
         }
-
-        self.build_packet_with_declared_size(
-            0x0F,
-            0x02,
-            &[NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME, 0x00, 0x01],
-            EXTENDED_CUSTOM_EFFECT_DATA_SIZE,
-            self.activation_expects_response,
-            self.activation_post_delay,
-        )
     }
 
     fn should_append_frame_activation(&self) -> bool {
@@ -666,6 +738,16 @@ impl Protocol for RazerProtocol {
             Duration::ZERO,
         )
         .map(|command| vec![command])
+    }
+
+    fn connection_diagnostics(&self) -> Vec<ProtocolCommand> {
+        let init_has_response = self.activation_expects_response
+            || (self.sends_device_mode_commands && self.mode_command_expects_response);
+        if init_has_response || self.frame_commands_expect_response {
+            return Vec::new();
+        }
+
+        self.serial_query_command().into_iter().collect()
     }
 
     fn keepalive(&self) -> Option<ProtocolKeepalive> {

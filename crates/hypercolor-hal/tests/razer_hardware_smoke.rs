@@ -121,13 +121,18 @@ async fn blade_identify_sequence_writes_without_protocol_errors() -> Result<(), 
     let transport = UsbControlTransport::new(usb.open().await?, interface, report_id).await?;
     let protocol = (descriptor.protocol.build)();
     let total_leds = usize::try_from(protocol.total_leds()).expect("LED count should fit usize");
-    let white = vec![[255, 255, 255]; total_leds];
+    let purple = vec![[0x80, 0x10, 0xD8]; total_leds];
     let clear = vec![[0, 0, 0]; total_leds];
 
     let result = async {
         run_commands(protocol.as_ref(), &transport, protocol.init_sequence()).await?;
-        run_commands(protocol.as_ref(), &transport, protocol.encode_frame(&white)).await?;
-        tokio::time::sleep(IDENTIFY_FLASH_MS).await;
+        run_commands(
+            protocol.as_ref(),
+            &transport,
+            protocol.encode_frame(&purple),
+        )
+        .await?;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         Ok::<(), Box<dyn Error>>(())
     }
     .await;
@@ -150,13 +155,14 @@ async fn basilisk_v3_custom_mode_init_and_frame_write_without_mode_command()
 
     let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BASILISK_V3)
         .expect("Basilisk descriptor should exist");
-    let (interface, report_id, usage_page, usage) = match descriptor.transport {
+    let (interface, report_id, report_mode, usage_page, usage) = match descriptor.transport {
         TransportType::UsbHidRaw {
             interface,
             report_id,
+            report_mode,
             usage_page,
             usage,
-        } => (interface, report_id, usage_page, usage),
+        } => (interface, report_id, report_mode, usage_page, usage),
         other => panic!("expected hidraw transport for Basilisk V3, got {other:?}"),
     };
 
@@ -172,16 +178,16 @@ async fn basilisk_v3_custom_mode_init_and_frame_write_without_mode_command()
         PID_BASILISK_V3,
         interface,
         report_id,
+        report_mode,
         usb.serial_number(),
         Some(&usb_device_path),
         usage_page,
         usage,
     )?;
     let protocol = (descriptor.protocol.build)();
-    assert_eq!(
-        protocol.init_sequence().len(),
-        1,
-        "Basilisk init should only send custom-effect activation"
+    assert!(
+        protocol.init_sequence().is_empty(),
+        "Basilisk should apply custom mode per frame"
     );
     let total_leds = usize::try_from(protocol.total_leds()).expect("LED count should fit usize");
     let white = vec![[255, 255, 255]; total_leds];
@@ -202,8 +208,8 @@ async fn basilisk_v3_custom_mode_init_and_frame_write_without_mode_command()
 }
 
 #[tokio::test]
-#[ignore = "manual Basilisk V3 packet diagnostics on connected hardware"]
-async fn basilisk_v3_signalrgb_sequence_diagnostics() -> Result<(), Box<dyn Error>> {
+#[ignore = "requires a connected Basilisk V3 and HYPERCOLOR_TEST_RAZER_HARDWARE=1; streams frames to reproduce long-session instability"]
+async fn basilisk_v3_sustained_frame_stream_stays_stable() -> Result<(), Box<dyn Error>> {
     if !hardware_tests_enabled() {
         eprintln!("skipping hardware smoke test; set {HARDWARE_TEST_ENV}=1 to enable it");
         return Ok(());
@@ -211,13 +217,14 @@ async fn basilisk_v3_signalrgb_sequence_diagnostics() -> Result<(), Box<dyn Erro
 
     let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BASILISK_V3)
         .expect("Basilisk descriptor should exist");
-    let (interface, report_id, usage_page, usage) = match descriptor.transport {
+    let (interface, report_id, report_mode, usage_page, usage) = match descriptor.transport {
         TransportType::UsbHidRaw {
             interface,
             report_id,
+            report_mode,
             usage_page,
             usage,
-        } => (interface, report_id, usage_page, usage),
+        } => (interface, report_id, report_mode, usage_page, usage),
         other => panic!("expected hidraw transport for Basilisk V3, got {other:?}"),
     };
 
@@ -233,6 +240,218 @@ async fn basilisk_v3_signalrgb_sequence_diagnostics() -> Result<(), Box<dyn Erro
         PID_BASILISK_V3,
         interface,
         report_id,
+        report_mode,
+        usb.serial_number(),
+        Some(&usb_device_path),
+        usage_page,
+        usage,
+    )?;
+    let protocol = (descriptor.protocol.build)();
+    let total_leds = usize::try_from(protocol.total_leds()).expect("LED count should fit usize");
+    let purple = vec![[0x50, 0x10, 0xD5]; total_leds];
+    let teal = vec![[0x10, 0xA0, 0x80]; total_leds];
+    let clear = vec![[0, 0, 0]; total_leds];
+
+    let result = async {
+        run_commands(protocol.as_ref(), &transport, protocol.init_sequence()).await?;
+
+        let started = tokio::time::Instant::now();
+        let stream_duration = Duration::from_secs(40);
+        let frame_period = Duration::from_millis(50);
+        let mut use_purple = true;
+
+        while started.elapsed() < stream_duration {
+            let frame = if use_purple { &purple } else { &teal };
+            run_commands(protocol.as_ref(), &transport, protocol.encode_frame(frame)).await?;
+            use_purple = !use_purple;
+            tokio::time::sleep(frame_period).await;
+        }
+
+        Ok::<(), Box<dyn Error>>(())
+    }
+    .await;
+
+    let _ = run_commands(protocol.as_ref(), &transport, protocol.encode_frame(&clear)).await;
+    let _ = transport.close().await;
+
+    result
+}
+
+#[tokio::test]
+#[ignore = "manual Basilisk V3 interface sweep for visual diagnostics"]
+async fn basilisk_v3_interface_sweep_visual_diagnostic() -> Result<(), Box<dyn Error>> {
+    if !hardware_tests_enabled() {
+        eprintln!("skipping hardware smoke test; set {HARDWARE_TEST_ENV}=1 to enable it");
+        return Ok(());
+    }
+
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BASILISK_V3)
+        .expect("Basilisk descriptor should exist");
+    let (report_id, report_mode) = match descriptor.transport {
+        TransportType::UsbHidRaw {
+            report_id,
+            report_mode,
+            ..
+        } => (report_id, report_mode),
+        other => panic!("expected hidraw transport for Basilisk V3, got {other:?}"),
+    };
+
+    let usb = nusb::list_devices()
+        .await?
+        .find(|device| {
+            device.vendor_id() == RAZER_VENDOR_ID && device.product_id() == PID_BASILISK_V3
+        })
+        .expect("Basilisk USB device should be present");
+    let usb_device_path = usb_path(&usb);
+    let protocol = (descriptor.protocol.build)();
+    let total_leds = usize::try_from(protocol.total_leds()).expect("LED count should fit usize");
+    let white = vec![[0xFF, 0xFF, 0xFF]; total_leds];
+    let clear = vec![[0, 0, 0]; total_leds];
+
+    for interface in [3_u8, 1, 0, 2] {
+        eprintln!("basilisk interface probe: interface={interface}");
+
+        let transport = match UsbHidRawTransport::open(
+            RAZER_VENDOR_ID,
+            PID_BASILISK_V3,
+            interface,
+            report_id,
+            report_mode,
+            usb.serial_number(),
+            Some(&usb_device_path),
+            None,
+            None,
+        ) {
+            Ok(transport) => transport,
+            Err(error) => {
+                eprintln!(
+                    "basilisk interface probe open failed: interface={interface} error={error}"
+                );
+                continue;
+            }
+        };
+
+        let result = async {
+            run_commands(protocol.as_ref(), &transport, protocol.init_sequence()).await?;
+            run_commands(protocol.as_ref(), &transport, protocol.encode_frame(&white)).await?;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            Ok::<(), Box<dyn Error>>(())
+        }
+        .await;
+
+        let _ = run_commands(protocol.as_ref(), &transport, protocol.encode_frame(&clear)).await;
+        let _ = transport.close().await;
+
+        match result {
+            Ok(()) => eprintln!("basilisk interface probe completed: interface={interface}"),
+            Err(error) => eprintln!(
+                "basilisk interface probe send failed: interface={interface} error={error}"
+            ),
+        }
+
+        tokio::time::sleep(Duration::from_millis(750)).await;
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "manual Basilisk V3 interface 3 color probe"]
+async fn basilisk_v3_interface_3_color_probe() -> Result<(), Box<dyn Error>> {
+    if !hardware_tests_enabled() {
+        eprintln!("skipping hardware smoke test; set {HARDWARE_TEST_ENV}=1 to enable it");
+        return Ok(());
+    }
+
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BASILISK_V3)
+        .expect("Basilisk descriptor should exist");
+    let (report_id, report_mode, usage_page, usage) = match descriptor.transport {
+        TransportType::UsbHidRaw {
+            report_id,
+            report_mode,
+            usage_page,
+            usage,
+            ..
+        } => (report_id, report_mode, usage_page, usage),
+        other => panic!("expected hidraw transport for Basilisk V3, got {other:?}"),
+    };
+
+    let usb = nusb::list_devices()
+        .await?
+        .find(|device| {
+            device.vendor_id() == RAZER_VENDOR_ID && device.product_id() == PID_BASILISK_V3
+        })
+        .expect("Basilisk USB device should be present");
+    let usb_device_path = usb_path(&usb);
+    let transport = UsbHidRawTransport::open(
+        RAZER_VENDOR_ID,
+        PID_BASILISK_V3,
+        3,
+        report_id,
+        report_mode,
+        usb.serial_number(),
+        Some(&usb_device_path),
+        usage_page,
+        usage,
+    )?;
+    let protocol = (descriptor.protocol.build)();
+    let total_leds = usize::try_from(protocol.total_leds()).expect("LED count should fit usize");
+    let red = vec![[0xFF, 0x00, 0x00]; total_leds];
+    let blue = vec![[0x00, 0x00, 0xFF]; total_leds];
+    let clear = vec![[0, 0, 0]; total_leds];
+
+    let result = async {
+        run_commands(protocol.as_ref(), &transport, protocol.init_sequence()).await?;
+        eprintln!("basilisk color probe: red");
+        run_commands(protocol.as_ref(), &transport, protocol.encode_frame(&red)).await?;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        eprintln!("basilisk color probe: blue");
+        run_commands(protocol.as_ref(), &transport, protocol.encode_frame(&blue)).await?;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        Ok::<(), Box<dyn Error>>(())
+    }
+    .await;
+
+    let _ = run_commands(protocol.as_ref(), &transport, protocol.encode_frame(&clear)).await;
+    let _ = transport.close().await;
+
+    result
+}
+
+#[tokio::test]
+#[ignore = "manual Basilisk V3 packet diagnostics on connected hardware"]
+async fn basilisk_v3_signalrgb_sequence_diagnostics() -> Result<(), Box<dyn Error>> {
+    if !hardware_tests_enabled() {
+        eprintln!("skipping hardware smoke test; set {HARDWARE_TEST_ENV}=1 to enable it");
+        return Ok(());
+    }
+
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BASILISK_V3)
+        .expect("Basilisk descriptor should exist");
+    let (interface, report_id, report_mode, usage_page, usage) = match descriptor.transport {
+        TransportType::UsbHidRaw {
+            interface,
+            report_id,
+            report_mode,
+            usage_page,
+            usage,
+        } => (interface, report_id, report_mode, usage_page, usage),
+        other => panic!("expected hidraw transport for Basilisk V3, got {other:?}"),
+    };
+
+    let usb = nusb::list_devices()
+        .await?
+        .find(|device| {
+            device.vendor_id() == RAZER_VENDOR_ID && device.product_id() == PID_BASILISK_V3
+        })
+        .expect("Basilisk USB device should be present");
+    let usb_device_path = usb_path(&usb);
+    let transport = UsbHidRawTransport::open(
+        RAZER_VENDOR_ID,
+        PID_BASILISK_V3,
+        interface,
+        report_id,
+        report_mode,
         usb.serial_number(),
         Some(&usb_device_path),
         usage_page,
@@ -449,13 +668,14 @@ async fn seiren_v3_chroma_init_and_frame_write() -> Result<(), Box<dyn Error>> {
 
     let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_SEIREN_V3_CHROMA)
         .expect("Seiren V3 Chroma descriptor should exist");
-    let (interface, report_id, usage_page, usage) = match descriptor.transport {
+    let (interface, report_id, report_mode, usage_page, usage) = match descriptor.transport {
         TransportType::UsbHidRaw {
             interface,
             report_id,
+            report_mode,
             usage_page,
             usage,
-        } => (interface, report_id, usage_page, usage),
+        } => (interface, report_id, report_mode, usage_page, usage),
         other => panic!("expected hidraw transport for Seiren V3 Chroma, got {other:?}"),
     };
 
@@ -471,6 +691,7 @@ async fn seiren_v3_chroma_init_and_frame_write() -> Result<(), Box<dyn Error>> {
         PID_SEIREN_V3_CHROMA,
         interface,
         report_id,
+        report_mode,
         usb.serial_number(),
         Some(&usb_device_path),
         usage_page,

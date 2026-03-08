@@ -8,8 +8,8 @@ use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, Trans
 use super::protocol::RazerProtocol;
 use super::seiren_v3::SeirenV3Protocol;
 use super::types::{
-    LED_ID_BACKLIGHT, LED_ID_ZERO, RazerLightingCommandSet, RazerMatrixType, RazerProtocolVersion,
-    VARSTORE,
+    EFFECT_CUSTOM_FRAME, LED_ID_BACKLIGHT, LED_ID_ZERO, NOSTORE, RazerLightingCommandSet,
+    RazerMatrixType, RazerProtocolVersion, VARSTORE,
 };
 
 /// Razer vendor ID.
@@ -70,8 +70,12 @@ pub fn build_basilisk_v3_protocol() -> Box<dyn Protocol> {
             LED_ID_ZERO,
         )
         .without_device_mode_commands()
-        .with_init_custom_effect()
-        .with_write_only_custom_effect_activation(std::time::Duration::from_millis(10))
+        .with_extended_custom_effect_activation(
+            0x0C,
+            [NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME, 0x00, 0x00],
+            3,
+        )
+        .with_write_only_custom_effect_activation(std::time::Duration::ZERO)
         .with_write_only_frame_uploads(),
     )
 }

@@ -29,6 +29,11 @@ struct HidrawCandidate {
     usage: u16,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct FeatureReportRequestState {
+    transaction_id: Option<u8>,
+}
+
 /// HIDRAW transport backed by `hidapi` on Linux.
 pub struct UsbHidRawTransport {
     device_path: String,
@@ -36,6 +41,7 @@ pub struct UsbHidRawTransport {
     report_mode: HidRawReportMode,
     max_packet_len: usize,
     device: Arc<Mutex<HidDevice>>,
+    feature_report_state: Arc<Mutex<FeatureReportRequestState>>,
     closed: AtomicBool,
     op_lock: tokio::sync::Mutex<()>,
 }
@@ -159,6 +165,7 @@ impl UsbHidRawTransport {
             report_mode,
             max_packet_len: DEFAULT_MAX_PACKET_LEN,
             device: Arc::new(Mutex::new(device)),
+            feature_report_state: Arc::new(Mutex::new(FeatureReportRequestState::default())),
             closed: AtomicBool::new(false),
             op_lock: tokio::sync::Mutex::new(()),
         })
@@ -186,6 +193,7 @@ impl Transport for UsbHidRawTransport {
 
         let _guard = self.op_lock.lock().await;
         let device = Arc::clone(&self.device);
+        let feature_report_state = Arc::clone(&self.feature_report_state);
         let report_id = self.report_id;
         let report_mode = self.report_mode;
         let packet = encode_feature_report_packet(data, report_id);
@@ -201,6 +209,7 @@ impl Transport for UsbHidRawTransport {
                 );
 
                 tokio::task::spawn_blocking(move || {
+                    store_feature_report_transaction_id(feature_report_state.as_ref(), &packet);
                     send_feature_report_locked(device.as_ref(), &packet)
                 })
                 .await
@@ -218,6 +227,7 @@ impl Transport for UsbHidRawTransport {
                 );
 
                 tokio::task::spawn_blocking(move || {
+                    store_feature_report_transaction_id(feature_report_state.as_ref(), &packet);
                     send_output_report_locked(device.as_ref(), &packet)
                 })
                 .await
@@ -233,6 +243,7 @@ impl Transport for UsbHidRawTransport {
 
         let _guard = self.op_lock.lock().await;
         let device = Arc::clone(&self.device);
+        let feature_report_state = Arc::clone(&self.feature_report_state);
         let report_id = self.report_id;
         let max_packet_len = self.max_packet_len;
         let report_mode = self.report_mode;
@@ -247,7 +258,14 @@ impl Transport for UsbHidRawTransport {
                 );
 
                 let response = tokio::task::spawn_blocking(move || {
-                    receive_feature_report_locked(device.as_ref(), report_id, max_packet_len)
+                    let transaction_id =
+                        load_feature_report_transaction_id(feature_report_state.as_ref());
+                    receive_feature_report_locked(
+                        device.as_ref(),
+                        report_id,
+                        max_packet_len,
+                        transaction_id,
+                    )
                 })
                 .await
                 .map_err(|error| TransportError::IoError {
@@ -306,6 +324,7 @@ impl Transport for UsbHidRawTransport {
         let report_id = self.report_id;
         let max_packet_len = self.max_packet_len;
         let report_mode = self.report_mode;
+        let feature_report_state = Arc::clone(&self.feature_report_state);
         let packet = encode_feature_report_packet(data, report_id);
 
         match report_mode {
@@ -330,6 +349,7 @@ impl Transport for UsbHidRawTransport {
                         &packet,
                         report_id,
                         max_packet_len,
+                        feature_report_state.as_ref(),
                     )
                 })
                 .await
@@ -437,10 +457,11 @@ fn receive_feature_report_locked(
     device: &Mutex<HidDevice>,
     report_id: u8,
     max_packet_len: usize,
+    transaction_id: Option<u8>,
 ) -> Result<Vec<u8>, TransportError> {
     let device = lock_hidraw_device(device)?;
-    let mut buffer = vec![0_u8; max_packet_len.saturating_add(1)];
-    buffer[0] = report_id;
+    let mut buffer =
+        encode_feature_report_request_buffer(report_id, max_packet_len, transaction_id);
 
     let read = device
         .get_feature_report(&mut buffer)
@@ -459,14 +480,17 @@ fn send_receive_feature_report_locked(
     packet: &[u8],
     report_id: u8,
     max_packet_len: usize,
+    feature_report_state: &Mutex<FeatureReportRequestState>,
 ) -> Result<Vec<u8>, TransportError> {
     let device = lock_hidraw_device(device)?;
+    store_feature_report_transaction_id(feature_report_state, packet);
     device
         .send_feature_report(packet)
         .map_err(|error| map_hidapi_error(&error))?;
 
-    let mut buffer = vec![0_u8; max_packet_len.saturating_add(1)];
-    buffer[0] = report_id;
+    let transaction_id = load_feature_report_transaction_id(feature_report_state);
+    let mut buffer =
+        encode_feature_report_request_buffer(report_id, max_packet_len, transaction_id);
 
     let read = device
         .get_feature_report(&mut buffer)
@@ -518,6 +542,33 @@ pub fn encode_feature_report_packet(payload: &[u8], report_id: u8) -> Vec<u8> {
     packet.push(report_id);
     packet.extend_from_slice(payload);
     packet
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn encode_feature_report_request_buffer(
+    report_id: u8,
+    max_packet_len: usize,
+    transaction_id: Option<u8>,
+) -> Vec<u8> {
+    let mut buffer = vec![0_u8; max_packet_len.saturating_add(1)];
+    buffer[0] = report_id;
+    if let Some(transaction_id) = transaction_id {
+        if buffer.len() > 2 {
+            buffer[2] = transaction_id;
+        }
+    }
+    buffer
+}
+
+fn store_feature_report_transaction_id(state: &Mutex<FeatureReportRequestState>, packet: &[u8]) {
+    if let Ok(mut state) = state.lock() {
+        state.transaction_id = packet.get(2).copied();
+    }
+}
+
+fn load_feature_report_transaction_id(state: &Mutex<FeatureReportRequestState>) -> Option<u8> {
+    state.lock().ok().and_then(|state| state.transaction_id)
 }
 
 #[doc(hidden)]

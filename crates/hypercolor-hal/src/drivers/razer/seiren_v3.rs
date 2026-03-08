@@ -22,6 +22,11 @@ const CRC_OFFSET: usize = 61;
 pub struct SeirenV3Protocol;
 
 impl SeirenV3Protocol {
+    fn encode_color(color: [u8; 3]) -> [u8; 3] {
+        // The Seiren V3 ring expects RBG channel order on the wire.
+        [color[0], color[2], color[1]]
+    }
+
     fn crc(payload: &[u8; SEIREN_V3_PAYLOAD_LEN]) -> u8 {
         payload[1..].iter().fold(0_u8, |acc, byte| acc ^ byte)
     }
@@ -91,7 +96,7 @@ impl Protocol for SeirenV3Protocol {
         let mut args = Vec::with_capacity(34);
         args.extend_from_slice(&[0x00, 0x00, 0x00, 0x09]);
         for color in ordered {
-            args.extend_from_slice(&color);
+            args.extend_from_slice(&Self::encode_color(color));
         }
 
         vec![Self::build_packet(

@@ -10,11 +10,11 @@ use hypercolor_types::device::DeviceTopologyHint;
 #[test]
 fn crc_uses_expected_byte_window() {
     let mut packet = [0_u8; RAZER_REPORT_LEN];
-    packet[1] = 0x12;
-    packet[86] = 0x34;
-    packet[87] = 0xFF; // Out of CRC range
+    packet[1] = 0x12; // Out of CRC range
+    packet[2] = 0x34;
+    packet[87] = 0x56;
 
-    assert_eq!(razer_crc(&packet), 0x12 ^ 0x34);
+    assert_eq!(razer_crc(&packet), 0x34 ^ 0x56);
 }
 
 #[test]
@@ -110,17 +110,10 @@ fn basilisk_v3_protocol_uses_fixed_length_matrix_packets() {
         .collect::<Vec<_>>();
 
     let init = protocol.init_sequence();
-    assert_eq!(init.len(), 1, "custom effect activation only");
-    assert_eq!(init[0].data[5], 0x06);
-    assert_eq!(init[0].data[6], 0x0F);
-    assert_eq!(init[0].data[7], 0x02);
-    assert!(!init[0].expects_response);
-    assert_eq!(init[0].post_delay, std::time::Duration::from_millis(10));
-    assert_eq!(init[0].data[11], 0x00);
-    assert_eq!(init[0].data[12], 0x01);
+    assert!(init.is_empty(), "Basilisk custom mode is applied per frame");
 
     let commands = protocol.encode_frame(&colors);
-    assert_eq!(commands.len(), 1, "single frame chunk");
+    assert_eq!(commands.len(), 2, "single frame chunk + modern apply");
     assert!(commands.iter().all(|command| !command.expects_response));
     assert!(
         commands
@@ -136,6 +129,33 @@ fn basilisk_v3_protocol_uses_fixed_length_matrix_packets() {
     assert_eq!(frame[10], 0x00);
     assert_eq!(frame[11], 0x00);
     assert_eq!(frame[12], 0x0A);
+
+    let activation = &commands[1].data;
+    assert_eq!(activation[1], 0x1F);
+    assert_eq!(activation[5], 0x0C);
+    assert_eq!(activation[6], 0x0F);
+    assert_eq!(activation[7], 0x02);
+    assert_eq!(activation[8], 0x00);
+    assert_eq!(activation[9], 0x00);
+    assert_eq!(activation[10], 0x08);
+    assert_eq!(commands[1].post_delay, std::time::Duration::ZERO);
+}
+
+#[test]
+fn basilisk_v3_protocol_exposes_connect_diagnostic_probe() {
+    let protocol = build_basilisk_v3_protocol();
+    let diagnostics = protocol.connection_diagnostics();
+
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "write-only init should expose a probe"
+    );
+    assert!(diagnostics[0].expects_response);
+    assert_eq!(diagnostics[0].data[1], 0x1F);
+    assert_eq!(diagnostics[0].data[5], 0x02);
+    assert_eq!(diagnostics[0].data[6], 0x00);
+    assert_eq!(diagnostics[0].data[7], 0x82);
 }
 
 #[test]
@@ -155,6 +175,10 @@ fn huntsman_v2_protocol_initializes_custom_mode_once_and_streams_write_only_fram
     assert!(commands.iter().all(|command| !command.expects_response));
     assert!(commands.iter().all(|command| command.data[6] == 0x0F));
     assert!(commands.iter().all(|command| command.data[7] == 0x03));
+    assert!(
+        protocol.connection_diagnostics().is_empty(),
+        "acknowledged init sequence should not need an extra probe"
+    );
 }
 
 #[test]
@@ -176,16 +200,16 @@ fn seiren_v3_protocol_uses_report_id_07_payload_shape() {
     assert_eq!(init[1].data[12], 0x01);
 
     let colors = vec![
-        [1, 0, 0],
-        [2, 0, 0],
-        [3, 0, 0],
-        [4, 0, 0],
-        [5, 0, 0],
-        [6, 0, 0],
-        [7, 0, 0],
-        [8, 0, 0],
-        [9, 0, 0],
-        [10, 0, 0],
+        [1, 11, 21],
+        [2, 12, 22],
+        [3, 13, 23],
+        [4, 14, 24],
+        [5, 15, 25],
+        [6, 16, 26],
+        [7, 17, 27],
+        [8, 18, 28],
+        [9, 19, 29],
+        [10, 20, 30],
     ];
     let frame = protocol.encode_frame(&colors);
     assert_eq!(frame.len(), 1);
@@ -194,10 +218,10 @@ fn seiren_v3_protocol_uses_report_id_07_payload_shape() {
     assert_eq!(frame[0].data[6], 0x0F);
     assert_eq!(frame[0].data[7], 0x03);
     assert_eq!(&frame[0].data[8..12], &[0x00, 0x00, 0x00, 0x09]);
-    assert_eq!(&frame[0].data[12..15], &[8, 0, 0]);
-    assert_eq!(&frame[0].data[15..18], &[6, 0, 0]);
-    assert_eq!(&frame[0].data[18..21], &[5, 0, 0]);
-    assert_eq!(&frame[0].data[39..42], &[4, 0, 0]);
+    assert_eq!(&frame[0].data[12..15], &[8, 28, 18]);
+    assert_eq!(&frame[0].data[15..18], &[6, 26, 16]);
+    assert_eq!(&frame[0].data[18..21], &[5, 25, 15]);
+    assert_eq!(&frame[0].data[39..42], &[4, 24, 14]);
 }
 
 #[test]

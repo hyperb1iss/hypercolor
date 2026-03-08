@@ -233,7 +233,6 @@ impl Transport for UsbSerialTransport {
         self.send_locked(&mut inner, data).await?;
         self.receive_locked(&mut inner, timeout).await
     }
-
     async fn close(&self) -> Result<(), TransportError> {
         self.closed.store(true, Ordering::Release);
         Ok(())

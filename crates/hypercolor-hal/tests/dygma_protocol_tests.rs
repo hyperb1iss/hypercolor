@@ -15,23 +15,32 @@ fn rgb_to_rgbw_matches_reference_conversion() {
 }
 
 #[test]
-fn init_sequence_queries_identity_probe_and_blackout() {
+fn init_sequence_queries_identity_probe_and_capabilities() {
     let protocol = build_defy_wired_protocol();
     let commands = protocol.init_sequence();
 
-    assert_eq!(commands.len(), 6);
+    assert_eq!(commands.len(), 4);
     assert_eq!(commands[0].data, b"hardware.chip_id\n");
     assert_eq!(commands[1].data, b"hardware.firmware\n");
     assert_eq!(commands[2].data, b"led.at 0\n");
-    assert_eq!(commands[3].data, b"led.fade 0\n");
-    assert_eq!(commands[4].data, b"led.mode 0\n");
-    assert_eq!(commands[5].data, b"led.setAll 0 0 0\n");
-    assert_eq!(commands[5].post_delay, Duration::from_millis(50));
+    assert_eq!(commands[3].data, b"hypercolor.capabilities\n");
     assert!(commands.iter().all(|command| command.expects_response));
 }
 
 #[test]
-fn shutdown_sequence_restores_palette_mode() {
+fn stock_connection_diagnostics_black_out_leds() {
+    let protocol = build_defy_wired_protocol();
+    let commands = protocol.connection_diagnostics();
+
+    assert_eq!(commands.len(), 3);
+    assert_eq!(commands[0].data, b"led.fade 0\n");
+    assert_eq!(commands[1].data, b"led.mode 0\n");
+    assert_eq!(commands[2].data, b"led.setAll 0 0 0\n");
+    assert_eq!(commands[2].post_delay, Duration::from_millis(50));
+}
+
+#[test]
+fn shutdown_sequence_restores_palette_mode_for_stock_firmware() {
     let protocol = build_defy_wired_protocol();
     let commands = protocol.shutdown_sequence();
 
@@ -78,6 +87,18 @@ fn non_probe_response_does_not_change_color_mode() {
 }
 
 #[test]
+fn capability_response_enables_direct_streaming() {
+    let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
+
+    protocol
+        .parse_response(b"hypercolor.capabilities version=1 direct=1 timeout_ms=500")
+        .expect("capability response should parse");
+
+    assert!(protocol.capabilities().supports_direct);
+    assert!(protocol.connection_diagnostics().is_empty());
+}
+
+#[test]
 fn direct_frame_encoding_is_disabled_for_stock_defy_firmware() {
     let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
     protocol
@@ -87,6 +108,39 @@ fn direct_frame_encoding_is_disabled_for_stock_defy_firmware() {
     let commands = protocol.encode_frame(&[[255, 255, 255]; 176]);
 
     assert!(commands.is_empty());
+}
+
+#[test]
+fn direct_frame_encoding_uses_hypercolor_binary_packet() {
+    let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
+    protocol
+        .parse_response(b"hypercolor.capabilities version=1 direct=1 timeout_ms=500")
+        .expect("capability response should parse");
+
+    let commands = protocol.encode_frame(&[[1, 2, 3]; 176]);
+
+    assert_eq!(commands.len(), 1);
+    let packet = &commands[0].data;
+    assert_eq!(&packet[..3], &[0xFF, b'H', b'C']);
+    assert_eq!(packet[3], 1);
+    assert_eq!(packet[4], 0x10);
+    assert_eq!(u16::from_le_bytes([packet[6], packet[7]]), 530);
+    assert_eq!(u16::from_le_bytes([packet[10], packet[11]]), 176);
+    assert_eq!(&packet[12..15], &[1, 2, 3]);
+    assert_eq!(packet.len(), 540);
+}
+
+#[test]
+fn streaming_shutdown_sequence_clears_override_without_touching_mode() {
+    let protocol = DygmaProtocol::new(DygmaVariant::DefyWired);
+    protocol
+        .parse_response(b"hypercolor.capabilities version=1 direct=1 timeout_ms=500")
+        .expect("capability response should parse");
+
+    let commands = protocol.shutdown_sequence();
+
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].data, b"hypercolor.clear\n");
 }
 
 #[test]
@@ -124,6 +178,16 @@ fn parse_response_rejects_invalid_utf8() {
         .expect_err("invalid UTF-8 should fail");
 
     assert!(matches!(error, ProtocolError::MalformedResponse { .. }));
+}
+
+#[test]
+fn parse_response_rejects_hypercolor_error_ack() {
+    let protocol = build_defy_wired_protocol();
+    let error = protocol
+        .parse_response(b"hypercolor.error crc 7")
+        .expect_err("error ack should fail");
+
+    assert!(matches!(error, ProtocolError::DeviceError { .. }));
 }
 
 #[test]

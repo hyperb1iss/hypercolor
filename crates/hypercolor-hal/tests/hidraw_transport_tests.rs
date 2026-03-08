@@ -1,53 +1,32 @@
 #![cfg(target_os = "linux")]
 
 use hypercolor_hal::transport::hidraw::{
-    decode_feature_report_packet, encode_feature_report_packet, usb_paths_match_for_testing,
+    encode_feature_report_packet, encode_feature_report_request_buffer,
 };
 
 #[test]
-fn encode_feature_report_packet_prepends_report_id_for_zero_report_devices() {
-    let payload = [0x00, 0x3F, 0x02, 0x00];
+fn feature_report_packet_prefixes_report_id() {
+    let packet = encode_feature_report_packet(&[0x00, 0x1F, 0xAA], 0x07);
 
-    let packet = encode_feature_report_packet(&payload, 0x00);
-
-    assert_eq!(packet, vec![0x00, 0x00, 0x3F, 0x02, 0x00]);
+    assert_eq!(packet, vec![0x07, 0x00, 0x1F, 0xAA]);
 }
 
 #[test]
-fn encode_feature_report_packet_prepends_report_id_for_numbered_reports() {
-    let payload = [0x02, 0x60, 0x01];
+fn feature_report_request_buffer_includes_transaction_id_hint() {
+    let buffer = encode_feature_report_request_buffer(0x00, 90, Some(0x1F));
 
-    let packet = encode_feature_report_packet(&payload, 0x07);
-
-    assert_eq!(packet, vec![0x07, 0x02, 0x60, 0x01]);
+    assert_eq!(buffer.len(), 91);
+    assert_eq!(buffer[0], 0x00);
+    assert_eq!(buffer[1], 0x00);
+    assert_eq!(buffer[2], 0x1F);
 }
 
 #[test]
-fn decode_feature_report_packet_strips_explicit_leading_report_id() {
-    let buffer = [0x00, 0x02, 0x3F, 0x00];
+fn feature_report_request_buffer_leaves_hint_empty_when_unknown() {
+    let buffer = encode_feature_report_request_buffer(0x07, 63, None);
 
-    let payload = decode_feature_report_packet(&buffer, 0x00, 3);
-
-    assert_eq!(payload, vec![0x02, 0x3F, 0x00]);
-}
-
-#[test]
-fn decode_feature_report_packet_preserves_payload_without_explicit_report_id() {
-    let buffer = [0x00, 0x3F, 0x00];
-
-    let payload = decode_feature_report_packet(&buffer, 0x00, 3);
-
-    assert_eq!(payload, buffer);
-}
-
-#[test]
-fn usb_paths_match_handles_padded_bus_numbers() {
-    assert!(usb_paths_match_for_testing("3-7", "003-7"));
-    assert!(usb_paths_match_for_testing("003-7", "3-7"));
-    assert!(usb_paths_match_for_testing("03-7.2", "3-7.2"));
-}
-
-#[test]
-fn usb_paths_match_rejects_different_ports() {
-    assert!(!usb_paths_match_for_testing("3-7", "3-8"));
+    assert_eq!(buffer.len(), 64);
+    assert_eq!(buffer[0], 0x07);
+    assert_eq!(buffer[1], 0x00);
+    assert_eq!(buffer[2], 0x00);
 }
