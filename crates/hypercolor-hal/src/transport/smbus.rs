@@ -290,14 +290,7 @@ impl Transport for SmBusTransport {
         let address = self.address;
 
         tokio::task::spawn_blocking(move || {
-            Self::execute_operations_locked(device.as_ref(), &path, address, &operations).map_err(
-                |mut error| {
-                    if let TransportError::IoError { detail } = &mut error {
-                        *detail = format!("{detail} (path={path}, address=0x{address:02X})");
-                    }
-                    error
-                },
-            )
+            Self::execute_operations_locked(device.as_ref(), &path, address, &operations)
         })
         .await
         .map_err(|error| TransportError::IoError {
@@ -327,14 +320,7 @@ impl Transport for SmBusTransport {
         let address = self.address;
 
         tokio::task::spawn_blocking(move || {
-            Self::execute_operations_locked(device.as_ref(), &path, address, &operations).map_err(
-                |mut error| {
-                    if let TransportError::IoError { detail } = &mut error {
-                        *detail = format!("{detail} (path={path}, address=0x{address:02X})");
-                    }
-                    error
-                },
-            )
+            Self::execute_operations_locked(device.as_ref(), &path, address, &operations)
         })
         .await
         .map_err(|error| TransportError::IoError {
