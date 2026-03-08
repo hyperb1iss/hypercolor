@@ -1808,20 +1808,6 @@ async fn resolve_device_id_or_response(
     }
 }
 
-fn backend_id_for_family(family: &DeviceFamily) -> String {
-    match family {
-        DeviceFamily::Wled => "wled".to_owned(),
-        DeviceFamily::Hue => "hue".to_owned(),
-        DeviceFamily::Razer
-        | DeviceFamily::Corsair
-        | DeviceFamily::Dygma
-        | DeviceFamily::LianLi
-        | DeviceFamily::PrismRgb
-        | DeviceFamily::Asus => "usb".to_owned(),
-        DeviceFamily::Custom(name) => name.to_ascii_lowercase(),
-    }
-}
-
 async fn resolved_backend_id(
     state: &AppState,
     device_id: DeviceId,
