@@ -370,6 +370,40 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
     id
 }
 
+async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> DeviceId {
+    let info = DeviceInfo {
+        id: DeviceId::new(),
+        name: name.to_owned(),
+        vendor: "ASUS".to_owned(),
+        family: DeviceFamily::Asus,
+        model: Some("ROG STRIX Test".to_owned()),
+        connection_type: ConnectionType::SmBus,
+        zones: vec![ZoneInfo {
+            name: "GPU".to_owned(),
+            led_count: 24,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: Some("AUMA0-E6K5-0107".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 24,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 60,
+        },
+    };
+    let fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned());
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("backend_id".to_owned(), "smbus".to_owned());
+    metadata.insert("smbus_address".to_owned(), "0x40".to_owned());
+    state
+        .device_registry
+        .add_with_fingerprint_and_metadata(info, fingerprint, metadata)
+        .await
+}
+
 // ── Devices ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -3086,6 +3120,98 @@ async fn logical_devices_reject_overlapping_segments() {
     );
     let json = body_json(overlapping_create).await;
     assert_eq!(json["error"]["code"], "validation_error");
+}
+
+#[tokio::test]
+async fn logical_device_endpoints_preserve_smbus_backend_metadata() {
+    let (state, _tmp) = test_state_with_temp_logical_store();
+    register_noop_backend(&state, "smbus", "SMBus Test").await;
+
+    let device_id = insert_test_asus_smbus_device(&state, "Aura GPU").await;
+    let tracked = state
+        .device_registry
+        .get(&device_id)
+        .await
+        .expect("device should exist");
+
+    let layout_device_id = {
+        let mut lifecycle = state.lifecycle_manager.lock().await;
+        let fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned());
+        let _ = lifecycle.on_discovered(device_id, &tracked.info, "smbus", Some(&fingerprint));
+        let layout_device_id = lifecycle
+            .layout_device_id_for(device_id)
+            .expect("layout id should exist")
+            .to_owned();
+        let _ = lifecycle
+            .on_connected(device_id)
+            .expect("connect transition should succeed");
+        layout_device_id
+    };
+
+    state
+        .backend_manager
+        .lock()
+        .await
+        .connect_device("smbus", device_id, &layout_device_id)
+        .await
+        .expect("smbus test backend should connect");
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let create_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"Aura Segment","led_start":0,"led_count":12}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(create_response.status(), StatusCode::CREATED);
+    let create_json = body_json(create_response).await;
+    assert_eq!(create_json["data"]["backend"], "smbus");
+    let segment_id = create_json["data"]["id"]
+        .as_str()
+        .expect("segment id should be a string")
+        .to_owned();
+
+    let list_response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/devices/{device_id}/logical-devices"))
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_json = body_json(list_response).await;
+    let items = list_json["data"]["items"]
+        .as_array()
+        .expect("logical items should be an array");
+    assert!(
+        items.iter().all(|item| item["backend"] == "smbus"),
+        "every logical device summary should keep the smbus backend id"
+    );
+
+    let manager = state.backend_manager.lock().await;
+    let routing = manager.routing_snapshot();
+    assert!(
+        routing.mappings.iter().any(|entry| {
+            entry.backend_id == "smbus"
+                && entry.device_id == device_id.to_string()
+                && entry.layout_device_id == segment_id
+        }),
+        "logical segment routing should stay attached to the smbus backend"
+    );
 }
 
 #[tokio::test]
