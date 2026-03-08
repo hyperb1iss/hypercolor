@@ -9,6 +9,6 @@ pub use devices::{
     build_prism_mini_protocol, build_prism_s_protocol, descriptors,
 };
 pub use protocol::{
-    HID_REPORT_SIZE, LOW_POWER_THRESHOLD, PrismRgbModel, PrismRgbProtocol, apply_low_power_saver,
-    compress_color_pair,
+    HID_REPORT_SIZE, LOW_POWER_THRESHOLD, PrismRgbModel, PrismRgbProtocol, PrismSConfig,
+    PrismSGpuCable, apply_low_power_saver, compress_color_pair,
 };

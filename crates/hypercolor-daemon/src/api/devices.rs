@@ -623,6 +623,9 @@ pub async fn discover_devices(
             layouts: Arc::clone(&state.layouts),
             layouts_path: state.layouts_path.clone(),
             logical_devices: Arc::clone(&state.logical_devices),
+            attachment_registry: Arc::clone(&state.attachment_registry),
+            attachment_profiles: Arc::clone(&state.attachment_profiles),
+            usb_protocol_configs: state.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&state.discovery_in_progress),
             task_spawner: tokio::runtime::Handle::current(),
         };
@@ -648,6 +651,9 @@ pub async fn discover_devices(
             layouts: Arc::clone(&state_for_task.layouts),
             layouts_path: state_for_task.layouts_path.clone(),
             logical_devices: Arc::clone(&state_for_task.logical_devices),
+            attachment_registry: Arc::clone(&state_for_task.attachment_registry),
+            attachment_profiles: Arc::clone(&state_for_task.attachment_profiles),
+            usb_protocol_configs: state_for_task.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&state_for_task.discovery_in_progress),
             task_spawner: tokio::runtime::Handle::current(),
         };

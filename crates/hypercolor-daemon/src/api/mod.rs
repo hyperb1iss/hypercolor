@@ -39,7 +39,9 @@ use tracing::warn;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::device::{BackendManager, DeviceLifecycleManager, DeviceRegistry};
+use hypercolor_core::device::{
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
+};
 use hypercolor_core::effect::{EffectEngine, EffectRegistry};
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::scene::SceneManager;
@@ -94,6 +96,9 @@ pub struct AppState {
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
+
+    /// Shared per-device USB protocol configuration for dynamic topologies.
+    pub usb_protocol_configs: UsbProtocolConfigStore,
 
     /// Rolling render-performance snapshot shared with metrics endpoints.
     pub performance: Arc<RwLock<PerformanceTracker>>,
@@ -207,6 +212,7 @@ impl AppState {
             render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
             spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(default_layout))),
             backend_manager: Arc::new(Mutex::new(BackendManager::new())),
+            usb_protocol_configs: UsbProtocolConfigStore::new(),
             performance: Arc::new(RwLock::new(PerformanceTracker::default())),
             lifecycle_manager: Arc::new(Mutex::new(DeviceLifecycleManager::new())),
             reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
@@ -258,6 +264,7 @@ impl AppState {
             render_loop: Arc::clone(&daemon.render_loop),
             spatial_engine: Arc::clone(&daemon.spatial_engine),
             backend_manager: Arc::clone(&daemon.backend_manager),
+            usb_protocol_configs: daemon.usb_protocol_configs.clone(),
             performance: Arc::clone(&daemon.performance),
             lifecycle_manager: Arc::clone(&daemon.lifecycle_manager),
             reconnect_tasks: Arc::clone(&daemon.reconnect_tasks),

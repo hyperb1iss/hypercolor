@@ -16,10 +16,15 @@ const LEDS_PER_PRISM_8_CHANNEL: usize = 126;
 const PRISM_8_LEDS_PER_PACKET: usize = 21;
 
 const PRISM_S_ATX_LEDS: usize = 120;
+const PRISM_S_GPU_DUAL_LEDS: usize = 108;
 const PRISM_S_GPU_TRIPLE_LEDS: usize = 162;
 const PRISM_S_ATX_PACKET_DATA_LEN: usize = 63;
 const PRISM_S_LAST_ATX_PACKET_OFFSET: usize = 320;
+const PRISM_S_GPU_MARKER_PACKET_LEN: usize = 46;
 const PRISM_S_GPU_INLINE_BYTES: usize = 18;
+const PRISM_S_LAST_ATX_PACKET_ID: u8 = 0x0F;
+const PRISM_S_GPU_MARKER_PACKET_ID: u8 = 0x05;
+const PRISM_S_GPU_DUAL_CHUNK_IDS: [u8; 5] = [6, 7, 8, 9, 20];
 const PRISM_S_GPU_CHUNK_IDS: [u8; 8] = [6, 7, 8, 9, 10, 11, 12, 13];
 
 const PRISM_MINI_MAX_LEDS: usize = 128;
@@ -39,6 +44,85 @@ pub enum PrismRgbModel {
     Nollie8,
     PrismS,
     PrismMini,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrismSGpuCable {
+    Dual8Pin,
+    Triple8Pin,
+}
+
+impl PrismSGpuCable {
+    #[must_use]
+    const fn led_count(self) -> usize {
+        match self {
+            Self::Dual8Pin => PRISM_S_GPU_DUAL_LEDS,
+            Self::Triple8Pin => PRISM_S_GPU_TRIPLE_LEDS,
+        }
+    }
+
+    #[must_use]
+    const fn topology(self) -> DeviceTopologyHint {
+        match self {
+            Self::Dual8Pin => DeviceTopologyHint::Matrix { rows: 4, cols: 27 },
+            Self::Triple8Pin => DeviceTopologyHint::Matrix { rows: 6, cols: 27 },
+        }
+    }
+
+    #[must_use]
+    const fn settings_mode(self) -> u8 {
+        match self {
+            Self::Dual8Pin => 0x01,
+            Self::Triple8Pin => 0x00,
+        }
+    }
+
+    #[must_use]
+    const fn packet_ids(self) -> &'static [u8] {
+        match self {
+            Self::Dual8Pin => &PRISM_S_GPU_DUAL_CHUNK_IDS,
+            Self::Triple8Pin => &PRISM_S_GPU_CHUNK_IDS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrismSConfig {
+    pub atx_present: bool,
+    pub gpu_cable: Option<PrismSGpuCable>,
+}
+
+impl PrismSConfig {
+    #[must_use]
+    pub const fn total_leds(self) -> usize {
+        let gpu_leds = match self.gpu_cable {
+            Some(cable) => cable.led_count(),
+            None => 0,
+        };
+
+        (if self.atx_present {
+            PRISM_S_ATX_LEDS
+        } else {
+            0
+        }) + gpu_leds
+    }
+
+    #[must_use]
+    const fn settings_mode(self) -> u8 {
+        match self.gpu_cable {
+            Some(cable) => cable.settings_mode(),
+            None => 0x00,
+        }
+    }
+}
+
+impl Default for PrismSConfig {
+    fn default() -> Self {
+        Self {
+            atx_present: true,
+            gpu_cable: Some(PrismSGpuCable::Triple8Pin),
+        }
+    }
 }
 
 impl PrismRgbModel {
@@ -84,6 +168,7 @@ pub struct PrismRgbProtocol {
     model: PrismRgbModel,
     low_power_mode: bool,
     compression_enabled: bool,
+    prism_s_config: PrismSConfig,
 }
 
 impl PrismRgbProtocol {
@@ -93,6 +178,10 @@ impl PrismRgbProtocol {
             model,
             low_power_mode: matches!(model, PrismRgbModel::PrismMini),
             compression_enabled: false,
+            prism_s_config: PrismSConfig {
+                atx_present: true,
+                gpu_cable: Some(PrismSGpuCable::Triple8Pin),
+            },
         }
     }
 
@@ -108,8 +197,22 @@ impl PrismRgbProtocol {
         self
     }
 
+    #[must_use]
+    pub const fn with_prism_s_config(mut self, prism_s_config: PrismSConfig) -> Self {
+        self.prism_s_config = prism_s_config;
+        self
+    }
+
+    #[must_use]
+    const fn expected_leds(&self) -> usize {
+        match self.model {
+            PrismRgbModel::PrismS => self.prism_s_config.total_leds(),
+            _ => self.model.total_leds(),
+        }
+    }
+
     fn normalize_colors(&self, colors: &[[u8; 3]]) -> Vec<[u8; 3]> {
-        let expected = self.model.total_leds();
+        let expected = self.expected_leds();
         if expected == 0 {
             return Vec::new();
         }
@@ -169,53 +272,72 @@ impl PrismRgbProtocol {
         commands
     }
 
-    fn prism_s_settings_command() -> ProtocolCommand {
+    fn prism_s_settings_command(&self) -> ProtocolCommand {
         let mut packet = [0_u8; HID_REPORT_SIZE];
         packet[1] = 0xFE;
         packet[2] = 0x01;
-        packet[6] = 0x00; // triple 8-pin layout by default
+        packet[6] = self.prism_s_config.settings_mode();
         command_from_packet(packet, false, Duration::from_millis(50))
     }
 
     fn encode_prism_s_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
         let normalized = self.normalize_colors(colors);
-        let atx = &normalized[..PRISM_S_ATX_LEDS];
-        let gpu = &normalized[PRISM_S_ATX_LEDS..];
+        let atx_leds = if self.prism_s_config.atx_present {
+            PRISM_S_ATX_LEDS
+        } else {
+            0
+        };
+        let gpu_leds = self
+            .prism_s_config
+            .gpu_cable
+            .map_or(0, PrismSGpuCable::led_count);
+        let atx = &normalized[..atx_leds];
+        let gpu = &normalized[atx_leds..atx_leds + gpu_leds];
 
         let atx_bytes = flatten_colors(atx, self.model.brightness_scale(), DeviceColorFormat::Rgb);
         let gpu_bytes = flatten_colors(gpu, self.model.brightness_scale(), DeviceColorFormat::Rgb);
 
-        let mut send_data = Vec::with_capacity(14 * 64);
-        let mut atx_remaining = atx_bytes.as_slice();
+        let mut send_data = Vec::new();
+        if self.prism_s_config.atx_present {
+            send_data.reserve(6 * 64);
+            let mut atx_remaining = atx_bytes.as_slice();
 
-        for packet_id in 0_u8..5 {
-            let take = min(PRISM_S_ATX_PACKET_DATA_LEN, atx_remaining.len());
-            send_data.push(packet_id);
-            send_data.extend_from_slice(&atx_remaining[..take]);
-            atx_remaining = &atx_remaining[take..];
-        }
-
-        send_data.push(0x0F);
-        send_data.extend_from_slice(atx_remaining);
-        while send_data.len() < PRISM_S_LAST_ATX_PACKET_OFFSET + 46 {
-            send_data.push(0x00);
-        }
-
-        // Prism S multiplexes ATX tail and GPU start inside the same chunk.
-        send_data[PRISM_S_LAST_ATX_PACKET_OFFSET] = 0x05;
-        let inline_gpu = min(PRISM_S_GPU_INLINE_BYTES, gpu_bytes.len());
-        send_data.extend_from_slice(&gpu_bytes[..inline_gpu]);
-
-        let mut gpu_remaining = &gpu_bytes[inline_gpu..];
-        for packet_id in PRISM_S_GPU_CHUNK_IDS {
-            if gpu_remaining.is_empty() {
-                break;
+            for packet_id in 0_u8..5 {
+                let take = min(PRISM_S_ATX_PACKET_DATA_LEN, atx_remaining.len());
+                send_data.push(packet_id);
+                send_data.extend_from_slice(&atx_remaining[..take]);
+                atx_remaining = &atx_remaining[take..];
             }
 
-            let take = min(PRISM_S_ATX_PACKET_DATA_LEN, gpu_remaining.len());
-            send_data.push(packet_id);
-            send_data.extend_from_slice(&gpu_remaining[..take]);
-            gpu_remaining = &gpu_remaining[take..];
+            send_data.push(PRISM_S_LAST_ATX_PACKET_ID);
+            send_data.extend_from_slice(atx_remaining);
+            while send_data.len() < PRISM_S_LAST_ATX_PACKET_OFFSET + PRISM_S_GPU_MARKER_PACKET_LEN {
+                send_data.push(0x00);
+            }
+        }
+
+        if let Some(gpu_cable) = self.prism_s_config.gpu_cable {
+            if send_data.is_empty() {
+                send_data.resize(PRISM_S_GPU_MARKER_PACKET_LEN, 0x00);
+                send_data[0] = PRISM_S_GPU_MARKER_PACKET_ID;
+            } else {
+                send_data[PRISM_S_LAST_ATX_PACKET_OFFSET] = PRISM_S_GPU_MARKER_PACKET_ID;
+            }
+
+            let inline_gpu = min(PRISM_S_GPU_INLINE_BYTES, gpu_bytes.len());
+            send_data.extend_from_slice(&gpu_bytes[..inline_gpu]);
+
+            let mut gpu_remaining = &gpu_bytes[inline_gpu..];
+            for packet_id in gpu_cable.packet_ids() {
+                if gpu_remaining.is_empty() {
+                    break;
+                }
+
+                let take = min(PRISM_S_ATX_PACKET_DATA_LEN, gpu_remaining.len());
+                send_data.push(*packet_id);
+                send_data.extend_from_slice(&gpu_remaining[..take]);
+                gpu_remaining = &gpu_remaining[take..];
+            }
         }
 
         send_data
@@ -304,7 +426,7 @@ impl Protocol for PrismRgbProtocol {
                     command_from_packet(hardware_effect, false, Duration::ZERO),
                 ]
             }
-            PrismRgbModel::PrismS => vec![Self::prism_s_settings_command()],
+            PrismRgbModel::PrismS => vec![self.prism_s_settings_command()],
             PrismRgbModel::PrismMini => vec![Self::prism_mini_firmware_query()],
         }
     }
@@ -328,7 +450,7 @@ impl Protocol for PrismRgbProtocol {
                     command_from_packet(hardware_mode, false, Duration::ZERO),
                 ]
             }
-            PrismRgbModel::PrismS => vec![Self::prism_s_settings_command()],
+            PrismRgbModel::PrismS => vec![self.prism_s_settings_command()],
             PrismRgbModel::PrismMini => Vec::new(),
         }
     }
@@ -373,20 +495,26 @@ impl Protocol for PrismRgbProtocol {
                     color_format: self.model.color_format(),
                 })
                 .collect(),
-            PrismRgbModel::PrismS => vec![
-                ProtocolZone {
-                    name: "ATX Strimer".to_owned(),
-                    led_count: u32::try_from(PRISM_S_ATX_LEDS).unwrap_or(u32::MAX),
-                    topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
-                    color_format: self.model.color_format(),
-                },
-                ProtocolZone {
-                    name: "GPU Strimer".to_owned(),
-                    led_count: u32::try_from(PRISM_S_GPU_TRIPLE_LEDS).unwrap_or(u32::MAX),
-                    topology: DeviceTopologyHint::Matrix { rows: 6, cols: 27 },
-                    color_format: self.model.color_format(),
-                },
-            ],
+            PrismRgbModel::PrismS => {
+                let mut zones = Vec::new();
+                if self.prism_s_config.atx_present {
+                    zones.push(ProtocolZone {
+                        name: "ATX Strimer".to_owned(),
+                        led_count: u32::try_from(PRISM_S_ATX_LEDS).unwrap_or(u32::MAX),
+                        topology: DeviceTopologyHint::Matrix { rows: 6, cols: 20 },
+                        color_format: self.model.color_format(),
+                    });
+                }
+                if let Some(gpu_cable) = self.prism_s_config.gpu_cable {
+                    zones.push(ProtocolZone {
+                        name: "GPU Strimer".to_owned(),
+                        led_count: u32::try_from(gpu_cable.led_count()).unwrap_or(u32::MAX),
+                        topology: gpu_cable.topology(),
+                        color_format: self.model.color_format(),
+                    });
+                }
+                zones
+            }
             PrismRgbModel::PrismMini => vec![ProtocolZone {
                 name: "Channel 1".to_owned(),
                 led_count: u32::try_from(PRISM_MINI_MAX_LEDS).unwrap_or(u32::MAX),
@@ -408,7 +536,7 @@ impl Protocol for PrismRgbProtocol {
     }
 
     fn total_leds(&self) -> u32 {
-        u32::try_from(self.model.total_leds()).unwrap_or(u32::MAX)
+        u32::try_from(self.expected_leds()).unwrap_or(u32::MAX)
     }
 
     fn frame_interval(&self) -> Duration {

@@ -848,3 +848,107 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
     }
     assert_eq!(layout.zones[0].size, NormalizedPosition::new(0.2, 0.08));
 }
+
+#[test]
+fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
+    let device_id = DeviceId::new();
+    let info = DeviceInfo {
+        id: device_id,
+        name: "PrismRGB Prism S".to_owned(),
+        vendor: "PrismRGB".to_owned(),
+        family: DeviceFamily::PrismRgb,
+        model: Some("prism_s".to_owned()),
+        connection_type: ConnectionType::Usb,
+        zones: vec![ZoneInfo {
+            name: "GPU Strimer".to_owned(),
+            led_count: 108,
+            topology: DeviceTopologyHint::Matrix { rows: 4, cols: 27 },
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: 108,
+            ..DeviceCapabilities::default()
+        },
+    };
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![
+            DeviceZone {
+                id: "auto-usb-prism-s-test-atx-strimer".to_owned(),
+                name: "PrismRGB Prism S: ATX Strimer".to_owned(),
+                device_id: "usb:prism-s:test".to_owned(),
+                zone_name: Some("ATX Strimer".to_owned()),
+                group_id: None,
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(0.25, 0.1),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Matrix {
+                    width: 20,
+                    height: 6,
+                    serpentine: false,
+                    start_corner: hypercolor_types::spatial::Corner::TopLeft,
+                },
+                led_positions: Vec::new(),
+                sampling_mode: Some(SamplingMode::Bilinear),
+                edge_behavior: Some(EdgeBehavior::Clamp),
+                shape: Some(hypercolor_types::spatial::ZoneShape::Rectangle),
+                shape_preset: None,
+                attachment: None,
+                led_mapping: None,
+            },
+            DeviceZone {
+                id: "auto-usb-prism-s-test-gpu-strimer".to_owned(),
+                name: "PrismRGB Prism S: GPU Strimer".to_owned(),
+                device_id: "usb:prism-s:test".to_owned(),
+                zone_name: Some("GPU Strimer".to_owned()),
+                group_id: None,
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(0.25, 0.1),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Matrix {
+                    width: 27,
+                    height: 6,
+                    serpentine: false,
+                    start_corner: hypercolor_types::spatial::Corner::TopLeft,
+                },
+                led_positions: Vec::new(),
+                sampling_mode: Some(SamplingMode::Bilinear),
+                edge_behavior: Some(EdgeBehavior::Clamp),
+                shape: Some(hypercolor_types::spatial::ZoneShape::Rectangle),
+                shape_preset: None,
+                attachment: None,
+                led_mapping: None,
+            },
+        ],
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    let repaired =
+        discovery::reconcile_auto_layout_zones_for_device(&mut layout, "usb:prism-s:test", &info);
+
+    assert_eq!(repaired, 2);
+    assert_eq!(layout.zones.len(), 1);
+    assert_eq!(layout.zones[0].zone_name.as_deref(), Some("GPU Strimer"));
+    assert_eq!(
+        layout.zones[0].topology,
+        LedTopology::Matrix {
+            width: 27,
+            height: 4,
+            serpentine: false,
+            start_corner: hypercolor_types::spatial::Corner::TopLeft,
+        }
+    );
+}

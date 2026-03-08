@@ -12,15 +12,18 @@ use std::time::Duration;
 
 use tokio::sync::{Mutex, RwLock, watch};
 
+use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig, MockEffectRenderer};
 use hypercolor_core::device::{
     BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry, ReconnectPolicy,
+    UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
 use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::event::{HypercolorEvent, ZoneColors};
 use hypercolor_types::spatial::{
@@ -495,6 +498,11 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         layouts: Arc::new(RwLock::new(HashMap::new())),
         layouts_path: PathBuf::from("layouts.json"),
         logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
+        attachment_registry: Arc::new(RwLock::new(AttachmentRegistry::new())),
+        attachment_profiles: Arc::new(RwLock::new(AttachmentProfileStore::new(PathBuf::from(
+            "attachment-profiles.json",
+        )))),
+        usb_protocol_configs: UsbProtocolConfigStore::new(),
         in_progress: Arc::new(AtomicBool::new(false)),
         task_spawner: tokio::runtime::Handle::current(),
     };

@@ -1,6 +1,7 @@
 //! Shared device discovery runtime for daemon startup and API-triggered scans.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -8,11 +9,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::Context;
+use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::wled::WledScanner;
 use hypercolor_core::device::{
     AsyncWriteFailure, BackendIo, BackendManager, DeviceLifecycleManager, DeviceRegistry,
-    DiscoveryOrchestrator, LifecycleAction, ScannerScanReport, UsbScanner,
+    DiscoveryOrchestrator, LifecycleAction, ScannerScanReport, UsbProtocolConfigStore, UsbScanner,
 };
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
 use hypercolor_types::config::HypercolorConfig;
@@ -28,6 +30,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+use crate::attachment_profiles::AttachmentProfileStore;
 use crate::logical_devices::{self, LogicalDevice};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
@@ -111,6 +114,15 @@ pub struct DiscoveryRuntime {
     /// Logical device segmentation store.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
 
+    /// Attachment template registry used to derive dynamic hardware topology.
+    pub attachment_registry: Arc<RwLock<AttachmentRegistry>>,
+
+    /// Saved attachment bindings keyed by physical device ID.
+    pub attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
+
+    /// Shared per-device USB protocol configuration store.
+    pub usb_protocol_configs: UsbProtocolConfigStore,
+
     /// Shared "scan in progress" lock flag.
     pub in_progress: Arc<AtomicBool>,
 
@@ -155,6 +167,49 @@ pub const fn default_timeout() -> Duration {
 pub fn normalize_timeout_ms(timeout_ms: Option<u64>) -> Duration {
     let raw = timeout_ms.unwrap_or(DEFAULT_DISCOVERY_TIMEOUT_MS);
     Duration::from_millis(raw.clamp(MIN_DISCOVERY_TIMEOUT_MS, MAX_DISCOVERY_TIMEOUT_MS))
+}
+
+/// Resolve the IPs that the WLED scanner should probe during discovery.
+///
+/// This merges explicit config with IP metadata cached from previous WLED
+/// discoveries so a transient mDNS miss does not immediately orphan a device
+/// that was recently reachable over HTTP.
+pub async fn resolve_wled_probe_ips(
+    device_registry: &DeviceRegistry,
+    config: &HypercolorConfig,
+) -> Vec<IpAddr> {
+    let mut known_ips: HashSet<IpAddr> = config.wled.known_ips.iter().copied().collect();
+
+    for tracked in device_registry.list().await {
+        if tracked.info.family != DeviceFamily::Wled {
+            continue;
+        }
+
+        let Some(metadata) = device_registry.metadata_for_id(&tracked.info.id).await else {
+            continue;
+        };
+        let Some(ip_raw) = metadata.get("ip") else {
+            continue;
+        };
+
+        match ip_raw.parse::<IpAddr>() {
+            Ok(ip) => {
+                known_ips.insert(ip);
+            }
+            Err(error) => {
+                debug!(
+                    device_id = %tracked.info.id,
+                    ip = %ip_raw,
+                    error = %error,
+                    "ignoring invalid cached WLED IP metadata"
+                );
+            }
+        }
+    }
+
+    let mut resolved: Vec<IpAddr> = known_ips.into_iter().collect();
+    resolved.sort_unstable();
+    resolved
 }
 
 /// Resolve and validate requested discovery backends against configuration.
@@ -290,8 +345,10 @@ pub async fn execute_discovery_scan(
     for backend in backends {
         match backend {
             DiscoveryBackend::Wled => {
+                let known_ips =
+                    resolve_wled_probe_ips(&runtime.device_registry, config.as_ref()).await;
                 orchestrator.add_scanner(Box::new(WledScanner::with_known_ips(
-                    config.wled.known_ips.clone(),
+                    known_ips,
                     config.discovery.mdns_enabled,
                     timeout,
                 )));
@@ -887,12 +944,50 @@ async fn backend_io(runtime: &DiscoveryRuntime, backend_id: &str) -> anyhow::Res
         .with_context(|| format!("backend '{backend_id}' is not registered"))
 }
 
+async fn apply_dynamic_usb_protocol_config(
+    runtime: &DiscoveryRuntime,
+    backend_id: &str,
+    device_id: DeviceId,
+) {
+    if backend_id != "usb" {
+        return;
+    }
+
+    let Some(tracked) = runtime.device_registry.get(&device_id).await else {
+        runtime.usb_protocol_configs.remove_device(device_id).await;
+        return;
+    };
+
+    if tracked.info.family != DeviceFamily::PrismRgb
+        || tracked.info.model.as_deref() != Some("prism_s")
+    {
+        runtime.usb_protocol_configs.remove_device(device_id).await;
+        return;
+    }
+
+    let prism_s_config = {
+        let registry = runtime.attachment_registry.read().await;
+        let profiles = runtime.attachment_profiles.read().await;
+        profiles.prism_s_config_for_device(&tracked.info, &registry)
+    };
+
+    if let Some(config) = prism_s_config {
+        runtime
+            .usb_protocol_configs
+            .set_prism_s_config(device_id, config)
+            .await;
+    } else {
+        runtime.usb_protocol_configs.remove_device(device_id).await;
+    }
+}
+
 async fn connect_backend_device(
     runtime: &DiscoveryRuntime,
     backend_id: &str,
     device_id: DeviceId,
     layout_device_id: &str,
 ) -> anyhow::Result<()> {
+    apply_dynamic_usb_protocol_config(runtime, backend_id, device_id).await;
     let io = backend_io(runtime, backend_id).await?;
     let target_fps = io.connect_with_refresh(device_id).await?;
 
@@ -918,6 +1013,7 @@ async fn disconnect_backend_device(
 
     let mut manager = runtime.backend_manager.lock().await;
     let _ = manager.remove_device_mappings_for_physical(backend_id, device_id);
+    runtime.usb_protocol_configs.remove_device(device_id).await;
     Ok(())
 }
 
@@ -1237,6 +1333,7 @@ pub fn reconcile_auto_layout_zones_for_device(
     layout_device_id: &str,
     device_info: &DeviceInfo,
 ) -> usize {
+    let auto_zone_prefix = format!("auto-{}-", sanitize_auto_layout_component(layout_device_id));
     let eligible_zones = device_info
         .zones
         .iter()
@@ -1245,17 +1342,32 @@ pub fn reconcile_auto_layout_zones_for_device(
         })
         .cloned()
         .collect::<Vec<_>>();
+    let expected_zone_names = eligible_zones
+        .iter()
+        .map(|zone| zone.name.as_str())
+        .collect::<HashSet<_>>();
+    let before_len = layout.zones.len();
+    layout.zones.retain(|zone| {
+        if zone.device_id != layout_device_id || !zone.id.starts_with(&auto_zone_prefix) {
+            return true;
+        }
+
+        zone.zone_name
+            .as_deref()
+            .is_some_and(|zone_name| expected_zone_names.contains(zone_name))
+    });
+
+    let mut repaired = before_len.saturating_sub(layout.zones.len());
     if eligible_zones.is_empty() {
-        return 0;
+        return repaired;
     }
 
-    let auto_zone_prefix = format!("auto-{}-", sanitize_auto_layout_component(layout_device_id));
-    let mut repaired = 0_usize;
-
     for (index, zone_info) in eligible_zones.iter().enumerate() {
-        let Some(override_spec) = auto_layout_override(layout_device_id, zone_info) else {
-            continue;
-        };
+        let override_spec = auto_layout_override(layout_device_id, zone_info);
+        let expected_topology = override_spec.as_ref().map_or_else(
+            || spatial_topology_for_zone(zone_info),
+            |spec| spec.topology.clone(),
+        );
 
         let (_, default_size) = auto_layout_geometry(
             NormalizedPosition::new(0.5, 0.5),
@@ -1263,15 +1375,19 @@ pub fn reconcile_auto_layout_zones_for_device(
             eligible_zones.len(),
             &zone_info.topology,
         );
-        let expected_size = override_spec.size.unwrap_or(default_size);
+        let expected_size = override_spec
+            .as_ref()
+            .and_then(|spec| spec.size)
+            .unwrap_or(default_size);
         let expected_name = if eligible_zones.len() == 1 {
             device_info.name.clone()
         } else {
             format!("{}: {}", device_info.name, zone_info.name)
         };
-        let expected_positions = generate_positions(&override_spec.topology);
+        let expected_positions = generate_positions(&expected_topology);
         let expected_shape = override_spec
-            .shape
+            .as_ref()
+            .and_then(|spec| spec.shape.clone())
             .or_else(|| auto_layout_shape(&zone_info.topology));
 
         for zone in layout.zones.iter_mut().filter(|zone| {
@@ -1285,8 +1401,8 @@ pub fn reconcile_auto_layout_zones_for_device(
                 zone.name = expected_name.clone();
                 changed = true;
             }
-            if zone.topology != override_spec.topology {
-                zone.topology = override_spec.topology.clone();
+            if zone.topology != expected_topology {
+                zone.topology = expected_topology.clone();
                 changed = true;
             }
             if zone.led_positions != expected_positions {

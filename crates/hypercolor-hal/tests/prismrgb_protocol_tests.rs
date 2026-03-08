@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use hypercolor_hal::drivers::prismrgb::{
-    LOW_POWER_THRESHOLD, PrismRgbModel, PrismRgbProtocol, apply_low_power_saver,
-    build_nollie_8_v2_protocol, build_prism_8_protocol, build_prism_mini_protocol,
-    build_prism_s_protocol, compress_color_pair,
+    LOW_POWER_THRESHOLD, PrismRgbModel, PrismRgbProtocol, PrismSConfig, PrismSGpuCable,
+    apply_low_power_saver, build_nollie_8_v2_protocol, build_prism_8_protocol,
+    build_prism_mini_protocol, build_prism_s_protocol, compress_color_pair,
 };
 use hypercolor_hal::protocol::{Protocol, ResponseStatus};
 use hypercolor_types::device::DeviceTopologyHint;
@@ -81,6 +81,60 @@ fn prism_s_init_sequence_encodes_settings_delay() {
     assert_eq!(commands[0].data[1], 0xFE);
     assert_eq!(commands[0].data[2], 0x01);
     assert_eq!(commands[0].post_delay, Duration::from_millis(50));
+}
+
+#[test]
+fn prism_s_dual_gpu_only_uses_packet_20_and_dual_led_count() {
+    let protocol = PrismRgbProtocol::new(PrismRgbModel::PrismS).with_prism_s_config(PrismSConfig {
+        atx_present: false,
+        gpu_cable: Some(PrismSGpuCable::Dual8Pin),
+    });
+    let colors = vec![[1, 2, 3]; 108];
+
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 6);
+    assert_eq!(commands[0].data[1], 0x05);
+    assert_eq!(commands[5].data[1], 0x14);
+
+    let zones = protocol.zones();
+    assert_eq!(zones.len(), 1);
+    assert_eq!(zones[0].name, "GPU Strimer");
+    assert_eq!(zones[0].led_count, 108);
+    assert_eq!(
+        zones[0].topology,
+        DeviceTopologyHint::Matrix { rows: 4, cols: 27 }
+    );
+    assert_eq!(protocol.total_leds(), 108);
+}
+
+#[test]
+fn prism_s_atx_only_keeps_final_atx_packet_and_reports_single_zone() {
+    let protocol = PrismRgbProtocol::new(PrismRgbModel::PrismS).with_prism_s_config(PrismSConfig {
+        atx_present: true,
+        gpu_cable: None,
+    });
+    let colors = vec![[1, 2, 3]; 120];
+
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 6);
+    assert_eq!(commands[5].data[1], 0x0F);
+
+    let zones = protocol.zones();
+    assert_eq!(zones.len(), 1);
+    assert_eq!(zones[0].name, "ATX Strimer");
+    assert_eq!(zones[0].led_count, 120);
+    assert_eq!(protocol.total_leds(), 120);
+}
+
+#[test]
+fn prism_s_dual_mode_sets_settings_byte_to_one() {
+    let protocol = PrismRgbProtocol::new(PrismRgbModel::PrismS).with_prism_s_config(PrismSConfig {
+        atx_present: true,
+        gpu_cable: Some(PrismSGpuCable::Dual8Pin),
+    });
+
+    let commands = protocol.init_sequence();
+    assert_eq!(commands[0].data[6], 0x01);
 }
 
 #[test]

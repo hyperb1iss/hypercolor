@@ -26,7 +26,7 @@ use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::wled::{WledBackend, WledProtocol};
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbBackend, UsbHotplugEvent,
-    UsbHotplugMonitor,
+    UsbHotplugMonitor, UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{
@@ -104,6 +104,9 @@ pub struct DaemonState {
 
     /// Device backend router — pushes colors to hardware.
     pub backend_manager: Arc<Mutex<BackendManager>>,
+
+    /// Shared per-device USB protocol configuration for dynamic topologies.
+    pub usb_protocol_configs: UsbProtocolConfigStore,
 
     /// Rolling render-performance snapshot shared with the API.
     pub performance: Arc<RwLock<PerformanceTracker>>,
@@ -263,12 +266,15 @@ impl DaemonState {
         info!("Spatial engine created (empty default layout)");
 
         // ── Backend Manager ─────────────────────────────────────────────
+        let usb_protocol_configs = UsbProtocolConfigStore::new();
         let mut backend_manager_inner = BackendManager::new();
         backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
         if config.discovery.wled_scan {
             backend_manager_inner.register_backend(Box::new(build_wled_backend(config)));
         }
-        backend_manager_inner.register_backend(Box::new(UsbBackend::new()));
+        backend_manager_inner.register_backend(Box::new(UsbBackend::with_protocol_config_store(
+            usb_protocol_configs.clone(),
+        )));
         let backend_manager = Arc::new(Mutex::new(backend_manager_inner));
         info!("Backend manager created");
 
@@ -398,6 +404,7 @@ impl DaemonState {
             render_loop,
             spatial_engine,
             backend_manager,
+            usb_protocol_configs,
             performance,
             lifecycle_manager,
             reconnect_tasks,
@@ -440,6 +447,9 @@ impl DaemonState {
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),
             logical_devices: Arc::clone(&self.logical_devices),
+            attachment_registry: Arc::clone(&self.attachment_registry),
+            attachment_profiles: Arc::clone(&self.attachment_profiles),
+            usb_protocol_configs: self.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&self.discovery_in_progress),
             task_spawner: tokio::runtime::Handle::current(),
         }
@@ -815,6 +825,9 @@ impl DaemonState {
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),
             logical_devices: Arc::clone(&self.logical_devices),
+            attachment_registry: Arc::clone(&self.attachment_registry),
+            attachment_profiles: Arc::clone(&self.attachment_profiles),
+            usb_protocol_configs: self.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&self.discovery_in_progress),
         };
 
@@ -923,6 +936,9 @@ struct DiscoveryWorkerContext {
     layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
     layouts_path: PathBuf,
     logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
+    attachment_registry: Arc<RwLock<AttachmentRegistry>>,
+    attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
+    usb_protocol_configs: UsbProtocolConfigStore,
     in_progress: Arc<AtomicBool>,
 }
 
@@ -938,6 +954,9 @@ impl DiscoveryWorkerContext {
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),
             logical_devices: Arc::clone(&self.logical_devices),
+            attachment_registry: Arc::clone(&self.attachment_registry),
+            attachment_profiles: Arc::clone(&self.attachment_profiles),
+            usb_protocol_configs: self.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&self.in_progress),
             task_spawner: tokio::runtime::Handle::current(),
         }
