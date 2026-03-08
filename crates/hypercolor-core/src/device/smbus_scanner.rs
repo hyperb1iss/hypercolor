@@ -51,6 +51,9 @@ const DRAM_SMBUS_ADAPTER_IDS: &[(u16, u16)] = &[
     (INTEL_VENDOR_ID, 0x43A3),
     (INTEL_VENDOR_ID, 0x7AA3),
     (INTEL_VENDOR_ID, 0x7A23),
+    (INTEL_VENDOR_ID, 0x7A4C),
+    (INTEL_VENDOR_ID, 0x7A4D),
+    (INTEL_VENDOR_ID, 0x7A4E),
     (INTEL_VENDOR_ID, 0x7F23),
 ];
 
@@ -172,20 +175,20 @@ pub(crate) async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<
 
 #[cfg(target_os = "linux")]
 async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
-    if !bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS) {
+    let hub_present = bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS);
+    if hub_present {
+        debug!(
+            bus_path,
+            hub_address = format_args!("0x{ASUS_DRAM_REMAP_HUB_ADDRESS:02X}"),
+            "detected ASUS Aura DRAM remap hub"
+        );
+    } else {
         trace!(
             bus_path,
             hub_address = format_args!("0x{ASUS_DRAM_REMAP_HUB_ADDRESS:02X}"),
-            "no ASUS Aura DRAM remap hub detected on bus"
+            "no ASUS Aura DRAM remap hub detected on bus; probing known ENE address pool directly"
         );
-        return Ok(Vec::new());
     }
-
-    debug!(
-        bus_path,
-        hub_address = format_args!("0x{ASUS_DRAM_REMAP_HUB_ADDRESS:02X}"),
-        "detected ASUS Aura DRAM remap hub"
-    );
 
     let occupied_addresses = probe_occupied_dram_addresses(bus_path);
     trace!(
@@ -194,54 +197,57 @@ async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
         "snapshotted occupied SMBus addresses before DRAM remap"
     );
 
-    let hub_transport = match SmBusTransport::open(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS) {
-        Ok(transport) => transport,
-        Err(_) => return Ok(Vec::new()),
-    };
-
     let mut remapped_addresses = Vec::new();
-    let mut next_address_index = 0_usize;
-
-    for slot_index in 0..ASUS_DRAM_REMAP_SLOT_COUNT {
-        if !bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS) {
-            break;
-        }
-
-        let Some((selected_index, remap_address)) =
-            next_available_dram_address(next_address_index, &occupied_addresses)
-        else {
-            break;
+    if hub_present {
+        let hub_transport = match SmBusTransport::open(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS) {
+            Ok(transport) => transport,
+            Err(_) => return Ok(Vec::new()),
         };
-        next_address_index = selected_index + 1;
 
-        let target_address = u8::try_from(remap_address)
-            .map_err(|_| anyhow!("DRAM remap address 0x{remap_address:02X} exceeds u8 range"))?;
-        let slot_index = u8::try_from(slot_index)
-            .map_err(|_| anyhow!("DRAM slot index {slot_index} exceeds u8 range"))?;
-        let remap_command =
-            encode_ene_transaction(&ene_dram_remap_sequence(slot_index, target_address))?;
+        let mut next_address_index = 0_usize;
 
-        if let Err(error) = hub_transport.send(&remap_command).await {
+        for slot_index in 0..ASUS_DRAM_REMAP_SLOT_COUNT {
+            if !bus_address_responds(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS) {
+                break;
+            }
+
+            let Some((selected_index, remap_address)) =
+                next_available_dram_address(next_address_index, &occupied_addresses)
+            else {
+                break;
+            };
+            next_address_index = selected_index + 1;
+
+            let target_address = u8::try_from(remap_address).map_err(|_| {
+                anyhow!("DRAM remap address 0x{remap_address:02X} exceeds u8 range")
+            })?;
+            let slot_index = u8::try_from(slot_index)
+                .map_err(|_| anyhow!("DRAM slot index {slot_index} exceeds u8 range"))?;
+            let remap_command =
+                encode_ene_transaction(&ene_dram_remap_sequence(slot_index, target_address))?;
+
+            if let Err(error) = hub_transport.send(&remap_command).await {
+                debug!(
+                    bus_path,
+                    slot_index,
+                    remap_address = format_args!("0x{remap_address:02X}"),
+                    error = %error,
+                    "failed to program ASUS Aura DRAM remap slot"
+                );
+                break;
+            }
+
             debug!(
                 bus_path,
                 slot_index,
                 remap_address = format_args!("0x{remap_address:02X}"),
-                error = %error,
-                "failed to program ASUS Aura DRAM remap slot"
+                "programmed ASUS Aura DRAM remap slot"
             );
-            break;
+            remapped_addresses.push(remap_address);
         }
 
-        debug!(
-            bus_path,
-            slot_index,
-            remap_address = format_args!("0x{remap_address:02X}"),
-            "programmed ASUS Aura DRAM remap slot"
-        );
-        remapped_addresses.push(remap_address);
+        let _ = hub_transport.close().await;
     }
-
-    let _ = hub_transport.close().await;
 
     let mut discovered = Vec::new();
     let probe_addresses = dram_probe_addresses(&occupied_addresses, &remapped_addresses);
@@ -261,7 +267,8 @@ async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
     debug!(
         bus_path,
         discovered_count = discovered.len(),
-        "completed ASUS Aura DRAM remap probe"
+        hub_present,
+        "completed ASUS Aura DRAM probe"
     );
 
     Ok(discovered)
@@ -393,7 +400,7 @@ fn dram_capable_bus(bus_path: &str) -> bool {
         return false;
     };
 
-    DRAM_SMBUS_ADAPTER_IDS.contains(&(vendor_id, device_id))
+    dram_capable_pci_id(vendor_id, device_id)
 }
 
 #[cfg(target_os = "linux")]
@@ -402,11 +409,7 @@ fn bus_pci_id(bus_path: &str) -> Option<(u16, u16)> {
     let sysfs_root = Path::new("/sys/class/i2c-dev")
         .join(bus_name)
         .join("device");
-    let vendor_path = sysfs_root.join("../vendor");
-    let device_path = sysfs_root.join("../device");
-    let vendor_id = read_sysfs_hex_u16(&vendor_path)?;
-    let device_id = read_sysfs_hex_u16(&device_path)?;
-    Some((vendor_id, device_id))
+    resolve_parent_pci_id_from_sysfs_path(&sysfs_root)
 }
 
 #[cfg(target_os = "linux")]
@@ -415,6 +418,35 @@ fn read_sysfs_hex_u16(path: &Path) -> Option<u16> {
     let trimmed = raw.trim();
     let trimmed = trimmed.strip_prefix("0x").unwrap_or(trimmed);
     u16::from_str_radix(trimmed, 16).ok()
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn dram_capable_pci_id(vendor_id: u16, device_id: u16) -> bool {
+    DRAM_SMBUS_ADAPTER_IDS.contains(&(vendor_id, device_id))
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn resolve_parent_pci_id_from_sysfs_path(path: &Path) -> Option<(u16, u16)> {
+    let mut current = std::fs::canonicalize(path).ok()?;
+
+    loop {
+        let vendor_path = current.join("vendor");
+        let device_path = current.join("device");
+        if let (Some(vendor_id), Some(device_id)) = (
+            read_sysfs_hex_u16(&vendor_path),
+            read_sysfs_hex_u16(&device_path),
+        ) {
+            return Some((vendor_id, device_id));
+        }
+
+        let parent = current.parent()?;
+        if parent == current {
+            return None;
+        }
+        current = parent.to_path_buf();
+    }
 }
 
 #[cfg(target_os = "linux")]
