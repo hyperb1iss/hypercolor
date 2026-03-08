@@ -14,7 +14,8 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::wled::WledScanner;
 use hypercolor_core::device::{
     AsyncWriteFailure, BackendIo, BackendManager, DeviceLifecycleManager, DeviceRegistry,
-    DiscoveryOrchestrator, LifecycleAction, ScannerScanReport, UsbProtocolConfigStore, UsbScanner,
+    DiscoveryOrchestrator, LifecycleAction, ScannerScanReport, SmBusScanner,
+    UsbProtocolConfigStore, UsbScanner,
 };
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
 use hypercolor_types::config::HypercolorConfig;
@@ -135,6 +136,7 @@ pub struct DiscoveryRuntime {
 pub enum DiscoveryBackend {
     Wled,
     Usb,
+    SmBus,
 }
 
 impl DiscoveryBackend {
@@ -144,6 +146,7 @@ impl DiscoveryBackend {
         match self {
             Self::Wled => "wled",
             Self::Usb => "usb",
+            Self::SmBus => "smbus",
         }
     }
 
@@ -151,6 +154,7 @@ impl DiscoveryBackend {
         match raw {
             "wled" => Some(Self::Wled),
             "usb" => Some(Self::Usb),
+            "smbus" => Some(Self::SmBus),
             _ => None,
         }
     }
@@ -231,14 +235,14 @@ pub fn resolve_backends(
     let explicit_request = requested.is_some_and(|raw| !raw.is_empty()) && !includes_all;
     let mut candidates: Vec<String> = match requested {
         Some(raw) if !raw.is_empty() => raw.to_vec(),
-        _ => vec!["wled".to_owned(), "usb".to_owned()],
+        _ => vec!["wled".to_owned(), "usb".to_owned(), "smbus".to_owned()],
     };
 
     if candidates
         .iter()
         .any(|item| item.trim().eq_ignore_ascii_case("all"))
     {
-        candidates = vec!["wled".to_owned(), "usb".to_owned()];
+        candidates = vec!["wled".to_owned(), "usb".to_owned(), "smbus".to_owned()];
     }
 
     let mut out = Vec::new();
@@ -247,7 +251,7 @@ pub fn resolve_backends(
     for candidate in candidates {
         let normalized = candidate.trim().to_ascii_lowercase();
         let backend = DiscoveryBackend::parse(&normalized).ok_or_else(|| {
-            format!("Unknown discovery backend '{candidate}'. Supported backends: wled, usb")
+            format!("Unknown discovery backend '{candidate}'. Supported backends: wled, usb, smbus")
         })?;
 
         if !seen.insert(backend) {
@@ -275,7 +279,7 @@ pub fn resolve_backends(
                     continue;
                 }
             }
-            DiscoveryBackend::Usb => {}
+            DiscoveryBackend::Usb | DiscoveryBackend::SmBus => {}
         }
 
         out.push(backend);
@@ -356,6 +360,9 @@ pub async fn execute_discovery_scan(
             DiscoveryBackend::Usb => {
                 orchestrator.add_scanner(Box::new(UsbScanner::new()));
             }
+            DiscoveryBackend::SmBus => {
+                orchestrator.add_scanner(Box::new(SmBusScanner::new()));
+            }
         }
     }
 
@@ -396,7 +403,8 @@ pub async fn execute_discovery_scan(
             continue;
         };
 
-        let backend = backend_id_for_family(&tracked.info.family);
+        let metadata = runtime.device_registry.metadata_for_id(id).await;
+        let backend = backend_id_for_device(&tracked.info.family, metadata.as_ref());
         let fingerprint = runtime.device_registry.fingerprint_for_id(id).await;
         let actions = {
             let mut lifecycle = runtime.lifecycle_manager.lock().await;
@@ -415,7 +423,9 @@ pub async fn execute_discovery_scan(
         let Some(tracked) = runtime.device_registry.get(id).await else {
             continue;
         };
-        let device_ref = device_ref_for_tracked(&tracked.info.family, &tracked.info);
+        let metadata = runtime.device_registry.metadata_for_id(id).await;
+        let device_ref =
+            device_ref_for_tracked(&tracked.info.family, &tracked.info, metadata.as_ref());
         runtime
             .event_bus
             .publish(HypercolorEvent::DeviceDiscovered {
@@ -442,7 +452,8 @@ pub async fn execute_discovery_scan(
             continue;
         };
 
-        let backend = backend_id_for_family(&tracked.info.family);
+        let metadata = runtime.device_registry.metadata_for_id(id).await;
+        let backend = backend_id_for_device(&tracked.info.family, metadata.as_ref());
         let fingerprint = runtime.device_registry.fingerprint_for_id(id).await;
         let actions = {
             let mut lifecycle = runtime.lifecycle_manager.lock().await;
@@ -461,7 +472,9 @@ pub async fn execute_discovery_scan(
         let Some(tracked) = runtime.device_registry.get(id).await else {
             continue;
         };
-        let device_ref = device_ref_for_tracked(&tracked.info.family, &tracked.info);
+        let metadata = runtime.device_registry.metadata_for_id(id).await;
+        let device_ref =
+            device_ref_for_tracked(&tracked.info.family, &tracked.info, metadata.as_ref());
         runtime
             .event_bus
             .publish(HypercolorEvent::DeviceDiscovered {
@@ -487,18 +500,17 @@ pub async fn execute_discovery_scan(
         .scanner_reports
         .iter()
         .any(|scanner| scanner.error.is_some());
-    let scoped_registry_ids = runtime
-        .device_registry
-        .list()
-        .await
-        .into_iter()
-        .filter_map(|tracked| {
-            let backend_id = backend_id_for_family(&tracked.info.family);
-            scanned_backend_ids
-                .contains(&backend_id)
-                .then_some(tracked.info.id)
-        })
-        .collect::<HashSet<_>>();
+    let mut scoped_registry_ids = HashSet::new();
+    for tracked in runtime.device_registry.list().await {
+        let metadata = runtime
+            .device_registry
+            .metadata_for_id(&tracked.info.id)
+            .await;
+        let backend_id = backend_id_for_device(&tracked.info.family, metadata.as_ref());
+        if scanned_backend_ids.contains(&backend_id) {
+            scoped_registry_ids.insert(tracked.info.id);
+        }
+    }
 
     let ignored_out_of_scope = report
         .vanished_devices
@@ -1796,14 +1808,26 @@ pub(crate) fn backend_id_for_family(family: &DeviceFamily) -> String {
     }
 }
 
+pub(crate) fn backend_id_for_device(
+    family: &DeviceFamily,
+    metadata: Option<&HashMap<String, String>>,
+) -> String {
+    metadata
+        .and_then(|metadata| metadata.get("backend_id"))
+        .filter(|backend_id| !backend_id.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| backend_id_for_family(family))
+}
+
 fn device_ref_for_tracked(
     family: &DeviceFamily,
     info: &hypercolor_types::device::DeviceInfo,
+    metadata: Option<&HashMap<String, String>>,
 ) -> DeviceRef {
     DeviceRef {
         id: info.id.to_string(),
         name: info.name.clone(),
-        backend: backend_id_for_family(family),
+        backend: backend_id_for_device(family, metadata),
         led_count: info.total_led_count(),
     }
 }
@@ -1837,8 +1861,13 @@ impl Drop for DiscoveryFlagGuard {
 
 #[cfg(test)]
 mod tests {
-    use super::{DiscoveryBackend, default_timeout, normalize_timeout_ms, resolve_backends};
-    use hypercolor_types::config::HypercolorConfig;
+    use std::collections::HashMap;
+
+    use super::{
+        DiscoveryBackend, backend_id_for_device, default_timeout, normalize_timeout_ms,
+        resolve_backends,
+    };
+    use hypercolor_types::{config::HypercolorConfig, device::DeviceFamily};
 
     #[test]
     fn default_timeout_is_ten_seconds() {
@@ -1853,12 +1882,16 @@ mod tests {
     }
 
     #[test]
-    fn resolve_backends_defaults_to_wled_and_usb() {
+    fn resolve_backends_defaults_to_wled_usb_and_smbus() {
         let cfg = HypercolorConfig::default();
         let resolved = resolve_backends(None, &cfg).expect("default backends should resolve");
         assert_eq!(
             resolved,
-            vec![DiscoveryBackend::Wled, DiscoveryBackend::Usb]
+            vec![
+                DiscoveryBackend::Wled,
+                DiscoveryBackend::Usb,
+                DiscoveryBackend::SmBus,
+            ]
         );
     }
 
@@ -1877,5 +1910,16 @@ mod tests {
         let requested = vec!["wled".to_owned()];
         let error = resolve_backends(Some(&requested), &cfg).expect_err("wled must fail");
         assert!(error.contains("disabled"));
+    }
+
+    #[test]
+    fn backend_id_for_device_prefers_scanner_metadata() {
+        let mut metadata = HashMap::new();
+        metadata.insert("backend_id".to_owned(), "smbus".to_owned());
+
+        assert_eq!(
+            backend_id_for_device(&DeviceFamily::Asus, Some(&metadata)),
+            "smbus"
+        );
     }
 }

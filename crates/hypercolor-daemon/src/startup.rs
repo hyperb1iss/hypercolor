@@ -25,8 +25,8 @@ use hypercolor_core::device::manager::BackendRoutingDebugSnapshot;
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::wled::{WledBackend, WledProtocol};
 use hypercolor_core::device::{
-    BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbBackend, UsbHotplugEvent,
-    UsbHotplugMonitor, UsbProtocolConfigStore,
+    BackendManager, DeviceLifecycleManager, DeviceRegistry, SmBusBackend, UsbBackend,
+    UsbHotplugEvent, UsbHotplugMonitor, UsbProtocolConfigStore,
 };
 use hypercolor_core::effect::builtin::register_builtin_effects;
 use hypercolor_core::effect::{
@@ -272,6 +272,7 @@ impl DaemonState {
         if config.discovery.wled_scan {
             backend_manager_inner.register_backend(Box::new(build_wled_backend(config)));
         }
+        backend_manager_inner.register_backend(Box::new(SmBusBackend::new()));
         backend_manager_inner.register_backend(Box::new(UsbBackend::with_protocol_config_store(
             usb_protocol_configs.clone(),
         )));

@@ -230,7 +230,7 @@ async fn run_usb_resume_scan(runtime: &SessionRuntime) {
     let result = discovery::execute_discovery_scan(
         runtime.discovery_runtime.clone(),
         config,
-        vec![DiscoveryBackend::Usb],
+        vec![DiscoveryBackend::Usb, DiscoveryBackend::SmBus],
         discovery::default_timeout(),
     )
     .await;
