@@ -257,6 +257,22 @@ impl SmBusTransport {
         Ok(device.smbus_read_byte_data(0x00).is_ok())
     }
 
+    /// Probe whether one SMBus address acknowledges a quick-write transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when the bus path itself cannot be opened.
+    pub fn probe_quick_write<P: AsRef<Path>>(
+        path: P,
+        address: u16,
+    ) -> Result<bool, TransportError> {
+        let path_string = path.as_ref().display().to_string();
+        let mut device = LinuxI2CDevice::new(path.as_ref(), address)
+            .map_err(|error| map_linux_i2c_error(&path_string, address, error))?;
+
+        Ok(device.smbus_write_quick(false).is_ok())
+    }
+
     fn check_open(&self) -> Result<(), TransportError> {
         if self.closed.load(Ordering::Acquire) {
             return Err(TransportError::Closed);
@@ -373,6 +389,13 @@ impl SmBusTransport {
 
     /// SMBus transport is only available on Linux.
     pub fn probe_presence(_path: &str, _address: u16) -> Result<bool, TransportError> {
+        Err(TransportError::IoError {
+            detail: "SMBus transport is only available on Linux".to_owned(),
+        })
+    }
+
+    /// SMBus transport is only available on Linux.
+    pub fn probe_quick_write(_path: &str, _address: u16) -> Result<bool, TransportError> {
         Err(TransportError::IoError {
             detail: "SMBus transport is only available on Linux".to_owned(),
         })

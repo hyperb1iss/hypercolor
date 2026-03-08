@@ -37,6 +37,22 @@ const ASUS_DRAM_SMBUS_ADDRESSES: &[u16] = &[
     0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F, 0x4F,
     0x66, 0x67, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,
 ];
+const INTEL_VENDOR_ID: u16 = 0x8086;
+const AMD_VENDOR_ID: u16 = 0x1022;
+const DRAM_SMBUS_ADAPTER_IDS: &[(u16, u16)] = &[
+    (AMD_VENDOR_ID, 0x790B),
+    (INTEL_VENDOR_ID, 0x3A30),
+    (INTEL_VENDOR_ID, 0xA123),
+    (INTEL_VENDOR_ID, 0x2085),
+    (INTEL_VENDOR_ID, 0xA2A3),
+    (INTEL_VENDOR_ID, 0xA323),
+    (INTEL_VENDOR_ID, 0x06A3),
+    (INTEL_VENDOR_ID, 0xA3A3),
+    (INTEL_VENDOR_ID, 0x43A3),
+    (INTEL_VENDOR_ID, 0x7AA3),
+    (INTEL_VENDOR_ID, 0x7A23),
+    (INTEL_VENDOR_ID, 0x7F23),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SmBusControllerKind {
@@ -140,7 +156,14 @@ pub(crate) async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<
                 }
             }
 
-            discovered.extend(probe_dram_bus(&bus_path).await?);
+            if dram_capable_bus(&bus_path) {
+                discovered.extend(probe_dram_bus(&bus_path).await?);
+            } else {
+                trace!(
+                    bus_path,
+                    "skipping ASUS Aura DRAM probe on non-chipset i2c adapter"
+                );
+            }
         }
 
         Ok(discovered)
@@ -221,7 +244,13 @@ async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
     let _ = hub_transport.close().await;
 
     let mut discovered = Vec::new();
-    for remapped_address in remapped_addresses {
+    let probe_addresses = dram_probe_addresses(&occupied_addresses, &remapped_addresses);
+    trace!(
+        bus_path,
+        probe_addresses = ?probe_addresses,
+        "probing ASUS Aura DRAM address pool for ENE controllers"
+    );
+    for remapped_address in probe_addresses {
         if let Some(probe) =
             probe_bus_address(bus_path, remapped_address, SmBusControllerKind::Dram).await?
         {
@@ -359,17 +388,52 @@ fn i2c_bus_paths_in(dev_root: &Path) -> Result<Vec<String>> {
 }
 
 #[cfg(target_os = "linux")]
+fn dram_capable_bus(bus_path: &str) -> bool {
+    let Some((vendor_id, device_id)) = bus_pci_id(bus_path) else {
+        return false;
+    };
+
+    DRAM_SMBUS_ADAPTER_IDS.contains(&(vendor_id, device_id))
+}
+
+#[cfg(target_os = "linux")]
+fn bus_pci_id(bus_path: &str) -> Option<(u16, u16)> {
+    let bus_name = Path::new(bus_path).file_name()?;
+    let sysfs_root = Path::new("/sys/class/i2c-dev")
+        .join(bus_name)
+        .join("device");
+    let vendor_path = sysfs_root.join("../vendor");
+    let device_path = sysfs_root.join("../device");
+    let vendor_id = read_sysfs_hex_u16(&vendor_path)?;
+    let device_id = read_sysfs_hex_u16(&device_path)?;
+    Some((vendor_id, device_id))
+}
+
+#[cfg(target_os = "linux")]
+fn read_sysfs_hex_u16(path: &Path) -> Option<u16> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let trimmed = raw.trim();
+    let trimmed = trimmed.strip_prefix("0x").unwrap_or(trimmed);
+    u16::from_str_radix(trimmed, 16).ok()
+}
+
+#[cfg(target_os = "linux")]
 fn probe_occupied_dram_addresses(bus_path: &str) -> HashSet<u16> {
     ASUS_DRAM_SMBUS_ADDRESSES
         .iter()
         .copied()
-        .filter(|&address| bus_address_responds(bus_path, address))
+        .filter(|&address| bus_address_quick_responds(bus_path, address))
         .collect()
 }
 
 #[cfg(target_os = "linux")]
 fn bus_address_responds(bus_path: &str, address: u16) -> bool {
     SmBusTransport::probe_presence(bus_path, address).unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn bus_address_quick_responds(bus_path: &str, address: u16) -> bool {
+    SmBusTransport::probe_quick_write(bus_path, address).unwrap_or(false)
 }
 
 #[cfg(target_os = "linux")]
@@ -383,6 +447,26 @@ fn next_available_dram_address(
         .enumerate()
         .skip(start_index)
         .find(|(_, address)| !occupied_addresses.contains(address))
+}
+
+#[cfg(target_os = "linux")]
+fn dram_probe_addresses(occupied_addresses: &HashSet<u16>, remapped_addresses: &[u16]) -> Vec<u16> {
+    let mut probe_addresses = Vec::new();
+    let mut seen = HashSet::new();
+
+    for address in ASUS_DRAM_SMBUS_ADDRESSES
+        .iter()
+        .copied()
+        .filter(|address| occupied_addresses.contains(address))
+        .chain(remapped_addresses.iter().copied())
+        .chain(ASUS_DRAM_SMBUS_ADDRESSES.iter().copied())
+    {
+        if seen.insert(address) {
+            probe_addresses.push(address);
+        }
+    }
+
+    probe_addresses
 }
 
 fn build_device_info(
