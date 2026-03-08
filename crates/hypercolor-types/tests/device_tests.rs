@@ -223,6 +223,7 @@ fn connection_type_is_copy() {
 fn connection_type_serde_round_trip() {
     for ct in [
         ConnectionType::Usb,
+        ConnectionType::SmBus,
         ConnectionType::Network,
         ConnectionType::Bluetooth,
         ConnectionType::Bridge,
@@ -488,6 +489,15 @@ fn device_identifier_network_display_without_hostname() {
 }
 
 #[test]
+fn device_identifier_smbus_display() {
+    let id = DeviceIdentifier::SmBus {
+        bus_path: "/dev/i2c-9".into(),
+        address: 0x40,
+    };
+    assert_eq!(id.display_short(), "SMBus /dev/i2c-9 [0x40]");
+}
+
+#[test]
 fn device_identifier_hue_display() {
     let id = DeviceIdentifier::HueBridge {
         bridge_id: "001788FFFE123456".into(),
@@ -531,6 +541,18 @@ fn device_identifier_fingerprint_usb_path_fallback() {
     assert_eq!(
         id.fingerprint(),
         DeviceFingerprint("usb:16d5:1f01:usb-0000:00:14.0-2".into())
+    );
+}
+
+#[test]
+fn device_identifier_fingerprint_smbus() {
+    let id = DeviceIdentifier::SmBus {
+        bus_path: "/dev/i2c-9".into(),
+        address: 0x40,
+    };
+    assert_eq!(
+        id.fingerprint(),
+        DeviceFingerprint("smbus:/dev/i2c-9:40".into())
     );
 }
 
@@ -580,6 +602,10 @@ fn device_identifier_serde_round_trip() {
             product_id: 0x1F01,
             serial: Some("SN001".into()),
             usb_path: None,
+        },
+        DeviceIdentifier::SmBus {
+            bus_path: "/dev/i2c-9".into(),
+            address: 0x40,
         },
         DeviceIdentifier::Network {
             mac_address: "AA:BB:CC:DD:EE:FF".into(),

@@ -294,6 +294,25 @@ fn lifecycle_uses_usb_fingerprint_for_same_name_devices() {
     );
 }
 
+#[test]
+fn lifecycle_uses_smbus_fingerprint_for_same_name_devices() {
+    let mut lifecycle = DeviceLifecycleManager::new();
+    let device_id = DeviceId::new();
+    let info = device_info(device_id, "ASUS ENE Controller");
+
+    let _ = lifecycle.on_discovered(
+        device_id,
+        &info,
+        "smbus",
+        Some(&DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned())),
+    );
+
+    assert_eq!(
+        lifecycle.layout_device_id_for(device_id),
+        Some("smbus:-dev-i2c-9:40")
+    );
+}
+
 #[tokio::test]
 async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
     let device_id = DeviceId::new();

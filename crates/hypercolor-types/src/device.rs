@@ -227,6 +227,9 @@ pub enum ConnectionType {
     /// USB HID (`PrismRGB`, Nollie).
     Usb,
 
+    /// Local I2C/SMBus device node (`/dev/i2c-*`).
+    SmBus,
+
     /// Network protocols (WLED DDP, E1.31, Hue HTTP).
     Network,
 
@@ -495,6 +498,14 @@ pub enum DeviceIdentifier {
         usb_path: Option<String>,
     },
 
+    /// Local SMBus slave on one host I2C bus.
+    SmBus {
+        /// Linux device path for the parent bus (for example, `/dev/i2c-9`).
+        bus_path: String,
+        /// 7-bit SMBus address.
+        address: u16,
+    },
+
     /// Network device identified by MAC address.
     Network {
         /// MAC address (colon-separated hex).
@@ -538,6 +549,9 @@ impl DeviceIdentifier {
                 Some(s) => format!("USB {vendor_id:04X}:{product_id:04X} [{s}]"),
                 None => format!("USB {vendor_id:04X}:{product_id:04X}"),
             },
+            Self::SmBus { bus_path, address } => {
+                format!("SMBus {bus_path} [0x{address:02X}]")
+            }
             Self::Network {
                 mac_address,
                 mdns_hostname,
@@ -576,6 +590,9 @@ impl DeviceIdentifier {
                     .or(usb_path.as_deref())
                     .unwrap_or("unknown");
                 DeviceFingerprint(format!("usb:{vendor_id:04x}:{product_id:04x}:{key}"))
+            }
+            Self::SmBus { bus_path, address } => {
+                DeviceFingerprint(format!("smbus:{bus_path}:{address:02x}"))
             }
             Self::Network { mac_address, .. } => {
                 DeviceFingerprint(format!("net:{}", mac_address.to_lowercase()))

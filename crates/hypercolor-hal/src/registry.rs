@@ -27,7 +27,7 @@ impl fmt::Debug for ProtocolBinding {
     }
 }
 
-/// Static metadata for a known USB device.
+/// Static metadata for a known HAL-managed device.
 #[derive(Debug, Clone)]
 pub struct DeviceDescriptor {
     /// USB vendor ID (`VID`).
@@ -52,7 +52,7 @@ pub struct DeviceDescriptor {
     pub firmware_predicate: Option<fn(&str) -> bool>,
 }
 
-/// USB transport mechanism for a descriptor.
+/// Transport mechanism for a descriptor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportType {
     /// HID feature reports over USB control transfers.
@@ -97,6 +97,12 @@ pub enum TransportType {
     UsbSerial {
         /// Serial port baud rate hint.
         baud_rate: u32,
+    },
+
+    /// Linux I2C/SMBus transport.
+    I2cSmBus {
+        /// 7-bit SMBus slave address.
+        address: u16,
     },
 
     /// Vendor-specific control transfer transport.

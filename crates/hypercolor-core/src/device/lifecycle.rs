@@ -391,6 +391,10 @@ impl DeviceLifecycleManager {
             return format!("usb:{}", sanitize_component(value));
         }
 
+        if let Some(value) = value.strip_prefix("smbus:") {
+            return format!("smbus:{}", sanitize_component(value));
+        }
+
         let backend_prefix = format!("{backend_id}:");
         if let Some(value) = value.strip_prefix(&backend_prefix) {
             return format!("{backend_id}:{}", sanitize_component(value));
@@ -406,6 +410,18 @@ impl DeviceLifecycleManager {
     ) -> DeviceIdentifier {
         if let Some(fingerprint) = fingerprint {
             let value = fingerprint.0.clone();
+            if backend_id == "smbus"
+                && let Some(rest) = value.strip_prefix("smbus:")
+            {
+                let (bus_path, address) = rest.rsplit_once(':').map_or((rest, 0), |(bus, raw)| {
+                    let address = u16::from_str_radix(raw, 16).unwrap_or(0);
+                    (bus, address)
+                });
+                return DeviceIdentifier::SmBus {
+                    bus_path: bus_path.to_owned(),
+                    address,
+                };
+            }
             if backend_id == "wled"
                 && let Some(rest) = value.strip_prefix("net:")
             {

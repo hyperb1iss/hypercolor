@@ -348,6 +348,12 @@ impl UsbBackend {
             TransportType::UsbSerial { baud_rate } => {
                 Self::open_serial_transport(pending, baud_rate)
             }
+            TransportType::I2cSmBus { address } => {
+                let _ = usb;
+                bail!(
+                    "SMBus transport 0x{address:02X} is not supported by the USB backend; use a dedicated SMBus backend"
+                );
+            }
             TransportType::UsbVendor => Ok(Box::new(UsbVendorTransport::new())),
         }
     }

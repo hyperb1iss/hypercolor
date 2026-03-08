@@ -4,12 +4,12 @@ use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::registry::TransportType;
 
 const UDEV_RULES: &str = include_str!("../../../udev/99-hypercolor.rules");
-const I2C_UDEV_RULE: &str =
-    "SUBSYSTEM==\"i2c-dev\", KERNEL==\"i2c-[0-9]*\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\"";
+const I2C_UDEV_RULE: &str = "SUBSYSTEM==\"i2c-dev\", KERNEL==\"i2c-[0-9]*\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\"";
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum RequiredSubsystem {
     Hidraw,
+    I2cDev,
     Tty,
     Usb,
 }
@@ -21,6 +21,10 @@ impl RequiredSubsystem {
                 format!(
                     "SUBSYSTEM==\"hidraw\", ATTRS{{idVendor}}==\"{vendor_id:04x}\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
                 )
+            }
+            Self::I2cDev => {
+                "SUBSYSTEM==\"i2c-dev\", KERNEL==\"i2c-[0-9]*\", MODE=\"0660\", GROUP=\"users\", TAG+=\"uaccess\""
+                    .to_owned()
             }
             Self::Tty => {
                 format!(
@@ -48,6 +52,9 @@ fn udev_rules_cover_each_supported_vendor_transport_family() {
             TransportType::UsbSerial { .. } => {
                 required.insert(RequiredSubsystem::Tty);
             }
+            TransportType::I2cSmBus { .. } => {
+                required.insert(RequiredSubsystem::I2cDev);
+            }
             TransportType::UsbControl { .. }
             | TransportType::UsbHid { .. }
             | TransportType::UsbBulk { .. }
@@ -66,6 +73,15 @@ fn udev_rules_cover_each_supported_vendor_transport_family() {
             );
         }
     }
+}
+
+#[test]
+fn udev_rules_grant_generic_i2c_device_access() {
+    let rule = RequiredSubsystem::I2cDev.rule_line(0);
+    assert!(
+        UDEV_RULES.contains(&rule),
+        "missing generic i2c-dev access rule: {rule}"
+    );
 }
 
 #[test]

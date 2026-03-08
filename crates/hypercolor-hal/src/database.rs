@@ -1,4 +1,4 @@
-//! Static USB protocol descriptor database.
+//! Static HAL protocol descriptor database.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::LazyLock;

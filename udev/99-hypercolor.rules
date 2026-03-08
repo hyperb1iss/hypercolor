@@ -1,12 +1,14 @@
-# Hypercolor USB device permissions
+# Hypercolor device permissions
 # Install: just udev-install
 # Grants access to the physically logged-in user via systemd-logind (TAG+="uaccess").
 # Some hidraw nodes can miss their ACL replay on existing devices, so we also set a
 # conservative fallback group/mode for the supported vendor families.
 # A replug or reboot is required after installation for existing devices.
 #
-# These rules are vendor-wide for the brands Hypercolor supports so newly added
+# USB rules are vendor-wide for the brands Hypercolor supports so newly added
 # product IDs do not require a udev update just to gain device-node access.
+# SMBus access is granted generically via `/dev/i2c-*` because bus nodes are
+# host-controller devices, not vendor-scoped endpoints.
 #
 # hidraw/tty rules use ATTRS (walk up to parent USB device for vendor match).
 # usb rules use ATTR + DEVTYPE filter to match the /dev/bus/usb/ device node directly.
