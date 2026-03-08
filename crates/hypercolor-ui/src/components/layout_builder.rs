@@ -130,7 +130,7 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     // Global mousemove / mouseup listeners for drag (registered once)
     let _drag_move = window_event_listener(ev::mousemove, move |ev| {
-        let Some(drag) = dragging.get_untracked() else {
+        let Some(drag) = dragging.try_get_untracked().flatten() else {
             return;
         };
         let Some(container) = container_ref.try_get_untracked().flatten() else {
@@ -154,14 +154,21 @@ pub fn LayoutBuilder() -> impl IntoView {
     });
 
     let _drag_end = window_event_listener(ev::mouseup, move |_| {
-        if let Some(drag) = dragging.get_untracked() {
-            set_dragging.set(None);
-            // Persist on release
-            match drag {
-                PanelDrag::Sidebar => {
-                    save_panel_size(LS_KEY_SIDEBAR, sidebar_width.get_untracked())
+        let Some(drag) = dragging.try_get_untracked().flatten() else {
+            return;
+        };
+        set_dragging.set(None);
+        // Persist on release.
+        match drag {
+            PanelDrag::Sidebar => {
+                if let Some(width) = sidebar_width.try_get_untracked() {
+                    save_panel_size(LS_KEY_SIDEBAR, width);
                 }
-                PanelDrag::Bottom => save_panel_size(LS_KEY_BOTTOM, bottom_height.get_untracked()),
+            }
+            PanelDrag::Bottom => {
+                if let Some(height) = bottom_height.try_get_untracked() {
+                    save_panel_size(LS_KEY_BOTTOM, height);
+                }
             }
         }
     });

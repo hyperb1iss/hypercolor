@@ -5,7 +5,6 @@ use leptos::prelude::*;
 use crate::api::{self, EffectSummary, SystemStatus};
 use crate::app::{EffectsContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
-use crate::toasts;
 use crate::ws::{BackpressureNotice, PerformanceMetrics};
 
 /// Dashboard landing page.
@@ -32,35 +31,7 @@ pub fn DashboardPage() -> impl IntoView {
             <Suspense fallback=move || view! { <StatusSkeleton /> }>
                 {move || status_resource.get().map(|result| {
                     match result {
-                        Ok(status) => {
-                            let on_change = {
-                                let status_resource = status_resource;
-                                Callback::new(move |brightness: u8| {
-                                    let status_resource = status_resource;
-                                    leptos::task::spawn_local(async move {
-                                        match api::set_global_brightness(brightness).await {
-                                            Ok(_) => status_resource.refetch(),
-                                            Err(error) => {
-                                                toasts::toast_error(&format!(
-                                                    "Global brightness update failed: {error}"
-                                                ));
-                                            }
-                                        }
-                                    });
-                                })
-                            };
-
-                            view! {
-                                <div class="space-y-3">
-                                    <StatusCards status=status.clone() />
-                                    <GlobalBrightnessCard
-                                        brightness=status.global_brightness
-                                        on_change=on_change
-                                    />
-                                </div>
-                            }
-                            .into_any()
-                        }
+                        Ok(status) => view! { <StatusCards status=status /> }.into_any(),
                         Err(e) => view! {
                             <div class="text-sm text-status-error bg-status-error/[0.05] border border-status-error/10 rounded-lg px-4 py-3">
                                 "Failed to connect: " {e}
@@ -362,43 +333,6 @@ fn StatusCards(status: SystemStatus) -> impl IntoView {
                     </div>
                 }
             }).collect_view()}
-        </div>
-    }
-}
-
-/// Quick-switch effect grid.
-#[component]
-fn GlobalBrightnessCard(brightness: u8, on_change: Callback<u8>) -> impl IntoView {
-    view! {
-        <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle px-4 py-3">
-            <div class="flex items-center justify-between gap-3 mb-2">
-                <div>
-                    <div class="text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary mb-1">
-                        "Global Brightness"
-                    </div>
-                    <div class="text-[12px] text-fg-secondary">
-                        "Master output scale across every device."
-                    </div>
-                </div>
-                <div class="text-lg font-medium tabular-nums text-fg-primary">
-                    {format!("{brightness}%")}
-                </div>
-            </div>
-            <input
-                type="range"
-                min="0"
-                max="100"
-                step="1"
-                class="w-full h-1 rounded-full appearance-none cursor-pointer"
-                style="accent-color: rgb(225, 53, 255); background: rgba(139, 133, 160, 0.15)"
-                prop:value=brightness.to_string()
-                on:change=move |ev| {
-                    let target = event_target_value(&ev);
-                    if let Ok(brightness) = target.parse::<u8>() {
-                        on_change.run(brightness);
-                    }
-                }
-            />
         </div>
     }
 }

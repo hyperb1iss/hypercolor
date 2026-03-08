@@ -2,6 +2,7 @@
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use leptos_use::use_throttle_fn_with_arg;
 use wasm_bindgen::JsCast;
 
 use crate::api;
@@ -44,7 +45,14 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
     let (seg_start, set_seg_start) = signal(String::new());
     let (seg_count, set_seg_count) = signal(String::new());
     let (identify_active, set_identify_active) = signal(false);
+    let (device_brightness, set_device_brightness) = signal(100_u8);
     let device_signal = Signal::derive(move || device.get());
+
+    Effect::new(move |_| {
+        if let Some(dev) = device.get() {
+            set_device_brightness.set(dev.brightness);
+        }
+    });
 
     // Save name handler
     let save_name = move || {
@@ -90,22 +98,27 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
     };
 
     // Device brightness
-    let set_brightness = move |brightness: u8| {
-        let Some(dev) = device.get() else { return };
-        let id = dev.id.clone();
-        let devices_resource = ctx.devices_resource;
-        leptos::task::spawn_local(async move {
-            let req = api::UpdateDeviceRequest {
-                name: None,
-                enabled: None,
-                brightness: Some(brightness),
+    let push_brightness = use_throttle_fn_with_arg(
+        move |brightness: u8| {
+            let Some(dev) = device.get_untracked() else {
+                return;
             };
-            match api::update_device(&id, &req).await {
-                Ok(_) => devices_resource.refetch(),
-                Err(error) => toasts::toast_error(&format!("Brightness update failed: {error}")),
-            }
-        });
-    };
+            let id = dev.id.clone();
+            let devices_resource = ctx.devices_resource;
+            leptos::task::spawn_local(async move {
+                let req = api::UpdateDeviceRequest {
+                    name: None,
+                    enabled: None,
+                    brightness: Some(brightness),
+                };
+                if let Err(error) = api::update_device(&id, &req).await {
+                    toasts::toast_error(&format!("Brightness update failed: {error}"));
+                    devices_resource.refetch();
+                }
+            });
+        },
+        50.0,
+    );
 
     // Identify handler
     let identify = move || {
@@ -176,6 +189,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                 let accent_border = format!("border-top: 2px solid rgba({rgb}, 0.15)");
                 let enabled = dev.status != "disabled";
                 let dev_name_for_edit = dev.name.clone();
+                let push_brightness = push_brightness.clone();
 
                 view! {
                     // ── Device Header ──────────────────────────────────────
@@ -249,7 +263,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                         </p>
                                     </div>
                                     <span class="text-sm font-mono tabular-nums text-fg-primary">
-                                        {format!("{}%", dev.brightness)}
+                                        {move || format!("{}%", device_brightness.get())}
                                     </span>
                                 </div>
                                 <input
@@ -259,13 +273,14 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                     step="1"
                                     class="w-full h-1 rounded-full appearance-none cursor-pointer"
                                     style="accent-color: rgb(225, 53, 255); background: rgba(139, 133, 160, 0.15)"
-                                    prop:value=dev.brightness.to_string()
-                                    on:change=move |ev| {
+                                    prop:value=move || device_brightness.get().to_string()
+                                    on:input=move |ev| {
                                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
                                         if let Some(el) = target
                                             && let Ok(brightness) = el.value().parse::<u8>()
                                         {
-                                            set_brightness(brightness);
+                                            set_device_brightness.set(brightness);
+                                            push_brightness(brightness);
                                         }
                                     }
                                 />

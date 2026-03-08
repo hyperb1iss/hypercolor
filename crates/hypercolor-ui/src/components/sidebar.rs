@@ -6,10 +6,13 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_router::components::A;
 use leptos_router::hooks::use_location;
+use leptos_use::use_throttle_fn_with_arg;
 
+use crate::api;
 use crate::app::{EffectsContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::icons::*;
+use crate::toasts;
 use crate::ws::ConnectionState;
 
 /// Sidebar collapsed state, shared via context so the shell can react.
@@ -198,6 +201,25 @@ pub fn Sidebar() -> impl IntoView {
         Signal::derive(move || ws.map_or(0, |ctx| ctx.preview_target_fps.get()));
     let (live_palette, set_live_palette) = signal(None::<LivePalette>);
     let (last_palette_time, set_last_palette_time) = signal(0.0_f64);
+    let global_brightness_resource = LocalResource::new(api::fetch_global_brightness);
+    let (global_brightness, set_global_brightness) = signal(100_u8);
+
+    Effect::new(move |_| {
+        if let Some(Ok(brightness)) = global_brightness_resource.get() {
+            set_global_brightness.set(brightness);
+        }
+    });
+
+    let push_global_brightness = use_throttle_fn_with_arg(
+        move |brightness: u8| {
+            leptos::task::spawn_local(async move {
+                if let Err(error) = api::set_global_brightness(brightness).await {
+                    toasts::toast_error(&format!("Global brightness update failed: {error}"));
+                }
+            });
+        },
+        50.0,
+    );
 
     if let Some(ws) = ws {
         // Palette extraction — throttled ~2x/sec for ambient styling
@@ -514,6 +536,7 @@ pub fn Sidebar() -> impl IntoView {
                 if !has_active.get() || collapsed.get() {
                     return None;
                 }
+                let push_global_brightness = push_global_brightness.clone();
 
                 // Derived signals for palette RGB — read inside style: closures, not here
                 let primary_rgb = move || {
@@ -623,6 +646,28 @@ pub fn Sidebar() -> impl IntoView {
                             >
                                 <Icon icon=LuShuffle width="16px" height="16px" />
                             </button>
+                        </div>
+
+                        <div class="px-4 flex items-center gap-2">
+                            <input
+                                type="range"
+                                min="0"
+                                max="100"
+                                step="1"
+                                class="min-w-0 flex-1 h-1 rounded-full appearance-none cursor-pointer"
+                                style="accent-color: rgb(225, 53, 255); background: rgba(139, 133, 160, 0.15)"
+                                prop:value=move || global_brightness.get().to_string()
+                                on:input=move |ev| {
+                                    let value = event_target_value(&ev);
+                                    if let Ok(brightness) = value.parse::<u8>() {
+                                        set_global_brightness.set(brightness);
+                                        push_global_brightness(brightness);
+                                    }
+                                }
+                            />
+                            <span class="shrink-0 text-fg-primary font-medium tabular-nums w-9 text-right text-[11px]">
+                                {move || format!("{}%", global_brightness.get())}
+                            </span>
                         </div>
                     </div>
                 })

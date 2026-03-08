@@ -5,6 +5,7 @@ use leptos_icons::Icon;
 
 use crate::api::{self, ZoneTopologySummary};
 use crate::app::DevicesContext;
+use crate::components::attachment_panel::AttachmentPanel;
 use crate::components::layout_canvas::device_accent_colors;
 use crate::icons::*;
 use crate::layout_geometry;
@@ -38,6 +39,9 @@ pub fn LayoutPalette(
     // Track which devices are collapsed
     let (collapsed_devices, set_collapsed_devices) =
         signal(std::collections::HashSet::<String>::new());
+
+    // Track which device has its attachment panel open (at most one at a time)
+    let (attachment_device_id, set_attachment_device_id) = signal(None::<String>);
 
     // Derive group list from layout
     let groups = Signal::derive(move || {
@@ -714,6 +718,75 @@ pub fn LayoutPalette(
                                 </div>
                     }
                         .into_any()
+                }}
+            </div>
+
+            // Separator
+            <div class="h-px bg-edge-subtle" />
+
+            // Attachments section — configure device attachments from the layout page
+            <div class="space-y-2">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary flex items-center gap-1.5">
+                        <Icon icon=LuCable width="12px" height="12px" />
+                        "Attachments"
+                    </h3>
+                </div>
+
+                // Device picker for attachments
+                <select
+                    class="w-full bg-surface-sunken border border-edge-subtle rounded-lg px-2.5 py-1.5 text-[11px] text-fg-primary
+                           focus:outline-none focus:border-accent-muted glow-ring transition-all"
+                    on:change=move |ev| {
+                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
+                        if let Some(el) = target {
+                            let val = el.value();
+                            if val.is_empty() {
+                                set_attachment_device_id.set(None);
+                            } else {
+                                set_attachment_device_id.set(Some(val));
+                            }
+                        }
+                    }
+                >
+                    <option value="" selected=move || attachment_device_id.get().is_none()>"Select device..."</option>
+                    {move || {
+                        stable_devices.get().into_iter().map(|dev| {
+                            let did = dev.id.clone();
+                            let did2 = dev.id.clone();
+                            let label = format!("{} ({} LEDs)", dev.name, dev.total_leds);
+                            view! {
+                                <option
+                                    value=did
+                                    selected=move || attachment_device_id.get().as_deref() == Some(&did2)
+                                >
+                                    {label}
+                                </option>
+                            }
+                        }).collect_view()
+                    }}
+                </select>
+
+                // Inline attachment panel for selected device
+                {move || {
+                    let selected_id = attachment_device_id.get()?;
+                    let devices = stable_devices.get();
+                    let device = devices.into_iter().find(|d| d.id == selected_id)?;
+
+                    let device_id_signal = Signal::derive({
+                        let id = selected_id.clone();
+                        move || id.clone()
+                    });
+                    let device_signal = Signal::derive({
+                        let dev = device.clone();
+                        move || Some(dev.clone())
+                    });
+
+                    Some(view! {
+                        <div class="animate-fade-in">
+                            <AttachmentPanel device_id=device_id_signal device=device_signal />
+                        </div>
+                    })
                 }}
             </div>
         </div>
