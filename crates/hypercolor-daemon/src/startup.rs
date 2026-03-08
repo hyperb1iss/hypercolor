@@ -47,6 +47,7 @@ use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::attachment_profiles::AttachmentProfileStore;
+use crate::display_output::{DisplayOutputState, DisplayOutputThread};
 use crate::effect_layouts;
 use crate::logical_devices::LogicalDevice;
 use crate::performance::PerformanceTracker;
@@ -148,6 +149,9 @@ pub struct DaemonState {
 
     /// Handle to the running render thread (if started).
     render_thread: Option<RenderThread>,
+
+    /// Handle to the automatic display output task (if started).
+    display_output_thread: Option<DisplayOutputThread>,
 
     /// Effect file watcher for hot-reload.
     effect_watcher_task: Option<tokio::task::JoinHandle<()>>,
@@ -407,6 +411,7 @@ impl DaemonState {
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             power_state,
             render_thread: None,
+            display_output_thread: None,
             effect_watcher_task: None,
             discovery_task: None,
             session_controller: None,
@@ -491,6 +496,11 @@ impl DaemonState {
             screen_capture_enabled: config.capture.enabled,
         };
         self.render_thread = Some(RenderThread::spawn(rt_state));
+        self.display_output_thread = Some(DisplayOutputThread::spawn(DisplayOutputState {
+            backend_manager: Arc::clone(&self.backend_manager),
+            device_registry: self.device_registry.clone(),
+            event_bus: Arc::clone(&self.event_bus),
+        }));
 
         // Publish a startup event so subscribers know the daemon is alive.
         let device_count = self.device_registry.len().await;
@@ -549,6 +559,11 @@ impl DaemonState {
         if let Some(mut rt) = self.render_thread.take() {
             if let Err(e) = rt.shutdown().await {
                 warn!(error = %e, "render thread shutdown error");
+            }
+        }
+        if let Some(mut output) = self.display_output_thread.take() {
+            if let Err(e) = output.shutdown().await {
+                warn!(error = %e, "display output shutdown error");
             }
         }
 

@@ -915,7 +915,7 @@ fn format_error_chain(error: &anyhow::Error) -> String {
         .join(" | caused_by: ")
 }
 
-fn backend_id_for_family(family: &DeviceFamily) -> String {
+pub(crate) fn backend_id_for_family(family: &DeviceFamily) -> String {
     match family {
         DeviceFamily::Wled => "wled".to_owned(),
         DeviceFamily::Hue => "hue".to_owned(),
