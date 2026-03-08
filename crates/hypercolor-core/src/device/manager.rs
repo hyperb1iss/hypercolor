@@ -1044,9 +1044,26 @@ impl BackendManager {
                 .iter()
                 .map(|(backend_id, device_id)| format!("{backend_id}:{device_id}"))
                 .collect::<Vec<_>>();
+            let mapped_layout_ids_by_device = newly_inactive
+                .iter()
+                .map(|(backend_id, device_id)| {
+                    let mut aliases = self
+                        .device_map
+                        .iter()
+                        .filter(|(_, mapping)| {
+                            mapping.backend_id == *backend_id && mapping.device_id == *device_id
+                        })
+                        .map(|(layout_device_id, _)| layout_device_id.clone())
+                        .collect::<Vec<_>>();
+                    aliases.sort_unstable();
+                    format!("{backend_id}:{device_id} => [{}]", aliases.join(", "))
+                })
+                .collect::<Vec<_>>();
             warn!(
                 inactive_device_count = devices.len(),
                 devices = ?devices,
+                layout_zone_count = layout.zones.len(),
+                mapped_layout_ids = ?mapped_layout_ids_by_device,
                 "connected devices have no active layout zones; frames will not be sent"
             );
         }

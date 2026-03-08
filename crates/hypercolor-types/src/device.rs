@@ -524,11 +524,11 @@ pub enum DeviceIdentifier {
         usb_path: Option<String>,
     },
 
-    /// Local SMBus slave on one host I2C bus.
+    /// Local `SMBus` slave on one host I2C bus.
     SmBus {
         /// Linux device path for the parent bus (for example, `/dev/i2c-9`).
         bus_path: String,
-        /// 7-bit SMBus address.
+        /// 7-bit `SMBus` address.
         address: u16,
     },
 

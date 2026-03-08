@@ -14,7 +14,7 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::wled::WledScanner;
 use hypercolor_core::device::{
     AsyncWriteFailure, BackendIo, BackendManager, DeviceLifecycleManager, DeviceRegistry,
-    DiscoveryOrchestrator, LifecycleAction, ScannerScanReport, SmBusScanner,
+    DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction, ScannerScanReport, SmBusScanner,
     UsbProtocolConfigStore, UsbScanner,
 };
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
@@ -279,15 +279,6 @@ pub fn resolve_backends(
                     }
                     continue;
                 }
-                if !config.discovery.mdns_enabled {
-                    if explicit_request {
-                        return Err(
-                            "Discovery backend 'wled' requires discovery.mdns_enabled=true"
-                                .to_owned(),
-                        );
-                    }
-                    continue;
-                }
             }
             DiscoveryBackend::Usb | DiscoveryBackend::SmBus => {}
         }
@@ -396,10 +387,24 @@ pub async fn execute_discovery_scan(
         };
     }
 
-    let report = orchestrator.full_scan().await;
-    let mut found = Vec::new();
-    let mut new_devices = Vec::new();
-    let mut reappeared_devices = Vec::new();
+    let incremental = Arc::new(Mutex::new(IncrementalDiscoveryState::default()));
+    let incremental_for_progress = Arc::clone(&incremental);
+    let runtime_for_progress = runtime.clone();
+    let report = orchestrator
+        .full_scan_with_progress(|progress: DiscoveryProgress| {
+            let runtime = runtime_for_progress.clone();
+            let incremental = Arc::clone(&incremental_for_progress);
+            async move {
+                process_discovery_progress(&runtime, progress, &incremental).await;
+            }
+        })
+        .await;
+
+    let IncrementalDiscoveryState {
+        found,
+        new_devices,
+        reappeared_devices,
+    } = incremental.lock().await.clone();
 
     let seen_ids: HashSet<DeviceId> = report
         .new_devices
@@ -407,136 +412,6 @@ pub async fn execute_discovery_scan(
         .chain(report.reappeared_devices.iter())
         .copied()
         .collect();
-
-    for id in &report.new_devices {
-        let persisted_settings = apply_persisted_device_settings(&runtime, *id).await;
-        let Some(tracked) = runtime.device_registry.get(id).await else {
-            continue;
-        };
-
-        let metadata = runtime.device_registry.metadata_for_id(id).await;
-        let backend = backend_id_for_device(&tracked.info.family, metadata.as_ref());
-        let fingerprint = runtime.device_registry.fingerprint_for_id(id).await;
-        let actions = {
-            let mut lifecycle = runtime.lifecycle_manager.lock().await;
-            let mut actions =
-                lifecycle.on_discovered(*id, &tracked.info, &backend, fingerprint.as_ref());
-            if !persisted_settings.enabled {
-                match lifecycle.on_user_disable(*id) {
-                    Ok(disable_actions) => actions = disable_actions,
-                    Err(error) => {
-                        warn!(
-                            device = %tracked.info.name,
-                            device_id = %id,
-                            error = %error,
-                            "failed to reapply persisted disabled state for discovered device"
-                        );
-                    }
-                }
-            }
-            actions
-        };
-        ensure_default_logical_for_device(
-            &runtime,
-            *id,
-            &tracked.info.name,
-            tracked.info.total_led_count(),
-        )
-        .await;
-        execute_lifecycle_actions(runtime.clone(), actions).await;
-        sync_registry_state(&runtime, *id).await;
-
-        let Some(tracked) = runtime.device_registry.get(id).await else {
-            continue;
-        };
-        let metadata = runtime.device_registry.metadata_for_id(id).await;
-        let device_ref =
-            device_ref_for_tracked(&tracked.info.family, &tracked.info, metadata.as_ref());
-        runtime
-            .event_bus
-            .publish(HypercolorEvent::DeviceDiscovered {
-                device_id: device_ref.id.clone(),
-                name: device_ref.name.clone(),
-                backend: device_ref.backend.clone(),
-                led_count: device_ref.led_count,
-                address: None,
-            });
-        info!(
-            device = %device_ref.name,
-            device_id = %device_ref.id,
-            backend = %device_ref.backend,
-            led_count = device_ref.led_count,
-            "discovered new device"
-        );
-
-        found.push(device_ref.clone());
-        new_devices.push(device_ref);
-    }
-
-    for id in &report.reappeared_devices {
-        let persisted_settings = apply_persisted_device_settings(&runtime, *id).await;
-        let Some(tracked) = runtime.device_registry.get(id).await else {
-            continue;
-        };
-
-        let metadata = runtime.device_registry.metadata_for_id(id).await;
-        let backend = backend_id_for_device(&tracked.info.family, metadata.as_ref());
-        let fingerprint = runtime.device_registry.fingerprint_for_id(id).await;
-        let actions = {
-            let mut lifecycle = runtime.lifecycle_manager.lock().await;
-            let mut actions =
-                lifecycle.on_discovered(*id, &tracked.info, &backend, fingerprint.as_ref());
-            if !persisted_settings.enabled {
-                match lifecycle.on_user_disable(*id) {
-                    Ok(disable_actions) => actions = disable_actions,
-                    Err(error) => {
-                        warn!(
-                            device = %tracked.info.name,
-                            device_id = %id,
-                            error = %error,
-                            "failed to reapply persisted disabled state for rediscovered device"
-                        );
-                    }
-                }
-            }
-            actions
-        };
-        ensure_default_logical_for_device(
-            &runtime,
-            *id,
-            &tracked.info.name,
-            tracked.info.total_led_count(),
-        )
-        .await;
-        execute_lifecycle_actions(runtime.clone(), actions).await;
-        sync_registry_state(&runtime, *id).await;
-
-        let Some(tracked) = runtime.device_registry.get(id).await else {
-            continue;
-        };
-        let metadata = runtime.device_registry.metadata_for_id(id).await;
-        let device_ref =
-            device_ref_for_tracked(&tracked.info.family, &tracked.info, metadata.as_ref());
-        runtime
-            .event_bus
-            .publish(HypercolorEvent::DeviceDiscovered {
-                device_id: device_ref.id.clone(),
-                name: device_ref.name.clone(),
-                backend: device_ref.backend.clone(),
-                led_count: device_ref.led_count,
-                address: None,
-            });
-        info!(
-            device = %device_ref.name,
-            device_id = %device_ref.id,
-            backend = %device_ref.backend,
-            led_count = device_ref.led_count,
-            "device reappeared"
-        );
-
-        found.push(device_ref.clone());
-        reappeared_devices.push(device_ref);
-    }
 
     let scan_had_errors = report
         .scanner_reports
@@ -662,6 +537,141 @@ pub async fn execute_discovery_scan(
         duration_ms,
         scanners: map_scanner_reports(&report.scanner_reports),
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct IncrementalDiscoveryState {
+    found: Vec<DeviceRef>,
+    new_devices: Vec<DeviceRef>,
+    reappeared_devices: Vec<DeviceRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiscoverySeenKind {
+    New,
+    Reappeared,
+}
+
+async fn process_discovery_progress(
+    runtime: &DiscoveryRuntime,
+    progress: DiscoveryProgress,
+    incremental: &Arc<Mutex<IncrementalDiscoveryState>>,
+) {
+    for id in progress.new_devices {
+        if let Some((device_ref, _)) =
+            process_discovered_device(runtime, id, DiscoverySeenKind::New).await
+        {
+            let mut state = incremental.lock().await;
+            state.found.push(device_ref.clone());
+            state.new_devices.push(device_ref);
+        }
+    }
+
+    for id in progress.reappeared_devices {
+        let Some((device_ref, should_record)) =
+            process_discovered_device(runtime, id, DiscoverySeenKind::Reappeared).await
+        else {
+            continue;
+        };
+
+        let mut state = incremental.lock().await;
+        state.found.push(device_ref.clone());
+        if should_record {
+            state.reappeared_devices.push(device_ref);
+        }
+    }
+}
+
+async fn process_discovered_device(
+    runtime: &DiscoveryRuntime,
+    device_id: DeviceId,
+    kind: DiscoverySeenKind,
+) -> Option<(DeviceRef, bool)> {
+    let persisted_settings = apply_persisted_device_settings(runtime, device_id).await;
+    let tracked_before = runtime.device_registry.get(&device_id).await?;
+    let was_renderable = tracked_before.state.is_renderable();
+
+    let metadata = runtime.device_registry.metadata_for_id(&device_id).await;
+    let backend = backend_id_for_device(&tracked_before.info.family, metadata.as_ref());
+    let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
+    let actions = {
+        let mut lifecycle = runtime.lifecycle_manager.lock().await;
+        let mut actions = lifecycle.on_discovered(
+            device_id,
+            &tracked_before.info,
+            &backend,
+            fingerprint.as_ref(),
+        );
+        if !persisted_settings.enabled {
+            match lifecycle.on_user_disable(device_id) {
+                Ok(disable_actions) => actions = disable_actions,
+                Err(error) => {
+                    warn!(
+                        device = %tracked_before.info.name,
+                        device_id = %device_id,
+                        error = %error,
+                        kind = ?kind,
+                        "failed to reapply persisted disabled state during discovery"
+                    );
+                }
+            }
+        }
+        actions
+    };
+    let had_actions = !actions.is_empty();
+
+    ensure_default_logical_for_device(
+        runtime,
+        device_id,
+        &tracked_before.info.name,
+        tracked_before.info.total_led_count(),
+    )
+    .await;
+    execute_lifecycle_actions(runtime.clone(), actions).await;
+    sync_registry_state(runtime, device_id).await;
+
+    let tracked_after = runtime.device_registry.get(&device_id).await?;
+    let metadata = runtime.device_registry.metadata_for_id(&device_id).await;
+    let device_ref = device_ref_for_tracked(
+        &tracked_after.info.family,
+        &tracked_after.info,
+        metadata.as_ref(),
+    );
+
+    let should_publish_reappeared = !was_renderable || had_actions;
+    let should_publish = match kind {
+        DiscoverySeenKind::New => true,
+        DiscoverySeenKind::Reappeared => should_publish_reappeared,
+    };
+
+    if should_publish {
+        runtime
+            .event_bus
+            .publish(HypercolorEvent::DeviceDiscovered {
+                device_id: device_ref.id.clone(),
+                name: device_ref.name.clone(),
+                backend: device_ref.backend.clone(),
+                led_count: device_ref.led_count,
+                address: None,
+            });
+
+        let message = match kind {
+            DiscoverySeenKind::New => "discovered new device",
+            DiscoverySeenKind::Reappeared => "device reappeared",
+        };
+        info!(
+            device = %device_ref.name,
+            device_id = %device_ref.id,
+            backend = %device_ref.backend,
+            led_count = device_ref.led_count,
+            "{message}"
+        );
+    }
+
+    Some((
+        device_ref,
+        matches!(kind, DiscoverySeenKind::Reappeared) && should_publish_reappeared,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1379,9 +1389,26 @@ pub async fn sync_active_layout_for_renderable_devices(
             .get(layout_device_id)
             .is_none_or(|entry| entry.enabled);
         if !default_enabled {
+            if inactive_ids.contains(&device_id) {
+                debug!(
+                    device_id = %device_id,
+                    device_name = %tracked.info.name,
+                    layout_device_id = %layout_device_id,
+                    "skipping auto-layout sync because the default logical device is disabled"
+                );
+            }
             continue;
         }
         if excluded_layout_device_ids.contains(layout_device_id) {
+            if inactive_ids.contains(&device_id) {
+                debug!(
+                    device_id = %device_id,
+                    device_name = %tracked.info.name,
+                    layout_device_id = %layout_device_id,
+                    layout_id = %layout.id,
+                    "skipping auto-layout sync because the device is excluded from the active layout"
+                );
+            }
             continue;
         }
 
@@ -1399,6 +1426,14 @@ pub async fn sync_active_layout_for_renderable_devices(
         let added =
             append_auto_layout_zones_for_device(&mut layout, layout_device_id, &tracked.info);
         if added == 0 {
+            debug!(
+                device_id = %device_id,
+                device_name = %tracked.info.name,
+                layout_device_id = %layout_device_id,
+                zone_count = tracked.info.zones.len(),
+                total_leds = tracked.info.total_led_count(),
+                "device remains layout-inactive because auto-layout produced no renderable zones"
+            );
             continue;
         }
 
@@ -2091,6 +2126,22 @@ mod tests {
         let requested = vec!["wled".to_owned()];
         let error = resolve_backends(Some(&requested), &cfg).expect_err("wled must fail");
         assert!(error.contains("disabled"));
+    }
+
+    #[test]
+    fn resolve_backends_keeps_wled_when_mdns_is_disabled() {
+        let mut cfg = HypercolorConfig::default();
+        cfg.discovery.mdns_enabled = false;
+
+        let resolved = resolve_backends(None, &cfg).expect("wled should still resolve");
+        assert_eq!(
+            resolved,
+            vec![
+                DiscoveryBackend::Wled,
+                DiscoveryBackend::Usb,
+                DiscoveryBackend::SmBus,
+            ]
+        );
     }
 
     #[test]

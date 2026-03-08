@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -1081,6 +1082,58 @@ async fn orchestrator_scans_transports_in_parallel() {
     assert!(
         elapsed < Duration::from_millis(400),
         "expected parallel scan completion, elapsed={elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn orchestrator_reports_progress_as_scanners_finish() {
+    let registry = DeviceRegistry::new();
+    let mut orchestrator = DiscoveryOrchestrator::new(registry);
+    let progress = Arc::new(StdMutex::new(Vec::<Duration>::new()));
+    let fast_delay = Duration::from_millis(40);
+    let slow_delay = Duration::from_millis(220);
+
+    orchestrator.add_scanner(Box::new(DelayedScanner::new(
+        "Fast",
+        fast_delay,
+        vec![mock_discovered("Fast Device", "net:progress:fast")],
+    )));
+    orchestrator.add_scanner(Box::new(DelayedScanner::new(
+        "Slow",
+        slow_delay,
+        vec![mock_discovered("Slow Device", "net:progress:slow")],
+    )));
+
+    let started = Instant::now();
+    let progress_for_callback = Arc::clone(&progress);
+    let report = orchestrator
+        .full_scan_with_progress(|delta| {
+            let progress = Arc::clone(&progress_for_callback);
+            let elapsed = started.elapsed();
+            async move {
+                if !(delta.new_devices.is_empty() && delta.reappeared_devices.is_empty()) {
+                    progress
+                        .lock()
+                        .expect("progress timings should not be poisoned")
+                        .push(elapsed);
+                }
+            }
+        })
+        .await;
+
+    let timings = progress
+        .lock()
+        .expect("progress timings should not be poisoned")
+        .clone();
+    assert_eq!(report.total_known, 2);
+    assert_eq!(timings.len(), 2);
+    assert!(
+        timings[0] < Duration::from_millis(140),
+        "expected first progress callback before slow scanner finished, timings={timings:?}"
+    );
+    assert!(
+        timings[1] >= Duration::from_millis(180),
+        "expected second progress callback after slow scanner completed, timings={timings:?}"
     );
 }
 

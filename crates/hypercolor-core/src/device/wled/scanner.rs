@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
+use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::device::discovery::{DiscoveredDevice, TransportScanner};
@@ -233,31 +234,56 @@ impl TransportScanner for WledScanner {
     }
 
     async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
-        let mut discovered: Vec<DiscoveredDevice> = Vec::new();
         let mut candidates: HashMap<IpAddr, Option<String>> = self
             .known_ips
             .iter()
             .copied()
             .map(|ip| (ip, None))
             .collect();
+        let known_ip_set = candidates
+            .keys()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        let mut enrichment_tasks = JoinSet::new();
+
+        for ip in known_ip_set.iter().copied() {
+            enrichment_tasks.spawn(async move { (ip, enrich_via_http(ip).await) });
+        }
 
         for (ip, hostname) in self.collect_mdns_candidates().await? {
             candidates.entry(ip).or_insert(hostname);
+            if !known_ip_set.contains(&ip) {
+                enrichment_tasks.spawn(async move { (ip, enrich_via_http(ip).await) });
+            }
         }
 
+        let mut enriched = HashMap::new();
+        while let Some(task) = enrichment_tasks.join_next().await {
+            match task {
+                Ok((ip, result)) => {
+                    enriched.insert(ip, result);
+                }
+                Err(error) => {
+                    warn!(error = %error, "WLED enrichment task failed");
+                }
+            }
+        }
+
+        let mut discovered: Vec<DiscoveredDevice> = Vec::with_capacity(candidates.len());
         for (ip, hostname) in candidates {
             let host_label = hostname.unwrap_or_else(|| ip.to_string());
-            let wled_info = match enrich_via_http(ip).await {
-                Ok(info) => Some(info),
-                Err(e) => {
+            let wled_info = match enriched.remove(&ip) {
+                Some(Ok(info)) => Some(info),
+                Some(Err(error)) => {
                     warn!(
                         ip = %ip,
                         hostname = %host_label,
-                        error = %e,
+                        error = %error,
                         "WLED candidate found but HTTP enrichment failed"
                     );
                     None
                 }
+                None => None,
             };
 
             discovered.push(Self::build_discovered(&host_label, ip, wled_info.as_ref()));

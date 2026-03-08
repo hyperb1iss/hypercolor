@@ -209,6 +209,9 @@ impl DeviceRegistry {
     pub async fn set_state(&self, id: &DeviceId, state: DeviceState) -> bool {
         let mut inner = self.inner.write().await;
         if let Some(entry) = inner.devices.get_mut(id) {
+            if entry.state == state {
+                return true;
+            }
             debug!(
                 device_id = %id,
                 from = %entry.state,

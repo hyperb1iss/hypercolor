@@ -19,7 +19,8 @@ pub mod usb_scanner;
 pub mod wled;
 
 pub use discovery::{
-    DiscoveredDevice, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport, TransportScanner,
+    DiscoveredDevice, DiscoveryOrchestrator, DiscoveryProgress, DiscoveryReport, ScannerScanReport,
+    TransportScanner,
 };
 pub use lifecycle::{DeviceLifecycleManager, LifecycleAction};
 pub use manager::{AsyncWriteFailure, BackendIo, BackendManager, SegmentRange};

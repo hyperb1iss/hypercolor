@@ -1065,6 +1065,42 @@ impl DeviceBackend for UsbBackend {
                 )
             })?;
 
+        let connection_diagnostics = protocol.connection_diagnostics();
+        if !connection_diagnostics.is_empty() {
+            debug!(
+                device_id = %id,
+                descriptor = pending.descriptor.name,
+                protocol = protocol.name(),
+                transport = transport.name(),
+                command_count = connection_diagnostics.len(),
+                "running USB post-connect diagnostic probe for write-only path"
+            );
+
+            match Self::run_commands(
+                protocol.as_ref(),
+                transport.as_ref(),
+                connection_diagnostics,
+            )
+            .await
+            {
+                Ok(()) => debug!(
+                    device_id = %id,
+                    descriptor = pending.descriptor.name,
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    "USB post-connect diagnostic probe succeeded"
+                ),
+                Err(error) => warn!(
+                    device_id = %id,
+                    descriptor = pending.descriptor.name,
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    error = %error,
+                    "USB post-connect diagnostic probe failed; write-only traffic may be silently ignored"
+                ),
+            }
+        }
+
         let transport_name = transport.name();
         let resolved_info =
             build_connected_device_info(*id, &pending.info_template, protocol.as_ref());
