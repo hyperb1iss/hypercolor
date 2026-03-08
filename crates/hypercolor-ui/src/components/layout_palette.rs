@@ -5,7 +5,7 @@ use leptos_icons::Icon;
 
 use crate::api::{self, ZoneTopologySummary};
 use crate::app::DevicesContext;
-use crate::components::device_card::backend_accent_rgb;
+use crate::components::layout_canvas::device_accent_colors;
 use crate::icons::*;
 use crate::layout_geometry;
 use hypercolor_types::spatial::{DeviceZone, NormalizedPosition, SpatialLayout, ZoneGroup};
@@ -19,6 +19,7 @@ const GROUP_COLORS: &[&str] = &[
 #[component]
 pub fn LayoutPalette(
     #[prop(into)] layout: Signal<Option<SpatialLayout>>,
+    #[prop(into)] selected_zone_id: Signal<Option<String>>,
     set_layout: WriteSignal<Option<SpatialLayout>>,
     set_selected_zone_id: WriteSignal<Option<String>>,
     set_is_dirty: WriteSignal<bool>,
@@ -191,7 +192,7 @@ pub fn LayoutPalette(
                                         let device_name = dev.name.clone();
                                         let connection_label = dev.connection_label.clone();
                                         let backend = dev.backend.clone();
-                                        let rgb = backend_accent_rgb(&backend).to_string();
+                                        let (primary_rgb, secondary_rgb) = device_accent_colors(&device_id);
                                         let fallback_leds = dev.total_leds;
                                         let has_multi_zones = dev.zones.len() > 1;
                                         let zone_count = dev.zones.len();
@@ -235,10 +236,35 @@ pub fn LayoutPalette(
                                             })
                                         };
 
-                                        // Clones for single-zone add handler
-                                        let header_zone = single_zone_summary.clone();
-                                        let header_did = device_id.clone();
-                                        let header_dname = dev.name.clone();
+                                        // Is any zone for this device currently selected on canvas?
+                                        let device_is_active = {
+                                            let did = device_id.clone();
+                                            Signal::derive(move || {
+                                                let Some(sel_zone) = selected_zone_id.get() else {
+                                                    return false;
+                                                };
+                                                layout.with(|current| {
+                                                    current
+                                                        .as_ref()
+                                                        .and_then(|l| l.zones.iter().find(|z| z.id == sel_zone))
+                                                        .is_some_and(|z| z.device_id == did)
+                                                })
+                                            })
+                                        };
+
+                                        // Find first zone_id for this device in the layout
+                                        let first_zone_id_in_layout = {
+                                            let did = device_id.clone();
+                                            Signal::derive(move || {
+                                                layout.with(|current| {
+                                                    current
+                                                        .as_ref()
+                                                        .and_then(|l| {
+                                                            l.zones.iter().find(|z| z.device_id == did).map(|z| z.id.clone())
+                                                        })
+                                                })
+                                            })
+                                        };
 
                                         // --- Multi-zone handling ---
                                         let collapse_key = dev.layout_device_id.clone();
@@ -250,8 +276,10 @@ pub fn LayoutPalette(
                                             })
                                         };
 
-                                        let rgb_for_indicator = rgb.clone();
-                                        let rgb_for_zones = rgb.clone();
+                                        let rgb_for_indicator = primary_rgb.clone();
+                                        let rgb_for_zones = primary_rgb.clone();
+                                        let rgb = primary_rgb.clone();
+                                        let rgb2 = secondary_rgb.clone();
                                         let mut entries: Vec<(
                                             Option<api::ZoneSummary>,
                                             String,
@@ -275,18 +303,38 @@ pub fn LayoutPalette(
 
                                         view! {
                                             <div
-                                                class="rounded-xl border border-edge-subtle bg-surface-overlay/30 overflow-hidden
-                                                       transition-all card-hover animate-fade-in-up"
-                                                style=format!(
-                                                    "--glow-rgb: {rgb}; {stagger}"
-                                                )
+                                                class="rounded-lg overflow-hidden transition-all animate-fade-in-up"
+                                                style=move || {
+                                                    let active = device_is_active.get();
+                                                    let border_opacity = if active { 0.5 } else { 0.15 };
+                                                    let bg_opacity = if active { 0.08 } else { 0.03 };
+                                                    let bg_opacity2 = if active { 0.04 } else { 0.01 };
+                                                    let shadow = if active {
+                                                        format!(
+                                                            "box-shadow: 0 0 16px rgba({rgb}, 0.15), 0 2px 8px rgba(0,0,0,0.2); "
+                                                        )
+                                                    } else {
+                                                        "box-shadow: 0 1px 4px rgba(0,0,0,0.15); ".to_string()
+                                                    };
+                                                    format!(
+                                                        "--glow-rgb: {rgb}; {stagger}; \
+                                                         border: 1px solid rgba({rgb}, {border_opacity}); \
+                                                         background: linear-gradient(135deg, rgba({rgb}, {bg_opacity}), rgba({rgb2}, {bg_opacity2})); \
+                                                         {shadow}"
+                                                    )
+                                                }
                                             >
                                                 // Device header
                                                 <button
                                                     class="w-full flex items-center gap-2 px-2.5 py-2 text-left transition-colors
-                                                           hover:bg-surface-hover/30"
+                                                           hover:bg-white/[0.03]"
                                                     on:click=move |_| {
                                                         if has_multi_zones {
+                                                            // Select first zone in layout (if any)
+                                                            if let Some(zid) = first_zone_id_in_layout.get_untracked() {
+                                                                set_selected_zone_id.set(Some(zid));
+                                                            }
+                                                            // Toggle collapse
                                                             set_collapsed_devices.update(
                                                                 |set| {
                                                                     if set.contains(
@@ -303,32 +351,19 @@ pub fn LayoutPalette(
                                                                     }
                                                                 },
                                                             );
-                                                        } else if !single_zone_in_layout
-                                                            .get_untracked()
-                                                        {
-                                                            let zone = create_default_zone(
-                                                                &header_did,
-                                                                &header_dname,
-                                                                header_zone.as_ref(),
-                                                                fallback_leds,
-                                                            );
-                                                            let zone_id = zone.id.clone();
-                                                            set_layout.update(|l| {
-                                                                if let Some(layout) = l {
-                                                                    layout.zones.push(zone);
-                                                                }
-                                                            });
-                                                            set_selected_zone_id
-                                                                .set(Some(zone_id));
-                                                            set_is_dirty.set(true);
+                                                        } else {
+                                                            // Select zone on canvas if it's in layout
+                                                            if let Some(zid) = first_zone_id_in_layout.get_untracked() {
+                                                                set_selected_zone_id.set(Some(zid));
+                                                            }
                                                         }
                                                     }
                                                 >
-                                                    // Backend accent strip
+                                                    // Device accent gradient strip
                                                     <div
                                                         class="w-1 self-stretch rounded-full shrink-0"
                                                         style=format!(
-                                                            "background: rgb({rgb})"
+                                                            "background: linear-gradient(180deg, rgb({primary_rgb}), rgb({secondary_rgb}))"
                                                         )
                                                     />
                                                     <div class="flex-1 min-w-0">
@@ -339,7 +374,7 @@ pub fn LayoutPalette(
                                                             <span
                                                                 class="text-[8px] font-mono uppercase tracking-wider px-1 py-0.5 rounded border shrink-0"
                                                                 style=format!(
-                                                                    "color: rgba({rgb}, 0.8); border-color: rgba({rgb}, 0.2); background: rgba({rgb}, 0.06)"
+                                                                    "color: rgba({primary_rgb}, 0.8); border-color: rgba({primary_rgb}, 0.2); background: rgba({primary_rgb}, 0.06)"
                                                                 )
                                                             >
                                                                 {backend}
@@ -373,7 +408,7 @@ pub fn LayoutPalette(
                                                         </div>
                                                     </div>
 
-                                                    // Right side: chevron (multi) or add/check (single)
+                                                    // Right side: chevron (multi) or toggle (single)
                                                     {if has_multi_zones {
                                                         view! {
                                                             <div
@@ -395,34 +430,66 @@ pub fn LayoutPalette(
                                                         }
                                                             .into_any()
                                                     } else {
+                                                        let toggle_rgb = rgb_for_indicator.clone();
+                                                        let toggle_did = device_id.clone();
+                                                        let toggle_dname = dev.name.clone();
+                                                        let toggle_zone = single_zone_summary.clone();
                                                         view! {
                                                             <div class="shrink-0 flex items-center gap-1.5">
                                                                 {single_topo}
                                                                 {move || {
+                                                                    let did = toggle_did.clone();
+                                                                    let zone = toggle_zone.clone();
+                                                                    let dname = toggle_dname.clone();
                                                                     if single_zone_in_layout.get() {
                                                                         view! {
-                                                                            <div style="color: rgba(80, 250, 123, 0.6)">
-                                                                                <Icon
-                                                                                    icon=LuCheck
-                                                                                    width="14px"
-                                                                                    height="14px"
-                                                                                />
-                                                                            </div>
-                                                                        }
-                                                                            .into_any()
+                                                                            <button
+                                                                                class="w-5 h-5 flex items-center justify-center rounded
+                                                                                       transition-all shrink-0 opacity-30 hover:opacity-80 btn-press"
+                                                                                style="color: var(--color-text-tertiary)"
+                                                                                on:click=move |ev| {
+                                                                                    ev.stop_propagation();
+                                                                                    remove_device_zone(
+                                                                                        &did,
+                                                                                        zone.as_ref().map(|z| z.name.as_str()),
+                                                                                        &set_layout,
+                                                                                        &set_selected_zone_id,
+                                                                                        &set_is_dirty,
+                                                                                    );
+                                                                                }
+                                                                            >
+                                                                                <Icon icon=LuX width="10px" height="10px" />
+                                                                            </button>
+                                                                        }.into_any()
                                                                     } else {
                                                                         view! {
-                                                                            <div style=format!(
-                                                                                "color: rgb({rgb_for_indicator})"
-                                                                            )>
-                                                                                <Icon
-                                                                                    icon=LuPlus
-                                                                                    width="14px"
-                                                                                    height="14px"
-                                                                                />
-                                                                            </div>
-                                                                        }
-                                                                            .into_any()
+                                                                            <button
+                                                                                class="w-6 h-6 flex items-center justify-center rounded-md
+                                                                                       border transition-all shrink-0 btn-press"
+                                                                                style=format!(
+                                                                                    "background: rgba({toggle_rgb}, 0.08); border-color: rgba({toggle_rgb}, 0.2); color: rgb({toggle_rgb})"
+                                                                                )
+                                                                                on:click=move |ev| {
+                                                                                    ev.stop_propagation();
+                                                                                    let new_zone = create_default_zone(
+                                                                                        &did,
+                                                                                        &dname,
+                                                                                        zone.as_ref(),
+                                                                                        fallback_leds,
+                                                                                    );
+                                                                                    let zone_id = new_zone.id.clone();
+                                                                                    set_layout.update(|l| {
+                                                                                        if let Some(layout) = l {
+                                                                                            layout.zones.push(new_zone);
+                                                                                        }
+                                                                                    });
+                                                                                    set_selected_zone_id.set(Some(zone_id));
+                                                                                    set_is_dirty.set(true);
+                                                                                }
+                                                                            >
+                                                                                <Icon icon=LuPlus width="12px" height="12px" />
+                                                                            </button>
+                                                                        }.into_any()
                                                                     }
                                                                 }}
                                                             </div>
@@ -436,12 +503,12 @@ pub fn LayoutPalette(
                                                     let device_id = device_id.clone();
                                                     view! {
                                                         <div
-                                                            class="border-t border-edge-subtle/50 px-1.5 py-1 space-y-0.5 overflow-hidden transition-all duration-200"
+                                                            class="border-t px-1.5 py-1 space-y-0.5 overflow-hidden transition-all duration-200"
                                                             style=move || {
                                                                 if is_collapsed.get() {
-                                                                    "max-height: 0; opacity: 0; padding: 0; border: none"
+                                                                    "max-height: 0; opacity: 0; padding: 0; border: none".to_string()
                                                                 } else {
-                                                                    "max-height: 500px; opacity: 1"
+                                                                    format!("max-height: 500px; opacity: 1; border-color: rgba({primary_rgb}, 0.1)")
                                                                 }
                                                             }
                                                         >
@@ -493,23 +560,74 @@ pub fn LayoutPalette(
                                                                             )
                                                                         };
 
+                                                                        // Is this specific zone selected?
+                                                                        let zone_is_selected = {
+                                                                            let did = device_id.clone();
+                                                                            let zn = zone_name_key.clone();
+                                                                            Signal::derive(move || {
+                                                                                let Some(sel) = selected_zone_id.get() else {
+                                                                                    return false;
+                                                                                };
+                                                                                layout.with(|current| {
+                                                                                    current.as_ref()
+                                                                                        .and_then(|l| l.zones.iter().find(|z| z.id == sel))
+                                                                                        .is_some_and(|z| {
+                                                                                            z.device_id == did && z.zone_name.as_deref() == zn.as_deref()
+                                                                                        })
+                                                                                })
+                                                                            })
+                                                                        };
+
+                                                                        // Find zone_id to select on click
+                                                                        let zone_id_for_select = {
+                                                                            let did = device_id.clone();
+                                                                            let zn = zone_name_key.clone();
+                                                                            Signal::derive(move || {
+                                                                                layout.with(|current| {
+                                                                                    current.as_ref().and_then(|l| {
+                                                                                        l.zones.iter().find(|z| {
+                                                                                            z.device_id == did && z.zone_name.as_deref() == zn.as_deref()
+                                                                                        }).map(|z| z.id.clone())
+                                                                                    })
+                                                                                })
+                                                                            })
+                                                                        };
+
                                                                         let topo_icon =
                                                                             topology_icon(
                                                                                 zone_summary
                                                                                     .as_ref(),
                                                                             );
-                                                                        let zone_for_add =
+                                                                        let zone_for_toggle =
                                                                             zone_summary.clone();
-                                                                        let did_for_add =
+                                                                        let did_for_toggle =
                                                                             device_id.clone();
-                                                                        let dname_for_add =
+                                                                        let dname_for_toggle =
                                                                             dev.name.clone();
-                                                                        let zone_rgb =
-                                                                            rgb_for_zones.clone();
+                                                                        let zone_rgb2 = rgb_for_zones.clone();
+                                                                        let zone_rgb3 = rgb_for_zones.clone();
+                                                                        let toggle_zone_name = zone_name_key.clone();
 
                                                                         view! {
-                                                                            <div class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg
-                                                                                        hover:bg-surface-hover/30 transition-all group/zone">
+                                                                            <div
+                                                                                class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg
+                                                                                        cursor-pointer hover:bg-white/[0.04] transition-all group/zone"
+                                                                                style=move || {
+                                                                                    if zone_is_selected.get() {
+                                                                                        format!(
+                                                                                            "background: rgba({zone_rgb2}, 0.08); \
+                                                                                             box-shadow: inset 2px 0 0 rgb({zone_rgb2})"
+                                                                                        )
+                                                                                    } else {
+                                                                                        String::new()
+                                                                                    }
+                                                                                }
+                                                                                on:click=move |_| {
+                                                                                    if let Some(zid) = zone_id_for_select.get_untracked() {
+                                                                                        set_selected_zone_id.set(Some(zid));
+                                                                                    }
+                                                                                }
+                                                                            >
                                                                                 // Topology icon
                                                                                 <div class="text-fg-tertiary/50 shrink-0">
                                                                                     {topo_icon}
@@ -523,59 +641,62 @@ pub fn LayoutPalette(
                                                                                         " LEDs"
                                                                                     </div>
                                                                                 </div>
+                                                                                // Toggle button — add or remove zone
                                                                                 {move || {
+                                                                                    let did = did_for_toggle.clone();
+                                                                                    let zn = toggle_zone_name.clone();
+                                                                                    let zone_entry = zone_for_toggle.clone();
+                                                                                    let dname = dname_for_toggle.clone();
                                                                                     if in_layout.get() {
                                                                                         view! {
-                                                                                            <div class="shrink-0" style="color: rgba(80, 250, 123, 0.5)">
-                                                                                                <Icon
-                                                                                                    icon=LuCheck
-                                                                                                    width="12px"
-                                                                                                    height="12px"
-                                                                                                />
-                                                                                            </div>
-                                                                                        }
-                                                                                            .into_any()
+                                                                                            <button
+                                                                                                class="w-5 h-5 flex items-center justify-center rounded
+                                                                                                       transition-all shrink-0 opacity-0 group-hover/zone:opacity-30
+                                                                                                       hover:!opacity-80 btn-press"
+                                                                                                style="color: var(--color-text-tertiary)"
+                                                                                                on:click=move |ev| {
+                                                                                                    ev.stop_propagation();
+                                                                                                    remove_device_zone(
+                                                                                                        &did,
+                                                                                                        zn.as_deref(),
+                                                                                                        &set_layout,
+                                                                                                        &set_selected_zone_id,
+                                                                                                        &set_is_dirty,
+                                                                                                    );
+                                                                                                }
+                                                                                            >
+                                                                                                <Icon icon=LuX width="10px" height="10px" />
+                                                                                            </button>
+                                                                                        }.into_any()
                                                                                     } else {
-                                                                                        let zone_entry =
-                                                                                            zone_for_add.clone();
-                                                                                        let did =
-                                                                                            did_for_add.clone();
-                                                                                        let dname =
-                                                                                            dname_for_add
-                                                                                                .clone();
                                                                                         view! {
                                                                                             <button
                                                                                                 class="w-6 h-6 flex items-center justify-center rounded-md
                                                                                                        border transition-all shrink-0 btn-press"
                                                                                                 style=format!(
-                                                                                                    "background: rgba({zone_rgb}, 0.08); border-color: rgba({zone_rgb}, 0.2); color: rgb({zone_rgb})"
+                                                                                                    "background: rgba({zone_rgb3}, 0.08); border-color: rgba({zone_rgb3}, 0.2); color: rgb({zone_rgb3})"
                                                                                                 )
-                                                                                                on:click=move |_| {
-                                                                                                    let zone = create_default_zone(
+                                                                                                on:click=move |ev| {
+                                                                                                    ev.stop_propagation();
+                                                                                                    let new_zone = create_default_zone(
                                                                                                         &did,
                                                                                                         &dname,
                                                                                                         zone_entry.as_ref(),
                                                                                                         fallback_leds,
                                                                                                     );
-                                                                                                    let zone_id = zone.id.clone();
-                                                                                                    set_layout
-                                                                                                        .update(|l| {
-                                                                                                            if let Some(layout) = l {
-                                                                                                                layout.zones.push(zone);
-                                                                                                            }
-                                                                                                        });
+                                                                                                    let zone_id = new_zone.id.clone();
+                                                                                                    set_layout.update(|l| {
+                                                                                                        if let Some(layout) = l {
+                                                                                                            layout.zones.push(new_zone);
+                                                                                                        }
+                                                                                                    });
                                                                                                     set_selected_zone_id.set(Some(zone_id));
                                                                                                     set_is_dirty.set(true);
                                                                                                 }
                                                                                             >
-                                                                                                <Icon
-                                                                                                    icon=LuPlus
-                                                                                                    width="12px"
-                                                                                                    height="12px"
-                                                                                                />
+                                                                                                <Icon icon=LuPlus width="12px" height="12px" />
                                                                                             </button>
-                                                                                        }
-                                                                                            .into_any()
+                                                                                        }.into_any()
                                                                                     }
                                                                                 }}
                                                                             </div>
@@ -644,7 +765,11 @@ fn create_default_zone(
         device_id: device_id.to_string(),
         zone_name,
         position: NormalizedPosition::new(0.5, 0.5),
-        size: defaults.size,
+        size: layout_geometry::normalize_zone_size_for_editor(
+            NormalizedPosition::new(0.5, 0.5),
+            defaults.size,
+            &defaults.topology,
+        ),
         rotation: 0.0,
         scale: 1.0,
         orientation: defaults.orientation,
@@ -658,6 +783,25 @@ fn create_default_zone(
         group_id: None,
         attachment: None,
     }
+}
+
+/// Remove a device zone from the layout by device_id + zone_name.
+fn remove_device_zone(
+    device_id: &str,
+    zone_name: Option<&str>,
+    set_layout: &WriteSignal<Option<SpatialLayout>>,
+    set_selected_zone_id: &WriteSignal<Option<String>>,
+    set_is_dirty: &WriteSignal<bool>,
+) {
+    set_layout.update(|l| {
+        if let Some(layout) = l {
+            layout.zones.retain(|z| {
+                !(z.device_id == device_id && z.zone_name.as_deref() == zone_name)
+            });
+        }
+    });
+    set_selected_zone_id.set(None);
+    set_is_dirty.set(true);
 }
 
 /// Generate a short pseudo-random hex ID.

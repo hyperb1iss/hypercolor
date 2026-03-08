@@ -47,6 +47,11 @@ pub fn LayoutZoneProperties(
                 if let Some(layout) = l {
                     if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
                         updater(zone);
+                        zone.size = layout_geometry::normalize_zone_size_for_editor(
+                            zone.position,
+                            zone.size,
+                            &zone.topology,
+                        );
                     }
                 }
             });

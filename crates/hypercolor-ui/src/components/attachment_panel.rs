@@ -624,6 +624,11 @@ fn build_attachment_layout_zones(
                 0.18 + cell_height * (row as f32 + 0.5),
             );
             let max_size = NormalizedPosition::new(cell_width * 0.82, cell_height * 0.82);
+            let size = layout_geometry::normalize_zone_size_for_editor(
+                position,
+                layout_geometry::attachment_zone_size(suggested, max_size),
+                &suggested.topology,
+            );
 
             DeviceZone {
                 id: attachment_zone_id(&device.layout_device_id, suggested),
@@ -632,7 +637,7 @@ fn build_attachment_layout_zones(
                 zone_name: Some(suggested.slot_id.clone()),
                 group_id: None,
                 position,
-                size: layout_geometry::attachment_zone_size(suggested, max_size),
+                size,
                 rotation: 0.0,
                 scale: 1.0,
                 orientation: orientation_for_topology(&suggested.topology),

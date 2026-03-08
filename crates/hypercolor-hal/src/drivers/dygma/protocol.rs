@@ -202,6 +202,9 @@ impl Protocol for DygmaProtocol {
             }
         }
 
+        // FocusSerial always emits the `.` terminator after handling a command,
+        // even when `led.theme` writes return no payload. Drain that empty
+        // response to keep the serial stream aligned for subsequent commands.
         vec![Self::text_command(payload, true, Duration::ZERO)]
     }
 

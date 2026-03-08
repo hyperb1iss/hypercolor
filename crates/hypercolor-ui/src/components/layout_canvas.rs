@@ -182,6 +182,11 @@ pub fn LayoutCanvas(
                                 if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
                                     zone.position.x = norm_x;
                                     zone.position.y = norm_y;
+                                    zone.size = layout_geometry::normalize_zone_size_for_editor(
+                                        zone.position,
+                                        zone.size,
+                                        &zone.topology,
+                                    );
                                 }
                             }
                         });
@@ -201,7 +206,11 @@ pub fn LayoutCanvas(
                                         keep_ratio,
                                     );
                                     zone.position = position;
-                                    zone.size = size;
+                                    zone.size = layout_geometry::normalize_zone_size_for_editor(
+                                        zone.position,
+                                        size,
+                                        &zone.topology,
+                                    );
                                 }
                             }
                         });
@@ -250,7 +259,7 @@ pub fn LayoutCanvas(
                             let rgb = hex_to_rgb(&color);
                             view! {
                                 <div
-                                    class="absolute rounded-lg pointer-events-none"
+                                    class="absolute rounded-md pointer-events-none"
                                     style=format!(
                                         "left: {left_pct:.2}%; top: {top_pct:.2}%; width: {w_pct:.2}%; height: {h_pct:.2}%; \
                                          border: 1.5px dashed rgba({rgb}, 0.4); \
@@ -331,38 +340,40 @@ pub fn LayoutCanvas(
 
                             view! {
                                 <div
-                                    class="absolute border-2 rounded-md cursor-move group transition-[border-color,box-shadow] duration-200"
+                                    class="absolute rounded-md cursor-move group transition-[border-color,box-shadow,background] duration-200"
                                     style=move || {
                                         let Some(zd) = zone_style.get() else {
                                             return "display: none".to_string();
                                         };
                                         let selected = is_selected.get();
-                                        let border_opacity = if selected { "0.9" } else { "0.45" };
+                                        let border = if selected {
+                                            format!("border: 2px solid rgba({}, 0.85)", zd.primary_rgb)
+                                        } else {
+                                            format!("border: 1.5px solid rgba({}, 0.35)", zd.primary_rgb)
+                                        };
                                         let bg = if selected {
                                             format!(
-                                                "background: linear-gradient(135deg, rgba({}, 0.10), rgba({}, 0.06))",
+                                                "background: linear-gradient(135deg, rgba({}, 0.14), rgba({}, 0.08))",
                                                 zd.primary_rgb, zd.secondary_rgb
                                             )
                                         } else {
                                             format!(
-                                                "background: linear-gradient(135deg, rgba({}, 0.05), rgba({}, 0.02))",
+                                                "background: linear-gradient(135deg, rgba({}, 0.08), rgba({}, 0.03))",
                                                 zd.primary_rgb, zd.secondary_rgb
                                             )
                                         };
                                         let shadow = if selected {
                                             format!(
-                                                "box-shadow: 0 0 24px rgba({}, 0.35), 0 0 6px rgba({}, 0.5), inset 0 0 20px rgba({}, 0.04)",
-                                                zd.primary_rgb, zd.secondary_rgb, zd.primary_rgb
+                                                "box-shadow: 0 0 28px rgba({}, 0.4), 0 0 8px rgba({}, 0.6), inset 0 1px 0 rgba(255,255,255,0.05)",
+                                                zd.primary_rgb, zd.secondary_rgb
                                             )
                                         } else {
-                                            format!(
-                                                "box-shadow: inset 0 0 12px rgba({}, 0.03)",
-                                                zd.primary_rgb
-                                            )
+                                            "box-shadow: 0 2px 8px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.03)"
+                                                .to_string()
                                         };
                                         format!(
-                                            "{}; border-color: rgba({}, {}); {}; {}",
-                                            zd.position_style, zd.primary_rgb, border_opacity, bg, shadow
+                                            "{}; {}; {}; {}; backdrop-filter: blur(4px) saturate(120%)",
+                                            zd.position_style, border, bg, shadow
                                         )
                                     }
                                     on:mousedown=move |ev| {
@@ -645,7 +656,7 @@ fn hex_to_rgb(hex: &str) -> String {
 /// Uses a simple FNV-1a hash to pick a hue, then derives a complementary secondary
 /// hue shifted 40° for a rich gradient effect. High saturation + controlled lightness
 /// keeps colors vivid against dark backgrounds.
-fn device_accent_colors(device_id: &str) -> (String, String) {
+pub(crate) fn device_accent_colors(device_id: &str) -> (String, String) {
     // FNV-1a hash for good distribution
     let mut hash: u32 = 2_166_136_261;
     for byte in device_id.bytes() {

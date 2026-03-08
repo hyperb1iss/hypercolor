@@ -1,6 +1,7 @@
 //! Shared device discovery runtime for daemon startup and API-triggered scans.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,9 +14,14 @@ use hypercolor_core::device::{
     AsyncWriteFailure, BackendIo, BackendManager, DeviceLifecycleManager, DeviceRegistry,
     DiscoveryOrchestrator, LifecycleAction, ScannerScanReport, UsbScanner,
 };
+use hypercolor_core::spatial::{SpatialEngine, generate_positions};
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::device::{DeviceFamily, DeviceId};
-use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent};
+use hypercolor_types::device::{DeviceFamily, DeviceId, DeviceInfo, DeviceTopologyHint};
+use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent, ZoneRef};
+use hypercolor_types::spatial::{
+    Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    StripDirection, Winding, ZoneShape,
+};
 use serde::Serialize;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -91,6 +97,15 @@ pub struct DiscoveryRuntime {
 
     /// Event bus for discovery/lifecycle events.
     pub event_bus: Arc<HypercolorBus>,
+
+    /// Active spatial layout used by the render loop.
+    pub spatial_engine: Arc<RwLock<SpatialEngine>>,
+
+    /// Persisted layout store shared with the runtime/API.
+    pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
+
+    /// Persistent path for the layout store.
+    pub layouts_path: PathBuf,
 
     /// Logical device segmentation store.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
@@ -234,6 +249,7 @@ pub async fn execute_discovery_scan(
         flag: Arc::clone(&runtime.in_progress),
     };
     let backend_names = backend_names(&backends);
+    let scanned_backend_ids = backend_names.iter().cloned().collect::<HashSet<_>>();
     let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
 
     runtime
@@ -241,6 +257,11 @@ pub async fn execute_discovery_scan(
         .publish(HypercolorEvent::DeviceDiscoveryStarted {
             backends: backend_names.clone(),
         });
+    info!(
+        backends = ?backend_names,
+        timeout_ms,
+        "starting discovery scan"
+    );
 
     if backends.is_empty() {
         runtime
@@ -330,6 +351,9 @@ pub async fn execute_discovery_scan(
         execute_lifecycle_actions(runtime.clone(), actions).await;
         sync_registry_state(&runtime, *id).await;
 
+        let Some(tracked) = runtime.device_registry.get(id).await else {
+            continue;
+        };
         let device_ref = device_ref_for_tracked(&tracked.info.family, &tracked.info);
         runtime
             .event_bus
@@ -340,6 +364,13 @@ pub async fn execute_discovery_scan(
                 led_count: device_ref.led_count,
                 address: None,
             });
+        info!(
+            device = %device_ref.name,
+            device_id = %device_ref.id,
+            backend = %device_ref.backend,
+            led_count = device_ref.led_count,
+            "discovered new device"
+        );
 
         found.push(device_ref.clone());
         new_devices.push(device_ref);
@@ -366,6 +397,9 @@ pub async fn execute_discovery_scan(
         execute_lifecycle_actions(runtime.clone(), actions).await;
         sync_registry_state(&runtime, *id).await;
 
+        let Some(tracked) = runtime.device_registry.get(id).await else {
+            continue;
+        };
         let device_ref = device_ref_for_tracked(&tracked.info.family, &tracked.info);
         runtime
             .event_bus
@@ -376,18 +410,74 @@ pub async fn execute_discovery_scan(
                 led_count: device_ref.led_count,
                 address: None,
             });
+        info!(
+            device = %device_ref.name,
+            device_id = %device_ref.id,
+            backend = %device_ref.backend,
+            led_count = device_ref.led_count,
+            "device reappeared"
+        );
 
         found.push(device_ref.clone());
         reappeared_devices.push(device_ref);
     }
 
-    let mut vanished_ids: HashSet<DeviceId> = report.vanished_devices.iter().copied().collect();
+    let scan_had_errors = report
+        .scanner_reports
+        .iter()
+        .any(|scanner| scanner.error.is_some());
+    let scoped_registry_ids = runtime
+        .device_registry
+        .list()
+        .await
+        .into_iter()
+        .filter_map(|tracked| {
+            let backend_id = backend_id_for_family(&tracked.info.family);
+            scanned_backend_ids
+                .contains(&backend_id)
+                .then_some(tracked.info.id)
+        })
+        .collect::<HashSet<_>>();
+
+    let ignored_out_of_scope = report
+        .vanished_devices
+        .iter()
+        .filter(|id| !scoped_registry_ids.contains(id))
+        .count();
+    if ignored_out_of_scope > 0 {
+        debug!(
+            ignored_out_of_scope,
+            backends = ?backend_names,
+            "ignoring vanished devices outside the active discovery backend scope"
+        );
+    }
+
+    let mut vanished_ids: HashSet<DeviceId> = if scan_had_errors {
+        let failed_scanners = report
+            .scanner_reports
+            .iter()
+            .filter_map(|scanner| scanner.error.as_ref().map(|_| scanner.scanner.clone()))
+            .collect::<Vec<_>>();
+        warn!(
+            backends = ?backend_names,
+            failed_scanners = ?failed_scanners,
+            "discovery scan was incomplete; preserving existing device mappings"
+        );
+        HashSet::new()
+    } else {
+        report
+            .vanished_devices
+            .iter()
+            .copied()
+            .filter(|id| scoped_registry_ids.contains(id))
+            .collect()
+    };
     let lifecycle_tracked_ids = {
         let lifecycle = runtime.lifecycle_manager.lock().await;
         lifecycle.tracked_device_ids()
     };
     for id in lifecycle_tracked_ids {
-        if !seen_ids.contains(&id) {
+        if !scan_had_errors && scoped_registry_ids.contains(&id) && !seen_ids.contains(&id) {
             vanished_ids.insert(id);
         }
     }
@@ -397,6 +487,7 @@ pub async fn execute_discovery_scan(
 
     let mut vanished_devices = Vec::new();
     for id in vanished_ids {
+        let device_label = device_log_label(&runtime, id).await;
         let actions = {
             let mut lifecycle = runtime.lifecycle_manager.lock().await;
             lifecycle.on_device_vanished(id)
@@ -411,6 +502,13 @@ pub async fn execute_discovery_scan(
                 reason: DisconnectReason::Timeout,
                 will_retry: true,
             });
+        info!(
+            device = %device_label,
+            device_id = %id,
+            reason = ?DisconnectReason::Timeout,
+            will_retry = true,
+            "device disconnected"
+        );
         vanished_devices.push(id.to_string());
     }
 
@@ -436,6 +534,8 @@ pub async fn execute_discovery_scan(
         duration_ms,
         "Discovery sweep finished"
     );
+
+    sync_active_layout_for_renderable_devices(&runtime, None).await;
 
     DiscoveryScanResult {
         backends: backend_names,
@@ -511,6 +611,15 @@ async fn execute_lifecycle_actions(runtime: DiscoveryRuntime, actions: Vec<Lifec
                         }
                         pending.extend(next_actions);
                         sync_registry_state(&runtime, device_id).await;
+                        if connected {
+                            let connected_only = HashSet::from([device_id]);
+                            sync_active_layout_for_renderable_devices(
+                                &runtime,
+                                Some(&connected_only),
+                            )
+                            .await;
+                            publish_device_connected(&runtime, &backend_id, device_id).await;
+                        }
                     }
                     Err(error) => {
                         let device_label = device_log_label(&runtime, device_id).await;
@@ -668,6 +777,7 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
             connect_backend_device(&runtime_for_task, &backend_id, device_id, &layout_device_id)
                 .await
         };
+        let reconnected = connect_result.is_ok();
 
         let follow_up = if let Err(error) = connect_result {
             let device_label = device_log_label(&runtime_for_task, device_id).await;
@@ -698,6 +808,15 @@ fn spawn_reconnect_task(runtime: &DiscoveryRuntime, device_id: DeviceId, delay: 
             Ok(actions) => {
                 execute_lifecycle_actions(runtime_for_task.clone(), actions).await;
                 sync_registry_state(&runtime_for_task, device_id).await;
+                if reconnected {
+                    let reconnect_only = HashSet::from([device_id]);
+                    sync_active_layout_for_renderable_devices(
+                        &runtime_for_task,
+                        Some(&reconnect_only),
+                    )
+                    .await;
+                    publish_device_connected(&runtime_for_task, &backend_id, device_id).await;
+                }
             }
             Err(error) => {
                 let device_label = device_log_label(&runtime_for_task, device_id).await;
@@ -916,6 +1035,333 @@ async fn sync_logical_mappings_for_device(
     }
 }
 
+async fn sync_active_layout_for_renderable_devices(
+    runtime: &DiscoveryRuntime,
+    limit_to_devices: Option<&HashSet<DeviceId>>,
+) {
+    let mut layout = {
+        let spatial = runtime.spatial_engine.read().await;
+        spatial.layout().clone()
+    };
+
+    let inactive_ids = {
+        let manager = runtime.backend_manager.lock().await;
+        manager
+            .connected_devices_without_layout_targets(&layout)
+            .into_iter()
+            .map(|(_, device_id)| device_id)
+            .collect::<HashSet<_>>()
+    };
+    if inactive_ids.is_empty() {
+        return;
+    }
+
+    let tracked_devices = runtime.device_registry.list().await;
+    let logical_store = runtime.logical_devices.read().await.clone();
+    let canonical_layout_ids = {
+        let lifecycle = runtime.lifecycle_manager.lock().await;
+        tracked_devices
+            .iter()
+            .map(|tracked| {
+                let device_id = tracked.info.id;
+                let layout_id = lifecycle
+                    .layout_device_id_for(device_id)
+                    .map_or_else(|| format!("device:{device_id}"), ToOwned::to_owned);
+                (device_id, layout_id)
+            })
+            .collect::<HashMap<_, _>>()
+    };
+
+    let mut added_devices = Vec::new();
+    let mut added_zone_count = 0_usize;
+    for tracked in tracked_devices {
+        let device_id = tracked.info.id;
+        if !tracked.state.is_renderable() || !inactive_ids.contains(&device_id) {
+            continue;
+        }
+        if limit_to_devices.is_some_and(|allowed| !allowed.contains(&device_id)) {
+            continue;
+        }
+
+        let Some(layout_device_id) = canonical_layout_ids.get(&device_id) else {
+            continue;
+        };
+        let default_enabled = logical_store
+            .get(layout_device_id)
+            .is_none_or(|entry| entry.enabled);
+        if !default_enabled {
+            continue;
+        }
+
+        let added =
+            append_auto_layout_zones_for_device(&mut layout, layout_device_id, &tracked.info);
+        if added == 0 {
+            continue;
+        }
+
+        added_zone_count = added_zone_count.saturating_add(added);
+        added_devices.push(format!("{} ({device_id})", tracked.info.name));
+    }
+
+    if added_devices.is_empty() {
+        return;
+    }
+
+    {
+        let mut spatial = runtime.spatial_engine.write().await;
+        spatial.update_layout(layout.clone());
+    }
+
+    let layouts_snapshot = {
+        let mut layouts = runtime.layouts.write().await;
+        layouts.insert(layout.id.clone(), layout.clone());
+        layouts.clone()
+    };
+    if let Err(error) = crate::layout_store::save(&runtime.layouts_path, &layouts_snapshot) {
+        warn!(
+            path = %runtime.layouts_path.display(),
+            %error,
+            "failed to persist auto-updated layout store"
+        );
+    }
+
+    info!(
+        layout_id = %layout.id,
+        layout_name = %layout.name,
+        added_device_count = added_devices.len(),
+        added_zone_count,
+        devices = ?added_devices,
+        "auto-added connected devices to active layout"
+    );
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn append_auto_layout_zones_for_device(
+    layout: &mut SpatialLayout,
+    layout_device_id: &str,
+    device_info: &DeviceInfo,
+) -> usize {
+    let eligible_zones = device_info
+        .zones
+        .iter()
+        .filter(|zone| {
+            zone.led_count > 0 && !matches!(zone.topology, DeviceTopologyHint::Display { .. })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if eligible_zones.is_empty() {
+        return 0;
+    }
+
+    let existing_device_count = layout
+        .zones
+        .iter()
+        .map(|zone| zone.device_id.as_str())
+        .collect::<HashSet<_>>()
+        .len();
+    let slot_center = auto_layout_slot_center(existing_device_count);
+
+    for (index, zone_info) in eligible_zones.iter().enumerate() {
+        let topology = spatial_topology_for_zone(zone_info);
+        let (position, size) = auto_layout_geometry(
+            slot_center,
+            index,
+            eligible_zones.len(),
+            &zone_info.topology,
+        );
+        let zone_id = unique_auto_zone_id(layout, layout_device_id, &zone_info.name);
+        let zone_name = if eligible_zones.len() == 1 {
+            device_info.name.clone()
+        } else {
+            format!("{}: {}", device_info.name, zone_info.name)
+        };
+
+        layout.zones.push(DeviceZone {
+            id: zone_id,
+            name: zone_name,
+            device_id: layout_device_id.to_owned(),
+            zone_name: Some(zone_info.name.clone()),
+            group_id: None,
+            position,
+            size,
+            rotation: 0.0,
+            scale: 1.0,
+            orientation: None,
+            topology: topology.clone(),
+            led_positions: generate_positions(&topology),
+            led_mapping: None,
+            sampling_mode: Some(SamplingMode::Bilinear),
+            edge_behavior: Some(EdgeBehavior::Clamp),
+            shape: auto_layout_shape(&zone_info.topology),
+            shape_preset: None,
+            attachment: None,
+        });
+    }
+
+    eligible_zones.len()
+}
+
+fn auto_layout_slot_center(slot_index: usize) -> NormalizedPosition {
+    const COLUMNS: usize = 3;
+    const LEFT_X: f32 = 0.18;
+    const TOP_Y: f32 = 0.18;
+    const X_SPACING: f32 = 0.32;
+    const Y_SPACING: f32 = 0.22;
+    let column = slot_index % COLUMNS;
+    let row = slot_index / COLUMNS;
+
+    let column_f32 = f32::from(u16::try_from(column).unwrap_or(u16::MAX));
+    let row_f32 = f32::from(u16::try_from(row).unwrap_or(u16::MAX));
+    NormalizedPosition::new(
+        (LEFT_X + X_SPACING * column_f32).clamp(0.12, 0.88),
+        (TOP_Y + Y_SPACING * row_f32).clamp(0.14, 0.86),
+    )
+}
+
+fn auto_layout_geometry(
+    slot_center: NormalizedPosition,
+    zone_index: usize,
+    zone_count: usize,
+    topology: &DeviceTopologyHint,
+) -> (NormalizedPosition, NormalizedPosition) {
+    let slot_width = 0.26;
+    let slot_height = 0.18;
+    let zone_count_f32 = f32::from(u16::try_from(zone_count.max(1)).unwrap_or(u16::MAX));
+    let zone_index_f32 = f32::from(u16::try_from(zone_index).unwrap_or(u16::MAX));
+    let steps = zone_count.saturating_sub(1);
+    let steps_f32 = f32::from(u16::try_from(steps).unwrap_or(u16::MAX));
+    let step = if zone_count <= 1 {
+        0.0
+    } else {
+        (slot_height / zone_count_f32).min(0.08)
+    };
+    let offset = if zone_count <= 1 {
+        0.0
+    } else {
+        -step * steps_f32 / 2.0 + step * zone_index_f32
+    };
+    let position = NormalizedPosition::new(slot_center.x, (slot_center.y + offset).clamp(0.1, 0.9));
+
+    let size = match topology {
+        DeviceTopologyHint::Strip | DeviceTopologyHint::Custom => {
+            NormalizedPosition::new(slot_width, (slot_height / zone_count_f32).clamp(0.05, 0.1))
+        }
+        DeviceTopologyHint::Matrix { rows, cols } => {
+            let rows_f32 = f32::from(u16::try_from(*rows).unwrap_or(u16::MAX));
+            let cols_f32 = f32::from(u16::try_from(*cols).unwrap_or(u16::MAX));
+            let aspect = if rows_f32 <= 0.0 {
+                1.0
+            } else {
+                cols_f32 / rows_f32
+            };
+            let width = 0.18_f32.clamp(0.12, slot_width);
+            let height = (width / aspect).clamp(0.08, 0.18 / zone_count_f32);
+            NormalizedPosition::new(width, height)
+        }
+        DeviceTopologyHint::Ring { .. } => {
+            let diameter = (0.16 / zone_count_f32.max(1.0)).clamp(0.08, 0.16);
+            NormalizedPosition::new(diameter, diameter)
+        }
+        DeviceTopologyHint::Point => NormalizedPosition::new(0.08, 0.08),
+        DeviceTopologyHint::Display { .. } => NormalizedPosition::new(0.18, 0.12),
+    };
+
+    (position, size)
+}
+
+fn spatial_topology_for_zone(zone_info: &hypercolor_types::device::ZoneInfo) -> LedTopology {
+    match zone_info.topology {
+        DeviceTopologyHint::Strip
+        | DeviceTopologyHint::Custom
+        | DeviceTopologyHint::Display { .. } => LedTopology::Strip {
+            count: zone_info.led_count,
+            direction: StripDirection::LeftToRight,
+        },
+        DeviceTopologyHint::Matrix { rows, cols } => LedTopology::Matrix {
+            width: cols,
+            height: rows,
+            serpentine: false,
+            start_corner: Corner::TopLeft,
+        },
+        DeviceTopologyHint::Ring { count } => LedTopology::Ring {
+            count,
+            start_angle: 0.0,
+            direction: Winding::Clockwise,
+        },
+        DeviceTopologyHint::Point => LedTopology::Point,
+    }
+}
+
+fn auto_layout_shape(topology: &DeviceTopologyHint) -> Option<ZoneShape> {
+    match topology {
+        DeviceTopologyHint::Ring { .. } => Some(ZoneShape::Ring),
+        DeviceTopologyHint::Point => None,
+        DeviceTopologyHint::Strip
+        | DeviceTopologyHint::Matrix { .. }
+        | DeviceTopologyHint::Custom
+        | DeviceTopologyHint::Display { .. } => Some(ZoneShape::Rectangle),
+    }
+}
+
+fn unique_auto_zone_id(layout: &SpatialLayout, layout_device_id: &str, zone_name: &str) -> String {
+    let device_component = sanitize_auto_layout_component(layout_device_id);
+    let zone_component = sanitize_auto_layout_component(zone_name);
+    let base = format!("auto-{device_component}-{zone_component}");
+    if !layout.zones.iter().any(|zone| zone.id == base) {
+        return base;
+    }
+
+    let mut suffix = 2_u32;
+    loop {
+        let candidate = format!("{base}-{suffix}");
+        if !layout.zones.iter().any(|zone| zone.id == candidate) {
+            return candidate;
+        }
+        suffix = suffix.saturating_add(1);
+    }
+}
+
+fn sanitize_auto_layout_component(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut prev_was_dash = false;
+    for ch in raw.chars() {
+        let normalized = if ch.is_ascii_alphanumeric() {
+            Some(ch.to_ascii_lowercase())
+        } else if ch == '-' || ch == '_' || ch == ':' || ch.is_ascii_whitespace() {
+            Some('-')
+        } else {
+            None
+        };
+
+        let Some(ch) = normalized else {
+            continue;
+        };
+
+        if ch == '-' {
+            if prev_was_dash || out.is_empty() {
+                continue;
+            }
+            prev_was_dash = true;
+            out.push(ch);
+            continue;
+        }
+
+        prev_was_dash = false;
+        out.push(ch);
+    }
+
+    while out.ends_with('-') {
+        out.pop();
+    }
+
+    if out.is_empty() {
+        "zone".to_owned()
+    } else {
+        out
+    }
+}
+
 fn map_device_with_zone_segments(
     manager: &mut BackendManager,
     layout_device_id: impl Into<String>,
@@ -959,6 +1405,56 @@ fn map_physical_device_alias(
             Some(segment),
             device_info,
         );
+    }
+}
+
+async fn publish_device_connected(
+    runtime: &DiscoveryRuntime,
+    backend_id: &str,
+    device_id: DeviceId,
+) {
+    let Some(tracked) = runtime.device_registry.get(&device_id).await else {
+        return;
+    };
+
+    let zones = build_zone_refs(&tracked.info);
+    info!(
+        device = %tracked.info.name,
+        device_id = %tracked.info.id,
+        backend = %backend_id,
+        led_count = tracked.info.total_led_count(),
+        zones = zones.len(),
+        "device connected"
+    );
+    runtime.event_bus.publish(HypercolorEvent::DeviceConnected {
+        device_id: tracked.info.id.to_string(),
+        name: tracked.info.name.clone(),
+        backend: backend_id.to_owned(),
+        led_count: tracked.info.total_led_count(),
+        zones,
+    });
+}
+
+fn build_zone_refs(info: &DeviceInfo) -> Vec<ZoneRef> {
+    info.zones
+        .iter()
+        .map(|zone| ZoneRef {
+            zone_id: format!("{}:{}", info.id, zone.name),
+            device_id: info.id.to_string(),
+            topology: topology_hint_name(&zone.topology).to_owned(),
+            led_count: zone.led_count,
+        })
+        .collect()
+}
+
+const fn topology_hint_name(topology: &DeviceTopologyHint) -> &'static str {
+    match topology {
+        DeviceTopologyHint::Strip => "strip",
+        DeviceTopologyHint::Matrix { .. } => "matrix",
+        DeviceTopologyHint::Ring { .. } => "ring",
+        DeviceTopologyHint::Point => "point",
+        DeviceTopologyHint::Display { .. } => "display",
+        DeviceTopologyHint::Custom => "custom",
     }
 }
 

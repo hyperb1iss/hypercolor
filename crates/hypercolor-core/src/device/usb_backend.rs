@@ -45,6 +45,7 @@ struct UsbDevice {
     transport: Arc<dyn Transport>,
     keepalive_task: Option<tokio::task::JoinHandle<()>>,
     info_template: DeviceInfo,
+    frame_diagnostics_emitted: bool,
 }
 
 /// Core USB backend for HAL-managed device families.
@@ -563,6 +564,7 @@ impl DeviceBackend for UsbBackend {
                 transport,
                 keepalive_task,
                 info_template: pending.info_template,
+                frame_diagnostics_emitted: false,
             },
         );
 
@@ -605,7 +607,7 @@ impl DeviceBackend for UsbBackend {
     }
 
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
-        let Some(device) = self.connected.get(id) else {
+        let Some(device) = self.connected.get_mut(id) else {
             bail!("device {id} is not connected");
         };
 
@@ -614,6 +616,23 @@ impl DeviceBackend for UsbBackend {
             || "<none>".to_owned(),
             |command| describe_packet(&command.data),
         );
+        if !device.frame_diagnostics_emitted {
+            let first_packet_hex = commands.first().map_or_else(
+                || "<empty>".to_owned(),
+                |command| format_hex_preview(&command.data, 32),
+            );
+            debug!(
+                device_id = %id,
+                protocol = device.protocol.name(),
+                transport = device.transport.name(),
+                led_count = colors.len(),
+                command_count = commands.len(),
+                first_packet = %first_packet,
+                first_packet_hex = %first_packet_hex,
+                "usb first frame diagnostics"
+            );
+            device.frame_diagnostics_emitted = true;
+        }
         trace!(
             device_id = %id,
             protocol = device.protocol.name(),

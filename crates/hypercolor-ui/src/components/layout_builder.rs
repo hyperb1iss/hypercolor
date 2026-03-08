@@ -15,6 +15,7 @@ use crate::components::layout_canvas::LayoutCanvas;
 use crate::components::layout_palette::LayoutPalette;
 use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::icons::*;
+use crate::layout_geometry;
 use crate::toasts;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -246,8 +247,9 @@ pub fn LayoutBuilder() -> impl IntoView {
             let set_saved = set_saved_layout;
             leptos::task::spawn_local(async move {
                 if let Ok(l) = api::fetch_layout(&id).await {
-                    set_saved.set(Some(l.clone()));
-                    set_layout.set(Some(l));
+                    let layout = layout_geometry::normalize_layout_for_editor(l);
+                    set_saved.set(Some(layout.clone()));
+                    set_layout.set(Some(layout));
                 }
             });
         } else {
@@ -626,6 +628,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                     >
                         <LayoutPalette
                             layout=layout_signal
+                            selected_zone_id=zone_id_signal
                             set_layout=set_layout
                             set_selected_zone_id=set_selected_zone_id
                             set_is_dirty=set_is_dirty

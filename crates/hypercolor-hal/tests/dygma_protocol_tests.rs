@@ -87,6 +87,7 @@ fn rgbw_frame_extracts_white_channel_for_every_led() {
 
     let commands = protocol.encode_frame(&colors);
     assert_eq!(commands.len(), 1);
+    assert!(commands[0].expects_response);
     let payload = String::from_utf8(commands[0].data.clone()).expect("frame should be utf-8");
     let parts = payload.split_whitespace().collect::<Vec<_>>();
 

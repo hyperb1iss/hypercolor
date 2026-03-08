@@ -8,12 +8,17 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::manager::{
     BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
 };
+use hypercolor_daemon::discovery;
 use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_prefixed_layout_targets, default_config, install_signal_handlers,
     load_config, parse_config_toml,
 };
 use hypercolor_daemon::{layout_store, runtime_state};
 use hypercolor_types::config::WledProtocolConfig;
+use hypercolor_types::device::{
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
+    DeviceTopologyHint, ZoneInfo,
+};
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -571,4 +576,101 @@ fn test_zone(id: &str, device_id: &str) -> DeviceZone {
         attachment: None,
         led_mapping: None,
     }
+}
+
+#[test]
+fn append_auto_layout_zones_for_device_adds_default_strip_zone() {
+    let device_id = DeviceId::new();
+    let info = DeviceInfo {
+        id: device_id,
+        name: "Desk Strip".to_owned(),
+        vendor: "Test".to_owned(),
+        family: DeviceFamily::Wled,
+        model: None,
+        connection_type: ConnectionType::Network,
+        zones: vec![ZoneInfo {
+            name: "Main".to_owned(),
+            led_count: 30,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    let added =
+        discovery::append_auto_layout_zones_for_device(&mut layout, "wled:desk-strip", &info);
+
+    assert_eq!(added, 1);
+    assert_eq!(layout.zones.len(), 1);
+    assert_eq!(layout.zones[0].device_id, "wled:desk-strip");
+    assert_eq!(layout.zones[0].zone_name, Some("Main".to_owned()));
+    assert_eq!(layout.zones[0].name, "Desk Strip");
+    assert_eq!(
+        layout.zones[0].topology,
+        LedTopology::Strip {
+            count: 30,
+            direction: StripDirection::LeftToRight,
+        }
+    );
+}
+
+#[test]
+fn append_auto_layout_zones_for_device_skips_display_only_devices() {
+    let device_id = DeviceId::new();
+    let info = DeviceInfo {
+        id: device_id,
+        name: "LCD Panel".to_owned(),
+        vendor: "Test".to_owned(),
+        family: DeviceFamily::Custom("display".to_owned()),
+        model: None,
+        connection_type: ConnectionType::Usb,
+        zones: vec![ZoneInfo {
+            name: "Screen".to_owned(),
+            led_count: 1,
+            topology: DeviceTopologyHint::Display {
+                width: 320,
+                height: 320,
+                circular: true,
+            },
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            has_display: true,
+            display_resolution: Some((320, 320)),
+            ..DeviceCapabilities::default()
+        },
+    };
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    let added = discovery::append_auto_layout_zones_for_device(&mut layout, "usb:lcd-panel", &info);
+
+    assert_eq!(added, 0);
+    assert!(layout.zones.is_empty());
 }

@@ -24,6 +24,10 @@ const COMMAND_ID_OFFSET: usize = 7;
 const ARGS_OFFSET: usize = 8;
 const ARGS_LEN: usize = 80;
 const CRC_OFFSET: usize = 88;
+// Razer matrix uploads declare fixed payload sizes even when the RGB payload is shorter.
+const STANDARD_MATRIX_FRAME_DATA_SIZE: u8 = 0x46;
+const EXTENDED_MATRIX_FRAME_DATA_SIZE: u8 = 0x47;
+const EXTENDED_CUSTOM_EFFECT_DATA_SIZE: u8 = 0x0C;
 
 /// Pure packet encoder/decoder for Razer HID reports.
 #[derive(Debug, Clone)]
@@ -218,7 +222,7 @@ impl RazerProtocol {
             RazerMatrixType::None
             | RazerMatrixType::Standard
             | RazerMatrixType::Extended
-            | RazerMatrixType::ExtendedArgb => 25,
+            | RazerMatrixType::ExtendedArgb => 22,
         }
     }
 
@@ -348,10 +352,11 @@ impl RazerProtocol {
             );
         }
 
-        self.build_packet(
+        self.build_packet_with_declared_size(
             0x0F,
             0x02,
             &[NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME],
+            EXTENDED_CUSTOM_EFFECT_DATA_SIZE,
             false,
             Duration::ZERO,
         )
@@ -482,14 +487,28 @@ impl RazerProtocol {
                     args.extend_from_slice(color);
                 }
 
-                if let Some(packet) = self.build_packet_with_transaction(
-                    frame_transaction_id,
-                    command_class,
-                    command_id,
-                    &args,
-                    false,
-                    Duration::from_millis(1),
-                ) {
+                let packet = match self.command_set {
+                    RazerLightingCommandSet::Standard => self.build_packet_with_options(
+                        frame_transaction_id,
+                        command_class,
+                        command_id,
+                        &args,
+                        Some(STANDARD_MATRIX_FRAME_DATA_SIZE),
+                        false,
+                        Duration::from_millis(1),
+                    ),
+                    RazerLightingCommandSet::Extended => self.build_packet_with_options(
+                        frame_transaction_id,
+                        command_class,
+                        command_id,
+                        &args,
+                        Some(EXTENDED_MATRIX_FRAME_DATA_SIZE),
+                        false,
+                        Duration::from_millis(1),
+                    ),
+                };
+
+                if let Some(packet) = packet {
                     commands.push(packet);
                 }
             }

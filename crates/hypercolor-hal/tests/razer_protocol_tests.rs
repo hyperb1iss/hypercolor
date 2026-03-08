@@ -1,6 +1,6 @@
 use hypercolor_hal::drivers::razer::{
     LED_ID_BACKLIGHT, LED_ID_LOGO, RAZER_REPORT_LEN, RazerLightingCommandSet, RazerMatrixType,
-    RazerProtocol, RazerProtocolVersion, build_blade_14_2021_protocol,
+    RazerProtocol, RazerProtocolVersion, build_basilisk_v3_protocol, build_blade_14_2021_protocol,
     build_blade_15_late_2021_advanced_protocol, razer_crc,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolError, ResponseStatus};
@@ -32,30 +32,37 @@ fn encode_extended_matrix_splits_row_chunks_and_adds_activation() {
         RazerProtocolVersion::Extended,
         RazerLightingCommandSet::Extended,
         RazerMatrixType::Extended,
-        (1, 26),
+        (1, 23),
         LED_ID_BACKLIGHT,
     );
 
-    let colors = (0_u8..26)
+    let colors = (0_u8..23)
         .map(|index| [index, index, index])
         .collect::<Vec<_>>();
 
     let commands = protocol.encode_frame(&colors);
     assert_eq!(commands.len(), 3, "2 row chunks + activation command");
 
-    // First frame packet (25 LEDs)
+    // First frame packet (22 LEDs)
     let first = &commands[0].data;
     assert_eq!(first[1], 0x3F);
     assert_eq!(first[6], 0x0F);
     assert_eq!(first[7], 0x03);
-    assert_eq!(first[5], 80); // 5-byte header + 25 * RGB
+    assert_eq!(first[5], 0x47);
+    assert_eq!(first[10], 0x00);
+    assert_eq!(first[11], 0x00);
+    assert_eq!(first[12], 0x15);
 
     // Second frame packet (1 LED)
     let second = &commands[1].data;
-    assert_eq!(second[5], 8); // 5-byte header + 1 * RGB
+    assert_eq!(second[5], 0x47);
+    assert_eq!(second[10], 0x00);
+    assert_eq!(second[11], 0x16);
+    assert_eq!(second[12], 0x16);
 
     // Activation packet
     let activation = &commands[2].data;
+    assert_eq!(activation[5], 0x0C);
     assert_eq!(activation[6], 0x0F);
     assert_eq!(activation[7], 0x02);
     assert_eq!(activation[8], 0x00);
@@ -79,6 +86,7 @@ fn encode_standard_matrix_supports_modern_transaction_ids() {
 
     let frame = &commands[0].data;
     assert_eq!(frame[1], 0x1F);
+    assert_eq!(frame[5], 0x46);
     assert_eq!(frame[6], 0x03);
     assert_eq!(frame[7], 0x0B);
     assert_eq!(frame[8], 0xFF);
@@ -87,6 +95,35 @@ fn encode_standard_matrix_supports_modern_transaction_ids() {
     assert_eq!(activation[1], 0x1F);
     assert_eq!(activation[6], 0x03);
     assert_eq!(activation[7], 0x0A);
+}
+
+#[test]
+fn basilisk_v3_protocol_uses_fixed_length_matrix_packets() {
+    let protocol = build_basilisk_v3_protocol();
+    let colors = (0_u8..11)
+        .map(|index| [index, index.saturating_add(1), index.saturating_add(2)])
+        .collect::<Vec<_>>();
+
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 2, "single frame chunk + activation");
+
+    let frame = &commands[0].data;
+    assert_eq!(frame[1], 0x1F);
+    assert_eq!(frame[5], 0x47);
+    assert_eq!(frame[6], 0x0F);
+    assert_eq!(frame[7], 0x03);
+    assert_eq!(frame[10], 0x00);
+    assert_eq!(frame[11], 0x00);
+    assert_eq!(frame[12], 0x0A);
+
+    let activation = &commands[1].data;
+    assert_eq!(activation[1], 0x1F);
+    assert_eq!(activation[5], 0x0C);
+    assert_eq!(activation[6], 0x0F);
+    assert_eq!(activation[7], 0x02);
+    assert_eq!(activation[8], 0x00);
+    assert_eq!(activation[9], 0x00);
+    assert_eq!(activation[10], 0x08);
 }
 
 #[test]

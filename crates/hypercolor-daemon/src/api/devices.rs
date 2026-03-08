@@ -619,6 +619,9 @@ pub async fn discover_devices(
             lifecycle_manager: Arc::clone(&state.lifecycle_manager),
             reconnect_tasks: Arc::clone(&state.reconnect_tasks),
             event_bus: Arc::clone(&state.event_bus),
+            spatial_engine: Arc::clone(&state.spatial_engine),
+            layouts: Arc::clone(&state.layouts),
+            layouts_path: state.layouts_path.clone(),
             logical_devices: Arc::clone(&state.logical_devices),
             in_progress: Arc::clone(&state.discovery_in_progress),
         };
@@ -640,6 +643,9 @@ pub async fn discover_devices(
             lifecycle_manager: Arc::clone(&state_for_task.lifecycle_manager),
             reconnect_tasks: Arc::clone(&state_for_task.reconnect_tasks),
             event_bus: Arc::clone(&state_for_task.event_bus),
+            spatial_engine: Arc::clone(&state_for_task.spatial_engine),
+            layouts: Arc::clone(&state_for_task.layouts),
+            layouts_path: state_for_task.layouts_path.clone(),
             logical_devices: Arc::clone(&state_for_task.logical_devices),
             in_progress: Arc::clone(&state_for_task.discovery_in_progress),
         };

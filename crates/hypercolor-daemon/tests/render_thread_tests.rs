@@ -4,6 +4,7 @@
 //! Effect render → Spatial sample → Device push → Bus publish.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
@@ -481,6 +482,8 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
             .expect("frame success should move device to active");
     }
 
+    let layout = test_layout(vec![strip_zone("zone_0", &layout_device_id, 8)]);
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout)));
     let event_bus = Arc::new(HypercolorBus::new());
     let discovery_runtime = DiscoveryRuntime {
         device_registry: device_registry.clone(),
@@ -488,12 +491,12 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         lifecycle_manager: Arc::clone(&lifecycle_manager),
         reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
         event_bus: Arc::clone(&event_bus),
+        spatial_engine: Arc::clone(&spatial_engine),
+        layouts: Arc::new(RwLock::new(HashMap::new())),
+        layouts_path: PathBuf::from("layouts.json"),
         logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
         in_progress: Arc::new(AtomicBool::new(false)),
     };
-
-    let layout = test_layout(vec![strip_zone("zone_0", &layout_device_id, 8)]);
-    let spatial_engine = SpatialEngine::new(layout);
 
     let mut effect_engine = EffectEngine::new();
     let renderer = MockEffectRenderer::solid(255, 0, 0);
@@ -505,7 +508,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
     let (_, power_state) = watch::channel(OutputPowerState::default());
     let state = RenderThreadState {
         effect_engine: Arc::new(Mutex::new(effect_engine)),
-        spatial_engine: Arc::new(RwLock::new(spatial_engine)),
+        spatial_engine,
         backend_manager,
         performance: Arc::new(RwLock::new(PerformanceTracker::default())),
         discovery_runtime: Some(discovery_runtime.clone()),

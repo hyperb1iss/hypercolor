@@ -72,6 +72,38 @@ fn attachment_strip_size_preserves_thin_signal_like_aspect() {
 }
 
 #[test]
+fn editor_normalization_gives_horizontal_strips_visible_height() {
+    let size = layout_geometry::normalize_zone_size_for_editor(
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(0.24, 0.004),
+        &LedTopology::Strip {
+            count: 60,
+            direction: StripDirection::LeftToRight,
+        },
+    );
+
+    assert!((size.x - 0.24).abs() < 0.001);
+    assert!((size.y - 0.03).abs() < 0.001);
+    assert!(size.x / size.y <= 8.01);
+}
+
+#[test]
+fn editor_normalization_gives_vertical_strips_visible_width() {
+    let size = layout_geometry::normalize_zone_size_for_editor(
+        NormalizedPosition::new(0.5, 0.5),
+        NormalizedPosition::new(0.004, 0.24),
+        &LedTopology::Strip {
+            count: 60,
+            direction: StripDirection::TopToBottom,
+        },
+    );
+
+    assert!((size.x - 0.03).abs() < 0.001);
+    assert!((size.y - 0.24).abs() < 0.001);
+    assert!(size.y / size.x <= 8.01);
+}
+
+#[test]
 fn locked_resize_keeps_original_aspect_ratio() {
     let (position, size) = layout_geometry::resize_zone_from_handle(
         NormalizedPosition::new(0.5, 0.5),

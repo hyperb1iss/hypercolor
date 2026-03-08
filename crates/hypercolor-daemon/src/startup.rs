@@ -436,6 +436,9 @@ impl DaemonState {
             lifecycle_manager: Arc::clone(&self.lifecycle_manager),
             reconnect_tasks: Arc::clone(&self.reconnect_tasks),
             event_bus: Arc::clone(&self.event_bus),
+            spatial_engine: Arc::clone(&self.spatial_engine),
+            layouts: Arc::clone(&self.layouts),
+            layouts_path: self.layouts_path.clone(),
             logical_devices: Arc::clone(&self.logical_devices),
             in_progress: Arc::clone(&self.discovery_in_progress),
         }
@@ -808,6 +811,8 @@ impl DaemonState {
             event_bus: Arc::clone(&self.event_bus),
             config_manager: Arc::clone(&self.config_manager),
             spatial_engine: Arc::clone(&self.spatial_engine),
+            layouts: Arc::clone(&self.layouts),
+            layouts_path: self.layouts_path.clone(),
             logical_devices: Arc::clone(&self.logical_devices),
             in_progress: Arc::clone(&self.discovery_in_progress),
         };
@@ -914,6 +919,8 @@ struct DiscoveryWorkerContext {
     event_bus: Arc<HypercolorBus>,
     config_manager: Arc<ConfigManager>,
     spatial_engine: Arc<RwLock<SpatialEngine>>,
+    layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
+    layouts_path: PathBuf,
     logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
     in_progress: Arc<AtomicBool>,
 }
@@ -926,6 +933,9 @@ impl DiscoveryWorkerContext {
             lifecycle_manager: Arc::clone(&self.lifecycle_manager),
             reconnect_tasks: Arc::clone(&self.reconnect_tasks),
             event_bus: Arc::clone(&self.event_bus),
+            spatial_engine: Arc::clone(&self.spatial_engine),
+            layouts: Arc::clone(&self.layouts),
+            layouts_path: self.layouts_path.clone(),
             logical_devices: Arc::clone(&self.logical_devices),
             in_progress: Arc::clone(&self.in_progress),
         }

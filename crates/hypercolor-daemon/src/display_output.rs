@@ -311,6 +311,7 @@ fn layout_device_aliases(
 }
 
 #[allow(
+    clippy::as_conversions,
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
@@ -384,6 +385,7 @@ fn apply_edge_normalized(value: f32, edge_behavior: EdgeBehavior) -> f32 {
 }
 
 #[allow(
+    clippy::as_conversions,
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
@@ -431,7 +433,11 @@ fn lerp_f32(left: f32, right: f32, amount: f32) -> f32 {
     left + (right - left) * amount
 }
 
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn apply_fade_to_black(
     pixel: image::Rgba<u8>,
     canvas_pos: NormalizedPosition,

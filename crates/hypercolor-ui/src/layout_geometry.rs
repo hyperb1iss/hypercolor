@@ -8,7 +8,8 @@ use std::f32::consts::FRAC_PI_2;
 
 use hypercolor_types::attachment::AttachmentSuggestedZone;
 use hypercolor_types::spatial::{
-    Corner, LedTopology, NormalizedPosition, Orientation, StripDirection, Winding, ZoneShape,
+    Corner, LedTopology, NormalizedPosition, Orientation, SpatialLayout, StripDirection, Winding,
+    ZoneShape,
 };
 
 use crate::api::{ZoneSummary, ZoneTopologySummary};
@@ -22,6 +23,7 @@ const RESIZE_MIN_SIZE: f32 = 0.04;
 const PROPORTIONAL_DIMENSION_FLOOR: f32 = 0.0001;
 const THIN_SHAPE_ASPECT_THRESHOLD: f32 = 3.0;
 const GRID_EPSILON: f32 = 0.001;
+const EDITOR_STRIP_MAX_ASPECT: f32 = 8.0;
 
 const BASILISK_V3_GRID: VisualUnits = VisualUnits::new(7.0, 8.0);
 const BASILISK_V3_PRO_GRID: VisualUnits = VisualUnits::new(6.0, 7.0);
@@ -168,6 +170,24 @@ pub(crate) fn attachment_zone_size(
 ) -> NormalizedPosition {
     let units = topology_visual_units(&suggested.topology);
     fit_visual_units(units, ATTACHMENT_MIN_SIZE, max_size)
+}
+
+pub(crate) fn normalize_layout_for_editor(mut layout: SpatialLayout) -> SpatialLayout {
+    for zone in &mut layout.zones {
+        zone.size = normalize_zone_size_for_editor(zone.position, zone.size, &zone.topology);
+    }
+    layout
+}
+
+pub(crate) fn normalize_zone_size_for_editor(
+    position: NormalizedPosition,
+    size: NormalizedPosition,
+    topology: &LedTopology,
+) -> NormalizedPosition {
+    match topology {
+        LedTopology::Strip { direction, .. } => clamp_strip_size(position, size, *direction),
+        _ => size,
+    }
 }
 
 pub(crate) fn resize_zone_from_handle(
@@ -681,6 +701,46 @@ fn locked_minimum_size(aspect: f32, base_min: f32) -> NormalizedPosition {
         let height = axis_mins.y.max(axis_mins.x / aspect.max(GRID_EPSILON));
         NormalizedPosition::new(height * aspect, height)
     }
+}
+
+fn clamp_strip_size(
+    position: NormalizedPosition,
+    size: NormalizedPosition,
+    direction: StripDirection,
+) -> NormalizedPosition {
+    let max_width = available_axis_span(position.x);
+    let max_height = available_axis_span(position.y);
+    let mut width = size.x.clamp(GRID_EPSILON, max_width.max(GRID_EPSILON));
+    let mut height = size.y.clamp(GRID_EPSILON, max_height.max(GRID_EPSILON));
+
+    match direction {
+        StripDirection::LeftToRight | StripDirection::RightToLeft => {
+            let target_height = (width / EDITOR_STRIP_MAX_ASPECT).min(max_height);
+            height = height
+                .max(target_height)
+                .clamp(GRID_EPSILON, max_height.max(GRID_EPSILON));
+            if width / height.max(GRID_EPSILON) > EDITOR_STRIP_MAX_ASPECT {
+                width = (height * EDITOR_STRIP_MAX_ASPECT)
+                    .clamp(GRID_EPSILON, max_width.max(GRID_EPSILON));
+            }
+        }
+        StripDirection::TopToBottom | StripDirection::BottomToTop => {
+            let target_width = (height / EDITOR_STRIP_MAX_ASPECT).min(max_width);
+            width = width
+                .max(target_width)
+                .clamp(GRID_EPSILON, max_width.max(GRID_EPSILON));
+            if height / width.max(GRID_EPSILON) > EDITOR_STRIP_MAX_ASPECT {
+                height = (width * EDITOR_STRIP_MAX_ASPECT)
+                    .clamp(GRID_EPSILON, max_height.max(GRID_EPSILON));
+            }
+        }
+    }
+
+    NormalizedPosition::new(width, height)
+}
+
+fn available_axis_span(center: f32) -> f32 {
+    (center.min(1.0 - center) * 2.0).clamp(GRID_EPSILON, 1.0)
 }
 
 fn distance_sq(left: NormalizedPosition, right: NormalizedPosition) -> f32 {

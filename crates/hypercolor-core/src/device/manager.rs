@@ -7,7 +7,7 @@
 //! device for asynchronous transmission.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -518,6 +518,9 @@ pub struct BackendManager {
 
     /// Last warning time for layout device IDs that had no live mapping.
     last_unmapped_warn_at: HashMap<String, Instant>,
+
+    /// Connected devices already reported as unused by the active layout.
+    warned_inactive_layout_devices: HashSet<BackendDeviceKey>,
 }
 
 /// Internal mapping from a layout device identifier to a backend + device.
@@ -573,6 +576,8 @@ impl BackendManager {
             .retain(|(cached_backend_id, _), _| cached_backend_id != &backend_id);
         self.direct_control_locks
             .retain(|(locked_backend_id, _), _| locked_backend_id != &backend_id);
+        self.warned_inactive_layout_devices
+            .retain(|(warn_backend_id, _)| warn_backend_id != &backend_id);
 
         self.backends
             .insert(backend_id, Arc::new(Mutex::new(backend)));
@@ -856,6 +861,7 @@ impl BackendManager {
             self.output_queues.remove(&key);
             self.device_fps_cache.remove(&key);
             self.direct_control_locks.remove(&key);
+            self.warned_inactive_layout_devices.remove(&key);
         }
 
         true
@@ -882,6 +888,7 @@ impl BackendManager {
             self.output_queues.remove(&key);
             self.device_fps_cache.remove(&key);
             self.direct_control_locks.remove(&key);
+            self.warned_inactive_layout_devices.remove(&key);
         }
 
         removed
@@ -903,6 +910,43 @@ impl BackendManager {
     #[must_use]
     pub fn mapped_device_count(&self) -> usize {
         self.device_map.len()
+    }
+
+    /// Physical devices that are connected and mapped, but not referenced by the active layout.
+    ///
+    /// This is a diagnostic view over the current routing table. Devices in this list
+    /// will not receive queued frame writes until a layout zone targets one of their aliases.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn connected_devices_without_layout_targets(
+        &self,
+        layout: &SpatialLayout,
+    ) -> Vec<(String, DeviceId)> {
+        let targeted = layout
+            .zones
+            .iter()
+            .filter_map(|zone| {
+                self.device_map
+                    .get(zone.device_id.as_str())
+                    .map(|mapping| (mapping.backend_id.clone(), mapping.device_id))
+            })
+            .collect::<HashSet<_>>();
+
+        let mut inactive = self
+            .device_map
+            .values()
+            .map(|mapping| (mapping.backend_id.clone(), mapping.device_id))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .filter(|key| !targeted.contains(key))
+            .collect::<Vec<_>>();
+
+        inactive.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
+        });
+        inactive
     }
 
     /// Push frame color data to all mapped devices.
@@ -940,6 +984,31 @@ impl BackendManager {
                 )
             })
             .collect();
+
+        let inactive_devices = self.connected_devices_without_layout_targets(layout);
+        let inactive_keys = inactive_devices.iter().cloned().collect::<HashSet<_>>();
+        let mut newly_inactive = inactive_devices
+            .into_iter()
+            .filter(|key| !self.warned_inactive_layout_devices.contains(key))
+            .collect::<Vec<_>>();
+        newly_inactive.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
+        });
+
+        if !newly_inactive.is_empty() {
+            let devices = newly_inactive
+                .iter()
+                .map(|(backend_id, device_id)| format!("{backend_id}:{device_id}"))
+                .collect::<Vec<_>>();
+            warn!(
+                inactive_device_count = devices.len(),
+                devices = ?devices,
+                "connected devices have no active layout zones; frames will not be sent"
+            );
+        }
+        self.warned_inactive_layout_devices = inactive_keys;
 
         #[allow(clippy::items_after_statements)]
         #[derive(Default)]
