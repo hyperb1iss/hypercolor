@@ -724,6 +724,9 @@ fn defaults_for_zone(zone: Option<&api::ZoneSummary>, fallback_led_count: u32) -
             shape: Some(ZoneShape::Ring),
             shape_preset: None,
         },
+        Some(ZoneTopologySummary::Display { width, height, .. }) => {
+            matrix_defaults(height, width, Some("lcd-display"))
+        }
         Some(ZoneTopologySummary::Custom) | None => {
             if led_count <= 1 {
                 ZoneDefaults {

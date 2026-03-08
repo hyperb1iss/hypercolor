@@ -102,6 +102,7 @@ pub enum ZoneTopologySummary {
     Matrix { rows: u32, cols: u32 },
     Ring { count: u32 },
     Point,
+    Display { width: u32, height: u32, circular: bool },
     Custom,
 }
 
