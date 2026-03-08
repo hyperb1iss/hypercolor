@@ -3,13 +3,13 @@
 //! This renderer runs Servo on a dedicated worker thread so the public
 //! `EffectRenderer` remains `Send` while Servo internals stay on one thread.
 
+use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -40,8 +40,6 @@ const CONSOLE_SNIPPET_RADIUS: usize = 1;
 const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
 const JS_TIMER_MIN_DURATION_MS: i64 = 4;
 
-static SERVO_WORKER: OnceLock<Mutex<Option<Arc<ServoWorker>>>> = OnceLock::new();
-
 /// Feature-gated renderer for HTML effects.
 pub struct ServoRenderer {
     html_source: Option<PathBuf>,
@@ -51,7 +49,7 @@ pub struct ServoRenderer {
     runtime: LightscriptRuntime,
     initialized: bool,
     pending_scripts: Vec<String>,
-    worker: Option<Arc<ServoWorker>>,
+    worker: Option<ServoWorker>,
     warned_fallback_frame: bool,
     include_audio_updates: bool,
 }
@@ -176,7 +174,7 @@ impl EffectRenderer for ServoRenderer {
                 )
             })?;
 
-        let worker = acquire_servo_worker(DEFAULT_WIDTH, DEFAULT_HEIGHT)?;
+        let worker = ServoWorker::spawn(DEFAULT_WIDTH, DEFAULT_HEIGHT)?;
         worker.load_effect(&runtime_source)?;
         self.worker = Some(worker);
         self.html_source = Some(path.clone());
@@ -225,6 +223,11 @@ impl EffectRenderer for ServoRenderer {
     }
 
     fn destroy(&mut self) {
+        if let Some(mut worker) = self.worker.take() {
+            if let Err(error) = worker.shutdown() {
+                warn!(%error, "Failed to shut down Servo worker cleanly");
+            }
+        }
         self.worker = None;
         self.pending_scripts.clear();
         self.controls.clear();
@@ -245,7 +248,8 @@ impl Default for ServoRenderer {
 
 /// Worker wrapper that owns the Servo runtime thread.
 struct ServoWorker {
-    command_tx: Sender<WorkerCommand>,
+    command_tx: Option<Sender<WorkerCommand>>,
+    thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl ServoWorker {
@@ -253,7 +257,7 @@ impl ServoWorker {
         let (command_tx, command_rx) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
 
-        thread::Builder::new()
+        let thread_handle = thread::Builder::new()
             .name("hypercolor-servo-worker".to_owned())
             .spawn(move || {
                 let runtime = match ServoWorkerRuntime::new(width, height) {
@@ -284,12 +288,15 @@ impl ServoWorker {
         };
         readiness?;
 
-        Ok(Self { command_tx })
+        Ok(Self {
+            command_tx: Some(command_tx),
+            thread_handle: Some(thread_handle),
+        })
     }
 
     fn load_effect(&self, html_path: &Path) -> Result<()> {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
-        self.command_tx
+        self.command_tx()?
             .send(WorkerCommand::Load {
                 html_path: html_path.to_path_buf(),
                 response_tx,
@@ -310,7 +317,7 @@ impl ServoWorker {
 
     fn render_frame(&self, scripts: Vec<String>, width: u32, height: u32) -> Result<Canvas> {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
-        self.command_tx
+        self.command_tx()?
             .send(WorkerCommand::Render {
                 scripts,
                 width,
@@ -329,6 +336,55 @@ impl ServoWorker {
             }
         }
     }
+
+    fn shutdown(&mut self) -> Result<()> {
+        let command_tx = self.command_tx.take();
+        if let Some(command_tx) = command_tx {
+            let (response_tx, response_rx) = mpsc::sync_channel(1);
+            if command_tx
+                .send(WorkerCommand::Shutdown { response_tx })
+                .is_ok()
+            {
+                match response_rx.recv_timeout(WORKER_READY_TIMEOUT) {
+                    Ok(()) => {}
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        bail!(
+                            "timed out waiting for Servo worker shutdown after {}ms",
+                            WORKER_READY_TIMEOUT.as_millis()
+                        );
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        bail!("Servo worker disconnected before acknowledging shutdown");
+                    }
+                }
+            }
+        }
+
+        if let Some(thread_handle) = self.thread_handle.take() {
+            thread_handle.join().map_err(|panic| {
+                anyhow!(
+                    "Servo worker thread panicked during shutdown: {}",
+                    panic_payload_message(&*panic)
+                )
+            })?;
+        }
+
+        Ok(())
+    }
+
+    fn command_tx(&self) -> Result<&Sender<WorkerCommand>> {
+        self.command_tx
+            .as_ref()
+            .ok_or_else(|| anyhow!("Servo worker is not running"))
+    }
+}
+
+impl Drop for ServoWorker {
+    fn drop(&mut self) {
+        if let Err(error) = self.shutdown() {
+            warn!(%error, "Servo worker dropped with shutdown error");
+        }
+    }
 }
 
 enum WorkerCommand {
@@ -342,11 +398,14 @@ enum WorkerCommand {
         height: u32,
         response_tx: SyncSender<Result<Canvas>>,
     },
+    Shutdown {
+        response_tx: SyncSender<()>,
+    },
 }
 
 struct ServoWorkerRuntime {
-    servo: Servo,
     webview: WebView,
+    servo: Servo,
     rendering_context: Rc<dyn RenderingContext>,
     delegate: Rc<HypercolorWebViewDelegate>,
     loaded_html_path: Option<PathBuf>,
@@ -383,8 +442,8 @@ impl ServoWorkerRuntime {
             .build();
 
         let runtime = Self {
-            servo,
             webview,
+            servo,
             rendering_context,
             delegate,
             loaded_html_path: None,
@@ -412,8 +471,25 @@ impl ServoWorkerRuntime {
                     let result = self.render_frame(&scripts, width, height);
                     let _ = response_tx.send(result);
                 }
+                WorkerCommand::Shutdown { response_tx } => {
+                    let _ = response_tx.send(());
+                    break;
+                }
             }
         }
+
+        let Self {
+            webview,
+            servo,
+            rendering_context,
+            delegate,
+            loaded_html_path,
+        } = self;
+        drop(loaded_html_path);
+        drop(delegate);
+        drop(webview);
+        drop(rendering_context);
+        drop(servo);
     }
 
     fn load_effect(&mut self, html_path: &Path) -> Result<()> {
@@ -765,22 +841,6 @@ fn script_preview(script: &str) -> String {
     truncate_for_log(&single_line, 120)
 }
 
-fn acquire_servo_worker(width: u32, height: u32) -> Result<Arc<ServoWorker>> {
-    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(None));
-    let mut guard = match slot.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-
-    if let Some(worker) = guard.as_ref() {
-        return Ok(Arc::clone(worker));
-    }
-
-    let worker = Arc::new(ServoWorker::spawn(width, height)?);
-    *guard = Some(Arc::clone(&worker));
-    Ok(worker)
-}
-
 fn install_rustls_provider() {
     if let Err(error) = rustls::crypto::aws_lc_rs::default_provider().install_default() {
         trace!(?error, "Rustls provider already initialized or unavailable");
@@ -893,10 +953,22 @@ fn effect_is_audio_reactive(metadata: &EffectMetadata) -> bool {
         .any(|tag| tag.eq_ignore_ascii_case("audio") || tag.eq_ignore_ascii_case("audio-reactive"))
 }
 
+fn panic_payload_message(payload: &(dyn Any + Send + 'static)) -> String {
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        return (*message).to_owned();
+    }
+    "unknown panic payload".to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use hypercolor_types::effect::EffectId;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use uuid::Uuid;
 
     #[test]
@@ -1046,5 +1118,76 @@ mod tests {
         assert!(formatted.contains("error: TypeError(\"boom\""));
         assert!(formatted.contains("effect.js:3"));
         assert!(formatted.contains(">3: gamma"));
+    }
+
+    #[test]
+    fn servo_worker_shutdown_joins_thread() {
+        let (command_tx, command_rx) = mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_clone = Arc::clone(&stopped);
+        let thread_handle = thread::spawn(move || {
+            while let Ok(command) = command_rx.recv() {
+                if let WorkerCommand::Shutdown { response_tx } = command {
+                    stopped_clone.store(true, Ordering::SeqCst);
+                    let _ = response_tx.send(());
+                    break;
+                }
+            }
+        });
+        let mut worker = ServoWorker {
+            command_tx: Some(command_tx),
+            thread_handle: Some(thread_handle),
+        };
+
+        worker.shutdown().expect("worker shutdown should succeed");
+
+        assert!(stopped.load(Ordering::SeqCst));
+        assert!(worker.command_tx.is_none());
+        assert!(worker.thread_handle.is_none());
+    }
+
+    #[test]
+    fn destroy_clears_renderer_state_and_shuts_down_worker() {
+        let (command_tx, command_rx) = mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_clone = Arc::clone(&stopped);
+        let thread_handle = thread::spawn(move || {
+            while let Ok(command) = command_rx.recv() {
+                if let WorkerCommand::Shutdown { response_tx } = command {
+                    stopped_clone.store(true, Ordering::SeqCst);
+                    let _ = response_tx.send(());
+                    break;
+                }
+            }
+        });
+
+        let mut renderer = ServoRenderer::new();
+        renderer.worker = Some(ServoWorker {
+            command_tx: Some(command_tx),
+            thread_handle: Some(thread_handle),
+        });
+        renderer.initialized = true;
+        renderer.pending_scripts.push("tick()".to_owned());
+        renderer
+            .controls
+            .insert("speed".to_owned(), ControlValue::Float(1.0));
+        renderer.html_source = Some(PathBuf::from("source.html"));
+        renderer.html_resolved_path = Some(PathBuf::from("resolved.html"));
+        renderer.runtime_html_path = Some(PathBuf::from("runtime.html"));
+        renderer.warned_fallback_frame = true;
+        renderer.include_audio_updates = false;
+
+        renderer.destroy();
+
+        assert!(stopped.load(Ordering::SeqCst));
+        assert!(renderer.worker.is_none());
+        assert!(renderer.pending_scripts.is_empty());
+        assert!(renderer.controls.is_empty());
+        assert!(renderer.html_source.is_none());
+        assert!(renderer.html_resolved_path.is_none());
+        assert!(renderer.runtime_html_path.is_none());
+        assert!(!renderer.initialized);
+        assert!(!renderer.warned_fallback_frame);
+        assert!(renderer.include_audio_updates);
     }
 }
