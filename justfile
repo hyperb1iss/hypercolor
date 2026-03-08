@@ -174,6 +174,7 @@ udev-install:
     sudo udevadm trigger --action=add --subsystem-match=hidraw
     sudo udevadm trigger --action=add --subsystem-match=usb
     sudo udevadm trigger --action=add --subsystem-match=tty
+    sudo udevadm trigger --action=add --subsystem-match=i2c-dev
     @echo '✅ udev rules installed and applied'
 
 # ─── Housekeeping ─────────────────────────────────────────
