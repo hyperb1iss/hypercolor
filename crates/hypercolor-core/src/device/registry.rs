@@ -10,7 +10,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-use crate::types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DeviceState};
+use crate::types::device::{
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceUserSettings,
+};
 
 // ── TrackedDevice ────────────────────────────────────────────────────────
 
@@ -22,6 +24,9 @@ pub struct TrackedDevice {
 
     /// Current lifecycle state.
     pub state: DeviceState,
+
+    /// Persisted user-facing settings layered on top of discovered metadata.
+    pub user_settings: DeviceUserSettings,
 }
 
 // ── DeviceRegistry ───────────────────────────────────────────────────────
@@ -102,6 +107,7 @@ impl DeviceRegistry {
                 let mut updated_info = info;
                 // Keep the canonical registry ID stable across rediscovery.
                 updated_info.id = existing_id;
+                apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
                 debug!(
                     device_id = %existing_id,
                     name = %updated_info.name,
@@ -141,6 +147,7 @@ impl DeviceRegistry {
         let tracked = TrackedDevice {
             info: tracked_info,
             state: DeviceState::Known,
+            user_settings: DeviceUserSettings::default(),
         };
 
         inner.fingerprints.insert(fingerprint.clone(), id);
@@ -224,6 +231,7 @@ impl DeviceRegistry {
 
         let mut updated_info = info;
         updated_info.id = *id;
+        apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
         entry.info = updated_info;
 
         debug!(device_id = %id, "Updated device metadata in registry");
@@ -234,8 +242,9 @@ impl DeviceRegistry {
     ///
     /// Supported updates:
     /// - `name`: display name override
-    /// - `enabled`: maps to lifecycle state (`false` => `Disabled`,
-    ///   `true` transitions `Disabled` back to `Known`)
+    /// - `enabled`: persisted user preference for whether the device should
+    ///   participate in rendering
+    /// - `brightness`: per-device output scale (`0.0..=1.0`)
     ///
     /// Returns the updated device snapshot, or `None` if the device ID is
     /// unknown.
@@ -244,23 +253,38 @@ impl DeviceRegistry {
         id: &DeviceId,
         name: Option<String>,
         enabled: Option<bool>,
+        brightness: Option<f32>,
     ) -> Option<TrackedDevice> {
         let mut inner = self.inner.write().await;
         let entry = inner.devices.get_mut(id)?;
 
         if let Some(name) = name {
+            entry.user_settings.name = Some(name.clone());
             entry.info.name = name;
         }
 
         if let Some(enabled) = enabled {
-            if enabled {
-                if entry.state == DeviceState::Disabled {
-                    entry.state = DeviceState::Known;
-                }
-            } else {
-                entry.state = DeviceState::Disabled;
-            }
+            entry.user_settings.enabled = enabled;
         }
+
+        if let Some(brightness) = brightness {
+            entry.user_settings.brightness = brightness.clamp(0.0, 1.0);
+        }
+
+        Some(entry.clone())
+    }
+
+    /// Replace all stored user settings for a tracked device.
+    pub async fn replace_user_settings(
+        &self,
+        id: &DeviceId,
+        settings: DeviceUserSettings,
+    ) -> Option<TrackedDevice> {
+        let mut inner = self.inner.write().await;
+        let entry = inner.devices.get_mut(id)?;
+
+        entry.user_settings = settings;
+        apply_user_settings_to_info(&mut entry.info, &entry.user_settings);
 
         Some(entry.clone())
     }
@@ -310,6 +334,18 @@ impl DeviceRegistry {
         inner.fingerprints.clone()
     }
 
+    /// Snapshot per-device brightness scalars keyed by device ID.
+    pub async fn brightness_snapshot(&self) -> HashMap<DeviceId, f32> {
+        let inner = self.inner.read().await;
+        inner
+            .devices
+            .iter()
+            .map(|(device_id, tracked)| {
+                (*device_id, tracked.user_settings.brightness.clamp(0.0, 1.0))
+            })
+            .collect()
+    }
+
     /// List all devices in a specific state.
     pub async fn list_by_state(&self, state: &DeviceState) -> Vec<TrackedDevice> {
         let inner = self.inner.read().await;
@@ -325,5 +361,11 @@ impl DeviceRegistry {
 impl Default for DeviceRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn apply_user_settings_to_info(info: &mut DeviceInfo, settings: &DeviceUserSettings) {
+    if let Some(name) = settings.name.as_ref() {
+        info.name = name.clone();
     }
 }

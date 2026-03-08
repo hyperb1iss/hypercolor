@@ -34,6 +34,7 @@ use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 
+use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{DiscoveryRuntime, handle_async_write_failures};
 use crate::performance::{LatestFrameMetrics, PerformanceTracker};
 use crate::session::OutputPowerState;
@@ -82,6 +83,9 @@ pub struct RenderThreadState {
 
     /// Session policy output state (brightness scale + sleep flag).
     pub power_state: watch::Receiver<OutputPowerState>,
+
+    /// Persisted global and per-device output settings.
+    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
 
     /// Target render canvas width.
     pub canvas_width: u32,
@@ -315,7 +319,7 @@ async fn execute_frame(
         &inputs,
         cached_canvas,
         delta_secs,
-        output_power.brightness,
+        output_power.effective_brightness(),
     )
     .await;
 

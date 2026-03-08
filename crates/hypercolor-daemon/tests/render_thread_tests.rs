@@ -24,6 +24,7 @@ use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
+use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::event::{HypercolorEvent, ZoneColors};
 use hypercolor_types::spatial::{
@@ -163,6 +164,9 @@ fn make_render_state(
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         power_state,
+        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
+            "device-settings.json",
+        )))),
         canvas_width: 320,
         canvas_height: 200,
         screen_capture_enabled: false,
@@ -390,6 +394,9 @@ async fn pipeline_renders_active_effect_to_devices() {
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         power_state,
+        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
+            "device-settings.json",
+        )))),
         canvas_width: 320,
         canvas_height: 200,
         screen_capture_enabled: false,
@@ -497,10 +504,14 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         spatial_engine: Arc::clone(&spatial_engine),
         layouts: Arc::new(RwLock::new(HashMap::new())),
         layouts_path: PathBuf::from("layouts.json"),
+        layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
         logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
         attachment_registry: Arc::new(RwLock::new(AttachmentRegistry::new())),
         attachment_profiles: Arc::new(RwLock::new(AttachmentProfileStore::new(PathBuf::from(
             "attachment-profiles.json",
+        )))),
+        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
+            "device-settings.json",
         )))),
         usb_protocol_configs: UsbProtocolConfigStore::new(),
         in_progress: Arc::new(AtomicBool::new(false)),
@@ -525,6 +536,9 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
         input_manager: Arc::new(Mutex::new(InputManager::new())),
         power_state,
+        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
+            "device-settings.json",
+        )))),
         canvas_width: 320,
         canvas_height: 200,
         screen_capture_enabled: false,

@@ -280,6 +280,17 @@ impl WledDevice {
         }
     }
 
+    fn black_frame(&self) -> Vec<u8> {
+        vec![
+            0_u8;
+            usize::from(self.led_count)
+                * match self.protocol {
+                    WledProtocol::Ddp => self.ddp_wire_format().bytes_per_pixel(),
+                    WledProtocol::E131 => self.color_format.bytes_per_pixel(),
+                }
+        ]
+    }
+
     /// Send a frame of raw pixel bytes to this device.
     ///
     /// # Errors
@@ -299,6 +310,15 @@ impl WledDevice {
             return Ok(());
         }
 
+        self.send_frame_forced(pixel_data).await
+    }
+
+    /// Send a frame immediately, bypassing deduplication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the UDP send fails.
+    async fn send_frame_forced(&mut self, pixel_data: &[u8]) -> Result<()> {
         let send_result = match self.protocol {
             WledProtocol::Ddp => self.send_ddp(pixel_data).await,
             WledProtocol::E131 => self.send_e131(pixel_data).await,
@@ -684,21 +704,10 @@ async fn exit_realtime_mode(ip: IpAddr) -> Result<()> {
 /// Bypasses dedup intentionally — all three frames are identical black
 /// but must actually be sent to ensure WLED fully transitions to realtime.
 async fn prime_device(device: &mut WledDevice) -> Result<()> {
-    let black_frame = vec![
-        0_u8;
-        usize::from(device.led_count)
-            * match device.protocol {
-                WledProtocol::Ddp => device.ddp_wire_format().bytes_per_pixel(),
-                WledProtocol::E131 => device.color_format.bytes_per_pixel(),
-            }
-    ];
+    let black_frame = device.black_frame();
 
     for _ in 0..REALTIME_PRIME_FRAMES {
-        // Send directly via protocol, bypassing send_frame() dedup logic
-        match device.protocol {
-            WledProtocol::Ddp => device.send_ddp(&black_frame).await?,
-            WledProtocol::E131 => device.send_e131(&black_frame).await?,
-        }
+        device.send_frame_forced(&black_frame).await?;
         tokio::time::sleep(REALTIME_PRIME_DELAY).await;
     }
 
@@ -708,6 +717,11 @@ async fn prime_device(device: &mut WledDevice) -> Result<()> {
     device.last_frame_at = Some(Instant::now());
 
     Ok(())
+}
+
+async fn clear_device(device: &mut WledDevice) -> Result<()> {
+    let black_frame = device.black_frame();
+    device.send_frame_forced(&black_frame).await
 }
 
 fn pixels_match_with_threshold(previous: &[u8], current: &[u8], threshold: u8) -> bool {
@@ -1115,7 +1129,15 @@ impl DeviceBackend for WledBackend {
     }
 
     async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
-        if let Some(device) = self.devices.remove(id) {
+        if let Some(mut device) = self.devices.remove(id) {
+            if let Err(error) = clear_device(&mut device).await {
+                debug!(
+                    device_id = %id,
+                    ip = %device.ip,
+                    error = %error,
+                    "best-effort WLED clear frame failed during disconnect"
+                );
+            }
             if self.realtime_http_enabled
                 && let Err(error) = exit_realtime_mode(device.ip).await
             {

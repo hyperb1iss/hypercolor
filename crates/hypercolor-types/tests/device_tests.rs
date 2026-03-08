@@ -3,7 +3,7 @@
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
     DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo, DeviceState,
-    DeviceTopologyHint, ZoneInfo,
+    DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
 };
 use uuid::Uuid;
 
@@ -145,6 +145,28 @@ fn capabilities_serde_round_trip() {
     let json = serde_json::to_string(&caps).expect("serialize");
     let back: DeviceCapabilities = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(back, caps);
+}
+
+// ── DeviceUserSettings ────────────────────────────────────────────────────
+
+#[test]
+fn user_settings_default_values() {
+    let settings = DeviceUserSettings::default();
+    assert_eq!(settings.name, None);
+    assert!(settings.enabled);
+    assert!((settings.brightness - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn user_settings_serde_round_trip() {
+    let settings = DeviceUserSettings {
+        name: Some("Desk Strip".into()),
+        enabled: false,
+        brightness: 0.42,
+    };
+    let json = serde_json::to_string(&settings).expect("serialize");
+    let back: DeviceUserSettings = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back, settings);
 }
 
 // ── DeviceState ───────────────────────────────────────────────────────────

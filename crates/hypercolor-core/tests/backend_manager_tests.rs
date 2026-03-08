@@ -1170,6 +1170,46 @@ async fn write_frame_routes_to_correct_backend() {
 }
 
 #[tokio::test]
+async fn write_frame_scales_device_output_brightness() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let brightness_writes = Arc::new(Mutex::new(Vec::new()));
+    let mut backend = DirectControlRecordingBackend::new(
+        device_id,
+        Arc::clone(&writes),
+        Arc::clone(&brightness_writes),
+    );
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("recording:strip", "recording", device_id);
+    manager.set_device_output_brightness(device_id, 0.5);
+
+    let layout = make_layout(vec![make_zone("zone_0", "recording:strip", 4)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[200, 100, 50]; 4],
+    }];
+
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 4);
+    assert!(stats.errors.is_empty());
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(
+        *writes.lock().await,
+        vec![vec![[99, 49, 24]; 4]],
+        "software output brightness should scale queued colors"
+    );
+    assert!(
+        brightness_writes.lock().await.is_empty(),
+        "per-device output brightness should not issue hardware brightness writes"
+    );
+}
+
+#[tokio::test]
 async fn write_frame_empty_layout_produces_no_writes() {
     let mut manager = BackendManager::new();
     let layout = make_layout(Vec::new());

@@ -29,7 +29,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use axum::Router;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -50,11 +50,14 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::AttachmentProfileStore;
+use crate::device_settings::DeviceSettingsStore;
+use crate::layout_auto_exclusions;
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
 use crate::performance::PerformanceTracker;
 use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::runtime_state;
+use crate::session::{OutputPowerState, current_global_brightness};
 
 // ── AppState ─────────────────────────────────────────────────────────────
 
@@ -124,11 +127,20 @@ pub struct AppState {
     /// Persistent per-device attachment profile store.
     pub attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
 
+    /// Persistent per-device user settings store.
+    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
+
     /// In-memory layout store (shared with `DaemonState`, persisted to layouts.json).
     pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
 
     /// Persistent path for spatial layouts.
     pub layouts_path: PathBuf,
+
+    /// Layout-specific exclusions for discovery auto-sync.
+    pub layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
+
+    /// Persistent path for layout-specific discovery auto-sync exclusions.
+    pub layout_auto_exclusions_path: PathBuf,
 
     /// Logical device segmentation store (physical device -> logical ranges).
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
@@ -144,6 +156,9 @@ pub struct AppState {
 
     /// Persisted path for startup runtime-session restoration.
     pub runtime_state_path: PathBuf,
+
+    /// Shared user/session output brightness state.
+    pub power_state: watch::Sender<OutputPowerState>,
 
     /// Saved effect library storage (favorites, presets, playlists).
     pub library_store: Arc<dyn LibraryStore>,
@@ -202,6 +217,21 @@ impl AppState {
                 );
                 AttachmentProfileStore::new(attachment_profiles_path)
             });
+        let device_settings_path = ConfigManager::data_dir().join("device-settings.json");
+        let device_settings =
+            DeviceSettingsStore::load(&device_settings_path).unwrap_or_else(|error| {
+                warn!(
+                    path = %device_settings_path.display(),
+                    %error,
+                    "Failed to load device settings; starting with defaults"
+                );
+                DeviceSettingsStore::new(device_settings_path)
+            });
+        let initial_global_brightness = device_settings.global_brightness();
+        let (power_state, _) = watch::channel(OutputPowerState {
+            global_brightness: initial_global_brightness,
+            ..OutputPowerState::default()
+        });
 
         Self {
             device_registry: DeviceRegistry::new(),
@@ -221,13 +251,18 @@ impl AppState {
             profiles: RwLock::new(HashMap::new()),
             attachment_registry: Arc::new(RwLock::new(attachment_registry)),
             attachment_profiles: Arc::new(RwLock::new(attachment_profiles)),
+            device_settings: Arc::new(RwLock::new(device_settings)),
             layouts: Arc::new(RwLock::new(HashMap::new())),
             layouts_path: ConfigManager::data_dir().join("layouts.json"),
+            layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
+            layout_auto_exclusions_path: ConfigManager::data_dir()
+                .join("layout-auto-exclusions.json"),
             logical_devices: Arc::new(RwLock::new(HashMap::new())),
             logical_devices_path: ConfigManager::data_dir().join("logical-devices.json"),
             effect_layout_links: Arc::new(RwLock::new(HashMap::new())),
             effect_layout_links_path: ConfigManager::data_dir().join("effect-layouts.json"),
             runtime_state_path: ConfigManager::data_dir().join("runtime-state.json"),
+            power_state,
             library_store: Arc::new(InMemoryLibraryStore::new()),
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: Instant::now(),
@@ -273,13 +308,17 @@ impl AppState {
             profiles: RwLock::new(HashMap::new()),
             attachment_registry: Arc::clone(&daemon.attachment_registry),
             attachment_profiles: Arc::clone(&daemon.attachment_profiles),
+            device_settings: Arc::clone(&daemon.device_settings),
             layouts: Arc::clone(&daemon.layouts),
             layouts_path: daemon.layouts_path.clone(),
+            layout_auto_exclusions: Arc::clone(&daemon.layout_auto_exclusions),
+            layout_auto_exclusions_path: daemon.layout_auto_exclusions_path.clone(),
             logical_devices: Arc::clone(&daemon.logical_devices),
             logical_devices_path: daemon.logical_devices_path.clone(),
             effect_layout_links: Arc::clone(&daemon.effect_layout_links),
             effect_layout_links_path: daemon.effect_layout_links_path.clone(),
             runtime_state_path: daemon.runtime_state_path.clone(),
+            power_state: daemon.power_state.clone(),
             library_store,
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: daemon.start_time,
@@ -305,6 +344,20 @@ pub(crate) async fn persist_layouts(state: &Arc<AppState>) {
     }
 }
 
+/// Persist layout-specific discovery auto-sync exclusions to disk.
+pub(crate) async fn persist_layout_auto_exclusions(state: &Arc<AppState>) {
+    let exclusions = state.layout_auto_exclusions.read().await;
+    if let Err(error) =
+        crate::layout_auto_exclusions::save(&state.layout_auto_exclusions_path, &exclusions)
+    {
+        warn!(
+            path = %state.layout_auto_exclusions_path.display(),
+            %error,
+            "Failed to persist layout auto-exclusion store"
+        );
+    }
+}
+
 /// Persist the current runtime session snapshot (active effect/preset/controls/layout).
 pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
     let mut snapshot = {
@@ -317,6 +370,7 @@ pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
         let spatial = state.spatial_engine.read().await;
         snapshot.active_layout_id = Some(spatial.layout().id.clone());
     }
+    snapshot.global_brightness = current_global_brightness(&state.power_state);
 
     if let Err(error) = runtime_state::save(&state.runtime_state_path, &snapshot) {
         warn!(
@@ -539,6 +593,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route("/status", axum::routing::get(system::get_status))
         .route("/state", axum::routing::get(system::get_status))
         .route("/audio/devices", axum::routing::get(settings::list_audio_devices))
+        .route(
+            "/settings/brightness",
+            axum::routing::get(settings::get_brightness).put(settings::set_brightness),
+        )
         // ── Preview ──────────────────────────────────────────────────
         .route("/preview", axum::routing::get(preview::preview_page))
         // ── Config ───────────────────────────────────────────────────

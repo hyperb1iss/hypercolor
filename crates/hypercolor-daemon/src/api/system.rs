@@ -13,6 +13,7 @@ use serde::Serialize;
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
 use crate::api::settings;
+use crate::session::current_global_brightness;
 
 use hypercolor_core::config::ConfigManager;
 
@@ -32,6 +33,7 @@ pub struct SystemStatus {
     pub effect_count: usize,
     pub scene_count: usize,
     pub active_effect: Option<String>,
+    pub global_brightness: u8,
     pub audio_available: bool,
     pub capture_available: bool,
     pub render_loop: RenderLoopStatus,
@@ -102,6 +104,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         effect_count,
         scene_count,
         active_effect,
+        global_brightness: brightness_percent(current_global_brightness(&state.power_state)),
         audio_available: settings::audio_input_available(),
         capture_available: settings::capture_input_available(),
         render_loop: render_loop_status,
@@ -132,4 +135,15 @@ fn config_path(state: &AppState) -> PathBuf {
         || ConfigManager::config_dir().join(DEFAULT_CONFIG_FILE_NAME),
         |manager| manager.path().to_path_buf(),
     )
+}
+
+fn brightness_percent(brightness: f32) -> u8 {
+    let scaled = (brightness.clamp(0.0, 1.0) * 100.0).round();
+    if scaled <= 0.0 {
+        0
+    } else if scaled >= 100.0 {
+        100
+    } else {
+        scaled as u8
+    }
 }

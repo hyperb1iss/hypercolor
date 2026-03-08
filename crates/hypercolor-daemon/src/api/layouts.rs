@@ -16,7 +16,8 @@ use tracing::warn;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::api::{persist_layouts, persist_runtime_session};
+use crate::api::{persist_layout_auto_exclusions, persist_layouts, persist_runtime_session};
+use crate::layout_auto_exclusions;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -222,6 +223,9 @@ pub async fn update_layout(
         mut zones,
         groups,
     } = body;
+    let previous_zones = zones.as_ref().map(|_| existing.zones.clone());
+    let updated_zones_for_exclusions = zones.clone();
+    let layout_id = existing.id.clone();
 
     if let Some(name) = name {
         let normalized_name = match normalize_layout_name(&name) {
@@ -274,6 +278,11 @@ pub async fn update_layout(
     };
 
     drop(layouts);
+    if let (Some(previous_zones), Some(updated_zones)) =
+        (previous_zones, updated_zones_for_exclusions)
+    {
+        update_layout_auto_exclusions(&state, &layout_id, &previous_zones, &updated_zones).await;
+    }
     persist_layouts(&state).await;
     ApiResponse::ok(summary)
 }
@@ -353,6 +362,10 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
         None
     };
     drop(layouts);
+    let exclusions_changed = {
+        let mut exclusions = state.layout_auto_exclusions.write().await;
+        exclusions.remove(&key).is_some()
+    };
 
     if let Some(layout) = next_active_layout {
         {
@@ -363,11 +376,45 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
     }
 
     persist_layouts(&state).await;
+    if exclusions_changed {
+        persist_layout_auto_exclusions(&state).await;
+    }
 
     ApiResponse::ok(serde_json::json!({
         "id": key,
         "deleted": true,
     }))
+}
+
+async fn update_layout_auto_exclusions(
+    state: &Arc<AppState>,
+    layout_id: &str,
+    previous_zones: &[DeviceZone],
+    updated_zones: &[DeviceZone],
+) {
+    let changed = {
+        let mut exclusions = state.layout_auto_exclusions.write().await;
+        let current = exclusions.get(layout_id).cloned().unwrap_or_default();
+        let next = layout_auto_exclusions::reconcile_layout_device_exclusions(
+            previous_zones,
+            updated_zones,
+            &current,
+        );
+        if next == current {
+            false
+        } else {
+            if next.is_empty() {
+                exclusions.remove(layout_id);
+            } else {
+                exclusions.insert(layout_id.to_owned(), next);
+            }
+            true
+        }
+    };
+
+    if changed {
+        persist_layout_auto_exclusions(state).await;
+    }
 }
 
 fn empty_default_layout(previous: &SpatialLayout) -> SpatialLayout {

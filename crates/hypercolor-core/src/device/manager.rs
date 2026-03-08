@@ -513,6 +513,9 @@ pub struct BackendManager {
     /// Preferred output FPS for connected devices, captured at connect time.
     device_fps_cache: HashMap<BackendDeviceKey, u32>,
 
+    /// User-configured per-device output brightness scalar.
+    device_brightness: HashMap<DeviceId, f32>,
+
     /// Reference-counted direct-control locks that suppress queued frame writes.
     direct_control_locks: HashMap<BackendDeviceKey, usize>,
 
@@ -781,6 +784,25 @@ impl BackendManager {
             })
     }
 
+    /// Configure software output brightness for a physical device.
+    pub fn set_device_output_brightness(&mut self, device_id: DeviceId, brightness: f32) {
+        let normalized = brightness.clamp(0.0, 1.0);
+        if normalized >= 0.999 {
+            self.device_brightness.remove(&device_id);
+            return;
+        }
+        self.device_brightness.insert(device_id, normalized);
+    }
+
+    /// Read the configured software output brightness for a physical device.
+    #[must_use]
+    pub fn device_output_brightness(&self, device_id: DeviceId) -> f32 {
+        self.device_brightness
+            .get(&device_id)
+            .copied()
+            .unwrap_or(1.0)
+    }
+
     /// Write one immediate JPEG display payload to a specific physical device.
     ///
     /// This bypasses spatial routing and targets display-capable backends
@@ -969,6 +991,23 @@ impl BackendManager {
         zone_colors: &[ZoneColors],
         layout: &SpatialLayout,
     ) -> FrameWriteStats {
+        self.write_frame_with_brightness(zone_colors, layout, None)
+            .await
+    }
+
+    /// Push frame color data to all mapped devices with optional per-device
+    /// output brightness scalars.
+    #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "frame routing keeps mapping, remap, segmented writes, queue dispatch together so the hot-path ordering stays readable"
+    )]
+    pub async fn write_frame_with_brightness(
+        &mut self,
+        zone_colors: &[ZoneColors],
+        layout: &SpatialLayout,
+        device_brightness: Option<&HashMap<DeviceId, f32>>,
+    ) -> FrameWriteStats {
         let mut stats = FrameWriteStats::default();
 
         // Build zone_id → routing metadata lookup from the spatial layout.
@@ -1125,6 +1164,12 @@ impl BackendManager {
                 values.resize(required_len, [0, 0, 0]);
             }
 
+            if let Some(brightness) =
+                device_brightness.and_then(|settings| settings.get(&device_id))
+            {
+                apply_output_brightness(&mut values, *brightness);
+            }
+
             if self.is_direct_control_active(backend_id.as_str(), device_id) {
                 trace!(
                     backend_id = %backend_id,
@@ -1141,12 +1186,15 @@ impl BackendManager {
                 continue;
             }
 
+            let brightness = self.device_output_brightness(device_id);
             let Some(queue) = self.ensure_output_queue(backend_id.as_str(), device_id) else {
                 stats
                     .errors
                     .push(format!("backend '{backend_id}' not registered"));
                 continue;
             };
+
+            apply_output_brightness(&mut values, brightness);
 
             stats.devices_written += 1;
             stats.total_leds += values.len();
@@ -1298,6 +1346,42 @@ impl BackendManager {
             orphaned_queues,
         }
     }
+}
+
+fn apply_output_brightness(colors: &mut Vec<[u8; 3]>, brightness: f32) {
+    let brightness = brightness.clamp(0.0, 1.0);
+    if brightness >= 0.999 {
+        return;
+    }
+    if brightness <= 0.0 {
+        colors.fill([0, 0, 0]);
+        return;
+    }
+
+    let factor = brightness_factor(brightness);
+    for color in colors {
+        color[0] = scale_channel(color[0], factor);
+        color[1] = scale_channel(color[1], factor);
+        color[2] = scale_channel(color[2], factor);
+    }
+}
+
+fn brightness_factor(brightness: f32) -> u16 {
+    let target = f64::from(brightness.clamp(0.0, 1.0)) * f64::from(u8::MAX);
+    (0_u16..=u16::from(u8::MAX))
+        .min_by(|left, right| {
+            let left_delta = (f64::from(*left) - target).abs();
+            let right_delta = (f64::from(*right) - target).abs();
+            left_delta
+                .partial_cmp(&right_delta)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .expect("brightness factor search range should be non-empty")
+}
+
+fn scale_channel(channel: u8, factor: u16) -> u8 {
+    let scaled = (u16::from(channel) * factor) / u16::from(u8::MAX);
+    u8::try_from(scaled).expect("scaled brightness channel should remain within byte range")
 }
 
 fn interval_for_target_fps(target_fps: u32) -> Option<Interval> {

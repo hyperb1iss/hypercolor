@@ -19,8 +19,9 @@ use hypercolor_types::attachment::{
 };
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
-    DeviceFamily, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint,
+    DeviceFamily, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, DeviceUserSettings,
 };
+use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 
 use crate::api::AppState;
@@ -34,6 +35,7 @@ use crate::logical_devices::{self, LogicalDevice, LogicalDeviceKind};
 pub struct UpdateDeviceRequest {
     pub name: Option<String>,
     pub enabled: Option<bool>,
+    pub brightness: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +64,7 @@ pub struct DeviceSummary {
     pub name: String,
     pub backend: String,
     pub status: String,
+    pub brightness: u8,
     pub firmware_version: Option<String>,
     pub network_ip: Option<String>,
     pub network_hostname: Option<String>,
@@ -303,6 +306,7 @@ pub async fn list_devices(
         items.push(summarize_device(
             &tracked.info,
             &tracked.state,
+            tracked.user_settings.brightness,
             layout_device_id,
             metadata.as_ref(),
         ));
@@ -361,6 +365,7 @@ pub async fn get_device(State(state): State<Arc<AppState>>, Path(id): Path<Strin
     ApiResponse::ok(summarize_device(
         &tracked.info,
         &tracked.state,
+        tracked.user_settings.brightness,
         layout_device_id,
         metadata.as_ref(),
     ))
@@ -377,8 +382,10 @@ pub async fn update_device(
         Err(response) => return response,
     };
 
-    if body.name.is_none() && body.enabled.is_none() {
-        return ApiError::validation("At least one field must be provided: name or enabled");
+    if body.name.is_none() && body.enabled.is_none() && body.brightness.is_none() {
+        return ApiError::validation(
+            "At least one field must be provided: name, enabled, or brightness",
+        );
     }
 
     let normalized_name = match body.name {
@@ -391,14 +398,63 @@ pub async fn update_device(
         }
         None => None,
     };
+    let normalized_brightness = match body.brightness {
+        Some(brightness) if brightness <= 100 => Some(percent_to_brightness(brightness)),
+        Some(_) => return ApiError::validation("Device brightness must be between 0 and 100"),
+        None => None,
+    };
 
-    let Some(updated) = state
+    let enabled_handled_by_lifecycle = if let Some(enabled) = body.enabled {
+        let runtime = discovery_runtime(&state);
+        match discovery::apply_user_enabled_state(&runtime, device_id, enabled).await {
+            Ok(discovery::UserEnabledStateResult::Applied) => true,
+            Ok(discovery::UserEnabledStateResult::MissingLifecycle) => false,
+            Err(error) => {
+                return ApiError::internal(format!(
+                    "Failed to update device state for {id}: {error}"
+                ));
+            }
+        }
+    } else {
+        false
+    };
+
+    let Some(mut updated) = state
         .device_registry
-        .update_user_settings(&device_id, normalized_name, body.enabled)
+        .update_user_settings(
+            &device_id,
+            normalized_name,
+            body.enabled,
+            normalized_brightness,
+        )
         .await
     else {
         return ApiError::not_found(format!("Device not found: {id}"));
     };
+
+    if !enabled_handled_by_lifecycle {
+        if let Some(enabled) = body.enabled {
+            let fallback_state = if enabled {
+                DeviceState::Known
+            } else {
+                DeviceState::Disabled
+            };
+            let _ = state
+                .device_registry
+                .set_state(&device_id, fallback_state)
+                .await;
+            if let Some(tracked) = state.device_registry.get(&device_id).await {
+                updated = tracked;
+            }
+        }
+    }
+
+    if let Err(error) = persist_device_settings_for(&state, device_id, &updated.user_settings).await
+    {
+        return ApiError::internal(format!("Failed to persist device settings: {error}"));
+    }
+    sync_device_output_brightness(&state, device_id, &updated.user_settings).await;
+    publish_device_settings_changed(&state, device_id, &updated.user_settings);
 
     let layout_device_id = ensure_default_logical_entry(
         &state,
@@ -415,6 +471,7 @@ pub async fn update_device(
     ApiResponse::ok(summarize_device(
         &updated.info,
         &updated.state,
+        updated.user_settings.brightness,
         layout_device_id,
         metadata.as_ref(),
     ))
@@ -622,9 +679,11 @@ pub async fn discover_devices(
             spatial_engine: Arc::clone(&state.spatial_engine),
             layouts: Arc::clone(&state.layouts),
             layouts_path: state.layouts_path.clone(),
+            layout_auto_exclusions: Arc::clone(&state.layout_auto_exclusions),
             logical_devices: Arc::clone(&state.logical_devices),
             attachment_registry: Arc::clone(&state.attachment_registry),
             attachment_profiles: Arc::clone(&state.attachment_profiles),
+            device_settings: Arc::clone(&state.device_settings),
             usb_protocol_configs: state.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&state.discovery_in_progress),
             task_spawner: tokio::runtime::Handle::current(),
@@ -650,9 +709,11 @@ pub async fn discover_devices(
             spatial_engine: Arc::clone(&state_for_task.spatial_engine),
             layouts: Arc::clone(&state_for_task.layouts),
             layouts_path: state_for_task.layouts_path.clone(),
+            layout_auto_exclusions: Arc::clone(&state_for_task.layout_auto_exclusions),
             logical_devices: Arc::clone(&state_for_task.logical_devices),
             attachment_registry: Arc::clone(&state_for_task.attachment_registry),
             attachment_profiles: Arc::clone(&state_for_task.attachment_profiles),
+            device_settings: Arc::clone(&state_for_task.device_settings),
             usb_protocol_configs: state_for_task.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&state_for_task.discovery_in_progress),
             task_spawner: tokio::runtime::Handle::current(),
@@ -709,6 +770,10 @@ pub async fn identify_device(
         .as_deref()
         .and_then(parse_hex_rgb)
         .unwrap_or(DEFAULT_IDENTIFY_COLOR_RGB);
+    let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
+        * tracked.user_settings.brightness)
+        .clamp(0.0, 1.0);
+    let identify_color = scale_rgb(identify_rgb, identify_brightness);
     let led_count = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
     if led_count == 0 {
         return ApiError::conflict(format!(
@@ -726,7 +791,7 @@ pub async fn identify_device(
         .as_ref()
         .and_then(|metadata| metadata.get("hostname").cloned());
     let manager = Arc::clone(&state.backend_manager);
-    let on_frame = vec![identify_rgb; led_count];
+    let on_frame = vec![identify_color; led_count];
     let direct_backend = {
         let mut manager = manager.lock().await;
         let Some(direct_backend) = manager.backend_io(&backend_id) else {
@@ -740,6 +805,7 @@ pub async fn identify_device(
             device_id = %device_id,
             led_count,
             color = ?identify_rgb,
+            effective_brightness = identify_brightness,
             network_ip = ?network_ip,
             network_hostname = ?network_hostname,
             "identify enabling direct control and issuing initial on-frame"
@@ -770,6 +836,7 @@ pub async fn identify_device(
         led_count,
         duration_ms,
         color = ?identify_rgb,
+        effective_brightness = identify_brightness,
         network_ip = ?network_ip,
         network_hostname = ?network_hostname,
         "Identify flash started"
@@ -781,7 +848,7 @@ pub async fn identify_device(
         device_id,
         led_count,
         Duration::from_millis(duration_ms),
-        identify_rgb,
+        identify_color,
     ));
 
     ApiResponse::ok(serde_json::json!({
@@ -1345,9 +1412,114 @@ async fn persist_logical_segments(state: &AppState) -> Result<(), String> {
         .map_err(|error| format!("{} ({})", error, state.logical_devices_path.display()))
 }
 
+fn percent_to_brightness(percent: u8) -> f32 {
+    (f32::from(percent) / 100.0).clamp(0.0, 1.0)
+}
+
+fn brightness_percent(brightness: f32) -> u8 {
+    (brightness.clamp(0.0, 1.0) * 100.0).round() as u8
+}
+
+fn scale_rgb(color: [u8; 3], brightness: f32) -> [u8; 3] {
+    let factor = brightness_factor(brightness);
+    [
+        scale_channel(color[0], factor),
+        scale_channel(color[1], factor),
+        scale_channel(color[2], factor),
+    ]
+}
+
+fn brightness_factor(brightness: f32) -> u16 {
+    let target = f64::from(brightness.clamp(0.0, 1.0)) * f64::from(u8::MAX);
+    (0_u16..=u16::from(u8::MAX))
+        .min_by(|left, right| {
+            let left_delta = (f64::from(*left) - target).abs();
+            let right_delta = (f64::from(*right) - target).abs();
+            left_delta
+                .partial_cmp(&right_delta)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .expect("brightness factor search range should be non-empty")
+}
+
+fn scale_channel(value: u8, factor: u16) -> u8 {
+    let scaled = (u16::from(value) * factor) / u16::from(u8::MAX);
+    u8::try_from(scaled).unwrap_or(u8::MAX)
+}
+
+async fn device_settings_key(state: &AppState, device_id: DeviceId) -> String {
+    state
+        .device_registry
+        .fingerprint_for_id(&device_id)
+        .await
+        .map_or_else(
+            || device_id.to_string(),
+            |fingerprint| fingerprint.to_string(),
+        )
+}
+
+async fn persist_device_settings_for(
+    state: &AppState,
+    device_id: DeviceId,
+    settings: &DeviceUserSettings,
+) -> Result<(), String> {
+    let key = device_settings_key(state, device_id).await;
+    let mut store = state.device_settings.write().await;
+    store.set_device_settings(
+        &key,
+        crate::device_settings::StoredDeviceSettings {
+            name: settings.name.clone(),
+            disabled: !settings.enabled,
+            brightness: settings.brightness,
+        },
+    );
+    store.save().map_err(|error| error.to_string())
+}
+
+async fn sync_device_output_brightness(
+    state: &AppState,
+    device_id: DeviceId,
+    settings: &DeviceUserSettings,
+) {
+    let mut manager = state.backend_manager.lock().await;
+    manager.set_device_output_brightness(device_id, settings.brightness);
+}
+
+fn publish_device_settings_changed(
+    state: &AppState,
+    device_id: DeviceId,
+    settings: &DeviceUserSettings,
+) {
+    let mut changes = HashMap::new();
+    changes.insert(
+        "name".to_owned(),
+        settings
+            .name
+            .as_ref()
+            .map_or(serde_json::Value::Null, |name| {
+                serde_json::Value::String(name.clone())
+            }),
+    );
+    changes.insert(
+        "enabled".to_owned(),
+        serde_json::Value::Bool(settings.enabled),
+    );
+    changes.insert(
+        "brightness".to_owned(),
+        serde_json::Value::from(brightness_percent(settings.brightness)),
+    );
+    state
+        .event_bus
+        .publish(HypercolorEvent::DeviceStateChanged {
+            device_id: device_id.to_string(),
+            changes,
+        });
+}
+
 fn summarize_device(
     info: &DeviceInfo,
     state: &DeviceState,
+    brightness: f32,
     layout_device_id: String,
     metadata: Option<&HashMap<String, String>>,
 ) -> DeviceSummary {
@@ -1355,8 +1527,9 @@ fn summarize_device(
         id: info.id.to_string(),
         layout_device_id,
         name: info.name.clone(),
-        backend: format!("{}", info.family),
+        backend: crate::discovery::backend_id_for_device(&info.family, metadata),
         status: state.variant_name().to_lowercase(),
+        brightness: brightness_percent(brightness),
         firmware_version: info.firmware_version.clone(),
         network_ip: metadata.and_then(|values| values.get("ip").cloned()),
         network_hostname: metadata.and_then(|values| values.get("hostname").cloned()),
@@ -1969,4 +2142,25 @@ fn parse_hex_rgb(raw: &str) -> Option<[u8; 3]> {
     let green = u8::from_str_radix(&color[2..4], 16).ok()?;
     let blue = u8::from_str_radix(&color[4..6], 16).ok()?;
     Some([red, green, blue])
+}
+
+fn discovery_runtime(state: &Arc<AppState>) -> discovery::DiscoveryRuntime {
+    discovery::DiscoveryRuntime {
+        device_registry: state.device_registry.clone(),
+        backend_manager: Arc::clone(&state.backend_manager),
+        lifecycle_manager: Arc::clone(&state.lifecycle_manager),
+        reconnect_tasks: Arc::clone(&state.reconnect_tasks),
+        event_bus: Arc::clone(&state.event_bus),
+        spatial_engine: Arc::clone(&state.spatial_engine),
+        layouts: Arc::clone(&state.layouts),
+        layouts_path: state.layouts_path.clone(),
+        layout_auto_exclusions: Arc::clone(&state.layout_auto_exclusions),
+        logical_devices: Arc::clone(&state.logical_devices),
+        attachment_registry: Arc::clone(&state.attachment_registry),
+        attachment_profiles: Arc::clone(&state.attachment_profiles),
+        device_settings: Arc::clone(&state.device_settings),
+        usb_protocol_configs: state.usb_protocol_configs.clone(),
+        in_progress: Arc::clone(&state.discovery_in_progress),
+        task_spawner: tokio::runtime::Handle::current(),
+    }
 }

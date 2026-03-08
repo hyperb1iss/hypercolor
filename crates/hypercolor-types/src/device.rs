@@ -154,6 +154,32 @@ impl Default for DeviceCapabilities {
     }
 }
 
+// ── DeviceUserSettings ────────────────────────────────────────────────────
+
+/// User-controlled device settings that should survive discovery refreshes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DeviceUserSettings {
+    /// Optional user-facing name override.
+    pub name: Option<String>,
+
+    /// Whether the device should participate in rendering.
+    pub enabled: bool,
+
+    /// User-selected device brightness scalar.
+    pub brightness: f32,
+}
+
+impl Default for DeviceUserSettings {
+    fn default() -> Self {
+        Self {
+            name: None,
+            enabled: true,
+            brightness: 1.0,
+        }
+    }
+}
+
 // ── ZoneInfo ──────────────────────────────────────────────────────────────
 
 /// A single zone within a device.

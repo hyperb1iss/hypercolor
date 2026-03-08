@@ -58,6 +58,7 @@ enum UsbDeviceCommand {
         response_tx: oneshot::Sender<std::result::Result<(), String>>,
     },
     Shutdown {
+        led_count: usize,
         response_tx: oneshot::Sender<std::result::Result<(), String>>,
     },
 }
@@ -155,10 +156,14 @@ impl UsbDevice {
             return Ok(());
         };
 
+        let led_count = usize::try_from(self.info_template.total_led_count()).unwrap_or_default();
         let (response_tx, response_rx) = oneshot::channel();
         let command_sent = self
             .command_tx
-            .send(UsbDeviceCommand::Shutdown { response_tx })
+            .send(UsbDeviceCommand::Shutdown {
+                led_count,
+                response_tx,
+            })
             .is_ok();
 
         let shutdown_result = if command_sent {
@@ -545,10 +550,14 @@ impl UsbBackend {
                             let _ = response_tx.send(response);
                             result?;
                         }
-                        UsbDeviceCommand::Shutdown { response_tx } => {
+                        UsbDeviceCommand::Shutdown {
+                            led_count,
+                            response_tx,
+                        } => {
                             let result = Self::run_shutdown_sequence(
                                 device_id,
                                 device_name,
+                                led_count,
                                 protocol.as_ref(),
                                 transport.as_ref(),
                             )
@@ -684,9 +693,33 @@ impl UsbBackend {
     async fn run_shutdown_sequence(
         device_id: DeviceId,
         device_name: &'static str,
+        led_count: usize,
         protocol: &dyn Protocol,
         transport: &dyn Transport,
     ) -> Result<()> {
+        if led_count > 0 {
+            let black_frame = vec![[0, 0, 0]; led_count];
+            if let Err(error) = Self::run_device_frame(
+                device_id,
+                protocol,
+                transport,
+                &UsbFramePayload {
+                    colors: black_frame,
+                },
+            )
+            .await
+            {
+                warn!(
+                    device_id = %device_id,
+                    device = device_name,
+                    protocol = protocol.name(),
+                    transport = transport.name(),
+                    error = %error,
+                    "USB final clear frame failed during shutdown"
+                );
+            }
+        }
+
         let shutdown = protocol.shutdown_sequence();
         if shutdown.is_empty() {
             return Ok(());

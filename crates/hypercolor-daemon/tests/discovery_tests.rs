@@ -1,6 +1,6 @@
 //! Integration tests for daemon discovery scan scoping.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -14,8 +14,10 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
+use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::discovery::{
     DiscoveryBackend, DiscoveryRuntime, execute_discovery_scan, resolve_wled_probe_ips,
+    sync_active_layout_for_renderable_devices,
 };
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_types::config::HypercolorConfig;
@@ -108,10 +110,14 @@ fn make_runtime(
         spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(empty_layout()))),
         layouts: Arc::new(RwLock::new(HashMap::new())),
         layouts_path,
+        layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
         logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
         attachment_registry: Arc::new(RwLock::new(AttachmentRegistry::new())),
         attachment_profiles: Arc::new(RwLock::new(AttachmentProfileStore::new(
             std::path::PathBuf::from("attachment-profiles.json"),
+        ))),
+        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(
+            std::path::PathBuf::from("device-settings.json"),
         ))),
         usb_protocol_configs: UsbProtocolConfigStore::new(),
         in_progress: Arc::new(AtomicBool::new(true)),
@@ -231,4 +237,64 @@ async fn resolve_wled_probe_ips_merges_config_and_registry_metadata() {
 
     let resolved = resolve_wled_probe_ips(&registry, &config).await;
     assert_eq!(resolved, vec![configured_ip, cached_ip]);
+}
+
+#[tokio::test]
+async fn sync_active_layout_for_renderable_devices_skips_excluded_devices() {
+    let device_registry = DeviceRegistry::new();
+    let info = usb_device_info();
+    let device_id = device_registry.add(info.clone()).await;
+    assert_eq!(device_id, info.id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Connected)
+            .await,
+        "device registry state should update"
+    );
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    let layout_device_id = {
+        let mut lifecycle = lifecycle_manager.lock().await;
+        let _ = lifecycle.on_discovered(device_id, &info, "usb", None);
+        lifecycle
+            .on_connected(device_id)
+            .expect("lifecycle should accept connected transition");
+        lifecycle
+            .layout_device_id_for(device_id)
+            .map(ToOwned::to_owned)
+            .expect("connected device should have a canonical layout ID")
+    };
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime = make_runtime(
+        device_registry,
+        lifecycle_manager,
+        temp_dir.path().join("layouts.json"),
+    );
+
+    {
+        let mut manager = runtime.backend_manager.lock().await;
+        manager.map_device(layout_device_id.clone(), "usb", device_id);
+    }
+    {
+        let mut exclusions = runtime.layout_auto_exclusions.write().await;
+        exclusions.insert("default".to_owned(), HashSet::from([layout_device_id]));
+    }
+
+    sync_active_layout_for_renderable_devices(&runtime, None).await;
+
+    let layout = {
+        let spatial = runtime.spatial_engine.read().await;
+        spatial.layout().clone()
+    };
+    assert!(
+        layout.zones.is_empty(),
+        "excluded devices must not be auto-readded into the active layout"
+    );
+
+    let persisted_layouts = runtime.layouts.read().await;
+    assert!(
+        persisted_layouts.is_empty(),
+        "skipping auto-readd should not persist any synthetic layout changes"
+    );
 }

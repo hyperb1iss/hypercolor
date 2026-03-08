@@ -2,12 +2,16 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use anyhow::{Result, bail};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::manager::{
     BackendRoutingDebugSnapshot, LayoutRoutingDebugEntry, OrphanedQueueDebugEntry,
 };
+use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_daemon::discovery;
 use hypercolor_daemon::startup::{
     DaemonState, collect_unmapped_prefixed_layout_targets, default_config, install_signal_handlers,
@@ -32,6 +36,61 @@ const MINIMAL_TOML: &str = "schema_version = 3\n";
 
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static CONFIG_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+struct ShutdownCleanupBackend {
+    expected_device_id: DeviceId,
+    disconnects: Arc<AtomicUsize>,
+    connected: bool,
+}
+
+impl ShutdownCleanupBackend {
+    fn new(expected_device_id: DeviceId, disconnects: Arc<AtomicUsize>) -> Self {
+        Self {
+            expected_device_id,
+            disconnects,
+            connected: false,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for ShutdownCleanupBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "cleanup".to_owned(),
+            name: "Shutdown Cleanup Backend".to_owned(),
+            description: "Tracks daemon shutdown disconnect cleanup".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        self.connected = true;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected {
+            bail!("disconnect called while backend was not connected");
+        }
+        self.connected = false;
+        self.disconnects.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        Ok(())
+    }
+}
 
 struct TestDataDirGuard {
     _lock: tokio::sync::MutexGuard<'static, ()>,
@@ -98,6 +157,32 @@ fn temp_config_file() -> NamedTempFile {
         .expect("failed to write temp config");
     f.flush().expect("failed to flush temp config");
     f
+}
+
+fn shutdown_cleanup_device_info(id: DeviceId) -> DeviceInfo {
+    DeviceInfo {
+        id,
+        name: "Shutdown Device".to_owned(),
+        vendor: "TestVendor".to_owned(),
+        family: DeviceFamily::Custom("cleanup".to_owned()),
+        model: None,
+        connection_type: ConnectionType::Network,
+        zones: vec![ZoneInfo {
+            name: "Main".to_owned(),
+            led_count: 8,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: 8,
+            supports_direct: true,
+            supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 60,
+        },
+    }
 }
 
 // ── Config Loading ──────────────────────────────────────────────────────────
@@ -267,6 +352,61 @@ async fn daemon_state_start_and_shutdown() {
 }
 
 #[tokio::test]
+async fn daemon_shutdown_disconnects_renderable_devices() {
+    let _guard = TestDataDirGuard::new().await;
+    let config = default_config();
+    let temp = temp_config_file();
+    let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("initialization should succeed");
+
+    let device_id = DeviceId::new();
+    let disconnects = Arc::new(AtomicUsize::new(0));
+    let info = shutdown_cleanup_device_info(device_id);
+
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager.register_backend(Box::new(ShutdownCleanupBackend::new(
+            device_id,
+            Arc::clone(&disconnects),
+        )));
+    }
+
+    let _ = state.device_registry.add(info.clone()).await;
+    let layout_device_id = {
+        let mut lifecycle = state.lifecycle_manager.lock().await;
+        let _actions = lifecycle.on_discovered(device_id, &info, "cleanup", None);
+        lifecycle
+            .layout_device_id_for(device_id)
+            .expect("layout id should exist")
+            .to_owned()
+    };
+
+    state
+        .backend_manager
+        .lock()
+        .await
+        .connect_device("cleanup", device_id, &layout_device_id)
+        .await
+        .expect("device should connect for shutdown cleanup");
+
+    {
+        let mut lifecycle = state.lifecycle_manager.lock().await;
+        lifecycle
+            .on_connected(device_id)
+            .expect("connect transition should succeed");
+    }
+    let _ = state
+        .device_registry
+        .set_state(&device_id, hypercolor_types::device::DeviceState::Connected)
+        .await;
+
+    state.shutdown().await.expect("shutdown should succeed");
+
+    assert_eq!(disconnects.load(Ordering::Relaxed), 1);
+    assert_eq!(state.backend_manager.lock().await.mapped_device_count(), 0);
+}
+
+#[tokio::test]
 async fn daemon_state_device_registry_starts_empty() {
     let _guard = TestDataDirGuard::new().await;
     let config = default_config();
@@ -387,6 +527,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
             active_preset_id: None,
             control_values: std::collections::HashMap::new(),
             active_layout_id: Some(restored_layout.id.clone()),
+            global_brightness: 1.0,
         },
     )
     .expect("runtime state should save");

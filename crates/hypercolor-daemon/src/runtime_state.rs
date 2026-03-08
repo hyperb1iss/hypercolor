@@ -31,6 +31,9 @@ pub struct RuntimeSessionSnapshot {
 
     /// Active layout ID, if one was applied to the spatial engine.
     pub active_layout_id: Option<String>,
+
+    /// User-configured global output brightness.
+    pub global_brightness: f32,
 }
 
 /// Errors produced while loading/saving runtime snapshots.
@@ -83,6 +86,7 @@ pub fn snapshot_from_engine(engine: &EffectEngine) -> RuntimeSessionSnapshot {
         active_preset_id: engine.active_preset_id().map(ToOwned::to_owned),
         control_values: engine.active_controls().clone(),
         active_layout_id: None, // Populated by the caller with spatial engine state.
+        global_brightness: 1.0,
     }
 }
 
@@ -166,6 +170,7 @@ mod tests {
             active_preset_id: Some("preset_42".to_owned()),
             control_values: controls,
             active_layout_id: Some("layout_abc123".to_owned()),
+            global_brightness: 0.42,
         };
 
         save(&path, &expected).expect("save snapshot");
@@ -175,6 +180,7 @@ mod tests {
         assert_eq!(loaded.active_effect_id, expected.active_effect_id);
         assert_eq!(loaded.active_preset_id, expected.active_preset_id);
         assert_eq!(loaded.control_values, expected.control_values);
+        assert_eq!(loaded.global_brightness, expected.global_brightness);
     }
 
     #[test]
@@ -194,6 +200,7 @@ mod tests {
             active_preset_id: Some("preset_42".to_owned()),
             control_values: HashMap::new(),
             active_layout_id: None,
+            global_brightness: 1.0,
         });
 
         let worker_count = 8;

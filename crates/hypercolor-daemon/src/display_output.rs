@@ -22,7 +22,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint};
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
-use crate::discovery::backend_id_for_family;
+use crate::discovery::backend_id_for_device;
 use crate::logical_devices::{self, LogicalDevice};
 
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
@@ -63,6 +63,7 @@ struct DisplayTarget {
     device_id: DeviceId,
     name: String,
     target_fps: u32,
+    brightness: f32,
     geometry: DisplayGeometry,
     viewport: DisplayViewport,
 }
@@ -197,8 +198,11 @@ async fn run_display_output(
             }
         }
 
-        let frame = canvas_rx.borrow_and_update().clone();
-        if frame.width == 0 || frame.height == 0 {
+        let has_canvas_frame = {
+            let frame = canvas_rx.borrow_and_update();
+            frame.width != 0 && frame.height != 0
+        };
+        if !has_canvas_frame {
             continue;
         }
 
@@ -212,6 +216,11 @@ async fn run_display_output(
         if targets.is_empty() {
             continue;
         }
+
+        // `watch` gives us latest-value semantics, so after target discovery we can
+        // cheaply snapshot the newest frame instead of cloning every canvas update
+        // while no display target is active.
+        let frame = canvas_rx.borrow().clone();
 
         let Some(source) =
             RgbaImage::from_raw(frame.width, frame.height, frame.rgba_bytes().to_vec())
@@ -323,9 +332,10 @@ async fn run_display_worker(
         let source = Arc::clone(&work.source);
         let viewport = work.target.viewport.clone();
         let geometry = work.target.geometry.clone();
+        let brightness = work.target.brightness;
         let target = work.target.clone();
         let encode_result = tokio::task::spawn_blocking(move || {
-            encode_canvas_frame(source.as_ref(), &viewport, &geometry)
+            encode_canvas_frame(source.as_ref(), &viewport, &geometry, brightness)
         })
         .await;
 
@@ -386,35 +396,42 @@ async fn display_targets(
     };
     let logical_store = logical_devices.read().await;
 
-    let mut targets = registry
+    let mut targets = Vec::new();
+    for tracked in registry
         .list()
         .await
         .into_iter()
         .filter(|tracked| tracked.state.is_renderable())
-        .filter_map(|tracked| {
-            let geometry = display_geometry_for_device(&tracked.info.zones).or_else(|| {
-                tracked
-                    .info
-                    .capabilities
-                    .display_resolution
-                    .map(|(width, height)| DisplayGeometry {
-                        width,
-                        height,
-                        circular: false,
-                    })
-            })?;
-            let viewport = display_viewport_for_device(&layout, &logical_store, tracked.info.id)?;
+    {
+        let metadata = registry.metadata_for_id(&tracked.info.id).await;
+        let Some(geometry) = display_geometry_for_device(&tracked.info.zones).or_else(|| {
+            tracked
+                .info
+                .capabilities
+                .display_resolution
+                .map(|(width, height)| DisplayGeometry {
+                    width,
+                    height,
+                    circular: false,
+                })
+        }) else {
+            continue;
+        };
+        let Some(viewport) = display_viewport_for_device(&layout, &logical_store, tracked.info.id)
+        else {
+            continue;
+        };
 
-            Some(DisplayTarget {
-                backend_id: backend_id_for_family(&tracked.info.family),
-                device_id: tracked.info.id,
-                name: tracked.info.name,
-                target_fps: capped_display_target_fps(tracked.info.capabilities.max_fps),
-                geometry,
-                viewport,
-            })
-        })
-        .collect::<Vec<_>>();
+        targets.push(DisplayTarget {
+            backend_id: backend_id_for_device(&tracked.info.family, metadata.as_ref()),
+            device_id: tracked.info.id,
+            name: tracked.info.name,
+            target_fps: capped_display_target_fps(tracked.info.capabilities.max_fps),
+            brightness: tracked.user_settings.brightness,
+            geometry,
+            viewport,
+        });
+    }
 
     targets.sort_by(|left, right| {
         left.backend_id
@@ -445,8 +462,10 @@ fn encode_canvas_frame(
     source: &RgbaImage,
     viewport: &DisplayViewport,
     geometry: &DisplayGeometry,
+    brightness: f32,
 ) -> Result<Vec<u8>> {
     let mut rendered = render_display_view(source, viewport, geometry.width, geometry.height);
+    apply_display_brightness(&mut rendered, brightness);
     if geometry.circular {
         apply_circular_mask(&mut rendered);
     }
@@ -458,6 +477,33 @@ fn encode_canvas_frame(
         .encode_image(&image)
         .context("failed to JPEG-encode display frame")?;
     Ok(jpeg)
+}
+
+fn apply_display_brightness(image: &mut RgbaImage, brightness: f32) {
+    let brightness = brightness.clamp(0.0, 1.0);
+    if brightness >= 0.999 {
+        return;
+    }
+    if brightness <= 0.0 {
+        for pixel in image.pixels_mut() {
+            pixel[0] = 0;
+            pixel[1] = 0;
+            pixel[2] = 0;
+        }
+        return;
+    }
+
+    let factor = ((brightness * 255.0).round() as u16).clamp(0, u16::from(u8::MAX));
+    for pixel in image.pixels_mut() {
+        pixel[0] = scale_channel(pixel[0], factor);
+        pixel[1] = scale_channel(pixel[1], factor);
+        pixel[2] = scale_channel(pixel[2], factor);
+    }
+}
+
+fn scale_channel(channel: u8, factor: u16) -> u8 {
+    let scaled = (u16::from(channel) * factor) / u16::from(u8::MAX);
+    u8::try_from(scaled).expect("display brightness scaling should remain within byte range")
 }
 
 fn display_viewport_for_device(

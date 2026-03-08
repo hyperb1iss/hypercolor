@@ -17,7 +17,7 @@ use hypercolor_core::device::{
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
     DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo, DeviceState,
-    DeviceTopologyHint, ZoneInfo,
+    DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
 };
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
@@ -619,6 +619,56 @@ async fn registry_list_by_state() {
 
     let known = registry.list_by_state(&DeviceState::Known).await;
     assert_eq!(known.len(), 1);
+}
+
+#[tokio::test]
+async fn registry_update_user_settings_tracks_name_enabled_and_brightness() {
+    let registry = DeviceRegistry::new();
+    let info = mock_device_info("Desk Strip");
+    let id = info.id;
+    registry.add(info).await;
+
+    let updated = registry
+        .update_user_settings(&id, Some("Desk Glow".to_owned()), Some(false), Some(0.35))
+        .await
+        .expect("device should update");
+
+    assert_eq!(updated.info.name, "Desk Glow");
+    assert_eq!(updated.state, DeviceState::Disabled);
+    assert_eq!(updated.user_settings.name.as_deref(), Some("Desk Glow"));
+    assert!(!updated.user_settings.enabled);
+    assert!((updated.user_settings.brightness - 0.35).abs() < f32::EPSILON);
+}
+
+#[tokio::test]
+async fn registry_replace_user_settings_reapplies_name_override_on_metadata_refresh() {
+    let registry = DeviceRegistry::new();
+    let original = mock_device_info("Original Name");
+    let id = original.id;
+    registry.add(original).await;
+
+    registry
+        .replace_user_settings(
+            &id,
+            DeviceUserSettings {
+                name: Some("Override Name".to_owned()),
+                enabled: true,
+                brightness: 0.6,
+            },
+        )
+        .await
+        .expect("settings should update");
+
+    let mut refreshed = mock_device_info("Rediscovered Name");
+    refreshed.id = id;
+    let updated = registry
+        .update_info(&id, refreshed)
+        .await
+        .expect("metadata should refresh");
+
+    assert_eq!(updated.info.name, "Override Name");
+    assert_eq!(updated.user_settings.name.as_deref(), Some("Override Name"));
+    assert!((updated.user_settings.brightness - 0.6).abs() < f32::EPSILON);
 }
 
 #[tokio::test]

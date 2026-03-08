@@ -7,14 +7,17 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Context;
+use axum::Json;
 use axum::extract::State;
 use axum::response::Response;
 use cpal::traits::{DeviceTrait, HostTrait};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::api::AppState;
-use crate::api::envelope::ApiResponse;
+use crate::api::envelope::{ApiError, ApiResponse};
+use crate::api::persist_runtime_session;
+use crate::session::{current_global_brightness, set_global_brightness};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct AudioDeviceInfo {
@@ -29,12 +32,55 @@ pub struct AudioDevicesResponse {
     pub current: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct BrightnessSettingsResponse {
+    pub brightness: u8,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetBrightnessRequest {
+    pub brightness: u8,
+}
+
 /// `GET /api/v1/audio/devices` — Enumerate audio input devices for the Settings UI.
 pub async fn list_audio_devices(State(state): State<Arc<AppState>>) -> Response {
     let current = current_audio_device_id(&state);
     let devices = audio_device_options(&current);
 
     ApiResponse::ok(AudioDevicesResponse { devices, current })
+}
+
+/// `GET /api/v1/settings/brightness` — Read the configured global brightness.
+pub async fn get_brightness(State(state): State<Arc<AppState>>) -> Response {
+    ApiResponse::ok(BrightnessSettingsResponse {
+        brightness: brightness_percent(current_global_brightness(&state.power_state)),
+    })
+}
+
+/// `PUT /api/v1/settings/brightness` — Update and persist global brightness.
+pub async fn set_brightness(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SetBrightnessRequest>,
+) -> Response {
+    let normalized = f32::from(body.brightness) / 100.0;
+    if !(0.0..=1.0).contains(&normalized) {
+        return ApiError::validation("brightness must be between 0 and 100");
+    }
+
+    {
+        let mut settings = state.device_settings.write().await;
+        settings.set_global_brightness(normalized);
+        if let Err(error) = settings.save() {
+            return ApiError::internal(format!("Failed to persist global brightness: {error}"));
+        }
+    }
+
+    set_global_brightness(&state.power_state, normalized);
+    persist_runtime_session(&state).await;
+
+    ApiResponse::ok(BrightnessSettingsResponse {
+        brightness: body.brightness,
+    })
 }
 
 pub(crate) fn audio_input_available() -> bool {
@@ -132,4 +178,15 @@ fn should_include_current_device(current: &str, devices: &[AudioDeviceInfo]) -> 
 fn dedupe_audio_devices(devices: &mut Vec<AudioDeviceInfo>) {
     let mut seen = HashSet::new();
     devices.retain(|device| seen.insert(device.id.to_ascii_lowercase()));
+}
+
+fn brightness_percent(brightness: f32) -> u8 {
+    let scaled = (brightness.clamp(0.0, 1.0) * 100.0).round();
+    if scaled <= 0.0 {
+        0
+    } else if scaled >= 100.0 {
+        100
+    } else {
+        scaled as u8
+    }
 }

@@ -48,13 +48,17 @@ use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::attachment_profiles::AttachmentProfileStore;
+use crate::device_settings::DeviceSettingsStore;
 use crate::display_output::{DisplayOutputState, DisplayOutputThread};
 use crate::effect_layouts;
+use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
 use crate::performance::PerformanceTracker;
 use crate::render_thread::{RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
-use crate::session::{OutputPowerState, SessionController};
+use crate::session::{
+    OutputPowerState, SessionController, current_global_brightness, set_global_brightness,
+};
 use crate::{discovery, discovery::DiscoveryBackend};
 
 // ── Config File Name ────────────────────────────────────────────────────────
@@ -132,6 +136,9 @@ pub struct DaemonState {
     /// Persistent per-device attachment profiles.
     pub attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
 
+    /// Persisted global and per-device output settings.
+    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
+
     /// Persisted effect -> layout association map.
     pub effect_layout_links: Arc<RwLock<HashMap<String, String>>>,
 
@@ -143,6 +150,12 @@ pub struct DaemonState {
 
     /// In-memory layout store (shared with `AppState`).
     pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
+
+    /// Persisted layout-specific auto-sync exclusions.
+    pub layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
+
+    /// Persistent JSON file for layout-specific auto-sync exclusions.
+    pub layout_auto_exclusions_path: PathBuf,
 
     /// Persistent JSON file for startup runtime session state.
     pub runtime_state_path: PathBuf,
@@ -349,6 +362,22 @@ impl DaemonState {
         let attachment_profiles = Arc::new(RwLock::new(attachment_profiles_inner));
         info!("Attachment profile store ready");
 
+        // ── Output Settings Store ───────────────────────────────────
+        let device_settings_path = ConfigManager::data_dir().join("device-settings.json");
+        let device_settings_inner = DeviceSettingsStore::load(&device_settings_path)
+            .unwrap_or_else(|error| {
+                warn!(
+                    path = %device_settings_path.display(),
+                    %error,
+                    "Failed to load device settings; starting with defaults"
+                );
+                DeviceSettingsStore::new(device_settings_path)
+            });
+        let initial_global_brightness = device_settings_inner.global_brightness();
+        let device_settings = Arc::new(RwLock::new(device_settings_inner));
+        set_global_brightness(&power_state, initial_global_brightness);
+        info!("Device settings store ready");
+
         // ── Effect/Layout Association Store ──────────────────────────
         let effect_layout_links_path = ConfigManager::data_dir().join("effect-layouts.json");
         let persisted_links = match effect_layouts::load(&effect_layout_links_path) {
@@ -386,6 +415,27 @@ impl DaemonState {
             "Layout store ready"
         );
 
+        // ── Layout Auto-Exclusion Store ─────────────────────────────
+        let layout_auto_exclusions_path =
+            ConfigManager::data_dir().join("layout-auto-exclusions.json");
+        let persisted_layout_auto_exclusions =
+            match layout_auto_exclusions::load(&layout_auto_exclusions_path) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    warn!(
+                        path = %layout_auto_exclusions_path.display(),
+                        %error,
+                        "Failed to load layout auto-exclusions; starting with empty store"
+                    );
+                    HashMap::new()
+                }
+            };
+        let layout_auto_exclusions = Arc::new(RwLock::new(persisted_layout_auto_exclusions));
+        info!(
+            path = %layout_auto_exclusions_path.display(),
+            "Layout auto-exclusion store ready"
+        );
+
         // ── Runtime Session Store ───────────────────────────────────
         let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
         info!(
@@ -414,10 +464,13 @@ impl DaemonState {
             logical_devices_path,
             attachment_registry,
             attachment_profiles,
+            device_settings,
             effect_layout_links,
             effect_layout_links_path,
             layouts_path,
             layouts,
+            layout_auto_exclusions,
+            layout_auto_exclusions_path,
             runtime_state_path,
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
             power_state,
@@ -447,9 +500,11 @@ impl DaemonState {
             spatial_engine: Arc::clone(&self.spatial_engine),
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),
+            layout_auto_exclusions: Arc::clone(&self.layout_auto_exclusions),
             logical_devices: Arc::clone(&self.logical_devices),
             attachment_registry: Arc::clone(&self.attachment_registry),
             attachment_profiles: Arc::clone(&self.attachment_profiles),
+            device_settings: Arc::clone(&self.device_settings),
             usb_protocol_configs: self.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&self.discovery_in_progress),
             task_spawner: tokio::runtime::Handle::current(),
@@ -509,6 +564,7 @@ impl DaemonState {
             render_loop: Arc::clone(&self.render_loop),
             input_manager: Arc::clone(&self.input_manager),
             power_state: self.power_state.subscribe(),
+            device_settings: Arc::clone(&self.device_settings),
             canvas_width: config.daemon.canvas_width,
             canvas_height: config.daemon.canvas_height,
             screen_capture_enabled: config.capture.enabled,
@@ -552,10 +608,11 @@ impl DaemonState {
     /// Sequence:
     /// 1. Stop render loop (no more frames produced)
     /// 2. Wait for render thread to exit
-    /// 3. Persist the current runtime session snapshot
-    /// 4. Deactivate the effect engine (release renderer resources)
-    /// 5. Scene manager cleanup
-    /// 6. Log final state
+    /// 3. Clear and disconnect renderable devices
+    /// 4. Persist the current runtime session snapshot
+    /// 5. Deactivate the effect engine (release renderer resources)
+    /// 6. Scene manager cleanup
+    /// 7. Log final state
     ///
     /// # Errors
     ///
@@ -605,36 +662,43 @@ impl DaemonState {
             }
         }
 
-        // 3. Stop input sources.
+        let disconnected_devices =
+            discovery::shutdown_renderable_devices(&self.discovery_runtime()).await;
+        info!(
+            disconnected_devices,
+            "Render devices cleared and disconnected"
+        );
+
+        // 4. Stop input sources.
         {
             let mut input_manager = self.input_manager.lock().await;
             input_manager.stop_all();
         }
         info!("Input sources stopped");
 
-        // 4. Persist the current runtime session before tearing down effect state.
+        // 5. Persist the current runtime session before tearing down effect state.
         self.persist_runtime_session_snapshot().await;
         info!("Runtime session snapshot persisted");
 
-        // 5. Deactivate effect engine.
+        // 6. Deactivate effect engine.
         {
             let mut engine_guard = self.effect_engine.lock().await;
             engine_guard.deactivate();
         }
         info!("Effect engine deactivated");
 
-        // 6. Scene manager — deactivate current scene.
+        // 7. Scene manager — deactivate current scene.
         {
             let mut scene_guard = self.scene_manager.write().await;
             scene_guard.deactivate_current();
         }
         info!("Scene manager cleaned up");
 
-        // 7. Log final device count.
+        // 8. Log final device count.
         let device_count = self.device_registry.len().await;
         info!(devices = device_count, "Device registry final state");
 
-        // 8. Publish shutdown event.
+        // 9. Publish shutdown event.
         self.event_bus
             .publish(hypercolor_types::event::HypercolorEvent::DaemonShutdown {
                 reason: "signal".to_string(),
@@ -654,6 +718,7 @@ impl DaemonState {
             let spatial = self.spatial_engine.read().await;
             snapshot.active_layout_id = Some(spatial.layout().id.clone());
         }
+        snapshot.global_brightness = current_global_brightness(&self.power_state);
 
         if let Err(error) = runtime_state::save(&self.runtime_state_path, &snapshot) {
             warn!(
@@ -688,6 +753,17 @@ impl DaemonState {
             );
             return;
         };
+        set_global_brightness(&self.power_state, snapshot.global_brightness);
+        {
+            let mut settings = self.device_settings.write().await;
+            settings.set_global_brightness(snapshot.global_brightness);
+            if let Err(error) = settings.save() {
+                warn!(
+                    %error,
+                    "Failed to sync restored global brightness into device settings store"
+                );
+            }
+        }
 
         // Restore active layout if persisted.
         if let Some(layout_id) = &snapshot.active_layout_id {
@@ -825,9 +901,11 @@ impl DaemonState {
             spatial_engine: Arc::clone(&self.spatial_engine),
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),
+            layout_auto_exclusions: Arc::clone(&self.layout_auto_exclusions),
             logical_devices: Arc::clone(&self.logical_devices),
             attachment_registry: Arc::clone(&self.attachment_registry),
             attachment_profiles: Arc::clone(&self.attachment_profiles),
+            device_settings: Arc::clone(&self.device_settings),
             usb_protocol_configs: self.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&self.discovery_in_progress),
         };
@@ -936,9 +1014,11 @@ struct DiscoveryWorkerContext {
     spatial_engine: Arc<RwLock<SpatialEngine>>,
     layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
     layouts_path: PathBuf,
+    layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
     logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
     attachment_registry: Arc<RwLock<AttachmentRegistry>>,
     attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
+    device_settings: Arc<RwLock<DeviceSettingsStore>>,
     usb_protocol_configs: UsbProtocolConfigStore,
     in_progress: Arc<AtomicBool>,
 }
@@ -954,9 +1034,11 @@ impl DiscoveryWorkerContext {
             spatial_engine: Arc::clone(&self.spatial_engine),
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),
+            layout_auto_exclusions: Arc::clone(&self.layout_auto_exclusions),
             logical_devices: Arc::clone(&self.logical_devices),
             attachment_registry: Arc::clone(&self.attachment_registry),
             attachment_profiles: Arc::clone(&self.attachment_profiles),
+            device_settings: Arc::clone(&self.device_settings),
             usb_protocol_configs: self.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&self.in_progress),
             task_spawner: tokio::runtime::Handle::current(),

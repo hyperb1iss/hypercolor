@@ -5,14 +5,15 @@
 
 use std::fs;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::{BackendInfo, DeviceBackend};
+use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -72,6 +73,61 @@ impl DeviceBackend for NoopBackend {
     }
 
     async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, _id: &DeviceId, _colors: &[[u8; 3]]) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct DisconnectRecordingBackend {
+    expected_device_id: DeviceId,
+    disconnects: Arc<AtomicUsize>,
+    connected: bool,
+}
+
+impl DisconnectRecordingBackend {
+    fn new(expected_device_id: DeviceId, disconnects: Arc<AtomicUsize>) -> Self {
+        Self {
+            expected_device_id,
+            disconnects,
+            connected: false,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for DisconnectRecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "wled".to_owned(),
+            name: "Disconnect Recording Backend".to_owned(),
+            description: "Tracks lifecycle disconnects from the API".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        self.connected = true;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        if !self.connected {
+            bail!("disconnect called while backend was not connected");
+        }
+        self.connected = false;
+        self.disconnects.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -171,6 +227,10 @@ async fn status_returns_200_with_envelope() {
             .as_bool()
             .expect("running should be bool")
     );
+    assert!(
+        json["data"]["global_brightness"].as_u64().is_some(),
+        "global_brightness should be an integer percentage"
+    );
     assert!(json["meta"]["api_version"].is_string());
     assert!(json["meta"]["request_id"].is_string());
     assert!(json["meta"]["timestamp"].is_string());
@@ -229,6 +289,73 @@ async fn status_prefers_live_config_manager_path() {
     assert_eq!(
         json["data"]["config_path"],
         serde_json::json!(custom_config_path.display().to_string())
+    );
+}
+
+#[tokio::test]
+async fn global_brightness_endpoint_updates_status_and_persistence() {
+    let (state, tmp) = test_state_with_temp_output_store();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let update_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/settings/brightness")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"brightness":42}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(update_response.status(), StatusCode::OK);
+    let update_json = body_json(update_response).await;
+    assert_eq!(update_json["data"]["brightness"], 42);
+
+    let get_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/settings/brightness")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let get_json = body_json(get_response).await;
+    assert_eq!(get_json["data"]["brightness"], 42);
+
+    let status_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(status_response.status(), StatusCode::OK);
+    let status_json = body_json(status_response).await;
+    assert_eq!(status_json["data"]["global_brightness"], 42);
+
+    let device_settings_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
+        .expect("device settings file should exist");
+    let device_settings_json: serde_json::Value =
+        serde_json::from_str(&device_settings_raw).expect("device settings file should be valid");
+    assert_eq!(
+        device_settings_json["global_brightness"],
+        serde_json::json!(0.42)
+    );
+
+    let runtime_state_raw = fs::read_to_string(tmp.path().join("runtime-state.json"))
+        .expect("runtime state file should exist");
+    let runtime_state_json: serde_json::Value =
+        serde_json::from_str(&runtime_state_raw).expect("runtime state file should be valid");
+    assert_eq!(
+        runtime_state_json["global_brightness"],
+        serde_json::json!(0.42)
     );
 }
 
@@ -2254,6 +2381,16 @@ fn test_state_with_temp_layout_and_runtime_store() -> (Arc<AppState>, tempfile::
     (Arc::new(state), dir)
 }
 
+fn test_state_with_temp_output_store() -> (Arc<AppState>, tempfile::TempDir) {
+    let mut state = AppState::new();
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    state.device_settings = Arc::new(tokio::sync::RwLock::new(DeviceSettingsStore::new(
+        dir.path().join("device-settings.json"),
+    )));
+    state.runtime_state_path = dir.path().join("runtime-state.json");
+    (Arc::new(state), dir)
+}
+
 fn grouped_layout_update_payload() -> &'static str {
     r##"{
         "groups":[{"id":"g1","name":"PC Case","color":"#e135ff"}],
@@ -2690,8 +2827,8 @@ async fn identify_device_not_found() {
 }
 
 #[tokio::test]
-async fn update_device_persists_name_and_enabled_state() {
-    let state = Arc::new(AppState::new());
+async fn update_device_persists_name_enabled_and_brightness_state() {
+    let (state, tmp) = test_state_with_temp_output_store();
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -2703,7 +2840,7 @@ async fn update_device_persists_name_and_enabled_state() {
                 .uri(format!("/api/v1/devices/{device_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"name":"Desk Strip Renamed","enabled":false}"#,
+                    r#"{"name":"Desk Strip Renamed","enabled":false,"brightness":27}"#,
                 ))
                 .expect("failed to build request"),
         )
@@ -2713,6 +2850,7 @@ async fn update_device_persists_name_and_enabled_state() {
     let update_json = body_json(update_response).await;
     assert_eq!(update_json["data"]["name"], "Desk Strip Renamed");
     assert_eq!(update_json["data"]["status"], "disabled");
+    assert_eq!(update_json["data"]["brightness"], 27);
 
     let get_response = app
         .clone()
@@ -2728,6 +2866,16 @@ async fn update_device_persists_name_and_enabled_state() {
     let get_json = body_json(get_response).await;
     assert_eq!(get_json["data"]["name"], "Desk Strip Renamed");
     assert_eq!(get_json["data"]["status"], "disabled");
+    assert_eq!(get_json["data"]["brightness"], 27);
+
+    let persisted_raw = fs::read_to_string(tmp.path().join("device-settings.json"))
+        .expect("device settings file should exist");
+    let persisted_json: serde_json::Value =
+        serde_json::from_str(&persisted_raw).expect("device settings file should be valid json");
+    let persisted_device = &persisted_json["devices"][device_id.to_string()];
+    assert_eq!(persisted_device["name"], "Desk Strip Renamed");
+    assert_eq!(persisted_device["disabled"], true);
+    assert_eq!(persisted_device["brightness"], serde_json::json!(0.27));
 
     let reenable_response = app
         .oneshot(
@@ -2743,6 +2891,74 @@ async fn update_device_persists_name_and_enabled_state() {
     assert_eq!(reenable_response.status(), StatusCode::OK);
     let reenable_json = body_json(reenable_response).await;
     assert_eq!(reenable_json["data"]["status"], "known");
+    assert_eq!(reenable_json["data"]["brightness"], 27);
+}
+
+#[tokio::test]
+async fn update_device_disable_runs_lifecycle_disconnect_cleanup() {
+    let state = Arc::new(AppState::new());
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let disconnects = Arc::new(AtomicUsize::new(0));
+
+    {
+        let mut manager = state.backend_manager.lock().await;
+        manager.register_backend(Box::new(DisconnectRecordingBackend::new(
+            device_id,
+            Arc::clone(&disconnects),
+        )));
+    }
+
+    let tracked = state
+        .device_registry
+        .get(&device_id)
+        .await
+        .expect("device should exist");
+    let layout_device_id = {
+        let mut lifecycle = state.lifecycle_manager.lock().await;
+        let _actions = lifecycle.on_discovered(device_id, &tracked.info, "wled", None);
+        lifecycle
+            .layout_device_id_for(device_id)
+            .expect("layout id should exist")
+            .to_owned()
+    };
+
+    state
+        .backend_manager
+        .lock()
+        .await
+        .connect_device("wled", device_id, &layout_device_id)
+        .await
+        .expect("device should connect for disable flow");
+
+    {
+        let mut lifecycle = state.lifecycle_manager.lock().await;
+        lifecycle
+            .on_connected(device_id)
+            .expect("connect transition should succeed");
+    }
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/devices/{device_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"enabled":false}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["status"], "disabled");
+    assert_eq!(disconnects.load(Ordering::Relaxed), 1);
+    assert_eq!(state.backend_manager.lock().await.mapped_device_count(), 0);
 }
 
 #[tokio::test]

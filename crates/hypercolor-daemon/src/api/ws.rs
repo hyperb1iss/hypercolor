@@ -692,12 +692,11 @@ async fn relay_events(
     loop {
         match event_rx.recv().await {
             Ok(timestamped) => {
-                let has_events = subscriptions
-                    .read()
-                    .await
-                    .channels
-                    .contains(&WsChannel::Events);
-                if !has_events {
+                let should_relay = {
+                    let subs = subscriptions.read().await;
+                    should_relay_event(&timestamped.event, &subs.channels)
+                };
+                if !should_relay {
                     continue;
                 }
 
@@ -720,6 +719,27 @@ async fn relay_events(
             Err(broadcast::error::RecvError::Closed) => break,
         }
     }
+}
+
+fn should_relay_event(
+    event: &hypercolor_types::event::HypercolorEvent,
+    channels: &HashSet<WsChannel>,
+) -> bool {
+    if !channels.contains(&WsChannel::Events) {
+        return false;
+    }
+
+    if matches!(
+        event,
+        hypercolor_types::event::HypercolorEvent::FrameRendered { .. }
+    ) && (channels.contains(&WsChannel::Frames)
+        || channels.contains(&WsChannel::Canvas)
+        || channels.contains(&WsChannel::Metrics))
+    {
+        return false;
+    }
+
+    true
 }
 
 enum FrameRelayMessage {
@@ -1653,13 +1673,17 @@ mod tests {
         ChannelConfig, ChannelConfigPatch, ServerMessage, WsChannel, command_response_from_http,
         dispatch_command, encode_canvas_binary, encode_frame_binary, encode_spectrum_binary,
         event_message_parts, filter_frame_zones, normalize_command_path, parse_channels,
-        parse_command_method, to_snake_case, unique_sorted_channel_names, ws_capabilities,
+        parse_command_method, should_relay_event, to_snake_case, unique_sorted_channel_names,
+        ws_capabilities,
     };
     use crate::api::AppState;
     use axum::response::IntoResponse;
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_types::canvas::{Canvas, Rgba};
-    use hypercolor_types::event::{FrameData, HypercolorEvent, SpectrumData, ZoneColors};
+    use hypercolor_types::event::{
+        FrameData, FrameTiming, HypercolorEvent, SpectrumData, ZoneColors,
+    };
+    use std::collections::HashSet;
     use std::sync::Arc;
 
     #[test]
@@ -1754,6 +1778,40 @@ mod tests {
         let (event_name, event_data) = event_message_parts(&HypercolorEvent::Resumed);
         assert_eq!(event_name, "resumed");
         assert_eq!(event_data, serde_json::json!({}));
+    }
+
+    #[test]
+    fn frame_rendered_events_are_suppressed_when_metrics_are_subscribed() {
+        let channels = HashSet::from([WsChannel::Events, WsChannel::Metrics]);
+        let event = HypercolorEvent::FrameRendered {
+            frame_number: 7,
+            timing: FrameTiming {
+                render_us: 0,
+                sample_us: 0,
+                push_us: 0,
+                total_us: 0,
+                budget_us: 16_666,
+            },
+        };
+
+        assert!(!should_relay_event(&event, &channels));
+    }
+
+    #[test]
+    fn frame_rendered_events_pass_through_for_event_only_clients() {
+        let channels = HashSet::from([WsChannel::Events]);
+        let event = HypercolorEvent::FrameRendered {
+            frame_number: 7,
+            timing: FrameTiming {
+                render_us: 0,
+                sample_us: 0,
+                push_us: 0,
+                total_us: 0,
+                budget_us: 16_666,
+            },
+        };
+
+        assert!(should_relay_event(&event, &channels));
     }
 
     #[test]

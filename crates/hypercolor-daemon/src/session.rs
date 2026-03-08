@@ -21,16 +21,25 @@ const FADE_STEP_MS: u64 = 16;
 /// Session-driven output scaling consumed by the render thread.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OutputPowerState {
-    pub brightness: f32,
+    pub global_brightness: f32,
+    pub session_brightness: f32,
     pub sleeping: bool,
 }
 
 impl Default for OutputPowerState {
     fn default() -> Self {
         Self {
-            brightness: 1.0,
+            global_brightness: 1.0,
+            session_brightness: 1.0,
             sleeping: false,
         }
+    }
+}
+
+impl OutputPowerState {
+    #[must_use]
+    pub fn effective_brightness(self) -> f32 {
+        (self.global_brightness * self.session_brightness).clamp(0.0, 1.0)
     }
 }
 
@@ -132,11 +141,11 @@ fn spawn_sleep_transition(runtime: SessionRuntime, action: SleepAction) -> Optio
             fade_ms,
         } => Some(tokio::spawn(async move {
             ensure_awake(&runtime).await;
-            fade_to(&runtime.power_tx, brightness, fade_ms).await;
+            fade_session_to(&runtime.power_tx, brightness, fade_ms).await;
         })),
         SleepAction::Off { fade_ms } => Some(tokio::spawn(async move {
             ensure_awake(&runtime).await;
-            fade_to(&runtime.power_tx, 0.0, fade_ms).await;
+            fade_session_to(&runtime.power_tx, 0.0, fade_ms).await;
             {
                 let mut engine = runtime.effect_engine.lock().await;
                 engine.pause();
@@ -144,7 +153,8 @@ fn spawn_sleep_transition(runtime: SessionRuntime, action: SleepAction) -> Optio
             set_power_state(
                 &runtime.power_tx,
                 OutputPowerState {
-                    brightness: 0.0,
+                    global_brightness: current_power_state(&runtime.power_tx).global_brightness,
+                    session_brightness: 0.0,
                     sleeping: true,
                 },
             );
@@ -175,7 +185,8 @@ fn spawn_wake_transition(
                 set_power_state(
                     &runtime.power_tx,
                     OutputPowerState {
-                        brightness: current.brightness,
+                        global_brightness: current.global_brightness,
+                        session_brightness: current.session_brightness,
                         sleeping: false,
                     },
                 );
@@ -189,7 +200,7 @@ fn spawn_wake_transition(
                 let mut engine = runtime.effect_engine.lock().await;
                 engine.resume();
             }
-            fade_to(&runtime.power_tx, 1.0, fade_ms).await;
+            fade_session_to(&runtime.power_tx, 1.0, fade_ms).await;
         })),
         WakeAction::Scene {
             scene_name,
@@ -218,7 +229,8 @@ async fn ensure_awake(runtime: &SessionRuntime) {
     set_power_state(
         &runtime.power_tx,
         OutputPowerState {
-            brightness: current.brightness,
+            global_brightness: current.global_brightness,
+            session_brightness: current.session_brightness,
             sleeping: false,
         },
     );
@@ -243,16 +255,17 @@ async fn run_usb_resume_scan(runtime: &SessionRuntime) {
     );
 }
 
-async fn fade_to(power_tx: &watch::Sender<OutputPowerState>, target: f32, fade_ms: u64) {
+async fn fade_session_to(power_tx: &watch::Sender<OutputPowerState>, target: f32, fade_ms: u64) {
     let target = target.clamp(0.0, 1.0);
     let current = current_power_state(power_tx);
-    let start = current.brightness;
+    let start = current.session_brightness;
 
     if fade_ms == 0 || (start - target).abs() <= f32::EPSILON {
         set_power_state(
             power_tx,
             OutputPowerState {
-                brightness: target,
+                global_brightness: current.global_brightness,
+                session_brightness: target,
                 sleeping: current.sleeping,
             },
         );
@@ -268,7 +281,8 @@ async fn fade_to(power_tx: &watch::Sender<OutputPowerState>, target: f32, fade_m
         set_power_state(
             power_tx,
             OutputPowerState {
-                brightness,
+                global_brightness: current.global_brightness,
+                session_brightness: brightness,
                 sleeping: false,
             },
         );
@@ -278,10 +292,28 @@ async fn fade_to(power_tx: &watch::Sender<OutputPowerState>, target: f32, fade_m
     set_power_state(
         power_tx,
         OutputPowerState {
-            brightness: target,
+            global_brightness: current.global_brightness,
+            session_brightness: target,
             sleeping: false,
         },
     );
+}
+
+pub fn set_global_brightness(power_tx: &watch::Sender<OutputPowerState>, brightness: f32) {
+    let current = current_power_state(power_tx);
+    set_power_state(
+        power_tx,
+        OutputPowerState {
+            global_brightness: brightness.clamp(0.0, 1.0),
+            session_brightness: current.session_brightness,
+            sleeping: current.sleeping,
+        },
+    );
+}
+
+#[must_use]
+pub fn current_global_brightness(power_tx: &watch::Sender<OutputPowerState>) -> f32 {
+    current_power_state(power_tx).global_brightness
 }
 
 fn current_power_state(power_tx: &watch::Sender<OutputPowerState>) -> OutputPowerState {
@@ -289,5 +321,5 @@ fn current_power_state(power_tx: &watch::Sender<OutputPowerState>) -> OutputPowe
 }
 
 fn set_power_state(power_tx: &watch::Sender<OutputPowerState>, state: OutputPowerState) {
-    let _ = power_tx.send(state);
+    power_tx.send_replace(state);
 }

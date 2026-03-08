@@ -246,6 +246,7 @@ async fn daemon_start_restores_last_runtime_session() {
         active_preset_id: Some("startup-preset".to_owned()),
         control_values: HashMap::new(),
         active_layout_id: None,
+        global_brightness: 1.0,
     };
     runtime_state::save(&state.runtime_state_path, &snapshot).expect("persist runtime snapshot");
 

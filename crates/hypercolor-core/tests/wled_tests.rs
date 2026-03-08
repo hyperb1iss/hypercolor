@@ -933,6 +933,39 @@ async fn backend_disconnect_unknown_fails() {
 }
 
 #[tokio::test]
+async fn backend_disconnect_sends_final_black_frame() {
+    let receiver = UdpSocket::bind("127.0.0.6:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let mut backend = WledBackend::new(vec![]);
+    backend.set_realtime_http_enabled(false);
+
+    let device_id = DeviceId::new();
+    backend.remember_device(
+        device_id,
+        "127.0.0.6".parse().expect("valid loopback IP"),
+        test_wled_info(4, false, 30, true),
+    );
+    backend
+        .connect(&device_id)
+        .await
+        .expect("connect should succeed");
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("disconnect should succeed");
+
+    let mut packet = [0_u8; 64];
+    let (len, _) = timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+        .await
+        .expect("expected final black DDP frame")
+        .expect("recv final black DDP frame");
+    assert_eq!(len, DDP_HEADER_SIZE + 12);
+    assert_eq!(&packet[10..22], &[0; 12]);
+}
+
+#[tokio::test]
 async fn backend_write_to_disconnected_fails() {
     let mut backend = WledBackend::new(vec![]);
     let unknown_id = hypercolor_types::device::DeviceId::new();

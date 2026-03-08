@@ -19,7 +19,9 @@ use hypercolor_core::device::{
 };
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::device::{DeviceFamily, DeviceId, DeviceInfo, DeviceTopologyHint};
+use hypercolor_types::device::{
+    DeviceError, DeviceFamily, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
+};
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent, ZoneRef};
 use hypercolor_types::spatial::{
     Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -32,6 +34,8 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::attachment_profiles::AttachmentProfileStore;
+use crate::device_settings::{DeviceSettingsStore, StoredDeviceSettings};
+use crate::layout_auto_exclusions;
 use crate::logical_devices::{self, LogicalDevice};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
@@ -112,6 +116,9 @@ pub struct DiscoveryRuntime {
     /// Persistent path for the layout store.
     pub layouts_path: PathBuf,
 
+    /// Layout-specific exclusions that block discovery auto-readds.
+    pub layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
+
     /// Logical device segmentation store.
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
 
@@ -120,6 +127,9 @@ pub struct DiscoveryRuntime {
 
     /// Saved attachment bindings keyed by physical device ID.
     pub attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
+
+    /// Persisted global and per-device output settings.
+    pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
 
     /// Shared per-device USB protocol configuration store.
     pub usb_protocol_configs: UsbProtocolConfigStore,
@@ -399,6 +409,7 @@ pub async fn execute_discovery_scan(
         .collect();
 
     for id in &report.new_devices {
+        let persisted_settings = apply_persisted_device_settings(&runtime, *id).await;
         let Some(tracked) = runtime.device_registry.get(id).await else {
             continue;
         };
@@ -408,7 +419,22 @@ pub async fn execute_discovery_scan(
         let fingerprint = runtime.device_registry.fingerprint_for_id(id).await;
         let actions = {
             let mut lifecycle = runtime.lifecycle_manager.lock().await;
-            lifecycle.on_discovered(*id, &tracked.info, &backend, fingerprint.as_ref())
+            let mut actions =
+                lifecycle.on_discovered(*id, &tracked.info, &backend, fingerprint.as_ref());
+            if !persisted_settings.enabled {
+                match lifecycle.on_user_disable(*id) {
+                    Ok(disable_actions) => actions = disable_actions,
+                    Err(error) => {
+                        warn!(
+                            device = %tracked.info.name,
+                            device_id = %id,
+                            error = %error,
+                            "failed to reapply persisted disabled state for discovered device"
+                        );
+                    }
+                }
+            }
+            actions
         };
         ensure_default_logical_for_device(
             &runtime,
@@ -448,6 +474,7 @@ pub async fn execute_discovery_scan(
     }
 
     for id in &report.reappeared_devices {
+        let persisted_settings = apply_persisted_device_settings(&runtime, *id).await;
         let Some(tracked) = runtime.device_registry.get(id).await else {
             continue;
         };
@@ -457,7 +484,22 @@ pub async fn execute_discovery_scan(
         let fingerprint = runtime.device_registry.fingerprint_for_id(id).await;
         let actions = {
             let mut lifecycle = runtime.lifecycle_manager.lock().await;
-            lifecycle.on_discovered(*id, &tracked.info, &backend, fingerprint.as_ref())
+            let mut actions =
+                lifecycle.on_discovered(*id, &tracked.info, &backend, fingerprint.as_ref());
+            if !persisted_settings.enabled {
+                match lifecycle.on_user_disable(*id) {
+                    Ok(disable_actions) => actions = disable_actions,
+                    Err(error) => {
+                        warn!(
+                            device = %tracked.info.name,
+                            device_id = %id,
+                            error = %error,
+                            "failed to reapply persisted disabled state for rediscovered device"
+                        );
+                    }
+                }
+            }
+            actions
         };
         ensure_default_logical_for_device(
             &runtime,
@@ -620,6 +662,94 @@ pub async fn execute_discovery_scan(
         duration_ms,
         scanners: map_scanner_reports(&report.scanner_reports),
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserEnabledStateResult {
+    /// Lifecycle transition ran and registry state was synced.
+    Applied,
+    /// Device exists in the registry but has no lifecycle entry to drive.
+    MissingLifecycle,
+}
+
+/// Apply a user-requested enabled/disabled state transition to a tracked device.
+///
+/// This routes through the lifecycle executor so disable operations disconnect
+/// hardware and tear down routing instead of only flipping registry state.
+pub async fn apply_user_enabled_state(
+    runtime: &DiscoveryRuntime,
+    device_id: DeviceId,
+    enabled: bool,
+) -> anyhow::Result<UserEnabledStateResult> {
+    let actions = {
+        let mut lifecycle = runtime.lifecycle_manager.lock().await;
+        let transition = if enabled {
+            lifecycle.on_user_enable(device_id)
+        } else {
+            lifecycle.on_user_disable(device_id)
+        };
+
+        match transition {
+            Ok(actions) => actions,
+            Err(DeviceError::NotFound { .. }) => {
+                return Ok(UserEnabledStateResult::MissingLifecycle);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+
+    execute_lifecycle_actions(runtime.clone(), actions).await;
+    sync_registry_state(runtime, device_id).await;
+
+    if !enabled {
+        sync_active_layout_for_renderable_devices(runtime, None).await;
+    }
+
+    Ok(UserEnabledStateResult::Applied)
+}
+
+/// Clear and disconnect every renderable device during daemon shutdown.
+pub async fn shutdown_renderable_devices(runtime: &DiscoveryRuntime) -> usize {
+    let tracked_device_ids = {
+        let lifecycle = runtime.lifecycle_manager.lock().await;
+        lifecycle
+            .tracked_device_ids()
+            .into_iter()
+            .filter(|device_id| {
+                lifecycle
+                    .state(*device_id)
+                    .is_some_and(|state| state.is_renderable())
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut disconnected = 0_usize;
+
+    for device_id in tracked_device_ids {
+        let actions = {
+            let mut lifecycle = runtime.lifecycle_manager.lock().await;
+            lifecycle.on_user_disable(device_id)
+        };
+
+        match actions {
+            Ok(actions) => {
+                execute_lifecycle_actions(runtime.clone(), actions).await;
+                sync_registry_state(runtime, device_id).await;
+                disconnected = disconnected.saturating_add(1);
+            }
+            Err(error) => {
+                let device_label = device_log_label(runtime, device_id).await;
+                warn!(
+                    device = %device_label,
+                    device_id = %device_id,
+                    error = %error,
+                    "failed to disable device during daemon shutdown cleanup"
+                );
+            }
+        }
+    }
+
+    disconnected
 }
 
 #[allow(clippy::too_many_lines)]
@@ -932,6 +1062,49 @@ async fn sync_registry_state(runtime: &DiscoveryRuntime, device_id: DeviceId) {
     }
 }
 
+async fn apply_persisted_device_settings(
+    runtime: &DiscoveryRuntime,
+    device_id: DeviceId,
+) -> DeviceUserSettings {
+    let fallback_settings = runtime
+        .device_registry
+        .get(&device_id)
+        .await
+        .map_or_else(DeviceUserSettings::default, |tracked| tracked.user_settings);
+    let key = runtime
+        .device_registry
+        .fingerprint_for_id(&device_id)
+        .await
+        .map_or_else(
+            || device_id.to_string(),
+            |fingerprint| fingerprint.to_string(),
+        );
+    let persisted_settings = {
+        let store = runtime.device_settings.read().await;
+        store
+            .device_settings_for_key(&key)
+            .map(stored_device_settings_to_user_settings)
+            .unwrap_or(fallback_settings)
+    };
+
+    let _ = runtime
+        .device_registry
+        .replace_user_settings(&device_id, persisted_settings.clone())
+        .await;
+
+    let mut manager = runtime.backend_manager.lock().await;
+    manager.set_device_output_brightness(device_id, persisted_settings.brightness);
+    persisted_settings
+}
+
+fn stored_device_settings_to_user_settings(settings: StoredDeviceSettings) -> DeviceUserSettings {
+    DeviceUserSettings {
+        name: settings.name,
+        enabled: !settings.disabled,
+        brightness: settings.brightness.clamp(0.0, 1.0),
+    }
+}
+
 async fn refresh_connected_device_info(
     runtime: &DiscoveryRuntime,
     backend_id: &str,
@@ -1147,13 +1320,18 @@ async fn sync_logical_mappings_for_device(
     }
 }
 
-async fn sync_active_layout_for_renderable_devices(
+#[doc(hidden)]
+pub async fn sync_active_layout_for_renderable_devices(
     runtime: &DiscoveryRuntime,
     limit_to_devices: Option<&HashSet<DeviceId>>,
 ) {
     let mut layout = {
         let spatial = runtime.spatial_engine.read().await;
         spatial.layout().clone()
+    };
+    let excluded_layout_device_ids = {
+        let store = runtime.layout_auto_exclusions.read().await;
+        store.get(&layout.id).cloned().unwrap_or_default()
     };
 
     let inactive_ids = {
@@ -1201,6 +1379,9 @@ async fn sync_active_layout_for_renderable_devices(
             .get(layout_device_id)
             .is_none_or(|entry| entry.enabled);
         if !default_enabled {
+            continue;
+        }
+        if excluded_layout_device_ids.contains(layout_device_id) {
             continue;
         }
 
