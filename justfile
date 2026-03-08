@@ -167,12 +167,14 @@ setup:
     cd sdk && bun install
     @echo '✅ All dependencies installed'
 
-# Install udev rules for USB device access (requires sudo, replug or reboot after)
+# Install udev rules for USB device access (requires sudo)
 udev-install:
     sudo cp udev/99-hypercolor.rules /etc/udev/rules.d/
     sudo udevadm control --reload-rules
-    sudo udevadm trigger
-    @echo '✅ udev rules installed — replug USB devices or reboot for changes to take effect'
+    sudo udevadm trigger --action=change --subsystem-match=hidraw
+    sudo udevadm trigger --action=change --subsystem-match=usb
+    sudo udevadm trigger --action=change --subsystem-match=tty
+    @echo '✅ udev rules installed and applied'
 
 # ─── Housekeeping ─────────────────────────────────────────
 
