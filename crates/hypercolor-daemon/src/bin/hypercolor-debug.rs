@@ -4,9 +4,10 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use hypercolor_core::device::wled::WledScanner;
 use hypercolor_core::device::{
-    DeviceRegistry, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport, UsbHotplugEvent,
-    UsbHotplugMonitor, UsbScanner,
+    DeviceRegistry, DiscoveryOrchestrator, DiscoveryReport, ScannerScanReport, SmBusScanner,
+    UsbHotplugEvent, UsbHotplugMonitor, UsbScanner,
 };
+use hypercolor_types::device::ConnectionType;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -33,6 +34,7 @@ enum DebugCommand {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum DebugBackend {
+    SmBus,
     Usb,
     Wled,
 }
@@ -40,7 +42,7 @@ enum DebugBackend {
 #[derive(Debug, Args)]
 struct DetectArgs {
     /// Backends to scan (repeat or comma-separate values).
-    #[arg(long, value_enum, value_delimiter = ',', default_values_t = [DebugBackend::Usb])]
+    #[arg(long, value_enum, value_delimiter = ',', default_values_t = [DebugBackend::Usb, DebugBackend::SmBus])]
     backends: Vec<DebugBackend>,
 
     /// Periodic scan interval in seconds.
@@ -240,6 +242,7 @@ async fn run_scan(
     let mut orchestrator = DiscoveryOrchestrator::new(registry.clone());
     for backend in backends {
         match backend {
+            DebugBackend::SmBus => orchestrator.add_scanner(Box::new(SmBusScanner::new())),
             DebugBackend::Usb => orchestrator.add_scanner(Box::new(UsbScanner::new())),
             DebugBackend::Wled => {
                 orchestrator.add_scanner(Box::new(WledScanner::with_timeout(timeout)));
@@ -274,7 +277,7 @@ async fn print_scan_report(registry: &DeviceRegistry, trigger: &str, report: &Di
                 "  + {} [{}] backend_hint={}",
                 tracked.info.name,
                 id,
-                backend_hint(&tracked.info.family),
+                backend_hint(&tracked.info.family, tracked.info.connection_type),
             );
         }
     }
@@ -285,7 +288,7 @@ async fn print_scan_report(registry: &DeviceRegistry, trigger: &str, report: &Di
                 "  ~ {} [{}] backend_hint={}",
                 tracked.info.name,
                 id,
-                backend_hint(&tracked.info.family),
+                backend_hint(&tracked.info.family, tracked.info.connection_type),
             );
         }
     }
@@ -323,7 +326,14 @@ fn normalize_backends(backends: &[DebugBackend]) -> Vec<DebugBackend> {
     out
 }
 
-fn backend_hint(family: &hypercolor_types::device::DeviceFamily) -> &'static str {
+fn backend_hint(
+    family: &hypercolor_types::device::DeviceFamily,
+    connection_type: ConnectionType,
+) -> &'static str {
+    if connection_type == ConnectionType::SmBus {
+        return "smbus";
+    }
+
     match family {
         hypercolor_types::device::DeviceFamily::Razer
         | hypercolor_types::device::DeviceFamily::Corsair
