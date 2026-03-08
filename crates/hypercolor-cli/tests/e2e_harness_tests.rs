@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::startup::{DaemonState, default_config};
 use tempfile::TempDir;
@@ -27,10 +28,21 @@ struct DaemonHarness {
     temp_dir: TempDir,
 }
 
+struct DataDirOverrideGuard;
+
+impl Drop for DataDirOverrideGuard {
+    fn drop(&mut self) {
+        ConfigManager::set_data_dir_override(None);
+    }
+}
+
 impl DaemonHarness {
     async fn start() -> Result<Self> {
         let temp_dir = tempfile::tempdir().context("failed to create temp dir")?;
         let config_path = temp_dir.path().join("hypercolor-e2e.toml");
+        let data_dir = temp_dir.path().join("data");
+        ConfigManager::set_data_dir_override(Some(data_dir));
+        let data_dir_guard = DataDirOverrideGuard;
 
         let mut config = default_config();
         "127.0.0.1".clone_into(&mut config.daemon.listen_address);
@@ -69,6 +81,8 @@ impl DaemonHarness {
             return Err(error);
         }
 
+        std::mem::forget(data_dir_guard);
+
         Ok(Self {
             port,
             shutdown_tx: Some(shutdown_tx),
@@ -100,6 +114,8 @@ impl DaemonHarness {
                 .await
                 .context("failed to shut down daemon state")?;
         }
+
+        ConfigManager::set_data_dir_override(None);
 
         Ok(())
     }

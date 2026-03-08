@@ -27,6 +27,7 @@ reqwest = { workspace = true }
 dirs = { workspace = true }
 
 [dev-dependencies]
+hypercolor-core = { path = "../hypercolor-core" }
 hypercolor-daemon = { path = "../hypercolor-daemon" }
 tempfile = { workspace = true }
 axum = { workspace = true }

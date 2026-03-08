@@ -224,8 +224,9 @@ fn default_config_has_sane_values() {
 
 // ── DaemonState Initialization ──────────────────────────────────────────────
 
-#[test]
-fn daemon_state_initializes_with_default_config() {
+#[tokio::test]
+async fn daemon_state_initializes_with_default_config() {
+    let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(&config, temp.path().to_path_buf());
@@ -234,6 +235,7 @@ fn daemon_state_initializes_with_default_config() {
 
 #[tokio::test]
 async fn daemon_state_start_and_shutdown() {
+    let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
@@ -266,6 +268,7 @@ async fn daemon_state_start_and_shutdown() {
 
 #[tokio::test]
 async fn daemon_state_device_registry_starts_empty() {
+    let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(&config, temp.path().to_path_buf())
@@ -279,6 +282,7 @@ async fn daemon_state_device_registry_starts_empty() {
 
 #[tokio::test]
 async fn daemon_state_effect_engine_starts_idle() {
+    let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(&config, temp.path().to_path_buf())
@@ -293,6 +297,7 @@ async fn daemon_state_effect_engine_starts_idle() {
 
 #[tokio::test]
 async fn daemon_state_scene_manager_starts_empty() {
+    let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
     let state = DaemonState::initialize(&config, temp.path().to_path_buf())
@@ -308,6 +313,7 @@ async fn daemon_state_scene_manager_starts_empty() {
 
 #[tokio::test]
 async fn daemon_state_config_accessor_returns_loaded_config() {
+    let _guard = TestDataDirGuard::new().await;
     let mut config = default_config();
     config.daemon.target_fps = 45;
     let temp = temp_config_file();
@@ -336,6 +342,7 @@ async fn signal_handler_channel_starts_false() {
 
 #[tokio::test]
 async fn shutdown_is_idempotent() {
+    let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
@@ -447,6 +454,7 @@ async fn daemon_shutdown_persists_active_runtime_session() {
 
 #[tokio::test]
 async fn event_bus_receives_startup_event() {
+    let _guard = TestDataDirGuard::new().await;
     let config = default_config();
     let temp = temp_config_file();
     let mut state = DaemonState::initialize(&config, temp.path().to_path_buf())
