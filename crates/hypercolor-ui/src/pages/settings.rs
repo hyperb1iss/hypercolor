@@ -300,7 +300,7 @@ pub fn SettingsPage() -> impl IntoView {
                 </div>
 
                 // Tab bar
-                <div class="flex items-center gap-0.5 px-5 overflow-x-auto scrollbar-none">
+                <div class="flex items-center gap-0.5 px-5 overflow-x-auto scrollbar-none border-b border-edge-subtle/15">
                     {tabs.into_iter().map(|tab| {
                         let id = tab.id;
                         let is_active = Memo::new(move |_| active_section.get() == id);
@@ -359,10 +359,10 @@ pub fn SettingsPage() -> impl IntoView {
                 {move || {
                     if !config_loaded.get() {
                         Some(view! {
-                            <div class="p-6 space-y-4 max-w-3xl mx-auto">
+                            <div class="px-6 pb-6 max-w-3xl mx-auto space-y-4">
                                 {(0..5).map(|i| view! {
                                     <div
-                                        class="rounded-xl border border-edge-subtle bg-surface-overlay/10 h-44 animate-pulse"
+                                        class="rounded-lg border border-edge-subtle/20 bg-surface-overlay/5 h-36 animate-pulse"
                                         style=format!("animation-delay: {}ms", i * 80)
                                     />
                                 }).collect_view()}
@@ -378,7 +378,7 @@ pub fn SettingsPage() -> impl IntoView {
                 // without causing DOM rebuild (no flicker on control changes).
                 {move || {
                     config_loaded.get().then(|| view! {
-                        <div class="p-6 space-y-4 max-w-3xl mx-auto">
+                        <div class="px-6 pb-6 max-w-3xl mx-auto divide-y divide-edge-subtle/20">
                             <div style="animation: fade-in 0.4s ease-out 0.05s both">
                                 <AudioSection
                                     config=config

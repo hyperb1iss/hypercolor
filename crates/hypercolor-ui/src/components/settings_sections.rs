@@ -6,6 +6,7 @@ use leptos_icons::Icon;
 use hypercolor_types::config::HypercolorConfig;
 
 use crate::api;
+use crate::app::WsContext;
 use crate::components::settings_controls::*;
 use crate::icons::*;
 
@@ -17,6 +18,122 @@ where
     T: Default,
 {
     config.with(|cfg| cfg.as_ref().map(selector).unwrap_or_default())
+}
+
+// ── Audio VU Meter ────────────────────────────────────────────────────────
+
+/// Compact level meter bar.
+#[component]
+fn LevelBar(
+    label: &'static str,
+    #[prop(into)] value: Signal<f32>,
+    color: &'static str,
+) -> impl IntoView {
+    view! {
+        <div class="flex items-center gap-2 min-w-0">
+            <span class="text-[10px] font-mono text-fg-tertiary/60 w-7 shrink-0 text-right uppercase">{label}</span>
+            <div class="flex-1 h-1.5 rounded-full overflow-hidden" style="background: rgba(139, 133, 160, 0.1)">
+                <div
+                    class="h-full rounded-full transition-all duration-100"
+                    style=move || format!(
+                        "width: {pct}%; background: {color}; box-shadow: 0 0 6px {color}40",
+                        pct = (value.get() * 100.0).clamp(0.0, 100.0),
+                        color = color,
+                    )
+                />
+            </div>
+        </div>
+    }
+}
+
+/// Live VU meter shown when audio capture is enabled.
+#[component]
+fn AudioVuMeter(#[prop(into)] enabled: Signal<bool>) -> impl IntoView {
+    let ws = expect_context::<WsContext>();
+
+    view! {
+        <Show when=move || enabled.get()>
+            <div class="mb-4 px-1 py-3 rounded-lg animate-fade-in" style="background: rgba(139, 133, 160, 0.04)">
+                <div class="flex items-center gap-4">
+                    // Beat indicator
+                    <div class="shrink-0 flex items-center gap-2 pl-1">
+                        <div
+                            class="w-2 h-2 rounded-full transition-all"
+                            style=move || {
+                                let al = ws.audio_level.get();
+                                if al.beat {
+                                    "background: rgb(225, 53, 255); box-shadow: 0 0 8px rgba(225, 53, 255, 0.6); transform: scale(1.3)"
+                                } else if al.level > 0.01 {
+                                    "background: rgba(128, 255, 234, 0.5); box-shadow: none; transform: scale(1)"
+                                } else {
+                                    "background: rgba(139, 133, 160, 0.2); box-shadow: none; transform: scale(1)"
+                                }
+                            }
+                        />
+                    </div>
+
+                    // Level bars
+                    <div class="flex-1 space-y-1.5 min-w-0">
+                        <LevelBar
+                            label="vol"
+                            value=Signal::derive(move || ws.audio_level.get().level)
+                            color="rgba(128, 255, 234, 0.8)"
+                        />
+                        <div class="flex gap-3">
+                            <div class="flex-1">
+                                <LevelBar
+                                    label="bass"
+                                    value=Signal::derive(move || ws.audio_level.get().bass)
+                                    color="rgba(225, 53, 255, 0.7)"
+                                />
+                            </div>
+                            <div class="flex-1">
+                                <LevelBar
+                                    label="mid"
+                                    value=Signal::derive(move || ws.audio_level.get().mid)
+                                    color="rgba(255, 106, 193, 0.7)"
+                                />
+                            </div>
+                            <div class="flex-1">
+                                <LevelBar
+                                    label="hi"
+                                    value=Signal::derive(move || ws.audio_level.get().treble)
+                                    color="rgba(241, 250, 140, 0.7)"
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    // Numeric readout
+                    <div class="shrink-0 pr-1">
+                        <span
+                            class="text-xs font-mono tabular-nums"
+                            style=move || {
+                                let level = ws.audio_level.get().level;
+                                if level > 0.8 {
+                                    "color: rgba(255, 99, 99, 0.8)"
+                                } else if level > 0.01 {
+                                    "color: rgba(128, 255, 234, 0.6)"
+                                } else {
+                                    "color: rgba(139, 133, 160, 0.3)"
+                                }
+                            }
+                        >
+                            {move || {
+                                let level = ws.audio_level.get().level;
+                                if level > 0.01 {
+                                    let db = (20.0 * level.log10()).max(-60.0);
+                                    format!("{db:.0} dB")
+                                } else {
+                                    "-\u{221e} dB".to_string()
+                                }
+                            }}
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </Show>
+    }
 }
 
 // ── Audio ──────────────────────────────────────────────────────────────────
@@ -48,8 +165,9 @@ pub fn AudioSection(
     ];
 
     view! {
-        <section id="section-audio" class="rounded-xl bg-surface-raised border border-edge-subtle p-5 space-y-0">
+        <section id="section-audio" class="pt-6 pb-2 space-y-0">
             <SectionHeader title="Audio" icon=LuAudioLines />
+            <AudioVuMeter enabled=enabled />
             <SettingToggle
                 label="Enabled"
                 description="Enable audio capture and spectrum analysis for reactive effects"
@@ -124,7 +242,7 @@ pub fn CaptureSection(
     ];
 
     view! {
-        <section id="section-capture" class="rounded-xl bg-surface-raised border border-edge-subtle p-5 space-y-0">
+        <section id="section-capture" class="pt-6 pb-2 space-y-0">
             <SectionHeader title="Screen Capture" icon=LuMonitor />
             <SettingToggle
                 label="Enabled"
@@ -206,7 +324,7 @@ pub fn EngineSection(
     ];
 
     view! {
-        <section id="section-engine" class="rounded-xl bg-surface-raised border border-edge-subtle p-5 space-y-0">
+        <section id="section-engine" class="pt-6 pb-2 space-y-0">
             <SectionHeader title="Effect Engine" icon=LuZap />
             <SettingDropdown
                 label="Preferred Renderer"
@@ -280,7 +398,7 @@ pub fn NetworkSection(
     let open_browser = Signal::derive(move || read_config(config, |cfg| cfg.web.open_browser));
 
     view! {
-        <section id="section-network" class="rounded-xl bg-surface-raised border border-edge-subtle p-5 space-y-0">
+        <section id="section-network" class="pt-6 pb-2 space-y-0">
             <SectionHeader title="Network" icon=LuGlobe />
             <SettingTextInput
                 label="Listen Address"
@@ -357,7 +475,7 @@ pub fn SessionSection(
         Signal::derive(move || read_config(config, |cfg| cfg.session.idle_off_timeout_secs as f64));
 
     view! {
-        <section id="section-session" class="rounded-xl bg-surface-raised border border-edge-subtle p-5 space-y-0">
+        <section id="section-session" class="pt-6 pb-2 space-y-0">
             <SectionHeader title="Session & Power" icon=LuPower />
             <SettingToggle
                 label="Session Awareness"
@@ -408,7 +526,7 @@ pub fn DiscoverySection(
     let wled = Signal::derive(move || read_config(config, |cfg| cfg.discovery.wled_scan));
     let hue = Signal::derive(move || read_config(config, |cfg| cfg.discovery.hue_scan));
     view! {
-        <section id="section-discovery" class="rounded-xl bg-surface-raised border border-edge-subtle p-5 space-y-0">
+        <section id="section-discovery" class="pt-6 pb-2 space-y-0">
             <SectionHeader title="Device Discovery" icon=LuRadar />
             <SettingToggle
                 label="mDNS Discovery"
@@ -478,7 +596,7 @@ pub fn DeveloperSection(
     ];
 
     view! {
-        <section id="section-developer" class="rounded-xl bg-surface-raised border border-edge-subtle p-5 space-y-0">
+        <section id="section-developer" class="pt-6 pb-2 space-y-0">
             <SectionHeader title="Developer" icon=LuCode />
             <div class="text-xs text-fg-tertiary/50 -mt-2 mb-4">"Advanced options for development and debugging"</div>
             <SettingDropdown
@@ -517,7 +635,7 @@ pub fn DeveloperSection(
             />
 
             // Feature flags
-            <div class="flex items-center gap-2 mt-5 mb-3 pt-4 border-t border-edge-subtle/20">
+            <div class="flex items-center gap-2 mt-4 mb-3 pt-3 border-t border-edge-subtle/10">
                 <Icon icon=LuFlaskConical width="14px" height="14px" style="color: rgba(241, 250, 140, 0.5)" />
                 <span class="text-xs font-mono uppercase tracking-[0.08em] text-fg-tertiary/60">"Experimental Features"</span>
             </div>
@@ -567,7 +685,7 @@ pub fn AboutSection(#[prop(into)] config_path: Signal<String>) -> impl IntoView 
     let status = LocalResource::new(api::fetch_status);
 
     view! {
-        <section id="section-about" class="rounded-xl bg-surface-raised border border-edge-subtle p-5 space-y-0">
+        <section id="section-about" class="pt-6 pb-2 space-y-0">
             <SectionHeader title="About" icon=LuInfo />
 
             {move || {
@@ -583,7 +701,7 @@ pub fn AboutSection(#[prop(into)] config_path: Signal<String>) -> impl IntoView 
                 }
             }}
 
-            <div class="flex items-center gap-4 mt-5 pt-4 border-t border-edge-subtle/20">
+            <div class="flex items-center gap-4 mt-4 pt-3 border-t border-edge-subtle/10">
                 <a
                     href="https://github.com/hyperb1iss/hypercolor"
                     target="_blank"

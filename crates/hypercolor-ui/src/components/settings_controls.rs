@@ -11,9 +11,9 @@ use crate::icons::*;
 #[component]
 pub fn SectionHeader(title: &'static str, icon: icondata_core::Icon) -> impl IntoView {
     view! {
-        <div class="flex items-center gap-2.5 mb-4">
-            <Icon icon=icon width="18px" height="18px" style="color: rgba(225, 53, 255, 0.7)" />
-            <h2 class="text-sm font-mono uppercase tracking-[0.1em] text-fg-secondary">{title}</h2>
+        <div class="flex items-center gap-2.5 mb-5">
+            <Icon icon=icon width="16px" height="16px" style="color: rgba(225, 53, 255, 0.6)" />
+            <h2 class="text-xs font-mono uppercase tracking-[0.12em] text-fg-tertiary/80">{title}</h2>
         </div>
     }
 }
@@ -427,7 +427,7 @@ pub fn SettingPathList(
 pub fn SectionReset(section_label: &'static str, on_reset: Callback<()>) -> impl IntoView {
     let (confirming, set_confirming) = signal(false);
     view! {
-        <div class="pt-4 mt-2 border-t border-edge-subtle/20">
+        <div class="pt-3 mt-1">
             {move || if confirming.get() {
                 view! {
                     <div class="flex items-center gap-3">

@@ -452,6 +452,12 @@ input[type="color"]::-webkit-color-swatch {
     animation: glowRingIn 0.4s var(--ease-silk) forwards;
 }
 
+/* ── Settings Rows ─────────────────────────────────────────────────────── */
+
+.setting-row + .setting-row {
+    border-top: 1px solid oklch(1 0 0 / 0.04);
+}
+
 /* ── Ambient Glow Utilities ─────────────────────────────────────────────── */
 
 /* Soft edge glow — replaces elevation shadows on panels */

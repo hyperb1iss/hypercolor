@@ -15,8 +15,8 @@ use crate::pages::effects::EffectsPage;
 use crate::pages::layout::LayoutPage;
 use crate::pages::settings::SettingsPage;
 use crate::ws::{
-    BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint, PerformanceMetrics,
-    WsManager,
+    AudioLevel, BackpressureNotice, CanvasFrame, ConnectionState, DeviceEventHint,
+    PerformanceMetrics, WsManager,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,12 +27,14 @@ pub struct IndexedEffect {
 
 impl IndexedEffect {
     fn new(effect: api::EffectSummary) -> Self {
+        let name_aliases = effect_name_aliases(&effect.name);
         let search_text = [
             effect.name.to_lowercase(),
             effect.description.to_lowercase(),
             effect.author.to_lowercase(),
             effect.category.to_lowercase(),
             effect.tags.join(" ").to_lowercase(),
+            name_aliases.join(" "),
         ]
         .join(" ");
 
@@ -47,6 +49,23 @@ impl IndexedEffect {
     }
 }
 
+fn effect_name_aliases(name: &str) -> Vec<String> {
+    let normalized = name.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+
+    let mut aliases = vec![
+        normalized.replace([' ', '-'], "_"),
+        normalized.replace([' ', '_'], "-"),
+        normalized.replace([' ', '_', '-'], ""),
+    ];
+    aliases.retain(|alias| !alias.is_empty() && alias != &normalized);
+    aliases.sort();
+    aliases.dedup();
+    aliases
+}
+
 /// Global WebSocket state provided via Leptos context.
 #[derive(Clone, Copy)]
 pub struct WsContext {
@@ -59,6 +78,7 @@ pub struct WsContext {
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
+    pub audio_level: ReadSignal<AudioLevel>,
 }
 
 /// Shared active-effect state — accessible from sidebar, effects page, etc.
@@ -231,6 +251,7 @@ pub fn App() -> impl IntoView {
         backpressure_notice: ws.backpressure_notice,
         active_effect: ws.active_effect,
         last_device_event: ws.last_device_event,
+        audio_level: ws.audio_level,
     };
     provide_context(ws_ctx);
 

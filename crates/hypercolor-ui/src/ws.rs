@@ -199,6 +199,18 @@ struct BackpressureMessage {
     suggested_fps: u32,
 }
 
+// ── Audio Level ─────────────────────────────────────────────────────────────
+
+/// Live audio levels from `AudioLevelUpdate` events (~10 Hz).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AudioLevel {
+    pub level: f32,
+    pub bass: f32,
+    pub mid: f32,
+    pub treble: f32,
+    pub beat: bool,
+}
+
 // ── WebSocket Manager ───────────────────────────────────────────────────────
 
 /// Reactive WebSocket connection to the daemon.
@@ -213,6 +225,7 @@ pub struct WsManager {
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
+    pub audio_level: ReadSignal<AudioLevel>,
     pub preview_target_fps: ReadSignal<u32>,
     pub set_preview_cap: WriteSignal<u32>,
 }
@@ -226,6 +239,7 @@ impl WsManager {
         let (backpressure_notice, set_backpressure_notice) = signal(None::<BackpressureNotice>);
         let (active_effect, set_active_effect) = signal(None::<String>);
         let (last_device_event, set_last_device_event) = signal(None::<DeviceEventHint>);
+        let (audio_level, set_audio_level) = signal(AudioLevel::default());
         let (preview_target_fps, set_preview_target_fps) = signal(0_u32);
         let (engine_preview_target, set_engine_preview_target) = signal(0_u32);
         let (preview_page_cap, set_preview_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
@@ -257,6 +271,7 @@ impl WsManager {
                     backpressure_notice,
                     active_effect,
                     last_device_event,
+                    audio_level,
                     preview_target_fps,
                     set_preview_cap,
                 };
@@ -382,6 +397,7 @@ impl WsManager {
                         &set_metrics,
                         &set_backpressure_notice,
                         &set_last_device_event,
+                        &set_audio_level,
                         &set_engine_preview_target,
                         &set_preview_target_fps,
                         &set_preview_transport_cap,
@@ -400,6 +416,7 @@ impl WsManager {
             backpressure_notice,
             active_effect,
             last_device_event,
+            audio_level,
             preview_target_fps,
             set_preview_cap,
         }
@@ -523,6 +540,7 @@ fn handle_json_message(
     set_metrics: &WriteSignal<Option<PerformanceMetrics>>,
     set_backpressure_notice: &WriteSignal<Option<BackpressureNotice>>,
     set_last_device_event: &WriteSignal<Option<DeviceEventHint>>,
+    set_audio_level: &WriteSignal<AudioLevel>,
     set_engine_preview_target: &WriteSignal<u32>,
     set_preview_target_fps: &WriteSignal<u32>,
     set_preview_transport_cap: &WriteSignal<u32>,
@@ -615,6 +633,24 @@ fn handle_json_message(
                     set_active.set(name);
                 } else if event_type == "effect_deactivated" || event_type == "effect_stopped" {
                     set_active.set(None);
+                } else if event_type == "audio_level_update" {
+                    if let Some(data) = msg.get("data") {
+                        let f = |key| {
+                            data.get(key)
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(0.0) as f32
+                        };
+                        set_audio_level.set(AudioLevel {
+                            level: f("level"),
+                            bass: f("bass"),
+                            mid: f("mid"),
+                            treble: f("treble"),
+                            beat: data
+                                .get("beat")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                        });
+                    }
                 } else if matches!(
                     event_type,
                     "device_discovered"
