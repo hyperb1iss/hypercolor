@@ -127,6 +127,30 @@ EOF
   echo "[cargo-cache] CC/CXX routed through $COMPILER_CACHE_NAME wrappers"
 fi
 
+# Patch glslopt's bundled C11 thread emulation to be compatible with newer glibc.
+# glibc 2.39+ with _GNU_SOURCE exposes once_flag/call_once in <stdlib.h>,
+# conflicting with threads_posix.h's pthread-based typedefs.
+for tp in "$HOME"/.cargo/registry/src/*/glslopt-*/glsl-optimizer/include/c11/threads_posix.h; do
+  [ -f "$tp" ] || continue
+  if ! grep -q '__once_flag_defined' "$tp"; then
+    python3 -c "
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+src = p.read_text()
+src = src.replace(
+    'typedef pthread_once_t  once_flag;',
+    '#ifndef __once_flag_defined\ntypedef pthread_once_t  once_flag;\n#endif'
+)
+src = src.replace(
+    'static inline void\ncall_once(once_flag *flag, void (*func)(void))\n{\n    pthread_once(flag, func);\n}',
+    '#ifndef __once_flag_defined\nstatic inline void\ncall_once(once_flag *flag, void (*func)(void))\n{\n    pthread_once(flag, func);\n}\n#endif'
+)
+p.write_text(src)
+" "$tp"
+    echo "[cargo-cache] patched glslopt threads_posix.h for glibc C23 compat"
+  fi
+done
+
 echo "[cargo-cache] CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
 echo "[cargo-cache] MOZBUILD_STATE_PATH=$MOZBUILD_STATE_PATH"
 
