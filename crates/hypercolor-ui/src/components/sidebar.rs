@@ -232,10 +232,12 @@ pub fn Sidebar() -> impl IntoView {
     // Navigate effects list (for prev/next)
     let navigate_effect = move |direction: i32| {
         let list = fx
-            .effects_resource
+            .effects_index
             .get()
-            .and_then(|r| r.ok())
-            .unwrap_or_default();
+            .into_iter()
+            .map(|entry| entry.effect)
+            .filter(|effect| effect.runnable)
+            .collect::<Vec<_>>();
         if list.is_empty() {
             return;
         }
@@ -251,10 +253,12 @@ pub fn Sidebar() -> impl IntoView {
     // Random effect
     let random_effect = move || {
         let list = fx
-            .effects_resource
+            .effects_index
             .get()
-            .and_then(|r| r.ok())
-            .unwrap_or_default();
+            .into_iter()
+            .map(|entry| entry.effect)
+            .filter(|effect| effect.runnable)
+            .collect::<Vec<_>>();
         if list.is_empty() {
             return;
         }

@@ -75,7 +75,7 @@ pub fn EffectCard(
         <div
             class=move || {
                 let base = "relative rounded-2xl border text-left w-full group overflow-hidden \
-                            card-hover animate-fade-in-up flex flex-col";
+                            card-hover animate-fade-in-up flex flex-col content-auto-card";
                 let state = if is_active.get() {
                     "border-accent-muted bg-surface-overlay animate-breathe"
                 } else if !runnable {

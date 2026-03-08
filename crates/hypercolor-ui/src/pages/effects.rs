@@ -1,6 +1,7 @@
 //! Effects browse page — grid of effect cards with filtering and detail panel.
 
 use leptos::prelude::*;
+use leptos_use::use_debounce_fn;
 use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
@@ -68,6 +69,25 @@ pub fn EffectsPage() -> impl IntoView {
         signal(stored("hc-fx-favorites").as_deref() == Some("true"));
     let (audio_reactive_only, set_audio_reactive_only) =
         signal(stored("hc-fx-audio").as_deref() == Some("true"));
+    let pending_control_updates =
+        StoredValue::new(std::collections::HashMap::<String, serde_json::Value>::new());
+    let flush_control_updates = use_debounce_fn(
+        move || {
+            let updates = pending_control_updates
+                .try_update_value(std::mem::take)
+                .unwrap_or_default();
+            if updates.is_empty() {
+                return;
+            }
+
+            let controls_json =
+                serde_json::Value::Object(updates.into_iter().collect::<serde_json::Map<_, _>>());
+            leptos::task::spawn_local(async move {
+                let _ = api::update_controls(&controls_json).await;
+            });
+        },
+        75.0,
+    );
 
     // Persist filter changes to localStorage
     Effect::new(move |_| {
@@ -88,15 +108,14 @@ pub fn EffectsPage() -> impl IntoView {
 
     // Derive unique sorted author list from loaded effects
     let authors = Memo::new(move |_| {
-        let Some(Ok(effects)) = fx.effects_resource.get() else {
-            return Vec::new();
-        };
         let mut seen = std::collections::BTreeSet::new();
-        for e in &effects {
-            if !e.author.is_empty() {
-                seen.insert(e.author.clone());
+        fx.effects_index.with(|effects| {
+            for entry in effects {
+                if !entry.effect.author.is_empty() {
+                    seen.insert(entry.effect.author.clone());
+                }
             }
-        }
+        });
         seen.into_iter().collect::<Vec<_>>()
     });
 
@@ -114,45 +133,36 @@ pub fn EffectsPage() -> impl IntoView {
 
     // Filter effects
     let filtered_effects = Memo::new(move |_| {
-        let Some(Ok(effects)) = fx.effects_resource.get() else {
-            return Vec::new();
-        };
-
-        let search_term = search.get().to_lowercase();
+        let search_term = search.get().trim().to_lowercase();
         let cat = category_filter.get();
         let sel_authors = selected_authors.get();
         let fav_only = favorites_only.get();
         let audio_only = audio_reactive_only.get();
         let fav_ids = fx.favorite_ids.get();
 
-        effects
-            .into_iter()
-            .filter(|e| {
-                if cat != "all" && e.category != cat {
-                    return false;
-                }
-                if !sel_authors.is_empty() && !sel_authors.contains(&e.author) {
-                    return false;
-                }
-                if fav_only && !fav_ids.contains(&e.id) {
-                    return false;
-                }
-                if audio_only && !e.audio_reactive {
-                    return false;
-                }
-                if !search_term.is_empty() {
-                    let matches_name = e.name.to_lowercase().contains(&search_term);
-                    let matches_desc = e.description.to_lowercase().contains(&search_term);
-                    let matches_author = e.author.to_lowercase().contains(&search_term);
-                    let matches_tags = e
-                        .tags
-                        .iter()
-                        .any(|t| t.to_lowercase().contains(&search_term));
-                    return matches_name || matches_desc || matches_author || matches_tags;
-                }
-                true
+        fx.effects_index
+            .with(|effects| {
+                effects
+                    .iter()
+                    .filter(|entry| {
+                        let effect = &entry.effect;
+                        if cat != "all" && effect.category != cat {
+                            return false;
+                        }
+                        if !sel_authors.is_empty() && !sel_authors.contains(&effect.author) {
+                            return false;
+                        }
+                        if fav_only && !fav_ids.contains(&effect.id) {
+                            return false;
+                        }
+                        if audio_only && !effect.audio_reactive {
+                            return false;
+                        }
+                        entry.matches_search(&search_term)
+                    })
+                    .map(|entry| entry.effect.clone())
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>()
     });
 
     let effect_count = Memo::new(move |_| filtered_effects.get().len());
@@ -169,39 +179,40 @@ pub fn EffectsPage() -> impl IntoView {
 
     // Control change handler
     let on_control_change = Callback::new(move |(name, value): (String, serde_json::Value)| {
-        if fx.active_effect_id.get().is_some() {
-            let controls_snapshot = fx.active_controls.get();
-            let current_values = fx.active_control_values.get();
-            let updates = expand_control_updates(
-                fx.active_effect_name.get().as_deref(),
-                &current_values,
-                &name,
-                &value,
-            );
+        if fx.active_effect_id.get().is_none() {
+            return;
+        }
 
-            fx.set_active_control_values.update({
-                let controls_snapshot = controls_snapshot.clone();
-                let updates = updates.clone();
-                move |values| {
-                    for (control_name, raw_value) in &updates {
-                        if let Some(control_value) =
-                            json_to_control_value(control_name, &controls_snapshot, raw_value)
-                        {
-                            values.insert(control_name.clone(), control_value);
-                        }
+        let controls_snapshot = fx.active_controls.get();
+        let current_values = fx.active_control_values.get();
+        let updates = expand_control_updates(
+            fx.active_effect_name.get().as_deref(),
+            &current_values,
+            &name,
+            &value,
+        );
+
+        fx.set_active_control_values.update({
+            let controls_snapshot = controls_snapshot.clone();
+            let updates = updates.clone();
+            move |values| {
+                for (control_name, raw_value) in &updates {
+                    if let Some(control_value) =
+                        json_to_control_value(control_name, &controls_snapshot, raw_value)
+                    {
+                        values.insert(control_name.clone(), control_value);
                     }
                 }
-            });
+            }
+        });
 
-            let controls_json = serde_json::Value::Object(
-                updates
-                    .into_iter()
-                    .collect::<serde_json::Map<String, serde_json::Value>>(),
-            );
-            leptos::task::spawn_local(async move {
-                let _ = api::update_controls(&controls_json).await;
-            });
-        }
+        pending_control_updates.update_value(|pending| {
+            for (control_name, raw_value) in &updates {
+                pending.insert(control_name.clone(), raw_value.clone());
+            }
+        });
+
+        flush_control_updates();
     });
 
     view! {
@@ -443,26 +454,29 @@ pub fn EffectsPage() -> impl IntoView {
                                     };
                                     view! {
                                         <div class=grid_class>
-                                            {effects.into_iter().enumerate().map(|(i, effect)| {
-                                                let effect_id = effect.id.clone();
-                                                let fav_effect_id = effect.id.clone();
-                                                let is_active = Signal::derive(move || {
-                                                    fx.active_effect_id.get().as_deref() == Some(&effect_id)
-                                                });
-                                                let is_favorite = Signal::derive(move || {
-                                                    fx.favorite_ids.get().contains(&fav_effect_id)
-                                                });
-                                                view! {
-                                                    <EffectCard
-                                                        effect=effect
-                                                        is_active=is_active
-                                                        is_favorite=is_favorite
-                                                        on_apply=on_apply
-                                                        on_toggle_favorite=on_toggle_favorite
-                                                        index=i
-                                                    />
+                                            <For
+                                                each=move || filtered_effects.get()
+                                                key=|effect| effect.id.clone()
+                                                children=move |effect| {
+                                                    let effect_id = effect.id.clone();
+                                                    let fav_effect_id = effect.id.clone();
+                                                    let is_active = Signal::derive(move || {
+                                                        fx.active_effect_id.get().as_deref() == Some(effect_id.as_str())
+                                                    });
+                                                    let is_favorite = Signal::derive(move || {
+                                                        fx.favorite_ids.get().contains(&fav_effect_id)
+                                                    });
+                                                    view! {
+                                                        <EffectCard
+                                                            effect=effect
+                                                            is_active=is_active
+                                                            is_favorite=is_favorite
+                                                            on_apply=on_apply
+                                                            on_toggle_favorite=on_toggle_favorite
+                                                        />
+                                                    }
                                                 }
-                                            }).collect_view()}
+                                            />
                                         </div>
                                     }.into_any()
                                 }
@@ -499,20 +513,7 @@ pub fn EffectsPage() -> impl IntoView {
                                         effect_id=Signal::derive(move || fx.active_effect_id.get())
                                         control_values=control_values
                                         accent_rgb=accent_rgb
-                                        on_preset_applied=Callback::new(move |()| {
-                                            let set_name = fx.set_active_effect_name;
-                                            let set_controls = fx.set_active_controls;
-                                            let set_values = fx.set_active_control_values;
-                                            let set_preset = fx.set_active_preset_id;
-                                            leptos::task::spawn_local(async move {
-                                                if let Ok(Some(active)) = api::fetch_active_effect().await {
-                                                    set_name.set(Some(active.name));
-                                                    set_controls.set(active.controls);
-                                                    set_values.set(active.control_values);
-                                                    set_preset.set(active.active_preset_id);
-                                                }
-                                            });
-                                        })
+                                        on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
                                         active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
                                     />
 

@@ -3,7 +3,7 @@
 use leptos::prelude::*;
 
 use crate::api::{self, EffectSummary, SystemStatus};
-use crate::app::WsContext;
+use crate::app::{EffectsContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::ws::{BackpressureNotice, PerformanceMetrics};
 
@@ -11,8 +11,8 @@ use crate::ws::{BackpressureNotice, PerformanceMetrics};
 #[component]
 pub fn DashboardPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
+    let fx = expect_context::<EffectsContext>();
     let status_resource = LocalResource::new(api::fetch_status);
-    let effects_resource = LocalResource::new(api::fetch_effects);
 
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
     let preview_fps = Signal::derive(move || ws.preview_fps.get());
@@ -82,20 +82,17 @@ pub fn DashboardPage() -> impl IntoView {
                         <Suspense fallback=move || view! {
                             <div class="text-xs text-fg-tertiary py-4 text-center">"Loading effects..."</div>
                         }>
-                            {move || effects_resource.get().map(|result| {
-                                match result {
-                                    Ok(effects) => {
-                                        let runnable: Vec<_> = effects.into_iter()
-                                            .filter(|e| e.runnable)
-                                            .take(20)
-                                            .collect();
-                                        view! { <QuickSwitchGrid effects=runnable /> }.into_any()
-                                    }
-                                    Err(_) => view! {
-                                        <p class="text-xs text-fg-tertiary">"Could not load effects"</p>
-                                    }.into_any(),
-                                }
-                            })}
+                            {move || {
+                                let runnable: Vec<_> = fx
+                                    .effects_index
+                                    .get()
+                                    .into_iter()
+                                    .map(|entry| entry.effect)
+                                    .filter(|effect| effect.runnable)
+                                    .take(20)
+                                    .collect();
+                                view! { <QuickSwitchGrid effects=runnable /> }.into_any()
+                            }}
                         </Suspense>
                     </div>
                 </div>
@@ -343,6 +340,8 @@ fn StatusCards(status: SystemStatus) -> impl IntoView {
 /// Quick-switch effect grid.
 #[component]
 fn QuickSwitchGrid(effects: Vec<EffectSummary>) -> impl IntoView {
+    let fx = expect_context::<EffectsContext>();
+
     if effects.is_empty() {
         return view! {
             <p class="text-xs text-fg-tertiary py-4 text-center">"No runnable effects found"</p>
@@ -363,12 +362,7 @@ fn QuickSwitchGrid(effects: Vec<EffectSummary>) -> impl IntoView {
                                hover:bg-accent-subtle hover:border-accent-muted card-hover btn-press group
                                animate-fade-in-up"
                         style=delay
-                        on:click=move |_| {
-                            let id = id.clone();
-                            leptos::task::spawn_local(async move {
-                                let _ = api::apply_effect(&id).await;
-                            });
-                        }
+                        on:click=move |_| fx.apply_effect(id.clone())
                     >
                         <div class="text-[12px] text-fg-secondary truncate group-hover:text-fg-primary transition-colors">{name}</div>
                         <div class="text-[10px] text-fg-tertiary capitalize">{category}</div>

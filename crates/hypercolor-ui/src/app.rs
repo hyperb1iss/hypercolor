@@ -19,6 +19,34 @@ use crate::ws::{
     WsManager,
 };
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexedEffect {
+    pub effect: api::EffectSummary,
+    search_text: String,
+}
+
+impl IndexedEffect {
+    fn new(effect: api::EffectSummary) -> Self {
+        let search_text = [
+            effect.name.to_lowercase(),
+            effect.description.to_lowercase(),
+            effect.author.to_lowercase(),
+            effect.category.to_lowercase(),
+            effect.tags.join(" ").to_lowercase(),
+        ]
+        .join(" ");
+
+        Self {
+            effect,
+            search_text,
+        }
+    }
+
+    pub fn matches_search(&self, term: &str) -> bool {
+        term.is_empty() || self.search_text.contains(term)
+    }
+}
+
 /// Global WebSocket state provided via Leptos context.
 #[derive(Clone, Copy)]
 pub struct WsContext {
@@ -35,7 +63,7 @@ pub struct WsContext {
 /// Shared active-effect state — accessible from sidebar, effects page, etc.
 #[derive(Clone, Copy)]
 pub struct EffectsContext {
-    pub effects_resource: LocalResource<Result<Vec<api::EffectSummary>, String>>,
+    pub effects_index: Memo<Vec<IndexedEffect>>,
     pub active_effect_id: ReadSignal<Option<String>>,
     pub set_active_effect_id: WriteSignal<Option<String>>,
     pub active_effect_name: ReadSignal<Option<String>>,
@@ -60,41 +88,60 @@ pub struct DevicesContext {
 }
 
 impl EffectsContext {
+    fn effect_summary(&self, id: &str) -> Option<api::EffectSummary> {
+        self.effects_index.with(|effects| {
+            effects
+                .iter()
+                .find(|entry| entry.effect.id == id)
+                .map(|entry| entry.effect.clone())
+        })
+    }
+
+    pub fn refresh_active_effect(&self) {
+        let ctx = *self;
+        leptos::task::spawn_local(async move {
+            match api::fetch_active_effect().await {
+                Ok(Some(active)) => {
+                    apply_active_effect_snapshot(
+                        &ctx,
+                        active.id.clone(),
+                        active.name,
+                        active.controls,
+                        active.control_values,
+                        active.active_preset_id,
+                    );
+                }
+                Ok(None) => clear_active_effect_state(&ctx),
+                Err(_) => {}
+            }
+        });
+    }
+
     /// Apply an effect by ID — sets local state + calls API.
     pub fn apply_effect(&self, id: String) {
         // Skip if already the active effect
         if self.active_effect_id.get().as_deref() == Some(&id) {
             return;
         }
-        let category = self
-            .effects_resource
-            .get()
-            .and_then(|r| r.ok())
-            .and_then(|effects| {
-                effects
-                    .iter()
-                    .find(|e| e.id == id)
-                    .map(|e| e.category.clone())
-            })
-            .unwrap_or_default();
+
+        let selected_effect = self.effect_summary(&id);
         self.set_active_effect_id.set(Some(id.clone()));
-        self.set_active_effect_category.set(category);
+        self.set_active_effect_name
+            .set(selected_effect.as_ref().map(|effect| effect.name.clone()));
+        self.set_active_effect_category.set(
+            selected_effect
+                .as_ref()
+                .map(|effect| effect.category.clone())
+                .unwrap_or_default(),
+        );
         self.set_active_controls.set(Vec::new());
         self.set_active_control_values.set(HashMap::new());
         self.set_active_preset_id.set(None);
 
-        let set_name = self.set_active_effect_name;
-        let set_controls = self.set_active_controls;
-        let set_values = self.set_active_control_values;
-        let set_preset = self.set_active_preset_id;
-
+        let ctx = *self;
         leptos::task::spawn_local(async move {
-            let _ = api::apply_effect(&id).await;
-            if let Ok(Some(active)) = api::fetch_active_effect().await {
-                set_name.set(Some(active.name));
-                set_controls.set(active.controls);
-                set_values.set(active.control_values);
-                set_preset.set(active.active_preset_id);
+            if api::apply_effect(&id).await.is_ok() {
+                ctx.refresh_active_effect();
             }
         });
     }
@@ -126,16 +173,44 @@ impl EffectsContext {
 
     /// Stop the active effect.
     pub fn stop_effect(&self) {
-        self.set_active_effect_id.set(None);
-        self.set_active_effect_name.set(None);
-        self.set_active_controls.set(Vec::new());
-        self.set_active_control_values.set(HashMap::new());
-        self.set_active_effect_category.set(String::new());
-        self.set_active_preset_id.set(None);
+        clear_active_effect_state(self);
+        let ctx = *self;
         leptos::task::spawn_local(async move {
-            let _ = api::stop_effect().await;
+            if api::stop_effect().await.is_err() {
+                ctx.refresh_active_effect();
+            }
         });
     }
+}
+
+fn apply_active_effect_snapshot(
+    ctx: &EffectsContext,
+    id: String,
+    name: String,
+    controls: Vec<ControlDefinition>,
+    control_values: HashMap<String, ControlValue>,
+    active_preset_id: Option<String>,
+) {
+    let category = ctx
+        .effect_summary(&id)
+        .map(|effect| effect.category)
+        .unwrap_or_default();
+
+    ctx.set_active_effect_id.set(Some(id));
+    ctx.set_active_effect_name.set(Some(name));
+    ctx.set_active_effect_category.set(category);
+    ctx.set_active_controls.set(controls);
+    ctx.set_active_control_values.set(control_values);
+    ctx.set_active_preset_id.set(active_preset_id);
+}
+
+fn clear_active_effect_state(ctx: &EffectsContext) {
+    ctx.set_active_effect_id.set(None);
+    ctx.set_active_effect_name.set(None);
+    ctx.set_active_controls.set(Vec::new());
+    ctx.set_active_control_values.set(HashMap::new());
+    ctx.set_active_effect_category.set(String::new());
+    ctx.set_active_preset_id.set(None);
 }
 
 #[component]
@@ -159,6 +234,13 @@ pub fn App() -> impl IntoView {
 
     // Global effects state — shared between sidebar player + effects page
     let effects_resource = LocalResource::new(api::fetch_effects);
+    let effects_index = Memo::new(move |_| {
+        effects_resource
+            .get()
+            .and_then(Result::ok)
+            .map(|effects| effects.into_iter().map(IndexedEffect::new).collect())
+            .unwrap_or_default()
+    });
     let active_resource = LocalResource::new(api::fetch_active_effect);
     let favorites_resource = LocalResource::new(api::fetch_favorites);
     let (active_effect_id, set_active_effect_id) = signal(None::<String>);
@@ -171,7 +253,7 @@ pub fn App() -> impl IntoView {
     let (favorite_ids, set_favorite_ids) = signal(HashSet::<String>::new());
 
     let effects_ctx = EffectsContext {
-        effects_resource,
+        effects_index,
         active_effect_id,
         set_active_effect_id,
         active_effect_name,
@@ -240,24 +322,16 @@ pub fn App() -> impl IntoView {
     // Initialize active effect from API on load
     Effect::new(move |_| {
         if let Some(Ok(Some(active))) = active_resource.get() {
-            let active_id = active.id.clone();
-            set_active_effect_id.set(Some(active.id));
-            set_active_effect_name.set(Some(active.name));
-            set_active_controls.set(active.controls);
-            set_active_control_values.set(active.control_values);
-            set_active_preset_id.set(active.active_preset_id);
-            if let Some(Ok(effects)) = effects_resource.get() {
-                if let Some(e) = effects.iter().find(|e| e.id == active_id) {
-                    set_active_effect_category.set(e.category.clone());
-                }
-            }
+            apply_active_effect_snapshot(
+                &effects_ctx,
+                active.id,
+                active.name,
+                active.controls,
+                active.control_values,
+                active.active_preset_id,
+            );
         } else if let Some(Ok(None)) = active_resource.get() {
-            set_active_effect_id.set(None);
-            set_active_effect_name.set(None);
-            set_active_controls.set(Vec::new());
-            set_active_control_values.set(HashMap::new());
-            set_active_effect_category.set(String::new());
-            set_active_preset_id.set(None);
+            clear_active_effect_state(&effects_ctx);
         }
     });
 

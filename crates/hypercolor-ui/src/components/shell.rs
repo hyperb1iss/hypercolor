@@ -6,7 +6,7 @@ use leptos_router::hooks::use_location;
 use leptos_router::hooks::use_navigate;
 use wasm_bindgen::JsCast;
 
-use crate::api;
+use crate::app::EffectsContext;
 use crate::components::sidebar::Sidebar;
 use crate::icons::*;
 
@@ -213,6 +213,7 @@ pub fn Shell(children: Children) -> impl IntoView {
 /// Command palette — fuzzy search over effects with one-click apply.
 #[component]
 fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
+    let fx = expect_context::<EffectsContext>();
     let (query, set_query) = signal(String::new());
     let input_ref = NodeRef::<leptos::html::Input>::new();
 
@@ -222,31 +223,26 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
         }
     });
 
-    let effects_resource = LocalResource::new(api::fetch_effects);
-
     let filtered = Memo::new(move |_| {
-        let Some(Ok(effects)) = effects_resource.get() else {
-            return Vec::new();
-        };
-
-        let q = query.get().to_lowercase();
+        let q = query.get().trim().to_lowercase();
+        let effects = fx.effects_index.get();
         if q.is_empty() {
             return effects
                 .into_iter()
-                .filter(|e| e.runnable)
+                .map(|entry| entry.effect)
+                .filter(|effect| effect.runnable)
                 .take(10)
                 .collect();
         }
 
         effects
             .into_iter()
-            .filter(|e| {
-                e.runnable
-                    && (e.name.to_lowercase().contains(&q)
-                        || e.description.to_lowercase().contains(&q)
-                        || e.category.contains(&q)
-                        || e.tags.iter().any(|t| t.to_lowercase().contains(&q)))
+            .filter(|entry| {
+                entry.effect.runnable
+                    && (entry.matches_search(&q)
+                        || entry.effect.category.to_lowercase().contains(&q))
             })
+            .map(|entry| entry.effect)
             .take(10)
             .collect::<Vec<_>>()
     });
@@ -317,10 +313,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                                        hover:bg-electric-purple/[0.05] btn-press group animate-fade-in-up"
                                                 style=delay
                                                 on:click=move |_| {
-                                                    let id = id.clone();
-                                                    leptos::task::spawn_local(async move {
-                                                        let _ = api::apply_effect(&id).await;
-                                                    });
+                                                    fx.apply_effect(id.clone());
                                                     on_close.run(());
                                                 }
                                             >

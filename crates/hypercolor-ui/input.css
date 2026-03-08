@@ -460,6 +460,12 @@ input[type="color"]::-webkit-color-swatch {
                 inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
+.content-auto-card {
+    content-visibility: auto;
+    contain: layout paint style;
+    contain-intrinsic-size: 220px 180px;
+}
+
 /* Accent edge glow — for active/important panels */
 .edge-glow-accent {
     box-shadow: 0 0 24px rgba(var(--glow-rgb, 225, 53, 255), 0.08),
