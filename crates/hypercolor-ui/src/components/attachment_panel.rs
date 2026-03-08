@@ -270,6 +270,8 @@ fn build_attachment_layout_zones(
                     template_id: suggested.template_id.clone(),
                     slot_id: suggested.slot_id.clone(),
                     instance: suggested.instance,
+                    led_start: Some(suggested.led_start),
+                    led_count: Some(suggested.led_count),
                     led_mapping: suggested.led_mapping.clone(),
                 }),
             }

@@ -193,6 +193,7 @@ pub fn LayoutPalette(
                             {devices.into_iter().enumerate().map(|(idx, dev)| {
                                         let device_id = dev.layout_device_id.clone();
                                         let device_name = dev.name.clone();
+                                        let connection_label = dev.connection_label.clone();
                                         let backend = dev.backend.clone();
                                         let rgb = backend_accent_rgb(&backend).to_string();
                                         let fallback_leds = dev.total_leds;
@@ -348,6 +349,13 @@ pub fn LayoutPalette(
                                                                 {backend}
                                                             </span>
                                                         </div>
+                                                        {connection_label.as_ref().map(|label| {
+                                                            view! {
+                                                                <div class="text-[9px] font-mono text-fg-tertiary/80 truncate mt-0.5">
+                                                                    {label.clone()}
+                                                                </div>
+                                                            }
+                                                        })}
                                                         <div class="text-[10px] text-fg-tertiary font-mono flex items-center gap-1.5 mt-0.5">
                                                             <span>
                                                                 {fallback_leds} " LEDs"

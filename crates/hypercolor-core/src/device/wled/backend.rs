@@ -276,8 +276,7 @@ impl WledDevice {
             // Preserve hue fidelity for WLED RGBW strips in DDP mode by
             // sending RGB-only payloads and letting WLED handle white-channel
             // behavior locally. WLED accepts RGB24 DDP for RGBW outputs.
-            WledColorFormat::Rgbw => WledColorFormat::Rgb,
-            WledColorFormat::Rgb => WledColorFormat::Rgb,
+            WledColorFormat::Rgbw | WledColorFormat::Rgb => WledColorFormat::Rgb,
         }
     }
 

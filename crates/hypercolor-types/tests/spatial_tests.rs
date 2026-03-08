@@ -1,8 +1,9 @@
 use hypercolor_types::spatial::{
     Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, NormalizedRect, Orientation,
     RingDef, RoomAdjacency, RoomDimensions, SamplingMode, SpaceDefinition, SpatialLayout,
-    StripDirection, Wall, Winding, ZoneGroup, ZoneShape,
+    StripDirection, Wall, Winding, ZoneAttachment, ZoneGroup, ZoneShape,
 };
+use serde_json::json;
 
 // ── NormalizedPosition ──────────────────────────────────────────────────────
 
@@ -306,6 +307,23 @@ fn device_zone_optional_fields() {
     assert!(zone.shape.is_none());
     assert!(zone.shape_preset.is_none());
     assert!(zone.led_mapping.is_none());
+}
+
+#[test]
+fn zone_attachment_defaults_optional_physical_range() {
+    let attachment: ZoneAttachment = serde_json::from_value(json!({
+        "template_id": "strimer-gpu",
+        "slot_id": "gpu-strimer",
+        "instance": 1
+    }))
+    .expect("attachment should deserialize");
+
+    assert_eq!(attachment.template_id, "strimer-gpu");
+    assert_eq!(attachment.slot_id, "gpu-strimer");
+    assert_eq!(attachment.instance, 1);
+    assert_eq!(attachment.led_start, None);
+    assert_eq!(attachment.led_count, None);
+    assert_eq!(attachment.led_mapping, None);
 }
 
 // ── SpatialLayout ───────────────────────────────────────────────────────────

@@ -324,6 +324,12 @@ pub struct ZoneAttachment {
     /// Zero-based attachment instance index within the binding.
     #[serde(default)]
     pub instance: u32,
+    /// Inclusive physical LED start index for this imported attachment zone.
+    #[serde(default)]
+    pub led_start: Option<u32>,
+    /// Physical LED count reserved for this imported attachment zone.
+    #[serde(default)]
+    pub led_count: Option<u32>,
     /// Optional spatial-order -> physical-order LED remapping.
     #[serde(default)]
     pub led_mapping: Option<Vec<u32>>,

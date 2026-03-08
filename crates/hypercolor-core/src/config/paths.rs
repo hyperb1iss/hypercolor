@@ -10,8 +10,7 @@ use std::sync::{LazyLock, RwLock};
 const APP_DIR: &str = "hypercolor";
 
 static DATA_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(|| RwLock::new(None));
-static CONFIG_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> =
-    LazyLock::new(|| RwLock::new(None));
+static CONFIG_DIR_OVERRIDE: LazyLock<RwLock<Option<PathBuf>>> = LazyLock::new(|| RwLock::new(None));
 
 /// Returns the platform-appropriate configuration directory.
 ///

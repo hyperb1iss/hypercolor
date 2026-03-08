@@ -14,6 +14,7 @@ use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInf
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    ZoneAttachment,
 };
 use tokio::sync::Mutex;
 
@@ -1424,6 +1425,56 @@ async fn write_frame_applies_zone_led_mapping_before_segment_copy() {
     let writes = writes.lock().await;
     let frame = writes.first().expect("one frame should be written");
     assert_eq!(frame.as_slice(), &[[20, 0, 0], [30, 0, 0], [10, 0, 0]]);
+}
+
+#[tokio::test]
+async fn write_frame_uses_attachment_led_range_within_mapped_device() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(10),
+        writes.clone(),
+        write_count,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device_with_segment(
+        "usb:prismrgb-prism-s",
+        "slow",
+        device_id,
+        Some(SegmentRange::new(0, 282)),
+    );
+
+    let mut zone = make_zone("zone_gpu", "usb:prismrgb-prism-s", 160);
+    zone.attachment = Some(ZoneAttachment {
+        template_id: "strimer-gpu".into(),
+        slot_id: "gpu-strimer".into(),
+        instance: 0,
+        led_start: Some(120),
+        led_count: Some(160),
+        led_mapping: None,
+    });
+    let layout = make_layout(vec![zone]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_gpu".into(),
+        colors: vec![[0, 0, 255]; 160],
+    }];
+
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 280);
+    assert!(stats.errors.is_empty());
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let writes = writes.lock().await;
+    let frame = writes.first().expect("one frame should be written");
+    assert_eq!(frame.len(), 280);
+    assert!(frame[..120].iter().all(|color| *color == [0, 0, 0]));
+    assert!(frame[120..280].iter().all(|color| *color == [0, 0, 255]));
 }
 
 #[tokio::test]

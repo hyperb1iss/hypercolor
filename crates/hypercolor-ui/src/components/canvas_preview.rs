@@ -7,7 +7,10 @@ use leptos::html::Canvas;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
-use web_sys::{HtmlCanvasElement, WebGlBuffer, WebGlProgram, WebGlRenderingContext as Gl, WebGlShader, WebGlTexture};
+use web_sys::{
+    HtmlCanvasElement, WebGlBuffer, WebGlProgram, WebGlRenderingContext as Gl, WebGlShader,
+    WebGlTexture,
+};
 
 use crate::ws::CanvasFrame;
 

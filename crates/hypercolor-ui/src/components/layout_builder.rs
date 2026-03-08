@@ -35,7 +35,10 @@ fn preferred_replacement_layout(
 fn replacement_layout_name(layouts: &[api::LayoutSummary]) -> String {
     let base = "Default Layout";
     let existing_names: Vec<&str> = layouts.iter().map(|layout| layout.name.as_str()).collect();
-    if !existing_names.iter().any(|name| name.eq_ignore_ascii_case(base)) {
+    if !existing_names
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(base))
+    {
         return base.to_owned();
     }
 
@@ -246,16 +249,21 @@ pub fn LayoutBuilder() -> impl IntoView {
             let mut next_selection = fallback_layout.clone();
 
             let delete_result: Result<(), String> = async {
-                if selected_summary.as_ref().is_some_and(|entry| entry.is_active) {
+                if selected_summary
+                    .as_ref()
+                    .is_some_and(|entry| entry.is_active)
+                {
                     let replacement = match fallback_layout {
                         Some(layout) => layout,
-                        None => api::create_layout(&api::CreateLayoutRequest {
-                            name: replacement_layout_name(&layouts),
-                            description: None,
-                            canvas_width: None,
-                            canvas_height: None,
-                        })
-                        .await?,
+                        None => {
+                            api::create_layout(&api::CreateLayoutRequest {
+                                name: replacement_layout_name(&layouts),
+                                description: None,
+                                canvas_width: None,
+                                canvas_height: None,
+                            })
+                            .await?
+                        }
                     };
                     api::apply_layout(&replacement.id).await?;
                     next_selection = Some(replacement);
@@ -267,7 +275,8 @@ pub fn LayoutBuilder() -> impl IntoView {
 
             match delete_result {
                 Ok(()) => {
-                    set_selected_layout_id.set(next_selection.as_ref().map(|layout| layout.id.clone()));
+                    set_selected_layout_id
+                        .set(next_selection.as_ref().map(|layout| layout.id.clone()));
                     if let Some(layout) = next_selection {
                         toasts::toast_info(&format!("Deleted {name}; switched to {}", layout.name));
                     } else {

@@ -154,13 +154,7 @@ impl Transport for UsbHidRawTransport {
         let _guard = self.op_lock.lock().await;
         let device_path = self.device_path.clone();
         let report_id = self.report_id;
-        let mut packet = data.to_vec();
-
-        // hidapi expects report ID in the first byte. For report_id=0 devices
-        // the payload already starts with 0, so send as-is.
-        if report_id != 0 && packet.first().copied() != Some(report_id) {
-            packet.insert(0, report_id);
-        }
+        let packet = encode_feature_report_packet(data, report_id);
 
         trace!(
             device_path = %self.device_path,
@@ -211,21 +205,19 @@ impl Transport for UsbHidRawTransport {
                 .open_path(&c_path)
                 .map_err(|error| map_hidapi_error(&error))?;
 
-            let mut buffer = vec![0_u8; max_packet_len];
-            if report_id != 0 {
-                buffer[0] = report_id;
-            }
+            let mut buffer = vec![0_u8; max_packet_len.saturating_add(1)];
+            buffer[0] = report_id;
 
             let read = device
                 .get_feature_report(&mut buffer)
                 .map_err(|error| map_hidapi_error(&error))?;
             buffer.truncate(read);
 
-            if report_id != 0 && !buffer.is_empty() && buffer[0] == report_id {
-                buffer.remove(0);
-            }
-
-            Ok(buffer)
+            Ok(decode_feature_report_packet(
+                &buffer,
+                report_id,
+                max_packet_len,
+            ))
         })
         .await
         .map_err(|error| TransportError::IoError {
@@ -253,6 +245,31 @@ fn c_string_for_path(path: &str) -> Result<CString, TransportError> {
     CString::new(path).map_err(|error| TransportError::IoError {
         detail: format!("invalid hidraw path '{path}': {error}"),
     })
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn encode_feature_report_packet(payload: &[u8], report_id: u8) -> Vec<u8> {
+    let mut packet = Vec::with_capacity(payload.len().saturating_add(1));
+    packet.push(report_id);
+    packet.extend_from_slice(payload);
+    packet
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn decode_feature_report_packet(
+    buffer: &[u8],
+    report_id: u8,
+    expected_payload_len: usize,
+) -> Vec<u8> {
+    if buffer.len() == expected_payload_len.saturating_add(1)
+        && buffer.first().copied() == Some(report_id)
+    {
+        return buffer[1..].to_vec();
+    }
+
+    buffer.to_vec()
 }
 
 fn map_hidapi_error(error: &hidapi::HidError) -> TransportError {
@@ -292,6 +309,12 @@ fn usb_paths_match(candidate: &str, requested: &str) -> bool {
     }
 }
 
+#[doc(hidden)]
+#[must_use]
+pub fn usb_paths_match_for_testing(candidate: &str, requested: &str) -> bool {
+    usb_paths_match(candidate, requested)
+}
+
 fn normalize_usb_path(path: &str) -> Option<String> {
     let (bus, ports) = path.split_once('-')?;
     let bus = bus.parse::<u16>().ok()?;
@@ -316,22 +339,5 @@ fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
         "<empty>".to_owned()
     } else {
         rendered
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::usb_paths_match;
-
-    #[test]
-    fn usb_paths_match_handles_padded_bus_numbers() {
-        assert!(usb_paths_match("3-7", "003-7"));
-        assert!(usb_paths_match("003-7", "3-7"));
-        assert!(usb_paths_match("03-7.2", "3-7.2"));
-    }
-
-    #[test]
-    fn usb_paths_match_rejects_different_ports() {
-        assert!(!usb_paths_match("3-7", "3-8"));
     }
 }

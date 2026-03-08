@@ -387,6 +387,15 @@ impl DeviceLifecycleManager {
             }
         }
 
+        if let Some(value) = value.strip_prefix("usb:") {
+            return format!("usb:{}", sanitize_component(value));
+        }
+
+        let backend_prefix = format!("{backend_id}:");
+        if let Some(value) = value.strip_prefix(&backend_prefix) {
+            return format!("{backend_id}:{}", sanitize_component(value));
+        }
+
         Self::layout_device_id(backend_id, device_info)
     }
 

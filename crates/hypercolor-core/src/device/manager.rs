@@ -20,12 +20,13 @@ use tracing::{debug, trace, warn};
 
 use hypercolor_types::device::{DeviceId, DeviceInfo};
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{SpatialLayout, ZoneAttachment};
 
 use super::traits::DeviceBackend;
 
 type BackendHandle = Arc<Mutex<Box<dyn DeviceBackend>>>;
 type BackendDeviceKey = (String, DeviceId);
+type ZoneRoute<'a> = (&'a str, Option<&'a [u32]>, Option<&'a ZoneAttachment>);
 const UNMAPPED_LAYOUT_WARN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Lightweight handle for backend I/O that can outlive the manager lock.
@@ -895,16 +896,20 @@ impl BackendManager {
     ) -> FrameWriteStats {
         let mut stats = FrameWriteStats::default();
 
-        // Build zone_id → layout device_id lookup from the spatial layout.
-        let zone_to_device: HashMap<&str, &str> = layout
+        // Build zone_id → routing metadata lookup from the spatial layout.
+        let zone_routes: HashMap<&str, ZoneRoute<'_>> = layout
             .zones
             .iter()
-            .map(|z| (z.id.as_str(), z.device_id.as_str()))
-            .collect();
-        let zone_to_mapping: HashMap<&str, Option<&[u32]>> = layout
-            .zones
-            .iter()
-            .map(|zone| (zone.id.as_str(), zone.led_mapping.as_deref()))
+            .map(|zone| {
+                (
+                    zone.id.as_str(),
+                    (
+                        zone.device_id.as_str(),
+                        zone.led_mapping.as_deref(),
+                        zone.attachment.as_ref(),
+                    ),
+                )
+            })
             .collect();
 
         #[allow(clippy::items_after_statements)]
@@ -919,18 +924,15 @@ impl BackendManager {
         let mut device_colors: HashMap<(String, DeviceId), AccumulatedColors> = HashMap::new();
 
         for zc in zone_colors {
-            let Some(layout_device_id) = zone_to_device.get(zc.zone_id.as_str()) else {
+            let Some((layout_device_id, led_mapping, attachment)) =
+                zone_routes.get(zc.zone_id.as_str()).copied()
+            else {
                 warn!(zone_id = %zc.zone_id, "zone not found in spatial layout");
                 continue;
             };
-            let remapped_colors = remap_zone_colors(
-                &zc.zone_id,
-                &zc.colors,
-                zone_to_mapping.get(zc.zone_id.as_str()).copied().flatten(),
-            );
+            let remapped_colors = remap_zone_colors(&zc.zone_id, &zc.colors, led_mapping);
 
-            let Some(mapping) = self.device_map.get(*layout_device_id) else {
-                let layout_device_id = *layout_device_id;
+            let Some(mapping) = self.device_map.get(layout_device_id) else {
                 let should_warn =
                     self.last_unmapped_warn_at
                         .get(layout_device_id)
@@ -953,7 +955,9 @@ impl BackendManager {
             let key = (mapping.backend_id.clone(), mapping.device_id);
             let entry = device_colors.entry(key).or_default();
 
-            if let Some(segment) = mapping.segment {
+            let segment = attachment_segment_for_zone(&zc.zone_id, mapping.segment, attachment);
+
+            if let Some(segment) = segment {
                 entry.has_segmented_write = true;
                 let required_len = segment.end();
                 if entry.values.len() < required_len {
@@ -1215,4 +1219,55 @@ fn remap_zone_colors<'a>(
     }
 
     Cow::Owned(reordered)
+}
+
+fn attachment_segment_for_zone(
+    zone_id: &str,
+    base_segment: Option<SegmentRange>,
+    attachment: Option<&ZoneAttachment>,
+) -> Option<SegmentRange> {
+    let Some(attachment) = attachment else {
+        return base_segment;
+    };
+    let (Some(led_start), Some(led_count)) = (attachment.led_start, attachment.led_count) else {
+        return base_segment;
+    };
+
+    let Ok(led_start) = usize::try_from(led_start) else {
+        warn!(
+            zone_id = %zone_id,
+            attachment_led_start = led_start,
+            "ignoring attachment segment override because led_start does not fit in usize"
+        );
+        return base_segment;
+    };
+    let Ok(led_count) = usize::try_from(led_count) else {
+        warn!(
+            zone_id = %zone_id,
+            attachment_led_count = led_count,
+            "ignoring attachment segment override because led_count does not fit in usize"
+        );
+        return base_segment;
+    };
+
+    if let Some(base_segment) = base_segment {
+        if led_start.saturating_add(led_count) > base_segment.length {
+            warn!(
+                zone_id = %zone_id,
+                attachment_led_start = led_start,
+                attachment_led_count = led_count,
+                base_segment_start = base_segment.start,
+                base_segment_length = base_segment.length,
+                "ignoring attachment segment override because it exceeds the mapped segment"
+            );
+            return Some(base_segment);
+        }
+
+        return Some(SegmentRange::new(
+            base_segment.start.saturating_add(led_start),
+            led_count,
+        ));
+    }
+
+    Some(SegmentRange::new(led_start, led_count))
 }

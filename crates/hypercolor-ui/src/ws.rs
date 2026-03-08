@@ -266,9 +266,9 @@ impl WsManager {
                         last_frame_number.get_value(),
                         last_frame_timestamp.get_value(),
                     ) {
-                        let frame_delta = current_frame_number.saturating_sub(previous_frame_number);
-                        let elapsed_ms =
-                            current_timestamp_ms.saturating_sub(previous_timestamp_ms);
+                        let frame_delta =
+                            current_frame_number.saturating_sub(previous_frame_number);
+                        let elapsed_ms = current_timestamp_ms.saturating_sub(previous_timestamp_ms);
 
                         if frame_delta > 0 && elapsed_ms > 0 {
                             let target_fps = preview_target_fps.get_untracked();

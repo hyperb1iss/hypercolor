@@ -263,6 +263,37 @@ async fn lifecycle_discovery_connect_and_frame_write() {
     assert_eq!(writes[0], vec![[255, 0, 128]; 4]);
 }
 
+#[test]
+fn lifecycle_uses_usb_fingerprint_for_same_name_devices() {
+    let mut lifecycle = DeviceLifecycleManager::new();
+    let first_id = DeviceId::new();
+    let second_id = DeviceId::new();
+    let first = device_info(first_id, "PrismRGB Prism S");
+    let second = device_info(second_id, "PrismRGB Prism S");
+
+    let _ = lifecycle.on_discovered(
+        first_id,
+        &first,
+        "usb",
+        Some(&DeviceFingerprint("usb:16d0:1294:1-3.3".to_owned())),
+    );
+    let _ = lifecycle.on_discovered(
+        second_id,
+        &second,
+        "usb",
+        Some(&DeviceFingerprint("usb:16d0:1294:1-3.4".to_owned())),
+    );
+
+    assert_eq!(
+        lifecycle.layout_device_id_for(first_id),
+        Some("usb:16d0:1294:1-3-3")
+    );
+    assert_eq!(
+        lifecycle.layout_device_id_for(second_id),
+        Some("usb:16d0:1294:1-3-4")
+    );
+}
+
 #[tokio::test]
 async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
     let device_id = DeviceId::new();

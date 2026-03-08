@@ -51,6 +51,10 @@ fn backend_icon(backend: &str) -> icondata_core::Icon {
 }
 
 fn endpoint_label(device: &DeviceSummary) -> Option<String> {
+    if let Some(label) = &device.connection_label {
+        return Some(label.clone());
+    }
+
     match (&device.network_hostname, &device.network_ip) {
         (Some(hostname), Some(ip)) => Some(format!("{hostname} ({ip})")),
         (Some(hostname), None) => Some(hostname.clone()),

@@ -221,10 +221,11 @@ pub fn App() -> impl IntoView {
             "device_discovered" => event.device_id.as_ref().is_some_and(|device_id| {
                 !current_devices.iter().any(|device| &device.id == device_id)
             }),
-            "device_disconnected" | "device_state_changed" => event
-                .device_id
-                .as_ref()
-                .is_some_and(|device_id| current_devices.iter().any(|device| &device.id == device_id)),
+            "device_disconnected" | "device_state_changed" => {
+                event.device_id.as_ref().is_some_and(|device_id| {
+                    current_devices.iter().any(|device| &device.id == device_id)
+                })
+            }
             "device_discovery_completed" => {
                 current_devices.is_empty() && event.found_count.is_some_and(|count| count > 0)
             }

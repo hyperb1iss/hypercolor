@@ -65,6 +65,7 @@ pub struct DeviceSummary {
     pub firmware_version: Option<String>,
     pub network_ip: Option<String>,
     pub network_hostname: Option<String>,
+    pub connection_label: Option<String>,
     pub total_leds: u32,
     pub zones: Vec<ZoneSummary>,
 }
@@ -1333,6 +1334,7 @@ fn summarize_device(
         firmware_version: info.firmware_version.clone(),
         network_ip: metadata.and_then(|values| values.get("ip").cloned()),
         network_hostname: metadata.and_then(|values| values.get("hostname").cloned()),
+        connection_label: device_connection_label(metadata),
         total_leds: info.total_led_count(),
         zones: info
             .zones
@@ -1347,6 +1349,15 @@ fn summarize_device(
             })
             .collect(),
     }
+}
+
+fn device_connection_label(metadata: Option<&HashMap<String, String>>) -> Option<String> {
+    metadata.and_then(|values| {
+        values
+            .get("serial")
+            .cloned()
+            .or_else(|| values.get("usb_path").map(|path| format!("USB {path}")))
+    })
 }
 
 fn summarize_attachment_profile(

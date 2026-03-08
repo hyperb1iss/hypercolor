@@ -48,31 +48,30 @@ pub fn EffectsPage() -> impl IntoView {
 
     // Restore persisted filter state from localStorage
     let storage = web_sys::window().and_then(|w| w.local_storage().ok().flatten());
-    let stored = |key: &str| -> Option<String> {
-        storage.as_ref()?.get_item(key).ok().flatten()
-    };
+    let stored = |key: &str| -> Option<String> { storage.as_ref()?.get_item(key).ok().flatten() };
 
     let (search, set_search) = signal(String::new());
-    let (category_filter, set_category_filter) = signal(
-        stored("hc-fx-category").unwrap_or_else(|| "all".to_string()),
-    );
+    let (category_filter, set_category_filter) =
+        signal(stored("hc-fx-category").unwrap_or_else(|| "all".to_string()));
     let (selected_authors, set_selected_authors) = signal({
         stored("hc-fx-authors")
-            .map(|s| s.split(',').filter(|a| !a.is_empty()).map(String::from).collect())
+            .map(|s| {
+                s.split(',')
+                    .filter(|a| !a.is_empty())
+                    .map(String::from)
+                    .collect()
+            })
             .unwrap_or_else(std::collections::BTreeSet::<String>::new)
     });
     let (author_dropdown_open, set_author_dropdown_open) = signal(false);
-    let (favorites_only, set_favorites_only) = signal(
-        stored("hc-fx-favorites").as_deref() == Some("true"),
-    );
-    let (audio_reactive_only, set_audio_reactive_only) = signal(
-        stored("hc-fx-audio").as_deref() == Some("true"),
-    );
+    let (favorites_only, set_favorites_only) =
+        signal(stored("hc-fx-favorites").as_deref() == Some("true"));
+    let (audio_reactive_only, set_audio_reactive_only) =
+        signal(stored("hc-fx-audio").as_deref() == Some("true"));
 
     // Persist filter changes to localStorage
     Effect::new(move |_| {
-        let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten())
-        else {
+        let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
             return;
         };
         let _ = storage.set_item("hc-fx-category", &category_filter.get());

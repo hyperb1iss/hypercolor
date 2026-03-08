@@ -99,10 +99,19 @@ pub struct ZoneSummary {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ZoneTopologySummary {
     Strip,
-    Matrix { rows: u32, cols: u32 },
-    Ring { count: u32 },
+    Matrix {
+        rows: u32,
+        cols: u32,
+    },
+    Ring {
+        count: u32,
+    },
     Point,
-    Display { width: u32, height: u32, circular: bool },
+    Display {
+        width: u32,
+        height: u32,
+        circular: bool,
+    },
     Custom,
 }
 
@@ -120,6 +129,8 @@ pub struct DeviceSummary {
     pub network_ip: Option<String>,
     #[serde(default)]
     pub network_hostname: Option<String>,
+    #[serde(default)]
+    pub connection_label: Option<String>,
     pub total_leds: usize,
     #[serde(default)]
     pub zones: Vec<ZoneSummary>,
