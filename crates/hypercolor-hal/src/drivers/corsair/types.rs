@@ -157,9 +157,8 @@ impl LinkDeviceType {
                 0x02 => 160,
                 _ => 0,
             },
-            Self::CoolerPumpLcd => 24,
+            Self::CoolerPumpLcd | Self::Xc7Elite => 24,
             Self::HSeriesAio | Self::TitanAio => 20,
-            Self::Xc7Elite => 24,
             Self::Xd5Elite | Self::Xd6Elite => 22,
             Self::Xg7Rgb => 16,
             Self::RxMaxFan

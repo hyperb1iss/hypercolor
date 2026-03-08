@@ -61,10 +61,6 @@ impl UsbBackend {
         Self::default()
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "transport setup fans out by transport family"
-    )]
     async fn build_transport(
         pending: &PendingUsbDevice,
         usb: &nusb::DeviceInfo,

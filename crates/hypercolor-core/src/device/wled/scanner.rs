@@ -102,7 +102,8 @@ impl WledScanner {
                 supports_brightness: true,
                 has_display: false,
                 display_resolution: None,
-                max_fps: wled_info.map_or(60, |info| info.negotiated_target_fps()),
+                max_fps: wled_info
+                    .map_or(60, super::backend::WledDeviceInfo::negotiated_target_fps),
             },
         };
 

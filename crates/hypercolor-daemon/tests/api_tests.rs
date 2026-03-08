@@ -3064,6 +3064,10 @@ async fn logical_devices_reject_overlapping_segments() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this migration test validates legacy alias preservation, logical-device creation, and backend mapping state in one end-to-end flow"
+)]
 async fn logical_devices_migrate_legacy_default_ids_and_keep_legacy_aliases_mapped() {
     let (state, _tmp) = test_state_with_temp_logical_store();
     register_noop_backend(&state, "wled", "WLED Test").await;

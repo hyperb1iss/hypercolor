@@ -428,6 +428,10 @@ async fn pipeline_renders_active_effect_to_devices() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this integration test exercises the full reconnect flow through render, write failure detection, and lifecycle recovery"
+)]
 async fn pipeline_async_write_failures_enter_reconnect_flow() {
     let device_id = DeviceId::new();
     let mock_config = MockDeviceConfig {

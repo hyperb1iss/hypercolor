@@ -380,7 +380,7 @@ fn empty_default_layout(previous: &SpatialLayout) -> SpatialLayout {
         zones: Vec::new(),
         groups: Vec::new(),
         default_sampling_mode: previous.default_sampling_mode.clone(),
-        default_edge_behavior: previous.default_edge_behavior.clone(),
+        default_edge_behavior: previous.default_edge_behavior,
         spaces: previous.spaces.clone(),
         version: previous.version,
     }

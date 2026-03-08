@@ -159,7 +159,7 @@ async fn run_display_output(
             };
 
             if let Err(error) = result {
-                maybe_warn_display_error(&mut last_warned_at, &target, error);
+                maybe_warn_display_error(&mut last_warned_at, &target, &error);
             }
         }
     }
@@ -293,7 +293,7 @@ fn apply_circular_mask(image: &mut RgbaImage) {
 fn maybe_warn_display_error(
     last_warned_at: &mut HashMap<(String, DeviceId), Instant>,
     target: &DisplayTarget,
-    error: anyhow::Error,
+    error: &anyhow::Error,
 ) {
     let key = (target.backend_id.clone(), target.device_id);
     let should_warn = last_warned_at

@@ -26,6 +26,17 @@ enum CorsairLcdInitMode {
     Xc7,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CorsairLcdConfig {
+    name: &'static str,
+    width: u32,
+    height: u32,
+    data_zone_byte: u8,
+    keepalive_zone_byte: u8,
+    circular: bool,
+    ring_led_count: u32,
+}
+
 /// JPEG streaming protocol for Corsair LCD devices.
 pub struct CorsairLcdProtocol {
     name: &'static str,
@@ -53,13 +64,15 @@ impl CorsairLcdProtocol {
         ring_led_count: u32,
     ) -> Self {
         Self::with_behavior(
-            name,
-            width,
-            height,
-            data_zone_byte,
-            keepalive_zone_byte,
-            circular,
-            ring_led_count,
+            CorsairLcdConfig {
+                name,
+                width,
+                height,
+                data_zone_byte,
+                keepalive_zone_byte,
+                circular,
+                ring_led_count,
+            },
             CorsairLcdInitMode::Standard,
             vec![STANDARD_LCD_SHUTDOWN.to_vec()],
         )
@@ -69,13 +82,15 @@ impl CorsairLcdProtocol {
     #[must_use]
     pub fn new_xc7(name: &'static str) -> Self {
         Self::with_behavior(
-            name,
-            480,
-            480,
-            0x1F,
-            0x1C,
-            true,
-            31,
+            CorsairLcdConfig {
+                name,
+                width: 480,
+                height: 480,
+                data_zone_byte: 0x1F,
+                keepalive_zone_byte: 0x1C,
+                circular: true,
+                ring_led_count: 31,
+            },
             CorsairLcdInitMode::Xc7,
             vec![
                 XC7_LCD_SHUTDOWN_PRIMARY.to_vec(),
@@ -85,24 +100,18 @@ impl CorsairLcdProtocol {
     }
 
     fn with_behavior(
-        name: &'static str,
-        width: u32,
-        height: u32,
-        data_zone_byte: u8,
-        keepalive_zone_byte: u8,
-        circular: bool,
-        ring_led_count: u32,
+        config: CorsairLcdConfig,
         init_mode: CorsairLcdInitMode,
         shutdown_reports: Vec<Vec<u8>>,
     ) -> Self {
         Self {
-            name,
-            width,
-            height,
-            data_zone_byte,
-            keepalive_zone_byte,
-            circular,
-            ring_led_count,
+            name: config.name,
+            width: config.width,
+            height: config.height,
+            data_zone_byte: config.data_zone_byte,
+            keepalive_zone_byte: config.keepalive_zone_byte,
+            circular: config.circular,
+            ring_led_count: config.ring_led_count,
             init_mode,
             shutdown_reports,
             last_keepalive_at: RwLock::new(None),

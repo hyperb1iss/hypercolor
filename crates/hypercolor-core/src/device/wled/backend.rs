@@ -108,7 +108,7 @@ pub struct WledDeviceInfo {
     pub uptime_secs: u32,
     /// Architecture string (e.g., "esp32").
     pub arch: String,
-    /// Whether the controller is currently connected over WiFi.
+    /// Whether the controller is currently connected over `WiFi`.
     #[serde(default)]
     pub is_wifi: bool,
     /// Number of built-in effects.
@@ -126,9 +126,8 @@ impl WledDeviceInfo {
         }
 
         match (usize::from(self.led_count), self.is_wifi) {
-            (0..=300, _) => 40,
             (301..=600, true) => 30,
-            (301..=600, false) => 40,
+            (0..=300, _) | (301..=600, false) => 40,
             (_, true) => 25,
             (_, false) => 35,
         }

@@ -655,6 +655,10 @@ pub async fn discover_devices(
 }
 
 /// `POST /api/v1/devices/:id/identify` — Flash identification pattern.
+#[expect(
+    clippy::too_many_lines,
+    reason = "identify setup validates request state, acquires direct backend access, and launches the flash task in one API entrypoint"
+)]
 pub async fn identify_device(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -708,9 +712,9 @@ pub async fn identify_device(
         .and_then(|metadata| metadata.get("hostname").cloned());
     let manager = Arc::clone(&state.backend_manager);
     let on_frame = vec![identify_rgb; led_count];
-    let backend_io = {
+    let direct_backend = {
         let mut manager = manager.lock().await;
-        let Some(backend_io) = manager.backend_io(&backend_id) else {
+        let Some(direct_backend) = manager.backend_io(&backend_id) else {
             return ApiError::internal(format!(
                 "Failed to start identify flash for {}: backend '{backend_id}' is not registered",
                 tracked.info.name
@@ -726,10 +730,10 @@ pub async fn identify_device(
             "identify enabling direct control and issuing initial on-frame"
         );
         manager.begin_direct_control(&backend_id, device_id);
-        backend_io
+        direct_backend
     };
 
-    if let Err(error) = backend_io.write_colors(device_id, &on_frame).await {
+    if let Err(error) = direct_backend.write_colors(device_id, &on_frame).await {
         let mut manager = manager.lock().await;
         manager.end_direct_control(&backend_id, device_id);
         warn!(
@@ -757,7 +761,7 @@ pub async fn identify_device(
     );
     tokio::spawn(run_identify_flash(
         manager,
-        backend_io,
+        direct_backend,
         backend_id,
         device_id,
         led_count,
@@ -1800,7 +1804,7 @@ fn parse_status_filter(raw: Option<&str>) -> Result<Option<String>, String> {
 
 async fn run_identify_flash(
     manager: Arc<tokio::sync::Mutex<BackendManager>>,
-    backend_io: BackendIo,
+    direct_backend: BackendIo,
     backend_id: String,
     device_id: DeviceId,
     led_count: usize,
@@ -1837,7 +1841,7 @@ async fn run_identify_flash(
             frame_leds = frame.len(),
             "identify issuing flash phase"
         );
-        let result = backend_io.write_colors(device_id, frame).await;
+        let result = direct_backend.write_colors(device_id, frame).await;
 
         if let Err(error) = result {
             warn!(
@@ -1860,7 +1864,7 @@ async fn run_identify_flash(
             elapsed_ms = started_at.elapsed().as_millis(),
             "identify issuing final clear frame"
         );
-        let clear_result = backend_io.write_colors(device_id, &off_frame).await;
+        let clear_result = direct_backend.write_colors(device_id, &off_frame).await;
         if let Err(error) = clear_result {
             warn!(
                 backend_id = %backend_id,

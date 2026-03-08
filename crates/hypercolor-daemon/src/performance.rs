@@ -18,6 +18,10 @@ pub(crate) struct LatestFrameMetrics {
 
 /// Aggregate frame-time summary over the recent render window.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the `_ms` suffix keeps exported latency units explicit across API and WebSocket consumers"
+)]
 pub(crate) struct FrameTimeSummary {
     pub avg_ms: f64,
     pub p95_ms: f64,
@@ -69,25 +73,34 @@ fn summarize_frame_times(samples: &VecDeque<u32>) -> FrameTimeSummary {
     sorted.sort_unstable();
 
     let total_us: u64 = samples.iter().map(|value| u64::from(*value)).sum();
-    let len_f64 = samples.len() as f64;
+    let sample_count = u64::try_from(samples.len()).unwrap_or(u64::MAX).max(1);
+    let average_us = total_us.saturating_add(sample_count / 2) / sample_count;
 
     FrameTimeSummary {
-        avg_ms: (total_us as f64 / len_f64) / 1000.0,
-        p95_ms: percentile_ms(&sorted, 0.95),
-        p99_ms: percentile_ms(&sorted, 0.99),
+        avg_ms: micros_to_ms(average_us),
+        p95_ms: percentile_ms(&sorted, 95, 100),
+        p99_ms: percentile_ms(&sorted, 99, 100),
         max_ms: sorted
             .last()
-            .map_or(0.0, |value| f64::from(*value) / 1000.0),
+            .map_or(0.0, |value| micros_to_ms(u64::from(*value))),
     }
 }
 
-fn percentile_ms(sorted: &[u32], percentile: f64) -> f64 {
+fn percentile_ms(sorted: &[u32], numerator: usize, denominator: usize) -> f64 {
     if sorted.is_empty() {
         return 0.0;
     }
 
-    let clamped = percentile.clamp(0.0, 1.0);
-    let rank = ((sorted.len() as f64) * clamped).ceil() as usize;
+    let rank = sorted
+        .len()
+        .saturating_mul(numerator)
+        .saturating_add(denominator.saturating_sub(1))
+        / denominator.max(1);
     let index = rank.saturating_sub(1).min(sorted.len().saturating_sub(1));
-    f64::from(sorted[index]) / 1000.0
+    micros_to_ms(u64::from(sorted[index]))
+}
+
+fn micros_to_ms(micros: u64) -> f64 {
+    let clamped = u32::try_from(micros).unwrap_or(u32::MAX);
+    f64::from(clamped) / 1000.0
 }

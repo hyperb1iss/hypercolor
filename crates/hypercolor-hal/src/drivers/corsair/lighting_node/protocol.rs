@@ -15,7 +15,7 @@ use crate::protocol::{
     ResponseStatus, TransferType,
 };
 
-const MAX_LEDS_PER_CHANNEL: usize = 204;
+const MAX_LEDS_PER_CHANNEL: u32 = 204;
 const DIRECT_CHUNK_SIZE: usize = 50;
 const DEFAULT_TARGET_FPS: u32 = 30;
 
@@ -30,7 +30,7 @@ impl CorsairLightingNodeProtocol {
     pub fn new(name: &'static str, channel_count: u8) -> Self {
         Self {
             name,
-            channel_leds: vec![MAX_LEDS_PER_CHANNEL as u32; usize::from(channel_count)],
+            channel_leds: vec![MAX_LEDS_PER_CHANNEL; usize::from(channel_count)],
         }
     }
 

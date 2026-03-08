@@ -884,6 +884,10 @@ impl BackendManager {
     /// collected but do not halt processing — every mapped device gets
     /// its data.
     #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "frame routing keeps mapping, remap, segmented writes, and queue dispatch together so the hot-path ordering stays readable"
+    )]
     pub async fn write_frame(
         &mut self,
         zone_colors: &[ZoneColors],

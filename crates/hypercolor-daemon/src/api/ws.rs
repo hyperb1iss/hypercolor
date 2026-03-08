@@ -858,10 +858,10 @@ async fn relay_canvas(
     loop {
         let canvas_config = {
             let subs = subscriptions.read().await;
-            if !subs.channels.contains(&WsChannel::Canvas) {
-                None
-            } else {
+            if subs.channels.contains(&WsChannel::Canvas) {
                 Some(subs.config.canvas.clone())
+            } else {
+                None
             }
         };
 

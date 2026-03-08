@@ -77,7 +77,7 @@ fn audio_device_options(current: &str) -> Vec<AudioDeviceInfo> {
 
     dedupe_audio_devices(&mut devices);
     devices.sort_by_cached_key(|device| {
-        let default_rank = if device.id == "default" { 0 } else { 1 };
+        let default_rank = i32::from(device.id != "default");
         (default_rank, device.name.to_ascii_lowercase())
     });
     devices

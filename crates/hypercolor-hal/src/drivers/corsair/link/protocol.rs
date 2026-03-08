@@ -131,7 +131,7 @@ impl CorsairLinkProtocol {
         normalized
     }
 
-    fn parse_children_response(&self, data: &[u8]) -> Result<Vec<LinkChild>, ProtocolError> {
+    fn parse_children_response(data: &[u8]) -> Result<Vec<LinkChild>, ProtocolError> {
         let Some(&channel_count) = data.get(6) else {
             return Err(ProtocolError::MalformedResponse {
                 detail: "LINK device enumeration missing channel count".to_owned(),
@@ -218,7 +218,7 @@ impl Default for CorsairLinkProtocol {
 }
 
 impl Protocol for CorsairLinkProtocol {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Corsair iCUE LINK System Hub"
     }
 
@@ -280,7 +280,8 @@ impl Protocol for CorsairLinkProtocol {
         self.state
             .write()
             .expect("LINK state lock should not be poisoned")
-            .last_frame_commands = commands.clone();
+            .last_frame_commands
+            .clone_from(&commands);
 
         commands
     }
@@ -302,7 +303,7 @@ impl Protocol for CorsairLinkProtocol {
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
         if data.len() >= 6 && data[4..6] == EP_GET_DEVICES.data_type {
-            let children = self.parse_children_response(data)?;
+            let children = Self::parse_children_response(data)?;
             self.update_children(children);
 
             return Ok(ProtocolResponse {

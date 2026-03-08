@@ -254,6 +254,10 @@ async fn run_pipeline(state: RenderThreadState) {
     info!("render pipeline exited");
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the frame executor keeps the render pipeline stages in one place so timing and ordering stay obvious"
+)]
 async fn execute_frame(
     state: &RenderThreadState,
     skip_decision: SkipDecision,
