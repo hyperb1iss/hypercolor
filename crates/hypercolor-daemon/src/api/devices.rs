@@ -717,7 +717,7 @@ pub async fn identify_device(
         ));
     }
 
-    let backend_id = backend_id_for_family(&tracked.info.family);
+    let backend_id = resolved_backend_id(&state, device_id, &tracked.info.family).await;
     let network_metadata = state.device_registry.metadata_for_id(&device_id).await;
     let network_ip = network_metadata
         .as_ref()
@@ -1229,7 +1229,7 @@ async fn sync_live_logical_mappings_for_device(state: &AppState, physical_id: De
     )
     .await;
 
-    let backend_id = backend_id_for_family(&tracked.info.family);
+    let backend_id = resolved_backend_id(&state, physical_id, &tracked.info.family).await;
     let (logical_entries, legacy_default_ids) = {
         let store = state.logical_devices.read().await;
         let legacy_ids = logical_devices::legacy_default_ids_for_physical(
@@ -1816,6 +1816,15 @@ fn backend_id_for_family(family: &DeviceFamily) -> String {
         | DeviceFamily::Asus => "usb".to_owned(),
         DeviceFamily::Custom(name) => name.to_ascii_lowercase(),
     }
+}
+
+async fn resolved_backend_id(
+    state: &AppState,
+    device_id: DeviceId,
+    family: &DeviceFamily,
+) -> String {
+    let metadata = state.device_registry.metadata_for_id(&device_id).await;
+    crate::discovery::backend_id_for_device(family, metadata.as_ref())
 }
 
 fn attachment_family_id(family: &DeviceFamily) -> String {
