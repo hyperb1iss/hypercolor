@@ -455,13 +455,7 @@ async fn maybe_idle_throttle(
     effect_running: bool,
     idle_black_pushed: &mut bool,
 ) -> Option<FrameExecution> {
-    let can_idle_throttle = should_idle_throttle(
-        effect_running,
-        state.screen_capture_enabled,
-        state.event_bus.frame_receiver_count(),
-        state.event_bus.canvas_receiver_count(),
-        state.event_bus.spectrum_receiver_count(),
-    );
+    let can_idle_throttle = should_idle_throttle(effect_running, state.screen_capture_enabled);
 
     if effect_running {
         *idle_black_pushed = false;
@@ -578,18 +572,15 @@ async fn maybe_sleep_throttle(
     })
 }
 
-fn should_idle_throttle(
-    effect_running: bool,
-    screen_capture_enabled: bool,
-    frame_receivers: usize,
-    canvas_receivers: usize,
-    spectrum_receivers: usize,
-) -> bool {
+fn should_idle_throttle(effect_running: bool, screen_capture_enabled: bool) -> bool {
     if effect_running || screen_capture_enabled {
         return false;
     }
 
-    frame_receivers == 0 && canvas_receivers == 0 && spectrum_receivers == 0
+    // The bus keeps the latest black frame/spectrum snapshot for late subscribers,
+    // so internal or UI watch receivers should not force the daemon to keep
+    // rendering when nothing is active.
+    true
 }
 
 fn apply_output_brightness(canvas: &mut Canvas, brightness: f32) {

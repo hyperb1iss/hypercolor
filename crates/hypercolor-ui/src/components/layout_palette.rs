@@ -2,7 +2,6 @@
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
-use wasm_bindgen::JsCast;
 
 use crate::api::{self, ZoneTopologySummary};
 use crate::app::DevicesContext;
@@ -60,6 +59,17 @@ pub fn LayoutPalette(
             }
         });
     };
+
+    // Auto-fetch attachments for multi-zone devices (they start expanded).
+    Effect::new(move |_| {
+        let devices = stable_devices.get();
+        let collapsed = collapsed_devices.get();
+        for dev in &devices {
+            if dev.zones.len() > 1 && !collapsed.contains(&dev.layout_device_id) {
+                fetch_attachments(dev.id.clone());
+            }
+        }
+    });
 
     // Derive group list from layout
     let groups = Signal::derive(move || {
@@ -603,6 +613,8 @@ pub fn LayoutPalette(
                                                 // Zone rows (multi-zone only)
                                                 {has_multi_zones.then(|| {
                                                     let device_id = device_id.clone();
+                                                    let zone_border_rgb = primary_rgb.clone();
+                                                    let import_border_rgb = primary_rgb.clone();
                                                     view! {
                                                         <div
                                                             class="border-t px-1.5 py-1 space-y-0.5 overflow-hidden transition-all duration-200"
@@ -610,7 +622,7 @@ pub fn LayoutPalette(
                                                                 if is_collapsed.get() {
                                                                     "max-height: 0; opacity: 0; padding: 0; border: none".to_string()
                                                                 } else {
-                                                                    format!("max-height: 500px; opacity: 1; border-color: rgba({primary_rgb}, 0.1)")
+                                                                    format!("max-height: 500px; opacity: 1; border-color: rgba({zone_border_rgb}, 0.1)")
                                                                 }
                                                             }
                                                         >
@@ -751,9 +763,24 @@ pub fn LayoutPalette(
                                                                                     <div class="text-[11px] text-fg-primary truncate">
                                                                                         {display_name}
                                                                                     </div>
-                                                                                    <div class="text-[8px] text-fg-tertiary/60 font-mono tabular-nums">
-                                                                                        {led_count}
-                                                                                        " LEDs"
+                                                                                    <div class="flex items-center gap-1.5">
+                                                                                        <span class="text-[8px] text-fg-tertiary/60 font-mono tabular-nums">
+                                                                                            {led_count} " LEDs"
+                                                                                        </span>
+                                                                                        {move || zone_binding.get().map(|binding| {
+                                                                                            let name = binding.name.clone()
+                                                                                                .unwrap_or_else(|| binding.template_name.clone());
+                                                                                            let title = format!("{} ({} LEDs)", &name, binding.effective_led_count);
+                                                                                            view! {
+                                                                                                <span class="text-[8px] font-mono px-1 py-0.5 rounded truncate max-w-[100px]"
+                                                                                                    style="color: rgb(128, 255, 234); background: rgba(128, 255, 234, 0.08); border: 1px solid rgba(128, 255, 234, 0.12)"
+                                                                                                    title=title
+                                                                                                >
+                                                                                                    <Icon icon=LuCable width="8px" height="8px" style="display: inline; vertical-align: -1px; margin-right: 2px" />
+                                                                                                    {name}
+                                                                                                </span>
+                                                                                            }
+                                                                                        })}
                                                                                     </div>
                                                                                 </div>
                                                                                 // Toggle button — add or remove zone
@@ -823,6 +850,37 @@ pub fn LayoutPalette(
                                                                     },
                                                                 )
                                                                 .collect_view()}
+
+                                                            // Import attachments button (if device has bindings)
+                                                            {move || {
+                                                                let did = device_id.clone();
+                                                                let has_bindings = attachment_cache.get()
+                                                                    .get(&did)
+                                                                    .is_some_and(|b| !b.is_empty());
+                                                                has_bindings.then(|| {
+                                                                    let did = did.clone();
+                                                                    view! {
+                                                                        <div class="mt-1 pt-1.5 border-t" style=format!("border-color: rgba({import_border_rgb}, 0.08)")>
+                                                                            <button
+                                                                                class="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[10px] font-medium transition-all btn-press disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                                style="background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.12); color: rgb(128, 255, 234)"
+                                                                                disabled=move || import_in_flight.get()
+                                                                                on:click=move |ev| {
+                                                                                    ev.stop_propagation();
+                                                                                    import_device_attachments(
+                                                                                        did.clone(),
+                                                                                        set_import_in_flight,
+                                                                                        ctx.layouts_resource,
+                                                                                    );
+                                                                                }
+                                                                            >
+                                                                                <Icon icon=LuLayoutTemplate width="10px" height="10px" style="color: inherit" />
+                                                                                {move || if import_in_flight.get() { "Importing..." } else { "Import Attachments" }}
+                                                                            </button>
+                                                                        </div>
+                                                                    }
+                                                                })
+                                                            }}
                                                         </div>
                                                     }
                                                 })}
@@ -833,75 +891,6 @@ pub fn LayoutPalette(
                                 </div>
                     }
                         .into_any()
-                }}
-            </div>
-
-            // Separator
-            <div class="h-px bg-edge-subtle" />
-
-            // Attachments section — configure device attachments from the layout page
-            <div class="space-y-2">
-                <div class="flex items-center justify-between">
-                    <h3 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary flex items-center gap-1.5">
-                        <Icon icon=LuCable width="12px" height="12px" />
-                        "Attachments"
-                    </h3>
-                </div>
-
-                // Device picker for attachments
-                <select
-                    class="w-full bg-surface-sunken border border-edge-subtle rounded-lg px-2.5 py-1.5 text-[11px] text-fg-primary
-                           focus:outline-none focus:border-accent-muted glow-ring transition-all"
-                    on:change=move |ev| {
-                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
-                        if let Some(el) = target {
-                            let val = el.value();
-                            if val.is_empty() {
-                                set_attachment_device_id.set(None);
-                            } else {
-                                set_attachment_device_id.set(Some(val));
-                            }
-                        }
-                    }
-                >
-                    <option value="" selected=move || attachment_device_id.get().is_none()>"Select device..."</option>
-                    {move || {
-                        stable_devices.get().into_iter().map(|dev| {
-                            let did = dev.id.clone();
-                            let did2 = dev.id.clone();
-                            let label = format!("{} ({} LEDs)", dev.name, dev.total_leds);
-                            view! {
-                                <option
-                                    value=did
-                                    selected=move || attachment_device_id.get().as_deref() == Some(&did2)
-                                >
-                                    {label}
-                                </option>
-                            }
-                        }).collect_view()
-                    }}
-                </select>
-
-                // Inline attachment panel for selected device
-                {move || {
-                    let selected_id = attachment_device_id.get()?;
-                    let devices = stable_devices.get();
-                    let device = devices.into_iter().find(|d| d.id == selected_id)?;
-
-                    let device_id_signal = Signal::derive({
-                        let id = selected_id.clone();
-                        move || id.clone()
-                    });
-                    let device_signal = Signal::derive({
-                        let dev = device.clone();
-                        move || Some(dev.clone())
-                    });
-
-                    Some(view! {
-                        <div class="animate-fade-in">
-                            <AttachmentPanel device_id=device_id_signal device=device_signal />
-                        </div>
-                    })
                 }}
             </div>
         </div>
@@ -1092,6 +1081,73 @@ fn uuid_v4_hex() -> String {
     )]
     let n = (r * 4_294_967_295.0) as u32;
     format!("{n:08x}")
+}
+
+/// Import a device's attachment zones into the active layout.
+fn import_device_attachments(
+    device_id: String,
+    set_in_flight: WriteSignal<bool>,
+    layouts_resource: leptos::prelude::LocalResource<Result<Vec<api::LayoutSummary>, String>>,
+) {
+    set_in_flight.set(true);
+    leptos::task::spawn_local(async move {
+        let result: Result<(usize, String), String> = async {
+            let devices = api::fetch_devices().await?;
+            let device = devices
+                .iter()
+                .find(|d| d.id == device_id)
+                .ok_or_else(|| "Device not found".to_string())?
+                .clone();
+            let attachments = api::fetch_device_attachments(&device_id).await?;
+            if attachments.suggested_zones.is_empty() {
+                return Ok((0_usize, String::new()));
+            }
+
+            let mut layout = api::fetch_active_layout().await?;
+            let layout_name = layout.name.clone();
+            let layout_id = layout.id.clone();
+            let imported_zones =
+                crate::components::attachment_panel::build_attachment_layout_zones(
+                    &device,
+                    &attachments.suggested_zones,
+                );
+            let imported_count = imported_zones.len();
+
+            layout.zones.retain(|zone| {
+                !(zone.device_id == device.layout_device_id && zone.attachment.is_some())
+            });
+            layout.zones.extend(imported_zones);
+
+            let req = api::UpdateLayoutApiRequest {
+                name: None,
+                description: None,
+                canvas_width: None,
+                canvas_height: None,
+                zones: Some(layout.zones),
+                groups: None,
+            };
+            api::update_layout(&layout_id, &req).await?;
+            api::apply_layout(&layout_id).await?;
+
+            Ok((imported_count, layout_name))
+        }
+        .await;
+
+        set_in_flight.set(false);
+        match result {
+            Ok((0, _)) => toasts::toast_info("No attachment zones ready to import"),
+            Ok((count, layout_name)) => {
+                layouts_resource.refetch();
+                let noun = if count == 1 { "zone" } else { "zones" };
+                toasts::toast_success(&format!(
+                    "Imported {count} attachment {noun} into {layout_name}"
+                ));
+            }
+            Err(error) => {
+                toasts::toast_error(&format!("Attachment import failed: {error}"));
+            }
+        }
+    });
 }
 
 /// Convert a hex color like "#e135ff" to "225, 53, 255" RGB string.

@@ -502,7 +502,7 @@ fn area_average_samples_region() {
 }
 
 #[test]
-fn low_density_matrix_sampling_boosts_chroma() {
+fn matrix_sampling_preserves_solid_color() {
     let canvas = solid_canvas(32, 20, Rgba::new(196, 124, 170, 255));
     let zone = full_canvas_zone(
         "keyboard",
@@ -519,14 +519,7 @@ fn low_density_matrix_sampling_boosts_chroma() {
     let result = engine.sample(&canvas);
     let color = &result[0].colors[0];
 
-    let original_spread = 196_u8.saturating_sub(124);
-    let boosted_spread = color.iter().max().copied().unwrap_or_default()
-        - color.iter().min().copied().unwrap_or_default();
-
-    assert!(
-        boosted_spread > original_spread,
-        "expected matrix color polish to increase channel spread, got original={original_spread} boosted={boosted_spread} color={color:?}"
-    );
+    assert_eq!(color, &[196, 124, 170]);
 }
 
 #[test]

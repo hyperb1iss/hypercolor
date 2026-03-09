@@ -203,6 +203,38 @@ fn effect_source_serde_round_trip() {
     }
 }
 
+#[test]
+fn effect_source_source_stem_uses_file_stem() {
+    let src = EffectSource::Native {
+        path: PathBuf::from("builtin/solid_color"),
+    };
+
+    assert_eq!(src.source_stem(), Some("solid_color"));
+}
+
+#[test]
+fn effect_metadata_matches_display_name_and_native_source_alias() {
+    let metadata = EffectMetadata {
+        id: EffectId::new(Uuid::now_v7()),
+        name: "Solid Color".to_owned(),
+        author: "Hypercolor".to_owned(),
+        version: "0.1.0".to_owned(),
+        description: "test effect".to_owned(),
+        category: EffectCategory::Utility,
+        tags: vec!["solid".to_owned()],
+        controls: Vec::new(),
+        audio_reactive: false,
+        source: EffectSource::Native {
+            path: PathBuf::from("builtin/solid_color"),
+        },
+        license: Some("Apache-2.0".to_owned()),
+    };
+
+    assert!(metadata.matches_lookup("Solid Color"));
+    assert!(metadata.matches_lookup("solid_color"));
+    assert!(!metadata.matches_lookup("solid-color-extra"));
+}
+
 // ── EffectState ───────────────────────────────────────────────────────────
 
 #[test]

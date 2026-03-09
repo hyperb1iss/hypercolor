@@ -106,6 +106,12 @@ impl EffectSource {
             Self::Native { path } | Self::Html { path } | Self::Shader { path } => path,
         }
     }
+
+    /// Returns the source file stem when it is valid UTF-8.
+    #[must_use]
+    pub fn source_stem(&self) -> Option<&str> {
+        self.path().file_stem()?.to_str()
+    }
 }
 
 // ── EffectState ───────────────────────────────────────────────────────────────
@@ -497,6 +503,16 @@ impl EffectMetadata {
         self.controls
             .iter()
             .find(|control| control.control_id().eq_ignore_ascii_case(id))
+    }
+
+    /// Match either the display name or a stable source-stem alias.
+    #[must_use]
+    pub fn matches_lookup(&self, id_or_name: &str) -> bool {
+        self.name.eq_ignore_ascii_case(id_or_name)
+            || self
+                .source
+                .source_stem()
+                .is_some_and(|stem| stem.eq_ignore_ascii_case(id_or_name))
     }
 }
 

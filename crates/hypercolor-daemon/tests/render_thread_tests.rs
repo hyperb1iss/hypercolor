@@ -692,3 +692,45 @@ async fn pipeline_uses_screen_input_canvas_when_available() {
     assert_eq!(left_zone.colors.first().copied(), Some([255, 0, 0]));
     assert_eq!(right_zone.colors.first().copied(), Some([0, 255, 0]));
 }
+
+#[tokio::test]
+async fn idle_pipeline_throttles_even_with_watch_receivers() {
+    let state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let _canvas_rx = state.event_bus.canvas_receiver();
+    let _spectrum_rx = state.event_bus.spectrum_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+    let first_frame = tokio::time::timeout(Duration::from_secs(1), frame_rx.changed()).await;
+    assert!(
+        first_frame.is_ok(),
+        "expected initial black frame before idle throttling"
+    );
+    let _ = frame_rx.borrow_and_update();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let got_extra_frame = frame_rx
+        .has_changed()
+        .expect("frame watch should remain connected");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    assert!(
+        !got_extra_frame,
+        "expected idle pipeline to stop publishing repeated frames"
+    );
+}

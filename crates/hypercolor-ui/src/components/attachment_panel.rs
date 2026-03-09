@@ -600,7 +600,7 @@ pub fn AttachmentPanel(
 }
 
 #[allow(clippy::cast_precision_loss)]
-fn build_attachment_layout_zones(
+pub fn build_attachment_layout_zones(
     device: &api::DeviceSummary,
     suggested_zones: &[AttachmentSuggestedZone],
 ) -> Vec<DeviceZone> {
