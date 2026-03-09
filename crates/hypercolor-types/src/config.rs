@@ -55,6 +55,14 @@ mod defaults {
         30
     }
 
+    // MCP
+    pub fn mcp_base_path() -> String {
+        "/mcp".into()
+    }
+    pub fn sse_keep_alive_secs() -> u64 {
+        15
+    }
+
     // Audio
     pub fn audio_device() -> String {
         "default".into()
@@ -113,6 +121,9 @@ mod defaults {
     pub fn bool_true() -> bool {
         true
     }
+    pub fn bool_false() -> bool {
+        false
+    }
 }
 
 // ─── Top-Level Config ────────────────────────────────────────────────────────
@@ -132,6 +143,9 @@ pub struct HypercolorConfig {
 
     #[serde(default)]
     pub web: WebConfig,
+
+    #[serde(default)]
+    pub mcp: McpConfig,
 
     #[serde(default)]
     pub effect_engine: EffectEngineConfig,
@@ -171,6 +185,7 @@ impl Default for HypercolorConfig {
             include: Vec::new(),
             daemon: DaemonConfig::default(),
             web: WebConfig::default(),
+            mcp: McpConfig::default(),
             effect_engine: EffectEngineConfig::default(),
             audio: AudioConfig::default(),
             capture: CaptureConfig::default(),
@@ -297,6 +312,39 @@ impl Default for WebConfig {
             cors_origins: Vec::new(),
             websocket_fps: defaults::websocket_fps(),
             auth_enabled: false,
+        }
+    }
+}
+
+// ─── MCP ─────────────────────────────────────────────────────────────────────
+
+/// Model Context Protocol server settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpConfig {
+    #[serde(default = "defaults::bool_false")]
+    pub enabled: bool,
+
+    #[serde(default = "defaults::mcp_base_path")]
+    pub base_path: String,
+
+    #[serde(default = "defaults::bool_true")]
+    pub stateful_mode: bool,
+
+    #[serde(default = "defaults::bool_false")]
+    pub json_response: bool,
+
+    #[serde(default = "defaults::sse_keep_alive_secs")]
+    pub sse_keep_alive_secs: u64,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: defaults::bool_false(),
+            base_path: defaults::mcp_base_path(),
+            stateful_mode: defaults::bool_true(),
+            json_response: defaults::bool_false(),
+            sse_keep_alive_secs: defaults::sse_keep_alive_secs(),
         }
     }
 }

@@ -1,688 +1,415 @@
-//! MCP (Model Context Protocol) server for Hypercolor.
+//! MCP (Model Context Protocol) HTTP server for Hypercolor.
 //!
-//! Current implementation: a JSON-RPC 2.0 MCP surface over stdio.
-//! AI assistants communicate with Hypercolor through 14 tools, 5 resources,
-//! and 3 prompt templates — translating natural language intent into
-//! precise RGB hardware commands.
+//! Exposes Hypercolor tools, resources, and prompt templates over the MCP
+//! Streamable HTTP transport using `rmcp`.
 
 pub mod fuzzy;
 pub mod prompts;
 pub mod resources;
 pub mod tools;
 
+use std::future::ready;
 use std::sync::Arc;
+use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use axum::Router;
+use hypercolor_types::config::McpConfig;
+use rmcp::transport::streamable_http_server::{
+    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+};
+use rmcp::{
+    ErrorData, ServerHandler,
+    model::{
+        AnnotateAble, CallToolRequestParams, CallToolResult, GetPromptRequestParams,
+        GetPromptResult, Implementation, JsonObject, ListPromptsResult,
+        ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+        Prompt, PromptArgument, PromptMessage, PromptMessageContent, PromptMessageRole,
+        RawResource, ReadResourceRequestParams, ReadResourceResult, ResourceContents, Role,
+        ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    },
+    service::{RequestContext, RoleServer},
+};
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 use crate::api::AppState;
 
-use self::prompts::build_prompt_definitions;
-use self::resources::build_resource_definitions;
-use self::tools::build_tool_definitions;
+/// Build the MCP HTTP router mounted at the configured base path.
+#[must_use]
+pub fn build_router(state: Arc<AppState>, config: &McpConfig) -> Router<Arc<AppState>> {
+    let path = normalize_base_path(&config.base_path);
+    let service_state = Arc::clone(&state);
+    let service: StreamableHttpService<HypercolorMcpServer, LocalSessionManager> =
+        StreamableHttpService::new(
+            move || Ok(HypercolorMcpServer::new(Arc::clone(&service_state))),
+            Default::default(),
+            http_config(config),
+        );
 
-// ── JSON-RPC Types ────────────────────────────────────────────────────────
-
-/// An incoming JSON-RPC 2.0 request.
-#[derive(Debug, Deserialize)]
-pub struct JsonRpcRequest {
-    /// Must be `"2.0"`.
-    pub jsonrpc: String,
-    /// Request ID — `null` for notifications.
-    pub id: Option<Value>,
-    /// The method name to invoke.
-    pub method: String,
-    /// Optional method parameters.
-    pub params: Option<Value>,
+    Router::new().nest_service(&path, service)
 }
 
-/// An outgoing JSON-RPC 2.0 response.
-#[derive(Debug, Serialize)]
-pub struct JsonRpcResponse {
-    /// Always `"2.0"`.
-    pub jsonrpc: String,
-    /// Mirrors the request ID.
-    pub id: Value,
-    /// Present on success.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
-    /// Present on failure.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<JsonRpcError>,
+fn http_config(config: &McpConfig) -> StreamableHttpServerConfig {
+    StreamableHttpServerConfig {
+        sse_keep_alive: (config.sse_keep_alive_secs > 0)
+            .then_some(Duration::from_secs(config.sse_keep_alive_secs)),
+        stateful_mode: config.stateful_mode,
+        json_response: config.json_response,
+        cancellation_token: CancellationToken::new(),
+        ..Default::default()
+    }
 }
 
-/// A JSON-RPC 2.0 error object.
-#[derive(Debug, Serialize)]
-pub struct JsonRpcError {
-    /// Numeric error code.
-    pub code: i64,
-    /// Short error description.
-    pub message: String,
-    /// Optional additional data.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
+fn normalize_base_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return "/mcp".to_owned();
+    }
+
+    let normalized = if trimmed.starts_with('/') {
+        trimmed.to_owned()
+    } else {
+        format!("/{trimmed}")
+    };
+
+    if normalized.len() > 1 {
+        normalized.trim_end_matches('/').to_owned()
+    } else {
+        normalized
+    }
 }
 
-// ── Standard JSON-RPC Error Codes ─────────────────────────────────────────
-
-/// Request body is not valid JSON.
-pub const PARSE_ERROR: i64 = -32700;
-/// The JSON sent is not a valid Request object.
-pub const INVALID_REQUEST: i64 = -32600;
-/// The method does not exist or is not available.
-pub const METHOD_NOT_FOUND: i64 = -32601;
-/// Invalid method parameter(s).
-pub const INVALID_PARAMS: i64 = -32602;
-/// Internal JSON-RPC error.
-pub const INTERNAL_ERROR: i64 = -32603;
-
-// ── MCP Server ────────────────────────────────────────────────────────────
-
-/// The Hypercolor MCP server. Holds tool, resource, and prompt registrations.
-///
-/// This is the stateless protocol layer. Actual state access would come
-/// from a shared `DaemonState` reference wired in at construction time.
-pub struct McpServer {
-    /// Registered tool definitions.
+#[derive(Clone)]
+struct HypercolorMcpServer {
+    state: Arc<AppState>,
     tools: Vec<tools::ToolDefinition>,
-    /// Registered resource definitions.
     resources: Vec<resources::ResourceDefinition>,
-    /// Registered prompt definitions.
     prompts: Vec<prompts::PromptDefinition>,
-    /// Whether the client has completed the initialize handshake.
-    initialized: bool,
-    /// Live daemon state (when running in integrated daemon mode).
-    state: Option<Arc<AppState>>,
 }
 
-impl McpServer {
-    /// Create a new MCP server with all tools, resources, and prompts registered.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::with_optional_state(None)
-    }
-
-    /// Create an MCP server backed by live daemon state.
-    #[must_use]
-    pub fn with_state(state: Arc<AppState>) -> Self {
-        Self::with_optional_state(Some(state))
-    }
-
-    fn with_optional_state(state: Option<Arc<AppState>>) -> Self {
+impl HypercolorMcpServer {
+    fn new(state: Arc<AppState>) -> Self {
         Self {
-            tools: build_tool_definitions(),
-            resources: build_resource_definitions(),
-            prompts: build_prompt_definitions(),
-            initialized: false,
             state,
+            tools: tools::build_tool_definitions(),
+            resources: resources::build_resource_definitions(),
+            prompts: prompts::build_prompt_definitions(),
+        }
+    }
+}
+
+impl ServerHandler for HypercolorMcpServer {
+    fn get_info(&self) -> ServerInfo {
+        let capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .enable_prompts()
+            .build();
+
+        ServerInfo::new(capabilities)
+            .with_server_info(
+                Implementation::new("hypercolor", env!("CARGO_PKG_VERSION"))
+                    .with_title("Hypercolor RGB Lighting Controller")
+                    .with_description(
+                        "AI-powered RGB lighting control for Linux with effects, devices, layouts, profiles, scenes, and diagnostics.",
+                    )
+                    .with_website_url("https://github.com/hyperb1iss/hypercolor"),
+            )
+            .with_instructions(
+                "You are controlling Hypercolor, an RGB lighting system. Start with get_status or the hypercolor://state resource before making changes. Use list_effects to discover the effect catalog before applying visuals. Prefer structured tool arguments and resource reads over guessing current state.",
+            )
+    }
+
+    fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + Send + '_ {
+        ready(Ok(ListToolsResult::with_all_items(
+            self.tools.iter().map(tool_to_mcp).collect(),
+        )))
+    }
+
+    fn get_tool(&self, name: &str) -> Option<Tool> {
+        self.tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .map(tool_to_mcp)
+    }
+
+    fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<CallToolResult, ErrorData>> + Send + '_ {
+        async move {
+            let arguments = Value::Object(request.arguments.unwrap_or_default());
+            match tools::execute_tool_with_state(request.name.as_ref(), &arguments, &self.state)
+                .await
+            {
+                Ok(payload) => Ok(CallToolResult::structured(payload)),
+                Err(error) => Ok(CallToolResult::structured_error(json!({
+                    "code": error.error_code(),
+                    "message": error.to_string()
+                }))),
+            }
         }
     }
 
-    /// Process a raw JSON string and return the response JSON string.
-    ///
-    /// Returns `None` for notifications (requests without an `id`).
-    pub fn handle_message(&mut self, input: &str) -> Option<String> {
-        let request: JsonRpcRequest = match serde_json::from_str(input) {
-            Ok(req) => req,
-            Err(e) => {
-                let response = JsonRpcResponse {
-                    jsonrpc: "2.0".into(),
-                    id: Value::Null,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: PARSE_ERROR,
-                        message: format!("Parse error: {e}"),
-                        data: None,
-                    }),
-                };
-                return Some(
-                    serde_json::to_string(&response)
-                        .expect("JsonRpcResponse serialization should not fail"),
-                );
-            }
-        };
+    fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + Send + '_ {
+        ready(Ok(ListResourcesResult::with_all_items(
+            self.resources.iter().map(resource_to_mcp).collect(),
+        )))
+    }
 
-        // Validate jsonrpc version
-        if request.jsonrpc != "2.0" {
-            let response = JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                id: request.id.unwrap_or(Value::Null),
-                result: None,
-                error: Some(JsonRpcError {
-                    code: INVALID_REQUEST,
-                    message: "Invalid JSON-RPC version (must be \"2.0\")".into(),
-                    data: None,
-                }),
+    fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourceTemplatesResult, ErrorData>> + Send + '_ {
+        ready(Ok(ListResourceTemplatesResult::with_all_items(Vec::new())))
+    }
+
+    fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ReadResourceResult, ErrorData>> + Send + '_ {
+        async move {
+            let uri = request.uri;
+            let Some(definition) = self.resources.iter().find(|resource| resource.uri == uri)
+            else {
+                return Err(ErrorData::resource_not_found(
+                    "Resource not found",
+                    Some(json!({ "uri": uri })),
+                ));
             };
-            return Some(
-                serde_json::to_string(&response)
-                    .expect("JsonRpcResponse serialization should not fail"),
-            );
-        }
 
-        // Route the request
-        let id = request.id.clone().unwrap_or(Value::Null);
-        let result = self.route_method(&request.method, &request.params.unwrap_or(Value::Null));
-
-        // If this was a notification (no id), don't send a response
-        request.id.as_ref()?;
-
-        let response = match result {
-            Ok(value) => JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                id,
-                result: Some(value),
-                error: None,
-            },
-            Err(err) => JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                id,
-                result: None,
-                error: Some(err),
-            },
-        };
-
-        Some(
-            serde_json::to_string(&response)
-                .expect("JsonRpcResponse serialization should not fail"),
-        )
-    }
-
-    /// Async variant of [`handle_message`](Self::handle_message) that can
-    /// execute stateful tools/resources requiring async locks.
-    pub async fn handle_message_async(&mut self, input: &str) -> Option<String> {
-        let request: JsonRpcRequest = match serde_json::from_str(input) {
-            Ok(req) => req,
-            Err(e) => {
-                let response = JsonRpcResponse {
-                    jsonrpc: "2.0".into(),
-                    id: Value::Null,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: PARSE_ERROR,
-                        message: format!("Parse error: {e}"),
-                        data: None,
-                    }),
-                };
-                return Some(
-                    serde_json::to_string(&response)
-                        .expect("JsonRpcResponse serialization should not fail"),
-                );
-            }
-        };
-
-        if request.jsonrpc != "2.0" {
-            let response = JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                id: request.id.unwrap_or(Value::Null),
-                result: None,
-                error: Some(JsonRpcError {
-                    code: INVALID_REQUEST,
-                    message: "Invalid JSON-RPC version (must be \"2.0\")".into(),
-                    data: None,
-                }),
+            let Some(payload) = resources::read_resource_with_state(&uri, &self.state).await else {
+                return Err(ErrorData::resource_not_found(
+                    "Resource not found",
+                    Some(json!({ "uri": uri })),
+                ));
             };
-            return Some(
-                serde_json::to_string(&response)
-                    .expect("JsonRpcResponse serialization should not fail"),
-            );
-        }
 
-        let id = request.id.clone().unwrap_or(Value::Null);
-        let result = self
-            .route_method_async(&request.method, &request.params.unwrap_or(Value::Null))
-            .await;
-
-        request.id.as_ref()?;
-
-        let response = match result {
-            Ok(value) => JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                id,
-                result: Some(value),
-                error: None,
-            },
-            Err(err) => JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                id,
-                result: None,
-                error: Some(err),
-            },
-        };
-
-        Some(
-            serde_json::to_string(&response)
-                .expect("JsonRpcResponse serialization should not fail"),
-        )
-    }
-
-    /// Route a method call to the appropriate handler.
-    fn route_method(&mut self, method: &str, params: &Value) -> Result<Value, JsonRpcError> {
-        match method {
-            "initialize" => self.handle_initialize(params),
-            "initialized" => {
-                // Client acknowledgment notification — no response needed
-                Ok(Value::Null)
-            }
-            "tools/list" => {
-                self.require_initialized()?;
-                Ok(self.handle_tools_list())
-            }
-            "tools/call" => {
-                self.require_initialized()?;
-                self.handle_tools_call(params)
-            }
-            "resources/list" => {
-                self.require_initialized()?;
-                Ok(self.handle_resources_list())
-            }
-            "resources/read" => {
-                self.require_initialized()?;
-                self.handle_resources_read(params)
-            }
-            "prompts/list" => {
-                self.require_initialized()?;
-                Ok(self.handle_prompts_list())
-            }
-            "prompts/get" => {
-                self.require_initialized()?;
-                self.handle_prompts_get(params)
-            }
-            "ping" => Ok(json!({})),
-            _ => Err(JsonRpcError {
-                code: METHOD_NOT_FOUND,
-                message: format!("Method not found: {method}"),
-                data: None,
-            }),
-        }
-    }
-
-    async fn route_method_async(
-        &mut self,
-        method: &str,
-        params: &Value,
-    ) -> Result<Value, JsonRpcError> {
-        match method {
-            "initialize" => self.handle_initialize(params),
-            "initialized" => Ok(Value::Null),
-            "tools/list" => {
-                self.require_initialized()?;
-                Ok(self.handle_tools_list())
-            }
-            "tools/call" => {
-                self.require_initialized()?;
-                self.handle_tools_call_async(params).await
-            }
-            "resources/list" => {
-                self.require_initialized()?;
-                Ok(self.handle_resources_list())
-            }
-            "resources/read" => {
-                self.require_initialized()?;
-                self.handle_resources_read_async(params).await
-            }
-            "prompts/list" => {
-                self.require_initialized()?;
-                Ok(self.handle_prompts_list())
-            }
-            "prompts/get" => {
-                self.require_initialized()?;
-                self.handle_prompts_get(params)
-            }
-            "ping" => Ok(json!({})),
-            _ => Err(JsonRpcError {
-                code: METHOD_NOT_FOUND,
-                message: format!("Method not found: {method}"),
-                data: None,
-            }),
-        }
-    }
-
-    /// Ensure the client has completed initialization.
-    fn require_initialized(&self) -> Result<(), JsonRpcError> {
-        if self.initialized {
-            Ok(())
-        } else {
-            Err(JsonRpcError {
-                code: INVALID_REQUEST,
-                message: "Server not initialized. Send 'initialize' first.".into(),
-                data: None,
-            })
-        }
-    }
-
-    // ── Method Handlers ───────────────────────────────────────────────
-
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "will validate params when protocol grows"
-    )]
-    fn handle_initialize(&mut self, _params: &Value) -> Result<Value, JsonRpcError> {
-        self.initialized = true;
-
-        Ok(json!({
-            "protocolVersion": "2025-11-25",
-            "capabilities": {
-                "tools": {},
-                "resources": {},
-                "prompts": {}
-            },
-            "serverInfo": {
-                "name": "hypercolor",
-                "title": "Hypercolor RGB Lighting Controller",
-                "version": env!("CARGO_PKG_VERSION"),
-                "description": "AI-powered RGB lighting control for Linux. Manage effects, devices, profiles, audio reactivity, screen capture, and automation through natural language.",
-                "websiteUrl": "https://github.com/hyperb1iss/hypercolor"
-            },
-            "instructions": "You are controlling Hypercolor, an RGB lighting system. Use get_status to understand the current setup before making changes. Use list_effects to discover available effects before applying them. Natural language queries work for effect names — you don't need exact IDs. When the user describes a mood or activity, use set_effect with a descriptive query to find and apply a matching effect."
-        }))
-    }
-
-    fn handle_tools_list(&self) -> Value {
-        let tools: Vec<Value> = self
-            .tools
-            .iter()
-            .map(|t| {
-                json!({
-                    "name": t.name,
-                    "title": t.title,
-                    "description": t.description,
-                    "inputSchema": t.input_schema,
-                    "outputSchema": t.output_schema,
-                    "annotations": {
-                        "readOnlyHint": t.read_only,
-                        "destructiveHint": false,
-                        "idempotentHint": t.idempotent,
-                        "openWorldHint": false
-                    }
-                })
-            })
-            .collect();
-
-        json!({ "tools": tools })
-    }
-
-    #[expect(
-        clippy::unused_self,
-        reason = "will use self when wired to daemon state"
-    )]
-    fn handle_tools_call(&self, params: &Value) -> Result<Value, JsonRpcError> {
-        let tool_name = params
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| JsonRpcError {
-                code: INVALID_PARAMS,
-                message: "Missing 'name' parameter in tools/call".into(),
-                data: None,
+            let text = serde_json::to_string(&payload).map_err(|error| {
+                ErrorData::internal_error(
+                    "Failed to serialize resource payload",
+                    Some(json!({
+                        "uri": uri,
+                        "reason": error.to_string()
+                    })),
+                )
             })?;
 
-        let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
-
-        match tools::execute_tool(tool_name, &arguments) {
-            Ok(result) => Ok(build_tool_success(result)),
-            Err(error) => Ok(build_tool_error(&error)),
+            Ok(ReadResourceResult::new(vec![
+                ResourceContents::text(text, uri).with_mime_type(definition.mime_type.clone()),
+            ]))
         }
     }
 
-    async fn handle_tools_call_async(&self, params: &Value) -> Result<Value, JsonRpcError> {
-        let tool_name = params
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| JsonRpcError {
-                code: INVALID_PARAMS,
-                message: "Missing 'name' parameter in tools/call".into(),
-                data: None,
-            })?;
-
-        let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
-
-        let result = if let Some(state) = self.state.as_ref() {
-            tools::execute_tool_with_state(tool_name, &arguments, state).await
-        } else {
-            tools::execute_tool(tool_name, &arguments)
-        };
-
-        match result {
-            Ok(payload) => Ok(build_tool_success(payload)),
-            Err(error) => Ok(build_tool_error(&error)),
-        }
+    fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListPromptsResult, ErrorData>> + Send + '_ {
+        ready(Ok(ListPromptsResult::with_all_items(
+            self.prompts.iter().map(prompt_to_mcp).collect(),
+        )))
     }
 
-    fn handle_resources_list(&self) -> Value {
-        let resources: Vec<Value> = self
-            .resources
-            .iter()
-            .map(|r| {
-                json!({
-                    "uri": r.uri,
-                    "name": r.name,
-                    "description": r.description,
-                    "mimeType": r.mime_type,
-                    "annotations": {
-                        "audience": ["assistant"],
-                        "priority": r.priority
-                    }
-                })
-            })
-            .collect();
-
-        json!({ "resources": resources })
+    fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<GetPromptResult, ErrorData>> + Send + '_ {
+        ready(build_prompt_result(request))
     }
+}
 
-    #[expect(
-        clippy::unused_self,
-        reason = "will use self when wired to daemon state"
-    )]
-    fn handle_resources_read(&self, params: &Value) -> Result<Value, JsonRpcError> {
-        let uri = params
-            .get("uri")
-            .and_then(Value::as_str)
-            .ok_or_else(|| JsonRpcError {
-                code: INVALID_PARAMS,
-                message: "Missing 'uri' parameter in resources/read".into(),
-                data: None,
-            })?;
+fn tool_to_mcp(tool: &tools::ToolDefinition) -> Tool {
+    Tool::new_with_raw(
+        tool.name.clone(),
+        Some(tool.description.clone().into()),
+        Arc::new(schema_object(&tool.input_schema)),
+    )
+    .with_title(tool.title.clone())
+    .with_raw_output_schema(Arc::new(schema_object(&tool.output_schema)))
+    .with_annotations(
+        ToolAnnotations::new()
+            .read_only(tool.read_only)
+            .destructive(false)
+            .idempotent(tool.idempotent)
+            .open_world(false),
+    )
+}
 
-        match resources::read_resource(uri) {
-            Some(content) => Ok(json!({
-                "contents": [{
-                    "uri": uri,
-                    "mimeType": "application/json",
-                    "text": serde_json::to_string(&content)
-                        .unwrap_or_else(|_| content.to_string())
-                }]
-            })),
-            None => Err(JsonRpcError {
-                code: INVALID_PARAMS,
-                message: format!("Resource not found: {uri}"),
-                data: None,
-            }),
-        }
-    }
+fn resource_to_mcp(resource: &resources::ResourceDefinition) -> rmcp::model::Resource {
+    RawResource::new(resource.uri.clone(), resource.name.clone())
+        .with_title(resource.name.clone())
+        .with_description(resource.description.clone())
+        .with_mime_type(resource.mime_type.clone())
+        .with_audience(vec![Role::Assistant])
+        .with_priority(resource.priority)
+}
 
-    async fn handle_resources_read_async(&self, params: &Value) -> Result<Value, JsonRpcError> {
-        let uri = params
-            .get("uri")
-            .and_then(Value::as_str)
-            .ok_or_else(|| JsonRpcError {
-                code: INVALID_PARAMS,
-                message: "Missing 'uri' parameter in resources/read".into(),
-                data: None,
-            })?;
-
-        let content = if let Some(state) = self.state.as_ref() {
-            resources::read_resource_with_state(uri, state).await
-        } else {
-            resources::read_resource(uri)
-        };
-
-        match content {
-            Some(payload) => Ok(json!({
-                "contents": [{
-                    "uri": uri,
-                    "mimeType": "application/json",
-                    "text": serde_json::to_string(&payload)
-                        .unwrap_or_else(|_| payload.to_string())
-                }]
-            })),
-            None => Err(JsonRpcError {
-                code: INVALID_PARAMS,
-                message: format!("Resource not found: {uri}"),
-                data: None,
-            }),
-        }
-    }
-
-    fn handle_prompts_list(&self) -> Value {
-        let prompts: Vec<Value> = self
-            .prompts
-            .iter()
-            .map(|p| {
-                json!({
-                    "name": p.name,
-                    "title": p.title,
-                    "description": p.description,
-                    "arguments": p.arguments.iter().map(|a| json!({
-                        "name": a.name,
-                        "description": a.description,
-                        "required": a.required
-                    })).collect::<Vec<_>>()
-                })
-            })
-            .collect();
-
-        json!({ "prompts": prompts })
-    }
-
-    #[expect(
-        clippy::unused_self,
-        reason = "will use self when wired to daemon state"
-    )]
-    fn handle_prompts_get(&self, params: &Value) -> Result<Value, JsonRpcError> {
-        let name = params
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| JsonRpcError {
-                code: INVALID_PARAMS,
-                message: "Missing 'name' parameter in prompts/get".into(),
-                data: None,
-            })?;
-
-        let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
-
-        prompts::get_prompt_messages(name, &arguments).ok_or_else(|| JsonRpcError {
-            code: INVALID_PARAMS,
-            message: format!("Prompt not found: {name}"),
-            data: None,
+fn prompt_to_mcp(prompt: &prompts::PromptDefinition) -> Prompt {
+    let arguments = prompt
+        .arguments
+        .iter()
+        .map(|argument| {
+            let mut prompt_argument = PromptArgument::new(argument.name.clone())
+                .with_description(argument.description.clone());
+            if argument.required {
+                prompt_argument = prompt_argument.with_required(true);
+            }
+            prompt_argument
         })
+        .collect::<Vec<_>>();
+
+    Prompt::new(
+        prompt.name.clone(),
+        Some(prompt.description.clone()),
+        Some(arguments),
+    )
+    .with_title(prompt.title.clone())
+}
+
+fn build_prompt_result(request: GetPromptRequestParams) -> Result<GetPromptResult, ErrorData> {
+    let name = request.name;
+    let arguments = Value::Object(request.arguments.unwrap_or_default());
+
+    let payload = prompts::get_prompt_messages(&name, &arguments).ok_or_else(|| {
+        ErrorData::invalid_params("Prompt not found", Some(json!({ "name": name })))
+    })?;
+
+    let description = payload
+        .get("description")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let messages = payload
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ErrorData::internal_error(
+                "Prompt payload missing messages array",
+                Some(json!({ "name": name })),
+            )
+        })?
+        .iter()
+        .map(prompt_message_from_value)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut result = GetPromptResult::new(messages);
+    if let Some(description) = description {
+        result = result.with_description(description);
+    }
+    Ok(result)
+}
+
+fn prompt_message_from_value(value: &Value) -> Result<PromptMessage, ErrorData> {
+    let Some(message) = value.as_object() else {
+        return Err(ErrorData::internal_error(
+            "Prompt message was not an object",
+            Some(json!({ "message": value })),
+        ));
+    };
+
+    let role = match message.get("role").and_then(Value::as_str) {
+        Some("user") => PromptMessageRole::User,
+        Some("assistant") => PromptMessageRole::Assistant,
+        Some(other) => {
+            return Err(ErrorData::internal_error(
+                "Prompt message used an unsupported role",
+                Some(json!({ "role": other })),
+            ));
+        }
+        None => {
+            return Err(ErrorData::internal_error(
+                "Prompt message missing role",
+                Some(json!({ "message": value })),
+            ));
+        }
+    };
+
+    let Some(content) = message.get("content").and_then(Value::as_object) else {
+        return Err(ErrorData::internal_error(
+            "Prompt message missing content object",
+            Some(json!({ "message": value })),
+        ));
+    };
+
+    match content.get("type").and_then(Value::as_str) {
+        Some("text") => {
+            let Some(text) = content.get("text").and_then(Value::as_str) else {
+                return Err(ErrorData::internal_error(
+                    "Prompt text content missing text field",
+                    Some(json!({ "message": value })),
+                ));
+            };
+            Ok(PromptMessage::new_text(role, text))
+        }
+        Some("resource") => {
+            let Some(resource) = content.get("resource").and_then(Value::as_object) else {
+                return Err(ErrorData::internal_error(
+                    "Prompt resource content missing resource object",
+                    Some(json!({ "message": value })),
+                ));
+            };
+            let Some(uri) = resource.get("uri").and_then(Value::as_str) else {
+                return Err(ErrorData::internal_error(
+                    "Prompt resource content missing uri",
+                    Some(json!({ "message": value })),
+                ));
+            };
+
+            let mut link = RawResource::new(uri.to_owned(), uri.to_owned()).with_title(uri);
+            if let Some(mime_type) = resource.get("mimeType").and_then(Value::as_str) {
+                link = link.with_mime_type(mime_type);
+            }
+
+            Ok(PromptMessage::new(
+                role,
+                PromptMessageContent::resource_link(link.no_annotation()),
+            ))
+        }
+        Some(other) => Err(ErrorData::internal_error(
+            "Prompt message used an unsupported content type",
+            Some(json!({ "type": other })),
+        )),
+        None => Err(ErrorData::internal_error(
+            "Prompt message content missing type",
+            Some(json!({ "message": value })),
+        )),
     }
 }
 
-fn build_tool_success(payload: Value) -> Value {
-    let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
-
-    json!({
-        "content": [{
-            "type": "text",
-            "text": text
-        }],
-        "structuredContent": payload,
-        "isError": false
-    })
-}
-
-fn build_tool_error(error: &tools::ToolError) -> Value {
-    let payload = json!({
-        "code": error.error_code(),
-        "message": error.to_string()
-    });
-    let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
-
-    json!({
-        "content": [{
-            "type": "text",
-            "text": text
-        }],
-        "structuredContent": payload,
-        "isError": true
-    })
-}
-
-impl Default for McpServer {
-    fn default() -> Self {
-        Self::new()
+fn schema_object(value: &Value) -> JsonObject {
+    match value.as_object() {
+        Some(object) => object.clone(),
+        None => JsonObject::new(),
     }
 }
 
-/// Run the MCP server's stdio loop.
-///
-/// Reads JSON-RPC messages from stdin (one per line), processes them,
-/// and writes responses to stdout. Logs go to stderr.
-///
-/// # Errors
-///
-/// Returns an error if reading from stdin or writing to stdout fails.
-pub async fn run_stdio_server() -> anyhow::Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(test)]
+mod tests {
+    use super::normalize_base_path;
 
-    let mut server = McpServer::new();
-    let stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-    let reader = BufReader::new(stdin);
-    let mut lines = reader.lines();
-
-    tracing::info!("MCP stdio server ready");
-
-    while let Some(line) = lines.next_line().await? {
-        let line = line.trim().to_owned();
-        if line.is_empty() {
-            continue;
-        }
-
-        tracing::debug!(input = %line, "MCP request");
-
-        if let Some(response) = server.handle_message(&line) {
-            tracing::debug!(output = %response, "MCP response");
-            stdout.write_all(response.as_bytes()).await?;
-            stdout.write_all(b"\n").await?;
-            stdout.flush().await?;
-        }
+    #[test]
+    fn normalize_base_path_uses_default_for_empty_values() {
+        assert_eq!(normalize_base_path(""), "/mcp");
+        assert_eq!(normalize_base_path("   "), "/mcp");
+        assert_eq!(normalize_base_path("/"), "/mcp");
     }
 
-    tracing::info!("MCP stdio server shutting down");
-    Ok(())
-}
-
-/// Run the MCP stdio loop backed by live daemon state.
-///
-/// This variant enables non-stub tool/resource execution.
-pub async fn run_stdio_server_with_state(state: Arc<AppState>) -> anyhow::Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
-    let mut server = McpServer::with_state(state);
-    let stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-    let reader = BufReader::new(stdin);
-    let mut lines = reader.lines();
-
-    tracing::info!("MCP stdio server (stateful) ready");
-
-    while let Some(line) = lines.next_line().await? {
-        let line = line.trim().to_owned();
-        if line.is_empty() {
-            continue;
-        }
-
-        tracing::debug!(input = %line, "MCP request");
-
-        if let Some(response) = server.handle_message_async(&line).await {
-            tracing::debug!(output = %response, "MCP response");
-            stdout.write_all(response.as_bytes()).await?;
-            stdout.write_all(b"\n").await?;
-            stdout.flush().await?;
-        }
+    #[test]
+    fn normalize_base_path_adds_leading_slash_and_trims_trailing_slash() {
+        assert_eq!(normalize_base_path("mcp"), "/mcp");
+        assert_eq!(normalize_base_path("/mcp/"), "/mcp");
+        assert_eq!(normalize_base_path("/nested/mcp///"), "/nested/mcp");
     }
-
-    tracing::info!("MCP stdio server (stateful) shutting down");
-    Ok(())
 }

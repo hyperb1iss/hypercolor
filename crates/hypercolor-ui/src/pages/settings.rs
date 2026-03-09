@@ -17,6 +17,7 @@ const SECTION_IDS: &[&str] = &[
     "capture",
     "engine",
     "network",
+    "mcp",
     "session",
     "discovery",
     "developer",
@@ -259,6 +260,12 @@ pub fn SettingsPage() -> impl IntoView {
             separator_before: false,
         },
         TabEntry {
+            id: "mcp",
+            label: "MCP",
+            icon: LuCable,
+            separator_before: false,
+        },
+        TabEntry {
             id: "session",
             label: "Session",
             icon: LuPower,
@@ -397,15 +404,18 @@ pub fn SettingsPage() -> impl IntoView {
                                 <NetworkSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div style="animation: fade-in 0.4s ease-out 0.25s both">
-                                <SessionSection config=config on_change=on_change on_reset=on_reset />
+                                <McpSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div style="animation: fade-in 0.4s ease-out 0.3s both">
-                                <DiscoverySection config=config on_change=on_change on_reset=on_reset />
+                                <SessionSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div style="animation: fade-in 0.4s ease-out 0.35s both">
-                                <DeveloperSection config=config on_change=on_change on_reset=on_reset />
+                                <DiscoverySection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div style="animation: fade-in 0.4s ease-out 0.4s both">
+                                <DeveloperSection config=config on_change=on_change on_reset=on_reset />
+                            </div>
+                            <div style="animation: fade-in 0.4s ease-out 0.45s both">
                                 <AboutSection config_path=Signal::derive(move || config_path.get()) />
                             </div>
                         </div>

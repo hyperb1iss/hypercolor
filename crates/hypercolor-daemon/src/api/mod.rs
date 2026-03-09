@@ -47,6 +47,7 @@ use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_types::config::McpConfig;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -397,6 +398,11 @@ pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
 #[expect(clippy::too_many_lines)]
 pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
     let security_state = security::SecurityState::from_env();
+    let mcp_config: McpConfig = state
+        .config_manager
+        .as_ref()
+        .map(|manager| manager.get().mcp.clone())
+        .unwrap_or_default();
 
     let api = Router::new()
         // ── Devices ──────────────────────────────────────────────────
@@ -625,6 +631,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route("/ws", axum::routing::get(ws::ws_handler))
         .route("/preview", axum::routing::get(preview::preview_page))
         .route("/health", axum::routing::get(system::health_check));
+
+    if mcp_config.enabled {
+        router = router.merge(crate::mcp::build_router(Arc::clone(&state), &mcp_config));
+    }
 
     // Serve the web UI with SPA fallback when a UI directory is configured.
     if let Some(ui_path) = ui_dir {

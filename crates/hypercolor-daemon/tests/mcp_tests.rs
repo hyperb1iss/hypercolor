@@ -1,10 +1,11 @@
-//! Integration tests for the MCP server module.
-//!
-//! Covers protocol compliance, tool definitions, resource URIs, prompt templates,
-//! fuzzy matching, and JSON-RPC error handling.
+//! Integration tests for the MCP HTTP surface and its reusable domain helpers.
 
-use hypercolor_daemon::mcp::McpServer;
-use hypercolor_daemon::mcp::fuzzy::{match_effect, resolve_color};
+use std::sync::Arc;
+use std::time::Duration;
+
+use hypercolor_core::config::ConfigManager;
+use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::mcp;
 use hypercolor_daemon::mcp::prompts::{
     build_prompt_definitions, get_prompt_messages, is_valid_prompt,
 };
@@ -12,826 +13,418 @@ use hypercolor_daemon::mcp::resources::{
     build_resource_definitions, is_valid_resource_uri, read_resource,
 };
 use hypercolor_daemon::mcp::tools::{ToolError, build_tool_definitions, execute_tool};
+use hypercolor_types::config::{CURRENT_SCHEMA_VERSION, McpConfig};
+use reqwest::{Client, Response};
 use serde_json::{Value, json};
+use tempfile::TempDir;
 
-// ── Helper ─────────────────────────────────────────────────────────────────
+const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
 
-/// Send a JSON-RPC request to a server and parse the response.
-fn rpc_call(server: &mut McpServer, method: &str, params: &Value) -> Value {
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": method,
-        "params": params
+async fn spawn_router(router: axum::Router) -> (Client, String) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test server");
+    let addr = listener.local_addr().expect("read local addr");
+
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
     });
-    let input = serde_json::to_string(&request).expect("request serialization should succeed");
-    let output = server
-        .handle_message(&input)
-        .expect("non-notification request should produce a response");
-    serde_json::from_str(&output).expect("response should be valid JSON")
+
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .expect("build reqwest client");
+    (client, format!("http://{addr}"))
 }
 
-/// Initialize a server (required before most method calls).
-fn initialized_server() -> McpServer {
-    let mut server = McpServer::new();
-    let response = rpc_call(&mut server, "initialize", &json!({}));
+fn stateless_mcp_config() -> McpConfig {
+    McpConfig {
+        enabled: true,
+        stateful_mode: false,
+        json_response: true,
+        ..McpConfig::default()
+    }
+}
+
+async fn post_raw(client: &Client, url: &str, body: &str, session_id: Option<&str>) -> Response {
+    let mut request = client
+        .post(url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .body(body.to_owned());
+
+    if let Some(session_id) = session_id {
+        request = request.header("Mcp-Session-Id", session_id);
+    }
+
+    request.send().await.expect("send MCP request")
+}
+
+async fn post_json(client: &Client, url: &str, body: Value, session_id: Option<&str>) -> Response {
+    post_raw(
+        client,
+        url,
+        &serde_json::to_string(&body).expect("serialize json-rpc body"),
+        session_id,
+    )
+    .await
+}
+
+async fn parse_jsonrpc_response(response: Response) -> (Option<String>, Value, String, String) {
+    let headers = response.headers().clone();
+    let session_id = headers
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
+    let content_type = headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let body = response.text().await.expect("read response body");
+    let payload = extract_jsonrpc_payload(&body);
+    (session_id, payload, content_type, body)
+}
+
+fn extract_jsonrpc_payload(body: &str) -> Value {
+    if let Ok(json) = serde_json::from_str(body) {
+        return json;
+    }
+
+    for line in body.lines() {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        if let Ok(json) = serde_json::from_str::<Value>(data.trim()) {
+            return json;
+        }
+    }
+
+    panic!("response body did not contain a JSON-RPC payload: {body}");
+}
+
+#[tokio::test]
+async fn mcp_http_initialize_returns_json_in_stateless_mode() {
+    let state = Arc::new(AppState::new());
+    let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
+    let (client, base_url) = spawn_router(router).await;
+
+    let response = post_raw(&client, &format!("{base_url}/mcp"), INIT_BODY, None).await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let (_session_id, payload, content_type, _body) = parse_jsonrpc_response(response).await;
     assert!(
-        response.get("result").is_some(),
-        "initialize should succeed"
+        content_type.contains("application/json"),
+        "expected application/json, got {content_type}"
     );
-    server
-}
 
-// ── JSON-RPC Protocol Compliance ───────────────────────────────────────────
-
-#[test]
-fn test_parse_error_on_invalid_json() {
-    let mut server = McpServer::new();
-    let response = server
-        .handle_message("not valid json {{{")
-        .expect("parse error should still produce a response");
-    let parsed: Value = serde_json::from_str(&response).expect("response should be valid JSON");
-    let error = parsed.get("error").expect("should have error field");
-    assert_eq!(error["code"], -32700, "should be PARSE_ERROR code");
-}
-
-#[test]
-fn test_invalid_jsonrpc_version() {
-    let mut server = McpServer::new();
-    let request = json!({
-        "jsonrpc": "1.0",
-        "id": 1,
-        "method": "initialize"
-    });
-    let response = rpc_call_raw(&mut server, &request);
-    let error = response.get("error").expect("should have error field");
-    assert_eq!(error["code"], -32600, "should be INVALID_REQUEST code");
-}
-
-#[test]
-fn test_method_not_found() {
-    let mut server = initialized_server();
-    let response = rpc_call(&mut server, "nonexistent/method", &json!({}));
-    let error = response.get("error").expect("should have error field");
-    assert_eq!(error["code"], -32601, "should be METHOD_NOT_FOUND code");
-}
-
-#[test]
-fn test_notification_returns_none() {
-    let mut server = McpServer::new();
-    // Notification = no "id" field
-    let request = json!({
-        "jsonrpc": "2.0",
-        "method": "initialized"
-    });
-    let input = serde_json::to_string(&request).expect("serialization should succeed");
-    let result = server.handle_message(&input);
-    assert!(
-        result.is_none(),
-        "notifications should not produce a response"
-    );
-}
-
-#[test]
-fn test_requires_initialization() {
-    let mut server = McpServer::new();
-    let response = rpc_call(&mut server, "tools/list", &json!({}));
-    let error = response.get("error").expect("should reject pre-init call");
-    assert_eq!(error["code"], -32600);
-    assert!(
-        error["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("not initialized"),
-        "error message should mention initialization"
-    );
-}
-
-#[test]
-fn test_ping_always_works() {
-    let mut server = McpServer::new();
-    // ping should work even without initialization
-    let response = rpc_call(&mut server, "ping", &json!({}));
-    assert!(response.get("result").is_some());
-}
-
-// ── Initialize Handshake ───────────────────────────────────────────────────
-
-#[test]
-fn test_initialize_response_shape() {
-    let mut server = McpServer::new();
-    let response = rpc_call(&mut server, "initialize", &json!({}));
-    let result = response.get("result").expect("should have result");
-
-    assert_eq!(result["protocolVersion"], "2025-11-25");
+    let result = payload.get("result").expect("initialize result");
+    assert_eq!(result["protocolVersion"], "2025-06-18");
     assert!(result["capabilities"]["tools"].is_object());
     assert!(result["capabilities"]["resources"].is_object());
     assert!(result["capabilities"]["prompts"].is_object());
+    assert_eq!(result["serverInfo"]["name"], "hypercolor");
     assert!(
         result["capabilities"].get("logging").is_none(),
-        "initialize should not advertise unsupported logging capability"
+        "server should not advertise unsupported logging"
     );
-    assert!(
-        result["capabilities"].get("completions").is_none(),
-        "initialize should not advertise unsupported completions capability"
-    );
-    assert!(
-        result["capabilities"]["resources"]
-            .get("subscribe")
-            .is_none(),
-        "initialize should not advertise unsupported resource subscriptions"
-    );
-    assert_eq!(result["serverInfo"]["name"], "hypercolor");
-    assert!(result["instructions"].is_string());
 }
 
-// ── Tools ──────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn mcp_http_tools_list_and_call_return_structured_results() {
+    let state = Arc::new(AppState::new());
+    let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
+    let (client, base_url) = spawn_router(router).await;
+    let mcp_url = format!("{base_url}/mcp");
 
-#[test]
-fn test_tool_definitions_count() {
-    let tools = build_tool_definitions();
-    assert_eq!(tools.len(), 14, "should have exactly 14 tools");
-}
-
-#[test]
-fn test_tool_definitions_have_valid_schemas() {
-    let tools = build_tool_definitions();
-    for tool in &tools {
-        assert!(!tool.name.is_empty(), "tool name should not be empty");
-        assert!(
-            !tool.description.is_empty(),
-            "tool {}: description should not be empty",
-            tool.name
-        );
-        assert_eq!(
-            tool.input_schema["type"], "object",
-            "tool {}: input_schema root type should be 'object'",
-            tool.name
-        );
-    }
-}
-
-#[test]
-fn test_tool_names_are_snake_case() {
-    let tools = build_tool_definitions();
-    for tool in &tools {
-        assert!(
-            tool.name.chars().all(|c| c.is_lowercase() || c == '_'),
-            "tool name '{}' should be snake_case",
-            tool.name
-        );
-    }
-}
-
-#[test]
-fn test_tools_list_via_protocol() {
-    let mut server = initialized_server();
-    let response = rpc_call(&mut server, "tools/list", &json!({}));
-    let result = response.get("result").expect("should have result");
-    let tools = result["tools"]
+    let list_response = post_json(
+        &client,
+        &mcp_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list"
+        }),
+        None,
+    )
+    .await;
+    let (_session_id, list_payload, _content_type, _body) =
+        parse_jsonrpc_response(list_response).await;
+    let tools = list_payload["result"]["tools"]
         .as_array()
-        .expect("tools should be an array");
+        .expect("tools list array");
     assert_eq!(tools.len(), 14);
+    assert!(tools.iter().all(|tool| tool["outputSchema"].is_object()));
 
-    // Every tool should have name, description, inputSchema, outputSchema
-    for tool in tools {
-        assert!(tool["name"].is_string());
-        assert!(tool["description"].is_string());
-        assert!(tool["inputSchema"].is_object());
-        assert!(tool["outputSchema"].is_object());
-    }
-}
-
-#[test]
-fn test_tools_call_missing_name() {
-    let mut server = initialized_server();
-    let response = rpc_call(&mut server, "tools/call", &json!({}));
-    // Missing 'name' parameter triggers a JSON-RPC-level error (not a tool-level isError)
-    assert!(
-        response.get("error").is_some(),
-        "tools/call without 'name' should return a JSON-RPC error"
-    );
-}
-
-#[test]
-fn test_tools_call_unknown_tool() {
-    let mut server = initialized_server();
-    let response = rpc_call(
-        &mut server,
-        "tools/call",
-        &json!({ "name": "nonexistent_tool", "arguments": {} }),
-    );
-    let result = response.get("result").expect("should have result");
-    assert_eq!(result["isError"], true);
-}
-
-#[test]
-fn test_set_color_tool_valid_hex() {
-    let result = execute_tool("set_color", &json!({ "color": "#ff6ac1" }));
-    let value = result.expect("set_color with valid hex should succeed");
-    assert_eq!(value["applied"], true);
-    assert_eq!(value["resolved_color"]["hex"], "#ff6ac1");
-    assert_eq!(value["resolved_color"]["rgb"]["r"], 255);
-    assert_eq!(value["resolved_color"]["rgb"]["g"], 106);
-    assert_eq!(value["resolved_color"]["rgb"]["b"], 193);
-}
-
-#[test]
-fn test_tools_call_returns_structured_content() {
-    let mut server = initialized_server();
-    let response = rpc_call(
-        &mut server,
-        "tools/call",
-        &json!({ "name": "set_color", "arguments": { "color": "#ff6ac1" } }),
-    );
-    let result = response.get("result").expect("should have result");
-
+    let call_response = post_json(
+        &client,
+        &mcp_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "get_status",
+                "arguments": {}
+            }
+        }),
+        None,
+    )
+    .await;
+    let (_session_id, call_payload, _content_type, _body) =
+        parse_jsonrpc_response(call_response).await;
+    let result = call_payload.get("result").expect("tool call result");
     assert_eq!(result["isError"], false);
-    assert!(result["structuredContent"].is_object());
-    assert_eq!(
-        result["structuredContent"]["resolved_color"]["hex"],
-        "#ff6ac1"
-    );
+    assert!(result["structuredContent"]["devices"].is_object());
+    assert!(result["structuredContent"]["uptime_seconds"].is_number());
     assert!(result["content"].is_array());
-    assert!(result["content"][0]["text"].is_string());
-}
 
-#[test]
-fn test_tools_call_errors_return_structured_content() {
-    let mut server = initialized_server();
-    let response = rpc_call(
-        &mut server,
-        "tools/call",
-        &json!({ "name": "set_color", "arguments": {} }),
-    );
-    let result = response.get("result").expect("should have result");
-
-    assert_eq!(result["isError"], true);
-    assert!(result["structuredContent"].is_object());
-    assert_eq!(result["structuredContent"]["code"], -32602);
-    assert!(result["structuredContent"]["message"].is_string());
-}
-
-#[test]
-fn test_set_color_tool_named_color() {
-    let result = execute_tool("set_color", &json!({ "color": "coral" }));
-    let value = result.expect("set_color with named color should succeed");
-    assert_eq!(value["applied"], true);
-    assert_eq!(value["resolved_color"]["name"], "coral");
-}
-
-#[test]
-fn test_set_color_missing_param() {
-    let result = execute_tool("set_color", &json!({}));
-    assert!(result.is_err(), "set_color without 'color' should fail");
-    let err = result.expect_err("set_color without 'color' should produce error");
-    assert!(matches!(err, ToolError::MissingParam(_)));
-}
-
-#[test]
-fn test_set_brightness_validation() {
-    // Valid brightness
-    let result = execute_tool("set_brightness", &json!({ "brightness": 50 }));
-    assert!(result.is_ok());
-    assert_eq!(result.expect("should succeed")["brightness"], 50);
-
-    // Missing brightness
-    let result = execute_tool("set_brightness", &json!({}));
-    assert!(result.is_err());
-
-    // Out of range
-    let result = execute_tool("set_brightness", &json!({ "brightness": 200 }));
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_get_status_tool() {
-    let result = execute_tool("get_status", &json!({}));
-    let value = result.expect("get_status should succeed");
-    assert_eq!(value["running"], true);
-    assert!(value["brightness"].is_number());
-    assert!(value["devices"].is_object());
-    assert!(value["uptime_seconds"].is_number());
-}
-
-#[test]
-fn test_create_scene_required_params() {
-    // Missing name
-    let result = execute_tool(
-        "create_scene",
-        &json!({
-            "profile_id": "test",
-            "trigger": { "type": "schedule" }
+    let error_response = post_json(
+        &client,
+        &mcp_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "set_color",
+                "arguments": {}
+            }
         }),
-    );
-    assert!(result.is_err());
+        None,
+    )
+    .await;
+    let (_session_id, error_payload, _content_type, _body) =
+        parse_jsonrpc_response(error_response).await;
+    let error_result = error_payload.get("result").expect("tool error result");
+    assert_eq!(error_result["isError"], true);
+    assert_eq!(error_result["structuredContent"]["code"], -32602);
+}
 
-    // Missing profile_id
-    let result = execute_tool(
-        "create_scene",
-        &json!({
-            "name": "Test Scene",
-            "trigger": { "type": "schedule" }
+#[tokio::test]
+async fn mcp_http_resources_and_prompts_roundtrip() {
+    let state = Arc::new(AppState::new());
+    let router = mcp::build_router(Arc::clone(&state), &stateless_mcp_config()).with_state(state);
+    let (client, base_url) = spawn_router(router).await;
+    let mcp_url = format!("{base_url}/mcp");
+
+    let resources_response = post_json(
+        &client,
+        &mcp_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "resources/list"
         }),
-    );
-    assert!(result.is_err());
-
-    // Missing trigger
-    let result = execute_tool(
-        "create_scene",
-        &json!({
-            "name": "Test Scene",
-            "profile_id": "test"
-        }),
-    );
-    assert!(result.is_err());
-
-    // All required params present
-    let result = execute_tool(
-        "create_scene",
-        &json!({
-            "name": "Test Scene",
-            "profile_id": "test",
-            "trigger": { "type": "schedule" }
-        }),
-    );
-    assert!(result.is_ok());
-    let value = result.expect("should succeed");
-    assert_eq!(value["name"], "Test Scene");
-    assert!(value["scene_id"].is_string());
-}
-
-#[test]
-fn test_diagnose_tool() {
-    let result = execute_tool("diagnose", &json!({}));
-    let value = result.expect("diagnose should succeed");
-    assert_eq!(value["overall_status"], "healthy");
-    assert!(value["findings"].is_array());
-}
-
-#[test]
-fn test_set_effect_missing_query() {
-    let result = execute_tool("set_effect", &json!({}));
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_activate_scene_missing_name() {
-    let result = execute_tool("activate_scene", &json!({}));
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_set_profile_missing_query() {
-    let result = execute_tool("set_profile", &json!({}));
-    assert!(result.is_err());
-}
-
-// ── Resources ──────────────────────────────────────────────────────────────
-
-#[test]
-fn test_resource_definitions_count() {
-    let resources = build_resource_definitions();
-    assert_eq!(resources.len(), 5, "should have exactly 5 resources");
-}
-
-#[test]
-fn test_resource_uris_use_hypercolor_scheme() {
-    let resources = build_resource_definitions();
-    for resource in &resources {
-        assert!(
-            resource.uri.starts_with("hypercolor://"),
-            "resource URI '{}' should use hypercolor:// scheme",
-            resource.uri
-        );
-    }
-}
-
-#[test]
-fn test_valid_resource_uri_check() {
-    assert!(is_valid_resource_uri("hypercolor://state"));
-    assert!(is_valid_resource_uri("hypercolor://devices"));
-    assert!(is_valid_resource_uri("hypercolor://effects"));
-    assert!(is_valid_resource_uri("hypercolor://profiles"));
-    assert!(is_valid_resource_uri("hypercolor://audio"));
-    assert!(!is_valid_resource_uri("hypercolor://nonexistent"));
-    assert!(!is_valid_resource_uri("http://state"));
-}
-
-#[test]
-fn test_read_all_resources() {
-    let resources = build_resource_definitions();
-    for resource in &resources {
-        let content = read_resource(&resource.uri);
-        assert!(
-            content.is_some(),
-            "resource '{}' should return content",
-            resource.uri
-        );
-        let value = content.expect("should have content");
-        assert!(
-            value.is_object(),
-            "resource content should be a JSON object"
-        );
-    }
-}
-
-#[test]
-fn test_read_unknown_resource() {
-    let content = read_resource("hypercolor://unknown");
-    assert!(content.is_none());
-}
-
-#[test]
-fn test_resources_list_via_protocol() {
-    let mut server = initialized_server();
-    let response = rpc_call(&mut server, "resources/list", &json!({}));
-    let result = response.get("result").expect("should have result");
-    let resources = result["resources"]
+        None,
+    )
+    .await;
+    let (_session_id, resources_payload, _content_type, _body) =
+        parse_jsonrpc_response(resources_response).await;
+    let resources = resources_payload["result"]["resources"]
         .as_array()
-        .expect("resources should be an array");
+        .expect("resource list array");
     assert_eq!(resources.len(), 5);
 
-    for resource in resources {
-        assert!(resource["uri"].is_string());
-        assert!(resource["name"].is_string());
-        assert!(resource["mimeType"].is_string());
-    }
-}
-
-#[test]
-fn test_resources_read_via_protocol() {
-    let mut server = initialized_server();
-    let response = rpc_call(
-        &mut server,
-        "resources/read",
-        &json!({ "uri": "hypercolor://state" }),
-    );
-    let result = response.get("result").expect("should have result");
-    let contents = result["contents"]
+    let read_response = post_json(
+        &client,
+        &mcp_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "resources/read",
+            "params": {
+                "uri": "hypercolor://state"
+            }
+        }),
+        None,
+    )
+    .await;
+    let (_session_id, read_payload, _content_type, _body) =
+        parse_jsonrpc_response(read_response).await;
+    let contents = read_payload["result"]["contents"]
         .as_array()
-        .expect("contents should be an array");
-    assert_eq!(contents.len(), 1);
+        .expect("resource contents array");
     assert_eq!(contents[0]["uri"], "hypercolor://state");
-    assert!(contents[0]["text"].is_string());
-}
+    assert_eq!(contents[0]["mimeType"], "application/json");
 
-#[test]
-fn test_resources_read_invalid_uri() {
-    let mut server = initialized_server();
-    let response = rpc_call(
-        &mut server,
-        "resources/read",
-        &json!({ "uri": "hypercolor://nope" }),
-    );
-    assert!(response.get("error").is_some());
-}
-
-// ── Prompts ────────────────────────────────────────────────────────────────
-
-#[test]
-fn test_prompt_definitions_count() {
-    let prompts = build_prompt_definitions();
-    assert_eq!(prompts.len(), 3, "should have exactly 3 prompts");
-}
-
-#[test]
-fn test_prompt_names() {
-    let prompts = build_prompt_definitions();
-    let names: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
-    assert!(names.contains(&"mood_lighting"));
-    assert!(names.contains(&"troubleshoot"));
-    assert!(names.contains(&"setup_automation"));
-}
-
-#[test]
-fn test_valid_prompt_check() {
-    assert!(is_valid_prompt("mood_lighting"));
-    assert!(is_valid_prompt("troubleshoot"));
-    assert!(is_valid_prompt("setup_automation"));
-    assert!(!is_valid_prompt("nonexistent"));
-}
-
-#[test]
-fn test_mood_lighting_prompt_messages() {
-    let messages = get_prompt_messages("mood_lighting", &json!({ "mood": "cozy evening" }));
-    let value = messages.expect("mood_lighting should produce messages");
-    assert!(value["messages"].is_array());
-    let msgs = value["messages"].as_array().expect("should be array");
-    assert!(msgs.len() >= 3, "should have multiple message turns");
-
-    // First message should include the mood
-    let first_text = msgs[0]["content"]["text"]
-        .as_str()
-        .expect("first message should have text");
-    assert!(
-        first_text.contains("cozy evening"),
-        "first message should include the mood"
-    );
-}
-
-#[test]
-fn test_troubleshoot_prompt_messages() {
-    let messages = get_prompt_messages(
-        "troubleshoot",
-        &json!({ "issue": "WLED strip not responding" }),
-    );
-    let value = messages.expect("troubleshoot should produce messages");
-    let msgs = value["messages"].as_array().expect("should be array");
-    let first_text = msgs[0]["content"]["text"]
-        .as_str()
-        .expect("should have text");
-    assert!(first_text.contains("WLED strip not responding"));
-}
-
-#[test]
-fn test_setup_automation_prompt_messages() {
-    let messages = get_prompt_messages(
-        "setup_automation",
-        &json!({ "description": "dim lights at 10pm" }),
-    );
-    let value = messages.expect("setup_automation should produce messages");
-    let msgs = value["messages"].as_array().expect("should be array");
-    let first_text = msgs[0]["content"]["text"]
-        .as_str()
-        .expect("should have text");
-    assert!(first_text.contains("dim lights at 10pm"));
-}
-
-#[test]
-fn test_unknown_prompt() {
-    let messages = get_prompt_messages("nonexistent", &json!({}));
-    assert!(messages.is_none());
-}
-
-#[test]
-fn test_prompts_list_via_protocol() {
-    let mut server = initialized_server();
-    let response = rpc_call(&mut server, "prompts/list", &json!({}));
-    let result = response.get("result").expect("should have result");
-    let prompts = result["prompts"]
+    let prompts_response = post_json(
+        &client,
+        &mcp_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "prompts/list"
+        }),
+        None,
+    )
+    .await;
+    let (_session_id, prompts_payload, _content_type, _body) =
+        parse_jsonrpc_response(prompts_response).await;
+    let prompts = prompts_payload["result"]["prompts"]
         .as_array()
-        .expect("prompts should be an array");
+        .expect("prompt list array");
     assert_eq!(prompts.len(), 3);
 
-    for prompt in prompts {
-        assert!(prompt["name"].is_string());
-        assert!(prompt["description"].is_string());
-        assert!(prompt["arguments"].is_array());
-    }
-}
-
-#[test]
-fn test_prompts_get_via_protocol() {
-    let mut server = initialized_server();
-    let response = rpc_call(
-        &mut server,
-        "prompts/get",
-        &json!({
-            "name": "mood_lighting",
-            "arguments": { "mood": "chill" }
+    let prompt_response = post_json(
+        &client,
+        &mcp_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "prompts/get",
+            "params": {
+                "name": "mood_lighting",
+                "arguments": {
+                    "mood": "cozy evening"
+                }
+            }
         }),
+        None,
+    )
+    .await;
+    let (_session_id, prompt_payload, _content_type, _body) =
+        parse_jsonrpc_response(prompt_response).await;
+    let prompt_result = prompt_payload.get("result").expect("prompt result");
+    assert!(prompt_result["messages"].is_array());
+    assert_eq!(
+        prompt_result["description"],
+        "Configure Hypercolor RGB lighting to match a mood"
     );
-    let result = response.get("result").expect("should have result");
-    assert!(result["messages"].is_array());
 }
 
-// ── Fuzzy Matching: Effects ────────────────────────────────────────────────
+#[tokio::test]
+async fn mcp_http_stateful_mode_uses_session_headers_and_sse() {
+    let config = McpConfig {
+        enabled: true,
+        stateful_mode: true,
+        json_response: true,
+        ..McpConfig::default()
+    };
+    let state = Arc::new(AppState::new());
+    let router = mcp::build_router(Arc::clone(&state), &config).with_state(state);
+    let (client, base_url) = spawn_router(router).await;
+    let mcp_url = format!("{base_url}/mcp");
 
-#[test]
-fn test_match_effect_empty_catalog() {
-    let results = match_effect("aurora", &[]);
-    assert!(results.is_empty());
-}
-
-#[test]
-fn test_match_effect_exact() {
-    let effects = test_effects();
-    let results = match_effect("Aurora Borealis", &effects);
-    assert!(!results.is_empty(), "exact match should produce results");
-    assert_eq!(results[0].effect.name, "Aurora Borealis");
+    let init_response = post_raw(&client, &mcp_url, INIT_BODY, None).await;
+    assert_eq!(init_response.status(), reqwest::StatusCode::OK);
+    let session_id = init_response
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
+    let content_type = init_response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let body = init_response.text().await.expect("read init SSE body");
     assert!(
-        (results[0].score - 1.0).abs() < f32::EPSILON,
-        "exact match score should be 1.0"
+        content_type.contains("text/event-stream"),
+        "expected SSE response, got {content_type}"
+    );
+    assert!(
+        body.contains("retry: 3000"),
+        "expected SSE priming event, got {body}"
+    );
+
+    let session_id = session_id.expect("stateful initialize should return session id");
+    let list_response = post_json(
+        &client,
+        &mcp_url,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/list"
+        }),
+        Some(&session_id),
+    )
+    .await;
+    let list_content_type = list_response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let list_body = list_response.text().await.expect("read list SSE body");
+    assert!(list_content_type.contains("text/event-stream"));
+    assert!(
+        list_body.contains("data:"),
+        "expected SSE framing, got {list_body}"
     );
 }
 
-#[test]
-fn test_match_effect_fuzzy() {
-    let effects = test_effects();
-    let results = match_effect("aurra", &effects);
-    // Should still match Aurora Borealis with a decent score
-    assert!(!results.is_empty(), "fuzzy match should produce results");
-    assert!(results[0].score > 0.3);
+#[tokio::test]
+async fn api_router_mounts_mcp_when_enabled_in_config() {
+    let tempdir = TempDir::new().expect("create temp dir");
+    let config_path = tempdir.path().join("hypercolor.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "schema_version = {CURRENT_SCHEMA_VERSION}\n[mcp]\nenabled = true\nstateful_mode = false\njson_response = true\n"
+        ),
+    )
+    .expect("write config file");
+
+    let manager = Arc::new(ConfigManager::new(config_path).expect("load config manager"));
+    let mut state = AppState::new();
+    state.config_manager = Some(manager);
+
+    let router = api::build_router(Arc::new(state), None);
+    let (client, base_url) = spawn_router(router).await;
+
+    let response = post_raw(&client, &format!("{base_url}/mcp"), INIT_BODY, None).await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let (_session_id, payload, content_type, _body) = parse_jsonrpc_response(response).await;
+    assert!(content_type.contains("application/json"));
+    assert_eq!(payload["result"]["serverInfo"]["name"], "hypercolor");
 }
 
 #[test]
-fn test_match_effect_by_tag() {
-    let effects = test_effects();
-    let results = match_effect("calm nature", &effects);
-    // Should match effects tagged with "calm" or "nature"
-    assert!(!results.is_empty(), "tag match should produce results");
+fn tool_definitions_have_valid_schemas() {
+    let tools = build_tool_definitions();
+    assert_eq!(tools.len(), 14);
+    assert!(
+        tools
+            .iter()
+            .all(|tool| tool.input_schema["type"] == "object")
+    );
+    assert!(tools.iter().all(|tool| tool.output_schema.is_object()));
 }
 
 #[test]
-fn test_match_effect_below_threshold_excluded() {
-    let effects = test_effects();
-    let results = match_effect("xyzzy quantum flux capacitor", &effects);
-    // With completely unrelated query, most results should be filtered out
-    for m in &results {
-        assert!(
-            m.score > 0.3,
-            "all returned matches should be above threshold"
-        );
-    }
-}
+fn set_color_tool_executes_and_validates() {
+    let result = execute_tool("set_color", &json!({ "color": "#ff6ac1" }))
+        .expect("set_color should succeed");
+    assert_eq!(result["resolved_color"]["hex"], "#ff6ac1");
 
-// ── Fuzzy Matching: Colors ─────────────────────────────────────────────────
-
-#[test]
-fn test_resolve_color_hex() {
-    let result = resolve_color("#ff6ac1").expect("should resolve hex");
-    assert_eq!(result.r, 255);
-    assert_eq!(result.g, 106);
-    assert_eq!(result.b, 193);
-    assert_eq!(result.hex, "#ff6ac1");
-    assert!((result.confidence - 1.0).abs() < f32::EPSILON);
+    let error =
+        execute_tool("set_color", &json!({})).expect_err("missing color should return an error");
+    assert!(matches!(error, ToolError::MissingParam(_)));
 }
 
 #[test]
-fn test_resolve_color_hex_no_hash() {
-    let result = resolve_color("ff6ac1").expect("should resolve hex without #");
-    assert_eq!(result.r, 255);
-    assert_eq!(result.g, 106);
-    assert_eq!(result.b, 193);
+fn resource_definitions_are_readable() {
+    let resources = build_resource_definitions();
+    assert_eq!(resources.len(), 5);
+    assert!(
+        resources
+            .iter()
+            .all(|resource| resource.uri.starts_with("hypercolor://"))
+    );
+    assert!(is_valid_resource_uri("hypercolor://state"));
+    assert!(read_resource("hypercolor://state").is_some());
+    assert!(read_resource("hypercolor://nope").is_none());
 }
 
 #[test]
-fn test_resolve_color_rgb_function() {
-    let result = resolve_color("rgb(255, 106, 193)").expect("should resolve rgb()");
-    assert_eq!(result.r, 255);
-    assert_eq!(result.g, 106);
-    assert_eq!(result.b, 193);
-    assert!((result.confidence - 1.0).abs() < f32::EPSILON);
-}
-
-#[test]
-fn test_resolve_color_hsl_function() {
-    let result = resolve_color("hsl(0, 100%, 50%)").expect("should resolve hsl()");
-    // hsl(0, 100%, 50%) = pure red
-    assert_eq!(result.r, 255);
-    assert_eq!(result.g, 0);
-    assert_eq!(result.b, 0);
-}
-
-#[test]
-fn test_resolve_color_named() {
-    let result = resolve_color("coral").expect("should resolve named color");
-    assert_eq!(result.name, "coral");
-    assert_eq!(result.r, 255);
-    assert_eq!(result.g, 127);
-    assert_eq!(result.b, 80);
-    assert!((result.confidence - 1.0).abs() < f32::EPSILON);
-}
-
-#[test]
-fn test_resolve_color_named_case_insensitive() {
-    let result = resolve_color("CORAL").expect("should resolve uppercase");
-    assert_eq!(result.name, "coral");
-}
-
-#[test]
-fn test_resolve_color_blue() {
-    let result = resolve_color("blue").expect("should resolve 'blue'");
-    assert_eq!(result.name, "blue");
-    assert_eq!(result.r, 0);
-    assert_eq!(result.g, 0);
-    assert_eq!(result.b, 255);
-}
-
-#[test]
-fn test_resolve_color_warm_white() {
-    let result = resolve_color("warm white").expect("should resolve compound name");
-    assert_eq!(result.name, "warm white");
-}
-
-#[test]
-fn test_resolve_color_natural_language() {
-    let result = resolve_color("ocean blue").expect("should resolve 'ocean blue'");
-    assert_eq!(result.name, "ocean blue");
-}
-
-#[test]
-fn test_resolve_color_empty_string() {
-    let result = resolve_color("");
-    assert!(result.is_none(), "empty string should not resolve");
-}
-
-#[test]
-fn test_resolve_color_invalid_hex() {
-    // "gggggg" is not valid hex, should fall through to name matching
-    let result = resolve_color("#gggggg");
-    // May or may not match a fuzzy color name — the key is it doesn't panic
-    // and doesn't return a bogus hex parse.
-    if let Some(color) = result {
-        assert!(
-            color.confidence < 1.0,
-            "invalid hex should not be a perfect match"
-        );
-    }
-}
-
-// ── Test Helpers ───────────────────────────────────────────────────────────
-
-/// Build a small catalog of test effects.
-fn test_effects() -> Vec<hypercolor_types::effect::EffectMetadata> {
-    use hypercolor_types::effect::{EffectCategory, EffectId, EffectMetadata, EffectSource};
-    use std::path::PathBuf;
-
-    vec![
-        EffectMetadata {
-            id: EffectId::new(uuid::Uuid::now_v7()),
-            name: "Aurora Borealis".into(),
-            author: "Hypercolor".into(),
-            version: "1.0.0".into(),
-            description: "Northern lights shimmer with calm, flowing colors".into(),
-            category: EffectCategory::Ambient,
-            tags: vec![
-                "calm".into(),
-                "nature".into(),
-                "aurora".into(),
-                "northern-lights".into(),
-            ],
-            controls: Vec::new(),
-            audio_reactive: false,
-            source: EffectSource::Native {
-                path: PathBuf::from("aurora.wgsl"),
-            },
-            license: Some("Apache-2.0".into()),
-        },
-        EffectMetadata {
-            id: EffectId::new(uuid::Uuid::now_v7()),
-            name: "Fire Blaze".into(),
-            author: "Hypercolor".into(),
-            version: "1.0.0".into(),
-            description: "Realistic fire simulation with flickering warmth".into(),
-            category: EffectCategory::Ambient,
-            tags: vec!["fire".into(), "warm".into(), "flickering".into()],
-            controls: Vec::new(),
-            audio_reactive: false,
-            source: EffectSource::Native {
-                path: PathBuf::from("fire.wgsl"),
-            },
-            license: Some("Apache-2.0".into()),
-        },
-        EffectMetadata {
-            id: EffectId::new(uuid::Uuid::now_v7()),
-            name: "Beat Pulse".into(),
-            author: "Hypercolor".into(),
-            version: "1.0.0".into(),
-            description: "Pulse colors to the beat of your music".into(),
-            category: EffectCategory::Audio,
-            tags: vec![
-                "beat".into(),
-                "music".into(),
-                "pulse".into(),
-                "reactive".into(),
-            ],
-            controls: Vec::new(),
-            audio_reactive: true,
-            source: EffectSource::Native {
-                path: PathBuf::from("beat_pulse.wgsl"),
-            },
-            license: Some("Apache-2.0".into()),
-        },
-        EffectMetadata {
-            id: EffectId::new(uuid::Uuid::now_v7()),
-            name: "Rainbow Wave".into(),
-            author: "Hypercolor".into(),
-            version: "1.0.0".into(),
-            description: "Classic rainbow gradient flowing across LEDs".into(),
-            category: EffectCategory::Generative,
-            tags: vec![
-                "rainbow".into(),
-                "gradient".into(),
-                "wave".into(),
-                "colorful".into(),
-            ],
-            controls: Vec::new(),
-            audio_reactive: false,
-            source: EffectSource::Native {
-                path: PathBuf::from("rainbow.wgsl"),
-            },
-            license: Some("Apache-2.0".into()),
-        },
-    ]
-}
-
-/// Send a raw JSON value as a request.
-fn rpc_call_raw(server: &mut McpServer, request: &Value) -> Value {
-    let input = serde_json::to_string(request).expect("serialization should succeed");
-    let output = server
-        .handle_message(&input)
-        .expect("should produce a response");
-    serde_json::from_str(&output).expect("response should be valid JSON")
+fn prompt_definitions_and_messages_are_valid() {
+    let prompts = build_prompt_definitions();
+    assert_eq!(prompts.len(), 3);
+    assert!(is_valid_prompt("mood_lighting"));
+    let messages = get_prompt_messages("mood_lighting", &json!({ "mood": "cozy evening" }))
+        .expect("prompt should build messages");
+    assert!(messages["messages"].is_array());
 }

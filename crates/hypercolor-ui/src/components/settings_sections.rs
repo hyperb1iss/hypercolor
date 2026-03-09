@@ -459,6 +459,74 @@ pub fn NetworkSection(
     }
 }
 
+// ── MCP ────────────────────────────────────────────────────────────────────
+
+#[component]
+pub fn McpSection(
+    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
+    on_change: Callback<(String, serde_json::Value)>,
+    on_reset: Callback<String>,
+) -> impl IntoView {
+    let enabled = Signal::derive(move || read_config(config, |cfg| cfg.mcp.enabled));
+    let base_path = Signal::derive(move || read_config(config, |cfg| cfg.mcp.base_path.clone()));
+    let stateful_mode =
+        Signal::derive(move || read_config(config, |cfg| cfg.mcp.stateful_mode));
+    let json_response =
+        Signal::derive(move || read_config(config, |cfg| cfg.mcp.json_response));
+    let sse_keep_alive_secs = Signal::derive(move || {
+        read_config(config, |cfg| cfg.mcp.sse_keep_alive_secs as f64)
+    });
+
+    view! {
+        <section id="section-mcp" class="pt-6 pb-2 space-y-0">
+            <SectionHeader title="MCP" icon=LuCable />
+            <SettingToggle
+                label="Enabled"
+                description="Expose Hypercolor's Model Context Protocol server on the main HTTP listener"
+                key="mcp.enabled"
+                value=enabled
+                on_change=on_change
+                restart_required=true
+            />
+            <SettingTextInput
+                label="Base Path"
+                description="HTTP mount path for the MCP endpoint on the existing server"
+                key="mcp.base_path"
+                value=base_path
+                on_change=on_change
+                restart_required=true
+                placeholder="/mcp"
+            />
+            <SettingToggle
+                label="Stateful Sessions"
+                description="Use MCP session headers and SSE streams for multi-request conversations"
+                key="mcp.stateful_mode"
+                value=stateful_mode
+                on_change=on_change
+                restart_required=true
+            />
+            <SettingToggle
+                label="JSON Responses"
+                description="Return plain JSON instead of SSE for stateless requests; ignored when stateful sessions are enabled"
+                key="mcp.json_response"
+                value=json_response
+                on_change=on_change
+                restart_required=true
+            />
+            <SettingNumberInput
+                label="SSE Keep Alive"
+                description="Seconds between SSE keep-alive pings in stateful mode (0 disables keep-alives)"
+                key="mcp.sse_keep_alive_secs"
+                value=sse_keep_alive_secs
+                on_change=on_change
+                min=0.0 max=300.0 step=1.0
+                restart_required=true
+            />
+            <SectionReset section_label="MCP" on_reset=Callback::new(move |()| on_reset.run("mcp".to_string())) />
+        </section>
+    }
+}
+
 // ── Session & Power ────────────────────────────────────────────────────────
 
 #[component]

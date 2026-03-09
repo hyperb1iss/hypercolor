@@ -2,8 +2,8 @@
 
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
-    FeatureFlags, HypercolorConfig, LogLevel, ShutdownBehavior, TuiConfig, WebConfig, WledConfig,
-    WledProtocolConfig,
+    FeatureFlags, HypercolorConfig, LogLevel, McpConfig, ShutdownBehavior, TuiConfig, WebConfig,
+    WledConfig, WledProtocolConfig,
 };
 use hypercolor_types::session::SessionConfig;
 
@@ -34,6 +34,16 @@ fn web_defaults_match_spec() {
     assert!(w.cors_origins.is_empty());
     assert_eq!(w.websocket_fps, 30);
     assert!(!w.auth_enabled);
+}
+
+#[test]
+fn mcp_defaults_match_spec() {
+    let m = McpConfig::default();
+    assert!(!m.enabled);
+    assert_eq!(m.base_path, "/mcp");
+    assert!(m.stateful_mode);
+    assert!(!m.json_response);
+    assert_eq!(m.sse_keep_alive_secs, 15);
 }
 
 #[test]
@@ -148,6 +158,7 @@ fn full_config_toml_roundtrip() {
         include: vec!["local.toml".into()],
         daemon: DaemonConfig::default(),
         web: WebConfig::default(),
+        mcp: McpConfig::default(),
         effect_engine: EffectEngineConfig::default(),
         audio: AudioConfig::default(),
         capture: CaptureConfig::default(),
@@ -165,6 +176,7 @@ fn full_config_toml_roundtrip() {
     assert_eq!(restored.include, vec!["local.toml"]);
     assert_eq!(restored.daemon.port, 9420);
     assert!(restored.web.enabled);
+    assert_eq!(restored.mcp.base_path, "/mcp");
     assert_eq!(restored.audio.fft_size, 1024);
     assert!(!restored.capture.enabled);
     assert_eq!(restored.discovery.scan_interval_secs, 300);
@@ -182,6 +194,7 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.schema_version, 2);
     assert_eq!(config.daemon.port, 9420);
     assert!(config.web.enabled);
+    assert_eq!(config.mcp.base_path, "/mcp");
     assert_eq!(config.audio.device, "default");
     assert!(!config.capture.enabled);
     assert_eq!(config.tui.theme, "silkcircuit");
