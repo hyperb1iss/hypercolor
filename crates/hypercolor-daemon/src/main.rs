@@ -53,7 +53,10 @@ async fn main() -> Result<()> {
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new(default_env_filter(&log_level)));
 
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .log_internal_errors(false)
+        .init();
 
     info!(
         version = env!("CARGO_PKG_VERSION"),

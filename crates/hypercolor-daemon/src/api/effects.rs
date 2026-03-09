@@ -576,7 +576,7 @@ pub(super) fn resolve_effect_metadata(
 
     registry
         .iter()
-        .find(|(_, entry)| entry.metadata.name.eq_ignore_ascii_case(id_or_name))
+        .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
         .map(|(_, entry)| entry.metadata.clone())
 }
 

@@ -377,6 +377,7 @@ pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
         snapshot.active_layout_id = Some(spatial.layout().id.clone());
     }
     snapshot.global_brightness = current_global_brightness(&state.power_state);
+    snapshot.wled_probe_ips = runtime_state::collect_wled_probe_ips(&state.device_registry).await;
 
     if let Err(error) = runtime_state::save(&state.runtime_state_path, &snapshot) {
         warn!(

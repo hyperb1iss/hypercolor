@@ -267,7 +267,7 @@ fn build_setup_automation_messages(arguments: &Value) -> Value {
                 "role": "user",
                 "content": {
                     "type": "text",
-                    "text": "Based on the available profiles and current state, help me create an automation rule. Ask about:\n1. When should it trigger? (time of day, solar event, device connection, etc.)\n2. What should happen? (apply a profile, set a specific effect, adjust brightness)\n3. Any conditions? (only on weekdays, only when a device is connected)\n4. Transition style? (instant, slow fade, etc.)\n\nThen use create_scene or set_schedule to create the automation."
+                    "text": "Based on the available profiles and current state, help me create an automation rule. Ask about:\n1. When should it trigger? (time of day, solar event, device connection, etc.)\n2. What should happen? (apply a profile, set a specific effect, adjust brightness)\n3. Any conditions? (only on weekdays, only when a device is connected)\n4. Transition style? (instant, slow fade, etc.)\n\nThen use create_scene to create the automation."
                 }
             }
         ]

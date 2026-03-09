@@ -513,6 +513,7 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
             "device-settings.json",
         )))),
+        runtime_state_path: PathBuf::from("runtime-state.json"),
         usb_protocol_configs: UsbProtocolConfigStore::new(),
         in_progress: Arc::new(AtomicBool::new(false)),
         task_spawner: tokio::runtime::Handle::current(),

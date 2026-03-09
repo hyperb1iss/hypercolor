@@ -1,6 +1,6 @@
 //! MCP (Model Context Protocol) server for Hypercolor.
 //!
-//! Implements the MCP protocol as a JSON-RPC 2.0 server over stdio.
+//! Current implementation: a JSON-RPC 2.0 MCP surface over stdio.
 //! AI assistants communicate with Hypercolor through 14 tools, 5 resources,
 //! and 3 prompt templates — translating natural language intent into
 //! precise RGB hardware commands.
@@ -363,14 +363,9 @@ impl McpServer {
         Ok(json!({
             "protocolVersion": "2025-11-25",
             "capabilities": {
-                "tools": { "listChanged": true },
-                "resources": {
-                    "subscribe": true,
-                    "listChanged": true
-                },
-                "prompts": { "listChanged": true },
-                "logging": {},
-                "completions": {}
+                "tools": {},
+                "resources": {},
+                "prompts": {}
             },
             "serverInfo": {
                 "name": "hypercolor",
@@ -393,6 +388,7 @@ impl McpServer {
                     "title": t.title,
                     "description": t.description,
                     "inputSchema": t.input_schema,
+                    "outputSchema": t.output_schema,
                     "annotations": {
                         "readOnlyHint": t.read_only,
                         "destructiveHint": false,
@@ -423,21 +419,8 @@ impl McpServer {
         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
         match tools::execute_tool(tool_name, &arguments) {
-            Ok(result) => Ok(json!({
-                "content": [{
-                    "type": "text",
-                    "text": serde_json::to_string_pretty(&result)
-                        .unwrap_or_else(|_| result.to_string())
-                }],
-                "isError": false
-            })),
-            Err(e) => Ok(json!({
-                "content": [{
-                    "type": "text",
-                    "text": format!("Error: {e}")
-                }],
-                "isError": true
-            })),
+            Ok(result) => Ok(build_tool_success(result)),
+            Err(error) => Ok(build_tool_error(&error)),
         }
     }
 
@@ -460,21 +443,8 @@ impl McpServer {
         };
 
         match result {
-            Ok(payload) => Ok(json!({
-                "content": [{
-                    "type": "text",
-                    "text": serde_json::to_string_pretty(&payload)
-                        .unwrap_or_else(|_| payload.to_string())
-                }],
-                "isError": false
-            })),
-            Err(error) => Ok(json!({
-                "content": [{
-                    "type": "text",
-                    "text": format!("Error: {error}")
-                }],
-                "isError": true
-            })),
+            Ok(payload) => Ok(build_tool_success(payload)),
+            Err(error) => Ok(build_tool_error(&error)),
         }
     }
 
@@ -606,6 +576,36 @@ impl McpServer {
             data: None,
         })
     }
+}
+
+fn build_tool_success(payload: Value) -> Value {
+    let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
+
+    json!({
+        "content": [{
+            "type": "text",
+            "text": text
+        }],
+        "structuredContent": payload,
+        "isError": false
+    })
+}
+
+fn build_tool_error(error: &tools::ToolError) -> Value {
+    let payload = json!({
+        "code": error.error_code(),
+        "message": error.to_string()
+    });
+    let text = serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string());
+
+    json!({
+        "content": [{
+            "type": "text",
+            "text": text
+        }],
+        "structuredContent": payload,
+        "isError": true
+    })
 }
 
 impl Default for McpServer {

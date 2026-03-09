@@ -278,12 +278,15 @@ impl DaemonState {
         let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(default_layout)));
         info!("Spatial engine created (empty default layout)");
 
+        let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
+
         // ── Backend Manager ─────────────────────────────────────────────
         let usb_protocol_configs = UsbProtocolConfigStore::new();
         let mut backend_manager_inner = BackendManager::new();
         backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
         if config.discovery.wled_scan {
-            backend_manager_inner.register_backend(Box::new(build_wled_backend(config)));
+            backend_manager_inner
+                .register_backend(Box::new(build_wled_backend(config, &runtime_state_path)));
         }
         backend_manager_inner.register_backend(Box::new(SmBusBackend::new()));
         backend_manager_inner.register_backend(Box::new(UsbBackend::with_protocol_config_store(
@@ -437,7 +440,6 @@ impl DaemonState {
         );
 
         // ── Runtime Session Store ───────────────────────────────────
-        let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
         info!(
             path = %runtime_state_path.display(),
             "Runtime session store ready"
@@ -505,6 +507,7 @@ impl DaemonState {
             attachment_registry: Arc::clone(&self.attachment_registry),
             attachment_profiles: Arc::clone(&self.attachment_profiles),
             device_settings: Arc::clone(&self.device_settings),
+            runtime_state_path: self.runtime_state_path.clone(),
             usb_protocol_configs: self.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&self.discovery_in_progress),
             task_spawner: tokio::runtime::Handle::current(),
@@ -719,6 +722,8 @@ impl DaemonState {
             snapshot.active_layout_id = Some(spatial.layout().id.clone());
         }
         snapshot.global_brightness = current_global_brightness(&self.power_state);
+        snapshot.wled_probe_ips =
+            runtime_state::collect_wled_probe_ips(&self.device_registry).await;
 
         if let Err(error) = runtime_state::save(&self.runtime_state_path, &snapshot) {
             warn!(
@@ -906,6 +911,7 @@ impl DaemonState {
             attachment_registry: Arc::clone(&self.attachment_registry),
             attachment_profiles: Arc::clone(&self.attachment_profiles),
             device_settings: Arc::clone(&self.device_settings),
+            runtime_state_path: self.runtime_state_path.clone(),
             usb_protocol_configs: self.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&self.discovery_in_progress),
         };
@@ -1019,6 +1025,7 @@ struct DiscoveryWorkerContext {
     attachment_registry: Arc<RwLock<AttachmentRegistry>>,
     attachment_profiles: Arc<RwLock<AttachmentProfileStore>>,
     device_settings: Arc<RwLock<DeviceSettingsStore>>,
+    runtime_state_path: PathBuf,
     usb_protocol_configs: UsbProtocolConfigStore,
     in_progress: Arc<AtomicBool>,
 }
@@ -1039,6 +1046,7 @@ impl DiscoveryWorkerContext {
             attachment_registry: Arc::clone(&self.attachment_registry),
             attachment_profiles: Arc::clone(&self.attachment_profiles),
             device_settings: Arc::clone(&self.device_settings),
+            runtime_state_path: self.runtime_state_path.clone(),
             usb_protocol_configs: self.usb_protocol_configs.clone(),
             in_progress: Arc::clone(&self.in_progress),
             task_spawner: tokio::runtime::Handle::current(),
@@ -1224,11 +1232,26 @@ pub(crate) fn build_input_manager(config: &HypercolorConfig) -> InputManager {
     input_manager
 }
 
-fn build_wled_backend(config: &HypercolorConfig) -> WledBackend {
-    let mut backend = WledBackend::with_mdns_fallback(
-        config.wled.known_ips.clone(),
-        config.discovery.mdns_enabled,
-    );
+fn build_wled_backend(config: &HypercolorConfig, runtime_state_path: &Path) -> WledBackend {
+    let mut known_ips: HashSet<_> = config.wled.known_ips.iter().copied().collect();
+    match runtime_state::load_wled_probe_ips(runtime_state_path) {
+        Ok(cached_ips) => {
+            known_ips.extend(cached_ips);
+        }
+        Err(error) => {
+            warn!(
+                path = %runtime_state_path.display(),
+                %error,
+                "Failed to load cached WLED probe IPs; falling back to config only"
+            );
+        }
+    }
+
+    let mut resolved_known_ips: Vec<_> = known_ips.into_iter().collect();
+    resolved_known_ips.sort_unstable();
+
+    let mut backend =
+        WledBackend::with_mdns_fallback(resolved_known_ips, config.discovery.mdns_enabled);
     let protocol = match config.wled.default_protocol {
         WledProtocolConfig::Ddp => WledProtocol::Ddp,
         WledProtocolConfig::E131 => WledProtocol::E131,

@@ -24,6 +24,8 @@ pub struct ToolDefinition {
     pub description: String,
     /// JSON Schema for the tool's input parameters.
     pub input_schema: Value,
+    /// JSON Schema for the tool's structured result payload.
+    pub output_schema: Value,
     /// Whether this tool only reads state (never modifies).
     pub read_only: bool,
     /// Whether repeated calls with the same input produce the same result.
@@ -48,6 +50,13 @@ pub fn build_tool_definitions() -> Vec<ToolDefinition> {
         build_get_layout(),
         build_diagnose(),
     ]
+}
+
+fn default_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "Structured JSON result returned by this tool. Field-level schemas are intentionally broad for now and should be tightened as the MCP surface stabilizes."
+    })
 }
 
 /// Execute a tool by name with the given arguments. Returns the result as JSON.
@@ -163,6 +172,7 @@ fn build_set_effect() -> ToolDefinition {
             },
             "required": ["query"]
         }),
+        output_schema: default_output_schema(),
         read_only: false,
         idempotent: true,
     }
@@ -204,6 +214,7 @@ fn build_list_effects() -> ToolDefinition {
                 }
             }
         }),
+        output_schema: default_output_schema(),
         read_only: true,
         idempotent: true,
     }
@@ -226,6 +237,7 @@ fn build_stop_effect() -> ToolDefinition {
                 }
             }
         }),
+        output_schema: default_output_schema(),
         read_only: false,
         idempotent: true,
     }
@@ -264,6 +276,7 @@ fn build_set_color() -> ToolDefinition {
             },
             "required": ["color"]
         }),
+        output_schema: default_output_schema(),
         read_only: false,
         idempotent: true,
     }
@@ -285,6 +298,7 @@ fn build_get_devices() -> ToolDefinition {
                 }
             }
         }),
+        output_schema: default_output_schema(),
         read_only: true,
         idempotent: true,
     }
@@ -318,6 +332,7 @@ fn build_set_brightness() -> ToolDefinition {
             },
             "required": ["brightness"]
         }),
+        output_schema: default_output_schema(),
         read_only: false,
         idempotent: true,
     }
@@ -332,6 +347,7 @@ fn build_get_status() -> ToolDefinition {
             "type": "object",
             "additionalProperties": false
         }),
+        output_schema: default_output_schema(),
         read_only: true,
         idempotent: true,
     }
@@ -359,6 +375,7 @@ fn build_activate_scene() -> ToolDefinition {
             },
             "required": ["name"]
         }),
+        output_schema: default_output_schema(),
         read_only: false,
         idempotent: true,
     }
@@ -379,6 +396,7 @@ fn build_list_scenes() -> ToolDefinition {
                 }
             }
         }),
+        output_schema: default_output_schema(),
         read_only: true,
         idempotent: true,
     }
@@ -437,6 +455,7 @@ fn build_create_scene() -> ToolDefinition {
             },
             "required": ["name", "profile_id", "trigger"]
         }),
+        output_schema: default_output_schema(),
         read_only: false,
         idempotent: false,
     }
@@ -451,6 +470,7 @@ fn build_get_audio_state() -> ToolDefinition {
             "type": "object",
             "additionalProperties": false
         }),
+        output_schema: default_output_schema(),
         read_only: true,
         idempotent: true,
     }
@@ -478,6 +498,7 @@ fn build_set_profile() -> ToolDefinition {
             },
             "required": ["query"]
         }),
+        output_schema: default_output_schema(),
         read_only: false,
         idempotent: true,
     }
@@ -492,6 +513,7 @@ fn build_get_layout() -> ToolDefinition {
             "type": "object",
             "additionalProperties": false
         }),
+        output_schema: default_output_schema(),
         read_only: true,
         idempotent: true,
     }
@@ -520,6 +542,7 @@ fn build_diagnose() -> ToolDefinition {
                 }
             }
         }),
+        output_schema: default_output_schema(),
         read_only: true,
         idempotent: true,
     }

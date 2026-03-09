@@ -37,6 +37,7 @@ use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::{DeviceSettingsStore, StoredDeviceSettings};
 use crate::layout_auto_exclusions;
 use crate::logical_devices::{self, LogicalDevice};
+use crate::runtime_state;
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
 const MIN_DISCOVERY_TIMEOUT_MS: u64 = 100;
@@ -131,6 +132,9 @@ pub struct DiscoveryRuntime {
     /// Persisted global and per-device output settings.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
 
+    /// Persistent JSON file for startup runtime session state.
+    pub runtime_state_path: PathBuf,
+
     /// Shared per-device USB protocol configuration store.
     pub usb_protocol_configs: UsbProtocolConfigStore,
 
@@ -191,35 +195,24 @@ pub fn normalize_timeout_ms(timeout_ms: Option<u64>) -> Duration {
 pub async fn resolve_wled_probe_ips(
     device_registry: &DeviceRegistry,
     config: &HypercolorConfig,
+    runtime_state_path: &std::path::Path,
 ) -> Vec<IpAddr> {
     let mut known_ips: HashSet<IpAddr> = config.wled.known_ips.iter().copied().collect();
 
-    for tracked in device_registry.list().await {
-        if tracked.info.family != DeviceFamily::Wled {
-            continue;
+    match runtime_state::load_wled_probe_ips(runtime_state_path) {
+        Ok(cached_ips) => {
+            known_ips.extend(cached_ips);
         }
-
-        let Some(metadata) = device_registry.metadata_for_id(&tracked.info.id).await else {
-            continue;
-        };
-        let Some(ip_raw) = metadata.get("ip") else {
-            continue;
-        };
-
-        match ip_raw.parse::<IpAddr>() {
-            Ok(ip) => {
-                known_ips.insert(ip);
-            }
-            Err(error) => {
-                debug!(
-                    device_id = %tracked.info.id,
-                    ip = %ip_raw,
-                    error = %error,
-                    "ignoring invalid cached WLED IP metadata"
-                );
-            }
+        Err(error) => {
+            warn!(
+                path = %runtime_state_path.display(),
+                %error,
+                "failed to load cached WLED probe IPs; ignoring persisted runtime cache"
+            );
         }
     }
+
+    known_ips.extend(runtime_state::collect_wled_probe_ips(device_registry).await);
 
     let mut resolved: Vec<IpAddr> = known_ips.into_iter().collect();
     resolved.sort_unstable();
@@ -350,8 +343,12 @@ pub async fn execute_discovery_scan(
     for backend in backends {
         match backend {
             DiscoveryBackend::Wled => {
-                let known_ips =
-                    resolve_wled_probe_ips(&runtime.device_registry, config.as_ref()).await;
+                let known_ips = resolve_wled_probe_ips(
+                    &runtime.device_registry,
+                    config.as_ref(),
+                    &runtime.runtime_state_path,
+                )
+                .await;
                 orchestrator.add_scanner(Box::new(WledScanner::with_known_ips(
                     known_ips,
                     config.discovery.mdns_enabled,

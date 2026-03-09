@@ -3,14 +3,17 @@
 //! Stores the currently active effect, control values, and selected preset so
 //! daemon startup can restore the previous user session.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use hypercolor_core::device::DeviceRegistry;
 use hypercolor_core::effect::EffectEngine;
+use hypercolor_types::device::DeviceFamily;
 use hypercolor_types::effect::ControlValue;
 
 /// Process-local counter to guarantee per-save temp file uniqueness.
@@ -34,6 +37,9 @@ pub struct RuntimeSessionSnapshot {
 
     /// User-configured global output brightness.
     pub global_brightness: f32,
+
+    /// Last-known WLED IPs discovered in previous sessions.
+    pub wled_probe_ips: Vec<IpAddr>,
 }
 
 /// Errors produced while loading/saving runtime snapshots.
@@ -87,6 +93,7 @@ pub fn snapshot_from_engine(engine: &EffectEngine) -> RuntimeSessionSnapshot {
         control_values: engine.active_controls().clone(),
         active_layout_id: None, // Populated by the caller with spatial engine state.
         global_brightness: 1.0,
+        wled_probe_ips: Vec::new(),
     }
 }
 
@@ -108,6 +115,38 @@ pub fn load(path: &Path) -> Result<Option<RuntimeSessionSnapshot>, RuntimeSessio
             source,
         })?;
     Ok(Some(snapshot))
+}
+
+/// Load the cached WLED probe IPs from `path`.
+pub fn load_wled_probe_ips(path: &Path) -> Result<Vec<IpAddr>, RuntimeSessionError> {
+    Ok(load(path)?.map_or_else(Vec::new, |snapshot| snapshot.wled_probe_ips))
+}
+
+/// Collect the last-known WLED probe IPs from registry metadata.
+pub async fn collect_wled_probe_ips(device_registry: &DeviceRegistry) -> Vec<IpAddr> {
+    let mut probe_ips = HashSet::new();
+
+    for tracked in device_registry.list().await {
+        if tracked.info.family != DeviceFamily::Wled {
+            continue;
+        }
+
+        let Some(metadata) = device_registry.metadata_for_id(&tracked.info.id).await else {
+            continue;
+        };
+        let Some(ip_raw) = metadata.get("ip") else {
+            continue;
+        };
+        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
+            continue;
+        };
+
+        probe_ips.insert(ip);
+    }
+
+    let mut resolved: Vec<IpAddr> = probe_ips.into_iter().collect();
+    resolved.sort_unstable();
+    resolved
 }
 
 /// Persist a runtime snapshot to `path` using atomic replace semantics.
@@ -171,6 +210,10 @@ mod tests {
             control_values: controls,
             active_layout_id: Some("layout_abc123".to_owned()),
             global_brightness: 0.42,
+            wled_probe_ips: vec![
+                "10.0.0.8".parse().expect("valid IP"),
+                "10.0.0.9".parse().expect("valid IP"),
+            ],
         };
 
         save(&path, &expected).expect("save snapshot");
@@ -181,6 +224,7 @@ mod tests {
         assert_eq!(loaded.active_preset_id, expected.active_preset_id);
         assert_eq!(loaded.control_values, expected.control_values);
         assert_eq!(loaded.global_brightness, expected.global_brightness);
+        assert_eq!(loaded.wled_probe_ips, expected.wled_probe_ips);
     }
 
     #[test]
@@ -201,6 +245,7 @@ mod tests {
             control_values: HashMap::new(),
             active_layout_id: None,
             global_brightness: 1.0,
+            wled_probe_ips: vec!["10.0.0.42".parse().expect("valid IP")],
         });
 
         let worker_count = 8;

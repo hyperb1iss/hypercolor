@@ -20,8 +20,8 @@ use hypercolor_daemon::startup::{
 use hypercolor_daemon::{layout_store, runtime_state};
 use hypercolor_types::config::WledProtocolConfig;
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-    DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
+    DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::spatial::{
@@ -528,6 +528,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
             control_values: std::collections::HashMap::new(),
             active_layout_id: Some(restored_layout.id.clone()),
             global_brightness: 1.0,
+            wled_probe_ips: Vec::new(),
         },
     )
     .expect("runtime state should save");
@@ -581,6 +582,32 @@ async fn daemon_shutdown_persists_active_runtime_session() {
         engine.set_active_preset_id("shutdown-preset".to_owned());
     }
 
+    let mut wled_metadata = std::collections::HashMap::new();
+    wled_metadata.insert("ip".to_owned(), "10.0.0.42".to_owned());
+    state
+        .device_registry
+        .add_with_fingerprint_and_metadata(
+            DeviceInfo {
+                id: DeviceId::new(),
+                name: "Desk Strip".to_owned(),
+                vendor: "WLED".to_owned(),
+                family: DeviceFamily::Wled,
+                model: None,
+                connection_type: ConnectionType::Network,
+                zones: vec![ZoneInfo {
+                    name: "Main".to_owned(),
+                    led_count: 30,
+                    topology: DeviceTopologyHint::Strip,
+                    color_format: DeviceColorFormat::Rgb,
+                }],
+                firmware_version: Some("0.15.3".to_owned()),
+                capabilities: DeviceCapabilities::default(),
+            },
+            DeviceFingerprint("net:aa:bb:cc:dd:ee:ff".to_owned()),
+            wled_metadata,
+        )
+        .await;
+
     state.shutdown().await.expect("shutdown should succeed");
 
     let snapshot = runtime_state::load(&state.runtime_state_path)
@@ -590,6 +617,10 @@ async fn daemon_shutdown_persists_active_runtime_session() {
     assert_eq!(
         snapshot.active_preset_id,
         Some("shutdown-preset".to_owned())
+    );
+    assert_eq!(
+        snapshot.wled_probe_ips,
+        vec!["10.0.0.42".parse::<std::net::IpAddr>().expect("valid IP"),]
     );
 }
 

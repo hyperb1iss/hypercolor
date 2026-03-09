@@ -127,6 +127,20 @@ fn test_initialize_response_shape() {
     assert!(result["capabilities"]["tools"].is_object());
     assert!(result["capabilities"]["resources"].is_object());
     assert!(result["capabilities"]["prompts"].is_object());
+    assert!(
+        result["capabilities"].get("logging").is_none(),
+        "initialize should not advertise unsupported logging capability"
+    );
+    assert!(
+        result["capabilities"].get("completions").is_none(),
+        "initialize should not advertise unsupported completions capability"
+    );
+    assert!(
+        result["capabilities"]["resources"]
+            .get("subscribe")
+            .is_none(),
+        "initialize should not advertise unsupported resource subscriptions"
+    );
     assert_eq!(result["serverInfo"]["name"], "hypercolor");
     assert!(result["instructions"].is_string());
 }
@@ -179,11 +193,12 @@ fn test_tools_list_via_protocol() {
         .expect("tools should be an array");
     assert_eq!(tools.len(), 14);
 
-    // Every tool should have name, description, inputSchema
+    // Every tool should have name, description, inputSchema, outputSchema
     for tool in tools {
         assert!(tool["name"].is_string());
         assert!(tool["description"].is_string());
         assert!(tool["inputSchema"].is_object());
+        assert!(tool["outputSchema"].is_object());
     }
 }
 
@@ -219,6 +234,42 @@ fn test_set_color_tool_valid_hex() {
     assert_eq!(value["resolved_color"]["rgb"]["r"], 255);
     assert_eq!(value["resolved_color"]["rgb"]["g"], 106);
     assert_eq!(value["resolved_color"]["rgb"]["b"], 193);
+}
+
+#[test]
+fn test_tools_call_returns_structured_content() {
+    let mut server = initialized_server();
+    let response = rpc_call(
+        &mut server,
+        "tools/call",
+        &json!({ "name": "set_color", "arguments": { "color": "#ff6ac1" } }),
+    );
+    let result = response.get("result").expect("should have result");
+
+    assert_eq!(result["isError"], false);
+    assert!(result["structuredContent"].is_object());
+    assert_eq!(
+        result["structuredContent"]["resolved_color"]["hex"],
+        "#ff6ac1"
+    );
+    assert!(result["content"].is_array());
+    assert!(result["content"][0]["text"].is_string());
+}
+
+#[test]
+fn test_tools_call_errors_return_structured_content() {
+    let mut server = initialized_server();
+    let response = rpc_call(
+        &mut server,
+        "tools/call",
+        &json!({ "name": "set_color", "arguments": {} }),
+    );
+    let result = response.get("result").expect("should have result");
+
+    assert_eq!(result["isError"], true);
+    assert!(result["structuredContent"].is_object());
+    assert_eq!(result["structuredContent"]["code"], -32602);
+    assert!(result["structuredContent"]["message"].is_string());
 }
 
 #[test]

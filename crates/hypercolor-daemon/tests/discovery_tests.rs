@@ -20,6 +20,7 @@ use hypercolor_daemon::discovery::{
     sync_active_layout_for_renderable_devices,
 };
 use hypercolor_daemon::logical_devices::LogicalDevice;
+use hypercolor_daemon::runtime_state;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
@@ -100,6 +101,7 @@ fn make_runtime(
     device_registry: DeviceRegistry,
     lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
     layouts_path: std::path::PathBuf,
+    runtime_state_path: std::path::PathBuf,
 ) -> DiscoveryRuntime {
     DiscoveryRuntime {
         device_registry,
@@ -119,6 +121,7 @@ fn make_runtime(
         device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(
             std::path::PathBuf::from("device-settings.json"),
         ))),
+        runtime_state_path,
         usb_protocol_configs: UsbProtocolConfigStore::new(),
         in_progress: Arc::new(AtomicBool::new(true)),
         task_spawner: tokio::runtime::Handle::current(),
@@ -152,6 +155,7 @@ async fn wled_only_scan_does_not_vanish_connected_usb_devices() {
         device_registry.clone(),
         Arc::clone(&lifecycle_manager),
         temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
     );
 
     let mut config = HypercolorConfig::default();
@@ -182,7 +186,7 @@ async fn wled_only_scan_does_not_vanish_connected_usb_devices() {
 }
 
 #[tokio::test]
-async fn resolve_wled_probe_ips_merges_config_and_registry_metadata() {
+async fn resolve_wled_probe_ips_merges_config_runtime_state_and_registry_metadata() {
     let registry = DeviceRegistry::new();
 
     let configured_ip: IpAddr = "10.4.22.69".parse().expect("configured IP should parse");
@@ -235,8 +239,32 @@ async fn resolve_wled_probe_ips_merges_config_and_registry_metadata() {
         )
         .await;
 
-    let resolved = resolve_wled_probe_ips(&registry, &config).await;
-    assert_eq!(resolved, vec![configured_ip, cached_ip]);
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime_state_path = temp_dir.path().join("runtime-state.json");
+    runtime_state::save(
+        &runtime_state_path,
+        &runtime_state::RuntimeSessionSnapshot {
+            wled_probe_ips: vec![
+                "10.4.22.42"
+                    .parse()
+                    .expect("cached runtime IP should parse"),
+            ],
+            ..runtime_state::RuntimeSessionSnapshot::default()
+        },
+    )
+    .expect("runtime state should save");
+
+    let resolved = resolve_wled_probe_ips(&registry, &config, &runtime_state_path).await;
+    assert_eq!(
+        resolved,
+        vec![
+            "10.4.22.42"
+                .parse()
+                .expect("cached runtime IP should parse"),
+            configured_ip,
+            cached_ip,
+        ]
+    );
 }
 
 #[tokio::test]
@@ -270,6 +298,7 @@ async fn sync_active_layout_for_renderable_devices_skips_excluded_devices() {
         device_registry,
         lifecycle_manager,
         temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
     );
 
     {
