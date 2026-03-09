@@ -26,14 +26,14 @@ pub(crate) struct PreparedZone {
     sample_positions: Vec<NormalizedPosition>,
     prepared_canvas_width: u32,
     prepared_canvas_height: u32,
-    prepared_samples: Vec<PreparedCanvasSample>,
+    prepared_samples: PreparedZoneSamples,
 }
 
 #[derive(Debug, Clone)]
-enum PreparedCanvasSample {
-    Nearest(PreparedNearestSample),
-    Bilinear(PreparedBilinearSample),
-    Area(PreparedAreaSample),
+enum PreparedZoneSamples {
+    Nearest(Vec<PreparedNearestSample>),
+    Bilinear(Vec<PreparedBilinearSample>),
+    Area(Vec<PreparedAreaSample>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -154,19 +154,51 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
         .iter()
         .map(|&pos| zone_local_to_canvas(pos, zone, edge))
         .collect::<Vec<_>>();
-    let prepared_samples = sample_positions
-        .iter()
-        .copied()
-        .map(|position| {
-            prepare_canvas_sample(
-                position,
-                sampling_method,
-                edge,
-                layout.canvas_width,
-                layout.canvas_height,
-            )
-        })
-        .collect();
+    let prepared_samples = match sampling_method {
+        SamplingMethod::Nearest => PreparedZoneSamples::Nearest(
+            sample_positions
+                .iter()
+                .copied()
+                .map(|position| {
+                    prepare_nearest_sample(
+                        position,
+                        edge,
+                        layout.canvas_width,
+                        layout.canvas_height,
+                    )
+                })
+                .collect(),
+        ),
+        SamplingMethod::Bilinear => PreparedZoneSamples::Bilinear(
+            sample_positions
+                .iter()
+                .copied()
+                .map(|position| {
+                    prepare_bilinear_sample_for_position(
+                        position,
+                        edge,
+                        layout.canvas_width,
+                        layout.canvas_height,
+                    )
+                })
+                .collect(),
+        ),
+        SamplingMethod::Area { radius } => PreparedZoneSamples::Area(
+            sample_positions
+                .iter()
+                .copied()
+                .map(|position| {
+                    prepare_area_sample_for_position(
+                        position,
+                        edge,
+                        radius,
+                        layout.canvas_width,
+                        layout.canvas_height,
+                    )
+                })
+                .collect(),
+        ),
+    };
 
     PreparedZone {
         zone_id: zone.id.clone(),
@@ -180,34 +212,18 @@ pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> Prepare
 }
 
 #[must_use]
-fn prepare_canvas_sample(
+fn prepare_nearest_sample(
     position: NormalizedPosition,
-    sampling_method: SamplingMethod,
     edge_behavior: EdgeBehavior,
     canvas_width: u32,
     canvas_height: u32,
-) -> PreparedCanvasSample {
+) -> PreparedNearestSample {
     let attenuation = attenuation_for_position(position, edge_behavior);
     let clamped = NormalizedPosition::new(position.x.clamp(0.0, 1.0), position.y.clamp(0.0, 1.0));
 
-    match sampling_method {
-        SamplingMethod::Nearest => PreparedCanvasSample::Nearest(PreparedNearestSample {
-            offset: nearest_pixel_offset(clamped, canvas_width, canvas_height),
-            attenuation,
-        }),
-        SamplingMethod::Bilinear => PreparedCanvasSample::Bilinear(prepare_bilinear_sample(
-            clamped,
-            attenuation,
-            canvas_width,
-            canvas_height,
-        )),
-        SamplingMethod::Area { radius } => PreparedCanvasSample::Area(prepare_area_sample(
-            clamped,
-            attenuation,
-            radius,
-            canvas_width,
-            canvas_height,
-        )),
+    PreparedNearestSample {
+        offset: nearest_pixel_offset(clamped, canvas_width, canvas_height),
+        attenuation,
     }
 }
 
@@ -267,14 +283,16 @@ fn nearest_pixel_offset(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss
 )]
-fn prepare_bilinear_sample(
+fn prepare_bilinear_sample_for_position(
     position: NormalizedPosition,
-    attenuation: u16,
+    edge_behavior: EdgeBehavior,
     canvas_width: u32,
     canvas_height: u32,
 ) -> PreparedBilinearSample {
-    let fx = position.x * (canvas_width - 1) as f32;
-    let fy = position.y * (canvas_height - 1) as f32;
+    let attenuation = attenuation_for_position(position, edge_behavior);
+    let clamped = NormalizedPosition::new(position.x.clamp(0.0, 1.0), position.y.clamp(0.0, 1.0));
+    let fx = clamped.x * (canvas_width - 1) as f32;
+    let fy = clamped.y * (canvas_height - 1) as f32;
 
     let x0 = fx.floor() as u32;
     let y0 = fy.floor() as u32;
@@ -306,15 +324,17 @@ fn prepare_bilinear_sample(
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap
 )]
-fn prepare_area_sample(
+fn prepare_area_sample_for_position(
     position: NormalizedPosition,
-    attenuation: u16,
+    edge_behavior: EdgeBehavior,
     radius: f32,
     canvas_width: u32,
     canvas_height: u32,
 ) -> PreparedAreaSample {
-    let cx = position.x * (canvas_width - 1) as f32;
-    let cy = position.y * (canvas_height - 1) as f32;
+    let attenuation = attenuation_for_position(position, edge_behavior);
+    let clamped = NormalizedPosition::new(position.x.clamp(0.0, 1.0), position.y.clamp(0.0, 1.0));
+    let cx = clamped.x * (canvas_width - 1) as f32;
+    let cy = clamped.y * (canvas_height - 1) as f32;
     let radius = radius.ceil() as i32;
 
     PreparedAreaSample {
@@ -367,27 +387,57 @@ pub(crate) fn sample_prepared_zone(canvas: &Canvas, zone: &PreparedZone) -> Vec<
 }
 
 #[must_use]
-fn sample_prepared_canvas_pixels(
-    canvas: &Canvas,
-    samples: &[PreparedCanvasSample],
-) -> Vec<[u8; 3]> {
+fn sample_prepared_canvas_pixels(canvas: &Canvas, samples: &PreparedZoneSamples) -> Vec<[u8; 3]> {
     let bytes = canvas.as_rgba_bytes();
     let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
+    match samples {
+        PreparedZoneSamples::Nearest(samples) => sample_prepared_nearest_pixels(bytes, samples),
+        PreparedZoneSamples::Bilinear(samples) => sample_prepared_bilinear_pixels(bytes, samples),
+        PreparedZoneSamples::Area(samples) => {
+            sample_prepared_area_pixels(bytes, row_stride, samples)
+        }
+    }
+}
+
+#[must_use]
+fn sample_prepared_nearest_pixels(bytes: &[u8], samples: &[PreparedNearestSample]) -> Vec<[u8; 3]> {
     let mut colors = Vec::with_capacity(samples.len());
     for sample in samples {
-        let color = match sample {
-            PreparedCanvasSample::Nearest(sample) => {
-                attenuate_rgb(read_rgb_at(bytes, sample.offset), sample.attenuation)
-            }
-            PreparedCanvasSample::Bilinear(sample) => {
-                attenuate_rgb(sample_bilinear_rgb(bytes, sample), sample.attenuation)
-            }
-            PreparedCanvasSample::Area(sample) => attenuate_rgb(
-                sample_area_rgb(bytes, row_stride, sample),
-                sample.attenuation,
-            ),
-        };
-        colors.push(color);
+        colors.push(attenuate_rgb(
+            read_rgb_at(bytes, sample.offset),
+            sample.attenuation,
+        ));
+    }
+    colors
+}
+
+#[must_use]
+fn sample_prepared_bilinear_pixels(
+    bytes: &[u8],
+    samples: &[PreparedBilinearSample],
+) -> Vec<[u8; 3]> {
+    let mut colors = Vec::with_capacity(samples.len());
+    for sample in samples {
+        colors.push(attenuate_rgb(
+            sample_bilinear_rgb(bytes, sample),
+            sample.attenuation,
+        ));
+    }
+    colors
+}
+
+#[must_use]
+fn sample_prepared_area_pixels(
+    bytes: &[u8],
+    row_stride: usize,
+    samples: &[PreparedAreaSample],
+) -> Vec<[u8; 3]> {
+    let mut colors = Vec::with_capacity(samples.len());
+    for sample in samples {
+        colors.push(attenuate_rgb(
+            sample_area_rgb(bytes, row_stride, sample),
+            sample.attenuation,
+        ));
     }
     colors
 }

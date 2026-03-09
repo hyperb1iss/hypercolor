@@ -101,6 +101,7 @@ struct DisplayEncodeState {
     rgb_buffer: Vec<u8>,
     jpeg_buffer: Vec<u8>,
     jpeg_compressor: TurboJpegCompressor,
+    axis_plan: Option<PreparedDisplayPlan>,
 }
 
 impl DisplayEncodeState {
@@ -118,8 +119,37 @@ impl DisplayEncodeState {
             rgb_buffer: Vec::new(),
             jpeg_buffer: Vec::new(),
             jpeg_compressor,
+            axis_plan: None,
         })
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreparedDisplayPlanKey {
+    source_width: u32,
+    source_height: u32,
+    output_width: u32,
+    output_height: u32,
+    edge_behavior: u8,
+    start_x_bits: u32,
+    start_y_bits: u32,
+    span_x_bits: u32,
+    span_y_bits: u32,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedDisplayPlan {
+    key: PreparedDisplayPlanKey,
+    samples: Vec<PreparedDisplaySample>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PreparedDisplaySample {
+    offsets: [usize; 4],
+    x_lower_weight: u16,
+    x_upper_weight: u16,
+    y_lower_weight: u16,
+    y_upper_weight: u16,
 }
 
 impl DisplayWorkerHandle {
@@ -529,6 +559,7 @@ fn encode_canvas_frame(
         geometry.width,
         geometry.height,
         &mut encode_state.rgb_buffer,
+        &mut encode_state.axis_plan,
     );
     apply_display_brightness(&mut encode_state.rgb_buffer, brightness);
     if geometry.circular {
@@ -660,6 +691,7 @@ fn render_display_view(
     width: u32,
     height: u32,
     rendered_rgb: &mut Vec<u8>,
+    axis_plan: &mut Option<PreparedDisplayPlan>,
 ) {
     let Some(render_len) = rgb_buffer_len(width, height) else {
         rendered_rgb.clear();
@@ -675,7 +707,7 @@ fn render_display_view(
     if viewport.rotation.abs() <= f32::EPSILON
         && !matches!(viewport.edge_behavior, EdgeBehavior::FadeToBlack { .. })
     {
-        render_display_view_axis_aligned(source, viewport, width, height, rendered_rgb);
+        render_display_view_axis_aligned(source, viewport, width, height, rendered_rgb, axis_plan);
         return;
     }
 
@@ -701,29 +733,20 @@ fn render_display_view_axis_aligned(
     width: u32,
     height: u32,
     rendered_rgb: &mut [u8],
+    axis_plan: &mut Option<PreparedDisplayPlan>,
 ) {
-    let source_width = usize::try_from(source.width).unwrap_or_default();
     let rgba = source.rgba_bytes();
-    let x_samples = precompute_axis_samples(
-        width,
-        viewport.position.x - (viewport.size.x * viewport.scale * 0.5),
-        viewport.size.x * viewport.scale,
-        source.width,
-        viewport.edge_behavior,
-    );
-    let y_samples = precompute_axis_samples(
-        height,
-        viewport.position.y - (viewport.size.y * viewport.scale * 0.5),
-        viewport.size.y * viewport.scale,
-        source.height,
-        viewport.edge_behavior,
-    );
-    let output_width = usize::try_from(width).unwrap_or_default();
+    let plan_key = prepared_display_plan_key(source, viewport, width, height);
+    if axis_plan.as_ref().is_none_or(|plan| plan.key != plan_key) {
+        *axis_plan = Some(prepare_display_plan(
+            source, viewport, width, height, plan_key,
+        ));
+    }
 
-    for (y_index, y_sample) in y_samples.iter().enumerate() {
-        let mut output_offset = rgb_offset(output_width, 0, y_index);
-        for x_sample in &x_samples {
-            let pixel = bilinear_sample_rgba(rgba, source_width, *x_sample, *y_sample);
+    if let Some(plan) = axis_plan.as_ref() {
+        let mut output_offset = 0usize;
+        for sample in &plan.samples {
+            let pixel = sample_prepared_display_rgb(rgba, sample);
             rendered_rgb[output_offset] = pixel[0];
             rendered_rgb[output_offset + 1] = pixel[1];
             rendered_rgb[output_offset + 2] = pixel[2];
@@ -783,6 +806,82 @@ struct AxisSample {
     upper: usize,
     lower_weight: u16,
     upper_weight: u16,
+}
+
+fn prepared_display_plan_key(
+    source: &CanvasFrame,
+    viewport: &DisplayViewport,
+    output_width: u32,
+    output_height: u32,
+) -> PreparedDisplayPlanKey {
+    let start_x = viewport.position.x - (viewport.size.x * viewport.scale * 0.5);
+    let start_y = viewport.position.y - (viewport.size.y * viewport.scale * 0.5);
+    let span_x = viewport.size.x * viewport.scale;
+    let span_y = viewport.size.y * viewport.scale;
+
+    PreparedDisplayPlanKey {
+        source_width: source.width,
+        source_height: source.height,
+        output_width,
+        output_height,
+        edge_behavior: match viewport.edge_behavior {
+            EdgeBehavior::Clamp => 0,
+            EdgeBehavior::Wrap => 1,
+            EdgeBehavior::Mirror => 2,
+            EdgeBehavior::FadeToBlack { .. } => 3,
+        },
+        start_x_bits: start_x.to_bits(),
+        start_y_bits: start_y.to_bits(),
+        span_x_bits: span_x.to_bits(),
+        span_y_bits: span_y.to_bits(),
+    }
+}
+
+fn prepare_display_plan(
+    source: &CanvasFrame,
+    viewport: &DisplayViewport,
+    output_width: u32,
+    output_height: u32,
+    key: PreparedDisplayPlanKey,
+) -> PreparedDisplayPlan {
+    let start_x = viewport.position.x - (viewport.size.x * viewport.scale * 0.5);
+    let start_y = viewport.position.y - (viewport.size.y * viewport.scale * 0.5);
+    let span_x = viewport.size.x * viewport.scale;
+    let span_y = viewport.size.y * viewport.scale;
+    let x_samples = precompute_axis_samples(
+        output_width,
+        start_x,
+        span_x,
+        source.width,
+        viewport.edge_behavior,
+    );
+    let y_samples = precompute_axis_samples(
+        output_height,
+        start_y,
+        span_y,
+        source.height,
+        viewport.edge_behavior,
+    );
+    let source_width = usize::try_from(source.width).unwrap_or_default();
+    let mut samples = Vec::with_capacity(x_samples.len().saturating_mul(y_samples.len()));
+    for y_sample in &y_samples {
+        for x_sample in &x_samples {
+            samples.push(PreparedDisplaySample {
+                offsets: [
+                    rgba_offset(source_width, x_sample.lower, y_sample.lower),
+                    rgba_offset(source_width, x_sample.upper, y_sample.lower),
+                    rgba_offset(source_width, x_sample.lower, y_sample.upper),
+                    rgba_offset(source_width, x_sample.upper, y_sample.upper),
+                ],
+                x_lower_weight: x_sample.lower_weight,
+                x_upper_weight: x_sample.upper_weight,
+                y_lower_weight: y_sample.lower_weight,
+                y_upper_weight: y_sample.upper_weight,
+            });
+        }
+    }
+
+    PreparedDisplayPlan { key, samples }
 }
 
 #[allow(
@@ -942,6 +1041,30 @@ fn bilinear_sample_rgba(
             y_sample,
         ),
     ]
+}
+
+fn sample_prepared_display_rgb(rgba: &[u8], sample: &PreparedDisplaySample) -> [u8; 3] {
+    [
+        prepared_display_channel(rgba, sample.offsets, 0, sample),
+        prepared_display_channel(rgba, sample.offsets, 1, sample),
+        prepared_display_channel(rgba, sample.offsets, 2, sample),
+    ]
+}
+
+fn prepared_display_channel(
+    rgba: &[u8],
+    offsets: [usize; 4],
+    channel: usize,
+    sample: &PreparedDisplaySample,
+) -> u8 {
+    let top = u32::from(rgba[offsets[0] + channel]) * u32::from(sample.x_lower_weight)
+        + u32::from(rgba[offsets[1] + channel]) * u32::from(sample.x_upper_weight);
+    let bottom = u32::from(rgba[offsets[2] + channel]) * u32::from(sample.x_lower_weight)
+        + u32::from(rgba[offsets[3] + channel]) * u32::from(sample.x_upper_weight);
+    let blended =
+        top * u32::from(sample.y_lower_weight) + bottom * u32::from(sample.y_upper_weight);
+    let rounded = blended.saturating_add(BILINEAR_WEIGHT_ROUNDING) >> 16;
+    u8::try_from(rounded).expect("bilinear interpolation should remain within byte range")
 }
 
 fn bilinear_channel(
