@@ -1,0 +1,15 @@
+[Unit]
+Description=Hypercolor RGB Lighting Daemon
+Documentation=https://github.com/hyperb1iss/hypercolor
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/hypercolor --ui-dir %h/.local/share/hypercolor/ui
+Restart=on-failure
+RestartSec=3
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

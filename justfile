@@ -167,6 +167,10 @@ setup:
     cd sdk && bun install
     @echo '✅ All dependencies installed'
 
+# Install Hypercolor locally under ~/.local and set up host integration
+install *args='':
+    ./scripts/install.sh {{ args }}
+
 # Install udev rules for USB device access (requires sudo)
 udev-install:
     sudo cp udev/99-hypercolor.rules /etc/udev/rules.d/

@@ -201,6 +201,9 @@ buffering ensures the render loop never blocks on audio.
 git clone https://github.com/hyperb1iss/hypercolor.git
 cd hypercolor
 
+# Install locally under ~/.local
+./scripts/install.sh
+
 # Build (release)
 cargo build --release
 
@@ -210,6 +213,10 @@ cargo run --release -p hypercolor-daemon
 # Open the UI
 open http://localhost:9420
 ```
+
+The installer builds the daemon, CLI, and web UI, installs a systemd user
+service, installs the launcher desktop entry, reloads udev rules, and persists
+`i2c-dev` so SMBus RGB devices survive reboot.
 
 ### Using Just (recommended)
 

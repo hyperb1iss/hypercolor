@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+set -eu
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user start hypercolor.service >/dev/null 2>&1 || true
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  i=0
+  while [ "$i" -lt 40 ]; do
+    if curl --silent --fail http://127.0.0.1:9420/health >/dev/null 2>&1; then
+      break
+    fi
+    i=$((i + 1))
+    sleep 0.25
+  done
+fi
+
+if command -v xdg-open >/dev/null 2>&1; then
+  exec xdg-open http://127.0.0.1:9420/
+fi
+
+printf '%s\n' 'Open http://127.0.0.1:9420/ in your browser.'
