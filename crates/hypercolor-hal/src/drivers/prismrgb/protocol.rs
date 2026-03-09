@@ -427,7 +427,7 @@ impl PrismRgbProtocol {
 }
 
 impl Protocol for PrismRgbProtocol {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         self.model.name()
     }
 

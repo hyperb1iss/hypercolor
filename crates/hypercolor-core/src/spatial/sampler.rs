@@ -226,6 +226,12 @@ fn prepare_nearest_sample(
 }
 
 #[must_use]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the attenuation curve is clamped into the valid u16 range before narrowing"
+)]
 fn attenuation_for_position(position: NormalizedPosition, edge_behavior: EdgeBehavior) -> u16 {
     let EdgeBehavior::FadeToBlack { falloff } = edge_behavior else {
         return ATTENUATION_ONE;
@@ -258,6 +264,7 @@ fn attenuation_for_position(position: NormalizedPosition, edge_behavior: EdgeBeh
 #[allow(
     clippy::as_conversions,
     clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
     clippy::cast_sign_loss
 )]
 fn nearest_pixel_offset(
@@ -429,10 +436,14 @@ pub(crate) fn sample_prepared_zone_into(
         zone.sampling_method,
         zone.edge_behavior,
         colors,
-    )
+    );
 }
 
 #[must_use]
+#[allow(
+    clippy::as_conversions,
+    reason = "canvas dimensions are already bounded by in-memory image sizes before widening to usize"
+)]
 fn sample_prepared_canvas_pixels(canvas: &Canvas, samples: &PreparedZoneSamples) -> Vec<[u8; 3]> {
     let bytes = canvas.as_rgba_bytes();
     let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
@@ -445,6 +456,10 @@ fn sample_prepared_canvas_pixels(canvas: &Canvas, samples: &PreparedZoneSamples)
     }
 }
 
+#[allow(
+    clippy::as_conversions,
+    reason = "canvas dimensions are already bounded by in-memory image sizes before widening to usize"
+)]
 fn sample_prepared_canvas_pixels_into(
     canvas: &Canvas,
     samples: &PreparedZoneSamples,
@@ -523,7 +538,10 @@ fn sample_prepared_area_pixels_into(
 ) {
     colors.resize(samples.len(), [0, 0, 0]);
     for (color, sample) in colors.iter_mut().zip(samples) {
-        *color = attenuate_rgb(sample_area_rgb(bytes, row_stride, sample), sample.attenuation);
+        *color = attenuate_rgb(
+            sample_area_rgb(bytes, row_stride, sample),
+            sample.attenuation,
+        );
     }
 }
 
@@ -533,11 +551,19 @@ fn read_rgb_at(bytes: &[u8], offset: usize) -> [u8; 3] {
 }
 
 #[must_use]
-#[allow(clippy::as_conversions)]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "bilinear weights are normalized to the 0-255 channel range before narrowing"
+)]
 fn sample_bilinear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> [u8; 3] {
     let [top_left, top_right, bottom_left, bottom_right] = sample.offsets;
-    let [top_left_weight, top_right_weight, bottom_left_weight, bottom_right_weight] =
-        sample.weights;
+    let [
+        top_left_weight,
+        top_right_weight,
+        bottom_left_weight,
+        bottom_right_weight,
+    ] = sample.weights;
     let top_left = top_left as usize;
     let top_right = top_right as usize;
     let bottom_left = bottom_left as usize;
@@ -555,6 +581,12 @@ fn sample_bilinear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> [u8; 3]
 }
 
 #[must_use]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "area sampling clamps coordinates and averages byte channels before narrowing"
+)]
 fn sample_area_rgb(bytes: &[u8], row_stride: usize, sample: &PreparedAreaSample) -> [u8; 3] {
     let mut sum_r = 0u32;
     let mut sum_g = 0u32;
@@ -582,6 +614,11 @@ fn sample_area_rgb(bytes: &[u8], row_stride: usize, sample: &PreparedAreaSample)
 }
 
 #[must_use]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "attenuation math keeps channel values within the 0-255 byte range"
+)]
 fn attenuate_rgb(color: [u8; 3], attenuation: u16) -> [u8; 3] {
     if attenuation >= ATTENUATION_ONE {
         return color;

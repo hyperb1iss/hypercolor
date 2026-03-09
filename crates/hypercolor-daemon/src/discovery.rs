@@ -1090,8 +1090,7 @@ async fn apply_persisted_device_settings(
         let store = runtime.device_settings.read().await;
         store
             .device_settings_for_key(&key)
-            .map(stored_device_settings_to_user_settings)
-            .unwrap_or(fallback_settings)
+            .map_or(fallback_settings, stored_device_settings_to_user_settings)
     };
 
     let _ = runtime
@@ -1328,6 +1327,10 @@ async fn sync_logical_mappings_for_device(
 }
 
 #[doc(hidden)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "auto-layout sync keeps the full reconciliation flow in one place"
+)]
 pub async fn sync_active_layout_for_renderable_devices(
     runtime: &DiscoveryRuntime,
     limit_to_devices: Option<&HashSet<DeviceId>>,
@@ -1624,7 +1627,7 @@ pub fn reconcile_auto_layout_zones_for_device(
             let mut changed = false;
 
             if zone.name != expected_name {
-                zone.name = expected_name.clone();
+                zone.name.clone_from(&expected_name);
                 changed = true;
             }
             if zone.topology != expected_topology {
@@ -1632,11 +1635,11 @@ pub fn reconcile_auto_layout_zones_for_device(
                 changed = true;
             }
             if zone.led_positions != expected_positions {
-                zone.led_positions = expected_positions.clone();
+                zone.led_positions.clone_from(&expected_positions);
                 changed = true;
             }
             if zone.shape != expected_shape {
-                zone.shape = expected_shape.clone();
+                zone.shape.clone_from(&expected_shape);
                 changed = true;
             }
             if zone.size != expected_size {

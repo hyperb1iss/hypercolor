@@ -934,7 +934,8 @@ async fn backend_disconnect_unknown_fails() {
 
 #[tokio::test]
 async fn backend_disconnect_sends_final_black_frame() {
-    let receiver = UdpSocket::bind("127.0.0.6:4048")
+    let _guard = ddp_test_port_lock().lock().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
     let mut backend = WledBackend::new(vec![]);
@@ -943,7 +944,7 @@ async fn backend_disconnect_sends_final_black_frame() {
     let device_id = DeviceId::new();
     backend.remember_device(
         device_id,
-        "127.0.0.6".parse().expect("valid loopback IP"),
+        "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(4, false, 30, true),
     );
     backend
@@ -1019,7 +1020,8 @@ async fn backend_connect_reuses_shared_socket_and_allocates_e131_universes() {
 
 #[tokio::test]
 async fn backend_write_colors_pads_dedups_and_keeps_alive() {
-    let receiver = UdpSocket::bind("127.0.0.4:4048")
+    let _guard = ddp_test_port_lock().lock().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
     let mut backend = WledBackend::new(vec![]);
@@ -1028,7 +1030,7 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
     let device_id = DeviceId::new();
     backend.remember_device(
         device_id,
-        "127.0.0.4".parse().expect("valid loopback IP"),
+        "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(4, false, 30, true),
     );
     backend
@@ -1079,7 +1081,8 @@ async fn backend_write_colors_pads_dedups_and_keeps_alive() {
 
 #[tokio::test]
 async fn backend_write_colors_allows_duplicate_frames_when_dedup_is_disabled() {
-    let receiver = UdpSocket::bind("127.0.0.6:4048")
+    let _guard = ddp_test_port_lock().lock().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
     let mut backend = WledBackend::new(vec![]);
@@ -1089,7 +1092,7 @@ async fn backend_write_colors_allows_duplicate_frames_when_dedup_is_disabled() {
     let device_id = DeviceId::new();
     backend.remember_device(
         device_id,
-        "127.0.0.6".parse().expect("valid loopback IP"),
+        "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(2, false, 30, true),
     );
     backend
@@ -1123,7 +1126,8 @@ async fn backend_write_colors_allows_duplicate_frames_when_dedup_is_disabled() {
 
 #[tokio::test]
 async fn backend_write_colors_preserves_chroma_on_rgbw_devices() {
-    let receiver = UdpSocket::bind("127.0.0.7:4048")
+    let _guard = ddp_test_port_lock().lock().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
     let mut backend = WledBackend::new(vec![]);
@@ -1132,7 +1136,7 @@ async fn backend_write_colors_preserves_chroma_on_rgbw_devices() {
     let device_id = DeviceId::new();
     backend.remember_device(
         device_id,
-        "127.0.0.7".parse().expect("valid loopback IP"),
+        "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(2, true, 30, true),
     );
     backend
@@ -1162,7 +1166,8 @@ async fn backend_write_colors_preserves_chroma_on_rgbw_devices() {
 
 #[tokio::test]
 async fn backend_write_colors_truncates_oversized_frames() {
-    let receiver = UdpSocket::bind("127.0.0.5:4048")
+    let _guard = ddp_test_port_lock().lock().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
         .expect("bind loopback DDP receiver");
     let mut backend = WledBackend::new(vec![]);
@@ -1171,7 +1176,7 @@ async fn backend_write_colors_truncates_oversized_frames() {
     let device_id = DeviceId::new();
     backend.remember_device(
         device_id,
-        "127.0.0.5".parse().expect("valid loopback IP"),
+        "127.0.0.1".parse().expect("valid loopback IP"),
         test_wled_info(2, false, 30, true),
     );
     backend
@@ -1259,6 +1264,7 @@ fn wled_device_info_serializable() {
 
 static MDNS_TEST_LOGGER: MdnsTestLogger = MdnsTestLogger;
 static MDNS_TEST_LOGGER_INIT: Once = Once::new();
+static DDP_TEST_PORT_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
 static MDNS_TEST_LOG_MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static MDNS_TEST_LOG_LOCK: OnceLock<AsyncMutex<()>> = OnceLock::new();
 
@@ -1292,6 +1298,10 @@ fn init_mdns_test_logger() {
         log::set_logger(&MDNS_TEST_LOGGER).expect("mDNS test logger should install once");
         log::set_max_level(log::LevelFilter::Trace);
     });
+}
+
+fn ddp_test_port_lock() -> &'static AsyncMutex<()> {
+    DDP_TEST_PORT_LOCK.get_or_init(|| AsyncMutex::new(()))
 }
 
 fn mdns_test_log_lock() -> &'static AsyncMutex<()> {

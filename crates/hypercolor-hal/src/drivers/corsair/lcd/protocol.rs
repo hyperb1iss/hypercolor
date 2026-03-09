@@ -205,7 +205,7 @@ impl CorsairLcdProtocol {
 }
 
 impl Protocol for CorsairLcdProtocol {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         self.name
     }
 

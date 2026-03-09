@@ -235,20 +235,11 @@ impl UsbProtocolConfigStore {
 }
 
 /// Core USB backend for HAL-managed device families.
+#[derive(Default)]
 pub struct UsbBackend {
     pending: HashMap<DeviceId, PendingUsbDevice>,
     connected: HashMap<DeviceId, UsbDevice>,
     protocol_configs: UsbProtocolConfigStore,
-}
-
-impl Default for UsbBackend {
-    fn default() -> Self {
-        Self {
-            pending: HashMap::new(),
-            connected: HashMap::new(),
-            protocol_configs: UsbProtocolConfigStore::default(),
-        }
-    }
 }
 
 impl UsbBackend {
@@ -336,7 +327,7 @@ impl UsbBackend {
 
                 #[cfg(not(target_os = "linux"))]
                 {
-                    let _ = usb;
+                    let _ = (interface, report_id, report_mode, usage_page, usage, usb);
                     bail!("hidraw transport is only supported on Linux");
                 }
             }
@@ -445,6 +436,10 @@ impl UsbBackend {
         })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "actor bootstrap needs the transport, channels, ids, and shared error sink together"
+    )]
     fn spawn_device_actor(
         device_id: DeviceId,
         device_name: &'static str,
@@ -496,6 +491,10 @@ impl UsbBackend {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "device actor loop coordinates command, keepalive, frame, and display streams in one place"
+    )]
     async fn run_device_actor(
         device_id: DeviceId,
         device_name: &'static str,
@@ -553,7 +552,8 @@ impl UsbBackend {
                                 ))
                             };
 
-                            let response = result.as_ref().map(|_| ()).map_err(ToString::to_string);
+                            let response =
+                                result.as_ref().map_err(ToString::to_string).copied();
                             let _ = response_tx.send(response);
                             result?;
                         }
@@ -569,13 +569,14 @@ impl UsbBackend {
                                 transport.as_ref(),
                             )
                             .await;
-                            let response = result.as_ref().map(|_| ()).map_err(ToString::to_string);
+                            let response =
+                                result.as_ref().map_err(ToString::to_string).copied();
                             let _ = response_tx.send(response);
                             return result;
                         }
                     }
                 }
-                _ = async {
+                () = async {
                     if let Some(interval) = keepalive_interval.as_mut() {
                         interval.tick().await;
                     }
@@ -831,7 +832,7 @@ impl UsbBackend {
                 if Self::run_response_command(
                     protocol,
                     transport,
-                    &command,
+                    command,
                     command_position,
                     total_commands,
                     &mut attempt,
@@ -868,6 +869,10 @@ impl UsbBackend {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "response handling keeps retry, delayed reads, parsing, and tracing in one place"
+    )]
     async fn run_response_command(
         protocol: &dyn Protocol,
         transport: &dyn Transport,
@@ -1024,6 +1029,10 @@ impl DeviceBackend for UsbBackend {
         Ok(info)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "USB connect owns discovery handoff, init, diagnostics, and actor startup"
+    )]
     async fn connect(&mut self, id: &DeviceId) -> Result<()> {
         let pending_ids = self
             .pending

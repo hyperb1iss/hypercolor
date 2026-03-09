@@ -154,6 +154,9 @@ impl SessionWatcher {
             ));
         }
 
+        #[cfg(not(target_os = "linux"))]
+        let _ = merged_tx;
+
         if tasks.len() == 1 {
             warn!("Session watcher started without any active session monitors");
         } else {
@@ -186,6 +189,7 @@ impl SessionWatcher {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn spawn_monitor<M: SessionMonitor>(
     monitor: M,
     tx: mpsc::Sender<SessionEvent>,

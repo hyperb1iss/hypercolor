@@ -87,14 +87,13 @@ The installer must reflect the codebase as it exists today:
 
 - the daemon only auto-discovers the UI from `crates/hypercolor-ui/dist`
 - installed service units must therefore pass `--ui-dir %h/.local/share/hypercolor/ui`
-- `hypercolor-desktop` currently defines a `hypercolor` binary too, which collides with the daemon binary name
-- until that collision is resolved, the installer should not ship the Tauri shell
+- `hypercolor-desktop` now builds as its own `hypercolor-desktop` binary, so it no longer collides with the daemon
+- the installer still should not ship the Tauri shell until native desktop packaging is implemented
 
 ## Follow-On Work
 
 After the bootstrap script lands, the next installation work should be:
 
-1. Rename the Tauri shell binary to avoid the `hypercolor` collision
-2. Add a real `hyper permissions install` CLI path so the app can repair host integration after install
-3. Add a diagnostics check that explicitly reports `i2c-dev` missing vs permission denied
-4. Port the bootstrap logic into package-native hooks for Arch, Debian, Fedora, and Nix
+1. Add a real `hyper permissions install` CLI path so the app can repair host integration after install
+2. Add a diagnostics check that explicitly reports `i2c-dev` missing vs permission denied
+3. Port the bootstrap logic into package-native hooks for Arch, Debian, Fedora, and Nix

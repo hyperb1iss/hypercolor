@@ -210,7 +210,7 @@ fn frame_input_clone() {
         canvas_width: 320,
         canvas_height: 200,
     };
-    let cloned = input.clone();
+    let cloned = input;
     assert_eq!(cloned.frame_number, input.frame_number);
     assert!((cloned.time_secs - input.time_secs).abs() < f32::EPSILON);
 }

@@ -64,6 +64,10 @@ fn color_control(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "control definitions are constructed from explicit schema fields"
+)]
 fn slider_control(
     id: &str,
     name: &str,
@@ -207,6 +211,10 @@ fn solid_color_controls() -> Vec<ControlDefinition> {
     ]
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the gradient preset control list is intentionally authored inline for readability"
+)]
 fn gradient_controls() -> Vec<ControlDefinition> {
     vec![
         color_control(
@@ -526,6 +534,10 @@ fn color_wave_controls() -> Vec<ControlDefinition> {
 ///
 /// Each entry carries a human-readable display name while the stable factory
 /// key remains in the native source path (`builtin/<key>`).
+#[allow(
+    clippy::too_many_lines,
+    reason = "builtin effect metadata is maintained as a single registry table"
+)]
 fn builtin_metadata() -> Vec<EffectMetadata> {
     vec![
         EffectMetadata {

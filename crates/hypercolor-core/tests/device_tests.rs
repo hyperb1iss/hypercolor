@@ -699,7 +699,7 @@ async fn registry_list_by_state() {
 }
 
 #[tokio::test]
-async fn registry_update_user_settings_tracks_name_enabled_and_brightness() {
+async fn registry_update_user_settings_tracks_name_enabled_and_brightness_without_changing_state() {
     let registry = DeviceRegistry::new();
     let info = mock_device_info("Desk Strip");
     let id = info.id;
@@ -711,7 +711,7 @@ async fn registry_update_user_settings_tracks_name_enabled_and_brightness() {
         .expect("device should update");
 
     assert_eq!(updated.info.name, "Desk Glow");
-    assert_eq!(updated.state, DeviceState::Disabled);
+    assert_eq!(updated.state, DeviceState::Known);
     assert_eq!(updated.user_settings.name.as_deref(), Some("Desk Glow"));
     assert!(!updated.user_settings.enabled);
     assert!((updated.user_settings.brightness - 0.35).abs() < f32::EPSILON);

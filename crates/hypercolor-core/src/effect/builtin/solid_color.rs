@@ -69,27 +69,31 @@ impl SolidColorRenderer {
             SolidPattern::VerticalSplit => transition_mix(nx, self.position, self.softness),
             SolidPattern::HorizontalSplit => transition_mix(ny, self.position, self.softness),
             SolidPattern::Checker => {
-                #[expect(
+                #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
+                    clippy::cast_precision_loss,
                     clippy::as_conversions
                 )]
                 let cols = self.scale.max(1.0).round() as i32;
-                #[expect(
+                #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
+                    clippy::cast_precision_loss,
                     clippy::as_conversions
                 )]
                 let rows = (self.scale.max(1.0) * (height / width)).max(1.0).round() as i32;
-                #[expect(
+                #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
+                    clippy::cast_precision_loss,
                     clippy::as_conversions
                 )]
                 let col = (nx * cols as f32).floor() as i32;
-                #[expect(
+                #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
+                    clippy::cast_precision_loss,
                     clippy::as_conversions
                 )]
                 let row = (ny * rows as f32).floor() as i32;

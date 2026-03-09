@@ -102,9 +102,9 @@ pub enum TransportType {
         baud_rate: u32,
     },
 
-    /// Linux I2C/SMBus transport.
+    /// Linux I2C/`SMBus` transport.
     I2cSmBus {
-        /// 7-bit SMBus slave address.
+        /// 7-bit `SMBus` slave address.
         address: u16,
     },
 

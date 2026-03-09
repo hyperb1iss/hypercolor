@@ -1,7 +1,9 @@
-//! SMBus transport framing and Linux transport support.
+//! `SMBus` transport framing and Linux transport support.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 
@@ -13,31 +15,31 @@ const SMBUS_OP_READ_BYTE_DATA: u8 = 0x03;
 const SMBUS_OP_WRITE_BLOCK_DATA: u8 = 0x04;
 const SMBUS_OP_DELAY: u8 = 0x05;
 
-/// One framed SMBus operation.
+/// One framed `SMBus` operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SmBusOperation {
     /// `i2c_smbus_write_word_data(register, value)`.
     WriteWordData {
-        /// SMBus command/register byte.
+        /// `SMBus` command/register byte.
         register: u8,
         /// 16-bit payload.
         value: u16,
     },
     /// `i2c_smbus_write_byte_data(register, value)`.
     WriteByteData {
-        /// SMBus command/register byte.
+        /// `SMBus` command/register byte.
         register: u8,
         /// Byte payload.
         value: u8,
     },
     /// `i2c_smbus_read_byte_data(register)`.
     ReadByteData {
-        /// SMBus command/register byte.
+        /// `SMBus` command/register byte.
         register: u8,
     },
     /// `i2c_smbus_write_block_data(register, data)`.
     WriteBlockData {
-        /// SMBus command/register byte.
+        /// `SMBus` command/register byte.
         register: u8,
         /// Block payload.
         data: Vec<u8>,
@@ -49,7 +51,7 @@ pub enum SmBusOperation {
     },
 }
 
-/// Serialize a sequence of SMBus operations into transport bytes.
+/// Serialize a sequence of `SMBus` operations into transport bytes.
 ///
 /// # Errors
 ///
@@ -96,7 +98,7 @@ pub fn encode_operations(operations: &[SmBusOperation]) -> Result<Vec<u8>, Trans
     Ok(encoded)
 }
 
-/// Decode one framed SMBus command sequence.
+/// Decode one framed `SMBus` command sequence.
 ///
 /// # Errors
 ///
@@ -201,7 +203,7 @@ use i2cdev::core::I2CDevice;
 #[cfg(target_os = "linux")]
 use i2cdev::linux::{LinuxI2CDevice, LinuxI2CError};
 
-/// Linux SMBus transport backed by `/dev/i2c-*`.
+/// Linux `SMBus` transport backed by `/dev/i2c-*`.
 #[cfg(target_os = "linux")]
 pub struct SmBusTransport {
     path: String,
@@ -213,7 +215,7 @@ pub struct SmBusTransport {
 
 #[cfg(target_os = "linux")]
 impl SmBusTransport {
-    /// Open one SMBus slave on one Linux I2C bus path.
+    /// Open one `SMBus` slave on one Linux I2C bus path.
     ///
     /// # Errors
     ///
@@ -232,7 +234,7 @@ impl SmBusTransport {
         })
     }
 
-    /// Probe whether one SMBus address responds on one Linux I2C bus.
+    /// Probe whether one `SMBus` address responds on one Linux I2C bus.
     ///
     /// This first attempts a quick-write probe, then falls back to simple
     /// byte reads because some ENE devices reject quick writes while still
@@ -257,7 +259,7 @@ impl SmBusTransport {
         Ok(device.smbus_read_byte_data(0x00).is_ok())
     }
 
-    /// Probe whether one SMBus address acknowledges a quick-write transaction.
+    /// Probe whether one `SMBus` address acknowledges a quick-write transaction.
     ///
     /// # Errors
     ///
@@ -380,21 +382,21 @@ pub struct SmBusTransport;
 
 #[cfg(not(target_os = "linux"))]
 impl SmBusTransport {
-    /// SMBus transport is only available on Linux.
+    /// `SMBus` transport is only available on Linux.
     pub fn open(_path: &str, _address: u16) -> Result<Self, TransportError> {
         Err(TransportError::IoError {
             detail: "SMBus transport is only available on Linux".to_owned(),
         })
     }
 
-    /// SMBus transport is only available on Linux.
+    /// `SMBus` transport is only available on Linux.
     pub fn probe_presence(_path: &str, _address: u16) -> Result<bool, TransportError> {
         Err(TransportError::IoError {
             detail: "SMBus transport is only available on Linux".to_owned(),
         })
     }
 
-    /// SMBus transport is only available on Linux.
+    /// `SMBus` transport is only available on Linux.
     pub fn probe_quick_write(_path: &str, _address: u16) -> Result<bool, TransportError> {
         Err(TransportError::IoError {
             detail: "SMBus transport is only available on Linux".to_owned(),

@@ -227,7 +227,7 @@ impl DisplayOutputThread {
             handle.join().map_err(|panic| {
                 anyhow!(
                     "display output thread panicked: {}",
-                    panic_payload_message(panic)
+                    panic_payload_message(panic.as_ref())
                 )
             })
         })
@@ -356,7 +356,7 @@ async fn reconcile_display_workers(
 
 async fn run_display_worker(
     backend_io: BackendIo,
-    backend_id: String,
+    backend_key: String,
     device_id: DeviceId,
     target_fps: u32,
     mut rx: watch::Receiver<Option<Arc<DisplayWorkItem>>>,
@@ -367,7 +367,7 @@ async fn run_display_worker(
         Ok(state) => state,
         Err(error) => {
             warn!(
-                backend_id = %backend_id,
+                backend_id = %backend_key,
                 device_id = %device_id,
                 error = %error,
                 "display worker failed to initialize encoder state"
@@ -419,7 +419,7 @@ async fn run_display_worker(
                     }
                     Err(init_error) => {
                         warn!(
-                            backend_id = %backend_id,
+                            backend_id = %backend_key,
                             device_id = %device_id,
                             error = %init_error,
                             "display worker could not recover encoder state after a blocking-task failure"
@@ -450,7 +450,7 @@ async fn run_display_worker(
 
         trace!(
             device = %target.name,
-            backend_id = %backend_id,
+            backend_id = %backend_key,
             device_id = %device_id,
             jpeg_bytes,
             target_fps,
@@ -956,6 +956,11 @@ fn rgb_buffer_len(width: u32, height: u32) -> Option<usize> {
         .checked_mul(3)
 }
 
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    reason = "display resampling math operates in normalized float space before producing bounded indices"
+)]
 fn precompute_axis_samples(
     output_len: u32,
     start: f32,
@@ -973,6 +978,13 @@ fn precompute_axis_samples(
         .collect()
 }
 
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "axis sampling clamps coordinates and weights into valid output ranges before narrowing"
+)]
 fn axis_sample(normalized: f32, source_len: u32) -> AxisSample {
     let max_index = source_len.saturating_sub(1);
     let coordinate = normalized * max_index as f32;
@@ -1088,6 +1100,12 @@ fn blend_channel(lower: u8, upper: u8, sample: AxisSample) -> u32 {
         + u32::from(upper) * u32::from(sample.upper_weight)
 }
 
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the helper bounds finite values to the 0-255 display byte range before narrowing"
+)]
 fn round_to_u8(value: f32) -> u8 {
     if !value.is_finite() || value <= 0.0 {
         return 0;
@@ -1099,6 +1117,12 @@ fn round_to_u8(value: f32) -> u8 {
     (value + 0.5) as u8
 }
 
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the helper bounds finite unit values to the 0-255 brightness factor range"
+)]
 fn round_unit_to_u16(value: f32) -> u16 {
     if !value.is_finite() || value <= 0.0 {
         return 0;
@@ -1167,7 +1191,7 @@ fn maybe_warn_display_error(
     );
 }
 
-fn panic_payload_message(panic: Box<dyn Any + Send + 'static>) -> String {
+fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
     if let Some(message) = panic.downcast_ref::<&str>() {
         (*message).to_owned()
     } else if let Some(message) = panic.downcast_ref::<String>() {

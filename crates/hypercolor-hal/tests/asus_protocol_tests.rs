@@ -1,18 +1,17 @@
+#![cfg(target_os = "linux")]
+
 use hypercolor_hal::drivers::asus::{
     AURA_REPORT_ID, AuraColorOrder, AuraControllerGen, AuraUsbProtocol,
     build_aura_addressable_gen1_protocol, build_aura_terminal_protocol, build_effect_color_payload,
 };
 use hypercolor_hal::protocol::{Protocol, ResponseStatus};
-#[cfg(target_os = "linux")]
 use hypercolor_hal::transport::hidraw::encode_feature_report_packet;
 use hypercolor_types::device::{DeviceColorFormat, DeviceTopologyHint};
 
-#[cfg(target_os = "linux")]
 fn wire_packet(payload: &[u8]) -> Vec<u8> {
     encode_feature_report_packet(payload, AURA_REPORT_ID)
 }
 
-#[cfg(target_os = "linux")]
 fn firmware_response(firmware: &str) -> Vec<u8> {
     let mut response = vec![0_u8; 65];
     response[0] = AURA_REPORT_ID;
@@ -23,7 +22,6 @@ fn firmware_response(firmware: &str) -> Vec<u8> {
     response
 }
 
-#[cfg(target_os = "linux")]
 fn config_response(argb_channels: u8, mainboard_leds: u8, rgb_headers: u8) -> Vec<u8> {
     let mut response = vec![0_u8; 65];
     response[0] = AURA_REPORT_ID;
@@ -35,7 +33,6 @@ fn config_response(argb_channels: u8, mainboard_leds: u8, rgb_headers: u8) -> Ve
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn motherboard_queries_are_byte_exact_on_the_wire() {
     let protocol = AuraUsbProtocol::new(AuraControllerGen::Motherboard);
     let init = protocol.init_sequence();
@@ -56,7 +53,6 @@ fn motherboard_queries_are_byte_exact_on_the_wire() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn gen1_addressable_init_includes_disable_and_direct_mode_setup() {
     let protocol = build_aura_addressable_gen1_protocol();
     let init = protocol.init_sequence();
@@ -82,7 +78,6 @@ fn gen1_addressable_init_includes_disable_and_direct_mode_setup() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn terminal_init_uses_addressable_mode_for_all_five_channels() {
     let protocol = build_aura_terminal_protocol();
     let init = protocol.init_sequence();
@@ -101,7 +96,6 @@ fn terminal_init_uses_addressable_mode_for_all_five_channels() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn parse_firmware_and_config_updates_runtime_topology() {
     let protocol =
         AuraUsbProtocol::new(AuraControllerGen::Motherboard).with_argb_led_counts(vec![60, 30, 15]);
@@ -128,7 +122,6 @@ fn parse_firmware_and_config_updates_runtime_topology() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn firmware_override_takes_precedence_over_config_table() {
     let protocol = AuraUsbProtocol::new(AuraControllerGen::Motherboard);
 
@@ -147,7 +140,6 @@ fn firmware_override_takes_precedence_over_config_table() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn board_name_override_applies_when_firmware_has_no_match() {
     let protocol =
         AuraUsbProtocol::new(AuraControllerGen::Motherboard).with_board_name("PRIME Z790-A WIFI");
@@ -166,7 +158,6 @@ fn board_name_override_applies_when_firmware_has_no_match() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn encode_frame_splits_mainboard_and_argb_packets_with_apply_flags() {
     let protocol = AuraUsbProtocol::new(AuraControllerGen::Motherboard).with_topology(3, vec![30]);
     let colors = vec![[0x10, 0x20, 0x30]; 33];
@@ -192,7 +183,6 @@ fn encode_frame_splits_mainboard_and_argb_packets_with_apply_flags() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn color_order_permutations_affect_direct_payload_bytes() {
     let cases = [
         (AuraColorOrder::Rgb, [0x10, 0x20, 0x30]),
@@ -214,7 +204,6 @@ fn color_order_permutations_affect_direct_payload_bytes() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn mixed_argb_lengths_map_to_expected_zones() {
     let protocol =
         AuraUsbProtocol::new(AuraControllerGen::AddressableOnly).with_topology(0, vec![2, 1]);
@@ -230,7 +219,6 @@ fn mixed_argb_lengths_map_to_expected_zones() {
 }
 
 #[test]
-#[cfg(target_os = "linux")]
 fn effect_color_payload_uses_masked_offsets() {
     let payload = build_effect_color_payload(
         2,

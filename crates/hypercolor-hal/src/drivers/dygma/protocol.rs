@@ -219,7 +219,7 @@ impl DygmaProtocol {
 }
 
 impl Protocol for DygmaProtocol {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         self.variant.device_name()
     }
 

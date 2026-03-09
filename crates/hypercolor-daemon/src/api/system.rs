@@ -137,6 +137,12 @@ fn config_path(state: &AppState) -> PathBuf {
     )
 }
 
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "brightness is clamped to 0-100 percent before narrowing to a byte"
+)]
 fn brightness_percent(brightness: f32) -> u8 {
     let scaled = (brightness.clamp(0.0, 1.0) * 100.0).round();
     if scaled <= 0.0 {

@@ -895,6 +895,10 @@ impl DaemonState {
         }));
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "startup wires the full discovery worker context in one place for readability"
+    )]
     fn spawn_discovery_worker(&mut self, config: Arc<HypercolorConfig>) {
         let worker = DiscoveryWorkerContext {
             device_registry: self.device_registry.clone(),

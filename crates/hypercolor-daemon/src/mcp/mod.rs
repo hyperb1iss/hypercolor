@@ -35,14 +35,17 @@ use tokio_util::sync::CancellationToken;
 use crate::api::AppState;
 
 /// Build the MCP HTTP router mounted at the configured base path.
-#[must_use]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the router takes shared ownership of app state through cloned Arcs"
+)]
 pub fn build_router(state: Arc<AppState>, config: &McpConfig) -> Router<Arc<AppState>> {
     let path = normalize_base_path(&config.base_path);
     let service_state = Arc::clone(&state);
     let service: StreamableHttpService<HypercolorMcpServer, LocalSessionManager> =
         StreamableHttpService::new(
             move || Ok(HypercolorMcpServer::new(Arc::clone(&service_state))),
-            Default::default(),
+            Arc::default(),
             http_config(config),
         );
 
@@ -137,6 +140,10 @@ impl ServerHandler for HypercolorMcpServer {
             .map(tool_to_mcp)
     }
 
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the rmcp trait requires returning an opaque future from the handler"
+    )]
     fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -174,6 +181,10 @@ impl ServerHandler for HypercolorMcpServer {
         ready(Ok(ListResourceTemplatesResult::with_all_items(Vec::new())))
     }
 
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the rmcp trait requires returning an opaque future from the handler"
+    )]
     fn read_resource(
         &self,
         request: ReadResourceRequestParams,

@@ -9,7 +9,7 @@ use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopo
 /// Implementations keep wire-format logic isolated from transport I/O.
 pub trait Protocol: Send + Sync {
     /// Human-readable protocol name.
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
 
     /// Commands to run when a device is first connected.
     fn init_sequence(&self) -> Vec<ProtocolCommand>;

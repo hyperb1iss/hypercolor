@@ -1302,7 +1302,7 @@ async fn sync_live_logical_mappings_for_device(state: &AppState, physical_id: De
     )
     .await;
 
-    let backend_id = resolved_backend_id(&state, physical_id, &tracked.info.family).await;
+    let backend_id = resolved_backend_id(state, physical_id, &tracked.info.family).await;
     let (logical_entries, legacy_default_ids) = {
         let store = state.logical_devices.read().await;
         let legacy_ids = logical_devices::legacy_default_ids_for_physical(
@@ -1418,6 +1418,12 @@ fn percent_to_brightness(percent: u8) -> f32 {
     (f32::from(percent) / 100.0).clamp(0.0, 1.0)
 }
 
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "brightness is clamped to 0-100 percent before narrowing to a byte"
+)]
 fn brightness_percent(brightness: f32) -> u8 {
     (brightness.clamp(0.0, 1.0) * 100.0).round() as u8
 }

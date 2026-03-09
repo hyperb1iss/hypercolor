@@ -115,7 +115,7 @@ impl EffectRenderer for ColorWaveRenderer {
             }
             "wave_count" => {
                 if let Some(v) = value.as_f32() {
-                    #[expect(
+                    #[allow(
                         clippy::cast_possible_truncation,
                         clippy::cast_sign_loss,
                         clippy::as_conversions

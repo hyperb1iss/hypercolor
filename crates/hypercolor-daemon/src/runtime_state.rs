@@ -223,7 +223,7 @@ mod tests {
         assert_eq!(loaded.active_effect_id, expected.active_effect_id);
         assert_eq!(loaded.active_preset_id, expected.active_preset_id);
         assert_eq!(loaded.control_values, expected.control_values);
-        assert_eq!(loaded.global_brightness, expected.global_brightness);
+        assert!((loaded.global_brightness - expected.global_brightness).abs() < f32::EPSILON);
         assert_eq!(loaded.wled_probe_ips, expected.wled_probe_ips);
     }
 

@@ -127,7 +127,10 @@ impl RenderThread {
         if let Some(handle) = self.join_handle.take() {
             tokio::task::spawn_blocking(move || {
                 handle.join().map_err(|panic| {
-                    anyhow!("render thread panicked: {}", panic_payload_message(panic))
+                    anyhow!(
+                        "render thread panicked: {}",
+                        panic_payload_message(panic.as_ref())
+                    )
                 })
             })
             .await
@@ -279,6 +282,10 @@ async fn run_pipeline(state: RenderThreadState) {
     clippy::too_many_lines,
     reason = "the frame executor keeps the render pipeline stages in one place so timing and ordering stay obvious"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "frame execution needs the live render state, caches, and throttle flags together"
+)]
 async fn execute_frame(
     state: &RenderThreadState,
     skip_decision: SkipDecision,
@@ -320,7 +327,7 @@ async fn execute_frame(
     let (canvas, render_us) = resolve_frame_canvas(
         state,
         skip_decision,
-        &inputs,
+        inputs,
         cached_canvas,
         delta_secs,
         output_power.effective_brightness(),
@@ -624,7 +631,7 @@ fn scale_channel(channel: u8, factor: u16) -> u8 {
     u8::try_from(scaled).expect("scaled brightness channel should remain within byte range")
 }
 
-fn panic_payload_message(panic: Box<dyn Any + Send + 'static>) -> String {
+fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
     if let Some(message) = panic.downcast_ref::<&str>() {
         (*message).to_owned()
     } else if let Some(message) = panic.downcast_ref::<String>() {

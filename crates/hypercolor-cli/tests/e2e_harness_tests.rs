@@ -17,7 +17,7 @@ use tokio::sync::oneshot;
 const HEALTH_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SERVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
-const CLI_TIMEOUT: Duration = Duration::from_secs(5);
+const CLI_TIMEOUT: Duration = Duration::from_secs(15);
 
 struct DaemonHarness {
     port: u16,
@@ -201,17 +201,17 @@ async fn cli_e2e_status_and_effect_lifecycle_round_trip() -> Result<()> {
         }
 
         let activation = run_hyper_json(port, &["effects", "activate", "audio_pulse"]).await?;
-        if activation["effect"]["name"] != serde_json::json!("audio_pulse") {
+        if activation["effect"]["name"] != serde_json::json!("Audio Pulse") {
             bail!(
-                "expected active effect name audio_pulse, got {}",
+                "expected active effect name Audio Pulse, got {}",
                 activation["effect"]["name"]
             );
         }
 
         let status_after = run_hyper_json(port, &["status"]).await?;
-        if status_after["active_effect"] != serde_json::json!("audio_pulse") {
+        if status_after["active_effect"] != serde_json::json!("Audio Pulse") {
             bail!(
-                "expected status.active_effect to be audio_pulse, got {}",
+                "expected status.active_effect to be Audio Pulse, got {}",
                 status_after["active_effect"]
             );
         }

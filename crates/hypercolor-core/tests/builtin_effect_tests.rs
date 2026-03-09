@@ -56,7 +56,7 @@ fn frame(time_secs: f32, frame_number: u64) -> FrameInput<'static> {
     }
 }
 
-fn frame_with_audio<'a>(time_secs: f32, audio: &'a AudioData) -> FrameInput<'a> {
+fn frame_with_audio(time_secs: f32, audio: &AudioData) -> FrameInput<'_> {
     FrameInput {
         time_secs,
         delta_secs: 1.0 / 60.0,
@@ -488,13 +488,11 @@ fn rainbow_defaults_to_vivid_red_at_origin() {
 
     assert!(
         origin.r >= 180,
-        "default rainbow should start with a strong red band, got {:?}",
-        origin
+        "default rainbow should start with a strong red band, got {origin:?}"
     );
     assert!(
         origin.g <= 10 && origin.b <= 10,
-        "default rainbow should not wash red into pastel orange, got {:?}",
-        origin
+        "default rainbow should not wash red into pastel orange, got {origin:?}"
     );
 }
 
@@ -825,7 +823,7 @@ fn solid_color_metadata_includes_diagnostic_controls() {
         .metadata
         .controls
         .iter()
-        .map(|control| control.control_id())
+        .map(hypercolor_types::effect::ControlDefinition::control_id)
         .collect();
 
     assert!(ids.contains(&"pattern"));
@@ -846,7 +844,7 @@ fn gradient_metadata_includes_geometry_and_motion_controls() {
         .metadata
         .controls
         .iter()
-        .map(|control| control.control_id())
+        .map(hypercolor_types::effect::ControlDefinition::control_id)
         .collect();
 
     assert!(ids.contains(&"mode"));
@@ -868,7 +866,7 @@ fn rainbow_metadata_includes_color_controls() {
         .metadata
         .controls
         .iter()
-        .map(|control| control.control_id())
+        .map(hypercolor_types::effect::ControlDefinition::control_id)
         .collect();
 
     assert!(ids.contains(&"speed"));

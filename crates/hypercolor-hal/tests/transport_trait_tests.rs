@@ -5,9 +5,11 @@ use async_trait::async_trait;
 use hypercolor_hal::protocol::TransferType;
 use hypercolor_hal::transport::{Transport, TransportError};
 
+type SendLog = Arc<Mutex<Vec<(TransferType, Vec<u8>)>>>;
+
 #[derive(Clone, Default)]
 struct RecordingTransport {
-    sends: Arc<Mutex<Vec<(TransferType, Vec<u8>)>>>,
+    sends: SendLog,
 }
 
 #[async_trait]

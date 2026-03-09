@@ -266,7 +266,7 @@ async fn mcp_http_resources_and_prompts_roundtrip() {
         .expect("prompt list array");
     assert_eq!(prompts.len(), 3);
 
-    let prompt_response = post_json(
+    let prompt_get_response = post_json(
         &client,
         &mcp_url,
         json!({
@@ -283,9 +283,9 @@ async fn mcp_http_resources_and_prompts_roundtrip() {
         None,
     )
     .await;
-    let (_session_id, prompt_payload, _content_type, _body) =
-        parse_jsonrpc_response(prompt_response).await;
-    let prompt_result = prompt_payload.get("result").expect("prompt result");
+    let (_session_id, prompt_result_payload, _content_type, _body) =
+        parse_jsonrpc_response(prompt_get_response).await;
+    let prompt_result = prompt_result_payload.get("result").expect("prompt result");
     assert!(prompt_result["messages"].is_array());
     assert_eq!(
         prompt_result["description"],

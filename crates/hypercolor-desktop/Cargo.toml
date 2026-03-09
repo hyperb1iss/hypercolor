@@ -9,7 +9,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "hypercolor"
+name = "hypercolor-desktop"
 path = "src/main.rs"
 
 [dependencies]

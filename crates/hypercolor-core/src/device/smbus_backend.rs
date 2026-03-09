@@ -1,4 +1,4 @@
-//! SMBus backend for ASUS Aura ENE controllers.
+//! `SMBus` backend for ASUS Aura ENE controllers.
 
 use std::cmp::min;
 use std::collections::HashMap;
@@ -35,7 +35,7 @@ struct ConnectedSmBusDevice {
     frame_commands: Vec<ProtocolCommand>,
 }
 
-/// Core SMBus backend for HAL-managed ENE controllers.
+/// Core `SMBus` backend for HAL-managed ENE controllers.
 pub struct SmBusBackend {
     scanner: SmBusScanner,
     pending: HashMap<DeviceId, PendingSmBusDevice>,
@@ -43,7 +43,7 @@ pub struct SmBusBackend {
 }
 
 impl SmBusBackend {
-    /// Create an empty SMBus backend.
+    /// Create an empty `SMBus` backend.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -231,7 +231,7 @@ async fn run_commands(
         run_command(
             protocol,
             transport,
-            &command,
+            command,
             command_position,
             total_commands,
         )

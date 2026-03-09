@@ -1,4 +1,4 @@
-//! ASUS Aura ENE SMBus protocol helpers.
+//! ASUS Aura ENE `SMBus` protocol helpers.
 
 use std::sync::RwLock;
 use std::time::Duration;
@@ -55,13 +55,13 @@ pub const ENE_DRAM_SLOT_INDEX_REGISTER: u16 = 0x80F8;
 /// ENE DRAM remap target-address register.
 pub const ENE_DRAM_I2C_ADDRESS_REGISTER: u16 = 0x80F9;
 
-/// ENE maximum SMBus block-write payload.
+/// ENE maximum `SMBus` block-write payload.
 pub const ENE_BLOCK_WRITE_LIMIT: usize = 3;
 
 /// ENE simple GPU magic word.
 pub const AURA_GPU_MAGIC: u16 = 0x1589;
 
-/// Delay between SMBus operations recommended by the spec.
+/// Delay between `SMBus` operations recommended by the spec.
 pub const ENE_OPERATION_DELAY: Duration = Duration::from_millis(1);
 
 const ENE_FIRMWARE_NAME_LEN: usize = 16;
@@ -84,8 +84,8 @@ pub struct EneFirmwareVariant {
     pub may_support_mode_14: bool,
 }
 
-/// Low-level SMBus operations emitted by ENE helper builders.
-/// ASUS ENE SMBus operation alias.
+/// Low-level `SMBus` operations emitted by ENE helper builders.
+/// ASUS ENE `SMBus` operation alias.
 pub type EneSmBusOperation = SmBusOperation;
 
 #[derive(Debug, Clone, Default)]
@@ -108,14 +108,14 @@ pub const fn ene_permute_color(r: u8, g: u8, b: u8) -> [u8; 3] {
     [r, b, g]
 }
 
-/// Serialize one ENE transaction into the shared SMBus transport framing.
+/// Serialize one ENE transaction into the shared `SMBus` transport framing.
 ///
 /// # Errors
 ///
 /// Returns [`ProtocolError`] if an operation cannot be represented by the
 /// shared transport format.
 pub fn encode_ene_transaction(operations: &[EneSmBusOperation]) -> Result<Vec<u8>, ProtocolError> {
-    encode_operations(operations).map_err(protocol_encoding_error)
+    encode_operations(operations).map_err(|error| protocol_encoding_error(&error))
 }
 
 /// Decode one serialized ENE transaction.
@@ -124,16 +124,16 @@ pub fn encode_ene_transaction(operations: &[EneSmBusOperation]) -> Result<Vec<u8
 ///
 /// Returns [`ProtocolError`] when the frame is malformed.
 pub fn decode_ene_transaction(data: &[u8]) -> Result<Vec<EneSmBusOperation>, ProtocolError> {
-    decode_operations(data).map_err(protocol_malformed_response)
+    decode_operations(data).map_err(|error| protocol_malformed_response(&error))
 }
 
-fn protocol_encoding_error(error: TransportError) -> ProtocolError {
+fn protocol_encoding_error(error: &TransportError) -> ProtocolError {
     ProtocolError::EncodingError {
         detail: error.to_string(),
     }
 }
 
-fn protocol_malformed_response(error: TransportError) -> ProtocolError {
+fn protocol_malformed_response(error: &TransportError) -> ProtocolError {
     ProtocolError::MalformedResponse {
         detail: error.to_string(),
     }
@@ -336,16 +336,16 @@ pub fn ene_dram_remap_sequence(slot_index: u8, target_address: u8) -> Vec<EneSmB
 /// Build the simple Aura GPU magic word from the two probe registers.
 #[must_use]
 pub const fn simple_gpu_magic(hi: u8, lo: u8) -> u16 {
-    ((hi as u16) << 8) | (lo as u16)
+    u16::from_be_bytes([hi, lo])
 }
 
-/// ASUS Aura ENE SMBus protocol with runtime firmware/config parsing.
+/// ASUS Aura ENE `SMBus` protocol with runtime firmware/config parsing.
 pub struct AuraSmBusProtocol {
     state: RwLock<AuraSmBusState>,
 }
 
 impl AuraSmBusProtocol {
-    /// Create a fresh ENE SMBus protocol instance.
+    /// Create a fresh ENE `SMBus` protocol instance.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -400,7 +400,7 @@ impl Default for AuraSmBusProtocol {
 }
 
 impl Protocol for AuraSmBusProtocol {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ASUS Aura ENE SMBus"
     }
 

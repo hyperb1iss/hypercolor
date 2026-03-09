@@ -1,8 +1,10 @@
 //! ASUS Aura USB motherboard/addressable/terminal protocol.
 
-use std::fs;
 use std::sync::RwLock;
 use std::time::Duration;
+
+#[cfg(target_os = "linux")]
+use std::fs;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
 
@@ -288,7 +290,7 @@ impl Default for AuraUsbProtocol {
 }
 
 impl Protocol for AuraUsbProtocol {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         self.controller_name()
     }
 

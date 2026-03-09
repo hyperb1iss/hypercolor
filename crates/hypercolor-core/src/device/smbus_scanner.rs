@@ -1,45 +1,63 @@
-//! SMBus scanner for ASUS Aura ENE controllers.
+//! `SMBus` scanner for ASUS Aura ENE controllers.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
-use hypercolor_hal::drivers::asus::{
-    AuraSmBusProtocol, encode_ene_transaction, ene_dram_remap_sequence,
-};
-use hypercolor_hal::protocol::{Protocol, ProtocolZone, ResponseStatus};
-use hypercolor_hal::transport::Transport;
-use hypercolor_hal::transport::smbus::SmBusTransport;
-use hypercolor_types::device::{
-    ConnectionType, DeviceFamily, DeviceFingerprint, DeviceIdentifier, DeviceInfo,
-};
-use tracing::{debug, trace};
+use anyhow::Result;
+use hypercolor_types::device::{ConnectionType, DeviceFingerprint, DeviceInfo};
 
 use super::discovery::{DiscoveredDevice, TransportScanner};
 
+#[cfg(target_os = "linux")]
+use anyhow::anyhow;
+#[cfg(target_os = "linux")]
+use hypercolor_hal::drivers::asus::{
+    AuraSmBusProtocol, encode_ene_transaction, ene_dram_remap_sequence,
+};
+#[cfg(target_os = "linux")]
+use hypercolor_hal::protocol::{Protocol, ProtocolZone, ResponseStatus};
+#[cfg(target_os = "linux")]
+use hypercolor_hal::transport::Transport;
+#[cfg(target_os = "linux")]
+use hypercolor_hal::transport::smbus::SmBusTransport;
+#[cfg(target_os = "linux")]
+use hypercolor_types::device::{DeviceFamily, DeviceIdentifier};
+#[cfg(target_os = "linux")]
+use std::collections::HashSet;
+#[cfg(target_os = "linux")]
+use tracing::{debug, trace};
+
+#[cfg(target_os = "linux")]
 const ASUS_SMBUS_BACKEND_ID: &str = "smbus";
 
+#[cfg(target_os = "linux")]
 const ASUS_MOTHERBOARD_SMBUS_ADDRESSES: &[(u16, SmBusControllerKind)] = &[
     (0x40, SmBusControllerKind::Motherboard),
     (0x4E, SmBusControllerKind::Motherboard),
     (0x4F, SmBusControllerKind::Motherboard),
 ];
 
+#[cfg(target_os = "linux")]
 const ASUS_GPU_SMBUS_ADDRESSES: &[(u16, SmBusControllerKind)] = &[
     (0x29, SmBusControllerKind::Gpu),
     (0x2A, SmBusControllerKind::Gpu),
     (0x67, SmBusControllerKind::Gpu),
 ];
 
+#[cfg(target_os = "linux")]
 const ASUS_DRAM_REMAP_HUB_ADDRESS: u16 = 0x77;
+#[cfg(target_os = "linux")]
 const ASUS_DRAM_REMAP_SLOT_COUNT: usize = 8;
+#[cfg(target_os = "linux")]
 const ASUS_DRAM_SMBUS_ADDRESSES: &[u16] = &[
     0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F, 0x4F,
     0x66, 0x67, 0x39, 0x3A, 0x3B, 0x3C, 0x3D,
 ];
 const INTEL_VENDOR_ID: u16 = 0x8086;
 const AMD_VENDOR_ID: u16 = 0x1022;
+#[cfg(target_os = "linux")]
 const AMD_GPU_VENDOR_ID: u16 = 0x1002;
+#[cfg(target_os = "linux")]
 const NVIDIA_VENDOR_ID: u16 = 0x10DE;
 const SYSTEM_SMBUS_ADAPTER_IDS: &[(u16, u16)] = &[
     (AMD_VENDOR_ID, 0x790B),
@@ -56,6 +74,7 @@ const SYSTEM_SMBUS_ADAPTER_IDS: &[(u16, u16)] = &[
     (INTEL_VENDOR_ID, 0x7F23),
 ];
 
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SmBusControllerKind {
     Motherboard,
@@ -63,6 +82,7 @@ pub(crate) enum SmBusControllerKind {
     Dram,
 }
 
+#[cfg(target_os = "linux")]
 impl SmBusControllerKind {
     pub(crate) const fn display_name(self) -> &'static str {
         match self {
@@ -88,19 +108,19 @@ pub(crate) struct SmBusProbe {
     pub(crate) metadata: HashMap<String, String>,
 }
 
-/// SMBus transport scanner for ASUS ENE controllers.
+/// `SMBus` transport scanner for ASUS ENE controllers.
 pub struct SmBusScanner {
     dev_root: PathBuf,
 }
 
 impl SmBusScanner {
-    /// Create an SMBus scanner.
+    /// Create an `SMBus` scanner.
     #[must_use]
     pub fn new() -> Self {
         Self::with_dev_root("/dev")
     }
 
-    /// Create an SMBus scanner with a custom device-node root.
+    /// Create an `SMBus` scanner with a custom device-node root.
     #[must_use]
     pub fn with_dev_root<P: Into<PathBuf>>(dev_root: P) -> Self {
         Self {
@@ -137,65 +157,63 @@ impl TransportScanner for SmBusScanner {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmBusProbe>> {
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = dev_root;
-        Ok(Vec::new())
-    }
+    let mut discovered = Vec::new();
 
-    #[cfg(target_os = "linux")]
-    {
-        let mut discovered = Vec::new();
+    for bus_path in i2c_bus_paths_in(dev_root)? {
+        let pci_id = bus_pci_id(&bus_path);
 
-        for bus_path in i2c_bus_paths_in(dev_root)? {
-            let pci_id = bus_pci_id(&bus_path);
-
-            if motherboard_capable_bus_pci_id(pci_id) {
-                for &(address, controller_kind) in ASUS_MOTHERBOARD_SMBUS_ADDRESSES {
-                    if let Some(probe) =
-                        probe_bus_address(&bus_path, address, controller_kind).await?
-                    {
-                        discovered.push(probe);
-                    }
+        if motherboard_capable_bus_pci_id(pci_id) {
+            for &(address, controller_kind) in ASUS_MOTHERBOARD_SMBUS_ADDRESSES {
+                if let Some(probe) = probe_bus_address(&bus_path, address, controller_kind).await? {
+                    discovered.push(probe);
                 }
-            } else {
-                trace!(
-                    bus_path,
-                    pci_id = ?pci_id,
-                    "skipping ASUS Aura motherboard SMBus probe on incompatible i2c adapter"
-                );
             }
-
-            if gpu_capable_bus_pci_id(pci_id) {
-                for &(address, controller_kind) in ASUS_GPU_SMBUS_ADDRESSES {
-                    if let Some(probe) =
-                        probe_bus_address(&bus_path, address, controller_kind).await?
-                    {
-                        discovered.push(probe);
-                    }
-                }
-            } else {
-                trace!(
-                    bus_path,
-                    pci_id = ?pci_id,
-                    "skipping ASUS Aura GPU SMBus probe on non-GPU i2c adapter"
-                );
-            }
-
-            if dram_capable_bus_pci_id(pci_id) {
-                discovered.extend(probe_dram_bus(&bus_path).await?);
-            } else {
-                trace!(
-                    bus_path,
-                    pci_id = ?pci_id,
-                    "skipping ASUS Aura DRAM probe on non-chipset i2c adapter"
-                );
-            }
+        } else {
+            trace!(
+                bus_path,
+                pci_id = ?pci_id,
+                "skipping ASUS Aura motherboard SMBus probe on incompatible i2c adapter"
+            );
         }
 
-        Ok(discovered)
+        if gpu_capable_bus_pci_id(pci_id) {
+            for &(address, controller_kind) in ASUS_GPU_SMBUS_ADDRESSES {
+                if let Some(probe) = probe_bus_address(&bus_path, address, controller_kind).await? {
+                    discovered.push(probe);
+                }
+            }
+        } else {
+            trace!(
+                bus_path,
+                pci_id = ?pci_id,
+                "skipping ASUS Aura GPU SMBus probe on non-GPU i2c adapter"
+            );
+        }
+
+        if dram_capable_bus_pci_id(pci_id) {
+            discovered.extend(probe_dram_bus(&bus_path).await?);
+        } else {
+            trace!(
+                bus_path,
+                pci_id = ?pci_id,
+                "skipping ASUS Aura DRAM probe on non-chipset i2c adapter"
+            );
+        }
     }
+
+    Ok(discovered)
+}
+
+#[cfg(not(target_os = "linux"))]
+#[allow(
+    clippy::unused_async,
+    reason = "the scanner uses one async probe interface across supported and excluded platforms"
+)]
+pub(crate) async fn probe_asus_smbus_devices_in_root(dev_root: &Path) -> Result<Vec<SmBusProbe>> {
+    let _ = dev_root;
+    Ok(Vec::new())
 }
 
 #[cfg(target_os = "linux")]
@@ -496,7 +514,6 @@ fn bus_pci_id(bus_path: &str) -> Option<(u16, u16)> {
     resolve_parent_pci_id_from_sysfs_path(&sysfs_root)
 }
 
-#[cfg(target_os = "linux")]
 fn read_sysfs_hex_u16(path: &Path) -> Option<u16> {
     let raw = std::fs::read_to_string(path).ok()?;
     let trimmed = raw.trim();
@@ -612,6 +629,7 @@ fn dram_probe_addresses(occupied_addresses: &HashSet<u16>, remapped_addresses: &
     probe_addresses
 }
 
+#[cfg(target_os = "linux")]
 fn build_device_info(
     controller_kind: SmBusControllerKind,
     protocol: &AuraSmBusProtocol,
@@ -641,6 +659,7 @@ fn build_device_info(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn protocol_zone_to_zone_info(zone: ProtocolZone) -> hypercolor_types::device::ZoneInfo {
     hypercolor_types::device::ZoneInfo {
         name: zone.name,

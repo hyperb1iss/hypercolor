@@ -43,6 +43,10 @@ enum CustomEffectActivationStyle {
 }
 
 /// Pure packet encoder/decoder for Razer HID reports.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "protocol quirk flags are independent device capability switches"
+)]
 #[derive(Debug, Clone)]
 pub struct RazerProtocol {
     version: RazerProtocolVersion,
@@ -673,7 +677,7 @@ impl RazerProtocol {
 }
 
 impl Protocol for RazerProtocol {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         self.protocol_name()
     }
 
