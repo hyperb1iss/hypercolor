@@ -62,7 +62,7 @@ impl Default for SessionConfig {
             idle_backend: IdleBackend::Auto,
             idle_dim_timeout_secs: 120,
             idle_off_timeout_secs: 600,
-            on_screen_lock: SleepBehavior::Off,
+            on_screen_lock: SleepBehavior::Ignore,
             screen_lock_brightness: 0.0,
             screen_lock_scene: String::new(),
             screen_lock_fade_ms: 2_000,

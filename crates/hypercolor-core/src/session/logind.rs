@@ -16,6 +16,7 @@ use crate::session::SessionMonitor;
 use crate::types::session::{SessionConfig, SessionEvent};
 
 const INHIBITOR_GRACE: Duration = Duration::from_millis(100);
+const RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
 
 #[zbus::proxy(
     interface = "org.freedesktop.login1.Manager",
@@ -72,110 +73,163 @@ impl SessionMonitor for LogindMonitor {
         tx: mpsc::Sender<SessionEvent>,
         cancel: CancellationToken,
     ) -> anyhow::Result<()> {
-        let connection = Connection::system()
-            .await
-            .context("failed to connect to the system D-Bus")?;
-        let manager = LoginManagerProxy::new(&connection)
-            .await
-            .context("failed to build login1 manager proxy")?;
-
-        let session_proxy = match resolve_session_proxy(&connection, &manager).await {
-            Ok(proxy) => Some(proxy),
-            Err(error) => {
-                warn!(%error, "logind session lock monitoring unavailable");
-                None
-            }
-        };
-
-        if let Some(proxy) = &session_proxy {
-            match proxy.locked_hint().await {
-                Ok(true) => send_event(&tx, SessionEvent::ScreenLocked).await,
-                Ok(false) => {}
-                Err(error) => warn!(%error, "failed to query logind LockedHint"),
-            }
-        }
-
-        let mut inhibitor = match acquire_sleep_inhibitor(&manager).await {
-            Ok(fd) => Some(fd),
-            Err(error) => {
-                warn!(%error, "failed to acquire logind sleep inhibitor");
-                None
-            }
-        };
-        let mut sleep_stream = manager
-            .receive_prepare_for_sleep()
-            .await
-            .context("failed to subscribe to PrepareForSleep")?;
-        let mut lock_stream = if let Some(proxy) = session_proxy.as_ref() {
-            Some(
-                proxy
-                    .receive_lock()
-                    .await
-                    .context("failed to subscribe to Lock")?,
-            )
-        } else {
-            None
-        };
-        let mut unlock_stream = if let Some(proxy) = session_proxy.as_ref() {
-            Some(
-                proxy
-                    .receive_unlock()
-                    .await
-                    .context("failed to subscribe to Unlock")?,
-            )
-        } else {
-            None
-        };
+        let mut connected_once = false;
 
         loop {
-            tokio::select! {
-                () = cancel.cancelled() => break,
-                maybe_signal = sleep_stream.next() => {
-                    let Some(signal) = maybe_signal else {
-                        break;
-                    };
-
-                    let args = signal.args().context("failed to decode PrepareForSleep signal")?;
-                    if *args.start() {
-                        debug!("logind signalled suspend preparation");
-                        send_event(&tx, SessionEvent::Suspending).await;
-
-                        tokio::select! {
-                            () = cancel.cancelled() => break,
-                            () = tokio::time::sleep(self.suspend_fade.saturating_add(INHIBITOR_GRACE)) => {}
-                        }
-                        inhibitor = None;
-                    } else {
-                        debug!("logind signalled resume");
-                        send_event(&tx, SessionEvent::Resumed).await;
-                        inhibitor = match acquire_sleep_inhibitor(&manager).await {
-                            Ok(fd) => Some(fd),
-                            Err(error) => {
-                                warn!(%error, "failed to re-acquire logind sleep inhibitor after resume");
-                                None
-                            }
-                        };
+            match run_logind_monitor_once(self.suspend_fade, &tx, &cancel).await {
+                Ok(RunResult::Cancelled) => break,
+                Ok(RunResult::Reconnect) => {
+                    connected_once = true;
+                    warn!("logind monitor connection dropped; rebuilding subscriptions");
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        () = tokio::time::sleep(RECONNECT_BACKOFF) => {}
                     }
                 }
-                maybe_signal = next_optional_signal(&mut lock_stream), if lock_stream.is_some() => {
-                    if maybe_signal.is_none() {
-                        lock_stream = None;
-                        continue;
+                Err(error) => {
+                    if !connected_once {
+                        return Err(error);
                     }
-                    send_event(&tx, SessionEvent::ScreenLocked).await;
-                }
-                maybe_signal = next_optional_signal(&mut unlock_stream), if unlock_stream.is_some() => {
-                    if maybe_signal.is_none() {
-                        unlock_stream = None;
-                        continue;
+
+                    warn!(%error, "logind monitor reconnect failed; retrying");
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        () = tokio::time::sleep(RECONNECT_BACKOFF) => {}
                     }
-                    send_event(&tx, SessionEvent::ScreenUnlocked).await;
                 }
             }
         }
 
-        drop(inhibitor);
         Ok(())
+    }
+}
+
+enum RunResult {
+    Cancelled,
+    Reconnect,
+}
+
+async fn run_logind_monitor_once(
+    suspend_fade: Duration,
+    tx: &mpsc::Sender<SessionEvent>,
+    cancel: &CancellationToken,
+) -> anyhow::Result<RunResult> {
+    let connection = Connection::system()
+        .await
+        .context("failed to connect to the system D-Bus")?;
+    let manager = LoginManagerProxy::new(&connection)
+        .await
+        .context("failed to build login1 manager proxy")?;
+
+    let session_proxy = match resolve_session_proxy(&connection, &manager).await {
+        Ok(proxy) => Some(proxy),
+        Err(error) => {
+            warn!(%error, "logind session lock monitoring unavailable");
+            None
+        }
+    };
+
+    if let Some(proxy) = &session_proxy {
+        match proxy.locked_hint().await {
+            Ok(true) => send_event(tx, SessionEvent::ScreenLocked).await,
+            Ok(false) => {}
+            Err(error) => warn!(%error, "failed to query logind LockedHint"),
+        }
+    }
+
+    let mut inhibitor = match acquire_sleep_inhibitor(&manager).await {
+        Ok(fd) => Some(fd),
+        Err(error) => {
+            warn!(%error, "failed to acquire logind sleep inhibitor");
+            None
+        }
+    };
+    let mut sleep_stream = manager
+        .receive_prepare_for_sleep()
+        .await
+        .context("failed to subscribe to PrepareForSleep")?;
+    let mut lock_stream = if let Some(proxy) = session_proxy.as_ref() {
+        Some(
+            proxy
+                .receive_lock()
+                .await
+                .context("failed to subscribe to Lock")?,
+        )
+    } else {
+        None
+    };
+    let mut unlock_stream = if let Some(proxy) = session_proxy.as_ref() {
+        Some(
+            proxy
+                .receive_unlock()
+                .await
+                .context("failed to subscribe to Unlock")?,
+        )
+    } else {
+        None
+    };
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => {
+                drop(inhibitor);
+                return Ok(RunResult::Cancelled);
+            }
+            maybe_signal = sleep_stream.next() => {
+                let Some(signal) = maybe_signal else {
+                    warn!("logind PrepareForSleep stream ended");
+                    drop(inhibitor);
+                    return Ok(RunResult::Reconnect);
+                };
+
+                let args = match signal.args() {
+                    Ok(args) => args,
+                    Err(error) => {
+                        warn!(%error, "failed to decode PrepareForSleep signal; reconnecting logind monitor");
+                        drop(inhibitor);
+                        return Ok(RunResult::Reconnect);
+                    }
+                };
+
+                if *args.start() {
+                    debug!("logind signalled suspend preparation");
+                    send_event(tx, SessionEvent::Suspending).await;
+
+                    tokio::select! {
+                        () = cancel.cancelled() => {
+                            drop(inhibitor);
+                            return Ok(RunResult::Cancelled);
+                        }
+                        () = tokio::time::sleep(suspend_fade.saturating_add(INHIBITOR_GRACE)) => {}
+                    }
+                    inhibitor = None;
+                } else {
+                    debug!("logind signalled resume");
+                    send_event(tx, SessionEvent::Resumed).await;
+                    inhibitor = match acquire_sleep_inhibitor(&manager).await {
+                        Ok(fd) => Some(fd),
+                        Err(error) => {
+                            warn!(%error, "failed to re-acquire logind sleep inhibitor after resume");
+                            None
+                        }
+                    };
+                }
+            }
+            maybe_signal = next_optional_signal(&mut lock_stream), if lock_stream.is_some() => {
+                if maybe_signal.is_none() {
+                    lock_stream = None;
+                    continue;
+                }
+                send_event(tx, SessionEvent::ScreenLocked).await;
+            }
+            maybe_signal = next_optional_signal(&mut unlock_stream), if unlock_stream.is_some() => {
+                if maybe_signal.is_none() {
+                    unlock_stream = None;
+                    continue;
+                }
+                send_event(tx, SessionEvent::ScreenUnlocked).await;
+            }
+        }
     }
 }
 

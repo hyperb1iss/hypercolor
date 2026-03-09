@@ -130,11 +130,11 @@ mod tests {
     };
 
     #[test]
-    fn screen_lock_maps_to_off_by_default() {
+    fn screen_lock_maps_to_ignore_by_default() {
         let policy = SleepPolicy::new(SessionConfig::default());
         assert_eq!(
             policy.sleep_action(&SessionEvent::ScreenLocked),
-            Some(SleepAction::Off { fade_ms: 2_000 })
+            Some(SleepAction::Ignore)
         );
     }
 

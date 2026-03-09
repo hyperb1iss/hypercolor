@@ -512,7 +512,7 @@ idle_dim_timeout_secs = 120     # Stage 1: dim after 2 minutes
 idle_off_timeout_secs = 600     # Stage 2: off after 10 minutes
 
 # Screen lock behavior
-on_screen_lock = "off"          # "off" | "dim" | "scene" | "ignore"
+on_screen_lock = "ignore"       # "off" | "dim" | "scene" | "ignore"
 screen_lock_brightness = 0.0    # Only used when on_screen_lock = "dim"
 screen_lock_scene = ""          # Only used when on_screen_lock = "scene"
 screen_lock_fade_ms = 2000
@@ -626,7 +626,7 @@ impl Default for SessionConfig {
             idle_backend: IdleBackend::Auto,
             idle_dim_timeout_secs: 120,
             idle_off_timeout_secs: 600,
-            on_screen_lock: SleepBehavior::Off,
+            on_screen_lock: SleepBehavior::Ignore,
             screen_lock_brightness: 0.0,
             screen_lock_scene: String::new(),
             screen_lock_fade_ms: 2000,

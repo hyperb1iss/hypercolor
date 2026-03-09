@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use hypercolor_types::config::HypercolorConfig;
+use hypercolor_types::session::SleepBehavior;
 
 use crate::api;
 use crate::app::WsContext;
@@ -18,6 +19,16 @@ where
     T: Default,
 {
     config.with(|cfg| cfg.as_ref().map(selector).unwrap_or_default())
+}
+
+fn sleep_behavior_value(behavior: SleepBehavior) -> String {
+    match behavior {
+        SleepBehavior::Off => "off",
+        SleepBehavior::Dim => "dim",
+        SleepBehavior::Scene => "scene",
+        SleepBehavior::Ignore => "ignore",
+    }
+    .to_owned()
 }
 
 // ── Audio VU Meter ────────────────────────────────────────────────────────
@@ -567,16 +578,101 @@ pub fn SessionSection(
         Signal::derive(move || read_config(config, |cfg| cfg.session.idle_dim_timeout_secs as f64));
     let off_timeout =
         Signal::derive(move || read_config(config, |cfg| cfg.session.idle_off_timeout_secs as f64));
+    let screen_lock_behavior = Signal::derive(move || {
+        read_config(config, |cfg| sleep_behavior_value(cfg.session.on_screen_lock))
+    });
+    let screen_lock_brightness =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.session.screen_lock_brightness)));
+    let screen_lock_fade =
+        Signal::derive(move || read_config(config, |cfg| cfg.session.screen_lock_fade_ms as f64));
+    let screen_unlock_fade =
+        Signal::derive(move || read_config(config, |cfg| cfg.session.screen_unlock_fade_ms as f64));
+    let suspend_behavior = Signal::derive(move || {
+        read_config(config, |cfg| sleep_behavior_value(cfg.session.on_suspend))
+    });
+    let suspend_fade =
+        Signal::derive(move || read_config(config, |cfg| cfg.session.suspend_fade_ms as f64));
+    let resume_fade =
+        Signal::derive(move || read_config(config, |cfg| cfg.session.resume_fade_ms as f64));
+
+    let screen_behavior_options = Signal::stored(vec![
+        ("ignore".to_string(), "Ignore".to_string()),
+        ("off".to_string(), "Turn Off".to_string()),
+        ("dim".to_string(), "Dim".to_string()),
+    ]);
+    let suspend_behavior_options = Signal::stored(vec![
+        ("ignore".to_string(), "Ignore".to_string()),
+        ("off".to_string(), "Turn Off".to_string()),
+        ("dim".to_string(), "Fade Black".to_string()),
+    ]);
 
     view! {
         <section id="section-session" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Session & Power" icon=LuPower />
             <SettingToggle
                 label="Session Awareness"
-                description="React to system power events like sleep, lid close, and screen lock"
+                description="React to actual suspend/resume, screen lock, and other desktop power events"
                 key="session.enabled"
                 value=enabled
                 on_change=on_change
+            />
+            <SettingDropdown
+                label="Screen Lock Behavior"
+                description="Choose what happens when the session locks or the display manager blanks the screen"
+                key="session.on_screen_lock"
+                value=screen_lock_behavior
+                options=screen_behavior_options
+                on_change=on_change
+            />
+            <Show when=move || screen_lock_behavior.get() == "dim">
+                <SettingSlider
+                    label="Screen Lock Brightness"
+                    description="Brightness multiplier applied while the screen is locked"
+                    key="session.screen_lock_brightness"
+                    value=screen_lock_brightness
+                    on_change=on_change
+                    min=0.0 max=1.0 step=0.05
+                />
+            </Show>
+            <SettingNumberInput
+                label="Screen Lock Fade"
+                description="Milliseconds to fade into the screen-lock state"
+                key="session.screen_lock_fade_ms"
+                value=screen_lock_fade
+                on_change=on_change
+                min=0.0 max=10000.0 step=50.0
+            />
+            <SettingNumberInput
+                label="Unlock Fade"
+                description="Milliseconds to restore output after the session unlocks"
+                key="session.screen_unlock_fade_ms"
+                value=screen_unlock_fade
+                on_change=on_change
+                min=0.0 max=10000.0 step=50.0
+            />
+            <SettingDropdown
+                label="Suspend Behavior"
+                description="Choose what happens when the OS is actually preparing to suspend"
+                key="session.on_suspend"
+                value=suspend_behavior
+                options=suspend_behavior_options
+                on_change=on_change
+            />
+            <SettingNumberInput
+                label="Suspend Fade"
+                description="Milliseconds to fade before the kernel suspends"
+                key="session.suspend_fade_ms"
+                value=suspend_fade
+                on_change=on_change
+                min=0.0 max=5000.0 step=25.0
+            />
+            <SettingNumberInput
+                label="Resume Fade"
+                description="Milliseconds to restore output after resume"
+                key="session.resume_fade_ms"
+                value=resume_fade
+                on_change=on_change
+                min=0.0 max=5000.0 step=25.0
             />
             <SettingToggle
                 label="Idle Detection"

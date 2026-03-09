@@ -8,6 +8,8 @@ mod policy;
 
 #[cfg(target_os = "linux")]
 mod logind;
+#[cfg(target_os = "linux")]
+mod screensaver;
 
 use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc};
@@ -18,6 +20,8 @@ use tracing::{debug, warn};
 #[cfg(target_os = "linux")]
 use self::logind::LogindMonitor;
 pub use self::policy::SleepPolicy;
+#[cfg(target_os = "linux")]
+use self::screensaver::ScreensaverMonitor;
 
 use crate::types::session::{SessionConfig, SessionEvent};
 
@@ -138,6 +142,11 @@ impl SessionWatcher {
 
         #[cfg(target_os = "linux")]
         {
+            tasks.push(spawn_monitor(
+                ScreensaverMonitor::new(),
+                merged_tx.clone(),
+                cancel.child_token(),
+            ));
             tasks.push(spawn_monitor(
                 LogindMonitor::new(config),
                 merged_tx,
