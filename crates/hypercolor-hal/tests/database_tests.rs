@@ -14,8 +14,8 @@ use hypercolor_hal::drivers::prismrgb::{
 };
 use hypercolor_hal::drivers::razer::{
     PID_BASILISK_V3, PID_BLADE_14_2021, PID_BLADE_14_2023, PID_BLADE_15_2022,
-    PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, PID_SEIREN_EMOTE, PID_SEIREN_V3_CHROMA,
-    RAZER_VENDOR_ID,
+    PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, PID_MAMBA_ELITE, PID_SEIREN_EMOTE,
+    PID_SEIREN_V3_CHROMA, RAZER_VENDOR_ID,
 };
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};
@@ -281,7 +281,7 @@ fn lookup_returns_huntsman_descriptor() {
     assert_eq!(descriptor.protocol.id, "razer/huntsman-v2");
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbHidRaw {
+        TransportType::UsbHidApi {
             interface: 3,
             report_id: 0x00,
             report_mode: HidRawReportMode::FeatureReport,
@@ -304,7 +304,7 @@ fn lookup_returns_basilisk_descriptor() {
     assert_eq!(descriptor.family, DeviceFamily::Razer);
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbHidRaw {
+        TransportType::UsbHidApi {
             interface: 3,
             report_id: 0x00,
             report_mode: HidRawReportMode::FeatureReport,
@@ -312,6 +312,30 @@ fn lookup_returns_basilisk_descriptor() {
             usage: Some(0x0001),
         }
     );
+}
+
+#[test]
+fn lookup_returns_mamba_elite_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_MAMBA_ELITE)
+        .expect("Mamba Elite descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Mamba Elite");
+    assert_eq!(descriptor.family, DeviceFamily::Razer);
+    assert_eq!(descriptor.protocol.id, "razer/mamba-elite");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbHidApi {
+            interface: 0,
+            report_id: 0x00,
+            report_mode: HidRawReportMode::FeatureReport,
+            usage_page: Some(0x0001),
+            usage: Some(0x0002),
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Razer Modern");
+    assert_eq!(protocol.total_leds(), 20);
 }
 
 #[test]
@@ -389,7 +413,7 @@ fn lookup_returns_seiren_v3_chroma_descriptor() {
     assert_eq!(descriptor.protocol.id, "razer/seiren-v3-chroma");
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbHidRaw {
+        TransportType::UsbHidApi {
             interface: 3,
             report_id: 0x07,
             report_mode: HidRawReportMode::FeatureReport,

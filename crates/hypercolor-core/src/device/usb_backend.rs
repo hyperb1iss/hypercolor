@@ -13,6 +13,7 @@ use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ProtocolError, Respons
 use hypercolor_hal::transport::bulk::UsbBulkTransport;
 use hypercolor_hal::transport::control::UsbControlTransport;
 use hypercolor_hal::transport::hid::UsbHidTransport;
+use hypercolor_hal::transport::hidapi::UsbHidApiTransport;
 use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
@@ -278,6 +279,20 @@ impl UsbBackend {
         usb: &nusb::DeviceInfo,
     ) -> Result<Box<dyn Transport>> {
         match pending.descriptor.transport {
+            TransportType::UsbHidApi {
+                interface,
+                report_id,
+                report_mode,
+                usage_page,
+                usage,
+            } => Self::open_hidapi_transport(
+                pending,
+                interface,
+                report_id,
+                report_mode,
+                usage_page,
+                usage,
+            ),
             TransportType::UsbHidRaw {
                 interface,
                 report_id,
@@ -990,6 +1005,39 @@ impl UsbBackend {
                 Err(anyhow!("protocol response parse failed: {error}"))
             }
         }
+    }
+
+    fn open_hidapi_transport(
+        pending: &PendingUsbDevice,
+        interface: u8,
+        report_id: u8,
+        report_mode: hypercolor_hal::registry::HidRawReportMode,
+        usage_page: Option<u16>,
+        usage: Option<u16>,
+    ) -> Result<Box<dyn Transport>> {
+        let transport = UsbHidApiTransport::open(
+            pending.vendor_id,
+            pending.product_id,
+            interface,
+            report_id,
+            report_mode,
+            pending.serial.as_deref(),
+            pending.usb_path.as_deref(),
+            usage_page,
+            usage,
+        )
+        .with_context(|| {
+            format!(
+                "failed to open HIDAPI transport for {:04X}:{:04X} interface {} (report_id=0x{report_id:02X}, usage_page={}, usage={})",
+                pending.vendor_id,
+                pending.product_id,
+                interface,
+                usage_page
+                    .map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
+                usage.map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}"))
+            )
+        })?;
+        Ok(Box::new(transport))
     }
 }
 

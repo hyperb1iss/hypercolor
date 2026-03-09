@@ -2,7 +2,7 @@ use hypercolor_hal::drivers::razer::{
     LED_ID_BACKLIGHT, LED_ID_LOGO, RAZER_REPORT_LEN, RazerLightingCommandSet, RazerMatrixType,
     RazerProtocol, RazerProtocolVersion, build_basilisk_v3_protocol, build_blade_14_2021_protocol,
     build_blade_15_late_2021_advanced_protocol, build_huntsman_v2_protocol,
-    build_seiren_v3_protocol, razer_crc,
+    build_mamba_elite_protocol, build_seiren_v3_protocol, razer_crc,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolError, ResponseStatus};
 use hypercolor_types::device::DeviceTopologyHint;
@@ -156,6 +156,34 @@ fn basilisk_v3_protocol_exposes_connect_diagnostic_probe() {
     assert_eq!(diagnostics[0].data[5], 0x02);
     assert_eq!(diagnostics[0].data[6], 0x00);
     assert_eq!(diagnostics[0].data[7], 0x82);
+}
+
+#[test]
+fn mamba_elite_protocol_initializes_custom_mode_once() {
+    let protocol = build_mamba_elite_protocol();
+    let colors = vec![[0x12, 0x34, 0x56]; 20];
+
+    let init = protocol.init_sequence();
+    assert_eq!(init.len(), 2, "device mode + custom effect activation");
+    assert_eq!(init[0].data[1], 0x1F);
+    assert_eq!(init[0].data[6], 0x00);
+    assert_eq!(init[0].data[7], 0x04);
+    assert_eq!(init[1].data[1], 0x1F);
+    assert_eq!(init[1].data[6], 0x0F);
+    assert_eq!(init[1].data[7], 0x02);
+
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 1, "single row frame upload");
+    assert!(commands.iter().all(|command| !command.expects_response));
+
+    let frame = &commands[0].data;
+    assert_eq!(frame[1], 0x1F);
+    assert_eq!(frame[5], 0x41);
+    assert_eq!(frame[6], 0x0F);
+    assert_eq!(frame[7], 0x03);
+    assert_eq!(frame[10], 0x00);
+    assert_eq!(frame[11], 0x00);
+    assert_eq!(frame[12], 0x13);
 }
 
 #[test]

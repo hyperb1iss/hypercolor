@@ -45,7 +45,7 @@ fn udev_rules_cover_each_supported_vendor_transport_family() {
     for descriptor in ProtocolDatabase::all() {
         let required = required_rules.entry(descriptor.vendor_id).or_default();
         match descriptor.transport {
-            TransportType::UsbHidRaw { .. } => {
+            TransportType::UsbHidApi { .. } | TransportType::UsbHidRaw { .. } => {
                 required.insert(RequiredSubsystem::Hidraw);
                 required.insert(RequiredSubsystem::Usb);
             }

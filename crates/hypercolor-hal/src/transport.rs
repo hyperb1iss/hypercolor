@@ -9,6 +9,7 @@ use crate::protocol::TransferType;
 pub mod bulk;
 pub mod control;
 pub mod hid;
+pub mod hidapi;
 #[cfg(target_os = "linux")]
 pub mod hidraw;
 pub mod serial;

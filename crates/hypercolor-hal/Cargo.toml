@@ -19,9 +19,9 @@ tracing = { workspace = true }
 nusb = { workspace = true }
 tokio = { workspace = true }
 tokio-serial = "5"
+hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw", "macos-shared-device"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
 i2cdev = "0.6.2"
 
 [dev-dependencies]
