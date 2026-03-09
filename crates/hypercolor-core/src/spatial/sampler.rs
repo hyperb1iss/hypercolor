@@ -9,10 +9,58 @@
 //! methods. This module wraps them with the zone-level [`SamplingMode`] dispatch
 //! and coordinate transformation pipeline.
 
-use hypercolor_types::canvas::{Canvas, Rgba, SamplingMethod};
+use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Rgba, SamplingMethod};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, NormalizedPosition, SamplingMode, SpatialLayout,
 };
+
+const BILINEAR_ONE: u32 = 256;
+const ATTENUATION_ONE: u16 = 256;
+
+/// Per-zone sampling plan prepared when the layout changes.
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedZone {
+    pub(crate) zone_id: String,
+    sampling_method: SamplingMethod,
+    edge_behavior: EdgeBehavior,
+    sample_positions: Vec<NormalizedPosition>,
+    prepared_canvas_width: u32,
+    prepared_canvas_height: u32,
+    prepared_samples: Vec<PreparedCanvasSample>,
+}
+
+#[derive(Debug, Clone)]
+enum PreparedCanvasSample {
+    Nearest(PreparedNearestSample),
+    Bilinear(PreparedBilinearSample),
+    Area(PreparedAreaSample),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparedNearestSample {
+    offset: usize,
+    attenuation: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparedBilinearSample {
+    offsets: [usize; 4],
+    frac_x: u32,
+    inv_frac_x: u32,
+    frac_y: u32,
+    inv_frac_y: u32,
+    attenuation: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PreparedAreaSample {
+    center_x: i32,
+    center_y: i32,
+    radius: i32,
+    canvas_width: i32,
+    canvas_height: i32,
+    attenuation: u16,
+}
 
 /// Transform a zone-local LED position to a normalized canvas position.
 ///
@@ -90,6 +138,329 @@ fn to_sampling_method(mode: &SamplingMode) -> SamplingMethod {
     }
 }
 
+/// Build the immutable sampling plan for a zone.
+#[must_use]
+pub(crate) fn prepare_zone(zone: &DeviceZone, layout: &SpatialLayout) -> PreparedZone {
+    let mode = resolve_sampling_mode(zone, layout);
+    let edge = resolve_edge_behavior(zone, layout);
+    let sampling_method = match mode {
+        SamplingMode::AreaAverage { radius_x, radius_y } => SamplingMethod::Area {
+            radius: radius_x.max(radius_y),
+        },
+        other => to_sampling_method(&other),
+    };
+    let sample_positions = zone
+        .led_positions
+        .iter()
+        .map(|&pos| zone_local_to_canvas(pos, zone, edge))
+        .collect::<Vec<_>>();
+    let prepared_samples = sample_positions
+        .iter()
+        .copied()
+        .map(|position| {
+            prepare_canvas_sample(
+                position,
+                sampling_method,
+                edge,
+                layout.canvas_width,
+                layout.canvas_height,
+            )
+        })
+        .collect();
+
+    PreparedZone {
+        zone_id: zone.id.clone(),
+        sampling_method,
+        edge_behavior: edge,
+        sample_positions,
+        prepared_canvas_width: layout.canvas_width,
+        prepared_canvas_height: layout.canvas_height,
+        prepared_samples,
+    }
+}
+
+#[must_use]
+fn prepare_canvas_sample(
+    position: NormalizedPosition,
+    sampling_method: SamplingMethod,
+    edge_behavior: EdgeBehavior,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> PreparedCanvasSample {
+    let attenuation = attenuation_for_position(position, edge_behavior);
+    let clamped = NormalizedPosition::new(position.x.clamp(0.0, 1.0), position.y.clamp(0.0, 1.0));
+
+    match sampling_method {
+        SamplingMethod::Nearest => PreparedCanvasSample::Nearest(PreparedNearestSample {
+            offset: nearest_pixel_offset(clamped, canvas_width, canvas_height),
+            attenuation,
+        }),
+        SamplingMethod::Bilinear => PreparedCanvasSample::Bilinear(prepare_bilinear_sample(
+            clamped,
+            attenuation,
+            canvas_width,
+            canvas_height,
+        )),
+        SamplingMethod::Area { radius } => PreparedCanvasSample::Area(prepare_area_sample(
+            clamped,
+            attenuation,
+            radius,
+            canvas_width,
+            canvas_height,
+        )),
+    }
+}
+
+#[must_use]
+fn attenuation_for_position(position: NormalizedPosition, edge_behavior: EdgeBehavior) -> u16 {
+    let EdgeBehavior::FadeToBlack { falloff } = edge_behavior else {
+        return ATTENUATION_ONE;
+    };
+
+    let dx = if position.x < 0.0 {
+        -position.x
+    } else if position.x > 1.0 {
+        position.x - 1.0
+    } else {
+        0.0
+    };
+    let dy = if position.y < 0.0 {
+        -position.y
+    } else if position.y > 1.0 {
+        position.y - 1.0
+    } else {
+        0.0
+    };
+
+    let distance = (dx * dx + dy * dy).sqrt();
+    if distance <= 0.0 {
+        return ATTENUATION_ONE;
+    }
+
+    ((-distance * falloff).exp().clamp(0.0, 1.0) * f32::from(ATTENUATION_ONE)).round() as u16
+}
+
+#[must_use]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
+fn nearest_pixel_offset(
+    position: NormalizedPosition,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> usize {
+    let x = (position.x * (canvas_width - 1) as f32).round() as u32;
+    let y = (position.y * (canvas_height - 1) as f32).round() as u32;
+    pixel_offset(
+        canvas_width,
+        x.min(canvas_width - 1),
+        y.min(canvas_height - 1),
+    )
+}
+
+#[must_use]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn prepare_bilinear_sample(
+    position: NormalizedPosition,
+    attenuation: u16,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> PreparedBilinearSample {
+    let fx = position.x * (canvas_width - 1) as f32;
+    let fy = position.y * (canvas_height - 1) as f32;
+
+    let x0 = fx.floor() as u32;
+    let y0 = fy.floor() as u32;
+    let x1 = (x0 + 1).min(canvas_width - 1);
+    let y1 = (y0 + 1).min(canvas_height - 1);
+    let frac_x = (fx.fract() * BILINEAR_ONE as f32).clamp(0.0, BILINEAR_ONE as f32) as u32;
+    let frac_y = (fy.fract() * BILINEAR_ONE as f32).clamp(0.0, BILINEAR_ONE as f32) as u32;
+
+    PreparedBilinearSample {
+        offsets: [
+            pixel_offset(canvas_width, x0, y0),
+            pixel_offset(canvas_width, x1, y0),
+            pixel_offset(canvas_width, x0, y1),
+            pixel_offset(canvas_width, x1, y1),
+        ],
+        frac_x,
+        inv_frac_x: BILINEAR_ONE - frac_x,
+        frac_y,
+        inv_frac_y: BILINEAR_ONE - frac_y,
+        attenuation,
+    }
+}
+
+#[must_use]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap
+)]
+fn prepare_area_sample(
+    position: NormalizedPosition,
+    attenuation: u16,
+    radius: f32,
+    canvas_width: u32,
+    canvas_height: u32,
+) -> PreparedAreaSample {
+    let cx = position.x * (canvas_width - 1) as f32;
+    let cy = position.y * (canvas_height - 1) as f32;
+    let radius = radius.ceil() as i32;
+
+    PreparedAreaSample {
+        center_x: cx as i32,
+        center_y: cy as i32,
+        radius,
+        canvas_width: canvas_width as i32,
+        canvas_height: canvas_height as i32,
+        attenuation,
+    }
+}
+
+#[must_use]
+#[allow(clippy::as_conversions)]
+fn pixel_offset(canvas_width: u32, x: u32, y: u32) -> usize {
+    ((y as usize * canvas_width as usize) + x as usize) * BYTES_PER_PIXEL
+}
+
+#[must_use]
+fn sample_positions(
+    canvas: &Canvas,
+    positions: &[NormalizedPosition],
+    sampling_method: SamplingMethod,
+    edge_behavior: EdgeBehavior,
+) -> Vec<[u8; 3]> {
+    let mut colors = Vec::with_capacity(positions.len());
+    for &pos in positions {
+        let color = canvas.sample(pos.x, pos.y, sampling_method);
+        let color = apply_fade_to_black(color, pos, edge_behavior);
+        colors.push([color.r, color.g, color.b]);
+    }
+    colors
+}
+
+/// Sample a prepared zone without redoing zone transform math.
+#[must_use]
+pub(crate) fn sample_prepared_zone(canvas: &Canvas, zone: &PreparedZone) -> Vec<[u8; 3]> {
+    if canvas.width() == zone.prepared_canvas_width
+        && canvas.height() == zone.prepared_canvas_height
+    {
+        return sample_prepared_canvas_pixels(canvas, &zone.prepared_samples);
+    }
+
+    sample_positions(
+        canvas,
+        &zone.sample_positions,
+        zone.sampling_method,
+        zone.edge_behavior,
+    )
+}
+
+#[must_use]
+fn sample_prepared_canvas_pixels(
+    canvas: &Canvas,
+    samples: &[PreparedCanvasSample],
+) -> Vec<[u8; 3]> {
+    let bytes = canvas.as_rgba_bytes();
+    let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
+    let mut colors = Vec::with_capacity(samples.len());
+    for sample in samples {
+        let color = match sample {
+            PreparedCanvasSample::Nearest(sample) => {
+                attenuate_rgb(read_rgb_at(bytes, sample.offset), sample.attenuation)
+            }
+            PreparedCanvasSample::Bilinear(sample) => {
+                attenuate_rgb(sample_bilinear_rgb(bytes, sample), sample.attenuation)
+            }
+            PreparedCanvasSample::Area(sample) => attenuate_rgb(
+                sample_area_rgb(bytes, row_stride, sample),
+                sample.attenuation,
+            ),
+        };
+        colors.push(color);
+    }
+    colors
+}
+
+#[must_use]
+fn read_rgb_at(bytes: &[u8], offset: usize) -> [u8; 3] {
+    [bytes[offset], bytes[offset + 1], bytes[offset + 2]]
+}
+
+#[must_use]
+fn sample_bilinear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> [u8; 3] {
+    #[inline]
+    fn bilinear_channel(
+        bytes: &[u8],
+        offsets: [usize; 4],
+        channel: usize,
+        sample: &PreparedBilinearSample,
+    ) -> u8 {
+        let top = u32::from(bytes[offsets[0] + channel]) * sample.inv_frac_x
+            + u32::from(bytes[offsets[1] + channel]) * sample.frac_x;
+        let bottom = u32::from(bytes[offsets[2] + channel]) * sample.inv_frac_x
+            + u32::from(bytes[offsets[3] + channel]) * sample.frac_x;
+        ((top * sample.inv_frac_y + bottom * sample.frac_y) / (BILINEAR_ONE * BILINEAR_ONE)) as u8
+    }
+
+    [
+        bilinear_channel(bytes, sample.offsets, 0, sample),
+        bilinear_channel(bytes, sample.offsets, 1, sample),
+        bilinear_channel(bytes, sample.offsets, 2, sample),
+    ]
+}
+
+#[must_use]
+fn sample_area_rgb(bytes: &[u8], row_stride: usize, sample: &PreparedAreaSample) -> [u8; 3] {
+    let mut sum_r = 0u32;
+    let mut sum_g = 0u32;
+    let mut sum_b = 0u32;
+    let mut count = 0u32;
+
+    for dy in -sample.radius..=sample.radius {
+        let y = (sample.center_y + dy).clamp(0, sample.canvas_height - 1) as usize;
+        let row_offset = y * row_stride;
+        for dx in -sample.radius..=sample.radius {
+            let x = (sample.center_x + dx).clamp(0, sample.canvas_width - 1) as usize;
+            let offset = row_offset + x * BYTES_PER_PIXEL;
+            sum_r += u32::from(bytes[offset]);
+            sum_g += u32::from(bytes[offset + 1]);
+            sum_b += u32::from(bytes[offset + 2]);
+            count += 1;
+        }
+    }
+
+    [
+        (sum_r / count) as u8,
+        (sum_g / count) as u8,
+        (sum_b / count) as u8,
+    ]
+}
+
+#[must_use]
+fn attenuate_rgb(color: [u8; 3], attenuation: u16) -> [u8; 3] {
+    if attenuation >= ATTENUATION_ONE {
+        return color;
+    }
+
+    let attenuation = u32::from(attenuation);
+    [
+        ((u32::from(color[0]) * attenuation + 128) / u32::from(ATTENUATION_ONE)) as u8,
+        ((u32::from(color[1]) * attenuation + 128) / u32::from(ATTENUATION_ONE)) as u8,
+        ((u32::from(color[2]) * attenuation + 128) / u32::from(ATTENUATION_ONE)) as u8,
+    ]
+}
+
 /// Sample a single LED position from the canvas.
 ///
 /// Transforms the zone-local position to canvas space, then delegates
@@ -125,16 +496,8 @@ pub fn sample_led(
 /// through the zone's affine placement and sampled from the canvas.
 #[must_use]
 pub fn sample_zone(canvas: &Canvas, zone: &DeviceZone, layout: &SpatialLayout) -> Vec<[u8; 3]> {
-    let mode = resolve_sampling_mode(zone, layout);
-    let edge = resolve_edge_behavior(zone, layout);
-
-    zone.led_positions
-        .iter()
-        .map(|pos| {
-            let color = sample_led(canvas, *pos, zone, &mode, edge);
-            [color.r, color.g, color.b]
-        })
-        .collect()
+    let prepared = prepare_zone(zone, layout);
+    sample_prepared_zone(canvas, &prepared)
 }
 
 /// Apply fade-to-black post-processing for positions outside `[0.0, 1.0]`.

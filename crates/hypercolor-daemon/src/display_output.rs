@@ -9,12 +9,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use image::ExtendedColorType;
-use image::codecs::jpeg::JpegEncoder;
 use tokio::sync::{Mutex, RwLock, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{debug, info, trace, warn};
+use turbojpeg::{
+    Compressor as TurboJpegCompressor, Image as TurboJpegImage,
+    PixelFormat as TurboJpegPixelFormat, Subsamp as TurboJpegSubsamp,
+    compressed_buf_len as turbojpeg_compressed_buf_len,
+};
 
 use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::{BackendIo, BackendManager, DeviceRegistry};
@@ -28,6 +31,9 @@ use crate::logical_devices::{self, LogicalDevice};
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const DISPLAY_OUTPUT_MAX_FPS: u32 = 15;
 const JPEG_QUALITY: u8 = 85;
+const JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
+const BILINEAR_WEIGHT_SCALE: u32 = 256;
+const BILINEAR_WEIGHT_ROUNDING: u32 = (BILINEAR_WEIGHT_SCALE * BILINEAR_WEIGHT_SCALE) / 2;
 
 /// Handle to the automatic display output task.
 pub struct DisplayOutputThread {
@@ -89,6 +95,31 @@ struct DisplayViewport {
     rotation: f32,
     scale: f32,
     edge_behavior: EdgeBehavior,
+}
+
+struct DisplayEncodeState {
+    rgb_buffer: Vec<u8>,
+    jpeg_buffer: Vec<u8>,
+    jpeg_compressor: TurboJpegCompressor,
+}
+
+impl DisplayEncodeState {
+    fn new() -> Result<Self> {
+        let mut jpeg_compressor =
+            TurboJpegCompressor::new().context("failed to initialize TurboJPEG display encoder")?;
+        jpeg_compressor
+            .set_quality(i32::from(JPEG_QUALITY))
+            .context("failed to configure TurboJPEG quality")?;
+        jpeg_compressor
+            .set_subsamp(JPEG_SUBSAMP)
+            .context("failed to configure TurboJPEG chroma subsampling")?;
+
+        Ok(Self {
+            rgb_buffer: Vec::new(),
+            jpeg_buffer: Vec::new(),
+            jpeg_compressor,
+        })
+    }
 }
 
 impl DisplayWorkerHandle {
@@ -302,7 +333,18 @@ async fn run_display_worker(
 ) {
     let mut interval = interval_for_target_fps(target_fps);
     let mut last_warned_at = None::<Instant>;
-    let mut rgb_buffer = Vec::<u8>::new();
+    let mut encode_state = match DisplayEncodeState::new() {
+        Ok(state) => state,
+        Err(error) => {
+            warn!(
+                backend_id = %backend_id,
+                device_id = %device_id,
+                error = %error,
+                "display worker failed to initialize encoder state"
+            );
+            return;
+        }
+    };
 
     loop {
         if rx.changed().await.is_err() {
@@ -322,25 +364,39 @@ async fn run_display_worker(
         let geometry = work.target.geometry.clone();
         let brightness = work.target.brightness;
         let target = work.target.clone();
-        let reusable_rgb = std::mem::take(&mut rgb_buffer);
         let encode_result = tokio::task::spawn_blocking(move || {
-            let mut reusable_rgb = reusable_rgb;
-            let jpeg =
-                encode_canvas_frame(&source, &viewport, &geometry, brightness, &mut reusable_rgb)?;
-            Ok::<_, anyhow::Error>((reusable_rgb, jpeg))
+            let mut encode_state = encode_state;
+            let encoded =
+                encode_canvas_frame(&source, &viewport, &geometry, brightness, &mut encode_state);
+            (encode_state, encoded)
         })
         .await;
 
         let jpeg = match encode_result {
-            Ok(Ok((reusable_rgb, encoded))) => {
-                rgb_buffer = reusable_rgb;
+            Ok((returned_state, Ok(encoded))) => {
+                encode_state = returned_state;
                 Arc::new(encoded)
             }
-            Ok(Err(error)) => {
+            Ok((returned_state, Err(error))) => {
+                encode_state = returned_state;
                 maybe_warn_display_error(&mut last_warned_at, &target, &error);
                 continue;
             }
             Err(error) => {
+                match DisplayEncodeState::new() {
+                    Ok(state) => {
+                        encode_state = state;
+                    }
+                    Err(init_error) => {
+                        warn!(
+                            backend_id = %backend_id,
+                            device_id = %device_id,
+                            error = %init_error,
+                            "display worker could not recover encoder state after a blocking-task failure"
+                        );
+                        break;
+                    }
+                }
                 maybe_warn_display_error(
                     &mut last_warned_at,
                     &target,
@@ -350,10 +406,14 @@ async fn run_display_worker(
             }
         };
 
-        if let Err(error) = backend_io
+        let jpeg_bytes = jpeg.len();
+        let write_result = backend_io
             .write_display_frame_owned(device_id, Arc::clone(&jpeg))
-            .await
-        {
+            .await;
+        if let Some(reusable_jpeg) = Arc::into_inner(jpeg) {
+            encode_state.jpeg_buffer = reusable_jpeg;
+        }
+        if let Err(error) = write_result {
             maybe_warn_display_error(&mut last_warned_at, &target, &error);
             continue;
         }
@@ -362,7 +422,7 @@ async fn run_display_worker(
             device = %target.name,
             backend_id = %backend_id,
             device_id = %device_id,
-            jpeg_bytes = jpeg.len(),
+            jpeg_bytes,
             target_fps,
             "display frame delivered"
         );
@@ -461,31 +521,66 @@ fn encode_canvas_frame(
     viewport: &DisplayViewport,
     geometry: &DisplayGeometry,
     brightness: f32,
-    rendered_rgb: &mut Vec<u8>,
+    encode_state: &mut DisplayEncodeState,
 ) -> Result<Vec<u8>> {
     render_display_view(
         source,
         viewport,
         geometry.width,
         geometry.height,
-        rendered_rgb,
+        &mut encode_state.rgb_buffer,
     );
-    apply_display_brightness(rendered_rgb, brightness);
+    apply_display_brightness(&mut encode_state.rgb_buffer, brightness);
     if geometry.circular {
-        apply_circular_mask(rendered_rgb, geometry.width, geometry.height);
-    }
-
-    let mut jpeg = Vec::new();
-    let mut encoder = JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY);
-    encoder
-        .encode(
-            rendered_rgb.as_slice(),
+        apply_circular_mask(
+            &mut encode_state.rgb_buffer,
             geometry.width,
             geometry.height,
-            ExtendedColorType::Rgb8,
-        )
-        .context("failed to JPEG-encode display frame")?;
-    Ok(jpeg)
+        );
+    }
+
+    encode_rgb_to_jpeg(geometry, encode_state)
+}
+
+fn encode_rgb_to_jpeg(
+    geometry: &DisplayGeometry,
+    encode_state: &mut DisplayEncodeState,
+) -> Result<Vec<u8>> {
+    let width = usize::try_from(geometry.width).context("display width does not fit usize")?;
+    let height = usize::try_from(geometry.height).context("display height does not fit usize")?;
+    let pitch = width
+        .checked_mul(TurboJpegPixelFormat::RGB.size())
+        .context("display row pitch overflow")?;
+    let required_len = turbojpeg_compressed_buf_len(width, height, JPEG_SUBSAMP)
+        .context("failed to size TurboJPEG display buffer")?;
+
+    let mut jpeg_buffer = std::mem::take(&mut encode_state.jpeg_buffer);
+    if jpeg_buffer.len() < required_len {
+        jpeg_buffer.resize(required_len, 0);
+    } else {
+        jpeg_buffer.truncate(required_len);
+    }
+
+    let image = TurboJpegImage {
+        pixels: encode_state.rgb_buffer.as_slice(),
+        width,
+        pitch,
+        height,
+        format: TurboJpegPixelFormat::RGB,
+    };
+    let jpeg_len = match encode_state
+        .jpeg_compressor
+        .compress_to_slice(image, jpeg_buffer.as_mut_slice())
+    {
+        Ok(len) => len,
+        Err(error) => {
+            encode_state.jpeg_buffer = jpeg_buffer;
+            return Err(error).context("failed to TurboJPEG-encode display frame");
+        }
+    };
+
+    jpeg_buffer.truncate(jpeg_len);
+    Ok(jpeg_buffer)
 }
 
 fn apply_display_brightness(image: &mut [u8], brightness: f32) {
@@ -607,6 +702,8 @@ fn render_display_view_axis_aligned(
     height: u32,
     rendered_rgb: &mut [u8],
 ) {
+    let source_width = usize::try_from(source.width).unwrap_or_default();
+    let rgba = source.rgba_bytes();
     let x_samples = precompute_axis_samples(
         width,
         viewport.position.x - (viewport.size.x * viewport.scale * 0.5),
@@ -621,17 +718,16 @@ fn render_display_view_axis_aligned(
         source.height,
         viewport.edge_behavior,
     );
+    let output_width = usize::try_from(width).unwrap_or_default();
 
     for (y_index, y_sample) in y_samples.iter().enumerate() {
-        for (x_index, x_sample) in x_samples.iter().enumerate() {
-            let pixel = bilinear_sample_rgb(source, *x_sample, *y_sample);
-            write_rgb_pixel(
-                rendered_rgb,
-                width,
-                u32::try_from(x_index).unwrap_or_default(),
-                u32::try_from(y_index).unwrap_or_default(),
-                pixel,
-            );
+        let mut output_offset = rgb_offset(output_width, 0, y_index);
+        for x_sample in &x_samples {
+            let pixel = bilinear_sample_rgba(rgba, source_width, *x_sample, *y_sample);
+            rendered_rgb[output_offset] = pixel[0];
+            rendered_rgb[output_offset + 1] = pixel[1];
+            rendered_rgb[output_offset + 2] = pixel[2];
+            output_offset += 3;
         }
     }
 }
@@ -683,9 +779,10 @@ fn bilinear_sample(source: &CanvasFrame, nx: f32, ny: f32) -> [u8; 3] {
 
 #[derive(Clone, Copy)]
 struct AxisSample {
-    left: usize,
-    right: usize,
-    amount: f32,
+    lower: usize,
+    upper: usize,
+    lower_weight: u16,
+    upper_weight: u16,
 }
 
 #[allow(
@@ -780,14 +877,18 @@ fn precompute_axis_samples(
 fn axis_sample(normalized: f32, source_len: u32) -> AxisSample {
     let max_index = source_len.saturating_sub(1);
     let coordinate = normalized * max_index as f32;
-    let left = coordinate as usize;
-    let right = left
+    let lower = coordinate as usize;
+    let upper = lower
         .saturating_add(1)
         .min(usize::try_from(max_index).unwrap_or_default());
+    let upper_weight = (((coordinate - lower as f32) * BILINEAR_WEIGHT_SCALE as f32) + 0.5)
+        .clamp(0.0, BILINEAR_WEIGHT_SCALE as f32) as u16;
+    let lower_weight = u16::try_from(BILINEAR_WEIGHT_SCALE).unwrap_or(u16::MAX) - upper_weight;
     AxisSample {
-        left,
-        right,
-        amount: coordinate - left as f32,
+        lower,
+        upper,
+        lower_weight,
+        upper_weight,
     }
 }
 
@@ -796,43 +897,72 @@ fn bilinear_sample_rgb(
     x_sample: AxisSample,
     y_sample: AxisSample,
 ) -> [u8; 3] {
-    let width = usize::try_from(source.width).unwrap_or_default();
-    let rgba = source.rgba_bytes();
-    let top_left = rgba_offset(width, x_sample.left, y_sample.left);
-    let top_right = rgba_offset(width, x_sample.right, y_sample.left);
-    let bottom_left = rgba_offset(width, x_sample.left, y_sample.right);
-    let bottom_right = rgba_offset(width, x_sample.right, y_sample.right);
+    bilinear_sample_rgba(
+        source.rgba_bytes(),
+        usize::try_from(source.width).unwrap_or_default(),
+        x_sample,
+        y_sample,
+    )
+}
 
-    let vertical_top = 1.0 - y_sample.amount;
-    let vertical_bottom = y_sample.amount;
+fn bilinear_sample_rgba(
+    rgba: &[u8],
+    source_width: usize,
+    x_sample: AxisSample,
+    y_sample: AxisSample,
+) -> [u8; 3] {
+    let top_left = rgba_offset(source_width, x_sample.lower, y_sample.lower);
+    let top_right = rgba_offset(source_width, x_sample.upper, y_sample.lower);
+    let bottom_left = rgba_offset(source_width, x_sample.lower, y_sample.upper);
+    let bottom_right = rgba_offset(source_width, x_sample.upper, y_sample.upper);
 
     [
-        round_to_u8(
-            lerp_channel(rgba[top_left], rgba[top_right], x_sample.amount) * vertical_top
-                + lerp_channel(rgba[bottom_left], rgba[bottom_right], x_sample.amount)
-                    * vertical_bottom,
+        bilinear_channel(
+            rgba[top_left],
+            rgba[top_right],
+            rgba[bottom_left],
+            rgba[bottom_right],
+            x_sample,
+            y_sample,
         ),
-        round_to_u8(
-            lerp_channel(rgba[top_left + 1], rgba[top_right + 1], x_sample.amount) * vertical_top
-                + lerp_channel(
-                    rgba[bottom_left + 1],
-                    rgba[bottom_right + 1],
-                    x_sample.amount,
-                ) * vertical_bottom,
+        bilinear_channel(
+            rgba[top_left + 1],
+            rgba[top_right + 1],
+            rgba[bottom_left + 1],
+            rgba[bottom_right + 1],
+            x_sample,
+            y_sample,
         ),
-        round_to_u8(
-            lerp_channel(rgba[top_left + 2], rgba[top_right + 2], x_sample.amount) * vertical_top
-                + lerp_channel(
-                    rgba[bottom_left + 2],
-                    rgba[bottom_right + 2],
-                    x_sample.amount,
-                ) * vertical_bottom,
+        bilinear_channel(
+            rgba[top_left + 2],
+            rgba[top_right + 2],
+            rgba[bottom_left + 2],
+            rgba[bottom_right + 2],
+            x_sample,
+            y_sample,
         ),
     ]
 }
 
-fn lerp_channel(left: u8, right: u8, amount: f32) -> f32 {
-    f32::from(left) + (f32::from(right) - f32::from(left)) * amount
+fn bilinear_channel(
+    top_left: u8,
+    top_right: u8,
+    bottom_left: u8,
+    bottom_right: u8,
+    x_sample: AxisSample,
+    y_sample: AxisSample,
+) -> u8 {
+    let top = blend_channel(top_left, top_right, x_sample);
+    let bottom = blend_channel(bottom_left, bottom_right, x_sample);
+    let blended =
+        top * u32::from(y_sample.lower_weight) + bottom * u32::from(y_sample.upper_weight);
+    let rounded = blended.saturating_add(BILINEAR_WEIGHT_ROUNDING) >> 16;
+    u8::try_from(rounded).expect("bilinear interpolation should remain within byte range")
+}
+
+fn blend_channel(lower: u8, upper: u8, sample: AxisSample) -> u32 {
+    u32::from(lower) * u32::from(sample.lower_weight)
+        + u32::from(upper) * u32::from(sample.upper_weight)
 }
 
 fn round_to_u8(value: f32) -> u8 {

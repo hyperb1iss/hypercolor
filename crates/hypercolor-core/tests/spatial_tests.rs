@@ -451,11 +451,11 @@ fn bilinear_sampling_interpolates() {
     let engine = SpatialEngine::new(layout);
     let result = engine.sample(&canvas);
 
-    // At center of 2-pixel canvas, linear-light interpolation should land near sRGB 188.
+    // At center of a 2-pixel canvas, byte-space bilinear interpolation lands near 128.
     let color = &result[0].colors[0];
     assert!(
-        (184..=191).contains(&color[0]),
-        "Bilinear center should be ~188, got {}",
+        (126..=129).contains(&color[0]),
+        "Bilinear center should be ~128, got {}",
         color[0]
     );
 }
@@ -490,15 +490,15 @@ fn area_average_samples_region() {
 
     let color = &result[0].colors[0];
     // The 5x5 kernel clamps at the edges, so this samples 60% red and 40% blue
-    // in linear light, which encodes back to roughly (203, 0, 170) in sRGB.
+    // in byte space, landing near (153, 0, 102).
     assert!(
-        (198..=208).contains(&color[0]),
-        "Area avg red should be ~203, got {}",
+        (150..=156).contains(&color[0]),
+        "Area avg red should be ~153, got {}",
         color[0]
     );
     assert!(
-        (165..=175).contains(&color[2]),
-        "Area avg blue should be ~170, got {}",
+        (100..=104).contains(&color[2]),
+        "Area avg blue should be ~102, got {}",
         color[2]
     );
 }
@@ -619,6 +619,55 @@ fn update_layout_recomputes_positions() {
         10,
         "Should reflect new LED count after update"
     );
+}
+
+#[test]
+fn update_layout_recomputes_cached_sample_positions() {
+    let black = Rgba::new(0, 0, 0, 255);
+    let white = Rgba::new(255, 255, 255, 255);
+    let canvas = horizontal_gradient(100, 1, black, white);
+
+    let left_zone = custom_zone(
+        "moving_strip",
+        LedTopology::Strip {
+            count: 3,
+            direction: StripDirection::LeftToRight,
+        },
+        NormalizedPosition::new(0.125, 0.5),
+        NormalizedPosition::new(0.25, 1.0),
+        Some(SamplingMode::Nearest),
+    );
+    let mut engine = SpatialEngine::new(test_layout(vec![left_zone], 100, 1));
+
+    let left_colors = &engine.sample(&canvas)[0].colors;
+    for color in left_colors {
+        assert!(
+            color[0] < 80,
+            "LED in left quarter should be dark before layout update, got r={}",
+            color[0]
+        );
+    }
+
+    let right_zone = custom_zone(
+        "moving_strip",
+        LedTopology::Strip {
+            count: 3,
+            direction: StripDirection::LeftToRight,
+        },
+        NormalizedPosition::new(0.875, 0.5),
+        NormalizedPosition::new(0.25, 1.0),
+        Some(SamplingMode::Nearest),
+    );
+    engine.update_layout(test_layout(vec![right_zone], 100, 1));
+
+    let right_colors = &engine.sample(&canvas)[0].colors;
+    for color in right_colors {
+        assert!(
+            color[0] > 175,
+            "LED in right quarter should be bright after layout update, got r={}",
+            color[0]
+        );
+    }
 }
 
 // ── Empty Layout ────────────────────────────────────────────────────────────

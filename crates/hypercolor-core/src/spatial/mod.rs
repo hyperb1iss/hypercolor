@@ -44,6 +44,8 @@ use hypercolor_types::spatial::SpatialLayout;
 pub struct SpatialEngine {
     /// The active spatial layout with precomputed LED positions.
     layout: SpatialLayout,
+    /// Immutable per-zone sampling plans cached from the layout.
+    prepared_zones: Vec<sampler::PreparedZone>,
 }
 
 impl SpatialEngine {
@@ -52,7 +54,10 @@ impl SpatialEngine {
     /// Generates LED positions for every zone's topology on construction.
     #[must_use]
     pub fn new(layout: SpatialLayout) -> Self {
-        let mut engine = Self { layout };
+        let mut engine = Self {
+            layout,
+            prepared_zones: Vec::new(),
+        };
         engine.rebuild_positions();
         engine
     }
@@ -64,13 +69,12 @@ impl SpatialEngine {
     /// sampling mode, and returns the results grouped by zone.
     #[must_use]
     pub fn sample(&self, canvas: &Canvas) -> Vec<ZoneColors> {
-        self.layout
-            .zones
+        self.prepared_zones
             .iter()
             .map(|zone| {
-                let colors = sampler::sample_zone(canvas, zone, &self.layout);
+                let colors = sampler::sample_prepared_zone(canvas, zone);
                 ZoneColors {
-                    zone_id: zone.id.clone(),
+                    zone_id: zone.zone_id.clone(),
                     colors,
                 }
             })
@@ -98,5 +102,11 @@ impl SpatialEngine {
         for zone in &mut self.layout.zones {
             zone.led_positions = topology::generate_positions(&zone.topology);
         }
+        self.prepared_zones = self
+            .layout
+            .zones
+            .iter()
+            .map(|zone| sampler::prepare_zone(zone, &self.layout))
+            .collect();
     }
 }

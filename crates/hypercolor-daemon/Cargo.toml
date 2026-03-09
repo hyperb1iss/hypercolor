@@ -40,6 +40,7 @@ clap = { workspace = true }
 toml = { workspace = true }
 cpal = { workspace = true }
 image = { workspace = true }
+turbojpeg = { workspace = true }
 tokio-util = { workspace = true }
 
 [dev-dependencies]

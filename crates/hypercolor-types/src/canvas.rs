@@ -589,6 +589,8 @@ impl Canvas {
         clippy::as_conversions
     )]
     pub fn sample_bilinear(&self, nx: f32, ny: f32) -> Rgba {
+        const BILINEAR_ONE: u32 = 256;
+
         let fx = nx * (self.width - 1) as f32;
         let fy = ny * (self.height - 1) as f32;
 
@@ -597,18 +599,48 @@ impl Canvas {
         let x1 = (x0 + 1).min(self.width - 1);
         let y1 = (y0 + 1).min(self.height - 1);
 
-        let frac_x = fx.fract();
-        let frac_y = fy.fract();
+        let frac_x = (fx.fract() * BILINEAR_ONE as f32).clamp(0.0, BILINEAR_ONE as f32) as u32;
+        let frac_y = (fy.fract() * BILINEAR_ONE as f32).clamp(0.0, BILINEAR_ONE as f32) as u32;
+        let inv_frac_x = BILINEAR_ONE - frac_x;
+        let inv_frac_y = BILINEAR_ONE - frac_y;
 
-        let tl = self.get_pixel(x0, y0).to_linear_f32();
-        let tr = self.get_pixel(x1, y0).to_linear_f32();
-        let bl = self.get_pixel(x0, y1).to_linear_f32();
-        let br = self.get_pixel(x1, y1).to_linear_f32();
+        let tl = self.get_pixel(x0, y0);
+        let tr = self.get_pixel(x1, y0);
+        let bl = self.get_pixel(x0, y1);
+        let br = self.get_pixel(x1, y1);
 
-        // Horizontal lerp, then vertical lerp
-        let top = RgbaF32::lerp(&tl, &tr, frac_x);
-        let bot = RgbaF32::lerp(&bl, &br, frac_x);
-        RgbaF32::lerp(&top, &bot, frac_y).to_srgba()
+        #[inline]
+        fn bilinear_channel(
+            tl: u8,
+            tr: u8,
+            bl: u8,
+            br: u8,
+            frac_x: u32,
+            inv_frac_x: u32,
+            frac_y: u32,
+            inv_frac_y: u32,
+        ) -> u8 {
+            let top = u32::from(tl) * inv_frac_x + u32::from(tr) * frac_x;
+            let bottom = u32::from(bl) * inv_frac_x + u32::from(br) * frac_x;
+            ((top * inv_frac_y + bottom * frac_y) / (BILINEAR_ONE * BILINEAR_ONE)) as u8
+        }
+
+        // LED spatial sampling is a hot loop, so keep bilinear interpolation in
+        // fixed-point byte space instead of bouncing through float colors.
+        Rgba {
+            r: bilinear_channel(
+                tl.r, tr.r, bl.r, br.r, frac_x, inv_frac_x, frac_y, inv_frac_y,
+            ),
+            g: bilinear_channel(
+                tl.g, tr.g, bl.g, br.g, frac_x, inv_frac_x, frac_y, inv_frac_y,
+            ),
+            b: bilinear_channel(
+                tl.b, tr.b, bl.b, br.b, frac_x, inv_frac_x, frac_y, inv_frac_y,
+            ),
+            a: bilinear_channel(
+                tl.a, tr.a, bl.a, br.a, frac_x, inv_frac_x, frac_y, inv_frac_y,
+            ),
+        }
     }
 
     /// Sample with area averaging.
@@ -630,27 +662,32 @@ impl Canvas {
         let cy = ny * (self.height - 1) as f32;
 
         let r = radius.ceil() as i32;
-        let mut sum_r = 0.0;
-        let mut sum_g = 0.0;
-        let mut sum_b = 0.0;
-        let mut sum_a = 0.0;
+        let mut sum_r = 0u32;
+        let mut sum_g = 0u32;
+        let mut sum_b = 0u32;
+        let mut sum_a = 0u32;
         let mut count = 0u32;
 
         for dy in -r..=r {
             for dx in -r..=r {
                 let px = (cx as i32 + dx).clamp(0, self.width as i32 - 1) as u32;
                 let py = (cy as i32 + dy).clamp(0, self.height as i32 - 1) as u32;
-                let p = self.get_pixel(px, py).to_linear_f32();
-                sum_r += p.r;
-                sum_g += p.g;
-                sum_b += p.b;
-                sum_a += p.a;
+                let p = self.get_pixel(px, py);
+                sum_r += u32::from(p.r);
+                sum_g += u32::from(p.g);
+                sum_b += u32::from(p.b);
+                sum_a += u32::from(p.a);
                 count += 1;
             }
         }
 
-        let count = count as f32;
-        RgbaF32::new(sum_r / count, sum_g / count, sum_b / count, sum_a / count).to_srgba()
+        #[allow(clippy::cast_possible_truncation)]
+        Rgba {
+            r: (sum_r / count) as u8,
+            g: (sum_g / count) as u8,
+            b: (sum_b / count) as u8,
+            a: (sum_a / count) as u8,
+        }
     }
 }
 

@@ -337,12 +337,7 @@ fn sample_bilinear_midpoint() {
     c.set_pixel(1, 0, Rgba::new(200, 200, 200, 255));
 
     let mid = c.sample_bilinear(0.5, 0.0);
-    // Linear-light interpolation with sRGB output lands near 146.
-    assert!(
-        mid.r > 140 && mid.r < 150,
-        "bilinear midpoint r = {}",
-        mid.r
-    );
+    assert_eq!(mid.r, 100, "bilinear midpoint r = {}", mid.r);
 }
 
 #[test]
