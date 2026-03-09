@@ -30,13 +30,23 @@ pub fn LayoutCanvas(
     // Drag state
     let (interaction, set_interaction) = signal(None::<InteractionState>);
 
-    // Derive just the zone IDs — only re-renders the zone list when zones are added/removed,
-    // NOT when positions change during drag.
+    // Derive zone IDs sorted by display_order — only re-renders when zones are added/removed
+    // or their stacking order changes, NOT when positions change during drag.
     let zone_ids = Memo::new(move |_| {
         layout.with(|current| {
             current
                 .as_ref()
-                .map(|l| l.zones.iter().map(|z| z.id.clone()).collect::<Vec<_>>())
+                .map(|l| {
+                    let mut sorted: Vec<_> = l
+                        .zones
+                        .iter()
+                        .enumerate()
+                        .map(|(i, z)| (z.id.clone(), z.display_order, i))
+                        .collect();
+                    // Stable sort: by display_order, then by original vector position
+                    sorted.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)));
+                    sorted.into_iter().map(|(id, _, _)| id).collect::<Vec<_>>()
+                })
                 .unwrap_or_default()
         })
     });
@@ -278,9 +288,14 @@ pub fn LayoutCanvas(
                         }).collect::<Vec<_>>()
                     }}
 
-                    // Zone overlays — keyed on zone IDs, only re-renders when zones are added/removed
+                    // Zone overlays — keyed on zone IDs sorted by display_order
                     {move || {
-                        zone_ids.get().into_iter().map(|zone_id| {
+                        let ids = zone_ids.get();
+                        let zone_count = ids.len();
+                        ids.into_iter().enumerate().map(|(render_index, zone_id)| {
+                        let base_z_index = render_index + 10; // 10+ to stay above groups
+                        let elevated_z_index = zone_count + 100; // selected zone always on top
+                        let _ = base_z_index; // used below in style closure
                             let zid = zone_id.clone();
                             let zid_select = zone_id.clone();
                             let zid_drag = zone_id.clone();
@@ -371,8 +386,9 @@ pub fn LayoutCanvas(
                                             "box-shadow: 0 2px 8px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.03)"
                                                 .to_string()
                                         };
+                                        let z = if selected { elevated_z_index } else { base_z_index };
                                         format!(
-                                            "{}; {}; {}; {}; backdrop-filter: blur(4px) saturate(120%)",
+                                            "{}; {}; {}; {}; z-index: {z}; backdrop-filter: blur(4px) saturate(120%)",
                                             zd.position_style, border, bg, shadow
                                         )
                                     }

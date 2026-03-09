@@ -385,8 +385,11 @@ pub fn SettingsPage() -> impl IntoView {
                 // without causing DOM rebuild (no flicker on control changes).
                 {move || {
                     config_loaded.get().then(|| view! {
-                        <div class="px-6 pb-6 max-w-3xl mx-auto divide-y divide-edge-subtle/20">
-                            <div style="animation: fade-in 0.4s ease-out 0.05s both">
+                        <div class="px-6 pb-6 pt-4 max-w-4xl mx-auto space-y-3">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.05s both"
+                            >
                                 <AudioSection
                                     config=config
                                     on_change=on_change
@@ -394,28 +397,52 @@ pub fn SettingsPage() -> impl IntoView {
                                     audio_devices=Signal::derive(move || audio_devices.get())
                                 />
                             </div>
-                            <div style="animation: fade-in 0.4s ease-out 0.1s both">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.1s both"
+                            >
                                 <CaptureSection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div style="animation: fade-in 0.4s ease-out 0.15s both">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.15s both"
+                            >
                                 <EngineSection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div style="animation: fade-in 0.4s ease-out 0.2s both">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.2s both"
+                            >
                                 <NetworkSection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div style="animation: fade-in 0.4s ease-out 0.25s both">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.25s both"
+                            >
                                 <McpSection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div style="animation: fade-in 0.4s ease-out 0.3s both">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.3s both"
+                            >
                                 <SessionSection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div style="animation: fade-in 0.4s ease-out 0.35s both">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.35s both"
+                            >
                                 <DiscoverySection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div style="animation: fade-in 0.4s ease-out 0.4s both">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.4s both"
+                            >
                                 <DeveloperSection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div style="animation: fade-in 0.4s ease-out 0.45s both">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.45s both"
+                            >
                                 <AboutSection config_path=Signal::derive(move || config_path.get()) />
                             </div>
                         </div>

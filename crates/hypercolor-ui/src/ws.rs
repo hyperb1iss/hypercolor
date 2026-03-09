@@ -536,6 +536,7 @@ fn decode_canvas_frame(buffer: js_sys::ArrayBuffer) -> Option<CanvasFrame> {
 }
 
 /// Handle incoming JSON events from the daemon.
+#[allow(clippy::too_many_arguments)]
 fn handle_json_message(
     msg: &serde_json::Value,
     set_active: &WriteSignal<Option<String>>,

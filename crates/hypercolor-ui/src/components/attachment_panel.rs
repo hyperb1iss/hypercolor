@@ -648,6 +648,7 @@ pub fn build_attachment_layout_zones(
                 edge_behavior: None,
                 shape: shape_for_category(&suggested.category),
                 shape_preset: None,
+                display_order: 0,
                 attachment: Some(ZoneAttachment {
                     template_id: suggested.template_id.clone(),
                     slot_id: suggested.slot_id.clone(),

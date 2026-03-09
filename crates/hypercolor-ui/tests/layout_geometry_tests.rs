@@ -112,6 +112,7 @@ fn repair_legacy_lcd_defaults_updates_untouched_square_display_zone() {
             edge_behavior: Some(EdgeBehavior::Clamp),
             shape: Some(ZoneShape::Rectangle),
             shape_preset: Some("lcd-display".to_owned()),
+            display_order: 0,
             attachment: None,
         }],
         groups: Vec::new(),

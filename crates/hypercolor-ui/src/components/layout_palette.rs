@@ -581,6 +581,7 @@ pub fn LayoutPalette(
                                                                                     ev.stop_propagation();
                                                                                     let (canvas_width, canvas_height) =
                                                                                         current_canvas_dimensions(&layout);
+                                                                                    let order = next_display_order(&layout);
                                                                                     let new_zone = create_default_zone(
                                                                                         &did,
                                                                                         &dname,
@@ -588,6 +589,7 @@ pub fn LayoutPalette(
                                                                                         fallback_leds,
                                                                                         canvas_width,
                                                                                         canvas_height,
+                                                                                        order,
                                                                                     );
                                                                                     let zone_id = new_zone.id.clone();
                                                                                     set_layout.update(|l| {
@@ -822,6 +824,7 @@ pub fn LayoutPalette(
                                                                                                     ev.stop_propagation();
                                                                                                     let (canvas_width, canvas_height) =
                                                                                                         current_canvas_dimensions(&layout);
+                                                                                                    let order = next_display_order(&layout);
                                                                                                     let new_zone = create_default_zone(
                                                                                                         &did,
                                                                                                         &dname,
@@ -829,6 +832,7 @@ pub fn LayoutPalette(
                                                                                                         fallback_leds,
                                                                                                         canvas_width,
                                                                                                         canvas_height,
+                                                                                                        order,
                                                                                                     );
                                                                                                     let zone_id = new_zone.id.clone();
                                                                                                     set_layout.update(|l| {
@@ -916,7 +920,19 @@ fn topology_icon(zone: Option<&api::ZoneSummary>) -> leptos::prelude::AnyView {
     }
 }
 
+/// Compute the next `display_order` value for a new zone added to the layout.
+fn next_display_order(layout: &Signal<Option<SpatialLayout>>) -> i32 {
+    layout.with_untracked(|current| {
+        current
+            .as_ref()
+            .and_then(|l| l.zones.iter().map(|z| z.display_order).max())
+            .unwrap_or(-1)
+            + 1
+    })
+}
+
 /// Create a default `DeviceZone` placed at canvas center.
+#[allow(clippy::too_many_arguments)]
 fn create_default_zone(
     device_id: &str,
     device_name: &str,
@@ -924,6 +940,7 @@ fn create_default_zone(
     total_leds: usize,
     canvas_width: u32,
     canvas_height: u32,
+    display_order: i32,
 ) -> DeviceZone {
     let defaults = layout_geometry::default_zone_visuals(
         device_name,
@@ -967,6 +984,7 @@ fn create_default_zone(
         shape_preset: defaults.shape_preset,
         group_id: None,
         attachment: None,
+        display_order,
     }
 }
 
@@ -1044,6 +1062,13 @@ fn add_all_device_zones(
     let mut first_new_id = None;
     set_layout.update(|l| {
         if let Some(current_layout) = l {
+            let mut order = current_layout
+                .zones
+                .iter()
+                .map(|z| z.display_order)
+                .max()
+                .unwrap_or(-1)
+                + 1;
             for zone in zones {
                 let zn = Some(zone.name.clone());
                 if existing_zone_names.contains(&zn) {
@@ -1056,7 +1081,9 @@ fn add_all_device_zones(
                     total_leds,
                     canvas_width,
                     canvas_height,
+                    order,
                 );
+                order += 1;
                 if first_new_id.is_none() {
                     first_new_id = Some(new_zone.id.clone());
                 }

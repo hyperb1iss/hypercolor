@@ -452,7 +452,18 @@ input[type="color"]::-webkit-color-swatch {
     animation: glowRingIn 0.4s var(--ease-silk) forwards;
 }
 
-/* ── Settings Rows ─────────────────────────────────────────────────────── */
+/* ── Settings ──────────────────────────────────────────────────────────── */
+
+.settings-card {
+    border-radius: 0.75rem;
+    padding-inline: 1.25rem;
+    background: oklch(0.20 0.015 280 / 0.5);
+    border: 1px solid oklch(0.40 0.02 280 / 0.12);
+    transition: border-color 0.2s ease;
+}
+.settings-card:hover {
+    border-color: oklch(0.50 0.03 280 / 0.15);
+}
 
 .setting-row + .setting-row {
     border-top: 1px solid oklch(1 0 0 / 0.04);

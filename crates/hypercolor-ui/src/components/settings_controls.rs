@@ -55,7 +55,7 @@ pub fn SettingToggle(
             <button
                 role="switch"
                 aria-checked=move || value.get().to_string()
-                class="relative w-9 h-5 rounded-full transition-all duration-200 shrink-0 mt-0.5 cursor-pointer"
+                class="relative w-11 h-6 rounded-full transition-all duration-200 shrink-0 mt-0.5 cursor-pointer"
                 style=move || if value.get() {
                     "background: rgba(225, 53, 255, 0.5); box-shadow: 0 0 10px rgba(225, 53, 255, 0.25)"
                 } else {
@@ -66,9 +66,9 @@ pub fn SettingToggle(
                 }
             >
                 <span
-                    class="absolute top-0.5 w-4 h-4 rounded-full shadow-sm transition-transform duration-200"
+                    class="absolute top-0.5 w-5 h-5 rounded-full shadow-sm transition-transform duration-200"
                     style=move || if value.get() {
-                        "transform: translateX(18px); background: rgb(225, 53, 255)"
+                        "transform: translateX(22px); background: rgb(225, 53, 255)"
                     } else {
                         "transform: translateX(2px); background: rgba(200, 200, 210, 0.6)"
                     }

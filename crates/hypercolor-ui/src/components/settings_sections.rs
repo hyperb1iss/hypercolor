@@ -53,20 +53,20 @@ fn AudioVuMeter(#[prop(into)] enabled: Signal<bool>) -> impl IntoView {
 
     view! {
         <Show when=move || enabled.get()>
-            <div class="mb-4 px-1 py-3 rounded-lg animate-fade-in" style="background: rgba(139, 133, 160, 0.04)">
+            <div class="mb-4 px-3 py-3 rounded-lg animate-fade-in" style="background: rgba(139, 133, 160, 0.04); border: 1px solid rgba(139, 133, 160, 0.06)">
                 <div class="flex items-center gap-4">
-                    // Beat indicator
+                    // Beat indicator + status
                     <div class="shrink-0 flex items-center gap-2 pl-1">
                         <div
-                            class="w-2 h-2 rounded-full transition-all"
+                            class="w-2.5 h-2.5 rounded-full transition-all"
                             style=move || {
                                 let al = ws.audio_level.get();
                                 if al.beat {
                                     "background: rgb(225, 53, 255); box-shadow: 0 0 8px rgba(225, 53, 255, 0.6); transform: scale(1.3)"
                                 } else if al.level > 0.01 {
-                                    "background: rgba(128, 255, 234, 0.5); box-shadow: none; transform: scale(1)"
+                                    "background: rgba(128, 255, 234, 0.5); box-shadow: 0 0 4px rgba(128, 255, 234, 0.3); transform: scale(1)"
                                 } else {
-                                    "background: rgba(139, 133, 160, 0.2); box-shadow: none; transform: scale(1)"
+                                    "background: rgba(139, 133, 160, 0.25); box-shadow: none; transform: scale(1)"
                                 }
                             }
                         />
@@ -105,7 +105,7 @@ fn AudioVuMeter(#[prop(into)] enabled: Signal<bool>) -> impl IntoView {
                     </div>
 
                     // Numeric readout
-                    <div class="shrink-0 pr-1">
+                    <div class="shrink-0 pr-1 text-right">
                         <span
                             class="text-xs font-mono tabular-nums"
                             style=move || {
@@ -130,6 +130,32 @@ fn AudioVuMeter(#[prop(into)] enabled: Signal<bool>) -> impl IntoView {
                             }}
                         </span>
                     </div>
+                </div>
+                // Live status hint
+                <div class="flex items-center justify-between mt-2 px-1">
+                    <span
+                        class="text-[10px] font-mono uppercase tracking-wider"
+                        style=move || {
+                            let level = ws.audio_level.get().level;
+                            if level > 0.01 {
+                                "color: rgba(128, 255, 234, 0.5)"
+                            } else {
+                                "color: rgba(139, 133, 160, 0.3)"
+                            }
+                        }
+                    >
+                        {move || {
+                            let al = ws.audio_level.get();
+                            if al.beat {
+                                "Beat detected"
+                            } else if al.level > 0.01 {
+                                "Listening..."
+                            } else {
+                                "Waiting for signal"
+                            }
+                        }}
+                    </span>
+                    <span class="text-[10px] text-fg-tertiary/30 font-mono">"Play audio to test"</span>
                 </div>
             </div>
         </Show>
@@ -165,7 +191,7 @@ pub fn AudioSection(
     ];
 
     view! {
-        <section id="section-audio" class="pt-6 pb-2 space-y-0">
+        <section id="section-audio" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Audio" icon=LuAudioLines />
             <AudioVuMeter enabled=enabled />
             <SettingToggle
@@ -242,7 +268,7 @@ pub fn CaptureSection(
     ];
 
     view! {
-        <section id="section-capture" class="pt-6 pb-2 space-y-0">
+        <section id="section-capture" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Screen Capture" icon=LuMonitor />
             <SettingToggle
                 label="Enabled"
@@ -324,7 +350,7 @@ pub fn EngineSection(
     ];
 
     view! {
-        <section id="section-engine" class="pt-6 pb-2 space-y-0">
+        <section id="section-engine" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Effect Engine" icon=LuZap />
             <SettingDropdown
                 label="Preferred Renderer"
@@ -398,7 +424,7 @@ pub fn NetworkSection(
     let open_browser = Signal::derive(move || read_config(config, |cfg| cfg.web.open_browser));
 
     view! {
-        <section id="section-network" class="pt-6 pb-2 space-y-0">
+        <section id="section-network" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Network" icon=LuGlobe />
             <SettingTextInput
                 label="Listen Address"
@@ -478,7 +504,7 @@ pub fn McpSection(
     });
 
     view! {
-        <section id="section-mcp" class="pt-6 pb-2 space-y-0">
+        <section id="section-mcp" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="MCP" icon=LuCable />
             <SettingToggle
                 label="Enabled"
@@ -543,7 +569,7 @@ pub fn SessionSection(
         Signal::derive(move || read_config(config, |cfg| cfg.session.idle_off_timeout_secs as f64));
 
     view! {
-        <section id="section-session" class="pt-6 pb-2 space-y-0">
+        <section id="section-session" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Session & Power" icon=LuPower />
             <SettingToggle
                 label="Session Awareness"
@@ -594,7 +620,7 @@ pub fn DiscoverySection(
     let wled = Signal::derive(move || read_config(config, |cfg| cfg.discovery.wled_scan));
     let hue = Signal::derive(move || read_config(config, |cfg| cfg.discovery.hue_scan));
     view! {
-        <section id="section-discovery" class="pt-6 pb-2 space-y-0">
+        <section id="section-discovery" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Device Discovery" icon=LuRadar />
             <SettingToggle
                 label="mDNS Discovery"
@@ -664,7 +690,7 @@ pub fn DeveloperSection(
     ];
 
     view! {
-        <section id="section-developer" class="pt-6 pb-2 space-y-0">
+        <section id="section-developer" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="Developer" icon=LuCode />
             <div class="text-xs text-fg-tertiary/50 -mt-2 mb-4">"Advanced options for development and debugging"</div>
             <SettingDropdown
@@ -753,7 +779,7 @@ pub fn AboutSection(#[prop(into)] config_path: Signal<String>) -> impl IntoView 
     let status = LocalResource::new(api::fetch_status);
 
     view! {
-        <section id="section-about" class="pt-6 pb-2 space-y-0">
+        <section id="section-about" class="pt-5 pb-3 space-y-0">
             <SectionHeader title="About" icon=LuInfo />
 
             {move || {

@@ -109,6 +109,8 @@ pub fn LayoutZoneProperties(
                 };
                 let name_is_default = zone_name == default_name;
 
+                let display_order = zone.display_order;
+
                 let zid_name = zone_id.clone();
                 let zid_name_reset = zone_id.clone();
                 let zid_channel = zone_id.clone();
@@ -119,6 +121,10 @@ pub fn LayoutZoneProperties(
                 let zid_rotation = zone_id.clone();
                 let zid_scale = zone_id.clone();
                 let zid_group = zone_id.clone();
+                let zid_front = zone_id.clone();
+                let zid_up = zone_id.clone();
+                let zid_down = zone_id.clone();
+                let zid_back = zone_id.clone();
                 let zid_remove = zone_id;
 
                 view! {
@@ -263,6 +269,113 @@ pub fn LayoutZoneProperties(
                             </div>
                         </div>
 
+                        // Layer order controls
+                        <div class="flex items-center gap-3">
+                            <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider shrink-0">"Layer"</label>
+                            <div class="flex items-center gap-1">
+                                {layer_button("Front", LuSkipForward, "Bring to front", {
+                                    let zid = zid_front;
+                                    move |_| {
+                                        let zid = zid.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                let max = layout.zones.iter().map(|z| z.display_order).max().unwrap_or(0);
+                                                if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
+                                                    zone.display_order = max + 1;
+                                                }
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    }
+                                })}
+                                {layer_button("Up", LuChevronUp, "Move up one layer", {
+                                    let zid = zid_up;
+                                    move |_| {
+                                        let zid = zid.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                let current_order = layout.zones.iter()
+                                                    .find(|z| z.id == zid)
+                                                    .map(|z| z.display_order);
+                                                if let Some(order) = current_order {
+                                                    // Find next higher order value
+                                                    let next_up = layout.zones.iter()
+                                                        .filter(|z| z.display_order > order)
+                                                        .map(|z| z.display_order)
+                                                        .min();
+                                                    if let Some(swap_order) = next_up {
+                                                        // Swap: push the other zone down, this one up
+                                                        for z in &mut layout.zones {
+                                                            if z.id == zid {
+                                                                z.display_order = swap_order;
+                                                            } else if z.display_order == swap_order {
+                                                                z.display_order = order;
+                                                            }
+                                                        }
+                                                    } else {
+                                                        // Already at top — bump by 1 anyway
+                                                        if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
+                                                            zone.display_order += 1;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    }
+                                })}
+                                {layer_button("Down", LuChevronDown, "Move down one layer", {
+                                    let zid = zid_down;
+                                    move |_| {
+                                        let zid = zid.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                let current_order = layout.zones.iter()
+                                                    .find(|z| z.id == zid)
+                                                    .map(|z| z.display_order);
+                                                if let Some(order) = current_order {
+                                                    let next_down = layout.zones.iter()
+                                                        .filter(|z| z.display_order < order)
+                                                        .map(|z| z.display_order)
+                                                        .max();
+                                                    if let Some(swap_order) = next_down {
+                                                        for z in &mut layout.zones {
+                                                            if z.id == zid {
+                                                                z.display_order = swap_order;
+                                                            } else if z.display_order == swap_order {
+                                                                z.display_order = order;
+                                                            }
+                                                        }
+                                                    } else if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
+                                                        zone.display_order -= 1;
+                                                    }
+                                                }
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    }
+                                })}
+                                {layer_button("Back", LuSkipBack, "Send to back", {
+                                    let zid = zid_back;
+                                    move |_| {
+                                        let zid = zid.clone();
+                                        set_layout.update(|l| {
+                                            if let Some(layout) = l {
+                                                let min = layout.zones.iter().map(|z| z.display_order).min().unwrap_or(0);
+                                                if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
+                                                    zone.display_order = min - 1;
+                                                }
+                                            }
+                                        });
+                                        set_is_dirty.set(true);
+                                    }
+                                })}
+                            </div>
+                            <span class="text-[9px] font-mono text-fg-tertiary/50 tabular-nums">
+                                {display_order}
+                            </span>
+                        </div>
+
                         // Row 2: Transform — position, size, rotation, scale
                         <div class="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-[auto_auto_minmax(0,1fr)_minmax(0,1fr)] items-end">
                             // Position
@@ -396,6 +509,27 @@ pub fn LayoutZoneProperties(
                 }.into_any()
             }}
         </div>
+    }
+}
+
+/// Compact button for layer ordering controls.
+fn layer_button(
+    label: &'static str,
+    icon: icondata_core::Icon,
+    title: &'static str,
+    on_click: impl Fn(web_sys::MouseEvent) + 'static,
+) -> impl IntoView {
+    view! {
+        <button
+            class="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[8px] font-mono uppercase tracking-[0.06em]
+                   border transition-all btn-press text-fg-tertiary/70 hover:text-accent"
+            style="background: rgba(139, 133, 160, 0.04); border-color: rgba(139, 133, 160, 0.12)"
+            title=title
+            on:click=on_click
+        >
+            <Icon icon=icon width="10px" height="10px" />
+            {label}
+        </button>
     }
 }
 
