@@ -225,6 +225,7 @@ async fn run_pipeline(state: RenderThreadState) {
 
     let mut cached_inputs = FrameInputs::silence();
     let mut cached_canvas: Option<Canvas> = None;
+    let mut recycled_frame = FrameData::empty();
     let mut skip_decision = SkipDecision::None;
     let mut last_tick = Instant::now();
     let mut idle_black_pushed = false;
@@ -259,6 +260,7 @@ async fn run_pipeline(state: RenderThreadState) {
             skip_decision,
             &mut cached_inputs,
             &mut cached_canvas,
+            &mut recycled_frame,
             &mut last_tick,
             &mut idle_black_pushed,
             &mut sleep_black_pushed,
@@ -283,6 +285,7 @@ async fn execute_frame(
     skip_decision: SkipDecision,
     cached_inputs: &mut FrameInputs,
     cached_canvas: &mut Option<Canvas>,
+    recycled_frame: &mut FrameData,
     last_tick: &mut Instant,
     idle_black_pushed: &mut bool,
     sleep_black_pushed: &mut bool,
@@ -292,7 +295,9 @@ async fn execute_frame(
     *last_tick = frame_start;
 
     let output_power = *state.power_state.borrow();
-    if let Some(frame) = maybe_sleep_throttle(state, output_power, sleep_black_pushed).await {
+    if let Some(frame) =
+        maybe_sleep_throttle(state, output_power, recycled_frame, sleep_black_pushed).await
+    {
         return frame;
     }
 
@@ -327,9 +332,9 @@ async fn execute_frame(
     let sample_start = Instant::now();
     let (zone_colors, layout) = {
         let spatial = state.spatial_engine.read().await;
-        let colors = spatial.sample(&canvas);
+        spatial.sample_into(&canvas, &mut recycled_frame.zones);
         let layout = spatial.layout().clone();
-        (colors, layout)
+        (&recycled_frame.zones, layout)
     };
     let sample_us = micros_u32(sample_start.elapsed());
 
@@ -353,7 +358,7 @@ async fn execute_frame(
     let total_us = micros_u32(frame_start.elapsed());
     let publish_us = publish_frame_updates(
         state,
-        zone_colors,
+        recycled_frame,
         &inputs.audio,
         canvas,
         frame_num_u32,
@@ -486,6 +491,7 @@ async fn maybe_idle_throttle(
 async fn maybe_sleep_throttle(
     state: &RenderThreadState,
     power_state: OutputPowerState,
+    recycled_frame: &mut FrameData,
     sleep_black_pushed: &mut bool,
 ) -> Option<FrameExecution> {
     if !power_state.sleeping {
@@ -509,9 +515,9 @@ async fn maybe_sleep_throttle(
     let sample_start = Instant::now();
     let (zone_colors, layout) = {
         let spatial = state.spatial_engine.read().await;
-        let colors = spatial.sample(&canvas);
+        spatial.sample_into(&canvas, &mut recycled_frame.zones);
         let layout = spatial.layout().clone();
-        (colors, layout)
+        (&recycled_frame.zones, layout)
     };
     let sample_us = micros_u32(sample_start.elapsed());
 
@@ -533,7 +539,7 @@ async fn maybe_sleep_throttle(
     let total_us = sample_us.saturating_add(push_us);
     let publish_us = publish_frame_updates(
         state,
-        zone_colors,
+        recycled_frame,
         &AudioData::silence(),
         canvas,
         frame_num_u32,
@@ -670,7 +676,7 @@ async fn frame_snapshot(state: &RenderThreadState) -> (u64, u32, u32) {
 
 fn publish_frame_updates(
     state: &RenderThreadState,
-    zone_colors: Vec<hypercolor_core::types::event::ZoneColors>,
+    recycled_frame: &mut FrameData,
     audio: &AudioData,
     canvas: Canvas,
     frame_number: u32,
@@ -678,8 +684,14 @@ fn publish_frame_updates(
     timing: FrameTiming,
 ) -> u32 {
     let publish_start = Instant::now();
-    let frame_data = FrameData::new(zone_colors, frame_number, elapsed_ms);
-    let _ = state.event_bus.frame_sender().send(frame_data);
+    recycled_frame.frame_number = frame_number;
+    recycled_frame.timestamp_ms = elapsed_ms;
+    let published_frame = FrameData::new(
+        std::mem::take(&mut recycled_frame.zones),
+        frame_number,
+        elapsed_ms,
+    );
+    *recycled_frame = state.event_bus.frame_sender().send_replace(published_frame);
     let _ = state
         .event_bus
         .spectrum_sender()

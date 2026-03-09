@@ -6,6 +6,7 @@
 
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
 use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     Corner, DeviceZone, LedTopology, NormalizedPosition, SamplingMode, StripDirection, Winding,
 };
@@ -667,6 +668,53 @@ fn update_layout_recomputes_cached_sample_positions() {
             "LED in right quarter should be bright after layout update, got r={}",
             color[0]
         );
+    }
+}
+
+#[test]
+fn sample_into_reuses_zone_and_color_buffers() {
+    let canvas_a = solid_canvas(32, 20, Rgba::new(10, 20, 30, 255));
+    let canvas_b = solid_canvas(32, 20, Rgba::new(40, 50, 60, 255));
+    let layout = test_layout(
+        vec![
+            full_canvas_zone(
+                "strip1",
+                LedTopology::Strip {
+                    count: 5,
+                    direction: StripDirection::LeftToRight,
+                },
+            ),
+            full_canvas_zone(
+                "strip2",
+                LedTopology::Strip {
+                    count: 8,
+                    direction: StripDirection::LeftToRight,
+                },
+            ),
+        ],
+        32,
+        20,
+    );
+    let engine = SpatialEngine::new(layout);
+    let mut zones = Vec::<ZoneColors>::new();
+
+    engine.sample_into(&canvas_a, &mut zones);
+
+    let zones_ptr = zones.as_ptr();
+    let color_ptrs = zones
+        .iter()
+        .map(|zone| zone.colors.as_ptr())
+        .collect::<Vec<_>>();
+
+    engine.sample_into(&canvas_b, &mut zones);
+
+    assert_eq!(zones.as_ptr(), zones_ptr);
+    assert_eq!(zones.len(), 2);
+    assert_eq!(zones[0].colors, vec![[40, 50, 60]; 5]);
+    assert_eq!(zones[1].colors, vec![[40, 50, 60]; 8]);
+
+    for (zone, color_ptr) in zones.iter().zip(color_ptrs) {
+        assert_eq!(zone.colors.as_ptr(), color_ptr);
     }
 }
 

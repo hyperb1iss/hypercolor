@@ -69,16 +69,33 @@ impl SpatialEngine {
     /// sampling mode, and returns the results grouped by zone.
     #[must_use]
     pub fn sample(&self, canvas: &Canvas) -> Vec<ZoneColors> {
-        self.prepared_zones
-            .iter()
-            .map(|zone| {
-                let colors = sampler::sample_prepared_zone(canvas, zone);
-                ZoneColors {
-                    zone_id: zone.zone_id.clone(),
+        let mut zones = Vec::new();
+        self.sample_into(canvas, &mut zones);
+        zones
+    }
+
+    /// Sample the canvas into an existing output buffer, reusing allocations.
+    pub fn sample_into(&self, canvas: &Canvas, zones: &mut Vec<ZoneColors>) {
+        zones.truncate(self.prepared_zones.len());
+        zones.reserve(self.prepared_zones.len().saturating_sub(zones.len()));
+
+        for (index, prepared_zone) in self.prepared_zones.iter().enumerate() {
+            if index == zones.len() {
+                let mut colors = Vec::new();
+                sampler::sample_prepared_zone_into(canvas, prepared_zone, &mut colors);
+                zones.push(ZoneColors {
+                    zone_id: prepared_zone.zone_id.clone(),
                     colors,
-                }
-            })
-            .collect()
+                });
+                continue;
+            }
+
+            let zone = &mut zones[index];
+            if zone.zone_id != prepared_zone.zone_id {
+                zone.zone_id.clone_from(&prepared_zone.zone_id);
+            }
+            sampler::sample_prepared_zone_into(canvas, prepared_zone, &mut zone.colors);
+        }
     }
 
     /// Replace the active layout and recompute all LED positions.

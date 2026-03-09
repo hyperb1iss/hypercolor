@@ -360,13 +360,32 @@ fn sample_positions(
     sampling_method: SamplingMethod,
     edge_behavior: EdgeBehavior,
 ) -> Vec<[u8; 3]> {
-    let mut colors = Vec::with_capacity(positions.len());
+    let mut colors = Vec::new();
+    sample_positions_into_buffer(
+        canvas,
+        positions,
+        sampling_method,
+        edge_behavior,
+        &mut colors,
+    );
+    colors
+}
+
+fn sample_positions_into_buffer(
+    canvas: &Canvas,
+    positions: &[NormalizedPosition],
+    sampling_method: SamplingMethod,
+    edge_behavior: EdgeBehavior,
+    colors: &mut Vec<[u8; 3]>,
+) {
+    colors.clear();
+    colors.reserve(positions.len());
+
     for &pos in positions {
         let color = canvas.sample(pos.x, pos.y, sampling_method);
         let color = apply_fade_to_black(color, pos, edge_behavior);
         colors.push([color.r, color.g, color.b]);
     }
-    colors
 }
 
 /// Sample a prepared zone without redoing zone transform math.
@@ -386,6 +405,27 @@ pub(crate) fn sample_prepared_zone(canvas: &Canvas, zone: &PreparedZone) -> Vec<
     )
 }
 
+pub(crate) fn sample_prepared_zone_into(
+    canvas: &Canvas,
+    zone: &PreparedZone,
+    colors: &mut Vec<[u8; 3]>,
+) {
+    if canvas.width() == zone.prepared_canvas_width
+        && canvas.height() == zone.prepared_canvas_height
+    {
+        sample_prepared_canvas_pixels_into(canvas, &zone.prepared_samples, colors);
+        return;
+    }
+
+    sample_positions_into_buffer(
+        canvas,
+        &zone.sample_positions,
+        zone.sampling_method,
+        zone.edge_behavior,
+        colors,
+    )
+}
+
 #[must_use]
 fn sample_prepared_canvas_pixels(canvas: &Canvas, samples: &PreparedZoneSamples) -> Vec<[u8; 3]> {
     let bytes = canvas.as_rgba_bytes();
@@ -399,16 +439,46 @@ fn sample_prepared_canvas_pixels(canvas: &Canvas, samples: &PreparedZoneSamples)
     }
 }
 
+fn sample_prepared_canvas_pixels_into(
+    canvas: &Canvas,
+    samples: &PreparedZoneSamples,
+    colors: &mut Vec<[u8; 3]>,
+) {
+    let bytes = canvas.as_rgba_bytes();
+    let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
+    match samples {
+        PreparedZoneSamples::Nearest(samples) => {
+            sample_prepared_nearest_pixels_into(bytes, samples, colors);
+        }
+        PreparedZoneSamples::Bilinear(samples) => {
+            sample_prepared_bilinear_pixels_into(bytes, samples, colors);
+        }
+        PreparedZoneSamples::Area(samples) => {
+            sample_prepared_area_pixels_into(bytes, row_stride, samples, colors);
+        }
+    }
+}
+
 #[must_use]
 fn sample_prepared_nearest_pixels(bytes: &[u8], samples: &[PreparedNearestSample]) -> Vec<[u8; 3]> {
-    let mut colors = Vec::with_capacity(samples.len());
+    let mut colors = Vec::new();
+    sample_prepared_nearest_pixels_into(bytes, samples, &mut colors);
+    colors
+}
+
+fn sample_prepared_nearest_pixels_into(
+    bytes: &[u8],
+    samples: &[PreparedNearestSample],
+    colors: &mut Vec<[u8; 3]>,
+) {
+    colors.clear();
+    colors.reserve(samples.len());
     for sample in samples {
         colors.push(attenuate_rgb(
             read_rgb_at(bytes, sample.offset),
             sample.attenuation,
         ));
     }
-    colors
 }
 
 #[must_use]
@@ -416,14 +486,24 @@ fn sample_prepared_bilinear_pixels(
     bytes: &[u8],
     samples: &[PreparedBilinearSample],
 ) -> Vec<[u8; 3]> {
-    let mut colors = Vec::with_capacity(samples.len());
+    let mut colors = Vec::new();
+    sample_prepared_bilinear_pixels_into(bytes, samples, &mut colors);
+    colors
+}
+
+fn sample_prepared_bilinear_pixels_into(
+    bytes: &[u8],
+    samples: &[PreparedBilinearSample],
+    colors: &mut Vec<[u8; 3]>,
+) {
+    colors.clear();
+    colors.reserve(samples.len());
     for sample in samples {
         colors.push(attenuate_rgb(
             sample_bilinear_rgb(bytes, sample),
             sample.attenuation,
         ));
     }
-    colors
 }
 
 #[must_use]
@@ -432,14 +512,25 @@ fn sample_prepared_area_pixels(
     row_stride: usize,
     samples: &[PreparedAreaSample],
 ) -> Vec<[u8; 3]> {
-    let mut colors = Vec::with_capacity(samples.len());
+    let mut colors = Vec::new();
+    sample_prepared_area_pixels_into(bytes, row_stride, samples, &mut colors);
+    colors
+}
+
+fn sample_prepared_area_pixels_into(
+    bytes: &[u8],
+    row_stride: usize,
+    samples: &[PreparedAreaSample],
+    colors: &mut Vec<[u8; 3]>,
+) {
+    colors.clear();
+    colors.reserve(samples.len());
     for sample in samples {
         colors.push(attenuate_rgb(
             sample_area_rgb(bytes, row_stride, sample),
             sample.attenuation,
         ));
     }
-    colors
 }
 
 #[must_use]
