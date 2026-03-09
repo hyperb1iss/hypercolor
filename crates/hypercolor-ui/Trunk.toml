@@ -9,7 +9,7 @@ watch = ["src", "input.css", "tokens", "index.html"]
 
 [serve]
 addresses = ["127.0.0.1"]
-port = 3000
+port = 9430
 open = false
 
 # Compile Tailwind CSS before each build

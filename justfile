@@ -113,7 +113,7 @@ run-servo-release-bin *args='':
 
 # ─── UI ──────────────────────────────────────────────────
 
-# Start the UI dev server (Trunk + hot reload)
+# Start the UI dev server (Trunk + hot reload on :9430)
 ui-dev:
     cd crates/hypercolor-ui && trunk serve --dist .dist-dev
 

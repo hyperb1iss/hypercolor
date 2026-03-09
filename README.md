@@ -224,7 +224,7 @@ service, installs the launcher desktop entry, reloads udev rules, and persists
 just build           # Debug build
 just daemon          # Run daemon with preview profile
 just verify          # fmt + lint + test
-just ui-dev          # Leptos UI dev server with hot reload
+just ui-dev          # Leptos UI dev server with hot reload on :9430
 just sdk-dev         # SDK dev server with HMR
 ```
 

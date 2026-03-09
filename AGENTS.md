@@ -56,7 +56,7 @@ the Cargo workspace** — `cargo check --workspace` does NOT cover it.
 
 ```bash
 # Build/check UI separately
-just ui-dev              # Dev server on :3000, proxies API to :9420
+just ui-dev              # Dev server on :9430, proxies API to :9420
 cd crates/hypercolor-ui && trunk build   # One-shot build
 
 # UI tech stack
