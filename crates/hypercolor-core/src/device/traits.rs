@@ -4,6 +4,8 @@
 //! implements [`DeviceBackend`] for communication and [`DevicePlugin`] for
 //! lifecycle registration with the engine.
 
+use std::sync::Arc;
+
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
@@ -141,6 +143,23 @@ pub trait DeviceBackend: Send + Sync {
             "backend '{}' does not support device display output",
             self.info().id
         );
+    }
+
+    /// Push an owned JPEG-compressed display frame to a connected device.
+    ///
+    /// Backends with internal frame queues can override this to keep shared
+    /// ownership instead of cloning the payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the device is disconnected, display output is
+    /// unsupported, or the write fails.
+    async fn write_display_frame_owned(
+        &mut self,
+        id: &DeviceId,
+        jpeg_data: Arc<Vec<u8>>,
+    ) -> Result<()> {
+        self.write_display_frame(id, jpeg_data.as_slice()).await
     }
 
     /// Adjust hardware brightness for a connected device, if supported.

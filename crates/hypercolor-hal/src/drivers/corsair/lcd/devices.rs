@@ -79,8 +79,9 @@ macro_rules! lcd_descriptor {
             product_id: $pid,
             name: $name,
             family: DeviceFamily::Corsair,
-            transport: TransportType::UsbHid {
+            transport: TransportType::UsbBulk {
                 interface: CORSAIR_LCD_INTERFACE,
+                report_id: CORSAIR_LCD_REPORT_ID,
             },
             protocol: ProtocolBinding {
                 id: $protocol_id,

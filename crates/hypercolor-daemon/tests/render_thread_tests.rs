@@ -78,6 +78,7 @@ fn strip_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        display_order: 0,
         attachment: None,
     }
 }
@@ -101,6 +102,7 @@ fn point_zone(id: &str, device_id: &str, x: f32, y: f32) -> DeviceZone {
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        display_order: 0,
         attachment: None,
     }
 }

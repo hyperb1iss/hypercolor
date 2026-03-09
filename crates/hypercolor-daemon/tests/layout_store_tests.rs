@@ -34,6 +34,7 @@ fn sample_layout() -> SpatialLayout {
             edge_behavior: None,
             shape: None,
             shape_preset: None,
+            display_order: 0,
             attachment: None,
         }],
         groups: vec![ZoneGroup {

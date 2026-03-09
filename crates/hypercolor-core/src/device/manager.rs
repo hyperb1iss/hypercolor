@@ -169,6 +169,30 @@ impl BackendIo {
                 )
             })
     }
+
+    /// Write an owned display payload directly to the backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the display write fails.
+    pub async fn write_display_frame_owned(
+        &self,
+        device_id: DeviceId,
+        jpeg_data: Arc<Vec<u8>>,
+    ) -> Result<()> {
+        let byte_len = jpeg_data.len();
+        let mut backend = self.backend.lock().await;
+        backend
+            .write_display_frame_owned(&device_id, jpeg_data)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to write {} display bytes to device {device_id} using backend '{}'",
+                    byte_len,
+                    self.backend_id
+                )
+            })
+    }
 }
 
 /// Contiguous LED range on a physical device.
@@ -821,6 +845,23 @@ impl BackendManager {
             bail!("backend '{backend_id}' is not registered");
         };
         io.write_display_frame(device_id, jpeg_data).await
+    }
+
+    /// Write one owned JPEG display payload to a specific physical device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend is missing or the backend write fails.
+    pub async fn write_device_display_frame_owned(
+        &mut self,
+        backend_id: &str,
+        device_id: DeviceId,
+        jpeg_data: Arc<Vec<u8>>,
+    ) -> Result<()> {
+        let Some(io) = self.backend_io(backend_id) else {
+            bail!("backend '{backend_id}' is not registered");
+        };
+        io.write_display_frame_owned(device_id, jpeg_data).await
     }
 
     /// Cache a backend-provided output FPS for a physical device.

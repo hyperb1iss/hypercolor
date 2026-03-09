@@ -473,6 +473,12 @@ impl Canvas {
         &mut self.pixels
     }
 
+    /// Consume the canvas and return the owned RGBA byte buffer.
+    #[must_use]
+    pub fn into_rgba_bytes(self) -> Vec<u8> {
+        self.pixels
+    }
+
     /// View pixel data as `[u8; 4]` RGBA tuples.
     ///
     /// Returns a slice of length `width * height`.

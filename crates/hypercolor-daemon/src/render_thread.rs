@@ -355,7 +355,7 @@ async fn execute_frame(
         state,
         zone_colors,
         &inputs.audio,
-        &canvas,
+        canvas,
         frame_num_u32,
         elapsed_ms,
         FrameTiming {
@@ -535,7 +535,7 @@ async fn maybe_sleep_throttle(
         state,
         zone_colors,
         &AudioData::silence(),
-        &canvas,
+        canvas,
         frame_num_u32,
         elapsed_ms,
         FrameTiming {
@@ -672,7 +672,7 @@ fn publish_frame_updates(
     state: &RenderThreadState,
     zone_colors: Vec<hypercolor_core::types::event::ZoneColors>,
     audio: &AudioData,
-    canvas: &Canvas,
+    canvas: Canvas,
     frame_number: u32,
     elapsed_ms: u32,
     timing: FrameTiming,
@@ -687,7 +687,11 @@ fn publish_frame_updates(
     let _ = state
         .event_bus
         .canvas_sender()
-        .send(CanvasFrame::from_canvas(canvas, frame_number, elapsed_ms));
+        .send(CanvasFrame::from_owned_canvas(
+            canvas,
+            frame_number,
+            elapsed_ms,
+        ));
     state.event_bus.publish(HypercolorEvent::FrameRendered {
         frame_number,
         timing,
@@ -870,24 +874,17 @@ mod tests {
 
     #[test]
     fn idle_throttle_enabled_only_when_fully_idle() {
-        assert!(should_idle_throttle(false, false, 0, 0, 0));
+        assert!(should_idle_throttle(false, false));
     }
 
     #[test]
     fn idle_throttle_disabled_when_effect_running() {
-        assert!(!should_idle_throttle(true, false, 0, 0, 0));
+        assert!(!should_idle_throttle(true, false));
     }
 
     #[test]
     fn idle_throttle_disabled_when_capture_enabled() {
-        assert!(!should_idle_throttle(false, true, 0, 0, 0));
-    }
-
-    #[test]
-    fn idle_throttle_disabled_when_stream_has_subscribers() {
-        assert!(!should_idle_throttle(false, false, 1, 0, 0));
-        assert!(!should_idle_throttle(false, false, 0, 1, 0));
-        assert!(!should_idle_throttle(false, false, 0, 0, 1));
+        assert!(!should_idle_throttle(false, true));
     }
 
     #[test]

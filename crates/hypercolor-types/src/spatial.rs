@@ -380,6 +380,11 @@ pub struct DeviceZone {
     #[serde(default = "default_scale")]
     pub scale: f32,
 
+    /// Display stacking order in the layout editor.
+    /// Higher values render on top. Zones with equal values use vector order.
+    #[serde(default)]
+    pub display_order: i32,
+
     /// Zone orientation hint for the editor. Does not affect sampling.
     pub orientation: Option<Orientation>,
 

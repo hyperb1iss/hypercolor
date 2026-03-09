@@ -509,6 +509,19 @@ async fn canvas_watch_latest_value_semantics() {
     assert_eq!(latest.rgba_bytes()[..8], [1, 2, 3, 255, 4, 5, 6, 255]);
 }
 
+#[test]
+fn owned_canvas_frame_reuses_canvas_rgba_allocation() {
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(1, 2, 3, 255));
+    canvas.set_pixel(1, 0, Rgba::new(4, 5, 6, 255));
+    let original_ptr = canvas.as_rgba_bytes().as_ptr();
+
+    let frame = CanvasFrame::from_owned_canvas(canvas, 9, 123);
+
+    assert_eq!(frame.rgba_bytes().as_ptr(), original_ptr);
+    assert_eq!(frame.rgba_bytes()[..8], [1, 2, 3, 255, 4, 5, 6, 255]);
+}
+
 // ── Lagged Receiver Handling ─────────────────────────────────────────────
 
 #[tokio::test]

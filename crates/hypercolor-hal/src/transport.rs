@@ -49,6 +49,30 @@ pub trait Transport: Send + Sync {
         self.send(data).await
     }
 
+    /// Send owned bytes over a specific transport path.
+    ///
+    /// Implementations can override this to move packet ownership into the
+    /// transport layer without cloning.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TransportError`] when the requested transfer type is not
+    /// supported or I/O fails.
+    async fn send_owned_with_type(
+        &self,
+        data: Vec<u8>,
+        transfer_type: TransferType,
+    ) -> Result<(), TransportError> {
+        if transfer_type != TransferType::Primary {
+            return Err(TransportError::UnsupportedTransfer {
+                transport: self.name().to_owned(),
+                transfer_type,
+            });
+        }
+
+        self.send(&data).await
+    }
+
     /// Receive raw bytes.
     ///
     /// # Errors

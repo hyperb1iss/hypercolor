@@ -174,7 +174,13 @@ fn lookup_returns_elite_capellix_lcd_descriptor() {
     assert_eq!(descriptor.name, "Corsair Elite Capellix LCD");
     assert_eq!(descriptor.family, DeviceFamily::Corsair);
     assert_eq!(descriptor.protocol.id, "corsair/elite-capellix-lcd");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbBulk {
+            interface: 0,
+            report_id: 0x03,
+        }
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Corsair Elite Capellix LCD");
@@ -190,7 +196,13 @@ fn lookup_returns_icue_link_lcd_descriptor() {
     assert_eq!(descriptor.name, "Corsair iCUE LINK LCD");
     assert_eq!(descriptor.family, DeviceFamily::Corsair);
     assert_eq!(descriptor.protocol.id, "corsair/icue-link-lcd");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbBulk {
+            interface: 0,
+            report_id: 0x03,
+        }
+    );
 }
 
 #[test]
@@ -215,7 +227,13 @@ fn lookup_returns_xc7_rgb_elite_lcd_descriptor() {
     assert_eq!(descriptor.name, "Corsair XC7 RGB Elite LCD");
     assert_eq!(descriptor.family, DeviceFamily::Corsair);
     assert_eq!(descriptor.protocol.id, "corsair/xc7-rgb-elite-lcd");
-    assert_eq!(descriptor.transport, TransportType::UsbHid { interface: 0 });
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbBulk {
+            interface: 0,
+            report_id: 0x03,
+        }
+    );
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Corsair XC7 RGB Elite LCD");

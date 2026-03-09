@@ -261,6 +261,7 @@ fn device_zone_construction() {
         edge_behavior: None,
         shape: Some(ZoneShape::Rectangle),
         shape_preset: Some("strimer-atx-24pin".into()),
+        display_order: 0,
         attachment: None,
     };
 
@@ -296,6 +297,7 @@ fn device_zone_optional_fields() {
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        display_order: 0,
         attachment: None,
     };
 
@@ -375,6 +377,7 @@ fn spatial_layout_with_zones() {
         edge_behavior: Some(EdgeBehavior::Clamp),
         shape: Some(ZoneShape::Ring),
         shape_preset: None,
+        display_order: 0,
         attachment: None,
     };
 

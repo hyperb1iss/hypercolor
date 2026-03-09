@@ -92,6 +92,7 @@ fn build_layout_for_device(
             edge_behavior: None,
             shape: None,
             shape_preset: None,
+            display_order: 0,
             attachment: None,
         }],
         groups: vec![],
@@ -138,6 +139,7 @@ fn build_dual_zone_layout(
                 edge_behavior: None,
                 shape: None,
                 shape_preset: None,
+                display_order: 0,
                 attachment: None,
             },
             DeviceZone {
@@ -163,6 +165,7 @@ fn build_dual_zone_layout(
                 edge_behavior: None,
                 shape: None,
                 shape_preset: None,
+                display_order: 0,
                 attachment: None,
             },
         ],

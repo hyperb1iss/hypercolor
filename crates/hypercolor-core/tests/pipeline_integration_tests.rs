@@ -243,6 +243,7 @@ fn make_strip_zone(id: &str, led_count: u32) -> DeviceZone {
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        display_order: 0,
         attachment: None,
     }
 }

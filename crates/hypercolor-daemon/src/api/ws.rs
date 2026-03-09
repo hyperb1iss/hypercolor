@@ -2054,4 +2054,16 @@ mod tests {
         assert_eq!(encoded[13], 0);
         assert_eq!(&encoded[14..20], &[10, 20, 30, 40, 50, 60]);
     }
+
+    #[test]
+    fn canvas_binary_encoder_writes_rgba_payload_without_repacking() {
+        let mut canvas = Canvas::new(2, 1);
+        canvas.set_pixel(0, 0, Rgba::new(10, 20, 30, 255));
+        canvas.set_pixel(1, 0, Rgba::new(40, 50, 60, 200));
+        let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
+
+        let encoded = encode_canvas_binary(&frame, super::CanvasFormat::Rgba);
+        assert_eq!(encoded[13], 1);
+        assert_eq!(&encoded[14..22], &[10, 20, 30, 255, 40, 50, 60, 200]);
+    }
 }

@@ -53,6 +53,7 @@ fn full_canvas_zone(id: &str, topology: LedTopology) -> DeviceZone {
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        display_order: 0,
         attachment: None,
     }
 }
@@ -83,6 +84,7 @@ fn custom_zone(
         edge_behavior: None,
         shape: None,
         shape_preset: None,
+        display_order: 0,
         attachment: None,
     }
 }

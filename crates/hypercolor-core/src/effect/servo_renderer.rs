@@ -40,6 +40,8 @@ const RECENT_CONSOLE_SAMPLE_SIZE: usize = 6;
 const CONSOLE_SNIPPET_RADIUS: usize = 1;
 const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
 const JS_TIMER_MIN_DURATION_MS: i64 = 4;
+const DEFAULT_EFFECT_FPS_CAP: u32 = 30;
+const MAX_EFFECT_FPS_CAP: u32 = 60;
 
 // Servo initializes process-global options once. Recreating the runtime after a
 // shutdown panics inside libservo, so Hypercolor keeps one shared worker alive
@@ -61,6 +63,7 @@ pub struct ServoRenderer {
     worker: Option<ServoWorkerClient>,
     warned_fallback_frame: bool,
     include_audio_updates: bool,
+    last_animation_fps_cap: Option<u32>,
 }
 
 impl ServoRenderer {
@@ -78,14 +81,23 @@ impl ServoRenderer {
             worker: None,
             warned_fallback_frame: false,
             include_audio_updates: true,
+            last_animation_fps_cap: None,
         }
     }
 
     fn enqueue_bootstrap_scripts(&mut self) {
         self.pending_scripts.push(self.runtime.bootstrap_script());
+        self.pending_scripts
+            .push(animation_fps_cap_script(DEFAULT_EFFECT_FPS_CAP));
+        self.last_animation_fps_cap = Some(DEFAULT_EFFECT_FPS_CAP);
     }
 
     fn enqueue_frame_scripts(&mut self, input: &FrameInput) {
+        let fps_cap = animation_fps_cap(input.delta_secs);
+        if self.last_animation_fps_cap != Some(fps_cap) {
+            self.pending_scripts.push(animation_fps_cap_script(fps_cap));
+            self.last_animation_fps_cap = Some(fps_cap);
+        }
         if let Some(script) = self
             .runtime
             .resize_script(input.canvas_width, input.canvas_height)
@@ -156,6 +168,7 @@ impl EffectRenderer for ServoRenderer {
         self.pending_scripts.clear();
         self.warned_fallback_frame = false;
         self.include_audio_updates = effect_is_audio_reactive(metadata);
+        self.last_animation_fps_cap = None;
         self.controls = metadata
             .controls
             .iter()
@@ -241,6 +254,7 @@ impl EffectRenderer for ServoRenderer {
         self.initialized = false;
         self.warned_fallback_frame = false;
         self.include_audio_updates = true;
+        self.last_animation_fps_cap = None;
     }
 }
 
@@ -523,6 +537,8 @@ impl ServoWorkerRuntime {
         let url = file_url_for_path(html_path)?;
         self.loaded_html_path = Some(html_path.to_path_buf());
         self.delegate.take_page_loaded();
+        // Keep the page throttled except for the single daemon-driven render step.
+        self.webview.set_throttled(true);
         debug!(url = %url, "Loading Servo effect page");
         self.webview.load(url.clone());
         self.wait_for_load_completion(LOAD_TIMEOUT, Some(url.as_str()))?;
@@ -548,7 +564,7 @@ impl ServoWorkerRuntime {
     }
 
     fn render_frame(&mut self, scripts: &[String], width: u32, height: u32) -> Result<Canvas> {
-        (|| {
+        let result = (|| {
             self.resize_if_needed(width, height);
 
             for script in scripts {
@@ -558,7 +574,9 @@ impl ServoWorkerRuntime {
             }
 
             // Let timers/RAF advance for one daemon-driven frame after scripts
-            // have injected controls/audio for this tick.
+            // have injected controls/audio for this tick. Leaving the webview
+            // unthrottled between ticks lets effect-side RAF/timer loops free-run.
+            self.webview.set_throttled(false);
             self.servo.spin_event_loop();
             let frame_ready = self.delegate.take_frame_ready();
             if frame_ready {
@@ -588,7 +606,10 @@ impl ServoWorkerRuntime {
                 image_width,
                 image_height,
             ))
-        })()
+        })();
+
+        self.webview.set_throttled(true);
+        result
     }
 
     fn resize_if_needed(&self, width: u32, height: u32) {
@@ -990,6 +1011,24 @@ fn panic_payload_message(payload: &(dyn Any + Send + 'static)) -> String {
     "unknown panic payload".to_owned()
 }
 
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn animation_fps_cap(delta_secs: f32) -> u32 {
+    if !delta_secs.is_finite() || delta_secs <= f32::EPSILON {
+        return DEFAULT_EFFECT_FPS_CAP;
+    }
+
+    let fps = (1.0 / delta_secs).round();
+    (fps as u32).clamp(1, MAX_EFFECT_FPS_CAP)
+}
+
+fn animation_fps_cap_script(fps_cap: u32) -> String {
+    format!("window.__hypercolorFpsCap = {fps_cap};")
+}
+
 fn acquire_servo_worker(width: u32, height: u32) -> Result<ServoWorkerClient> {
     SERVO_WORKER_EXIT_GUARD.with(|_| {});
     let slot = SERVO_WORKER.get_or_init(|| Mutex::new(None));
@@ -1035,6 +1074,7 @@ fn replace_shared_servo_worker_for_test(worker: Option<ServoWorker>) -> Option<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hypercolor_types::audio::AudioData;
     use hypercolor_types::effect::EffectId;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1061,6 +1101,18 @@ mod tests {
             },
             stopped,
         )
+    }
+
+    fn frame_input(delta_secs: f32) -> FrameInput {
+        FrameInput {
+            time_secs: 0.0,
+            delta_secs,
+            frame_number: 0,
+            audio: AudioData::silence(),
+            interaction: crate::input::InteractionData::default(),
+            canvas_width: DEFAULT_WIDTH,
+            canvas_height: DEFAULT_HEIGHT,
+        }
     }
 
     #[test]
@@ -1258,5 +1310,48 @@ mod tests {
         let removed_worker = replace_shared_servo_worker_for_test(previous_worker);
         drop(removed_worker);
         assert!(stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn bootstrap_scripts_seed_default_animation_cap() {
+        let mut renderer = ServoRenderer::new();
+
+        renderer.enqueue_bootstrap_scripts();
+
+        assert_eq!(
+            renderer.last_animation_fps_cap,
+            Some(DEFAULT_EFFECT_FPS_CAP)
+        );
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .any(|script| script == "window.__hypercolorFpsCap = 30;")
+        );
+    }
+
+    #[test]
+    fn frame_scripts_update_animation_cap_only_when_target_changes() {
+        let mut renderer = ServoRenderer::new();
+        renderer.enqueue_bootstrap_scripts();
+        renderer.pending_scripts.clear();
+
+        renderer.enqueue_frame_scripts(&frame_input(1.0 / 30.0));
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .all(|script| !script.contains("__hypercolorFpsCap"))
+        );
+
+        renderer.pending_scripts.clear();
+        renderer.enqueue_frame_scripts(&frame_input(1.0 / 15.0));
+        assert_eq!(renderer.last_animation_fps_cap, Some(15));
+        assert!(
+            renderer
+                .pending_scripts
+                .iter()
+                .any(|script| script == "window.__hypercolorFpsCap = 15;")
+        );
     }
 }

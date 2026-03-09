@@ -14,6 +14,7 @@ mod filter;
 pub use filter::{EventFilter, FilteredEventReceiver};
 
 use std::time::{Instant, SystemTime};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};
@@ -61,7 +62,7 @@ pub struct CanvasFrame {
     pub width: u32,
     /// Canvas height in pixels.
     pub height: u32,
-    rgba: Vec<u8>,
+    rgba: Arc<Vec<u8>>,
 }
 
 impl CanvasFrame {
@@ -73,7 +74,7 @@ impl CanvasFrame {
             timestamp_ms: 0,
             width: 0,
             height: 0,
-            rgba: Vec::new(),
+            rgba: Arc::new(Vec::new()),
         }
     }
 
@@ -85,14 +86,26 @@ impl CanvasFrame {
             timestamp_ms,
             width: canvas.width(),
             height: canvas.height(),
-            rgba: canvas.as_rgba_bytes().to_vec(),
+            rgba: Arc::new(canvas.as_rgba_bytes().to_vec()),
+        }
+    }
+
+    /// Consume a canvas without cloning its RGBA backing buffer.
+    #[must_use]
+    pub fn from_owned_canvas(canvas: Canvas, frame_number: u32, timestamp_ms: u32) -> Self {
+        Self {
+            frame_number,
+            timestamp_ms,
+            width: canvas.width(),
+            height: canvas.height(),
+            rgba: Arc::new(canvas.into_rgba_bytes()),
         }
     }
 
     /// RGBA canvas bytes in row-major order.
     #[must_use]
     pub fn rgba_bytes(&self) -> &[u8] {
-        &self.rgba
+        self.rgba.as_slice()
     }
 }
 

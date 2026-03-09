@@ -131,18 +131,22 @@ impl UsbBulkTransport {
     }
 
     fn send_bulk_locked(&self, data: &[u8]) -> Result<(), TransportError> {
+        self.send_bulk_owned_locked(data.to_vec())
+    }
+
+    fn send_bulk_owned_locked(&self, data: Vec<u8>) -> Result<(), TransportError> {
         let mut endpoint = lock_mutex(&self.out_endpoint, "bulk OUT endpoint")?;
 
         trace!(
             interface_number = self.interface_number,
             endpoint = format_args!("0x{:02X}", self.out_endpoint_address),
             packet_len = data.len(),
-            packet_hex = %format_hex_preview(data, 32),
+            packet_hex = %format_hex_preview(&data, 32),
             "usb bulk send"
         );
 
         endpoint
-            .transfer_blocking(data.to_vec().into(), DEFAULT_IO_TIMEOUT)
+            .transfer_blocking(data.into(), DEFAULT_IO_TIMEOUT)
             .into_result()
             .map(|_| ())
             .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
@@ -250,6 +254,20 @@ impl Transport for UsbBulkTransport {
         match transfer_type {
             TransferType::Primary | TransferType::Bulk => self.send_bulk_locked(data),
             TransferType::HidReport => self.send_report_locked(data),
+        }
+    }
+
+    async fn send_owned_with_type(
+        &self,
+        data: Vec<u8>,
+        transfer_type: TransferType,
+    ) -> Result<(), TransportError> {
+        self.check_open()?;
+
+        let _guard = lock_mutex(&self.op_lock, "operation lock")?;
+        match transfer_type {
+            TransferType::Primary | TransferType::Bulk => self.send_bulk_owned_locked(data),
+            TransferType::HidReport => self.send_report_locked(&data),
         }
     }
 

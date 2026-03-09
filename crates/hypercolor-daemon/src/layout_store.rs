@@ -103,6 +103,7 @@ mod tests {
                 led_mapping: None,
                 sampling_mode: None,
                 edge_behavior: None,
+                display_order: 0,
                 shape: None,
                 shape_preset: None,
                 attachment: None,

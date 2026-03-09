@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use image::codecs::jpeg::JpegEncoder;
-use image::{DynamicImage, RgbaImage};
+use image::ExtendedColorType;
 use tokio::sync::{Mutex, RwLock, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Interval, MissedTickBehavior};
@@ -72,7 +72,7 @@ type DisplayWorkerKey = (String, DeviceId);
 
 #[derive(Clone)]
 struct DisplayWorkItem {
-    source: Arc<RgbaImage>,
+    source: CanvasFrame,
     target: DisplayTarget,
 }
 
@@ -222,24 +222,11 @@ async fn run_display_output(
         // while no display target is active.
         let frame = canvas_rx.borrow().clone();
 
-        let Some(source) =
-            RgbaImage::from_raw(frame.width, frame.height, frame.rgba_bytes().to_vec())
-        else {
-            warn!(
-                width = frame.width,
-                height = frame.height,
-                payload_bytes = frame.rgba_bytes().len(),
-                "canvas frame RGBA payload length does not match its dimensions"
-            );
-            continue;
-        };
-        let source = Arc::new(source);
-
         for target in targets {
             let key = display_worker_key(&target);
             if let Some(worker) = workers.get(&key) {
                 worker.push(DisplayWorkItem {
-                    source: Arc::clone(&source),
+                    source: frame.clone(),
                     target,
                 });
             }
@@ -315,6 +302,7 @@ async fn run_display_worker(
 ) {
     let mut interval = interval_for_target_fps(target_fps);
     let mut last_warned_at = None::<Instant>;
+    let mut rgb_buffer = Vec::<u8>::new();
 
     loop {
         if rx.changed().await.is_err() {
@@ -329,18 +317,30 @@ async fn run_display_worker(
             limiter.tick().await;
         }
 
-        let source = Arc::clone(&work.source);
+        let source = work.source.clone();
         let viewport = work.target.viewport.clone();
         let geometry = work.target.geometry.clone();
         let brightness = work.target.brightness;
         let target = work.target.clone();
+        let reusable_rgb = std::mem::take(&mut rgb_buffer);
         let encode_result = tokio::task::spawn_blocking(move || {
-            encode_canvas_frame(source.as_ref(), &viewport, &geometry, brightness)
+            let mut reusable_rgb = reusable_rgb;
+            let jpeg = encode_canvas_frame(
+                &source,
+                &viewport,
+                &geometry,
+                brightness,
+                &mut reusable_rgb,
+            )?;
+            Ok::<_, anyhow::Error>((reusable_rgb, jpeg))
         })
         .await;
 
         let jpeg = match encode_result {
-            Ok(Ok(encoded)) => encoded,
+            Ok(Ok((reusable_rgb, encoded))) => {
+                rgb_buffer = reusable_rgb;
+                Arc::new(encoded)
+            }
             Ok(Err(error)) => {
                 maybe_warn_display_error(&mut last_warned_at, &target, &error);
                 continue;
@@ -355,7 +355,10 @@ async fn run_display_worker(
             }
         };
 
-        if let Err(error) = backend_io.write_display_frame(device_id, &jpeg).await {
+        if let Err(error) = backend_io
+            .write_display_frame_owned(device_id, Arc::clone(&jpeg))
+            .await
+        {
             maybe_warn_display_error(&mut last_warned_at, &target, &error);
             continue;
         }
@@ -459,42 +462,43 @@ fn display_geometry_for_device(
 }
 
 fn encode_canvas_frame(
-    source: &RgbaImage,
+    source: &CanvasFrame,
     viewport: &DisplayViewport,
     geometry: &DisplayGeometry,
     brightness: f32,
+    rendered_rgb: &mut Vec<u8>,
 ) -> Result<Vec<u8>> {
-    let mut rendered = render_display_view(source, viewport, geometry.width, geometry.height);
-    apply_display_brightness(&mut rendered, brightness);
+    render_display_view(source, viewport, geometry.width, geometry.height, rendered_rgb);
+    apply_display_brightness(rendered_rgb, brightness);
     if geometry.circular {
-        apply_circular_mask(&mut rendered);
+        apply_circular_mask(rendered_rgb, geometry.width, geometry.height);
     }
 
     let mut jpeg = Vec::new();
-    let image = DynamicImage::ImageRgba8(rendered);
     let mut encoder = JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY);
     encoder
-        .encode_image(&image)
+        .encode(
+            rendered_rgb.as_slice(),
+            geometry.width,
+            geometry.height,
+            ExtendedColorType::Rgb8,
+        )
         .context("failed to JPEG-encode display frame")?;
     Ok(jpeg)
 }
 
-fn apply_display_brightness(image: &mut RgbaImage, brightness: f32) {
+fn apply_display_brightness(image: &mut [u8], brightness: f32) {
     let brightness = brightness.clamp(0.0, 1.0);
     if brightness >= 0.999 {
         return;
     }
     if brightness <= 0.0 {
-        for pixel in image.pixels_mut() {
-            pixel[0] = 0;
-            pixel[1] = 0;
-            pixel[2] = 0;
-        }
+        image.fill(0);
         return;
     }
 
-    let factor = ((brightness * 255.0).round() as u16).clamp(0, u16::from(u8::MAX));
-    for pixel in image.pixels_mut() {
+    let factor = round_unit_to_u16(brightness);
+    for pixel in image.chunks_exact_mut(3) {
         pixel[0] = scale_channel(pixel[0], factor);
         pixel[1] = scale_channel(pixel[1], factor);
         pixel[2] = scale_channel(pixel[2], factor);
@@ -555,14 +559,28 @@ fn layout_device_aliases(
     clippy::cast_sign_loss
 )]
 fn render_display_view(
-    source: &RgbaImage,
+    source: &CanvasFrame,
     viewport: &DisplayViewport,
     width: u32,
     height: u32,
-) -> RgbaImage {
-    let mut rendered = RgbaImage::new(width, height);
-    if width == 0 || height == 0 || source.width() == 0 || source.height() == 0 {
-        return rendered;
+    rendered_rgb: &mut Vec<u8>,
+) {
+    let Some(render_len) = rgb_buffer_len(width, height) else {
+        rendered_rgb.clear();
+        return;
+    };
+    rendered_rgb.clear();
+    rendered_rgb.resize(render_len, 0);
+
+    if width == 0 || height == 0 || source.width == 0 || source.height == 0 {
+        return;
+    }
+
+    if viewport.rotation.abs() <= f32::EPSILON
+        && !matches!(viewport.edge_behavior, EdgeBehavior::FadeToBlack { .. })
+    {
+        render_display_view_axis_aligned(source, viewport, width, height, rendered_rgb);
+        return;
     }
 
     let width_f32 = width as f32;
@@ -576,11 +594,45 @@ fn render_display_view(
             );
             let canvas_pos = viewport_local_to_canvas(local, viewport);
             let pixel = sample_image_bilinear(source, canvas_pos, viewport.edge_behavior);
-            rendered.put_pixel(x, y, pixel);
+            write_rgb_pixel(rendered_rgb, width, x, y, pixel);
         }
     }
+}
 
-    rendered
+fn render_display_view_axis_aligned(
+    source: &CanvasFrame,
+    viewport: &DisplayViewport,
+    width: u32,
+    height: u32,
+    rendered_rgb: &mut [u8],
+) {
+    let x_samples = precompute_axis_samples(
+        width,
+        viewport.position.x - (viewport.size.x * viewport.scale * 0.5),
+        viewport.size.x * viewport.scale,
+        source.width,
+        viewport.edge_behavior,
+    );
+    let y_samples = precompute_axis_samples(
+        height,
+        viewport.position.y - (viewport.size.y * viewport.scale * 0.5),
+        viewport.size.y * viewport.scale,
+        source.height,
+        viewport.edge_behavior,
+    );
+
+    for (y_index, y_sample) in y_samples.iter().enumerate() {
+        for (x_index, x_sample) in x_samples.iter().enumerate() {
+            let pixel = bilinear_sample_rgb(source, *x_sample, *y_sample);
+            write_rgb_pixel(
+                rendered_rgb,
+                width,
+                u32::try_from(x_index).unwrap_or_default(),
+                u32::try_from(y_index).unwrap_or_default(),
+                pixel,
+            );
+        }
+    }
 }
 
 fn viewport_local_to_canvas(
@@ -599,10 +651,10 @@ fn viewport_local_to_canvas(
 }
 
 fn sample_image_bilinear(
-    source: &RgbaImage,
+    source: &CanvasFrame,
     canvas_pos: NormalizedPosition,
     edge_behavior: EdgeBehavior,
-) -> image::Rgba<u8> {
+) -> [u8; 3] {
     let sample_x = apply_edge_normalized(canvas_pos.x, edge_behavior).clamp(0.0, 1.0);
     let sample_y = apply_edge_normalized(canvas_pos.y, edge_behavior).clamp(0.0, 1.0);
 
@@ -622,53 +674,17 @@ fn apply_edge_normalized(value: f32, edge_behavior: EdgeBehavior) -> f32 {
     }
 }
 
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn bilinear_sample(source: &RgbaImage, nx: f32, ny: f32) -> image::Rgba<u8> {
-    let fx = nx * (source.width().saturating_sub(1) as f32);
-    let fy = ny * (source.height().saturating_sub(1) as f32);
-
-    let x0 = fx.floor() as u32;
-    let y0 = fy.floor() as u32;
-    let x1 = (x0 + 1).min(source.width().saturating_sub(1));
-    let y1 = (y0 + 1).min(source.height().saturating_sub(1));
-
-    let frac_x = fx.fract();
-    let frac_y = fy.fract();
-
-    let tl = source.get_pixel(x0, y0).0;
-    let tr = source.get_pixel(x1, y0).0;
-    let bl = source.get_pixel(x0, y1).0;
-    let br = source.get_pixel(x1, y1).0;
-
-    let top_r = lerp_channel(tl[0], tr[0], frac_x);
-    let top_g = lerp_channel(tl[1], tr[1], frac_x);
-    let top_b = lerp_channel(tl[2], tr[2], frac_x);
-    let top_a = lerp_channel(tl[3], tr[3], frac_x);
-
-    let bottom_r = lerp_channel(bl[0], br[0], frac_x);
-    let bottom_g = lerp_channel(bl[1], br[1], frac_x);
-    let bottom_b = lerp_channel(bl[2], br[2], frac_x);
-    let bottom_a = lerp_channel(bl[3], br[3], frac_x);
-
-    image::Rgba([
-        lerp_f32(top_r, bottom_r, frac_y).round().clamp(0.0, 255.0) as u8,
-        lerp_f32(top_g, bottom_g, frac_y).round().clamp(0.0, 255.0) as u8,
-        lerp_f32(top_b, bottom_b, frac_y).round().clamp(0.0, 255.0) as u8,
-        lerp_f32(top_a, bottom_a, frac_y).round().clamp(0.0, 255.0) as u8,
-    ])
+fn bilinear_sample(source: &CanvasFrame, nx: f32, ny: f32) -> [u8; 3] {
+    let x_sample = axis_sample(nx, source.width);
+    let y_sample = axis_sample(ny, source.height);
+    bilinear_sample_rgb(source, x_sample, y_sample)
 }
 
-fn lerp_channel(left: u8, right: u8, amount: f32) -> f32 {
-    lerp_f32(f32::from(left), f32::from(right), amount)
-}
-
-fn lerp_f32(left: f32, right: f32, amount: f32) -> f32 {
-    left + (right - left) * amount
+#[derive(Clone, Copy)]
+struct AxisSample {
+    left: usize,
+    right: usize,
+    amount: f32,
 }
 
 #[allow(
@@ -677,10 +693,10 @@ fn lerp_f32(left: f32, right: f32, amount: f32) -> f32 {
     clippy::cast_sign_loss
 )]
 fn apply_fade_to_black(
-    pixel: image::Rgba<u8>,
+    pixel: [u8; 3],
     canvas_pos: NormalizedPosition,
     edge_behavior: EdgeBehavior,
-) -> image::Rgba<u8> {
+) -> [u8; 3] {
     let EdgeBehavior::FadeToBlack { falloff } = edge_behavior else {
         return pixel;
     };
@@ -706,34 +722,149 @@ fn apply_fade_to_black(
     }
 
     let attenuation = (-distance * falloff).exp().clamp(0.0, 1.0);
-    image::Rgba([
-        (f32::from(pixel[0]) * attenuation)
-            .round()
-            .clamp(0.0, 255.0) as u8,
-        (f32::from(pixel[1]) * attenuation)
-            .round()
-            .clamp(0.0, 255.0) as u8,
-        (f32::from(pixel[2]) * attenuation)
-            .round()
-            .clamp(0.0, 255.0) as u8,
-        pixel[3],
-    ])
+    [
+        round_to_u8(f32::from(pixel[0]) * attenuation),
+        round_to_u8(f32::from(pixel[1]) * attenuation),
+        round_to_u8(f32::from(pixel[2]) * attenuation),
+    ]
 }
 
-fn apply_circular_mask(image: &mut RgbaImage) {
-    let width = i64::from(image.width());
-    let height = i64::from(image.height());
+fn apply_circular_mask(image: &mut [u8], width: u32, height: u32) {
+    let width = i64::from(width);
+    let height = i64::from(height);
     let radius = width.min(height);
     let radius_sq = radius.saturating_mul(radius);
 
-    for (x, y, pixel) in image.enumerate_pixels_mut() {
-        let dx = i64::from(x).saturating_mul(2).saturating_add(1) - width;
-        let dy = i64::from(y).saturating_mul(2).saturating_add(1) - height;
-        let distance_sq = dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy));
-        if distance_sq > radius_sq {
-            *pixel = image::Rgba([0, 0, 0, 255]);
+    for y in 0..height {
+        for x in 0..width {
+            let dx = x.saturating_mul(2).saturating_add(1) - width;
+            let dy = y.saturating_mul(2).saturating_add(1) - height;
+            let distance_sq = dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy));
+            if distance_sq > radius_sq {
+                let index = rgb_offset(
+                    usize::try_from(width).unwrap_or_default(),
+                    usize::try_from(x).unwrap_or_default(),
+                    usize::try_from(y).unwrap_or_default(),
+                );
+                image[index..index + 3].fill(0);
+            }
         }
     }
+}
+
+fn rgb_buffer_len(width: u32, height: u32) -> Option<usize> {
+    usize::try_from(width)
+        .ok()?
+        .checked_mul(usize::try_from(height).ok()?)?
+        .checked_mul(3)
+}
+
+fn precompute_axis_samples(
+    output_len: u32,
+    start: f32,
+    span: f32,
+    source_len: u32,
+    edge_behavior: EdgeBehavior,
+) -> Vec<AxisSample> {
+    let output_len_f32 = output_len.max(1) as f32;
+    (0..output_len)
+        .map(|index| {
+            let position = start + ((index as f32 + 0.5) / output_len_f32) * span;
+            let normalized = apply_edge_normalized(position, edge_behavior).clamp(0.0, 1.0);
+            axis_sample(normalized, source_len)
+        })
+        .collect()
+}
+
+fn axis_sample(normalized: f32, source_len: u32) -> AxisSample {
+    let max_index = source_len.saturating_sub(1);
+    let coordinate = normalized * max_index as f32;
+    let left = coordinate as usize;
+    let right = left
+        .saturating_add(1)
+        .min(usize::try_from(max_index).unwrap_or_default());
+    AxisSample {
+        left,
+        right,
+        amount: coordinate - left as f32,
+    }
+}
+
+fn bilinear_sample_rgb(source: &CanvasFrame, x_sample: AxisSample, y_sample: AxisSample) -> [u8; 3] {
+    let width = usize::try_from(source.width).unwrap_or_default();
+    let rgba = source.rgba_bytes();
+    let top_left = rgba_offset(width, x_sample.left, y_sample.left);
+    let top_right = rgba_offset(width, x_sample.right, y_sample.left);
+    let bottom_left = rgba_offset(width, x_sample.left, y_sample.right);
+    let bottom_right = rgba_offset(width, x_sample.right, y_sample.right);
+
+    let vertical_top = 1.0 - y_sample.amount;
+    let vertical_bottom = y_sample.amount;
+
+    [
+        round_to_u8(
+            lerp_channel(rgba[top_left], rgba[top_right], x_sample.amount) * vertical_top
+                + lerp_channel(rgba[bottom_left], rgba[bottom_right], x_sample.amount)
+                    * vertical_bottom,
+        ),
+        round_to_u8(
+            lerp_channel(rgba[top_left + 1], rgba[top_right + 1], x_sample.amount)
+                * vertical_top
+                + lerp_channel(rgba[bottom_left + 1], rgba[bottom_right + 1], x_sample.amount)
+                    * vertical_bottom,
+        ),
+        round_to_u8(
+            lerp_channel(rgba[top_left + 2], rgba[top_right + 2], x_sample.amount)
+                * vertical_top
+                + lerp_channel(rgba[bottom_left + 2], rgba[bottom_right + 2], x_sample.amount)
+                    * vertical_bottom,
+        ),
+    ]
+}
+
+fn lerp_channel(left: u8, right: u8, amount: f32) -> f32 {
+    f32::from(left) + (f32::from(right) - f32::from(left)) * amount
+}
+
+fn round_to_u8(value: f32) -> u8 {
+    if !value.is_finite() || value <= 0.0 {
+        return 0;
+    }
+    if value >= 255.0 {
+        return u8::MAX;
+    }
+
+    (value + 0.5) as u8
+}
+
+fn round_unit_to_u16(value: f32) -> u16 {
+    if !value.is_finite() || value <= 0.0 {
+        return 0;
+    }
+    if value >= 1.0 {
+        return u16::from(u8::MAX);
+    }
+
+    ((value * f32::from(u8::MAX)) + 0.5) as u16
+}
+
+fn write_rgb_pixel(image: &mut [u8], width: u32, x: u32, y: u32, pixel: [u8; 3]) {
+    let offset = rgb_offset(
+        usize::try_from(width).unwrap_or_default(),
+        usize::try_from(x).unwrap_or_default(),
+        usize::try_from(y).unwrap_or_default(),
+    );
+    image[offset] = pixel[0];
+    image[offset + 1] = pixel[1];
+    image[offset + 2] = pixel[2];
+}
+
+fn rgba_offset(width: usize, x: usize, y: usize) -> usize {
+    (y * width + x) * 4
+}
+
+fn rgb_offset(width: usize, x: usize, y: usize) -> usize {
+    (y * width + x) * 3
 }
 
 fn capped_display_target_fps(device_max_fps: u32) -> u32 {

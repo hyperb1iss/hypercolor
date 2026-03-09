@@ -1533,6 +1533,7 @@ pub fn append_auto_layout_zones_for_device(
             size,
             rotation: 0.0,
             scale: 1.0,
+            display_order: 0,
             orientation: None,
             topology: topology.clone(),
             led_positions: generate_positions(&topology),

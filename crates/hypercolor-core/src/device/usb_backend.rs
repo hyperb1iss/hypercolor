@@ -49,7 +49,7 @@ struct UsbFramePayload {
 
 #[derive(Debug)]
 struct UsbDisplayPayload {
-    jpeg_data: Vec<u8>,
+    jpeg_data: Arc<Vec<u8>>,
 }
 
 enum UsbDeviceCommand {
@@ -114,10 +114,10 @@ impl UsbDevice {
         })));
     }
 
-    fn queue_display_frame(&self, jpeg_data: &[u8]) {
+    fn queue_display_frame(&self, jpeg_data: Arc<Vec<u8>>) {
         self.display_tx
             .send_replace(Some(Arc::new(UsbDisplayPayload {
-                jpeg_data: jpeg_data.to_vec(),
+                jpeg_data,
             })));
     }
 
@@ -669,7 +669,7 @@ impl UsbBackend {
         frame: &UsbDisplayPayload,
     ) -> Result<()> {
         let commands = protocol
-            .encode_display_frame(&frame.jpeg_data)
+            .encode_display_frame(frame.jpeg_data.as_slice())
             .with_context(|| {
                 format!("USB protocol does not support display output for device {device_id}")
             })?;
@@ -767,15 +767,11 @@ impl UsbBackend {
             Self::run_command(
                 protocol,
                 transport,
-                &command,
+                command,
                 command_position,
                 total_commands,
             )
             .await?;
-
-            if !command.post_delay.is_zero() {
-                tokio::time::sleep(command.post_delay).await;
-            }
         }
 
         Ok(())
@@ -812,7 +808,7 @@ impl UsbBackend {
     async fn run_command(
         protocol: &dyn Protocol,
         transport: &dyn Transport,
-        command: &ProtocolCommand,
+        command: ProtocolCommand,
         command_position: usize,
         total_commands: usize,
     ) -> Result<()> {
@@ -823,7 +819,7 @@ impl UsbBackend {
                 if Self::run_response_command(
                     protocol,
                     transport,
-                    command,
+                    &command,
                     command_position,
                     total_commands,
                     &mut attempt,
@@ -843,9 +839,17 @@ impl UsbBackend {
                     "usb send starting"
                 );
                 transport
-                    .send_with_type(&command.data, command.transfer_type)
+                    .send_owned_with_type(command.data, command.transfer_type)
                     .await
                     .map_err(map_transport_error)?;
+                if !command.post_delay.is_zero() {
+                    tokio::time::sleep(command.post_delay).await;
+                }
+                return Ok(());
+            }
+
+            if !command.post_delay.is_zero() {
+                tokio::time::sleep(command.post_delay).await;
             }
 
             return Ok(());
@@ -1228,6 +1232,15 @@ impl DeviceBackend for UsbBackend {
     }
 
     async fn write_display_frame(&mut self, id: &DeviceId, jpeg_data: &[u8]) -> Result<()> {
+        self.write_display_frame_owned(id, Arc::new(jpeg_data.to_vec()))
+            .await
+    }
+
+    async fn write_display_frame_owned(
+        &mut self,
+        id: &DeviceId,
+        jpeg_data: Arc<Vec<u8>>,
+    ) -> Result<()> {
         let Some(device) = self.connected.get_mut(id) else {
             bail!("device {id} is not connected");
         };

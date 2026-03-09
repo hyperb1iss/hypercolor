@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
 
 use crate::drivers::corsair::framing::{
-    LCD_DATA_PER_PACKET, build_lcd_display_packet, build_lcd_report, chunk_bytes, pad_to,
+    LCD_DATA_PER_PACKET, build_lcd_display_packet, build_lcd_report, pad_to,
 };
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ProtocolZone,
@@ -241,14 +241,14 @@ impl Protocol for CorsairLcdProtocol {
     }
 
     fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
-        let chunks = chunk_bytes(jpeg_data, LCD_DATA_PER_PACKET);
-        let mut commands = chunks
-            .iter()
+        let chunk_count = jpeg_data.len().div_ceil(LCD_DATA_PER_PACKET);
+        let mut commands = jpeg_data
+            .chunks(LCD_DATA_PER_PACKET)
             .enumerate()
             .map(|(index, chunk)| {
                 Self::bulk_command(build_lcd_display_packet(
                     self.data_zone_byte,
-                    index + 1 == chunks.len(),
+                    index + 1 == chunk_count,
                     u8::try_from(index).unwrap_or(u8::MAX),
                     chunk,
                 ))
@@ -256,7 +256,7 @@ impl Protocol for CorsairLcdProtocol {
             .collect::<Vec<_>>();
 
         if self.keepalive_due() {
-            let packets_sent = u8::try_from(chunks.len()).unwrap_or(u8::MAX);
+            let packets_sent = u8::try_from(chunk_count).unwrap_or(u8::MAX);
             commands.push(self.keepalive_command(
                 0x01,
                 packets_sent,
