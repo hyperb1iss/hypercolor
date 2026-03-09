@@ -16,25 +16,6 @@ uniform float iBloom;
 uniform float iSpread;
 uniform float iDensity;
 
-float hash21(vec2 p) {
-    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
-
-float vnoise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-
-    float a = hash21(i);
-    float b = hash21(i + vec2(1.0, 0.0));
-    float c = hash21(i + vec2(0.0, 1.0));
-    float d = hash21(i + vec2(1.0, 1.0));
-
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-}
-
 vec3 plasmaPalette(float t, vec3 c1, vec3 c2, vec3 c3) {
     vec3 color = mix(c1, c2, smoothstep(0.04, 0.52, t));
     color = mix(color, c3, smoothstep(0.48, 0.96, t));
@@ -55,58 +36,48 @@ vec3 themedPalette(float t) {
 void main() {
     vec2 uv = gl_FragCoord.xy / iResolution.xy;
     float speed = max(iSpeed, 0.2);
-    float bloom = clamp(iBloom * 0.01, 0.0, 1.0);
+    float glow = clamp(iBloom * 0.01, 0.0, 1.0);
     float spread = clamp(iSpread * 0.01, 0.0, 1.0);
     float density = clamp(iDensity * 0.01, 0.10, 1.0);
-    float time = iTime * (0.34 + speed * 0.52);
+    float time = iTime * (0.18 + speed * 0.22);
 
     vec2 p = uv * 2.0 - 1.0;
     p.x *= iResolution.x / iResolution.y;
 
-    vec2 q = p * mix(2.8, 8.8, density);
-    q += vec2(
-        sin(p.y * 3.2 + time * 0.88),
-        cos(p.x * 2.7 - time * 0.76)
-    ) * (0.16 + spread * 0.40);
+    vec2 q = p * mix(1.6, 4.2, density);
+    vec2 drift = vec2(
+        sin(p.y * 1.9 + time * 0.61) + cos(p.y * 0.7 - time * 0.29),
+        cos(p.x * 1.7 - time * 0.57) + sin(p.x * 0.9 + time * 0.23)
+    );
+    q += drift * (0.08 + spread * 0.22);
 
     float plasma = 0.0;
-    plasma += sin(q.x * 1.2 + time * 1.34);
-    plasma += sin(q.y * 1.7 - time * 1.08);
-    plasma += sin((q.x + q.y) * 1.1 + time * 0.74);
+    plasma += sin(q.x + time * 0.81);
+    plasma += sin(q.y - time * 0.63);
+    plasma += sin((q.x + q.y) * 0.75 + time * 0.41);
     plasma += sin(length(q - vec2(
-        sin(time * 0.46) * 1.5,
-        cos(time * 0.34) * 1.3
-    )) * 3.1 - time * 1.42);
+        cos(time * 0.11) * 2.0,
+        sin(time * 0.19) * 1.5
+    )) * 1.4 + time * 0.37);
     plasma += sin(length(q + vec2(
-        cos(time * 0.29) * 1.2,
-        sin(time * 0.41) * 1.4
-    )) * 2.4 + time * 1.18);
+        sin(time * 0.17) * 1.8,
+        cos(time * 0.13) * 1.6
+    )) * 1.9 - time * 0.49);
     plasma = plasma / 5.0;
     plasma = 0.5 + 0.5 * plasma;
 
-    float bandWave = 0.5 + 0.5 * sin(plasma * mix(9.0, 20.0, density) * 6.28318 - time * 0.8);
-    float contour = smoothstep(0.76 - bloom * 0.16, 0.98, bandWave);
-    float lava = smoothstep(0.16, 0.94, plasma);
-    float zebra = 0.5 + 0.5 * sin((q.x + q.y * 0.8) * mix(1.8, 4.4, density) + time * 0.54);
+    float paletteShift = time * (0.015 + speed * 0.010);
+    vec3 palette = themedPalette(fract(plasma + paletteShift));
+    float body = smoothstep(0.08, 0.92, plasma);
+    float highlight = pow(body, mix(2.4, 1.4, glow));
 
-    float noise = vnoise(uv * vec2(22.0, 16.0) + vec2(time * 0.35, -time * 0.26));
-    vec3 palette = themedPalette(plasma);
-    vec3 cycle = themedPalette(fract(plasma + time * 0.08 + noise * 0.08 + zebra * 0.05));
-    palette = mix(palette, cycle, 0.18 + spread * 0.16);
+    vec3 color = mix(iBackgroundColor * 0.92, palette, 0.24 + body * 0.76);
+    color *= 0.62 + body * 0.48;
+    color += palette * highlight * (0.03 + glow * 0.09);
 
-    float glow = smoothstep(0.30, 1.0, lava + contour * 0.6) * (0.04 + bloom * 0.16);
-    vec3 color = iBackgroundColor;
-    color += themedPalette(fract(0.12 + zebra * 0.16)) * (0.04 + spread * 0.05) * (0.4 + noise * 0.6);
-    color += palette * lava * (0.40 + density * 0.44);
-    color += themedPalette(fract(plasma + 0.42)) * contour * (0.12 + bloom * 0.34);
-    color += cycle * glow;
-    color += mix(palette, cycle, 0.5) * contour * (0.05 + bloom * 0.12);
+    float vignette = smoothstep(1.42, 0.18, length(p));
+    color *= 0.84 + 0.16 * vignette;
 
-    float vignette = smoothstep(1.48, 0.10, length(p));
-    color *= 0.42 + 0.74 * vignette;
-
-    color = max(color, vec3(0.0));
-    color = 1.0 - exp(-color * mix(1.05, 1.78, bloom));
     color = pow(clamp(color, 0.0, 1.0), vec3(0.94));
 
     fragColor = vec4(color, 1.0);

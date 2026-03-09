@@ -1,4 +1,4 @@
-import { canvas, combo } from '@hypercolor/sdk'
+import { canvas, color, combo, num } from '@hypercolor/sdk'
 
 interface GlassSeed {
     baseX: number
@@ -31,60 +31,65 @@ interface GlassPalette {
     glint: Rgb
 }
 
-const PALETTE_NAMES = ['Glacier', 'Prism', 'Lagoon', 'Rose Quartz', 'Solar']
+type PaletteName = 'Custom' | 'Prism' | 'Solar' | 'Rose Quartz' | 'Lagoon' | 'Glacier'
+
+const PALETTE_NAMES: PaletteName[] = ['Prism', 'Lagoon', 'Glacier', 'Rose Quartz', 'Solar', 'Custom']
 const TAU = Math.PI * 2
 const DEFAULT_BACKGROUND = '#050913'
+const DEFAULT_COLOR_1 = '#22f0ff'
+const DEFAULT_COLOR_2 = '#ff46c8'
+const DEFAULT_COLOR_3 = '#3659ff'
 
-const PALETTES: Record<string, GlassPalette> = {
+const PALETTES: Record<Exclude<PaletteName, 'Custom'>, GlassPalette> = {
     Glacier: {
         bg:     { r: 4, g: 9, b: 22 },
         colors: [
-            hsvToRgb(205, 0.82, 0.82),
-            hsvToRgb(188, 0.76, 0.86),
-            hsvToRgb(244, 0.70, 0.76),
+            hsvToRgb(192, 0.94, 0.94),
+            hsvToRgb(224, 0.88, 0.92),
+            hsvToRgb(278, 0.76, 0.82),
         ],
-        edge:  hsvToRgb(192, 0.38, 0.98),
-        glint: hsvToRgb(220, 0.16, 1),
+        edge:  hsvToRgb(206, 0.78, 0.90),
+        glint: hsvToRgb(248, 0.58, 0.72),
     },
     Prism: {
-        bg:     { r: 7, g: 4, b: 18 },
+        bg:     { r: 6, g: 3, b: 18 },
         colors: [
-            hsvToRgb(188, 0.84, 0.90),
-            hsvToRgb(284, 0.82, 0.88),
-            hsvToRgb(320, 0.76, 0.86),
+            hsvToRgb(188, 0.96, 0.98),
+            hsvToRgb(244, 0.90, 0.98),
+            hsvToRgb(320, 0.92, 0.96),
         ],
-        edge:  hsvToRgb(196, 0.34, 1),
-        glint: hsvToRgb(285, 0.18, 1),
+        edge:  hsvToRgb(214, 0.86, 0.92),
+        glint: hsvToRgb(292, 0.62, 0.76),
     },
     Lagoon: {
         bg:     { r: 2, g: 12, b: 20 },
         colors: [
-            hsvToRgb(150, 0.80, 0.82),
-            hsvToRgb(184, 0.84, 0.88),
-            hsvToRgb(214, 0.76, 0.82),
+            hsvToRgb(156, 0.88, 0.88),
+            hsvToRgb(188, 0.96, 0.96),
+            hsvToRgb(252, 0.86, 0.92),
         ],
-        edge:  hsvToRgb(182, 0.32, 0.98),
-        glint: hsvToRgb(200, 0.12, 1),
+        edge:  hsvToRgb(182, 0.78, 0.90),
+        glint: hsvToRgb(210, 0.56, 0.72),
     },
     'Rose Quartz': {
         bg:     { r: 10, g: 5, b: 18 },
         colors: [
-            hsvToRgb(330, 0.76, 0.88),
-            hsvToRgb(286, 0.78, 0.84),
-            hsvToRgb(214, 0.74, 0.80),
+            hsvToRgb(334, 0.90, 0.96),
+            hsvToRgb(286, 0.86, 0.92),
+            hsvToRgb(210, 0.90, 0.96),
         ],
-        edge:  hsvToRgb(320, 0.32, 0.98),
-        glint: hsvToRgb(222, 0.16, 1),
+        edge:  hsvToRgb(318, 0.80, 0.92),
+        glint: hsvToRgb(254, 0.52, 0.74),
     },
     Solar: {
         bg:     { r: 14, g: 6, b: 12 },
         colors: [
-            hsvToRgb(24, 0.88, 0.92),
-            hsvToRgb(330, 0.78, 0.88),
-            hsvToRgb(292, 0.74, 0.82),
+            hsvToRgb(22, 0.92, 0.98),
+            hsvToRgb(320, 0.92, 0.96),
+            hsvToRgb(248, 0.90, 0.94),
         ],
-        edge:  hsvToRgb(28, 0.30, 1),
-        glint: hsvToRgb(340, 0.18, 1),
+        edge:  hsvToRgb(24, 0.88, 0.92),
+        glint: hsvToRgb(334, 0.58, 0.76),
     },
 }
 
@@ -161,19 +166,21 @@ function mixRgb(a: Rgb, b: Rgb, amount: number): Rgb {
     }
 }
 
+function saturateRgb(color: Rgb, amount: number): Rgb {
+    const luminance = color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722
+
+    return {
+        r: clamp(Math.round(luminance + (color.r - luminance) * amount), 0, 255),
+        g: clamp(Math.round(luminance + (color.g - luminance) * amount), 0, 255),
+        b: clamp(Math.round(luminance + (color.b - luminance) * amount), 0, 255),
+    }
+}
+
 function scaleRgb(color: Rgb, scale: number): Rgb {
     return {
         r: clamp(Math.round(color.r * scale), 0, 255),
         g: clamp(Math.round(color.g * scale), 0, 255),
         b: clamp(Math.round(color.b * scale), 0, 255),
-    }
-}
-
-function addRgb(base: Rgb, glow: Rgb): Rgb {
-    return {
-        r: clamp(base.r + glow.r, 0, 255),
-        g: clamp(base.g + glow.g, 0, 255),
-        b: clamp(base.b + glow.b, 0, 255),
     }
 }
 
@@ -196,17 +203,43 @@ function createSeed(index: number): GlassSeed {
     }
 }
 
-function getPalette(name: string): GlassPalette {
-    return PALETTES[name] ?? PALETTES.Glacier
+function resolvePalette(
+    name: PaletteName,
+    color1: string,
+    color2: string,
+    color3: string,
+): GlassPalette {
+    if (name !== 'Custom') {
+        return PALETTES[name] ?? PALETTES.Prism
+    }
+
+    const primary = hexToRgb(color1, PALETTES.Prism.colors[0])
+    const secondary = hexToRgb(color2, PALETTES.Prism.colors[1])
+    const accent = hexToRgb(color3, PALETTES.Prism.colors[2])
+    const edge = saturateRgb(mixRgb(primary, secondary, 0.38), 1.16)
+    const glint = scaleRgb(saturateRgb(mixRgb(primary, accent, 0.52), 1.10), 0.82)
+
+    return {
+        bg: { r: 5, g: 9, b: 19 },
+        colors: [primary, secondary, accent],
+        edge,
+        glint,
+    }
 }
 
 export default canvas.stateful('Voronoi Glass', {
     speed:      [1, 10, 4],
     density:    [10, 100, 42],
+    drift:      num('Drift', [0, 100], 44),
     refraction: [0, 100, 58],
+    contrast:   num('Contrast', [0, 100], 56),
     edgeGlow:   [0, 100, 66],
-    palette:    combo('Palette', PALETTE_NAMES, { default: 'Glacier' }),
-    background: DEFAULT_BACKGROUND,
+    glaze:      num('Glaze', [0, 100], 18),
+    palette:    combo('Palette', PALETTE_NAMES, { default: 'Prism' }),
+    color1:     color('Color 1', DEFAULT_COLOR_1),
+    color2:     color('Color 2', DEFAULT_COLOR_2),
+    color3:     color('Color 3', DEFAULT_COLOR_3),
+    background: color('Backdrop', DEFAULT_BACKGROUND),
 }, () => {
     let seeds: GlassSeed[] = []
     let seedCount = 0
@@ -243,13 +276,21 @@ export default canvas.stateful('Voronoi Glass', {
     return (ctx, time, c) => {
         const speedMix = clamp(((c.speed as number) - 1) / 9, 0, 1)
         const densityMix = clamp(((c.density as number) - 10) / 90, 0, 1)
+        const driftMix = clamp((c.drift as number) / 100, 0, 1)
         const refractionMix = clamp((c.refraction as number) / 100, 0, 1)
+        const contrastMix = clamp((c.contrast as number) / 100, 0, 1)
         const edgeGlowMix = clamp((c.edgeGlow as number) / 100, 0, 1)
-        const palette = getPalette(c.palette as string)
+        const glazeMix = clamp((c.glaze as number) / 100, 0, 1)
+        const palette = resolvePalette(
+            c.palette as PaletteName,
+            c.color1 as string,
+            c.color2 as string,
+            c.color3 as string,
+        )
         const background = mixRgb(
             palette.bg,
             hexToRgb(c.background as string, palette.bg),
-            0.3,
+            0.82,
         )
 
         const w = ctx.canvas.width
@@ -265,18 +306,18 @@ export default canvas.stateful('Voronoi Glass', {
         const data = image.data
         const positions: SeedPosition[] = new Array(seeds.length)
 
-        const driftRate = 0.12 + speedMix * 0.3
+        const driftRate = 0.08 + speedMix * 0.22 + driftMix * 0.16
         const refractionRate = 0.16 + speedMix * 0.2
-        const glazeRate = 0.08 + speedMix * 0.12
+        const glazeRate = 0.06 + speedMix * 0.08 + glazeMix * 0.08
 
         for (let i = 0; i < seeds.length; i++) {
             const seed = seeds[i]
             const orbitX = Math.sin(
                 time * (driftRate * (0.75 + seed.driftX * 0.75)) + seed.phaseX,
-            ) * (0.05 + seed.driftX * 0.08)
+            ) * ((0.03 + seed.driftX * 0.06) * (0.45 + driftMix * 0.95))
             const orbitY = Math.cos(
                 time * (driftRate * (0.65 + seed.driftY * 0.85)) + seed.phaseY,
-            ) * (0.05 + seed.driftY * 0.07)
+            ) * ((0.03 + seed.driftY * 0.05) * (0.45 + driftMix * 0.95))
 
             positions[i] = {
                 x: clamp(0.08 + seed.baseX * 0.84 + orbitX, 0.04, 0.96) * w,
@@ -287,7 +328,7 @@ export default canvas.stateful('Voronoi Glass', {
         }
 
         const cellRadius = Math.sqrt((w * h) / positions.length) * (0.7 + (1 - densityMix) * 0.18)
-        const edgeWidth = cellRadius * (0.12 + edgeGlowMix * 0.12)
+        const edgeWidth = cellRadius * (0.10 + edgeGlowMix * 0.10 + contrastMix * 0.05)
 
         let offset = 0
 
@@ -348,33 +389,34 @@ export default canvas.stateful('Voronoi Glass', {
                 )
 
                 const tintMix = clamp(
-                    0.1 + refractionMix * 0.2 + edgeFactor * 0.18 + glaze * 0.1,
-                    0.08,
-                    0.54,
+                    0.04 + refractionMix * 0.10 + edgeFactor * 0.14 + glaze * glazeMix * 0.04,
+                    0.03,
+                    0.26,
                 )
 
                 const interior = mixRgb(
                     baseColor,
                     palette.glint,
-                    0.12 + facet * 0.18 + centerFactor * 0.1,
+                    0.04 + facet * (0.06 + glazeMix * 0.04) + centerFactor * (0.04 + contrastMix * 0.06),
                 )
                 const refracted = mixRgb(interior, neighborColor, tintMix)
 
                 const light = clamp(
-                    0.24 + centerFactor * 0.3 + facet * 0.12 + glaze * 0.08,
-                    0.16,
-                    0.84,
+                    0.12 + centerFactor * (0.22 + contrastMix * 0.12) + facet * 0.06 + glaze * glazeMix * 0.03,
+                    0.10,
+                    0.66 + contrastMix * 0.06,
                 )
 
                 let pixel = mixRgb(background, refracted, light)
 
-                const edgeColor = mixRgb(palette.edge, neighborColor, 0.12 + glaze * 0.12)
-                pixel = addRgb(
+                const edgeColor = saturateRgb(mixRgb(palette.edge, neighborColor, 0.06 + glaze * 0.05), 1.08)
+                pixel = mixRgb(
                     pixel,
-                    scaleRgb(edgeColor, edgeFactor * (0.08 + edgeGlowMix * 0.24)),
+                    edgeColor,
+                    edgeFactor * (0.10 + edgeGlowMix * 0.26 + contrastMix * 0.06),
                 )
 
-                const vignette = clamp(1 - (cx * cx + cy * cy) * 0.16, 0.76, 1)
+                const vignette = clamp(1 - (cx * cx + cy * cy) * (0.12 + contrastMix * 0.08), 0.72, 1)
                 pixel = scaleRgb(pixel, vignette)
 
                 data[offset] = pixel.r
@@ -388,7 +430,7 @@ export default canvas.stateful('Voronoi Glass', {
         ctx.putImageData(image, 0, 0)
 
         ctx.save()
-        ctx.globalCompositeOperation = 'screen'
+        ctx.globalCompositeOperation = 'lighter'
 
         const glowX = w * (0.35 + Math.sin(time * (0.09 + speedMix * 0.08)) * 0.12)
         const glowY = h * (0.32 + Math.cos(time * (0.07 + speedMix * 0.06)) * 0.14)
@@ -400,8 +442,8 @@ export default canvas.stateful('Voronoi Glass', {
             glowY,
             minDim * (0.62 + refractionMix * 0.18),
         )
-        glow.addColorStop(0, toRgba(palette.glint, 0.1 + edgeGlowMix * 0.04))
-        glow.addColorStop(0.55, toRgba(palette.edge, 0.05 + edgeGlowMix * 0.05))
+        glow.addColorStop(0, toRgba(palette.glint, 0.012 + glazeMix * 0.014 + edgeGlowMix * 0.010))
+        glow.addColorStop(0.55, toRgba(palette.edge, 0.008 + edgeGlowMix * 0.016))
         glow.addColorStop(1, 'rgba(0,0,0,0)')
         ctx.fillStyle = glow
         ctx.fillRect(0, 0, w, h)
@@ -412,8 +454,11 @@ export default canvas.stateful('Voronoi Glass', {
             0.18,
             0.82,
         )
-        glazeOverlay.addColorStop(0, toRgba(palette.glint, 0.02))
-        glazeOverlay.addColorStop(shimmerStop, toRgba(palette.edge, 0.05 + refractionMix * 0.04))
+        glazeOverlay.addColorStop(0, toRgba(palette.glint, 0.004 + glazeMix * 0.006))
+        glazeOverlay.addColorStop(
+            shimmerStop,
+            toRgba(palette.edge, 0.010 + glazeMix * 0.010 + refractionMix * 0.010),
+        )
         glazeOverlay.addColorStop(1, 'rgba(0,0,0,0)')
         ctx.fillStyle = glazeOverlay
         ctx.fillRect(0, 0, w, h)
@@ -421,5 +466,5 @@ export default canvas.stateful('Voronoi Glass', {
         ctx.restore()
     }
 }, {
-    description: 'Slow-drifting Voronoi glass with broad LED-safe cells and soft prism edges',
+    description: 'LED-friendly stained glass cells with deeper controls, lower white skew, and restrained glaze overlays',
 })

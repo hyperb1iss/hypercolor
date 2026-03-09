@@ -91,6 +91,10 @@ function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value))
 }
 
+function lerp(start: number, end: number, amount: number): number {
+    return start + (end - start) * clamp(amount, 0, 1)
+}
+
 function wrap(value: number, max: number): number {
     if (max <= 0) return 0
     return ((value % max) + max) % max
@@ -122,6 +126,19 @@ function hexToRgb(hex: string): RGB {
 function rgbToHex(rgb: RGB): string {
     const channel = (value: number) => clamp(Math.round(value), 0, 255).toString(16).padStart(2, '0')
     return `#${channel(rgb.r)}${channel(rgb.g)}${channel(rgb.b)}`
+}
+
+function mixRgb(a: RGB, b: RGB, amount: number): RGB {
+    const t = clamp(amount, 0, 1)
+    return {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+    }
+}
+
+function mixHex(a: string, b: string, amount: number): string {
+    return rgbToHex(mixRgb(hexToRgb(a), hexToRgb(b), amount))
 }
 
 function rgbToHsl(rgb: RGB): HSL {
@@ -196,7 +213,8 @@ function hslToRgb(hsl: HSL): RGB {
 function ledSafeHue(hue: number): number {
     const wrapped = wrap(hue, 360)
     if (wrapped >= 30 && wrapped < 90) {
-        return wrapped < 60 ? 24 : 120
+        const t = (wrapped - 30) / 60
+        return lerp(24, 120, t * t * (3 - 2 * t))
     }
     return wrapped
 }
@@ -323,6 +341,34 @@ function drawDash(
     ctx.restore()
 }
 
+function drawCapsule(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    rotation: number,
+    color: string,
+): void {
+    const radius = Math.min(width, height) * 0.5
+    const halfW = width * 0.5
+    const halfH = height * 0.5
+
+    ctx.save()
+    ctx.translate(x, y)
+    ctx.rotate(rotation)
+    ctx.fillStyle = color
+    ctx.beginPath()
+    ctx.moveTo(-halfW + radius, -halfH)
+    ctx.lineTo(halfW - radius, -halfH)
+    ctx.arc(halfW - radius, 0, radius, -Math.PI * 0.5, Math.PI * 0.5)
+    ctx.lineTo(-halfW + radius, halfH)
+    ctx.arc(-halfW + radius, 0, radius, Math.PI * 0.5, -Math.PI * 0.5)
+    ctx.closePath()
+    ctx.fill()
+    ctx.restore()
+}
+
 function drawMiniSquiggle(
     ctx: CanvasRenderingContext2D,
     x: number,
@@ -375,9 +421,40 @@ function drawStarburst(
     }
 }
 
-function drawBackground(ctx: CanvasRenderingContext2D, w: number, h: number, color: string): void {
-    ctx.fillStyle = color
+function drawBackground(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    palette: Palette,
+    time: number,
+    glow: number,
+    motion: number,
+): void {
+    ctx.fillStyle = palette.background
     ctx.fillRect(0, 0, w, h)
+
+    ctx.save()
+    ctx.globalCompositeOperation = 'lighter'
+
+    const glowCenterX = w * (0.34 + Math.sin(time * (0.08 + motion * 0.06)) * 0.08)
+    const glowCenterY = h * (0.30 + Math.cos(time * (0.07 + motion * 0.05)) * 0.08)
+    const glowRadius = Math.max(w, h) * (0.72 + glow * 0.12)
+
+    const halo = ctx.createRadialGradient(glowCenterX, glowCenterY, 0, glowCenterX, glowCenterY, glowRadius)
+    halo.addColorStop(0, rgba(mixHex(palette.front, palette.background, 0.38), 0.05 + glow * 0.05))
+    halo.addColorStop(0.55, rgba(mixHex(palette.squiggle, palette.background, 0.56), 0.025 + glow * 0.03))
+    halo.addColorStop(1, 'rgba(0, 0, 0, 0)')
+    ctx.fillStyle = halo
+    ctx.fillRect(0, 0, w, h)
+
+    const sweep = ctx.createLinearGradient(0, 0, w, h)
+    sweep.addColorStop(0, rgba(mixHex(palette.accent, palette.background, 0.62), 0.02 + glow * 0.02))
+    sweep.addColorStop(0.48, 'rgba(0, 0, 0, 0)')
+    sweep.addColorStop(1, rgba(mixHex(palette.squiggle, palette.background, 0.66), 0.018 + glow * 0.02))
+    ctx.fillStyle = sweep
+    ctx.fillRect(0, 0, w, h)
+
+    ctx.restore()
 }
 
 function getBasePalette(controls: Record<string, unknown>): Palette {
@@ -400,7 +477,7 @@ function getActivePalette(controls: Record<string, unknown>, time: number): Pale
     if (colorMode !== 'Color Cycle') return base
 
     const cycleSpeed = controls.cycleSpeed as number
-    const shift = time * (6 + cycleSpeed * 1.2)
+    const shift = time * (1.2 + cycleSpeed * 0.18)
     return {
         background: shiftHexHue(base.background, shift * 0.2 - 24),
         front: shiftHexHue(base.front, shift),
@@ -411,27 +488,27 @@ function getActivePalette(controls: Record<string, unknown>, time: number): Pale
 
 function buildFlecks(count: number): Fleck[] {
     return Array.from({ length: count }, (_, index) => ({
-        x: hash(index * 0.83 + 1.1),
-        y: hash(index * 1.21 + 6.2),
-        size: 0.6 + hash(index * 1.71 + 2.3) * 3.6,
+        x: 0.04 + hash(index * 0.83 + 1.1) * 0.92,
+        y: 0.05 + hash(index * 1.21 + 6.2) * 0.90,
+        size: 0.8 + hash(index * 1.71 + 2.3) * 2.1,
         rotation: hash(index * 2.31 + 7.4) * Math.PI * 2,
         variant: Math.floor(hash(index * 3.07 + 4.8) * 5),
         colorIndex: Math.floor(hash(index * 4.41 + 5.3) * 3),
-        drift: 0.8 + hash(index * 5.31 + 2.2) * 1.6,
+        drift: 1.2 + hash(index * 5.31 + 2.2) * 4.4,
         phase: hash(index * 7.19 + 8.1) * Math.PI * 2,
     }))
 }
 
 function buildOrnaments(count: number): Ornament[] {
     return Array.from({ length: count }, (_, index) => ({
-        x: hash(index * 0.91 + 2.4),
-        y: hash(index * 1.47 + 4.2),
-        size: 6 + hash(index * 2.93 + 6.1) * 26,
+        x: 0.10 + hash(index * 0.91 + 2.4) * 0.80,
+        y: 0.12 + hash(index * 1.47 + 4.2) * 0.74,
+        size: 8 + hash(index * 2.93 + 6.1) * 18,
         rotation: hash(index * 3.71 + 9.5) * Math.PI * 2,
         variant: Math.floor(hash(index * 4.13 + 2.9) * 5),
         colorIndex: Math.floor(hash(index * 5.81 + 7.7) * 3),
         phase: hash(index * 6.71 + 1.7) * Math.PI * 2,
-        drift: 4 + hash(index * 7.43 + 8.9) * 16,
+        drift: 8 + hash(index * 7.43 + 8.9) * 14,
     }))
 }
 
@@ -447,24 +524,29 @@ function drawCarpetFlecks(
     const colors = [palette.front, palette.squiggle, palette.accent]
 
     for (const fleck of flecks) {
-        const x = wrap(fleck.x * w + Math.sin(time * 0.22 + fleck.phase) * fleck.drift * moveScale * 2.2, w)
-        const y = wrap(fleck.y * h + Math.cos(time * 0.19 + fleck.phase) * fleck.drift * moveScale * 1.8, h)
+        const swayX = Math.sin(time * (0.12 + fleck.drift * 0.015) + fleck.phase) * fleck.drift * (0.25 + moveScale * 0.45)
+        const swayY = Math.cos(time * (0.10 + fleck.drift * 0.012) + fleck.phase * 1.2) * fleck.drift * (0.16 + moveScale * 0.28)
+        const x = clamp(fleck.x * w + swayX, 2, w - 2)
+        const y = clamp(fleck.y * h + swayY, 2, h - 2)
         const color = colors[fleck.colorIndex] ?? palette.front
+        const size = fleck.size * (0.88 + 0.16 * Math.sin(time * 0.20 + fleck.phase))
+        const alpha = 0.38 + 0.14 * Math.sin(time * 0.24 + fleck.phase * 0.9)
+        const ink = rgba(color, alpha)
 
         if (fleck.variant === 0) {
-            ctx.fillStyle = color
-            ctx.fillRect(x, y, fleck.size, fleck.size)
+            ctx.fillStyle = ink
+            ctx.fillRect(x, y, size, size)
         } else if (fleck.variant === 1) {
-            drawDash(ctx, x, y, fleck.size * 2.8, fleck.rotation, Math.max(1, fleck.size * 0.55), color)
+            drawDash(ctx, x, y, size * 2.5, fleck.rotation, Math.max(1, size * 0.45), ink)
         } else if (fleck.variant === 2) {
-            ctx.fillStyle = color
+            ctx.fillStyle = ink
             ctx.beginPath()
-            ctx.arc(x, y, fleck.size * 0.6, 0, Math.PI * 2)
+            ctx.arc(x, y, size * 0.5, 0, Math.PI * 2)
             ctx.fill()
         } else if (fleck.variant === 3) {
-            drawTriangle(ctx, x, y, fleck.size * 0.85, fleck.rotation, color)
+            drawTriangle(ctx, x, y, size * 0.75, fleck.rotation, ink)
         } else {
-            drawRing(ctx, x, y, fleck.size * 0.7, Math.max(1, fleck.size * 0.28), color)
+            drawRing(ctx, x, y, size * 0.7, Math.max(1, size * 0.28), ink)
         }
     }
 }
@@ -480,30 +562,27 @@ function drawOrnaments(
     moveScale: number,
 ): void {
     const colors = [palette.front, palette.squiggle, palette.accent]
-    const driftMultiplier = scene === 'Pattern 1' ? 1.4 : scene === 'Pattern 2' ? 1.1 : 0.75
+    const driftMultiplier = scene === 'Pattern 1' ? 0.8 : scene === 'Pattern 2' ? 1 : 0.65
 
     for (const ornament of ornaments) {
-        const x = wrap(
-            ornament.x * w + Math.sin(time * 0.16 + ornament.phase) * ornament.drift * driftMultiplier * moveScale,
-            w,
-        )
-        const y = wrap(
-            ornament.y * h + Math.cos(time * 0.13 + ornament.phase) * ornament.drift * 0.7 * driftMultiplier * moveScale,
-            h,
-        )
+        const orbitX = Math.sin(time * (0.11 + ornament.drift * 0.004) + ornament.phase) * ornament.drift * driftMultiplier * (0.18 + moveScale * 0.34)
+        const orbitY = Math.cos(time * (0.09 + ornament.drift * 0.003) + ornament.phase * 1.2) * ornament.drift * 0.8 * driftMultiplier * (0.16 + moveScale * 0.28)
+        const size = ornament.size * (0.84 + 0.10 * Math.sin(time * 0.22 + ornament.phase))
+        const x = clamp(ornament.x * w + orbitX, size, w - size)
+        const y = clamp(ornament.y * h + orbitY, size, h - size)
         const color = colors[ornament.colorIndex] ?? palette.front
-        const size = ornament.size * (0.75 + 0.25 * Math.sin(time * 0.25 + ornament.phase))
+        const ink = rgba(color, 0.62)
 
         if (ornament.variant === 0) {
-            drawTriangle(ctx, x, y, size * 0.45, ornament.rotation, color)
+            drawTriangle(ctx, x, y, size * 0.38, ornament.rotation, ink)
         } else if (ornament.variant === 1) {
-            drawDiamond(ctx, x, y, size * 0.42, ornament.rotation, color)
+            drawDiamond(ctx, x, y, size * 0.36, ornament.rotation, ink)
         } else if (ornament.variant === 2) {
-            drawRing(ctx, x, y, size * 0.35, Math.max(1.4, size * 0.09), color)
+            drawRing(ctx, x, y, size * 0.30, Math.max(1.2, size * 0.08), ink)
         } else if (ornament.variant === 3) {
-            drawDash(ctx, x, y, size, ornament.rotation, Math.max(2, size * 0.1), color)
+            drawDash(ctx, x, y, size * 0.9, ornament.rotation, Math.max(1.8, size * 0.09), ink)
         } else {
-            drawStarburst(ctx, x, y, size * 0.42, color)
+            drawStarburst(ctx, x, y, size * 0.34, ink)
         }
     }
 }
@@ -515,16 +594,13 @@ function drawPatternOne(
     palette: Palette,
     time: number,
     moveScale: number,
+    glow: number,
 ): void {
     const sx = w / 320
     const sy = h / 200
-    const lineWidth = Math.max(8, 18 * Math.min(sx, sy))
-    const bandPeriod = 220 * sy
-    const bandY = [
-        wrap(h + 36 - time * moveScale * 30, bandPeriod) - 150 * sy,
-        wrap(h - 38 - time * moveScale * 30, bandPeriod) - 150 * sy,
-        wrap(h - 114 - time * moveScale * 30, bandPeriod) - 150 * sy,
-    ]
+    const scale = Math.min(sx, sy)
+    const lineWidth = Math.max(8, 16 * scale)
+    const bandY = [0.18, 0.46, 0.74]
 
     const rows = [
         [
@@ -561,62 +637,36 @@ function drawPatternOne(
         ],
     ]
 
-    for (const y of bandY) {
-        for (const row of rows) {
-            drawPolyline(ctx, scalePoints(row, 0, y, sx, sy), palette.squiggle, lineWidth)
+    for (let bandIndex = 0; bandIndex < bandY.length; bandIndex++) {
+        const y = h * bandY[bandIndex] + Math.sin(time * (0.26 + moveScale * 0.40) + bandIndex * 1.1) * h * 0.03
+        const xOffset = Math.sin(time * (0.18 + moveScale * 0.24) + bandIndex * 0.7) * 22 * scale
+
+        for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+            const points = scalePoints(rows[rowIndex], xOffset, y, sx, sy)
+            drawPolyline(ctx, points, rgba(palette.squiggle, 0.10 + glow * 0.06), lineWidth * 1.55)
+            drawPolyline(ctx, points, palette.squiggle, lineWidth)
         }
     }
 
-    const upwardLanes = [0.44 * w, -0.05 * w, 0.94 * w]
+    const upwardLanes = [0.18 * w, 0.50 * w, 0.82 * w]
     for (let laneIndex = 0; laneIndex < upwardLanes.length; laneIndex++) {
         const laneX = upwardLanes[laneIndex]
-        const lanePhase = laneIndex * 0.18
+        const laneSlant = laneIndex % 2 === 0 ? -1 : 1
 
-        ctx.save()
-        ctx.translate(laneX, h * 0.6)
-        ctx.rotate(0.3)
-        ctx.translate(-laneX, -h * 0.6)
-
-        for (let item = 0; item < 7; item++) {
-            const progress = wrap(time * moveScale * 0.13 + lanePhase + item * 0.21, 1)
-            const y = h * 1.2 - progress * (h + 200 * sy)
+        for (let item = 0; item < 5; item++) {
+            const anchor = h * lerp(0.18, 0.82, item / 4)
+            const y = anchor + Math.sin(time * (0.34 + moveScale * 0.46) + laneIndex * 0.7 + item * 0.8) * h * 0.028
+            const x = laneX + laneSlant * Math.cos(time * (0.22 + moveScale * 0.30) + item * 0.9) * w * 0.018
             const color = item % 2 === 0 ? palette.front : palette.accent
-            if (item % 2 === 0) {
-                ctx.fillStyle = color
-                ctx.beginPath()
-                ctx.arc(laneX + (item % 3 === 0 ? 10 * sx : -10 * sx), y, 26 * sy, 0, Math.PI * 2)
-                ctx.fill()
+
+            if (item % 3 === 0) {
+                drawCapsule(ctx, x, y, 18 * sx, 54 * sy, laneSlant * 0.26, color)
+            } else if (item % 3 === 1) {
+                drawRing(ctx, x, y, 16 * sy, Math.max(2, 5 * scale), color)
             } else {
-                ctx.fillStyle = color
-                ctx.fillRect(laneX - 12 * sx, y - 50 * sy, 24 * sx, 100 * sy)
+                drawDiamond(ctx, x, y, 18 * sy, Math.PI * 0.25, color)
             }
         }
-
-        ctx.restore()
-    }
-
-    const downwardLanes = [0.44 * w, 0.94 * w]
-    for (let laneIndex = 0; laneIndex < downwardLanes.length; laneIndex++) {
-        const laneX = downwardLanes[laneIndex]
-        const lanePhase = laneIndex * 0.26
-
-        ctx.save()
-        ctx.translate(laneX, h * 0.5)
-        ctx.rotate(0.3)
-        ctx.translate(-laneX, -h * 0.5)
-
-        for (let item = 0; item < 6; item++) {
-            const progress = wrap(time * moveScale * 0.11 + lanePhase + item * 0.22, 1)
-            const y = -80 * sy + progress * (h + 180 * sy)
-            const color = item % 2 === 0 ? palette.front : palette.accent
-            if (item % 2 === 0) {
-                drawTriangle(ctx, laneX + (item % 3 === 0 ? 20 * sx : -20 * sx), y, 34 * sy, Math.PI, color)
-            } else {
-                drawDiamond(ctx, laneX, y, 34 * sy, Math.PI * 0.25, color)
-            }
-        }
-
-        ctx.restore()
     }
 }
 
@@ -628,28 +678,29 @@ function drawPatternTwo(
     time: number,
     moveScale: number,
     density: number,
+    glow: number,
 ): void {
-    const squiggleCount = Math.floor(10 + density * 0.12)
-    const laneTravel = time * moveScale * 55
+    const densityMix = clamp(density / 100, 0, 1)
+    const squiggleCount = Math.floor(5 + densityMix * 5)
 
     for (let index = 0; index < squiggleCount; index++) {
         const baseX = (index + 0.5) * (w / squiggleCount)
-        const direction = index % 2 === 0 ? 1 : -1
-        const y = wrap(direction > 0 ? laneTravel + index * 14 : -laneTravel + index * 14, h + 80) - 40
-        const size = 8 + (index % 3) * 5
+        const y = h * lerp(0.18, 0.82, index / Math.max(1, squiggleCount - 1))
+            + Math.sin(time * (0.40 + moveScale * 0.36) + index * 0.9) * h * 0.05
+        const size = 8 + (index % 3) * 4
         drawMiniSquiggle(
             ctx,
-            baseX + Math.sin(time * 0.7 + index) * 4,
+            baseX + Math.sin(time * (0.46 + moveScale * 0.34) + index) * w * 0.018,
             y,
             size,
             index % 3 === 0 ? -0.2 : index % 3 === 1 ? 0.4 : 0,
-            palette.squiggle,
+            rgba(palette.squiggle, 0.66),
         )
     }
 
     const conveyors = [
-        { angle: Math.PI * 0.25, direction: 1, colorA: palette.front, colorB: palette.accent, shape: 'rect' },
-        { angle: Math.PI * 1.25, direction: 1, colorA: palette.accent, colorB: palette.front, shape: 'triangle' },
+        { angle: Math.PI * 0.22, colorA: palette.front, colorB: palette.accent, shape: 'capsule' },
+        { angle: Math.PI * 1.22, colorA: palette.accent, colorB: palette.front, shape: 'triangle' },
     ] as const
 
     for (const [laneIndex, lane] of conveyors.entries()) {
@@ -658,26 +709,28 @@ function drawPatternTwo(
         ctx.rotate(lane.angle)
         ctx.translate(-w * 0.5, -h * 0.5)
 
-        for (let item = 0; item < 10; item++) {
-            const progress = wrap(time * moveScale * 0.11 + item * 0.13 + laneIndex * 0.09, 1)
-            const x = -0.35 * w + progress * (w * 1.7)
-            const y = h * 0.5 + Math.sin(time * 0.5 + item) * 4
+        for (let item = 0; item < 7; item++) {
+            const base = item / 6
+            const travel = Math.sin(time * (0.26 + moveScale * 0.24) + item * 0.8 + laneIndex * 0.6) * 0.07
+            const progress = clamp(base + travel, 0.08, 0.92)
+            const x = lerp(w * 0.12, w * 0.88, progress)
+            const y = h * 0.5 + Math.sin(time * 0.34 + item * 0.7 + laneIndex) * h * 0.018
             const isAccent = item % 2 === 0
             const color = isAccent ? lane.colorA : lane.colorB
 
-            if (lane.shape === 'rect') {
-                ctx.fillStyle = color
-                ctx.fillRect(x - 18, y - 60, 36, 120)
-                ctx.fillStyle = isAccent ? lane.colorB : lane.colorA
-                ctx.fillRect(x - 13, y - 55, 26, 110)
+            if (lane.shape === 'capsule') {
+                drawCapsule(ctx, x, y, 30, 98, 0, rgba(color, 0.78))
+                drawCapsule(ctx, x, y, 14, 72, 0, rgba(isAccent ? lane.colorB : lane.colorA, 0.70))
             } else {
-                drawTriangle(ctx, x, y + 18, 38, Math.PI, color)
-                drawTriangle(ctx, x + 6, y + 28, 28, Math.PI * 0.88, isAccent ? lane.colorB : lane.colorA)
+                drawTriangle(ctx, x, y + 12, 30, Math.PI, rgba(color, 0.76))
+                drawTriangle(ctx, x + 4, y + 20, 20, Math.PI * 0.88, rgba(isAccent ? lane.colorB : lane.colorA, 0.68))
             }
         }
 
         ctx.restore()
     }
+
+    drawRing(ctx, w * 0.5, h * 0.5, Math.min(w, h) * 0.16, Math.max(4, Math.min(w, h) * 0.022), rgba(palette.squiggle, 0.10 + glow * 0.06))
 }
 
 function drawRibbon(
@@ -728,17 +781,24 @@ function drawPatternThree(
     palette: Palette,
     time: number,
     moveScale: number,
+    glow: number,
 ): void {
-    drawRibbon(ctx, w, h * 0.42, h * 0.1, Math.max(18, h * 0.11), palette.front, time * moveScale, 0)
-    drawRibbon(ctx, w, h * 0.42, h * 0.1, Math.max(8, h * 0.045), palette.accent, time * moveScale, 0.7)
-    drawRibbon(ctx, w, h * 0.68, h * 0.09, Math.max(16, h * 0.095), palette.squiggle, time * moveScale, 1.4)
-    drawRibbon(ctx, w, h * 0.68, h * 0.09, Math.max(7, h * 0.038), palette.accent, time * moveScale, 2.1)
+    const flow = time * (0.34 + moveScale * 0.52)
+
+    drawRibbon(ctx, w, h * 0.42, h * 0.09, Math.max(26, h * 0.15), rgba(palette.front, 0.10 + glow * 0.05), flow, 0)
+    drawRibbon(ctx, w, h * 0.42, h * 0.09, Math.max(17, h * 0.10), palette.front, flow, 0)
+    drawRibbon(ctx, w, h * 0.42, h * 0.09, Math.max(7, h * 0.042), palette.accent, flow, 0.7)
+    drawRibbon(ctx, w, h * 0.68, h * 0.08, Math.max(22, h * 0.13), rgba(palette.squiggle, 0.10 + glow * 0.05), flow, 1.4)
+    drawRibbon(ctx, w, h * 0.68, h * 0.08, Math.max(14, h * 0.085), palette.squiggle, flow, 1.4)
+    drawRibbon(ctx, w, h * 0.68, h * 0.08, Math.max(6, h * 0.034), palette.accent, flow, 2.1)
 
     const dotCount = 8
     for (let index = 0; index < dotCount; index++) {
-        const progress = wrap(time * moveScale * 0.09 + index * 0.16, 1)
-        const x = progress * w
-        const y = (index % 2 === 0 ? h * 0.2 : h * 0.85) + Math.sin(time * 0.9 + index) * (h * 0.04)
+        const baseProgress = index / Math.max(1, dotCount - 1)
+        const x = lerp(w * 0.08, w * 0.92, baseProgress)
+            + Math.sin(time * (0.28 + moveScale * 0.22) + index * 0.9) * w * 0.016
+        const y = (index % 2 === 0 ? h * 0.22 : h * 0.84)
+            + Math.sin(time * 0.48 + index) * (h * 0.03)
         const color = index % 2 === 0 ? palette.accent : palette.front
         if (index % 3 === 0) {
             drawRing(ctx, x, y, Math.max(10, h * 0.04), Math.max(2, h * 0.01), color)
@@ -751,24 +811,25 @@ function drawPatternThree(
 }
 
 export default canvas.stateful('Roller Rink', {
-    theme:           combo('Theme', THEMES, { default: 'Blacklight' }),
-    scene:           combo('Scene', SCENES, { default: 'Pattern 1' }),
-    colorMode:       combo('Color Mode', COLOR_MODES, { default: 'Static' }),
-    moveSpeed:       num('Animation Speed', [0, 100], 33),
-    cycleSpeed:      num('Color Cycle Speed', [0, 100], 48),
-    density:         num('Density', [0, 100], 72),
-    frontColor:      color('Front Color', '#ff52c8'),
-    squiggleColor:   color('Squiggle Color', '#25e7ff'),
+    theme:           combo('Palette', THEMES, { default: 'Blacklight' }),
+    scene:           combo('Layout', SCENES, { default: 'Pattern 3' }),
+    colorMode:       combo('Palette Motion', COLOR_MODES, { default: 'Static' }),
+    moveSpeed:       num('Motion', [0, 100], 24),
+    cycleSpeed:      num('Color Drift', [0, 100], 22),
+    density:         num('Decor Density', [0, 100], 42),
+    glow:            num('Glow', [0, 100], 34),
+    frontColor:      color('Primary Color', '#ff52c8'),
+    squiggleColor:   color('Line Color', '#25e7ff'),
     accentColor:     color('Accent Color', '#ffb347'),
-    backgroundColor: color('Background Color', '#05050b'),
+    backgroundColor: color('Backdrop Color', '#05050b'),
 }, () => {
     let flecks: Fleck[] = []
     let ornaments: Ornament[] = []
     let lastDensity = -1
 
     function reseed(density: number): void {
-        const fleckCount = Math.floor(84 + density * 1.9)
-        const ornamentCount = Math.floor(12 + density * 0.22)
+        const fleckCount = Math.floor(20 + density * 0.46)
+        const ornamentCount = Math.floor(4 + density * 0.08)
         flecks = buildFlecks(fleckCount)
         ornaments = buildOrnaments(ornamentCount)
         lastDensity = density
@@ -778,29 +839,30 @@ export default canvas.stateful('Roller Rink', {
         const width = ctx.canvas.width
         const height = ctx.canvas.height
         const density = controls.density as number
+        const glow = clamp((controls.glow as number) / 100, 0, 1)
 
         if (flecks.length === 0 || ornaments.length === 0 || density !== lastDensity) {
             reseed(density)
         }
 
-        const moveScale = clamp((controls.moveSpeed as number) / 33, 0, 3.1)
+        const moveScale = clamp((controls.moveSpeed as number) / 100, 0, 1)
         const scene = controls.scene as SceneName
         const palette = getActivePalette(controls as Record<string, unknown>, time)
 
-        drawBackground(ctx, width, height, palette.background)
+        drawBackground(ctx, width, height, palette, time, glow, moveScale)
         drawCarpetFlecks(ctx, width, height, flecks, palette, time, moveScale)
         drawOrnaments(ctx, width, height, ornaments, palette, time, scene, moveScale)
 
         if (scene === 'Pattern 1') {
-            drawPatternOne(ctx, width, height, palette, time, moveScale)
+            drawPatternOne(ctx, width, height, palette, time, moveScale, glow)
         } else if (scene === 'Pattern 2') {
-            drawPatternTwo(ctx, width, height, palette, time, moveScale, density)
+            drawPatternTwo(ctx, width, height, palette, time, moveScale, density, glow)
         } else {
-            drawPatternThree(ctx, width, height, palette, time, moveScale)
+            drawPatternThree(ctx, width, height, palette, time, moveScale, glow)
         }
 
     }
 }, {
-    description: 'Sharp blacklight carpet geometry inspired by the original 90s bus-and-rink patterns, now with themed palettes',
+    description: 'Smooth blacklight carpet patterns with softer motion, calmer decor, and richer palette controls',
     author: 'Hypercolor',
 })
