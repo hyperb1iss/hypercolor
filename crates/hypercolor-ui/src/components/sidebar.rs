@@ -195,10 +195,23 @@ pub fn Sidebar() -> impl IntoView {
 
     // ── Live canvas + palette from WebSocket frames ────────────────────
     let ws = use_context::<WsContext>();
-    let canvas_frame = Signal::derive(move || ws.and_then(|ctx| ctx.canvas_frame.get()));
-    let preview_fps = Signal::derive(move || ws.map_or(0.0, |ctx| ctx.preview_fps.get()));
-    let preview_target_fps =
-        Signal::derive(move || ws.map_or(0, |ctx| ctx.preview_target_fps.get()));
+    // Avoid Signal::derive re-wrap — pass ReadSignals directly when WS is available
+    let (canvas_frame, preview_fps, preview_target_fps): (
+        Signal<Option<crate::ws::CanvasFrame>>,
+        Signal<f32>,
+        Signal<u32>,
+    ) = match ws {
+        Some(ctx) => (
+            ctx.canvas_frame.into(),
+            ctx.preview_fps.into(),
+            ctx.preview_target_fps.into(),
+        ),
+        None => (
+            Signal::derive(|| None),
+            Signal::derive(|| 0.0_f32),
+            Signal::derive(|| 0_u32),
+        ),
+    };
     let (live_palette, set_live_palette) = signal(None::<LivePalette>);
     let (last_palette_time, set_last_palette_time) = signal(0.0_f64);
     let global_brightness_resource = LocalResource::new(api::fetch_global_brightness);

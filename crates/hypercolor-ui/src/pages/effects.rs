@@ -129,10 +129,8 @@ pub fn EffectsPage() -> impl IntoView {
     // Count how many effects are favorited (for the badge)
     let favorites_count = Memo::new(move |_| fx.favorite_ids.get().len());
 
-    let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
-    let preview_fps = Signal::derive(move || ws.preview_fps.get());
-    let controls = Signal::derive(move || fx.active_controls.get());
-    let control_values = Signal::derive(move || fx.active_control_values.get());
+    let controls: Signal<Vec<ControlDefinition>> = fx.active_controls.into();
+    let control_values: Signal<std::collections::HashMap<String, ControlValue>> = fx.active_control_values.into();
     let accent_rgb =
         Signal::derive(move || category_accent_rgb(&fx.active_effect_category.get()).to_string());
 
@@ -525,8 +523,8 @@ pub fn EffectsPage() -> impl IntoView {
                                 // Live preview
                                 <div class="rounded-lg bg-black overflow-hidden edge-glow">
                                     <CanvasPreview
-                                        frame=canvas_frame
-                                        fps=preview_fps
+                                        frame=ws.canvas_frame
+                                        fps=ws.preview_fps
                                         show_fps=true
                                         fps_target=ws.preview_target_fps
                                     />

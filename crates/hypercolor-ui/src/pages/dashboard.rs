@@ -15,11 +15,6 @@ pub fn DashboardPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
     let status_resource = LocalResource::new(api::fetch_status);
 
-    let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
-    let preview_fps = Signal::derive(move || ws.preview_fps.get());
-    let metrics = Signal::derive(move || ws.metrics.get());
-    let backpressure = Signal::derive(move || ws.backpressure_notice.get());
-
     view! {
         <div class="space-y-5 max-w-6xl animate-fade-in">
             // Top row: preview + favorites side by side
@@ -39,8 +34,8 @@ pub fn DashboardPage() -> impl IntoView {
                     </div>
                     <div class="p-3">
                         <CanvasPreview
-                            frame=canvas_frame
-                            fps=preview_fps
+                            frame=ws.canvas_frame
+                            fps=ws.preview_fps
                             show_fps=true
                             fps_target=ws.preview_target_fps
                         />
@@ -69,10 +64,10 @@ pub fn DashboardPage() -> impl IntoView {
 
             // Performance stats
             <PerformancePanel
-                preview_fps=preview_fps
+                preview_fps=ws.preview_fps
                 preview_target_fps=ws.preview_target_fps
-                metrics=metrics
-                backpressure=backpressure
+                metrics=ws.metrics
+                backpressure=ws.backpressure_notice
             />
         </div>
     }
@@ -258,59 +253,61 @@ fn PerformancePanel(
         }
     };
 
-    let engine_text = Signal::derive(move || {
+    // Memo gates: only propagate to DOM when the formatted string actually changes.
+    // This prevents re-renders from metrics updates where only unrelated fields moved.
+    let engine_text = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| format!("{:.1}/{} fps", m.fps.actual, m.fps.target))
             .unwrap_or_else(|| "—".to_string())
     });
-    let engine_hint = Signal::derive(move || {
+    let engine_hint = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| format!("{} budget misses", m.fps.dropped))
             .unwrap_or_else(|| "render loop".to_string())
     });
-    let frame_time_text = Signal::derive(move || {
+    let frame_time_text = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| format!("{:.2} ms avg", m.frame_time.avg_ms))
             .unwrap_or_else(|| "—".to_string())
     });
-    let frame_time_hint = Signal::derive(move || {
+    let frame_time_hint = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| format!("p95 {:.2} ms", m.frame_time.p95_ms))
             .unwrap_or_else(|| "collecting samples".to_string())
     });
-    let preview_text = Signal::derive(move || {
+    let preview_text = Memo::new(move |_| {
         format!("{:.1}/{} fps", preview_fps.get(), preview_target_fps.get())
     });
-    let preview_hint = Signal::derive(move || {
+    let preview_hint = Memo::new(move |_| {
         if preview_target_fps.get() <= 15 {
             "debug preview cap".to_string()
         } else {
             "canvas stream delivery".to_string()
         }
     });
-    let websocket_text = Signal::derive(move || {
+    let websocket_text = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| format_bytes_per_sec(m.websocket.bytes_sent_per_sec))
             .unwrap_or_else(|| "—".to_string())
     });
-    let websocket_hint = Signal::derive(move || {
+    let websocket_hint = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| format!("{} client(s)", m.websocket.client_count))
             .unwrap_or_else(|| "metrics channel".to_string())
     });
-    let device_output_text = Signal::derive(move || {
+    let device_output_text = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| m.devices.output_errors.to_string())
             .unwrap_or_else(|| "0".to_string())
     });
-    let device_output_hint = Signal::derive(move || {
+    let device_output_hint = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| {
@@ -322,31 +319,31 @@ fn PerformancePanel(
             .unwrap_or_else(|| "device output".to_string())
     });
 
-    let input_stage = Signal::derive(move || {
+    let input_stage = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| m.stages.input_sampling_ms)
             .unwrap_or_default()
     });
-    let render_stage = Signal::derive(move || {
+    let render_stage = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| m.stages.effect_rendering_ms)
             .unwrap_or_default()
     });
-    let sample_stage = Signal::derive(move || {
+    let sample_stage = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| m.stages.spatial_sampling_ms)
             .unwrap_or_default()
     });
-    let push_stage = Signal::derive(move || {
+    let push_stage = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| m.stages.device_output_ms)
             .unwrap_or_default()
     });
-    let publish_stage = Signal::derive(move || {
+    let publish_stage = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| m.stages.event_bus_ms)
@@ -384,10 +381,10 @@ fn PerformancePanel(
 
             <div class="p-4 space-y-4">
                 <div class="grid grid-cols-2 xl:grid-cols-5 gap-3">
-                    {metric_card("Engine", engine_text, engine_hint)}
-                    {metric_card("Preview", preview_text, preview_hint)}
-                    {metric_card("Frame Time", frame_time_text, frame_time_hint)}
-                    {metric_card("WebSocket", websocket_text, websocket_hint)}
+                    {metric_card("Engine", engine_text.into(), engine_hint.into())}
+                    {metric_card("Preview", preview_text.into(), preview_hint.into())}
+                    {metric_card("Frame Time", frame_time_text.into(), frame_time_hint.into())}
+                    {metric_card("WebSocket", websocket_text.into(), websocket_hint.into())}
                     // Output errors inline as 5th metric card
                     <div class="rounded-lg border border-edge-subtle bg-surface-overlay/30 px-4 py-3">
                         <div class="text-[9px] font-mono uppercase tracking-[0.14em] text-fg-tertiary mb-1.5">
@@ -399,11 +396,11 @@ fn PerformancePanel(
                 </div>
 
                 <div class="grid grid-cols-2 lg:grid-cols-5 gap-2">
-                    {stage_chip("Input", input_stage)}
-                    {stage_chip("Render", render_stage)}
-                    {stage_chip("Sample", sample_stage)}
-                    {stage_chip("Queue", push_stage)}
-                    {stage_chip("Publish", publish_stage)}
+                    {stage_chip("Input", input_stage.into())}
+                    {stage_chip("Render", render_stage.into())}
+                    {stage_chip("Sample", sample_stage.into())}
+                    {stage_chip("Queue", push_stage.into())}
+                    {stage_chip("Publish", publish_stage.into())}
                 </div>
 
                 {move || backpressure.get().map(|notice| {

@@ -394,7 +394,9 @@ impl WsManager {
                     handle_json_message(
                         &msg,
                         &set_active_effect,
+                        metrics,
                         &set_metrics,
+                        backpressure_notice,
                         &set_backpressure_notice,
                         &set_last_device_event,
                         &set_audio_level,
@@ -537,7 +539,9 @@ fn decode_canvas_frame(buffer: js_sys::ArrayBuffer) -> Option<CanvasFrame> {
 fn handle_json_message(
     msg: &serde_json::Value,
     set_active: &WriteSignal<Option<String>>,
+    metrics: ReadSignal<Option<PerformanceMetrics>>,
     set_metrics: &WriteSignal<Option<PerformanceMetrics>>,
+    backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     set_backpressure_notice: &WriteSignal<Option<BackpressureNotice>>,
     set_last_device_event: &WriteSignal<Option<DeviceEventHint>>,
     set_audio_level: &WriteSignal<AudioLevel>,
@@ -590,7 +594,10 @@ fn handle_json_message(
                 if message.data.fps.target > 0 {
                     set_engine_preview_target.set(message.data.fps.target.min(60));
                 }
-                set_metrics.set(Some(message.data));
+                // Gate on equality — skip notification when data hasn't changed
+                if metrics.get_untracked().as_ref() != Some(&message.data) {
+                    set_metrics.set(Some(message.data));
+                }
             }
         }
         "subscribed" => {
@@ -614,12 +621,15 @@ fn handle_json_message(
                     set_preview_transport_cap
                         .update(|current| *current = (*current).min(message.suggested_fps));
                 }
-                set_backpressure_notice.set(Some(BackpressureNotice {
+                let notice = BackpressureNotice {
                     dropped_frames: message.dropped_frames,
                     channel: message.channel,
                     recommendation: message.recommendation,
                     suggested_fps: message.suggested_fps,
-                }));
+                };
+                if backpressure_notice.get_untracked().as_ref() != Some(&notice) {
+                    set_backpressure_notice.set(Some(notice));
+                }
             }
         }
         "event" => {
