@@ -1,5 +1,6 @@
 //! Native Corsair Lighting Node direct RGB protocol.
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
@@ -11,8 +12,8 @@ use crate::drivers::corsair::types::{
     LightingNodeColorChannel, LightingNodePacketId, LightingNodePortState,
 };
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
+    ProtocolZone, ResponseStatus, TransferType,
 };
 
 const MAX_LEDS_PER_CHANNEL: u32 = 204;
@@ -42,10 +43,10 @@ impl CorsairLightingNodeProtocol {
             .sum()
     }
 
-    fn normalize_colors(&self, colors: &[[u8; 3]]) -> Vec<[u8; 3]> {
+    fn normalize_colors<'a>(&self, colors: &'a [[u8; 3]]) -> Cow<'a, [[u8; 3]]> {
         let expected = self.total_leds_usize();
         if colors.len() == expected {
-            return colors.to_vec();
+            return Cow::Borrowed(colors);
         }
 
         let mut normalized = vec![[0_u8; 3]; expected];
@@ -59,63 +60,70 @@ impl CorsairLightingNodeProtocol {
             "corsair lighting node frame length mismatch; applying truncate/pad"
         );
 
-        normalized
+        Cow::Owned(normalized)
     }
 
-    fn packet(
-        packet_id: LightingNodePacketId,
-        payload: &[u8],
-        expects_response: bool,
-    ) -> ProtocolCommand {
-        let mut packet = vec![0_u8; LN_WRITE_BUF_SIZE];
-        packet[1] = packet_id.byte();
+    fn write_packet(buffer: &mut Vec<u8>, packet_id: LightingNodePacketId, payload: &[u8]) {
+        buffer.resize(LN_WRITE_BUF_SIZE, 0x00);
+        buffer[1] = packet_id.byte();
         let payload_len = payload.len().min(LN_WRITE_BUF_SIZE.saturating_sub(2));
-        packet[2..2 + payload_len].copy_from_slice(&payload[..payload_len]);
+        buffer[2..2 + payload_len].copy_from_slice(&payload[..payload_len]);
+    }
 
+    fn firmware_query() -> ProtocolCommand {
+        let mut data = Vec::with_capacity(LN_WRITE_BUF_SIZE);
+        Self::write_packet(&mut data, LightingNodePacketId::Firmware, &[]);
         ProtocolCommand {
-            data: packet,
-            expects_response,
+            data,
+            expects_response: true,
             response_delay: Duration::ZERO,
             post_delay: Duration::ZERO,
             transfer_type: TransferType::Primary,
         }
     }
 
-    fn firmware_query() -> ProtocolCommand {
-        Self::packet(LightingNodePacketId::Firmware, &[], true)
-    }
-
-    fn direct_packet(
-        channel: u8,
-        start: u8,
-        count: u8,
-        color_channel: LightingNodeColorChannel,
-        colors: &[u8],
-    ) -> ProtocolCommand {
-        let mut payload = Vec::with_capacity(colors.len().saturating_add(4));
-        payload.extend_from_slice(&[channel, start, count, color_channel.byte()]);
-        payload.extend_from_slice(colors);
-        Self::packet(LightingNodePacketId::Direct, &payload, true)
-    }
-
     fn commit_packet() -> ProtocolCommand {
-        Self::packet(LightingNodePacketId::Commit, &[0xFF], true)
+        let mut data = Vec::with_capacity(LN_WRITE_BUF_SIZE);
+        Self::write_packet(&mut data, LightingNodePacketId::Commit, &[0xFF]);
+        ProtocolCommand {
+            data,
+            expects_response: true,
+            response_delay: Duration::ZERO,
+            post_delay: Duration::ZERO,
+            transfer_type: TransferType::Primary,
+        }
     }
 
     fn port_state_packet(channel: u8, state: LightingNodePortState) -> ProtocolCommand {
-        Self::packet(
+        let mut data = Vec::with_capacity(LN_WRITE_BUF_SIZE);
+        Self::write_packet(
+            &mut data,
             LightingNodePacketId::PortState,
             &[channel, state.byte()],
-            true,
-        )
+        );
+        ProtocolCommand {
+            data,
+            expects_response: true,
+            response_delay: Duration::ZERO,
+            post_delay: Duration::ZERO,
+            transfer_type: TransferType::Primary,
+        }
     }
 
     fn brightness_packet(channel: u8, brightness: u8) -> ProtocolCommand {
-        Self::packet(
+        let mut data = Vec::with_capacity(LN_WRITE_BUF_SIZE);
+        Self::write_packet(
+            &mut data,
             LightingNodePacketId::Brightness,
             &[channel, brightness],
-            true,
-        )
+        );
+        ProtocolCommand {
+            data,
+            expects_response: true,
+            response_delay: Duration::ZERO,
+            post_delay: Duration::ZERO,
+            transfer_type: TransferType::Primary,
+        }
     }
 }
 
@@ -142,8 +150,14 @@ impl Protocol for CorsairLightingNodeProtocol {
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
-        let normalized = self.normalize_colors(colors);
         let mut commands = Vec::new();
+        self.encode_frame_into(colors, &mut commands);
+        commands
+    }
+
+    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+        let normalized = self.normalize_colors(colors);
+        let mut encoder = CommandBuffer::new(commands);
         let mut offset = 0_usize;
 
         for (channel_index, &channel_led_count) in self.channel_leds.iter().enumerate() {
@@ -152,45 +166,58 @@ impl Protocol for CorsairLightingNodeProtocol {
             let channel_colors = &normalized[offset..offset + count];
             offset += count;
 
-            commands.push(Self::port_state_packet(
-                channel,
-                LightingNodePortState::Software,
-            ));
+            encoder.push_fill(
+                true,
+                Duration::ZERO,
+                Duration::ZERO,
+                TransferType::Primary,
+                |buffer| {
+                    Self::write_packet(
+                        buffer,
+                        LightingNodePacketId::PortState,
+                        &[channel, LightingNodePortState::Software.byte()],
+                    );
+                },
+            );
 
             for (chunk_index, chunk) in channel_colors.chunks(DIRECT_CHUNK_SIZE).enumerate() {
-                let reds = chunk.iter().map(|color| color[0]).collect::<Vec<_>>();
-                let greens = chunk.iter().map(|color| color[1]).collect::<Vec<_>>();
-                let blues = chunk.iter().map(|color| color[2]).collect::<Vec<_>>();
                 let start = u8::try_from(chunk_index * DIRECT_CHUNK_SIZE).unwrap_or(u8::MAX);
                 let count = u8::try_from(chunk.len()).unwrap_or(u8::MAX);
 
-                commands.push(Self::direct_packet(
-                    channel,
-                    start,
-                    count,
-                    LightingNodeColorChannel::Red,
-                    &reds,
-                ));
-                commands.push(Self::direct_packet(
-                    channel,
-                    start,
-                    count,
-                    LightingNodeColorChannel::Green,
-                    &greens,
-                ));
-                commands.push(Self::direct_packet(
-                    channel,
-                    start,
-                    count,
-                    LightingNodeColorChannel::Blue,
-                    &blues,
-                ));
+                for (component, color_channel) in [
+                    (0_usize, LightingNodeColorChannel::Red),
+                    (1_usize, LightingNodeColorChannel::Green),
+                    (2_usize, LightingNodeColorChannel::Blue),
+                ] {
+                    encoder.push_fill(
+                        true,
+                        Duration::ZERO,
+                        Duration::ZERO,
+                        TransferType::Primary,
+                        |buffer| {
+                            buffer.resize(LN_WRITE_BUF_SIZE, 0x00);
+                            buffer[1] = LightingNodePacketId::Direct.byte();
+                            buffer[2] = channel;
+                            buffer[3] = start;
+                            buffer[4] = count;
+                            buffer[5] = color_channel.byte();
+                            for (index, color) in chunk.iter().enumerate() {
+                                buffer[6 + index] = color[component];
+                            }
+                        },
+                    );
+                }
             }
 
-            commands.push(Self::commit_packet());
+            encoder.push_fill(
+                true,
+                Duration::ZERO,
+                Duration::ZERO,
+                TransferType::Primary,
+                |buffer| Self::write_packet(buffer, LightingNodePacketId::Commit, &[0xFF]),
+            );
         }
-
-        commands
+        encoder.finish();
     }
 
     fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {

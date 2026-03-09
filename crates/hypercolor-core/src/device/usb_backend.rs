@@ -513,6 +513,7 @@ impl UsbBackend {
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             interval
         });
+        let mut frame_commands = Vec::new();
 
         loop {
             tokio::select! {
@@ -539,7 +540,11 @@ impl UsbBackend {
                                     "usb brightness write requested"
                                 );
 
-                                Self::run_commands(protocol.as_ref(), transport.as_ref(), commands)
+                                Self::run_commands(
+                                    protocol.as_ref(),
+                                    transport.as_ref(),
+                                    commands.as_slice(),
+                                )
                                     .await
                                     .with_context(|| format!("USB brightness write failed for device {device_id}"))
                             } else {
@@ -589,7 +594,11 @@ impl UsbBackend {
                         "usb keepalive tick"
                     );
 
-                    Self::run_commands(protocol.as_ref(), transport.as_ref(), commands)
+                    Self::run_commands(
+                        protocol.as_ref(),
+                        transport.as_ref(),
+                        commands.as_slice(),
+                    )
                         .await
                         .with_context(|| format!("USB keepalive failed for device {device_id}"))?;
                 }
@@ -624,6 +633,7 @@ impl UsbBackend {
                         protocol.as_ref(),
                         transport.as_ref(),
                         &frame,
+                        &mut frame_commands,
                     )
                     .await?;
                 }
@@ -639,8 +649,9 @@ impl UsbBackend {
         protocol: &dyn Protocol,
         transport: &dyn Transport,
         frame: &UsbFramePayload,
+        commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
-        let commands = protocol.encode_frame(&frame.colors);
+        protocol.encode_frame_into(&frame.colors, commands);
         let first_packet = commands.first().map_or_else(
             || "<none>".to_owned(),
             |command| describe_packet(&command.data),
@@ -656,7 +667,7 @@ impl UsbBackend {
             "usb frame write requested"
         );
 
-        Self::run_commands(protocol, transport, commands)
+        Self::run_commands(protocol, transport, commands.as_slice())
             .await
             .with_context(|| format!("USB frame write failed for device {device_id}"))
     }
@@ -687,7 +698,7 @@ impl UsbBackend {
             "usb display write requested"
         );
 
-        Self::run_commands(protocol, transport, commands)
+        Self::run_commands(protocol, transport, commands.as_slice())
             .await
             .with_context(|| format!("USB display write failed for device {device_id}"))
     }
@@ -701,6 +712,7 @@ impl UsbBackend {
     ) -> Result<()> {
         if led_count > 0 {
             let black_frame = vec![[0, 0, 0]; led_count];
+            let mut commands = Vec::new();
             if let Err(error) = Self::run_device_frame(
                 device_id,
                 protocol,
@@ -708,6 +720,7 @@ impl UsbBackend {
                 &UsbFramePayload {
                     colors: black_frame,
                 },
+                &mut commands,
             )
             .await
             {
@@ -727,7 +740,7 @@ impl UsbBackend {
             return Ok(());
         }
 
-        if let Err(error) = Self::run_commands(protocol, transport, shutdown).await {
+        if let Err(error) = Self::run_commands(protocol, transport, shutdown.as_slice()).await {
             warn!(
                 device_id = %device_id,
                 device = device_name,
@@ -750,16 +763,16 @@ impl UsbBackend {
     async fn run_commands(
         protocol: &dyn Protocol,
         transport: &dyn Transport,
-        commands: Vec<ProtocolCommand>,
+        commands: &[ProtocolCommand],
     ) -> Result<()> {
         let total_commands = commands.len();
 
-        for (index, command) in commands.into_iter().enumerate() {
+        for (index, command) in commands.iter().enumerate() {
             let command_position = index + 1;
             Self::trace_queued_command(
                 protocol,
                 transport,
-                &command,
+                command,
                 command_position,
                 total_commands,
             );
@@ -807,7 +820,7 @@ impl UsbBackend {
     async fn run_command(
         protocol: &dyn Protocol,
         transport: &dyn Transport,
-        command: ProtocolCommand,
+        command: &ProtocolCommand,
         command_position: usize,
         total_commands: usize,
     ) -> Result<()> {
@@ -838,7 +851,7 @@ impl UsbBackend {
                     "usb send starting"
                 );
                 transport
-                    .send_owned_with_type(command.data, command.transfer_type)
+                    .send_with_type(&command.data, command.transfer_type)
                     .await
                     .map_err(map_transport_error)?;
                 if !command.post_delay.is_zero() {
@@ -1068,14 +1081,18 @@ impl DeviceBackend for UsbBackend {
             "running USB init sequence"
         );
 
-        Self::run_commands(protocol.as_ref(), transport.as_ref(), init_sequence)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to run init sequence for {}",
-                    pending.descriptor.name
-                )
-            })?;
+        Self::run_commands(
+            protocol.as_ref(),
+            transport.as_ref(),
+            init_sequence.as_slice(),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "failed to run init sequence for {}",
+                pending.descriptor.name
+            )
+        })?;
 
         let connection_diagnostics = protocol.connection_diagnostics();
         if !connection_diagnostics.is_empty() {
@@ -1091,7 +1108,7 @@ impl DeviceBackend for UsbBackend {
             match Self::run_commands(
                 protocol.as_ref(),
                 transport.as_ref(),
-                connection_diagnostics,
+                connection_diagnostics.as_slice(),
             )
             .await
             {

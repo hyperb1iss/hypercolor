@@ -328,8 +328,8 @@ impl EffectEngine {
             time_secs: self.elapsed_secs,
             delta_secs,
             frame_number: self.frame_number,
-            audio: audio.clone(),
-            interaction: interaction.clone(),
+            audio,
+            interaction,
             canvas_width: self.canvas_width,
             canvas_height: self.canvas_height,
         };

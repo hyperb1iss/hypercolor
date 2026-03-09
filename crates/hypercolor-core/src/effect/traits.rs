@@ -17,8 +17,8 @@ use crate::input::InteractionData;
 /// Contains timing information, the current audio analysis snapshot,
 /// and the target canvas dimensions. Control values are delivered
 /// separately via [`EffectRenderer::set_control`].
-#[derive(Debug, Clone)]
-pub struct FrameInput {
+#[derive(Debug, Clone, Copy)]
+pub struct FrameInput<'a> {
     /// Elapsed time in seconds since the effect was activated.
     pub time_secs: f32,
 
@@ -30,10 +30,10 @@ pub struct FrameInput {
 
     /// Current audio analysis snapshot. Use [`AudioData::silence`]
     /// when no audio source is available.
-    pub audio: AudioData,
+    pub audio: &'a AudioData,
 
     /// Host keyboard and mouse state for interactive HTML effects.
-    pub interaction: InteractionData,
+    pub interaction: &'a InteractionData,
 
     /// Target canvas width in pixels.
     pub canvas_width: u32,
@@ -82,7 +82,7 @@ pub trait EffectRenderer: Send {
     ///
     /// Returns an error if the frame cannot be produced (GPU fault, render
     /// timeout, etc.). The engine may retry or transition to an error state.
-    fn tick(&mut self, input: &FrameInput) -> anyhow::Result<Canvas>;
+    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas>;
 
     /// Update a control parameter value.
     ///

@@ -219,7 +219,7 @@ impl EffectRenderer for ServoRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput) -> Result<Canvas> {
+    fn tick(&mut self, input: &FrameInput<'_>) -> Result<Canvas> {
         if !self.initialized {
             bail!("ServoRenderer tick called before init");
         }
@@ -1111,9 +1111,13 @@ mod tests {
     use super::*;
     use hypercolor_types::audio::AudioData;
     use hypercolor_types::effect::EffectId;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, LazyLock};
     use uuid::Uuid;
+
+    static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
+    static DEFAULT_INTERACTION: LazyLock<crate::input::InteractionData> =
+        LazyLock::new(crate::input::InteractionData::default);
 
     fn spawn_test_worker() -> (ServoWorker, Arc<AtomicBool>) {
         let (command_tx, command_rx) = mpsc::channel();
@@ -1138,13 +1142,13 @@ mod tests {
         )
     }
 
-    fn frame_input(delta_secs: f32) -> FrameInput {
+    fn frame_input(delta_secs: f32) -> FrameInput<'static> {
         FrameInput {
             time_secs: 0.0,
             delta_secs,
             frame_number: 0,
-            audio: AudioData::silence(),
-            interaction: crate::input::InteractionData::default(),
+            audio: &SILENCE,
+            interaction: &DEFAULT_INTERACTION,
             canvas_width: DEFAULT_WIDTH,
             canvas_height: DEFAULT_HEIGHT,
         }

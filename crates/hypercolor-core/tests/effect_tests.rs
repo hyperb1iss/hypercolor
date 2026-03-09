@@ -58,7 +58,7 @@ impl EffectRenderer for MockRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput) -> anyhow::Result<Canvas> {
+    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
         self.tick_count += 1;
         let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
         let color = hypercolor_types::canvas::Rgba::new(
@@ -178,12 +178,14 @@ fn sample_entry(name: &str, category: EffectCategory, tags: Vec<&str>) -> Effect
 
 #[test]
 fn frame_input_construction() {
+    let audio = AudioData::silence();
+    let interaction = InteractionData::default();
     let input = FrameInput {
         time_secs: 1.5,
         delta_secs: 0.016,
         frame_number: 90,
-        audio: AudioData::silence(),
-        interaction: InteractionData::default(),
+        audio: &audio,
+        interaction: &interaction,
         canvas_width: DEFAULT_CANVAS_WIDTH,
         canvas_height: DEFAULT_CANVAS_HEIGHT,
     };
@@ -197,12 +199,14 @@ fn frame_input_construction() {
 
 #[test]
 fn frame_input_clone() {
+    let audio = AudioData::silence();
+    let interaction = InteractionData::default();
     let input = FrameInput {
         time_secs: 2.0,
         delta_secs: 0.033,
         frame_number: 60,
-        audio: AudioData::silence(),
-        interaction: InteractionData::default(),
+        audio: &audio,
+        interaction: &interaction,
         canvas_width: 320,
         canvas_height: 200,
     };

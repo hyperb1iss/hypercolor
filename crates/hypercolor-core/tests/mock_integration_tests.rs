@@ -480,12 +480,14 @@ fn effect_renderer_lifecycle_tracking() {
     renderer.init(&meta).expect("init should succeed");
     assert!(renderer.initialized);
 
+    let audio = AudioData::silence();
+    let interaction = hypercolor_core::input::InteractionData::default();
     let input = hypercolor_core::effect::FrameInput {
         time_secs: 0.0,
         delta_secs: 0.016,
         frame_number: 0,
-        audio: AudioData::silence(),
-        interaction: hypercolor_core::input::InteractionData::default(),
+        audio: &audio,
+        interaction: &interaction,
         canvas_width: 10,
         canvas_height: 10,
     };

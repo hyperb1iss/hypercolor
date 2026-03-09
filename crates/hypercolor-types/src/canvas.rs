@@ -4,6 +4,8 @@
 //! color representations (`Rgba`, `RgbaF32`, `Rgb`), blend mode compositing (`BlendMode`),
 //! and Oklab/Oklch perceptual color spaces for smooth interpolation.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 // ── Canvas Constants ───────────────────────────────────────────────────────
@@ -365,6 +367,20 @@ pub enum SamplingMethod {
     },
 }
 
+fn bilinear_channel(
+    corners: [u8; 4],
+    frac_x: u32,
+    inv_frac_x: u32,
+    frac_y: u32,
+    inv_frac_y: u32,
+) -> u8 {
+    let [tl, tr, bl, br] = corners;
+    let top = u32::from(tl) * inv_frac_x + u32::from(tr) * frac_x;
+    let bottom = u32::from(bl) * inv_frac_x + u32::from(br) * frac_x;
+    let value = (top * inv_frac_y + bottom * frac_y) / (256 * 256);
+    u8::try_from(value).expect("bilinear interpolation stays within byte range")
+}
+
 // ── Canvas ─────────────────────────────────────────────────────────────────
 
 /// The canonical render surface for all effects.
@@ -385,7 +401,7 @@ pub struct Canvas {
 
     /// Row-major RGBA pixel data.
     /// Length is always `width * height * 4`.
-    pixels: Vec<u8>,
+    pixels: Arc<Vec<u8>>,
 }
 
 impl Canvas {
@@ -404,7 +420,7 @@ impl Canvas {
         Self {
             width,
             height,
-            pixels,
+            pixels: Arc::new(pixels),
         }
     }
 
@@ -429,7 +445,7 @@ impl Canvas {
         Self {
             width,
             height,
-            pixels: data.to_vec(),
+            pixels: Arc::new(data.to_vec()),
         }
     }
 
@@ -454,7 +470,7 @@ impl Canvas {
         Self {
             width,
             height,
-            pixels: data,
+            pixels: Arc::new(data),
         }
     }
 
@@ -473,18 +489,18 @@ impl Canvas {
     /// Raw pixel slice for zero-copy handoff to the spatial sampler.
     #[must_use]
     pub fn as_rgba_bytes(&self) -> &[u8] {
-        &self.pixels
+        self.pixels.as_slice()
     }
 
     /// Mutable pixel slice for renderers writing directly into the buffer.
     pub fn as_rgba_bytes_mut(&mut self) -> &mut [u8] {
-        &mut self.pixels
+        Arc::make_mut(&mut self.pixels).as_mut_slice()
     }
 
     /// Consume the canvas and return the owned RGBA byte buffer.
     #[must_use]
     pub fn into_rgba_bytes(self) -> Vec<u8> {
-        self.pixels
+        Arc::try_unwrap(self.pixels).unwrap_or_else(|pixels| pixels.as_ref().clone())
     }
 
     /// View pixel data as `[u8; 4]` RGBA tuples.
@@ -492,10 +508,13 @@ impl Canvas {
     /// Returns a slice of length `width * height`.
     #[must_use]
     pub fn pixels(&self) -> impl ExactSizeIterator<Item = [u8; 4]> + '_ {
-        self.pixels.chunks_exact(BYTES_PER_PIXEL).map(|chunk| {
-            // chunks_exact guarantees exactly BYTES_PER_PIXEL elements
-            [chunk[0], chunk[1], chunk[2], chunk[3]]
-        })
+        self.pixels
+            .as_slice()
+            .chunks_exact(BYTES_PER_PIXEL)
+            .map(|chunk| {
+                // chunks_exact guarantees exactly BYTES_PER_PIXEL elements
+                [chunk[0], chunk[1], chunk[2], chunk[3]]
+            })
     }
 
     /// Read a single pixel. Returns opaque black for out-of-bounds coordinates.
@@ -521,15 +540,16 @@ impl Canvas {
             return;
         }
         let idx = (y as usize * self.width as usize + x as usize) * BYTES_PER_PIXEL;
-        self.pixels[idx] = color.r;
-        self.pixels[idx + 1] = color.g;
-        self.pixels[idx + 2] = color.b;
-        self.pixels[idx + 3] = color.a;
+        let pixels = Arc::make_mut(&mut self.pixels);
+        pixels[idx] = color.r;
+        pixels[idx + 1] = color.g;
+        pixels[idx + 2] = color.b;
+        pixels[idx + 3] = color.a;
     }
 
     /// Fill the entire canvas with a single color.
     pub fn fill(&mut self, color: Rgba) {
-        for chunk in self.pixels.chunks_exact_mut(BYTES_PER_PIXEL) {
+        for chunk in Arc::make_mut(&mut self.pixels).chunks_exact_mut(BYTES_PER_PIXEL) {
             chunk[0] = color.r;
             chunk[1] = color.g;
             chunk[2] = color.b;
@@ -609,36 +629,36 @@ impl Canvas {
         let bl = self.get_pixel(x0, y1);
         let br = self.get_pixel(x1, y1);
 
-        #[inline]
-        fn bilinear_channel(
-            tl: u8,
-            tr: u8,
-            bl: u8,
-            br: u8,
-            frac_x: u32,
-            inv_frac_x: u32,
-            frac_y: u32,
-            inv_frac_y: u32,
-        ) -> u8 {
-            let top = u32::from(tl) * inv_frac_x + u32::from(tr) * frac_x;
-            let bottom = u32::from(bl) * inv_frac_x + u32::from(br) * frac_x;
-            ((top * inv_frac_y + bottom * frac_y) / (BILINEAR_ONE * BILINEAR_ONE)) as u8
-        }
-
         // LED spatial sampling is a hot loop, so keep bilinear interpolation in
         // fixed-point byte space instead of bouncing through float colors.
         Rgba {
             r: bilinear_channel(
-                tl.r, tr.r, bl.r, br.r, frac_x, inv_frac_x, frac_y, inv_frac_y,
+                [tl.r, tr.r, bl.r, br.r],
+                frac_x,
+                inv_frac_x,
+                frac_y,
+                inv_frac_y,
             ),
             g: bilinear_channel(
-                tl.g, tr.g, bl.g, br.g, frac_x, inv_frac_x, frac_y, inv_frac_y,
+                [tl.g, tr.g, bl.g, br.g],
+                frac_x,
+                inv_frac_x,
+                frac_y,
+                inv_frac_y,
             ),
             b: bilinear_channel(
-                tl.b, tr.b, bl.b, br.b, frac_x, inv_frac_x, frac_y, inv_frac_y,
+                [tl.b, tr.b, bl.b, br.b],
+                frac_x,
+                inv_frac_x,
+                frac_y,
+                inv_frac_y,
             ),
             a: bilinear_channel(
-                tl.a, tr.a, bl.a, br.a, frac_x, inv_frac_x, frac_y, inv_frac_y,
+                [tl.a, tr.a, bl.a, br.a],
+                frac_x,
+                inv_frac_x,
+                frac_y,
+                inv_frac_y,
             ),
         }
     }

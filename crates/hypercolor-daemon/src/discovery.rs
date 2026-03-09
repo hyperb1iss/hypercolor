@@ -1334,7 +1334,7 @@ pub async fn sync_active_layout_for_renderable_devices(
 ) {
     let mut layout = {
         let spatial = runtime.spatial_engine.read().await;
-        spatial.layout().clone()
+        spatial.layout().as_ref().clone()
     };
     let excluded_layout_device_ids = {
         let store = runtime.layout_auto_exclusions.read().await;

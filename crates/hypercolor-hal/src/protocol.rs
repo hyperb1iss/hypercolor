@@ -20,6 +20,12 @@ pub trait Protocol: Send + Sync {
     /// Encode a device frame into one or more wire-level commands.
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand>;
 
+    /// Encode a device frame into a reusable command buffer.
+    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+        commands.clear();
+        commands.extend(self.encode_frame(colors));
+    }
+
     /// Encode a hardware brightness change, if the protocol supports it.
     #[must_use]
     fn encode_brightness(&self, _brightness: u8) -> Option<Vec<ProtocolCommand>> {
@@ -117,6 +123,76 @@ pub struct ProtocolCommand {
 
     /// Transport path hint for this command.
     pub transfer_type: TransferType,
+}
+
+impl ProtocolCommand {
+    fn empty() -> Self {
+        Self {
+            data: Vec::new(),
+            expects_response: false,
+            response_delay: Duration::ZERO,
+            post_delay: Duration::ZERO,
+            transfer_type: TransferType::Primary,
+        }
+    }
+}
+
+/// Helper for filling reusable protocol command buffers in place.
+pub struct CommandBuffer<'a> {
+    commands: &'a mut Vec<ProtocolCommand>,
+    used: usize,
+}
+
+impl<'a> CommandBuffer<'a> {
+    #[must_use]
+    pub fn new(commands: &'a mut Vec<ProtocolCommand>) -> Self {
+        Self { commands, used: 0 }
+    }
+
+    pub fn push_fill<F>(
+        &mut self,
+        expects_response: bool,
+        response_delay: Duration,
+        post_delay: Duration,
+        transfer_type: TransferType,
+        fill: F,
+    ) where
+        F: FnOnce(&mut Vec<u8>),
+    {
+        if self.used == self.commands.len() {
+            self.commands.push(ProtocolCommand::empty());
+        }
+
+        let command = &mut self.commands[self.used];
+        self.used += 1;
+        command.expects_response = expects_response;
+        command.response_delay = response_delay;
+        command.post_delay = post_delay;
+        command.transfer_type = transfer_type;
+        command.data.clear();
+        fill(&mut command.data);
+    }
+
+    pub fn push_slice(
+        &mut self,
+        data: &[u8],
+        expects_response: bool,
+        response_delay: Duration,
+        post_delay: Duration,
+        transfer_type: TransferType,
+    ) {
+        self.push_fill(
+            expects_response,
+            response_delay,
+            post_delay,
+            transfer_type,
+            |buffer| buffer.extend_from_slice(data),
+        );
+    }
+
+    pub fn finish(self) {
+        self.commands.truncate(self.used);
+    }
 }
 
 /// A low-frequency protocol command sequence that should be run periodically

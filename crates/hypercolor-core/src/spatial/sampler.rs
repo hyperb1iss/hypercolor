@@ -15,6 +15,7 @@ use hypercolor_types::spatial::{
 };
 
 const BILINEAR_ONE: u32 = 256;
+const BILINEAR_SHIFT: u32 = 16;
 const ATTENUATION_ONE: u16 = 256;
 
 /// Per-zone sampling plan prepared when the layout changes.
@@ -44,11 +45,8 @@ struct PreparedNearestSample {
 
 #[derive(Debug, Clone, Copy)]
 struct PreparedBilinearSample {
-    offsets: [usize; 4],
-    frac_x: u32,
-    inv_frac_x: u32,
-    frac_y: u32,
-    inv_frac_y: u32,
+    offsets: [u32; 4],
+    weights: [u32; 4],
     attenuation: u16,
 }
 
@@ -300,18 +298,26 @@ fn prepare_bilinear_sample_for_position(
     let y1 = (y0 + 1).min(canvas_height - 1);
     let frac_x = (fx.fract() * BILINEAR_ONE as f32).clamp(0.0, BILINEAR_ONE as f32) as u32;
     let frac_y = (fy.fract() * BILINEAR_ONE as f32).clamp(0.0, BILINEAR_ONE as f32) as u32;
+    let inv_frac_x = BILINEAR_ONE - frac_x;
+    let inv_frac_y = BILINEAR_ONE - frac_y;
 
     PreparedBilinearSample {
         offsets: [
-            pixel_offset(canvas_width, x0, y0),
-            pixel_offset(canvas_width, x1, y0),
-            pixel_offset(canvas_width, x0, y1),
-            pixel_offset(canvas_width, x1, y1),
+            u32::try_from(pixel_offset(canvas_width, x0, y0))
+                .expect("prepared bilinear sample offset should fit within u32"),
+            u32::try_from(pixel_offset(canvas_width, x1, y0))
+                .expect("prepared bilinear sample offset should fit within u32"),
+            u32::try_from(pixel_offset(canvas_width, x0, y1))
+                .expect("prepared bilinear sample offset should fit within u32"),
+            u32::try_from(pixel_offset(canvas_width, x1, y1))
+                .expect("prepared bilinear sample offset should fit within u32"),
         ],
-        frac_x,
-        inv_frac_x: BILINEAR_ONE - frac_x,
-        frac_y,
-        inv_frac_y: BILINEAR_ONE - frac_y,
+        weights: [
+            inv_frac_x * inv_frac_y,
+            frac_x * inv_frac_y,
+            inv_frac_x * frac_y,
+            frac_x * frac_y,
+        ],
         attenuation,
     }
 }
@@ -471,13 +477,9 @@ fn sample_prepared_nearest_pixels_into(
     samples: &[PreparedNearestSample],
     colors: &mut Vec<[u8; 3]>,
 ) {
-    colors.clear();
-    colors.reserve(samples.len());
-    for sample in samples {
-        colors.push(attenuate_rgb(
-            read_rgb_at(bytes, sample.offset),
-            sample.attenuation,
-        ));
+    colors.resize(samples.len(), [0, 0, 0]);
+    for (color, sample) in colors.iter_mut().zip(samples) {
+        *color = attenuate_rgb(read_rgb_at(bytes, sample.offset), sample.attenuation);
     }
 }
 
@@ -496,13 +498,9 @@ fn sample_prepared_bilinear_pixels_into(
     samples: &[PreparedBilinearSample],
     colors: &mut Vec<[u8; 3]>,
 ) {
-    colors.clear();
-    colors.reserve(samples.len());
-    for sample in samples {
-        colors.push(attenuate_rgb(
-            sample_bilinear_rgb(bytes, sample),
-            sample.attenuation,
-        ));
+    colors.resize(samples.len(), [0, 0, 0]);
+    for (color, sample) in colors.iter_mut().zip(samples) {
+        *color = attenuate_rgb(sample_bilinear_rgb(bytes, sample), sample.attenuation);
     }
 }
 
@@ -523,13 +521,9 @@ fn sample_prepared_area_pixels_into(
     samples: &[PreparedAreaSample],
     colors: &mut Vec<[u8; 3]>,
 ) {
-    colors.clear();
-    colors.reserve(samples.len());
-    for sample in samples {
-        colors.push(attenuate_rgb(
-            sample_area_rgb(bytes, row_stride, sample),
-            sample.attenuation,
-        ));
+    colors.resize(samples.len(), [0, 0, 0]);
+    for (color, sample) in colors.iter_mut().zip(samples) {
+        *color = attenuate_rgb(sample_area_rgb(bytes, row_stride, sample), sample.attenuation);
     }
 }
 
@@ -539,26 +533,25 @@ fn read_rgb_at(bytes: &[u8], offset: usize) -> [u8; 3] {
 }
 
 #[must_use]
+#[allow(clippy::as_conversions)]
 fn sample_bilinear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> [u8; 3] {
-    #[inline]
-    fn bilinear_channel(
-        bytes: &[u8],
-        offsets: [usize; 4],
-        channel: usize,
-        sample: &PreparedBilinearSample,
-    ) -> u8 {
-        let top = u32::from(bytes[offsets[0] + channel]) * sample.inv_frac_x
-            + u32::from(bytes[offsets[1] + channel]) * sample.frac_x;
-        let bottom = u32::from(bytes[offsets[2] + channel]) * sample.inv_frac_x
-            + u32::from(bytes[offsets[3] + channel]) * sample.frac_x;
-        ((top * sample.inv_frac_y + bottom * sample.frac_y) / (BILINEAR_ONE * BILINEAR_ONE)) as u8
-    }
+    let [top_left, top_right, bottom_left, bottom_right] = sample.offsets;
+    let [top_left_weight, top_right_weight, bottom_left_weight, bottom_right_weight] =
+        sample.weights;
+    let top_left = top_left as usize;
+    let top_right = top_right as usize;
+    let bottom_left = bottom_left as usize;
+    let bottom_right = bottom_right as usize;
 
-    [
-        bilinear_channel(bytes, sample.offsets, 0, sample),
-        bilinear_channel(bytes, sample.offsets, 1, sample),
-        bilinear_channel(bytes, sample.offsets, 2, sample),
-    ]
+    let channel = |index: usize| {
+        let blended = u32::from(bytes[top_left + index]) * top_left_weight
+            + u32::from(bytes[top_right + index]) * top_right_weight
+            + u32::from(bytes[bottom_left + index]) * bottom_left_weight
+            + u32::from(bytes[bottom_right + index]) * bottom_right_weight;
+        (blended >> BILINEAR_SHIFT) as u8
+    };
+
+    [channel(0), channel(1), channel(2)]
 }
 
 #[must_use]

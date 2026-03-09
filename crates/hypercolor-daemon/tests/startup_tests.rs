@@ -546,7 +546,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
 
     let active_layout = {
         let spatial = state.spatial_engine.read().await;
-        spatial.layout().clone()
+        spatial.layout().as_ref().clone()
     };
     assert_eq!(active_layout.id, restored_layout.id);
     assert_eq!(active_layout.name, restored_layout.name);

@@ -1503,7 +1503,7 @@ async fn handle_set_profile_with_state(
 
 async fn handle_get_layout_with_state(state: &AppState) -> Result<Value, ToolError> {
     let spatial = state.spatial_engine.read().await;
-    let layout = spatial.layout().clone();
+    let layout = spatial.layout();
     let total_leds: u64 = layout
         .zones
         .iter()
@@ -1519,7 +1519,7 @@ async fn handle_get_layout_with_state(state: &AppState) -> Result<Value, ToolErr
             "canvas_height": layout.canvas_height,
             "zone_count": layout.zones.len()
         },
-        "zones": layout.zones.into_iter().map(|zone| json!({
+        "zones": layout.zones.iter().map(|zone| json!({
             "id": zone.id,
             "name": zone.name,
             "device_id": zone.device_id,

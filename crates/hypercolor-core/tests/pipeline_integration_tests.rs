@@ -66,7 +66,7 @@ impl EffectRenderer for TestGradientRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput) -> Result<Canvas> {
+    fn tick(&mut self, input: &FrameInput<'_>) -> Result<Canvas> {
         let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
         for y in 0..input.canvas_height {
             for x in 0..input.canvas_width {
@@ -107,7 +107,7 @@ impl EffectRenderer for TestSolidRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput) -> Result<Canvas> {
+    fn tick(&mut self, input: &FrameInput<'_>) -> Result<Canvas> {
         self.frame_count += 1;
         let brightness = ((self.frame_count * 25) % 256) as u8;
         let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);

@@ -194,7 +194,6 @@ const IDLE_THROTTLE_SLEEP: Duration = Duration::from_millis(120);
 /// Sleep duration while session policy has output fully suspended.
 const SESSION_SLEEP_THROTTLE_SLEEP: Duration = Duration::from_millis(250);
 
-#[derive(Clone)]
 struct FrameInputs {
     audio: AudioData,
     interaction: InteractionData,
@@ -311,9 +310,9 @@ async fn execute_frame(
     let inputs = match skip_decision {
         SkipDecision::None => {
             *cached_inputs = sample_inputs(state).await;
-            cached_inputs.clone()
+            &*cached_inputs
         }
-        SkipDecision::ReuseInputs | SkipDecision::ReuseCanvas => cached_inputs.clone(),
+        SkipDecision::ReuseInputs | SkipDecision::ReuseCanvas => &*cached_inputs,
     };
     let input_us = micros_u32(input_start.elapsed());
 
@@ -333,7 +332,7 @@ async fn execute_frame(
     let (zone_colors, layout) = {
         let spatial = state.spatial_engine.read().await;
         spatial.sample_into(&canvas, &mut recycled_frame.zones);
-        let layout = spatial.layout().clone();
+        let layout = spatial.layout();
         (&recycled_frame.zones, layout)
     };
     let sample_us = micros_u32(sample_start.elapsed());
@@ -342,7 +341,7 @@ async fn execute_frame(
     let push_start = Instant::now();
     let (write_stats, async_failures) = {
         let mut manager = state.backend_manager.lock().await;
-        let write_stats = manager.write_frame(&zone_colors, &layout).await;
+        let write_stats = manager.write_frame(zone_colors, layout.as_ref()).await;
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };
@@ -516,7 +515,7 @@ async fn maybe_sleep_throttle(
     let (zone_colors, layout) = {
         let spatial = state.spatial_engine.read().await;
         spatial.sample_into(&canvas, &mut recycled_frame.zones);
-        let layout = spatial.layout().clone();
+        let layout = spatial.layout();
         (&recycled_frame.zones, layout)
     };
     let sample_us = micros_u32(sample_start.elapsed());
@@ -524,7 +523,7 @@ async fn maybe_sleep_throttle(
     let push_start = Instant::now();
     let (write_stats, async_failures) = {
         let mut manager = state.backend_manager.lock().await;
-        let write_stats = manager.write_frame(&zone_colors, &layout).await;
+        let write_stats = manager.write_frame(zone_colors, layout.as_ref()).await;
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };

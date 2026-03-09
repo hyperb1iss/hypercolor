@@ -391,7 +391,7 @@ impl EffectRenderer for MockEffectRenderer {
         Ok(())
     }
 
-    fn tick(&mut self, input: &FrameInput) -> Result<Canvas> {
+    fn tick(&mut self, input: &FrameInput<'_>) -> Result<Canvas> {
         self.tick_count += 1;
         let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
 

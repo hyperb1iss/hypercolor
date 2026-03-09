@@ -123,7 +123,7 @@ impl EffectRenderer for GradientRenderer {
     }
 
     #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-    fn tick(&mut self, input: &FrameInput) -> anyhow::Result<Canvas> {
+    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
         let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
         let width = input.canvas_width.max(1) as f32;
         let height = input.canvas_height.max(1) as f32;

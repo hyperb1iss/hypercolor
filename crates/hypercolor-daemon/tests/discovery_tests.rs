@@ -314,7 +314,7 @@ async fn sync_active_layout_for_renderable_devices_skips_excluded_devices() {
 
     let layout = {
         let spatial = runtime.spatial_engine.read().await;
-        spatial.layout().clone()
+        spatial.layout().as_ref().clone()
     };
     assert!(
         layout.zones.is_empty(),

@@ -480,7 +480,7 @@ async fn display_targets(
 ) -> Vec<DisplayTarget> {
     let layout = {
         let spatial = spatial_engine.read().await;
-        spatial.layout().clone()
+        spatial.layout().as_ref().clone()
     };
     let logical_store = logical_devices.read().await;
 

@@ -26,6 +26,8 @@ mod topology;
 pub use sampler::{sample_led, sample_zone};
 pub use topology::generate_positions;
 
+use std::sync::Arc;
+
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::SpatialLayout;
@@ -43,7 +45,7 @@ use hypercolor_types::spatial::SpatialLayout;
 #[derive(Debug, Clone)]
 pub struct SpatialEngine {
     /// The active spatial layout with precomputed LED positions.
-    layout: SpatialLayout,
+    layout: Arc<SpatialLayout>,
     /// Immutable per-zone sampling plans cached from the layout.
     prepared_zones: Vec<sampler::PreparedZone>,
 }
@@ -55,7 +57,7 @@ impl SpatialEngine {
     #[must_use]
     pub fn new(layout: SpatialLayout) -> Self {
         let mut engine = Self {
-            layout,
+            layout: Arc::new(layout),
             prepared_zones: Vec::new(),
         };
         engine.rebuild_positions();
@@ -104,26 +106,27 @@ impl SpatialEngine {
     /// changes topology, etc.). The next [`sample`](Self::sample) call will
     /// use the new positions.
     pub fn update_layout(&mut self, layout: SpatialLayout) {
-        self.layout = layout;
+        self.layout = Arc::new(layout);
         self.rebuild_positions();
     }
 
     /// Access the current layout.
     #[must_use]
-    pub fn layout(&self) -> &SpatialLayout {
-        &self.layout
+    pub fn layout(&self) -> Arc<SpatialLayout> {
+        Arc::clone(&self.layout)
     }
 
     /// Recompute `led_positions` for every zone from its topology.
     fn rebuild_positions(&mut self) {
-        for zone in &mut self.layout.zones {
+        let layout = Arc::make_mut(&mut self.layout);
+
+        for zone in &mut layout.zones {
             zone.led_positions = topology::generate_positions(&zone.topology);
         }
-        self.prepared_zones = self
-            .layout
+        self.prepared_zones = layout
             .zones
             .iter()
-            .map(|zone| sampler::prepare_zone(zone, &self.layout))
+            .map(|zone| sampler::prepare_zone(zone, layout))
             .collect();
     }
 }

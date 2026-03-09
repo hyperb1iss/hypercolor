@@ -1158,7 +1158,7 @@ impl DiscoveryWorkerContext {
     async fn active_layout_unmapped_wled_targets(&self) -> Vec<String> {
         let layout = {
             let spatial = self.spatial_engine.read().await;
-            spatial.layout().clone()
+            spatial.layout().as_ref().clone()
         };
         let routing = {
             let manager = self.backend_manager.lock().await;

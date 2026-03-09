@@ -32,6 +32,7 @@ struct ConnectedSmBusDevice {
     transport: Box<dyn Transport>,
     info_template: DeviceInfo,
     target_fps: Option<u32>,
+    frame_commands: Vec<ProtocolCommand>,
 }
 
 /// Core SMBus backend for HAL-managed ENE controllers.
@@ -115,10 +116,11 @@ impl DeviceBackend for SmBusBackend {
         );
         let protocol: Box<dyn Protocol> = Box::new(AuraSmBusProtocol::new());
 
+        let init_sequence = protocol.init_sequence();
         run_commands(
             protocol.as_ref(),
             transport.as_ref(),
-            protocol.init_sequence(),
+            init_sequence.as_slice(),
         )
         .await
         .with_context(|| {
@@ -136,6 +138,7 @@ impl DeviceBackend for SmBusBackend {
                 transport,
                 info_template: pending.info_template,
                 target_fps,
+                frame_commands: Vec::new(),
             },
         );
 
@@ -147,10 +150,11 @@ impl DeviceBackend for SmBusBackend {
             return Ok(());
         };
 
+        let shutdown_sequence = device.protocol.shutdown_sequence();
         if let Err(error) = run_commands(
             device.protocol.as_ref(),
             device.transport.as_ref(),
-            device.protocol.shutdown_sequence(),
+            shutdown_sequence.as_slice(),
         )
         .await
         {
@@ -166,11 +170,13 @@ impl DeviceBackend for SmBusBackend {
             .get_mut(id)
             .with_context(|| format!("device {id} is not connected on SMBus backend"))?;
 
-        let commands = device.protocol.encode_frame(colors);
+        device
+            .protocol
+            .encode_frame_into(colors, &mut device.frame_commands);
         run_commands(
             device.protocol.as_ref(),
             device.transport.as_ref(),
-            commands,
+            device.frame_commands.as_slice(),
         )
         .await
     }
@@ -206,11 +212,11 @@ fn pending_from_discovered(discovered: &DiscoveredDevice) -> Option<PendingSmBus
 async fn run_commands(
     protocol: &dyn Protocol,
     transport: &dyn Transport,
-    commands: Vec<ProtocolCommand>,
+    commands: &[ProtocolCommand],
 ) -> Result<()> {
     let total_commands = commands.len();
 
-    for (index, command) in commands.into_iter().enumerate() {
+    for (index, command) in commands.iter().enumerate() {
         let command_position = index + 1;
         trace!(
             protocol = protocol.name(),

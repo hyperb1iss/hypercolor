@@ -1,5 +1,6 @@
 //! Pure `PrismRGB` protocol encoder/decoder.
 
+use std::borrow::Cow;
 use std::cmp::min;
 use std::time::Duration;
 
@@ -7,8 +8,8 @@ use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopo
 use tracing::warn;
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
-    TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone,
+    ResponseStatus, TransferType,
 };
 
 const CHANNELS_PRISM_8: usize = 8;
@@ -211,14 +212,14 @@ impl PrismRgbProtocol {
         }
     }
 
-    fn normalize_colors(&self, colors: &[[u8; 3]]) -> Vec<[u8; 3]> {
+    fn normalize_colors<'a>(&self, colors: &'a [[u8; 3]]) -> Cow<'a, [[u8; 3]]> {
         let expected = self.expected_leds();
         if expected == 0 {
-            return Vec::new();
+            return Cow::Borrowed(&[]);
         }
 
         if colors.len() == expected {
-            return colors.to_vec();
+            return Cow::Borrowed(colors);
         }
 
         let mut normalized = vec![[0_u8; 3]; expected];
@@ -234,12 +235,13 @@ impl PrismRgbProtocol {
             );
         }
 
-        normalized
+        Cow::Owned(normalized)
     }
 
-    fn encode_prism8_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+    fn encode_prism8_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let normalized = self.normalize_colors(colors);
-        let mut commands = Vec::with_capacity(CHANNELS_PRISM_8 * 6 + 1);
+        let normalized = normalized.as_ref();
+        let mut command_buffer = CommandBuffer::new(commands);
 
         for channel in 0..CHANNELS_PRISM_8 {
             let start = channel * LEDS_PER_PRISM_8_CHANNEL;
@@ -253,23 +255,35 @@ impl PrismRgbProtocol {
 
                 let mut cursor = 2;
                 for color in chunk {
-                    let encoded = encode_color(
+                    let encoded_color = encode_color(
                         *color,
                         self.model.brightness_scale(),
                         self.model.color_format(),
                     );
-                    packet[cursor..cursor + 3].copy_from_slice(&encoded);
+                    packet[cursor..cursor + 3].copy_from_slice(&encoded_color);
                     cursor += 3;
                 }
 
-                commands.push(command_from_packet(packet, false, Duration::ZERO));
+                command_buffer.push_slice(
+                    &packet,
+                    false,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    TransferType::Primary,
+                );
             }
         }
 
         let mut commit = [0_u8; HID_REPORT_SIZE];
         commit[1] = 0xFF;
-        commands.push(command_from_packet(commit, false, Duration::ZERO));
-        commands
+        command_buffer.push_slice(
+            &commit,
+            false,
+            Duration::ZERO,
+            Duration::ZERO,
+            TransferType::Primary,
+        );
+        command_buffer.finish();
     }
 
     fn prism_s_settings_command(&self) -> ProtocolCommand {
@@ -280,8 +294,9 @@ impl PrismRgbProtocol {
         command_from_packet(packet, false, Duration::from_millis(50))
     }
 
-    fn encode_prism_s_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+    fn encode_prism_s_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let normalized = self.normalize_colors(colors);
+        let normalized = normalized.as_ref();
         let atx_leds = if self.prism_s_config.atx_present {
             PRISM_S_ATX_LEDS
         } else {
@@ -340,14 +355,19 @@ impl PrismRgbProtocol {
             }
         }
 
-        send_data
-            .chunks(64)
-            .map(|chunk| {
-                let mut packet = [0_u8; HID_REPORT_SIZE];
-                packet[1..=chunk.len()].copy_from_slice(chunk);
-                command_from_packet(packet, false, Duration::ZERO)
-            })
-            .collect()
+        let mut encoder = CommandBuffer::new(commands);
+        for chunk in send_data.chunks(64) {
+            let mut packet = [0_u8; HID_REPORT_SIZE];
+            packet[1..=chunk.len()].copy_from_slice(chunk);
+            encoder.push_slice(
+                &packet,
+                false,
+                Duration::ZERO,
+                Duration::ZERO,
+                TransferType::Primary,
+            );
+        }
+        encoder.finish();
     }
 
     fn prism_mini_firmware_query() -> ProtocolCommand {
@@ -356,10 +376,15 @@ impl PrismRgbProtocol {
         command_from_packet(packet, true, Duration::ZERO)
     }
 
-    fn encode_prism_mini_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+    fn encode_prism_mini_frame_into(
+        &self,
+        colors: &[[u8; 3]],
+        commands: &mut Vec<ProtocolCommand>,
+    ) {
         let normalized = self.normalize_colors(colors);
-        let encoded = if self.compression_enabled {
-            encode_prism_mini_compressed(&normalized)
+        let normalized = normalized.as_ref();
+        let encoded_bytes = if self.compression_enabled {
+            encode_prism_mini_compressed(normalized)
         } else {
             normalized
                 .iter()
@@ -376,24 +401,28 @@ impl PrismRgbProtocol {
         };
 
         let total_packets = if self.compression_enabled {
-            encoded.len().div_ceil(60)
+            encoded_bytes.len().div_ceil(60)
         } else {
             normalized.len().div_ceil(PRISM_MINI_LEDS_PER_PACKET)
         };
 
-        encoded
-            .chunks(60)
-            .enumerate()
-            .map(|(index, chunk)| {
-                let mut packet = [0_u8; HID_REPORT_SIZE];
-                packet[1] = u8::try_from(index + 1).unwrap_or(u8::MAX);
-                packet[2] = u8::try_from(total_packets).unwrap_or(u8::MAX);
-                packet[PRISM_MINI_DATA_MARKER_OFFSET] = 0xAA;
-                packet[PRISM_MINI_DATA_OFFSET..PRISM_MINI_DATA_OFFSET + chunk.len()]
-                    .copy_from_slice(chunk);
-                command_from_packet(packet, false, Duration::ZERO)
-            })
-            .collect()
+        let mut command_buffer = CommandBuffer::new(commands);
+        for (index, chunk) in encoded_bytes.chunks(60).enumerate() {
+            let mut packet = [0_u8; HID_REPORT_SIZE];
+            packet[1] = u8::try_from(index + 1).unwrap_or(u8::MAX);
+            packet[2] = u8::try_from(total_packets).unwrap_or(u8::MAX);
+            packet[PRISM_MINI_DATA_MARKER_OFFSET] = 0xAA;
+            packet[PRISM_MINI_DATA_OFFSET..PRISM_MINI_DATA_OFFSET + chunk.len()]
+                .copy_from_slice(chunk);
+            command_buffer.push_slice(
+                &packet,
+                false,
+                Duration::ZERO,
+                Duration::ZERO,
+                TransferType::Primary,
+            );
+        }
+        command_buffer.finish();
     }
 }
 
@@ -456,10 +485,18 @@ impl Protocol for PrismRgbProtocol {
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        let mut commands = Vec::new();
+        self.encode_frame_into(colors, &mut commands);
+        commands
+    }
+
+    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         match self.model {
-            PrismRgbModel::Prism8 | PrismRgbModel::Nollie8 => self.encode_prism8_frame(colors),
-            PrismRgbModel::PrismS => self.encode_prism_s_frame(colors),
-            PrismRgbModel::PrismMini => self.encode_prism_mini_frame(colors),
+            PrismRgbModel::Prism8 | PrismRgbModel::Nollie8 => {
+                self.encode_prism8_frame_into(colors, commands);
+            }
+            PrismRgbModel::PrismS => self.encode_prism_s_frame_into(colors, commands),
+            PrismRgbModel::PrismMini => self.encode_prism_mini_frame_into(colors, commands),
         }
     }
 

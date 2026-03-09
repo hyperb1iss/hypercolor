@@ -763,7 +763,6 @@ async fn relay_frames(
             break;
         }
 
-        let frame = frame_rx.borrow().clone();
         let frame_config = {
             let subs = subscriptions.read().await;
             if !subs.channels.contains(&WsChannel::Frames) {
@@ -776,6 +775,7 @@ async fn relay_frames(
             continue;
         }
 
+        let frame = frame_rx.borrow();
         let zones = filter_frame_zones(&frame.zones, &frame_config.zones);
         let outbound = match frame_config.format {
             FrameFormat::Binary => {
@@ -839,7 +839,6 @@ async fn relay_spectrum(
             break;
         }
 
-        let spectrum = spectrum_rx.borrow().clone();
         let spectrum_config = {
             let subs = subscriptions.read().await;
             if !subs.channels.contains(&WsChannel::Spectrum) {
@@ -852,6 +851,7 @@ async fn relay_spectrum(
             continue;
         }
 
+        let spectrum = spectrum_rx.borrow();
         if binary_tx
             .try_send(encode_spectrum_binary(&spectrum, spectrum_config.bins))
             .is_err()
@@ -1286,7 +1286,17 @@ fn encode_frame_binary(frame: &hypercolor_types::event::FrameData) -> Vec<u8> {
         &frame.zones[..]
     };
 
-    let mut out = Vec::new();
+    let payload_bytes = included_zones.iter().fold(0_usize, |acc, zone| {
+        let zone_id_len = zone.zone_id.len().min(usize::from(u16::MAX));
+        let led_count = zone.colors.len().min(usize::from(u16::MAX));
+        acc.saturating_add(
+            2_usize
+                .saturating_add(zone_id_len)
+                .saturating_add(2)
+                .saturating_add(led_count.saturating_mul(3)),
+        )
+    });
+    let mut out = Vec::with_capacity(10_usize.saturating_add(payload_bytes));
     out.push(0x01);
     out.extend_from_slice(&frame.frame_number.to_le_bytes());
     out.extend_from_slice(&frame.timestamp_ms.to_le_bytes());
@@ -1318,7 +1328,7 @@ fn encode_spectrum_binary(
     let bin_count_u8 = u8::try_from(downsampled.len()).unwrap_or(u8::MAX);
     let bin_count = usize::from(bin_count_u8);
 
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(27_usize.saturating_add(bin_count.saturating_mul(4)));
     out.push(0x02);
     out.extend_from_slice(&spectrum.timestamp_ms.to_le_bytes());
     out.push(bin_count_u8);

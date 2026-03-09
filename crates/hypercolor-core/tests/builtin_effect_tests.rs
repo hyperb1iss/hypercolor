@@ -4,6 +4,7 @@
 //! audio reactivity, and full lifecycle for every built-in renderer.
 
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use hypercolor_core::effect::builtin::{
     AudioPulseRenderer, BreathingRenderer, ColorWaveRenderer, GradientRenderer, RainbowRenderer,
@@ -22,6 +23,8 @@ use uuid::Uuid;
 
 const W: u32 = 32;
 const H: u32 = 16;
+static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
+static DEFAULT_INTERACTION: LazyLock<InteractionData> = LazyLock::new(InteractionData::default);
 
 fn make_metadata(name: &str) -> EffectMetadata {
     EffectMetadata {
@@ -41,25 +44,25 @@ fn make_metadata(name: &str) -> EffectMetadata {
     }
 }
 
-fn frame(time_secs: f32, frame_number: u64) -> FrameInput {
+fn frame(time_secs: f32, frame_number: u64) -> FrameInput<'static> {
     FrameInput {
         time_secs,
         delta_secs: 1.0 / 60.0,
         frame_number,
-        audio: AudioData::silence(),
-        interaction: InteractionData::default(),
+        audio: &SILENCE,
+        interaction: &DEFAULT_INTERACTION,
         canvas_width: W,
         canvas_height: H,
     }
 }
 
-fn frame_with_audio(time_secs: f32, audio: AudioData) -> FrameInput {
+fn frame_with_audio<'a>(time_secs: f32, audio: &'a AudioData) -> FrameInput<'a> {
     FrameInput {
         time_secs,
         delta_secs: 1.0 / 60.0,
         frame_number: 0,
         audio,
-        interaction: InteractionData::default(),
+        interaction: &DEFAULT_INTERACTION,
         canvas_width: W,
         canvas_height: H,
     }
@@ -172,7 +175,7 @@ fn audio_pulse_produces_non_black_with_audio() {
     r.init(&make_metadata("audio_pulse")).expect("init");
     let mut audio = AudioData::silence();
     audio.rms_level = 0.8;
-    let canvas = r.tick(&frame_with_audio(0.0, audio)).expect("tick");
+    let canvas = r.tick(&frame_with_audio(0.0, &audio)).expect("tick");
     assert!(
         has_non_black_pixels(&canvas),
         "audio pulse should produce non-black pixels with audio"
@@ -316,14 +319,14 @@ fn audio_pulse_responds_to_silence_vs_loud() {
 
     // Silence
     let canvas_silent = r
-        .tick(&frame_with_audio(0.0, AudioData::silence()))
+        .tick(&frame_with_audio(0.0, &AudioData::silence()))
         .expect("tick silent");
     let p_silent = top_left(&canvas_silent);
 
     // Loud audio
     let mut loud = AudioData::silence();
     loud.rms_level = 1.0;
-    let canvas_loud = r.tick(&frame_with_audio(0.0, loud)).expect("tick loud");
+    let canvas_loud = r.tick(&frame_with_audio(0.0, &loud)).expect("tick loud");
     let p_loud = top_left(&canvas_loud);
 
     assert_ne!(
@@ -339,7 +342,7 @@ fn audio_pulse_responds_to_beat() {
 
     // No beat
     let canvas_no_beat = r
-        .tick(&frame_with_audio(0.0, AudioData::silence()))
+        .tick(&frame_with_audio(0.0, &AudioData::silence()))
         .expect("tick no beat");
 
     // Beat detected
@@ -347,7 +350,7 @@ fn audio_pulse_responds_to_beat() {
     beat_audio.beat_detected = true;
     beat_audio.rms_level = 0.5;
     let canvas_beat = r
-        .tick(&frame_with_audio(0.0, beat_audio))
+        .tick(&frame_with_audio(0.0, &beat_audio))
         .expect("tick with beat");
 
     let p_no_beat = top_left(&canvas_no_beat);
@@ -645,8 +648,8 @@ fn audio_pulse_full_lifecycle() {
             time_secs: t,
             delta_secs: 1.0 / 60.0,
             frame_number: i,
-            audio,
-            interaction: InteractionData::default(),
+            audio: &audio,
+            interaction: &DEFAULT_INTERACTION,
             canvas_width: W,
             canvas_height: H,
         };

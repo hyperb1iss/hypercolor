@@ -5,8 +5,8 @@ use std::time::Duration;
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
+    ProtocolZone, ResponseStatus, TransferType,
 };
 
 const SEIREN_V3_PAYLOAD_LEN: usize = 63;
@@ -31,13 +31,13 @@ impl SeirenV3Protocol {
         payload[1..].iter().fold(0_u8, |acc, byte| acc ^ byte)
     }
 
-    fn build_packet(
+    fn write_packet(
+        buffer: &mut Vec<u8>,
         data_size: u8,
         command_class: u8,
         command_id: u8,
         args: &[u8],
-        post_delay: Duration,
-    ) -> ProtocolCommand {
+    ) {
         let mut payload = [0_u8; SEIREN_V3_PAYLOAD_LEN];
         payload[1] = SEIREN_V3_TRANSACTION_ID;
         payload[5] = data_size;
@@ -46,8 +46,20 @@ impl SeirenV3Protocol {
         payload[8..8 + args.len()].copy_from_slice(args);
         payload[CRC_OFFSET] = Self::crc(&payload);
 
+        buffer.extend_from_slice(&payload);
+    }
+
+    fn build_packet(
+        data_size: u8,
+        command_class: u8,
+        command_id: u8,
+        args: &[u8],
+        post_delay: Duration,
+    ) -> ProtocolCommand {
+        let mut data = Vec::with_capacity(SEIREN_V3_PAYLOAD_LEN);
+        Self::write_packet(&mut data, data_size, command_class, command_id, args);
         ProtocolCommand {
-            data: payload.to_vec(),
+            data,
             expects_response: false,
             response_delay: Duration::ZERO,
             post_delay,
@@ -57,7 +69,7 @@ impl SeirenV3Protocol {
 }
 
 impl Protocol for SeirenV3Protocol {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Razer Seiren V3"
     }
 
@@ -85,6 +97,12 @@ impl Protocol for SeirenV3Protocol {
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        let mut commands = Vec::new();
+        self.encode_frame_into(colors, &mut commands);
+        commands
+    }
+
+    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let mut ordered = [[0_u8; 3]; SEIREN_V3_LED_ORDER.len()];
 
         for (index, slot) in SEIREN_V3_LED_ORDER.iter().copied().enumerate() {
@@ -99,13 +117,15 @@ impl Protocol for SeirenV3Protocol {
             args.extend_from_slice(&Self::encode_color(color));
         }
 
-        vec![Self::build_packet(
-            FRAME_DATA_SIZE,
-            0x0F,
-            0x03,
-            &args,
+        let mut encoder = CommandBuffer::new(commands);
+        encoder.push_fill(
+            false,
+            Duration::ZERO,
             Duration::from_millis(1),
-        )]
+            TransferType::Primary,
+            |buffer| Self::write_packet(buffer, FRAME_DATA_SIZE, 0x0F, 0x03, &args),
+        );
+        encoder.finish();
     }
 
     fn encode_brightness(&self, _brightness: u8) -> Option<Vec<ProtocolCommand>> {

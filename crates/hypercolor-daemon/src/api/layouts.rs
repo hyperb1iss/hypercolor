@@ -137,7 +137,7 @@ pub async fn get_layout(State(state): State<Arc<AppState>>, Path(id): Path<Strin
 pub async fn get_active_layout(State(state): State<Arc<AppState>>) -> Response {
     let active = {
         let spatial = state.spatial_engine.read().await;
-        spatial.layout().clone()
+        spatial.layout().as_ref().clone()
     };
     ApiResponse::ok(active)
 }
@@ -337,7 +337,7 @@ pub async fn preview_layout(
 pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let active_layout = {
         let spatial = state.spatial_engine.read().await;
-        spatial.layout().clone()
+        spatial.layout().as_ref().clone()
     };
     let mut layouts = state.layouts.write().await;
     let key = match resolve_layout_key(&layouts, &id) {

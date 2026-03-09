@@ -45,7 +45,7 @@ impl EffectRenderer for RainbowRenderer {
     }
 
     #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-    fn tick(&mut self, input: &FrameInput) -> anyhow::Result<Canvas> {
+    fn tick(&mut self, input: &FrameInput<'_>) -> anyhow::Result<Canvas> {
         let mut canvas = Canvas::new(input.canvas_width, input.canvas_height);
         let w = input.canvas_width as f32;
         let time_offset = input.time_secs * self.speed;
