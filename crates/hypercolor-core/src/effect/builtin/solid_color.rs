@@ -137,7 +137,7 @@ impl EffectRenderer for SolidColorRenderer {
                 pixel.r *= self.brightness;
                 pixel.g *= self.brightness;
                 pixel.b *= self.brightness;
-                canvas.set_pixel(x, y, pixel.to_rgba());
+                canvas.set_pixel(x, y, pixel.to_srgba());
             }
         }
 

@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
-use image::codecs::jpeg::JpegEncoder;
 use image::ExtendedColorType;
+use image::codecs::jpeg::JpegEncoder;
 use tokio::sync::{Mutex, RwLock, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Interval, MissedTickBehavior};
@@ -325,13 +325,8 @@ async fn run_display_worker(
         let reusable_rgb = std::mem::take(&mut rgb_buffer);
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut reusable_rgb = reusable_rgb;
-            let jpeg = encode_canvas_frame(
-                &source,
-                &viewport,
-                &geometry,
-                brightness,
-                &mut reusable_rgb,
-            )?;
+            let jpeg =
+                encode_canvas_frame(&source, &viewport, &geometry, brightness, &mut reusable_rgb)?;
             Ok::<_, anyhow::Error>((reusable_rgb, jpeg))
         })
         .await;
@@ -468,7 +463,13 @@ fn encode_canvas_frame(
     brightness: f32,
     rendered_rgb: &mut Vec<u8>,
 ) -> Result<Vec<u8>> {
-    render_display_view(source, viewport, geometry.width, geometry.height, rendered_rgb);
+    render_display_view(
+        source,
+        viewport,
+        geometry.width,
+        geometry.height,
+        rendered_rgb,
+    );
     apply_display_brightness(rendered_rgb, brightness);
     if geometry.circular {
         apply_circular_mask(rendered_rgb, geometry.width, geometry.height);
@@ -790,7 +791,11 @@ fn axis_sample(normalized: f32, source_len: u32) -> AxisSample {
     }
 }
 
-fn bilinear_sample_rgb(source: &CanvasFrame, x_sample: AxisSample, y_sample: AxisSample) -> [u8; 3] {
+fn bilinear_sample_rgb(
+    source: &CanvasFrame,
+    x_sample: AxisSample,
+    y_sample: AxisSample,
+) -> [u8; 3] {
     let width = usize::try_from(source.width).unwrap_or_default();
     let rgba = source.rgba_bytes();
     let top_left = rgba_offset(width, x_sample.left, y_sample.left);
@@ -808,16 +813,20 @@ fn bilinear_sample_rgb(source: &CanvasFrame, x_sample: AxisSample, y_sample: Axi
                     * vertical_bottom,
         ),
         round_to_u8(
-            lerp_channel(rgba[top_left + 1], rgba[top_right + 1], x_sample.amount)
-                * vertical_top
-                + lerp_channel(rgba[bottom_left + 1], rgba[bottom_right + 1], x_sample.amount)
-                    * vertical_bottom,
+            lerp_channel(rgba[top_left + 1], rgba[top_right + 1], x_sample.amount) * vertical_top
+                + lerp_channel(
+                    rgba[bottom_left + 1],
+                    rgba[bottom_right + 1],
+                    x_sample.amount,
+                ) * vertical_bottom,
         ),
         round_to_u8(
-            lerp_channel(rgba[top_left + 2], rgba[top_right + 2], x_sample.amount)
-                * vertical_top
-                + lerp_channel(rgba[bottom_left + 2], rgba[bottom_right + 2], x_sample.amount)
-                    * vertical_bottom,
+            lerp_channel(rgba[top_left + 2], rgba[top_right + 2], x_sample.amount) * vertical_top
+                + lerp_channel(
+                    rgba[bottom_left + 2],
+                    rgba[bottom_right + 2],
+                    x_sample.amount,
+                ) * vertical_bottom,
         ),
     ]
 }

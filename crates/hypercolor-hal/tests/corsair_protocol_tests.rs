@@ -5,7 +5,8 @@ use hypercolor_hal::drivers::corsair::framing::{
 };
 use hypercolor_hal::drivers::corsair::{
     CORSAIR_KEEPALIVE_INTERVAL, CorsairLcdProtocol, CorsairLightingNodeProtocol,
-    CorsairLinkProtocol, EP_GET_DEVICES,
+    CorsairLinkProtocol, EP_GET_DEVICES, build_icue_link_lcd_protocol,
+    build_xd6_elite_lcd_protocol,
 };
 use hypercolor_hal::protocol::{Protocol, ResponseStatus, TransferType};
 use hypercolor_types::device::DeviceTopologyHint;
@@ -357,4 +358,56 @@ fn xc7_lcd_supports_ring_zone_and_model_specific_keepalive() {
     assert!(capabilities.supports_direct);
     assert!(capabilities.has_display);
     assert_eq!(protocol.total_leds(), 31);
+}
+
+#[test]
+fn icue_link_lcd_matches_signalrgb_standard_lcd_flow() {
+    let protocol = build_icue_link_lcd_protocol();
+
+    let init = protocol.init_sequence();
+    assert_eq!(init.len(), 4);
+    assert_eq!(&init[3].data[..6], &[0x03, 0x0B, 0x40, 0x01, 0x79, 0xE7]);
+
+    let jpeg = vec![0x55; 32];
+    let commands = protocol
+        .encode_display_frame(&jpeg)
+        .expect("iCUE LINK LCD should support display frames");
+
+    assert_eq!(commands.len(), 2);
+    assert_eq!(commands[0].transfer_type, TransferType::Bulk);
+    assert_eq!(commands[1].transfer_type, TransferType::HidReport);
+    assert_eq!(
+        &commands[0].data[..8],
+        &[0x02, 0x05, 0x40, 0x01, 0x00, 0x00, 0xF8, 0x03]
+    );
+    assert_eq!(
+        &commands[1].data[..8],
+        &[0x03, 0x19, 0x40, 0x01, 0x01, 0x00, 0xF8, 0x03]
+    );
+}
+
+#[test]
+fn xd6_lcd_uses_standard_init_with_model_specific_zone_byte() {
+    let protocol = build_xd6_elite_lcd_protocol();
+
+    let init = protocol.init_sequence();
+    assert_eq!(init.len(), 4);
+    assert_eq!(&init[3].data[..6], &[0x03, 0x0B, 0x40, 0x01, 0x79, 0xE7]);
+
+    let jpeg = vec![0xAA; 32];
+    let commands = protocol
+        .encode_display_frame(&jpeg)
+        .expect("XD6 LCD should support display frames");
+
+    assert_eq!(commands.len(), 2);
+    assert_eq!(commands[0].transfer_type, TransferType::Bulk);
+    assert_eq!(commands[1].transfer_type, TransferType::HidReport);
+    assert_eq!(
+        &commands[0].data[..8],
+        &[0x02, 0x05, 0x01, 0x01, 0x00, 0x00, 0xF8, 0x03]
+    );
+    assert_eq!(
+        &commands[1].data[..8],
+        &[0x03, 0x19, 0x40, 0x01, 0x01, 0x00, 0xF8, 0x03]
+    );
 }

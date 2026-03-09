@@ -116,9 +116,7 @@ impl UsbDevice {
 
     fn queue_display_frame(&self, jpeg_data: Arc<Vec<u8>>) {
         self.display_tx
-            .send_replace(Some(Arc::new(UsbDisplayPayload {
-                jpeg_data,
-            })));
+            .send_replace(Some(Arc::new(UsbDisplayPayload { jpeg_data })));
     }
 
     async fn set_brightness(&mut self, device_id: DeviceId, brightness: u8) -> Result<()> {
@@ -479,6 +477,7 @@ impl UsbBackend {
                     protocol = protocol.name(),
                     transport = transport_name,
                     error = %error,
+                    error_chain = %format_error_chain(&error),
                     "USB device actor failed"
                 );
             }
@@ -974,6 +973,15 @@ impl UsbBackend {
             }
         }
     }
+}
+
+fn format_error_chain(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .skip(1)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" | caused_by: ")
 }
 
 #[async_trait::async_trait]

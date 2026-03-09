@@ -188,8 +188,7 @@ impl BackendIo {
             .with_context(|| {
                 format!(
                     "failed to write {} display bytes to device {device_id} using backend '{}'",
-                    byte_len,
-                    self.backend_id
+                    byte_len, self.backend_id
                 )
             })
     }

@@ -451,11 +451,11 @@ fn bilinear_sampling_interpolates() {
     let engine = SpatialEngine::new(layout);
     let result = engine.sample(&canvas);
 
-    // At center of 2-pixel canvas, bilinear should interpolate to ~127-128.
+    // At center of 2-pixel canvas, linear-light interpolation should land near sRGB 188.
     let color = &result[0].colors[0];
     assert!(
-        (120..=135).contains(&color[0]),
-        "Bilinear center should be ~128, got {}",
+        (184..=191).contains(&color[0]),
+        "Bilinear center should be ~188, got {}",
         color[0]
     );
 }
@@ -489,16 +489,16 @@ fn area_average_samples_region() {
     let result = engine.sample(&canvas);
 
     let color = &result[0].colors[0];
-    // Area average of half-red/half-blue should produce approximately:
-    // R ~128, G 0, B ~128
+    // The 5x5 kernel clamps at the edges, so this samples 60% red and 40% blue
+    // in linear light, which encodes back to roughly (203, 0, 170) in sRGB.
     assert!(
-        (90..=165).contains(&color[0]),
-        "Area avg red should be ~128, got {}",
+        (198..=208).contains(&color[0]),
+        "Area avg red should be ~203, got {}",
         color[0]
     );
     assert!(
-        (90..=165).contains(&color[2]),
-        "Area avg blue should be ~128, got {}",
+        (165..=175).contains(&color[2]),
+        "Area avg blue should be ~170, got {}",
         color[2]
     );
 }

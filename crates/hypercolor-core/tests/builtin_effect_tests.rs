@@ -222,9 +222,9 @@ fn solid_color_brightness_control() {
     let canvas = r.tick(&frame(0.0, 0)).expect("tick");
     let p = top_left(&canvas);
 
-    // At 50% brightness, white should be around 127-128
+    // At 50% linear brightness, the sRGB-encoded canvas value is around 188.
     assert!(
-        p.r > 100 && p.r < 150,
+        p.r > 180 && p.r < 195,
         "brightness should dim the color, got r={}",
         p.r
     );

@@ -29,6 +29,17 @@ fn rgba_to_f32_roundtrip() {
 }
 
 #[test]
+fn rgba_to_linear_f32_decodes_srgb() {
+    let encoded = Rgba::new(128, 64, 200, 255);
+    let linear = encoded.to_linear_f32();
+
+    assert!((linear.r - srgb_to_linear(128.0 / 255.0)).abs() < 0.0001);
+    assert!((linear.g - srgb_to_linear(64.0 / 255.0)).abs() < 0.0001);
+    assert!((linear.b - srgb_to_linear(200.0 / 255.0)).abs() < 0.0001);
+    assert!((linear.a - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
 fn rgba_to_f32_boundaries() {
     let black = Rgba::BLACK.to_f32();
     assert!((black.r).abs() < f32::EPSILON);
@@ -326,8 +337,12 @@ fn sample_bilinear_midpoint() {
     c.set_pixel(1, 0, Rgba::new(200, 200, 200, 255));
 
     let mid = c.sample_bilinear(0.5, 0.0);
-    // Should be approximately halfway
-    assert!(mid.r > 80 && mid.r < 120, "bilinear midpoint r = {}", mid.r);
+    // Linear-light interpolation with sRGB output lands near 146.
+    assert!(
+        mid.r > 140 && mid.r < 150,
+        "bilinear midpoint r = {}",
+        mid.r
+    );
 }
 
 #[test]

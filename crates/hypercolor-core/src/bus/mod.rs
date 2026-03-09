@@ -13,8 +13,8 @@ mod filter;
 
 pub use filter::{EventFilter, FilteredEventReceiver};
 
-use std::time::{Instant, SystemTime};
 use std::sync::Arc;
+use std::time::{Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch};

@@ -6,6 +6,7 @@ use leptos::prelude::*;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 
+use hypercolor_types::canvas::{linear_to_srgb, srgb_to_linear};
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
 const QUICK_COLOR_SWATCHES: [&str; 10] = [
@@ -691,9 +692,9 @@ fn hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
     let blue = u8::from_str_radix(&compact[4..6], 16).ok()?;
 
     Some([
-        f32::from(red) / 255.0,
-        f32::from(green) / 255.0,
-        f32::from(blue) / 255.0,
+        srgb_to_linear(f32::from(red) / 255.0),
+        srgb_to_linear(f32::from(green) / 255.0),
+        srgb_to_linear(f32::from(blue) / 255.0),
         1.0,
     ])
 }
@@ -704,5 +705,5 @@ fn hex_to_rgba(hex: &str) -> Option<[f32; 4]> {
     clippy::as_conversions
 )]
 fn to_byte(channel: f32) -> u8 {
-    (channel.clamp(0.0, 1.0) * 255.0).round() as u8
+    (linear_to_srgb(channel.clamp(0.0, 1.0)) * 255.0).round() as u8
 }

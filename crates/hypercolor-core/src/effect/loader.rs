@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectId, EffectMetadata,
     EffectSource, EffectState,
@@ -365,9 +366,9 @@ fn parse_hex_color(hex: &str) -> Option<ControlValue> {
         let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
         let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
         Some(ControlValue::Color([
-            f32::from(r) / 255.0,
-            f32::from(g) / 255.0,
-            f32::from(b) / 255.0,
+            srgb_to_linear(f32::from(r) / 255.0),
+            srgb_to_linear(f32::from(g) / 255.0),
+            srgb_to_linear(f32::from(b) / 255.0),
             1.0,
         ]))
     } else {

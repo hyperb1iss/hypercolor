@@ -66,9 +66,11 @@ impl Rgba {
         Self { r, g, b, a }
     }
 
-    /// Convert to floating-point representation for interpolation math.
+    /// Convert to normalized floating-point representation without color decoding.
     ///
-    /// Each channel is mapped from `[0, 255]` to `[0.0, 1.0]`.
+    /// Each channel is mapped from `[0, 255]` to `[0.0, 1.0]` as-is.
+    /// Use [`Self::to_linear_f32`] when the bytes represent sRGB storage and
+    /// the result will be used for interpolation or averaging.
     #[must_use]
     pub fn to_f32(self) -> RgbaF32 {
         RgbaF32 {
@@ -77,6 +79,12 @@ impl Rgba {
             b: f32::from(self.b) / 255.0,
             a: f32::from(self.a) / 255.0,
         }
+    }
+
+    /// Convert stored sRGB bytes into linear floating-point RGBA.
+    #[must_use]
+    pub fn to_linear_f32(self) -> RgbaF32 {
+        RgbaF32::from_srgb_u8(self.r, self.g, self.b, self.a)
     }
 
     /// Extract RGB only, discarding alpha.
@@ -179,10 +187,10 @@ impl RgbaF32 {
     )]
     pub fn to_srgb_u8(self) -> [u8; 4] {
         [
-            (linear_to_srgb(self.r) * 255.0).clamp(0.0, 255.0) as u8,
-            (linear_to_srgb(self.g) * 255.0).clamp(0.0, 255.0) as u8,
-            (linear_to_srgb(self.b) * 255.0).clamp(0.0, 255.0) as u8,
-            (self.a * 255.0).clamp(0.0, 255.0) as u8,
+            (linear_to_srgb(self.r) * 255.0).round().clamp(0.0, 255.0) as u8,
+            (linear_to_srgb(self.g) * 255.0).round().clamp(0.0, 255.0) as u8,
+            (linear_to_srgb(self.b) * 255.0).round().clamp(0.0, 255.0) as u8,
+            (self.a * 255.0).round().clamp(0.0, 255.0) as u8,
         ]
     }
 
@@ -592,15 +600,15 @@ impl Canvas {
         let frac_x = fx.fract();
         let frac_y = fy.fract();
 
-        let tl = self.get_pixel(x0, y0).to_f32();
-        let tr = self.get_pixel(x1, y0).to_f32();
-        let bl = self.get_pixel(x0, y1).to_f32();
-        let br = self.get_pixel(x1, y1).to_f32();
+        let tl = self.get_pixel(x0, y0).to_linear_f32();
+        let tr = self.get_pixel(x1, y0).to_linear_f32();
+        let bl = self.get_pixel(x0, y1).to_linear_f32();
+        let br = self.get_pixel(x1, y1).to_linear_f32();
 
         // Horizontal lerp, then vertical lerp
         let top = RgbaF32::lerp(&tl, &tr, frac_x);
         let bot = RgbaF32::lerp(&bl, &br, frac_x);
-        RgbaF32::lerp(&top, &bot, frac_y).to_rgba()
+        RgbaF32::lerp(&top, &bot, frac_y).to_srgba()
     }
 
     /// Sample with area averaging.
@@ -622,32 +630,27 @@ impl Canvas {
         let cy = ny * (self.height - 1) as f32;
 
         let r = radius.ceil() as i32;
-        let mut sum_r = 0u32;
-        let mut sum_g = 0u32;
-        let mut sum_b = 0u32;
-        let mut sum_a = 0u32;
+        let mut sum_r = 0.0;
+        let mut sum_g = 0.0;
+        let mut sum_b = 0.0;
+        let mut sum_a = 0.0;
         let mut count = 0u32;
 
         for dy in -r..=r {
             for dx in -r..=r {
                 let px = (cx as i32 + dx).clamp(0, self.width as i32 - 1) as u32;
                 let py = (cy as i32 + dy).clamp(0, self.height as i32 - 1) as u32;
-                let p = self.get_pixel(px, py);
-                sum_r += u32::from(p.r);
-                sum_g += u32::from(p.g);
-                sum_b += u32::from(p.b);
-                sum_a += u32::from(p.a);
+                let p = self.get_pixel(px, py).to_linear_f32();
+                sum_r += p.r;
+                sum_g += p.g;
+                sum_b += p.b;
+                sum_a += p.a;
                 count += 1;
             }
         }
 
-        #[allow(clippy::cast_possible_truncation)]
-        Rgba {
-            r: (sum_r / count) as u8,
-            g: (sum_g / count) as u8,
-            b: (sum_b / count) as u8,
-            a: (sum_a / count) as u8,
-        }
+        let count = count as f32;
+        RgbaF32::new(sum_r / count, sum_g / count, sum_b / count, sum_a / count).to_srgba()
     }
 }
 

@@ -63,14 +63,7 @@ pub trait Transport: Send + Sync {
         data: Vec<u8>,
         transfer_type: TransferType,
     ) -> Result<(), TransportError> {
-        if transfer_type != TransferType::Primary {
-            return Err(TransportError::UnsupportedTransfer {
-                transport: self.name().to_owned(),
-                transfer_type,
-            });
-        }
-
-        self.send(&data).await
+        self.send_with_type(&data, transfer_type).await
     }
 
     /// Receive raw bytes.
