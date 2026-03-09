@@ -2,13 +2,14 @@
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use wasm_bindgen::JsCast;
 
 use crate::api::{self, ZoneTopologySummary};
 use crate::app::DevicesContext;
-use crate::components::attachment_panel::AttachmentPanel;
 use crate::components::layout_canvas::device_accent_colors;
 use crate::icons::*;
 use crate::layout_geometry;
+use crate::toasts;
 use hypercolor_types::spatial::{DeviceZone, NormalizedPosition, SpatialLayout, ZoneGroup};
 
 /// Group color presets — works in both dark and light themes.
@@ -40,8 +41,25 @@ pub fn LayoutPalette(
     let (collapsed_devices, set_collapsed_devices) =
         signal(std::collections::HashSet::<String>::new());
 
-    // Track which device has its attachment panel open (at most one at a time)
-    let (attachment_device_id, set_attachment_device_id) = signal(None::<String>);
+    // Cached attachment bindings per device — fetched lazily on expand.
+    let (attachment_cache, set_attachment_cache) =
+        signal(std::collections::HashMap::<String, Vec<api::AttachmentBindingSummary>>::new());
+    let (import_in_flight, set_import_in_flight) = signal(false);
+
+    // Fetch attachments for a device (if not already cached).
+    let fetch_attachments = move |device_id: String| {
+        if attachment_cache.get_untracked().contains_key(&device_id) {
+            return;
+        }
+        let did = device_id.clone();
+        leptos::task::spawn_local(async move {
+            if let Ok(profile) = api::fetch_device_attachments(&did).await {
+                set_attachment_cache.update(|cache| {
+                    cache.insert(did, profile.bindings);
+                });
+            }
+        });
+    };
 
     // Derive group list from layout
     let groups = Signal::derive(move || {
@@ -270,6 +288,18 @@ pub fn LayoutPalette(
                                             })
                                         };
 
+                                        // --- Whole-device layout membership ---
+                                        let any_zone_in_layout = {
+                                            let did = device_id.clone();
+                                            Signal::derive(move || {
+                                                layout.with(|current| {
+                                                    current.as_ref().is_some_and(|l| {
+                                                        l.zones.iter().any(|z| z.device_id == did)
+                                                    })
+                                                })
+                                            })
+                                        };
+
                                         // --- Multi-zone handling ---
                                         let collapse_key = dev.layout_device_id.clone();
                                         let collapse_key2 = dev.layout_device_id.clone();
@@ -338,7 +368,8 @@ pub fn LayoutPalette(
                                                             if let Some(zid) = first_zone_id_in_layout.get_untracked() {
                                                                 set_selected_zone_id.set(Some(zid));
                                                             }
-                                                            // Toggle collapse
+                                                            // Toggle collapse + fetch attachments on expand
+                                                            let was_collapsed = collapsed_devices.get_untracked().contains(&collapse_key2);
                                                             set_collapsed_devices.update(
                                                                 |set| {
                                                                     if set.contains(
@@ -355,6 +386,9 @@ pub fn LayoutPalette(
                                                                     }
                                                                 },
                                                             );
+                                                            if was_collapsed {
+                                                                fetch_attachments(collapse_key.clone());
+                                                            }
                                                         } else {
                                                             // Select zone on canvas if it's in layout
                                                             if let Some(zid) = first_zone_id_in_layout.get_untracked() {
@@ -412,24 +446,84 @@ pub fn LayoutPalette(
                                                         </div>
                                                     </div>
 
-                                                    // Right side: chevron (multi) or toggle (single)
+                                                    // Right side: chevron + add/remove-all (multi) or toggle (single)
                                                     {if has_multi_zones {
+                                                        let toggle_all_rgb = rgb_for_indicator.clone();
+                                                        let toggle_all_did = device_id.clone();
+                                                        let toggle_all_dname = dev.name.clone();
+                                                        let toggle_all_zones = dev.zones.clone();
                                                         view! {
-                                                            <div
-                                                                class="text-fg-tertiary shrink-0"
-                                                                style=move || {
-                                                                    if is_collapsed.get() {
-                                                                        "transform: rotate(-90deg); transition: transform 0.2s ease"
+                                                            <div class="shrink-0 flex items-center gap-1">
+                                                                // Add-all / remove-all toggle
+                                                                {move || {
+                                                                    let did = toggle_all_did.clone();
+                                                                    let dname = toggle_all_dname.clone();
+                                                                    let zones = toggle_all_zones.clone();
+                                                                    if any_zone_in_layout.get() {
+                                                                        view! {
+                                                                            <button
+                                                                                class="w-5 h-5 flex items-center justify-center rounded
+                                                                                       transition-all shrink-0 opacity-30 hover:opacity-80 btn-press"
+                                                                                style="color: var(--color-text-tertiary)"
+                                                                                title="Remove all zones"
+                                                                                on:click=move |ev| {
+                                                                                    ev.stop_propagation();
+                                                                                    remove_all_device_zones(
+                                                                                        &did,
+                                                                                        &set_layout,
+                                                                                        &set_selected_zone_id,
+                                                                                        &set_is_dirty,
+                                                                                    );
+                                                                                }
+                                                                            >
+                                                                                <Icon icon=LuX width="10px" height="10px" />
+                                                                            </button>
+                                                                        }.into_any()
                                                                     } else {
-                                                                        "transition: transform 0.2s ease"
+                                                                        view! {
+                                                                            <button
+                                                                                class="w-6 h-6 flex items-center justify-center rounded-md
+                                                                                       border transition-all shrink-0 btn-press"
+                                                                                style=format!(
+                                                                                    "background: rgba({toggle_all_rgb}, 0.08); border-color: rgba({toggle_all_rgb}, 0.2); color: rgb({toggle_all_rgb})"
+                                                                                )
+                                                                                title="Add all zones"
+                                                                                on:click=move |ev| {
+                                                                                    ev.stop_propagation();
+                                                                                    add_all_device_zones(
+                                                                                        &did,
+                                                                                        &dname,
+                                                                                        &zones,
+                                                                                        fallback_leds,
+                                                                                        &layout,
+                                                                                        &set_layout,
+                                                                                        &set_selected_zone_id,
+                                                                                        &set_is_dirty,
+                                                                                    );
+                                                                                }
+                                                                            >
+                                                                                <Icon icon=LuPlus width="12px" height="12px" />
+                                                                            </button>
+                                                                        }.into_any()
                                                                     }
-                                                                }
-                                                            >
-                                                                <Icon
-                                                                    icon=LuChevronDown
-                                                                    width="14px"
-                                                                    height="14px"
-                                                                />
+                                                                }}
+                                                                // Expand/collapse chevron
+                                                                <div
+                                                                    class="text-fg-tertiary"
+                                                                    style=move || {
+                                                                        if is_collapsed.get() {
+                                                                            "transform: rotate(-90deg); transition: transform 0.2s ease"
+                                                                        } else {
+                                                                            "transition: transform 0.2s ease"
+                                                                        }
+                                                                    }
+                                                                >
+                                                                    <Icon
+                                                                        icon=LuChevronDown
+                                                                        width="14px"
+                                                                        height="14px"
+                                                                    />
+                                                                </div>
                                                             </div>
                                                         }
                                                             .into_any()
@@ -475,11 +569,15 @@ pub fn LayoutPalette(
                                                                                 )
                                                                                 on:click=move |ev| {
                                                                                     ev.stop_propagation();
+                                                                                    let (canvas_width, canvas_height) =
+                                                                                        current_canvas_dimensions(&layout);
                                                                                     let new_zone = create_default_zone(
                                                                                         &did,
                                                                                         &dname,
                                                                                         zone.as_ref(),
                                                                                         fallback_leds,
+                                                                                        canvas_width,
+                                                                                        canvas_height,
                                                                                     );
                                                                                     let zone_id = new_zone.id.clone();
                                                                                     set_layout.update(|l| {
@@ -612,6 +710,19 @@ pub fn LayoutPalette(
                                                                         let zone_rgb3 = rgb_for_zones.clone();
                                                                         let toggle_zone_name = zone_name_key.clone();
 
+                                                                        // Attachment binding for this zone/slot
+                                                                        let binding_zone_name = display_name.clone();
+                                                                        let binding_device_id = device_id.clone();
+                                                                        let zone_binding = Signal::derive(move || {
+                                                                            let cache = attachment_cache.get();
+                                                                            cache.get(&binding_device_id).and_then(|bindings| {
+                                                                                bindings.iter().find(|b| {
+                                                                                    b.slot_id.eq_ignore_ascii_case(&binding_zone_name)
+                                                                                        || b.slot_id == binding_zone_name
+                                                                                }).cloned()
+                                                                            })
+                                                                        });
+
                                                                         view! {
                                                                             <div
                                                                                 class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg
@@ -682,11 +793,15 @@ pub fn LayoutPalette(
                                                                                                 )
                                                                                                 on:click=move |ev| {
                                                                                                     ev.stop_propagation();
+                                                                                                    let (canvas_width, canvas_height) =
+                                                                                                        current_canvas_dimensions(&layout);
                                                                                                     let new_zone = create_default_zone(
                                                                                                         &did,
                                                                                                         &dname,
                                                                                                         zone_entry.as_ref(),
                                                                                                         fallback_leds,
+                                                                                                        canvas_width,
+                                                                                                        canvas_height,
                                                                                                     );
                                                                                                     let zone_id = new_zone.id.clone();
                                                                                                     set_layout.update(|l| {
@@ -818,8 +933,16 @@ fn create_default_zone(
     device_name: &str,
     zone: Option<&api::ZoneSummary>,
     total_leds: usize,
+    canvas_width: u32,
+    canvas_height: u32,
 ) -> DeviceZone {
-    let defaults = layout_geometry::default_zone_visuals(device_name, zone, total_leds);
+    let defaults = layout_geometry::default_zone_visuals(
+        device_name,
+        zone,
+        total_leds,
+        canvas_width,
+        canvas_height,
+    );
     let zone_name = zone.map(|z| z.name.clone());
     let display_name = zone.map_or_else(
         || device_name.to_owned(),
@@ -858,6 +981,15 @@ fn create_default_zone(
     }
 }
 
+fn current_canvas_dimensions(layout: &Signal<Option<SpatialLayout>>) -> (u32, u32) {
+    layout.with_untracked(|current| {
+        current
+            .as_ref()
+            .map(|layout| (layout.canvas_width.max(1), layout.canvas_height.max(1)))
+            .unwrap_or((320, 200))
+    })
+}
+
 /// Remove a device zone from the layout by device_id + zone_name.
 fn remove_device_zone(
     device_id: &str,
@@ -874,6 +1006,79 @@ fn remove_device_zone(
         }
     });
     set_selected_zone_id.set(None);
+    set_is_dirty.set(true);
+}
+
+/// Remove ALL zones for a device from the layout in one action.
+fn remove_all_device_zones(
+    device_id: &str,
+    set_layout: &WriteSignal<Option<SpatialLayout>>,
+    set_selected_zone_id: &WriteSignal<Option<String>>,
+    set_is_dirty: &WriteSignal<bool>,
+) {
+    set_layout.update(|l| {
+        if let Some(layout) = l {
+            layout.zones.retain(|z| z.device_id != device_id);
+        }
+    });
+    set_selected_zone_id.set(None);
+    set_is_dirty.set(true);
+}
+
+/// Add ALL zones for a device to the layout in one action, skipping any already present.
+#[allow(clippy::too_many_arguments)]
+fn add_all_device_zones(
+    device_id: &str,
+    device_name: &str,
+    zones: &[api::ZoneSummary],
+    total_leds: usize,
+    layout: &Signal<Option<SpatialLayout>>,
+    set_layout: &WriteSignal<Option<SpatialLayout>>,
+    set_selected_zone_id: &WriteSignal<Option<String>>,
+    set_is_dirty: &WriteSignal<bool>,
+) {
+    let (canvas_width, canvas_height) = current_canvas_dimensions(layout);
+    let existing_zone_names: std::collections::HashSet<Option<String>> =
+        layout.with_untracked(|current| {
+            current
+                .as_ref()
+                .map(|l| {
+                    l.zones
+                        .iter()
+                        .filter(|z| z.device_id == device_id)
+                        .map(|z| z.zone_name.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+
+    let mut first_new_id = None;
+    set_layout.update(|l| {
+        if let Some(current_layout) = l {
+            for zone in zones {
+                let zn = Some(zone.name.clone());
+                if existing_zone_names.contains(&zn) {
+                    continue;
+                }
+                let new_zone = create_default_zone(
+                    device_id,
+                    device_name,
+                    Some(zone),
+                    total_leds,
+                    canvas_width,
+                    canvas_height,
+                );
+                if first_new_id.is_none() {
+                    first_new_id = Some(new_zone.id.clone());
+                }
+                current_layout.zones.push(new_zone);
+            }
+        }
+    });
+
+    if let Some(id) = first_new_id {
+        set_selected_zone_id.set(Some(id));
+    }
     set_is_dirty.set(true);
 }
 

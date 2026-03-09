@@ -189,9 +189,13 @@ fn ControlWidget(
                         }
                     >
                         <div
-                            class="absolute top-[3px] w-4 h-4 rounded-full toggle-thumb"
-                            class=("translate-x-[22px] bg-white toggle-thumb-on", move || checked.get())
-                            class=("translate-x-[3px] bg-fg-tertiary", move || !checked.get())
+                            class=move || {
+                                if checked.get() {
+                                    "absolute top-[3px] w-4 h-4 rounded-full toggle-thumb translate-x-[22px] bg-white toggle-thumb-on"
+                                } else {
+                                    "absolute top-[3px] w-4 h-4 rounded-full toggle-thumb translate-x-[3px] bg-fg-tertiary"
+                                }
+                            }
                         />
                     </button>
                 </div>
@@ -356,9 +360,13 @@ fn ControlWidget(
                                     view! {
                                         <button
                                             type="button"
-                                            class="aspect-square rounded-lg border transition-all duration-150 hover:scale-110"
-                                            class=("border-white/30 edge-glow-accent", move || is_active.get())
-                                            class=("border-edge-subtle", move || !is_active.get())
+                                            class=move || {
+                                                if is_active.get() {
+                                                    "aspect-square rounded-lg border transition-all duration-150 hover:scale-110 border-white/30 edge-glow-accent"
+                                                } else {
+                                                    "aspect-square rounded-lg border transition-all duration-150 hover:scale-110 border-edge-subtle"
+                                                }
+                                            }
                                             style=format!("background: {swatch_hex}")
                                             on:click={
                                                 let control_name = control_name.clone();

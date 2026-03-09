@@ -4,6 +4,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
+use crate::app::DevicesContext;
 use crate::icons::*;
 use crate::layout_geometry::{self, SizeAxis};
 use hypercolor_types::spatial::SpatialLayout;
@@ -70,9 +71,12 @@ pub fn LayoutZoneProperties(
                     }.into_any();
                 };
 
+                let ctx = expect_context::<DevicesContext>();
+
                 let zone_id = zone.id.clone();
                 let zone_name = zone.name.clone();
                 let device_id_display = zone.device_id.clone();
+                let channel_name = zone.zone_name.clone();
                 let pos_x = zone.position.x;
                 let pos_y = zone.position.y;
                 let size_w = zone.size.x;
@@ -83,7 +87,31 @@ pub fn LayoutZoneProperties(
                 let topology_label = topology_name(&zone.topology);
                 let current_group_id = zone.group_id.clone();
 
+                // Compute the default display name for reset.
+                let default_name = {
+                    let device_name = ctx
+                        .devices_resource
+                        .get_untracked()
+                        .and_then(|r| r.ok())
+                        .and_then(|devices| {
+                            devices
+                                .iter()
+                                .find(|d| d.layout_device_id == zone.device_id)
+                                .map(|d| d.name.clone())
+                        })
+                        .unwrap_or_else(|| zone.device_id.clone());
+                    match &zone.zone_name {
+                        Some(zn) if !zn.eq_ignore_ascii_case(&device_name) => {
+                            format!("{device_name} · {zn}")
+                        }
+                        _ => device_name,
+                    }
+                };
+                let name_is_default = zone_name == default_name;
+
                 let zid_name = zone_id.clone();
+                let zid_name_reset = zone_id.clone();
+                let zid_channel = zone_id.clone();
                 let zid_pos_x = zone_id.clone();
                 let zid_pos_y = zone_id.clone();
                 let zid_size_w = zone_id.clone();
@@ -121,11 +149,31 @@ pub fn LayoutZoneProperties(
                             </button>
                         </div>
 
-                        // Row 1: Identity — name, device, topology, group
-                        <div class="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-4">
-                            // Name
+                        // Row 1: Identity — name, channel, device, topology, group
+                        <div class="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-5">
+                            // Name (with reset button)
                             <div class="space-y-0.5">
-                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Name"</label>
+                                <div class="flex items-center justify-between">
+                                    <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Name"</label>
+                                    {(!name_is_default).then(|| {
+                                        let default = default_name.clone();
+                                        view! {
+                                            <button
+                                                class="flex items-center gap-0.5 text-[7px] font-mono text-fg-tertiary/50 hover:text-accent
+                                                       transition-colors btn-press"
+                                                title="Reset to default name"
+                                                on:click=move |_| {
+                                                    let val = default.clone();
+                                                    let zid = zid_name_reset.clone();
+                                                    update_zone(zid, Box::new(move |z| z.name = val));
+                                                }
+                                            >
+                                                <Icon icon=LuRotateCcw width="8px" height="8px" />
+                                                "Reset"
+                                            </button>
+                                        }
+                                    })}
+                                </div>
                                 <input
                                     type="text"
                                     class="w-full bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[11px] text-fg-primary
@@ -137,6 +185,27 @@ pub fn LayoutZoneProperties(
                                             let val = el.value();
                                             let zid = zid_name.clone();
                                             update_zone(zid, Box::new(move |z| z.name = val));
+                                        }
+                                    }
+                                />
+                            </div>
+
+                            // Channel (editable, resettable)
+                            <div class="space-y-0.5">
+                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Channel"</label>
+                                <input
+                                    type="text"
+                                    placeholder="(none)"
+                                    class="w-full bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[11px] text-fg-primary font-mono
+                                           placeholder-fg-tertiary/40 focus:outline-none focus:border-accent-muted glow-ring transition-all"
+                                    prop:value=channel_name.clone().unwrap_or_default()
+                                    on:change=move |ev| {
+                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                        if let Some(el) = target {
+                                            let val = el.value();
+                                            let zid = zid_channel.clone();
+                                            let zone_name = if val.trim().is_empty() { None } else { Some(val) };
+                                            update_zone(zid, Box::new(move |z| z.zone_name = zone_name));
                                         }
                                     }
                                 />

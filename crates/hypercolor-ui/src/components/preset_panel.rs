@@ -214,7 +214,7 @@ pub fn PresetToolbar(
 
     view! {
         <div
-            class="rounded-xl bg-surface-raised border border-edge-subtle px-3 py-2.5 edge-glow"
+            class="rounded-lg bg-surface-overlay/40 border border-edge-subtle px-2.5 py-2"
             style=move || accent_border.get()
         >
             {move || {

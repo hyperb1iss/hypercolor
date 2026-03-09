@@ -101,7 +101,11 @@ pub(crate) fn default_zone_visuals(
     device_name: &str,
     zone: Option<&ZoneSummary>,
     total_leds: usize,
+    canvas_width: u32,
+    canvas_height: u32,
 ) -> ZoneVisualDefaults {
+    let canvas_aspect = canvas_aspect_ratio(canvas_width, canvas_height);
+
     #[allow(clippy::cast_possible_truncation)]
     let led_count = zone
         .map(|summary| summary.led_count)
@@ -109,7 +113,7 @@ pub(crate) fn default_zone_visuals(
         .unwrap_or(total_leds as u32)
         .max(1);
 
-    if let Some(signal_defaults) = signal_visual_defaults(device_name, led_count) {
+    if let Some(signal_defaults) = signal_visual_defaults(device_name, led_count, canvas_aspect) {
         return signal_defaults;
     }
 
@@ -121,15 +125,15 @@ pub(crate) fn default_zone_visuals(
     if zone_name.contains("strimer") || zone_name.contains("cable") {
         let rows = if led_count >= 48 { 4 } else { 2 };
         let cols = (led_count / rows).max(8);
-        return matrix_defaults(rows, cols, Some("strimer-generic"));
+        return matrix_defaults(rows, cols, Some("strimer-generic"), canvas_aspect);
     }
 
     if zone_name.contains("fan") {
-        return ring_defaults(led_count.max(12), Some("fan-ring"));
+        return ring_defaults(led_count.max(12), Some("fan-ring"), canvas_aspect);
     }
 
     if zone_name.contains("aio") || zone_name.contains("pump") {
-        return ring_defaults(led_count.max(12), Some("aio-pump-ring"));
+        return ring_defaults(led_count.max(12), Some("aio-pump-ring"), canvas_aspect);
     }
 
     if zone_name.contains("radiator") || zone_name.contains("rad") {
@@ -137,27 +141,31 @@ pub(crate) fn default_zone_visuals(
             led_count,
             StripDirection::LeftToRight,
             Some("aio-radiator-strip"),
+            canvas_aspect,
         );
     }
 
     match topology_hint {
         Some(ZoneTopologySummary::Strip) => {
-            strip_defaults(led_count, StripDirection::LeftToRight, None)
+            strip_defaults(led_count, StripDirection::LeftToRight, None, canvas_aspect)
         }
-        Some(ZoneTopologySummary::Matrix { rows, cols }) => matrix_defaults(rows, cols, None),
-        Some(ZoneTopologySummary::Ring { count }) => ring_defaults(count, None),
-        Some(ZoneTopologySummary::Point) => point_defaults(),
+        Some(ZoneTopologySummary::Matrix { rows, cols }) => {
+            matrix_defaults(rows, cols, None, canvas_aspect)
+        }
+        Some(ZoneTopologySummary::Ring { count }) => ring_defaults(count, None, canvas_aspect),
+        Some(ZoneTopologySummary::Point) => point_defaults(canvas_aspect),
         Some(ZoneTopologySummary::Display { width, height, .. }) => {
-            matrix_defaults(height, width, Some("lcd-display"))
+            matrix_defaults(height, width, Some("lcd-display"), canvas_aspect)
         }
         Some(ZoneTopologySummary::Custom) | None => {
             if led_count <= 1 {
-                point_defaults()
+                point_defaults(canvas_aspect)
             } else {
                 strip_defaults(
                     led_count,
                     StripDirection::LeftToRight,
                     Some("generic-strip"),
+                    canvas_aspect,
                 )
             }
         }
@@ -177,6 +185,38 @@ pub(crate) fn normalize_layout_for_editor(mut layout: SpatialLayout) -> SpatialL
         zone.size = normalize_zone_size_for_editor(zone.position, zone.size, &zone.topology);
     }
     layout
+}
+
+pub(crate) fn repair_legacy_lcd_defaults(layout: &mut SpatialLayout) -> bool {
+    let canvas_aspect = canvas_aspect_ratio(layout.canvas_width, layout.canvas_height);
+    let mut changed = false;
+
+    for zone in &mut layout.zones {
+        if zone.shape_preset.as_deref() != Some("lcd-display") {
+            continue;
+        }
+
+        let LedTopology::Matrix { width, height, .. } = zone.topology else {
+            continue;
+        };
+
+        let units = VisualUnits::new(width.max(1) as f32, height.max(1) as f32);
+        let legacy_size = fit_visual_units(units, DEVICE_MIN_SIZE, DEVICE_MAX_SIZE);
+        if !approximately_equal_size(zone.size, legacy_size) {
+            continue;
+        }
+
+        let corrected_size =
+            fit_visual_units_for_canvas(units, DEVICE_MIN_SIZE, DEVICE_MAX_SIZE, canvas_aspect);
+        if approximately_equal_size(zone.size, corrected_size) {
+            continue;
+        }
+
+        zone.size = corrected_size;
+        changed = true;
+    }
+
+    changed
 }
 
 pub(crate) fn normalize_zone_size_for_editor(
@@ -256,7 +296,11 @@ pub(crate) fn update_zone_size(
     )
 }
 
-fn signal_visual_defaults(device_name: &str, led_count: u32) -> Option<ZoneVisualDefaults> {
+fn signal_visual_defaults(
+    device_name: &str,
+    led_count: u32,
+    canvas_aspect: f32,
+) -> Option<ZoneVisualDefaults> {
     let normalized_name = device_name.to_ascii_lowercase();
 
     if normalized_name.contains("basilisk v3 pro 35k")
@@ -267,6 +311,7 @@ fn signal_visual_defaults(device_name: &str, led_count: u32) -> Option<ZoneVisua
             BASILISK_V3_PRO_GRID,
             led_count,
             "razer-basilisk-v3-pro",
+            canvas_aspect,
         );
     }
 
@@ -276,6 +321,7 @@ fn signal_visual_defaults(device_name: &str, led_count: u32) -> Option<ZoneVisua
             BASILISK_V3_GRID,
             led_count,
             "razer-basilisk-v3",
+            canvas_aspect,
         );
     }
 
@@ -287,6 +333,7 @@ fn sparse_signal_defaults(
     grid: VisualUnits,
     led_count: u32,
     shape_preset: &str,
+    canvas_aspect: f32,
 ) -> Option<ZoneVisualDefaults> {
     let positions = grid_points(points, grid);
     #[allow(clippy::cast_possible_truncation)]
@@ -296,14 +343,19 @@ fn sparse_signal_defaults(
 
     Some(ZoneVisualDefaults {
         topology: LedTopology::Custom { positions },
-        size: fit_visual_units(grid, DEVICE_MIN_SIZE, DEVICE_MAX_SIZE),
+        size: fit_visual_units_for_canvas(grid, DEVICE_MIN_SIZE, DEVICE_MAX_SIZE, canvas_aspect),
         orientation: Some(Orientation::Horizontal),
         shape: Some(ZoneShape::Rectangle),
         shape_preset: Some(shape_preset.to_owned()),
     })
 }
 
-fn matrix_defaults(rows: u32, cols: u32, shape_preset: Option<&str>) -> ZoneVisualDefaults {
+fn matrix_defaults(
+    rows: u32,
+    cols: u32,
+    shape_preset: Option<&str>,
+    canvas_aspect: f32,
+) -> ZoneVisualDefaults {
     let grid = VisualUnits::new(cols.max(1) as f32, rows.max(1) as f32);
     let aspect = grid.aspect_ratio();
 
@@ -314,7 +366,7 @@ fn matrix_defaults(rows: u32, cols: u32, shape_preset: Option<&str>) -> ZoneVisu
             serpentine: false,
             start_corner: Corner::TopLeft,
         },
-        size: fit_visual_units(grid, DEVICE_MIN_SIZE, DEVICE_MAX_SIZE),
+        size: fit_visual_units_for_canvas(grid, DEVICE_MIN_SIZE, DEVICE_MAX_SIZE, canvas_aspect),
         orientation: Some(if aspect >= 1.0 {
             Orientation::Horizontal
         } else {
@@ -329,6 +381,7 @@ fn strip_defaults(
     count: u32,
     direction: StripDirection,
     shape_preset: Option<&str>,
+    canvas_aspect: f32,
 ) -> ZoneVisualDefaults {
     let topology = LedTopology::Strip {
         count: count.max(1),
@@ -337,13 +390,14 @@ fn strip_defaults(
 
     ZoneVisualDefaults {
         topology,
-        size: fit_visual_units(
+        size: fit_visual_units_for_canvas(
             topology_visual_units(&LedTopology::Strip {
                 count: count.max(1),
                 direction,
             }),
             NormalizedPosition::new(0.10, 0.02),
             NormalizedPosition::new(0.34, 0.12),
+            canvas_aspect,
         ),
         orientation: Some(match direction {
             StripDirection::LeftToRight | StripDirection::RightToLeft => Orientation::Horizontal,
@@ -354,24 +408,34 @@ fn strip_defaults(
     }
 }
 
-fn ring_defaults(count: u32, shape_preset: Option<&str>) -> ZoneVisualDefaults {
+fn ring_defaults(count: u32, shape_preset: Option<&str>, canvas_aspect: f32) -> ZoneVisualDefaults {
     ZoneVisualDefaults {
         topology: LedTopology::Ring {
             count: count.max(1),
             start_angle: -FRAC_PI_2,
             direction: Winding::Clockwise,
         },
-        size: DEVICE_RING_SIZE,
+        size: fit_visual_units_for_canvas(
+            VisualUnits::new(1.0, 1.0),
+            DEVICE_RING_SIZE,
+            DEVICE_RING_SIZE,
+            canvas_aspect,
+        ),
         orientation: Some(Orientation::Radial),
         shape: Some(ZoneShape::Ring),
         shape_preset: shape_preset.map(str::to_owned),
     }
 }
 
-fn point_defaults() -> ZoneVisualDefaults {
+fn point_defaults(canvas_aspect: f32) -> ZoneVisualDefaults {
     ZoneVisualDefaults {
         topology: LedTopology::Point,
-        size: NormalizedPosition::new(0.08, 0.08),
+        size: fit_visual_units_for_canvas(
+            VisualUnits::new(1.0, 1.0),
+            NormalizedPosition::new(0.08, 0.08),
+            NormalizedPosition::new(0.08, 0.08),
+            canvas_aspect,
+        ),
         orientation: None,
         shape: Some(ZoneShape::Ring),
         shape_preset: None,
@@ -383,7 +447,27 @@ fn fit_visual_units(
     min_size: NormalizedPosition,
     max_size: NormalizedPosition,
 ) -> NormalizedPosition {
-    let aspect = units.aspect_ratio();
+    fit_aspect_ratio(units.aspect_ratio(), min_size, max_size)
+}
+
+fn fit_visual_units_for_canvas(
+    units: VisualUnits,
+    min_size: NormalizedPosition,
+    max_size: NormalizedPosition,
+    canvas_aspect: f32,
+) -> NormalizedPosition {
+    fit_aspect_ratio(
+        (units.aspect_ratio() / canvas_aspect.max(GRID_EPSILON)).max(GRID_EPSILON),
+        min_size,
+        max_size,
+    )
+}
+
+fn fit_aspect_ratio(
+    aspect: f32,
+    min_size: NormalizedPosition,
+    max_size: NormalizedPosition,
+) -> NormalizedPosition {
     let box_aspect =
         (max_size.x.max(GRID_EPSILON) / max_size.y.max(GRID_EPSILON)).max(GRID_EPSILON);
 
@@ -418,6 +502,16 @@ fn fit_visual_units(
         width.clamp(GRID_EPSILON, 1.0),
         height.clamp(GRID_EPSILON, 1.0),
     )
+}
+
+fn canvas_aspect_ratio(canvas_width: u32, canvas_height: u32) -> f32 {
+    let width = f32::from(u16::try_from(canvas_width.max(1)).unwrap_or(u16::MAX));
+    let height = f32::from(u16::try_from(canvas_height.max(1)).unwrap_or(u16::MAX));
+    (width / height).max(GRID_EPSILON)
+}
+
+fn approximately_equal_size(left: NormalizedPosition, right: NormalizedPosition) -> bool {
+    (left.x - right.x).abs() <= 0.001 && (left.y - right.y).abs() <= 0.001
 }
 
 fn topology_visual_units(topology: &LedTopology) -> VisualUnits {

@@ -254,8 +254,16 @@ pub fn LayoutBuilder() -> impl IntoView {
             let set_saved = set_saved_layout;
             leptos::task::spawn_local(async move {
                 if let Ok(l) = api::fetch_layout(&id).await {
-                    let layout = layout_geometry::normalize_layout_for_editor(l);
-                    set_saved.set(Some(layout.clone()));
+                    let mut repaired_layout = l.clone();
+                    let repaired_legacy_lcd =
+                        layout_geometry::repair_legacy_lcd_defaults(&mut repaired_layout);
+                    let layout = layout_geometry::normalize_layout_for_editor(repaired_layout);
+                    let saved_layout = if repaired_legacy_lcd {
+                        layout_geometry::normalize_layout_for_editor(l)
+                    } else {
+                        layout.clone()
+                    };
+                    set_saved.set(Some(saved_layout));
                     set_layout.set(Some(layout));
                 }
             });

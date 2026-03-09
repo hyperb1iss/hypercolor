@@ -437,126 +437,124 @@ pub fn EffectsPage() -> impl IntoView {
                 </div>
             </div>
 
-            // Scrollable content: grid + pinned detail panel
-            <div class="flex-1 overflow-y-auto px-6 pb-6">
-                <div class="flex gap-5 items-start">
-                    // Effect grid — z-[2] ensures cards stay above the sticky aside for click targeting
-                    <div class="flex-1 min-w-0 relative z-[2]">
-                        <Suspense fallback=move || view! { <LoadingSkeleton /> }>
-                            {move || {
-                                let effects = filtered_effects.get();
-                                if effects.is_empty() {
-                                    view! {
-                                        <div class="text-center py-20">
-                                            <div class="text-fg-tertiary text-sm">"No effects found"</div>
-                                            <div class="text-fg-tertiary/50 text-xs mt-1">"Try a different search or category"</div>
-                                        </div>
-                                    }.into_any()
-                                } else {
-                                    let grid_class = if has_active.get() {
-                                        "grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3"
-                                    } else {
-                                        "grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4"
-                                    };
-                                    view! {
-                                        <div class=grid_class>
-                                            <For
-                                                each=move || filtered_effects.get()
-                                                key=|effect| effect.id.clone()
-                                                children=move |effect| {
-                                                    let effect_id = effect.id.clone();
-                                                    let fav_effect_id = effect.id.clone();
-                                                    let is_active = Signal::derive(move || {
-                                                        fx.active_effect_id.get().as_deref() == Some(effect_id.as_str())
-                                                    });
-                                                    let is_favorite = Signal::derive(move || {
-                                                        fx.favorite_ids.get().contains(&fav_effect_id)
-                                                    });
-                                                    view! {
-                                                        <EffectCard
-                                                            effect=effect
-                                                            is_active=is_active
-                                                            is_favorite=is_favorite
-                                                            on_apply=on_apply
-                                                            on_toggle_favorite=on_toggle_favorite
-                                                        />
-                                                    }
-                                                }
-                                            />
-                                        </div>
-                                    }.into_any()
-                                }
-                            }}
-                        </Suspense>
-                    </div>
-
-                    // Detail panel — sticky, scrolls with cards until bottom pins
-                    //
-                    // IMPORTANT: Only read active_effect_id here so that accent color
-                    // changes don't rebuild the DOM (which destroys CanvasPreview and
-                    // causes a burst of re-paints). All dynamic styles use reactive bindings.
-                    {move || {
-                        fx.active_effect_id.get().map(|_| {
-                            view! {
-                                <aside
-                                    class="w-[420px] shrink-0 sticky top-0 self-start space-y-3 pb-4 animate-slide-in-right scrollbar-none z-[1]"
-                                    style="max-height: calc(100vh - 10rem); overflow-y: auto; overscroll-behavior: contain"
-                                >
-                                    // Active effect name with category-colored dot
-                                    <div class="flex items-center gap-2.5 px-1">
-                                        <div
-                                            class="w-2.5 h-2.5 rounded-full dot-alive shrink-0"
-                                            style:background=move || format!("rgb({})", accent_rgb.get())
-                                            style:box-shadow=move || format!("0 0 8px rgba({}, 0.6)", accent_rgb.get())
-                                        />
-                                        <span class="text-base font-medium text-fg-primary">
-                                            {move || fx.active_effect_name.get().unwrap_or_default()}
-                                        </span>
+            // Two-column layout — each side scrolls independently
+            <div class="flex-1 flex gap-5 min-h-0 px-6 pb-6">
+                // Effect grid — independently scrollable left column
+                <div class="flex-1 min-w-0 overflow-y-auto pr-1">
+                    <Suspense fallback=move || view! { <LoadingSkeleton /> }>
+                        {move || {
+                            let effects = filtered_effects.get();
+                            if effects.is_empty() {
+                                view! {
+                                    <div class="text-center py-20">
+                                        <div class="text-fg-tertiary text-sm">"No effects found"</div>
+                                        <div class="text-fg-tertiary/50 text-xs mt-1">"Try a different search or category"</div>
                                     </div>
+                                }.into_any()
+                            } else {
+                                let grid_class = if has_active.get() {
+                                    "grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3"
+                                } else {
+                                    "grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4"
+                                };
+                                view! {
+                                    <div class=grid_class>
+                                        <For
+                                            each=move || filtered_effects.get()
+                                            key=|effect| effect.id.clone()
+                                            children=move |effect| {
+                                                let effect_id = effect.id.clone();
+                                                let fav_effect_id = effect.id.clone();
+                                                let is_active = Signal::derive(move || {
+                                                    fx.active_effect_id.get().as_deref() == Some(effect_id.as_str())
+                                                });
+                                                let is_favorite = Signal::derive(move || {
+                                                    fx.favorite_ids.get().contains(&fav_effect_id)
+                                                });
+                                                view! {
+                                                    <EffectCard
+                                                        effect=effect
+                                                        is_active=is_active
+                                                        is_favorite=is_favorite
+                                                        on_apply=on_apply
+                                                        on_toggle_favorite=on_toggle_favorite
+                                                    />
+                                                }
+                                            }
+                                        />
+                                    </div>
+                                }.into_any()
+                            }
+                        }}
+                    </Suspense>
+                </div>
 
-                                    // Preset toolbar — select, save, create, edit, delete
-                                    <PresetToolbar
-                                        effect_id=Signal::derive(move || fx.active_effect_id.get())
+                // Detail panel — independently scrollable right column
+                //
+                // IMPORTANT: Only read active_effect_id here so that accent color
+                // changes don't rebuild the DOM (which destroys CanvasPreview and
+                // causes a burst of re-paints). All dynamic styles use reactive bindings.
+                {move || {
+                    fx.active_effect_id.get().map(|_| {
+                        view! {
+                            <aside
+                                class="w-[380px] shrink-0 overflow-y-auto space-y-2 pb-4 animate-slide-in-right"
+                                style="overscroll-behavior: contain"
+                            >
+                                // Active effect name with category-colored dot + preset toolbar inline
+                                <div class="flex items-center gap-2.5 px-1">
+                                    <div
+                                        class="w-2 h-2 rounded-full dot-alive shrink-0"
+                                        style:background=move || format!("rgb({})", accent_rgb.get())
+                                        style:box-shadow=move || format!("0 0 8px rgba({}, 0.6)", accent_rgb.get())
+                                    />
+                                    <span class="text-sm font-medium text-fg-primary truncate">
+                                        {move || fx.active_effect_name.get().unwrap_or_default()}
+                                    </span>
+                                </div>
+
+                                // Preset toolbar — compact, no extra border wrapper
+                                <PresetToolbar
+                                    effect_id=Signal::derive(move || fx.active_effect_id.get())
+                                    control_values=control_values
+                                    accent_rgb=accent_rgb
+                                    on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
+                                    active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
+                                />
+
+                                // Live preview
+                                <div class="rounded-lg bg-black overflow-hidden edge-glow">
+                                    <CanvasPreview
+                                        frame=canvas_frame
+                                        fps=preview_fps
+                                        show_fps=true
+                                        fps_target=ws.preview_target_fps
+                                    />
+                                </div>
+
+                                // Controls panel — tighter padding
+                                <div
+                                    class="rounded-lg bg-surface-raised border border-edge-subtle p-3 edge-glow"
+                                    style:border-top=move || format!("2px solid rgba({}, 0.15)", accent_rgb.get())
+                                >
+                                    <div class="flex items-center gap-2 mb-3">
+                                        <Icon icon=LuSettings width="14px" height="14px" style="color: rgba(139, 133, 160, 1)" />
+                                        <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">
+                                            "Controls"
+                                        </h3>
+                                    </div>
+                                    <ControlPanel
+                                        controls=controls
                                         control_values=control_values
                                         accent_rgb=accent_rgb
-                                        on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
-                                        active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
+                                        on_change=on_control_change
                                     />
+                                </div>
 
-                                    // Live preview — no border, black bleeds to edge
-                                    <div class="rounded-xl bg-black overflow-hidden edge-glow">
-                                        <CanvasPreview
-                                            frame=canvas_frame
-                                            fps=preview_fps
-                                            show_fps=true
-                                            fps_target=ws.preview_target_fps
-                                        />
-                                    </div>
-
-                                    // Controls panel with category accent line
-                                    <div
-                                        class="rounded-xl bg-surface-raised border border-edge-subtle p-5 edge-glow"
-                                        style:border-top=move || format!("2px solid rgba({}, 0.15)", accent_rgb.get())
-                                    >
-                                        <div class="flex items-center gap-2 mb-4">
-                                            <Icon icon=LuSettings width="16px" height="16px" style="color: rgba(139, 133, 160, 1)" />
-                                            <h3 class="text-xs font-mono uppercase tracking-[0.12em] text-fg-tertiary">
-                                                "Controls"
-                                            </h3>
-                                        </div>
-                                        <ControlPanel
-                                            controls=controls
-                                            control_values=control_values
-                                            accent_rgb=accent_rgb
-                                            on_change=on_control_change
-                                        />
-                                    </div>
-
-                                </aside>
-                            }
-                        })
-                    }}
-                </div>
+                            </aside>
+                        }
+                    })
+                }}
             </div>
         </div>
     }

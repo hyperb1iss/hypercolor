@@ -1,17 +1,18 @@
-//! Dashboard page — system overview with mini preview and quick-switch.
+//! Dashboard page — preview + favorites + performance stats.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 
 use crate::api::{self, EffectSummary, SystemStatus};
 use crate::app::{EffectsContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
+use crate::icons::*;
 use crate::ws::{BackpressureNotice, PerformanceMetrics};
 
 /// Dashboard landing page.
 #[component]
 pub fn DashboardPage() -> impl IntoView {
     let ws = expect_context::<WsContext>();
-    let fx = expect_context::<EffectsContext>();
     let status_resource = LocalResource::new(api::fetch_status);
 
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
@@ -20,38 +21,11 @@ pub fn DashboardPage() -> impl IntoView {
     let backpressure = Signal::derive(move || ws.backpressure_notice.get());
 
     view! {
-        <div class="space-y-6 max-w-5xl animate-fade-in">
-            // Hero
-            <div>
-                <h1 class="text-lg font-medium text-fg-primary mb-0.5">"Dashboard"</h1>
-                <p class="text-[13px] text-fg-secondary">"Hypercolor lighting engine overview"</p>
-            </div>
-
-            // Status cards
-            <Suspense fallback=move || view! { <StatusSkeleton /> }>
-                {move || status_resource.get().map(|result| {
-                    match result {
-                        Ok(status) => view! { <StatusCards status=status /> }.into_any(),
-                        Err(e) => view! {
-                            <div class="text-sm text-status-error bg-status-error/[0.05] border border-status-error/10 rounded-lg px-4 py-3">
-                                "Failed to connect: " {e}
-                            </div>
-                        }.into_any(),
-                    }
-                })}
-            </Suspense>
-
-            <PerformancePanel
-                preview_fps=preview_fps
-                preview_target_fps=ws.preview_target_fps
-                metrics=metrics
-                backpressure=backpressure
-            />
-
-            // Main: preview + quick switch
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                // Live preview
-                <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
+        <div class="space-y-5 max-w-6xl animate-fade-in">
+            // Top row: preview + favorites side by side
+            <div class="grid grid-cols-1 lg:grid-cols-5 gap-5">
+                // Live preview — takes 3/5 width
+                <div class="lg:col-span-3 rounded-xl bg-surface-overlay/60 border border-edge-subtle overflow-hidden">
                     <div class="px-4 py-3 border-b border-edge-subtle flex items-center justify-between">
                         <h2 class="text-[14px] font-medium text-fg-secondary">"Live Preview"</h2>
                         {move || ws.active_effect.get().map(|name| {
@@ -73,33 +47,196 @@ pub fn DashboardPage() -> impl IntoView {
                     </div>
                 </div>
 
-                // Quick switch
-                <div class="rounded-xl bg-surface-overlay/60 border border-edge-subtle">
-                    <div class="px-4 py-3 border-b border-edge-subtle">
-                        <h2 class="text-[14px] font-medium text-fg-secondary">"Quick Switch"</h2>
-                    </div>
-                    <div class="p-3">
-                        <Suspense fallback=move || view! {
-                            <div class="text-xs text-fg-tertiary py-4 text-center">"Loading effects..."</div>
-                        }>
-                            {move || {
-                                let runnable: Vec<_> = fx
-                                    .effects_index
-                                    .get()
-                                    .into_iter()
-                                    .map(|entry| entry.effect)
-                                    .filter(|effect| effect.runnable)
-                                    .take(20)
-                                    .collect();
-                                view! { <QuickSwitchGrid effects=runnable /> }.into_any()
-                            }}
-                        </Suspense>
-                    </div>
+                // Favorites — takes 2/5 width
+                <div class="lg:col-span-2 rounded-xl bg-surface-overlay/60 border border-edge-subtle flex flex-col">
+                    <FavoritesPanel />
                 </div>
             </div>
+
+            // Status cards row
+            <Suspense fallback=move || view! { <StatusSkeleton /> }>
+                {move || status_resource.get().map(|result| {
+                    match result {
+                        Ok(status) => view! { <StatusCards status=status /> }.into_any(),
+                        Err(e) => view! {
+                            <div class="text-sm text-status-error bg-status-error/[0.05] border border-status-error/10 rounded-lg px-4 py-3">
+                                "Failed to connect: " {e}
+                            </div>
+                        }.into_any(),
+                    }
+                })}
+            </Suspense>
+
+            // Performance stats
+            <PerformancePanel
+                preview_fps=preview_fps
+                preview_target_fps=ws.preview_target_fps
+                metrics=metrics
+                backpressure=backpressure
+            />
         </div>
     }
 }
+
+// ── Favorites panel ──────────────────────────────────────────────────
+
+#[component]
+fn FavoritesPanel() -> impl IntoView {
+    let fx = expect_context::<EffectsContext>();
+
+    let favorites_count = Memo::new(move |_| fx.favorite_ids.get().len());
+
+    let favorite_effects = Memo::new(move |_| {
+        let fav_ids = fx.favorite_ids.get();
+        fx.effects_index
+            .get()
+            .into_iter()
+            .filter(|entry| fav_ids.contains(&entry.effect.id))
+            .map(|entry| entry.effect)
+            .collect::<Vec<_>>()
+    });
+
+    view! {
+        <div class="px-4 py-3 border-b border-edge-subtle flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <Icon icon=LuHeart width="14px" height="14px" style="color: var(--coral)" />
+                <h2 class="text-[14px] font-medium text-fg-secondary">"Favorites"</h2>
+            </div>
+            <span class="text-[10px] font-mono text-fg-tertiary rounded-full border border-edge-subtle bg-surface-overlay/30 px-2 py-0.5">
+                {move || favorites_count.get().to_string()}
+            </span>
+        </div>
+        <div class="flex-1 overflow-y-auto p-3 min-h-0">
+            {move || {
+                let effects = favorite_effects.get();
+                if effects.is_empty() {
+                    view! {
+                        <div class="flex flex-col items-center justify-center h-full py-8 text-center">
+                            <Icon icon=LuHeart width="24px" height="24px" style="color: var(--fg-tertiary); opacity: 0.3" />
+                            <p class="text-xs text-fg-tertiary mt-3">"No favorites yet"</p>
+                            <p class="text-[10px] text-fg-tertiary/60 mt-1">"Heart effects to add them here"</p>
+                        </div>
+                    }.into_any()
+                } else {
+                    view! {
+                        <div class="space-y-1">
+                            {effects.into_iter().enumerate().map(|(i, effect)| {
+                                let delay = format!("animation-delay: {}ms", i * 30);
+                                view! { <FavoriteRow effect=effect delay=delay /> }
+                            }).collect_view()}
+                        </div>
+                    }.into_any()
+                }
+            }}
+        </div>
+    }
+}
+
+/// Single favorite row — compact, clickable, with unfavorite action.
+#[component]
+fn FavoriteRow(effect: EffectSummary, delay: String) -> impl IntoView {
+    let fx = expect_context::<EffectsContext>();
+    let apply_id = effect.id.clone();
+    let fav_id = effect.id.clone();
+    let active_check_id = effect.id.clone();
+    let name = effect.name.clone();
+    let category = effect.category.clone();
+    let audio_reactive = effect.audio_reactive;
+    let (badge_class, _) = category_style(&category);
+
+    let is_active = Signal::derive(move || {
+        fx.active_effect_id
+            .get()
+            .as_deref() == Some(active_check_id.as_str())
+    });
+
+    view! {
+        <div
+            class="animate-fade-in-up"
+            style=delay
+        >
+            <button
+                class=move || {
+                    let base = "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left group \
+                                transition-all duration-150 btn-press";
+                    if is_active.get() {
+                        format!("{base} bg-accent-subtle border border-accent-muted")
+                    } else {
+                        format!("{base} bg-surface-overlay/20 border border-transparent \
+                                 hover:bg-surface-hover/40 hover:border-edge-subtle")
+                    }
+                }
+                on:click={
+                    let apply_id = apply_id.clone();
+                    move |_| fx.apply_effect(apply_id.clone())
+                }
+            >
+                // Active indicator
+                {move || is_active.get().then(|| view! {
+                    <div class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />
+                })}
+
+                // Name + category
+                <div class="flex-1 min-w-0">
+                    <div class="text-[12px] text-fg-secondary truncate group-hover:text-fg-primary transition-colors">
+                        {name.clone()}
+                    </div>
+                    <div class="flex items-center gap-1.5 mt-0.5">
+                        <span class=format!(
+                            "text-[9px] font-mono px-1.5 py-0.5 rounded capitalize {}",
+                            badge_class
+                        )>
+                            {category.clone()}
+                        </span>
+                        {audio_reactive.then(|| view! {
+                            <span class="text-[9px] font-mono text-coral/70">
+                                <Icon icon=LuAudioLines width="9px" height="9px" />
+                            </span>
+                        })}
+                    </div>
+                </div>
+
+                // Unfavorite button
+                <button
+                    class="shrink-0 p-1 rounded opacity-0 group-hover:opacity-100 \
+                           hover:bg-surface-hover/60 transition-all duration-150"
+                    on:click={
+                        let fav_id = fav_id.clone();
+                        move |ev: web_sys::MouseEvent| {
+                            ev.stop_propagation();
+                            fx.toggle_favorite(fav_id.clone());
+                        }
+                    }
+                >
+                    <Icon icon=LuX width="12px" height="12px" style="color: var(--fg-tertiary)" />
+                </button>
+            </button>
+        </div>
+    }
+}
+
+/// Category -> (badge classes, accent hex for gradients).
+fn category_style(category: &str) -> (&'static str, &'static str) {
+    match category {
+        "ambient" => ("bg-neon-cyan/10 text-neon-cyan", "128, 255, 234"),
+        "audio" => ("bg-coral/10 text-coral", "255, 106, 193"),
+        "gaming" => (
+            "bg-electric-purple/10 text-electric-purple",
+            "225, 53, 255",
+        ),
+        "reactive" => (
+            "bg-electric-yellow/10 text-electric-yellow",
+            "241, 250, 140",
+        ),
+        "generative" => ("bg-success-green/10 text-success-green", "80, 250, 123"),
+        "interactive" => ("bg-info-blue/10 text-info-blue", "130, 170, 255"),
+        "productivity" => ("bg-pink-soft/10 text-pink-soft", "255, 153, 255"),
+        "utility" => ("bg-fg-tertiary/10 text-fg-tertiary", "139, 133, 160"),
+        _ => ("bg-surface-overlay/50 text-fg-tertiary", "139, 133, 160"),
+    }
+}
+
+// ── Performance panel ────────────────────────────────────────────────
 
 #[component]
 fn PerformancePanel(
@@ -124,25 +261,25 @@ fn PerformancePanel(
     let engine_text = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| format!("{:.1}/{} fps", metrics.fps.actual, metrics.fps.target))
-            .unwrap_or_else(|| "Waiting...".to_string())
+            .map(|m| format!("{:.1}/{} fps", m.fps.actual, m.fps.target))
+            .unwrap_or_else(|| "—".to_string())
     });
     let engine_hint = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| format!("{} budget misses", metrics.fps.dropped))
+            .map(|m| format!("{} budget misses", m.fps.dropped))
             .unwrap_or_else(|| "render loop".to_string())
     });
     let frame_time_text = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| format!("{:.2} ms avg", metrics.frame_time.avg_ms))
-            .unwrap_or_else(|| "Waiting...".to_string())
+            .map(|m| format!("{:.2} ms avg", m.frame_time.avg_ms))
+            .unwrap_or_else(|| "—".to_string())
     });
     let frame_time_hint = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| format!("p95 {:.2} ms", metrics.frame_time.p95_ms))
+            .map(|m| format!("p95 {:.2} ms", m.frame_time.p95_ms))
             .unwrap_or_else(|| "collecting samples".to_string())
     });
     let preview_text = Signal::derive(move || {
@@ -158,28 +295,28 @@ fn PerformancePanel(
     let websocket_text = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| format_bytes_per_sec(metrics.websocket.bytes_sent_per_sec))
-            .unwrap_or_else(|| "Waiting...".to_string())
+            .map(|m| format_bytes_per_sec(m.websocket.bytes_sent_per_sec))
+            .unwrap_or_else(|| "—".to_string())
     });
     let websocket_hint = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| format!("{} client(s)", metrics.websocket.client_count))
+            .map(|m| format!("{} client(s)", m.websocket.client_count))
             .unwrap_or_else(|| "metrics channel".to_string())
     });
     let device_output_text = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| metrics.devices.output_errors.to_string())
+            .map(|m| m.devices.output_errors.to_string())
             .unwrap_or_else(|| "0".to_string())
     });
     let device_output_hint = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| {
+            .map(|m| {
                 format!(
                     "{} devices, {} LEDs",
-                    metrics.devices.connected, metrics.devices.total_leds
+                    m.devices.connected, m.devices.total_leds
                 )
             })
             .unwrap_or_else(|| "device output".to_string())
@@ -188,31 +325,31 @@ fn PerformancePanel(
     let input_stage = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| metrics.stages.input_sampling_ms)
+            .map(|m| m.stages.input_sampling_ms)
             .unwrap_or_default()
     });
     let render_stage = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| metrics.stages.effect_rendering_ms)
+            .map(|m| m.stages.effect_rendering_ms)
             .unwrap_or_default()
     });
     let sample_stage = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| metrics.stages.spatial_sampling_ms)
+            .map(|m| m.stages.spatial_sampling_ms)
             .unwrap_or_default()
     });
     let push_stage = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| metrics.stages.device_output_ms)
+            .map(|m| m.stages.device_output_ms)
             .unwrap_or_default()
     });
     let publish_stage = Signal::derive(move || {
         metrics
             .get()
-            .map(|metrics| metrics.stages.event_bus_ms)
+            .map(|m| m.stages.event_bus_ms)
             .unwrap_or_default()
     });
 
@@ -233,24 +370,32 @@ fn PerformancePanel(
             <div class="px-4 py-3 border-b border-edge-subtle flex items-center justify-between gap-3">
                 <div>
                     <h2 class="text-[14px] font-medium text-fg-secondary">"Performance"</h2>
-                    <p class="text-[11px] text-fg-tertiary">"Separate engine timing from preview delivery and websocket transport."</p>
+                    <p class="text-[11px] text-fg-tertiary">"Engine timing, preview delivery, and websocket transport."</p>
                 </div>
                 <div class="text-[10px] font-mono text-fg-tertiary rounded-full border border-edge-subtle bg-surface-overlay/30 px-2.5 py-1">
                     {move || {
                         metrics
                             .get()
-                            .map(|metrics| format!("budget misses {}", metrics.fps.dropped))
+                            .map(|m| format!("budget misses {}", m.fps.dropped))
                             .unwrap_or_else(|| "metrics warming up".to_string())
                     }}
                 </div>
             </div>
 
             <div class="p-4 space-y-4">
-                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+                <div class="grid grid-cols-2 xl:grid-cols-5 gap-3">
                     {metric_card("Engine", engine_text, engine_hint)}
                     {metric_card("Preview", preview_text, preview_hint)}
                     {metric_card("Frame Time", frame_time_text, frame_time_hint)}
                     {metric_card("WebSocket", websocket_text, websocket_hint)}
+                    // Output errors inline as 5th metric card
+                    <div class="rounded-lg border border-edge-subtle bg-surface-overlay/30 px-4 py-3">
+                        <div class="text-[9px] font-mono uppercase tracking-[0.14em] text-fg-tertiary mb-1.5">
+                            "Output Errors"
+                        </div>
+                        <div class="text-lg font-medium tabular-nums text-fg-primary">{move || device_output_text.get()}</div>
+                        <div class="text-[11px] text-fg-tertiary mt-1">{move || device_output_hint.get()}</div>
+                    </div>
                 </div>
 
                 <div class="grid grid-cols-2 lg:grid-cols-5 gap-2">
@@ -259,12 +404,6 @@ fn PerformancePanel(
                     {stage_chip("Sample", sample_stage)}
                     {stage_chip("Queue", push_stage)}
                     {stage_chip("Publish", publish_stage)}
-                </div>
-
-                <div class="rounded-lg border border-edge-subtle bg-surface-overlay/20 px-3 py-2 text-[12px] text-fg-secondary">
-                    <span class="font-mono text-fg-primary mr-2">"Output Errors"</span>
-                    <span class="tabular-nums">{move || device_output_text.get()}</span>
-                    <span class="text-fg-tertiary ml-2">{move || device_output_hint.get()}</span>
                 </div>
 
                 {move || backpressure.get().map(|notice| {
@@ -286,7 +425,8 @@ fn PerformancePanel(
     }
 }
 
-/// Status metric cards.
+// ── Status cards ─────────────────────────────────────────────────────
+
 #[component]
 fn StatusCards(status: SystemStatus) -> impl IntoView {
     let cards = vec![
@@ -294,31 +434,19 @@ fn StatusCards(status: SystemStatus) -> impl IntoView {
             "Status",
             if status.running { "Running" } else { "Stopped" }.to_string(),
             status.running,
-            "electric-purple",
         ),
-        (
-            "Uptime",
-            format_uptime(status.uptime_seconds),
-            true,
-            "neon-cyan",
-        ),
+        ("Uptime", format_uptime(status.uptime_seconds), true),
         (
             "Devices",
             status.device_count.to_string(),
             status.device_count > 0,
-            "coral",
         ),
-        (
-            "Effects",
-            status.effect_count.to_string(),
-            true,
-            "success-green",
-        ),
+        ("Effects", status.effect_count.to_string(), true),
     ];
 
     view! {
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {cards.into_iter().enumerate().map(|(i, (label, value, healthy, _accent))| {
+            {cards.into_iter().enumerate().map(|(i, (label, value, healthy))| {
                 let delay_class = format!("stagger-{}", i + 1);
                 view! {
                     <div class=format!("rounded-xl bg-surface-overlay/60 border border-edge-subtle px-4 py-3 animate-fade-in-up {delay_class}")>
@@ -337,44 +465,8 @@ fn StatusCards(status: SystemStatus) -> impl IntoView {
     }
 }
 
-/// Quick-switch effect grid.
-#[component]
-fn QuickSwitchGrid(effects: Vec<EffectSummary>) -> impl IntoView {
-    let fx = expect_context::<EffectsContext>();
+// ── Skeletons & helpers ──────────────────────────────────────────────
 
-    if effects.is_empty() {
-        return view! {
-            <p class="text-xs text-fg-tertiary py-4 text-center">"No runnable effects found"</p>
-        }
-        .into_any();
-    }
-
-    view! {
-        <div class="grid grid-cols-2 gap-1.5 max-h-[400px] overflow-y-auto pr-1">
-            {effects.into_iter().enumerate().map(|(i, effect)| {
-                let id = effect.id.clone();
-                let name = effect.name.clone();
-                let category = effect.category.clone();
-                let delay = format!("animation-delay: {}ms", i * 25);
-                view! {
-                    <button
-                        class="text-left px-3 py-2 rounded-lg bg-surface-overlay/20 border border-edge-subtle
-                               hover:bg-accent-subtle hover:border-accent-muted card-hover btn-press group
-                               animate-fade-in-up"
-                        style=delay
-                        on:click=move |_| fx.apply_effect(id.clone())
-                    >
-                        <div class="text-[12px] text-fg-secondary truncate group-hover:text-fg-primary transition-colors">{name}</div>
-                        <div class="text-[10px] text-fg-tertiary capitalize">{category}</div>
-                    </button>
-                }
-            }).collect_view()}
-        </div>
-    }
-    .into_any()
-}
-
-/// Skeleton for status loading.
 #[component]
 fn StatusSkeleton() -> impl IntoView {
     view! {

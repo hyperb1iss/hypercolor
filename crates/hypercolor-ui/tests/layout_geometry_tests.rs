@@ -9,7 +9,10 @@ use api::{ZoneSummary, ZoneTopologySummary};
 use hypercolor_types::attachment::{
     AttachmentCanvasSize, AttachmentCategory, AttachmentSuggestedZone,
 };
-use hypercolor_types::spatial::{LedTopology, NormalizedPosition, StripDirection};
+use hypercolor_types::spatial::{
+    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+};
+use hypercolor_types::spatial::{StripDirection, ZoneShape};
 use layout_geometry::{ResizeHandle, SizeAxis};
 
 fn zone_summary(name: &str, led_count: usize, topology_hint: ZoneTopologySummary) -> ZoneSummary {
@@ -22,6 +25,13 @@ fn zone_summary(name: &str, led_count: usize, topology_hint: ZoneTopologySummary
     }
 }
 
+fn rendered_aspect(size: NormalizedPosition, canvas_width: u32, canvas_height: u32) -> f32 {
+    let canvas_width = f32::from(u16::try_from(canvas_width).unwrap_or(u16::MAX));
+    let canvas_height = f32::from(u16::try_from(canvas_height).unwrap_or(u16::MAX));
+    let canvas_aspect = canvas_width / canvas_height;
+    (size.x / size.y) * canvas_aspect
+}
+
 #[test]
 fn basilisk_v3_uses_signal_sparse_layout_instead_of_flat_matrix() {
     let zone = zone_summary(
@@ -30,16 +40,91 @@ fn basilisk_v3_uses_signal_sparse_layout_instead_of_flat_matrix() {
         ZoneTopologySummary::Matrix { rows: 1, cols: 11 },
     );
 
-    let defaults = layout_geometry::default_zone_visuals("Razer Basilisk V3", Some(&zone), 11);
+    let defaults =
+        layout_geometry::default_zone_visuals("Razer Basilisk V3", Some(&zone), 11, 320, 200);
 
     match defaults.topology {
         LedTopology::Custom { positions } => assert_eq!(positions.len(), 11),
         other => panic!("expected sparse custom topology, got {other:?}"),
     }
 
-    let aspect = defaults.size.x / defaults.size.y;
+    let aspect = rendered_aspect(defaults.size, 320, 200);
     assert!((aspect - (7.0 / 8.0)).abs() < 0.05);
-    assert!(defaults.size.y > defaults.size.x * 0.9);
+    assert!(defaults.size.y > defaults.size.x);
+}
+
+#[test]
+fn square_lcd_defaults_preserve_square_rendered_aspect_on_default_canvas() {
+    let zone = zone_summary(
+        "Display",
+        0,
+        ZoneTopologySummary::Display {
+            width: 480,
+            height: 480,
+            circular: true,
+        },
+    );
+
+    let defaults =
+        layout_geometry::default_zone_visuals("Corsair iCUE LINK LCD", Some(&zone), 0, 320, 200);
+
+    match defaults.topology {
+        LedTopology::Matrix { width, height, .. } => {
+            assert_eq!((width, height), (480, 480));
+        }
+        other => panic!("expected matrix display topology, got {other:?}"),
+    }
+
+    assert_eq!(defaults.shape_preset.as_deref(), Some("lcd-display"));
+    assert!((defaults.size.x - 0.15).abs() < 0.001);
+    assert!((defaults.size.y - 0.24).abs() < 0.001);
+    assert!((rendered_aspect(defaults.size, 320, 200) - 1.0).abs() < 0.01);
+}
+
+#[test]
+fn repair_legacy_lcd_defaults_updates_untouched_square_display_zone() {
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![DeviceZone {
+            id: "lcd-zone".to_owned(),
+            name: "LCD".to_owned(),
+            device_id: "usb:lcd".to_owned(),
+            zone_name: Some("Display".to_owned()),
+            group_id: None,
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(0.24, 0.24),
+            rotation: 0.0,
+            scale: 1.0,
+            orientation: None,
+            topology: LedTopology::Matrix {
+                width: 480,
+                height: 480,
+                serpentine: false,
+                start_corner: hypercolor_types::spatial::Corner::TopLeft,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: Some(SamplingMode::Bilinear),
+            edge_behavior: Some(EdgeBehavior::Clamp),
+            shape: Some(ZoneShape::Rectangle),
+            shape_preset: Some("lcd-display".to_owned()),
+            attachment: None,
+        }],
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    assert!(layout_geometry::repair_legacy_lcd_defaults(&mut layout));
+    assert!((layout.zones[0].size.x - 0.15).abs() < 0.001);
+    assert!((layout.zones[0].size.y - 0.24).abs() < 0.001);
+    assert!((rendered_aspect(layout.zones[0].size, 320, 200) - 1.0).abs() < 0.01);
 }
 
 #[test]

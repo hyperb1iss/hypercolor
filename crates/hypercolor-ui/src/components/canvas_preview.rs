@@ -100,39 +100,41 @@ impl WebGlPreview {
         })
     }
 
+    fn reinitialize_for_frame(
+        &mut self,
+        canvas: &HtmlCanvasElement,
+        width: u32,
+        height: u32,
+        format: CanvasPixelFormat,
+    ) -> bool {
+        if canvas.width() != width {
+            canvas.set_width(width);
+        }
+        if canvas.height() != height {
+            canvas.set_height(height);
+        }
+
+        let Some(mut replacement) = Self::new(canvas) else {
+            return false;
+        };
+        replacement.width = width;
+        replacement.height = height;
+        replacement.format = format;
+        *self = replacement;
+        true
+    }
+
     fn render(&mut self, canvas: &HtmlCanvasElement, frame: &CanvasFrame) {
         let frame_format = frame.pixel_format();
-        if self.width != frame.width || self.height != frame.height || self.format != frame_format {
-            canvas.set_width(frame.width);
-            canvas.set_height(frame.height);
-            self.width = frame.width;
-            self.height = frame.height;
-            self.format = frame_format;
-
-            let Ok(width) = i32::try_from(frame.width) else {
-                return;
-            };
-            let Ok(height) = i32::try_from(frame.height) else {
-                return;
-            };
-            let gl_format = match frame_format {
-                CanvasPixelFormat::Rgb => Gl::RGB,
-                CanvasPixelFormat::Rgba => Gl::RGBA,
-            };
-
-            let _ = self
-                .gl
-                .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_js_u8_array(
-                    Gl::TEXTURE_2D,
-                    0,
-                    gl_format as i32,
-                    width,
-                    height,
-                    0,
-                    gl_format,
-                    Gl::UNSIGNED_BYTE,
-                    None,
-                );
+        let needs_reinit = self.width != frame.width
+            || self.height != frame.height
+            || self.format != frame_format
+            || canvas.width() != frame.width
+            || canvas.height() != frame.height;
+        if needs_reinit
+            && !self.reinitialize_for_frame(canvas, frame.width, frame.height, frame_format)
+        {
+            return;
         }
 
         let Ok(width) = i32::try_from(frame.width) else {
@@ -155,13 +157,13 @@ impl WebGlPreview {
 
         let _ = self
             .gl
-            .tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_js_u8_array(
+            .tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_js_u8_array(
                 Gl::TEXTURE_2D,
                 0,
-                0,
-                0,
+                gl_format as i32,
                 width,
                 height,
+                0,
                 gl_format,
                 Gl::UNSIGNED_BYTE,
                 Some(frame.pixels_js()),

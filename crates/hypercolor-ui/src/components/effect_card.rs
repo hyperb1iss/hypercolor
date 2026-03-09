@@ -35,6 +35,18 @@ fn source_label(source: &str) -> &'static str {
     }
 }
 
+fn source_badge_classes(source: &str) -> &'static str {
+    match source {
+        "native" => {
+            "bg-electric-purple/10 text-electric-purple border border-electric-purple/15 \
+             shadow-[0_0_18px_rgba(225,53,255,0.12)]"
+        }
+        "html" => "bg-neon-cyan/10 text-neon-cyan border border-neon-cyan/10",
+        "shader" => "bg-info-blue/10 text-info-blue border border-info-blue/10",
+        _ => "bg-surface-overlay/30 text-fg-tertiary/60 border border-edge-subtle",
+    }
+}
+
 /// Cinematic effect card for the browse grid.
 #[component]
 pub fn EffectCard(
@@ -51,10 +63,14 @@ pub fn EffectCard(
     let description = effect.description.clone();
     let author = effect.author.clone();
     let category = effect.category.clone();
-    let tags = effect.tags.clone();
+    let mut tags = effect.tags.clone();
     let runnable = effect.runnable;
     let audio_reactive = effect.audio_reactive;
     let source = effect.source.clone();
+    let is_native = source == "native";
+    if is_native && !tags.iter().any(|tag| tag.eq_ignore_ascii_case("native")) {
+        tags.insert(0, "native".to_string());
+    }
 
     let (badge_class, accent_rgb) = category_style(&category);
     let badge_class = badge_class.to_string();
@@ -70,6 +86,7 @@ pub fn EffectCard(
     let fav_id = effect.id.clone();
     let stagger = (index.min(12) + 1).to_string();
     let source_tag = source_label(&source).to_string();
+    let source_badge_class = source_badge_classes(&source).to_string();
 
     view! {
         <div
@@ -145,7 +162,7 @@ pub fn EffectCard(
             >
                 // Header: name + category badge
                 <div class="flex items-start justify-between gap-3 pr-6 mb-2">
-                    <h3 class="text-sm font-medium text-fg-primary group-hover:text-fg-primary line-clamp-1 transition-colors duration-200 leading-snug">
+                    <h3 class="text-[15px] font-medium text-fg-primary group-hover:text-fg-primary line-clamp-2 transition-colors duration-200 leading-snug">
                         {name}
                     </h3>
                     <span class=format!("shrink-0 text-[9px] font-mono tracking-wide px-2 py-0.5 rounded-full capitalize {badge_class}")>
@@ -154,7 +171,7 @@ pub fn EffectCard(
                 </div>
 
                 // Description
-                <p class="text-xs text-fg-secondary/80 line-clamp-2 leading-relaxed min-h-[2.25rem] mb-3">
+                <p class="text-xs text-fg-secondary/80 line-clamp-2 leading-relaxed mb-3">
                     {description}
                 </p>
 
@@ -170,15 +187,19 @@ pub fn EffectCard(
                     })}
 
                     // Source type badge
-                    <span class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded \
-                                 bg-surface-overlay/30 text-fg-tertiary/60 border border-edge-subtle">
-                        {if source == "html" {
-                            view! { <Icon icon=LuGlobe width="10px" height="10px" /> }.into_any()
-                        } else {
-                            view! { <Icon icon=LuCode width="10px" height="10px" /> }.into_any()
-                        }}
-                        {source_tag}
-                    </span>
+                    {(!is_native).then(|| view! {
+                        <span class=format!(
+                            "inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded {}",
+                            source_badge_class
+                        )>
+                            {if source == "html" {
+                                view! { <Icon icon=LuGlobe width="10px" height="10px" /> }.into_any()
+                            } else {
+                                view! { <Icon icon=LuCode width="10px" height="10px" /> }.into_any()
+                            }}
+                            {source_tag}
+                        </span>
+                    })}
                 </div>
 
                 // Footer: author + tags

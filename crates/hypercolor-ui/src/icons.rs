@@ -6,6 +6,5 @@ pub use icondata::{
     LuGlobe, LuGrid2x2, LuGroup, LuHeart, LuInfo, LuLayers, LuLayoutDashboard, LuLayoutTemplate,
     LuMinus, LuMonitor, LuMoon, LuMousePointerClick, LuPencil, LuPlus, LuPower, LuRadar,
     LuRefreshCw, LuRotateCcw, LuSave, LuSearch, LuSettings, LuSettings2, LuShuffle, LuSkipBack,
-    LuSkipForward,
-    LuSquare, LuSquarePen, LuSun, LuTrash2, LuUndo2, LuUser, LuWifi, LuX, LuZap,
+    LuSkipForward, LuSquare, LuSquarePen, LuSun, LuTrash2, LuUndo2, LuUser, LuWifi, LuX, LuZap,
 };
