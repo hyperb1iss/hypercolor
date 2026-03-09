@@ -34,6 +34,7 @@ pub struct LightscriptRuntime {
     width: u32,
     height: u32,
     last_controls: HashMap<String, ControlValue>,
+    last_interaction: Option<InteractionData>,
 }
 
 impl LightscriptRuntime {
@@ -44,6 +45,7 @@ impl LightscriptRuntime {
             width,
             height,
             last_controls: HashMap::new(),
+            last_interaction: None,
         }
     }
 
@@ -403,6 +405,20 @@ impl LightscriptRuntime {
             js_bool(interaction.mouse.down),
             mouse_buttons,
         )
+    }
+
+    /// Build JavaScript for interaction state when the payload changed.
+    #[must_use]
+    pub fn input_update_script_if_changed(
+        &mut self,
+        interaction: &InteractionData,
+    ) -> Option<String> {
+        if self.last_interaction.as_ref() == Some(interaction) {
+            return None;
+        }
+
+        self.last_interaction = Some(interaction.clone());
+        Some(Self::input_update_script(interaction))
     }
 
     #[allow(
@@ -962,5 +978,42 @@ mod tests {
         assert!(resize.contains("window.engine.width = 640"));
         assert!(resize.contains("window.engine.height = 360"));
         assert!(runtime.resize_script(640, 360).is_none());
+    }
+
+    #[test]
+    fn input_update_script_emits_only_on_change() {
+        let mut runtime = LightscriptRuntime::new(320, 200);
+        let interaction = InteractionData {
+            keyboard: crate::input::KeyboardData {
+                pressed_keys: vec!["a".to_owned()],
+                recent_keys: vec!["a".to_owned()],
+            },
+            mouse: crate::input::MouseData {
+                x: 1,
+                y: 2,
+                buttons: vec![],
+                down: false,
+            },
+        };
+
+        assert!(
+            runtime
+                .input_update_script_if_changed(&interaction)
+                .is_some()
+        );
+        assert!(
+            runtime
+                .input_update_script_if_changed(&interaction)
+                .is_none()
+        );
+
+        let changed = InteractionData {
+            keyboard: crate::input::KeyboardData {
+                pressed_keys: vec!["b".to_owned()],
+                recent_keys: vec!["b".to_owned()],
+            },
+            mouse: interaction.mouse.clone(),
+        };
+        assert!(runtime.input_update_script_if_changed(&changed).is_some());
     }
 }

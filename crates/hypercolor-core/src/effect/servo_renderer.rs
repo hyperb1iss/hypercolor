@@ -111,8 +111,12 @@ impl ServoRenderer {
         if let Some(audio_update) = frame_scripts.audio_update {
             self.pending_scripts.push(audio_update);
         }
-        self.pending_scripts
-            .push(LightscriptRuntime::input_update_script(&input.interaction));
+        if let Some(script) = self
+            .runtime
+            .input_update_script_if_changed(&input.interaction)
+        {
+            self.pending_scripts.push(script);
+        }
     }
 
     fn placeholder_canvas(input: &FrameInput) -> Canvas {
@@ -567,11 +571,7 @@ impl ServoWorkerRuntime {
         let result = (|| {
             self.resize_if_needed(width, height);
 
-            for script in scripts {
-                let preview = script_preview(script);
-                self.evaluate_script(script)
-                    .with_context(|| format!("failed to evaluate script: {preview}"))?;
-            }
+            self.evaluate_scripts(scripts)?;
 
             // Let timers/RAF advance for one daemon-driven frame after scripts
             // have injected controls/audio for this tick. Leaving the webview
@@ -610,6 +610,17 @@ impl ServoWorkerRuntime {
 
         self.webview.set_throttled(true);
         result
+    }
+
+    fn evaluate_scripts(&mut self, scripts: &[String]) -> Result<()> {
+        if scripts.is_empty() {
+            return Ok(());
+        }
+
+        let combined = combined_script(scripts);
+        let preview = batched_script_preview(scripts);
+        self.evaluate_script(&combined)
+            .with_context(|| format!("failed to evaluate script batch: {preview}"))
     }
 
     fn resize_if_needed(&self, width: u32, height: u32) {
@@ -887,6 +898,30 @@ fn find_initialization_failure_message(messages: &[ConsoleMessage]) -> Option<&C
 fn script_preview(script: &str) -> String {
     let single_line = script.split_whitespace().collect::<Vec<_>>().join(" ");
     truncate_for_log(&single_line, 120)
+}
+
+fn batched_script_preview(scripts: &[String]) -> String {
+    if scripts.len() == 1 {
+        return script_preview(&scripts[0]);
+    }
+
+    let previews = scripts
+        .iter()
+        .take(3)
+        .map(|script| script_preview(script))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    format!("{} scripts: {previews}", scripts.len())
+}
+
+fn combined_script(scripts: &[String]) -> String {
+    let capacity = scripts.iter().map(String::len).sum::<usize>() + scripts.len();
+    let mut combined = String::with_capacity(capacity);
+    for script in scripts {
+        combined.push_str(script);
+        combined.push('\n');
+    }
+    combined
 }
 
 fn install_rustls_provider() {
@@ -1353,5 +1388,27 @@ mod tests {
                 .iter()
                 .any(|script| script == "window.__hypercolorFpsCap = 15;")
         );
+    }
+
+    #[test]
+    fn frame_scripts_skip_unchanged_input_updates() {
+        let mut renderer = ServoRenderer::new();
+
+        renderer.enqueue_frame_scripts(&frame_input(1.0 / 30.0));
+        let first_input_scripts = renderer
+            .pending_scripts
+            .iter()
+            .filter(|script| script.contains("window.engine.keyboard.keys"))
+            .count();
+        assert_eq!(first_input_scripts, 1);
+
+        renderer.pending_scripts.clear();
+        renderer.enqueue_frame_scripts(&frame_input(1.0 / 30.0));
+        let second_input_scripts = renderer
+            .pending_scripts
+            .iter()
+            .filter(|script| script.contains("window.engine.keyboard.keys"))
+            .count();
+        assert_eq!(second_input_scripts, 0);
     }
 }
