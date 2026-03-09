@@ -318,12 +318,69 @@ async fn sync_active_layout_for_renderable_devices_skips_excluded_devices() {
     };
     assert!(
         layout.zones.is_empty(),
-        "excluded devices must not be auto-readded into the active layout"
+        "excluded devices must not be reconciled back into the active layout"
     );
 
     let persisted_layouts = runtime.layouts.read().await;
     assert!(
         persisted_layouts.is_empty(),
-        "skipping auto-readd should not persist any synthetic layout changes"
+        "skipping excluded devices should not persist any synthetic layout changes"
+    );
+}
+
+#[tokio::test]
+async fn sync_active_layout_for_renderable_devices_does_not_auto_adopt_new_devices() {
+    let device_registry = DeviceRegistry::new();
+    let info = usb_device_info();
+    let device_id = device_registry.add(info.clone()).await;
+    assert_eq!(device_id, info.id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Connected)
+            .await,
+        "device registry state should update"
+    );
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    let layout_device_id = {
+        let mut lifecycle = lifecycle_manager.lock().await;
+        let _ = lifecycle.on_discovered(device_id, &info, "usb", None);
+        lifecycle
+            .on_connected(device_id)
+            .expect("lifecycle should accept connected transition");
+        lifecycle
+            .layout_device_id_for(device_id)
+            .map(ToOwned::to_owned)
+            .expect("connected device should have a canonical layout ID")
+    };
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime = make_runtime(
+        device_registry,
+        lifecycle_manager,
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+    );
+
+    {
+        let mut manager = runtime.backend_manager.lock().await;
+        manager.map_device(layout_device_id, "usb", device_id);
+    }
+
+    sync_active_layout_for_renderable_devices(&runtime, None).await;
+
+    let layout = {
+        let spatial = runtime.spatial_engine.read().await;
+        spatial.layout().as_ref().clone()
+    };
+    assert!(
+        layout.zones.is_empty(),
+        "newly discovered devices must not be auto-adopted into the active layout"
+    );
+
+    let persisted_layouts = runtime.layouts.read().await;
+    assert!(
+        persisted_layouts.is_empty(),
+        "discovery should not persist layout changes for unmapped devices"
     );
 }

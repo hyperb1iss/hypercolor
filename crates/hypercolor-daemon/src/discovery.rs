@@ -117,7 +117,7 @@ pub struct DiscoveryRuntime {
     /// Persistent path for the layout store.
     pub layouts_path: PathBuf,
 
-    /// Layout-specific exclusions that block discovery auto-readds.
+    /// Layout-specific exclusions that block discovery-driven auto-layout reconciliation.
     pub layout_auto_exclusions: Arc<RwLock<layout_auto_exclusions::LayoutAutoExclusionStore>>,
 
     /// Logical device segmentation store.
@@ -1329,7 +1329,7 @@ async fn sync_logical_mappings_for_device(
 #[doc(hidden)]
 #[allow(
     clippy::too_many_lines,
-    reason = "auto-layout sync keeps the full reconciliation flow in one place"
+    reason = "layout reconciliation keeps the full discovery-driven repair flow in one place"
 )]
 pub async fn sync_active_layout_for_renderable_devices(
     runtime: &DiscoveryRuntime,
@@ -1369,8 +1369,6 @@ pub async fn sync_active_layout_for_renderable_devices(
             .collect::<HashMap<_, _>>()
     };
 
-    let mut added_devices = Vec::new();
-    let mut added_zone_count = 0_usize;
     let mut repaired_devices = Vec::new();
     let mut repaired_zone_count = 0_usize;
     for tracked in tracked_devices {
@@ -1419,29 +1417,19 @@ pub async fn sync_active_layout_for_renderable_devices(
             repaired_devices.push(format!("{} ({device_id})", tracked.info.name));
         }
 
-        if !inactive_ids.contains(&device_id) {
-            continue;
-        }
-
-        let added =
-            append_auto_layout_zones_for_device(&mut layout, layout_device_id, &tracked.info);
-        if added == 0 {
+        if inactive_ids.contains(&device_id) {
             debug!(
                 device_id = %device_id,
                 device_name = %tracked.info.name,
                 layout_device_id = %layout_device_id,
                 zone_count = tracked.info.zones.len(),
                 total_leds = tracked.info.total_led_count(),
-                "device remains layout-inactive because auto-layout produced no renderable zones"
+                "leaving layout-inactive device out of the active layout until it is explicitly mapped"
             );
-            continue;
         }
-
-        added_zone_count = added_zone_count.saturating_add(added);
-        added_devices.push(format!("{} ({device_id})", tracked.info.name));
     }
 
-    if added_devices.is_empty() && repaired_devices.is_empty() {
+    if repaired_devices.is_empty() {
         return;
     }
 
@@ -1466,13 +1454,10 @@ pub async fn sync_active_layout_for_renderable_devices(
     info!(
         layout_id = %layout.id,
         layout_name = %layout.name,
-        added_device_count = added_devices.len(),
-        added_zone_count,
         repaired_device_count = repaired_devices.len(),
         repaired_zone_count,
-        added_devices = ?added_devices,
         repaired_devices = ?repaired_devices,
-        "auto-synced connected devices in active layout"
+        "reconciled existing auto-layout zones in the active layout"
     );
 }
 

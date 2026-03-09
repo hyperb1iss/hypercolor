@@ -1,4 +1,4 @@
-//! Persisted layout-specific exclusions for discovery auto-layout sync.
+//! Persisted layout-specific exclusions for discovery-driven layout reconciliation.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -106,8 +106,9 @@ pub fn save(path: &Path, store: &LayoutAutoExclusionStore) -> anyhow::Result<()>
 /// Merge intentional device removals from a saved layout edit into the exclusion set.
 ///
 /// Devices that were present before the save and are absent afterward are treated as
-/// intentionally removed and become excluded from discovery auto-readd. Any device
-/// that appears in the saved layout is removed from the exclusion set.
+/// intentionally removed and become excluded from future discovery-driven layout
+/// reconciliation. Any device that appears in the saved layout is removed from the
+/// exclusion set.
 #[must_use]
 pub fn reconcile_layout_device_exclusions(
     previous_zones: &[DeviceZone],
