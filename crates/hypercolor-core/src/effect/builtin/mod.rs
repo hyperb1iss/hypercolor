@@ -13,7 +13,7 @@
 //! | `rainbow`       | Ambient        | Cycling rainbow hue sweep                      |
 //! | `breathing`     | Ambient        | Sinusoidal brightness pulsation                |
 //! | `audio_pulse`   | Audio          | RMS + beat-reactive color modulation           |
-//! | `color_wave`    | Ambient        | Traveling sinusoidal wave                      |
+//! | `color_wave`    | Ambient        | Traveling wavefront bands with fade trails     |
 
 mod audio_pulse;
 mod breathing;
@@ -483,39 +483,91 @@ fn audio_pulse_controls() -> Vec<ControlDefinition> {
 fn color_wave_controls() -> Vec<ControlDefinition> {
     vec![
         color_control(
-            "color",
-            "Color",
+            "wave_color",
+            "Wave Color",
             [0.5, 1.0, 0.92, 1.0],
             "Colors",
-            "Wave color at peak intensity.",
+            "Primary color for the traveling wavefront.",
+        ),
+        color_control(
+            "background_color",
+            "Background Color",
+            [0.0, 0.02, 0.08, 1.0],
+            "Colors",
+            "Base fill color that the trail fades back toward.",
+        ),
+        dropdown_control(
+            "color_mode",
+            "Color Mode",
+            "Custom",
+            &["Custom", "Random", "Color Cycle"],
+            "Colors",
+            "Use a fixed color, randomize each wave, or continuously hue-cycle the wavefronts.",
+        ),
+        slider_control(
+            "cycle_speed",
+            "Color Cycle Speed",
+            50.0,
+            0.0,
+            100.0,
+            1.0,
+            "Colors",
+            "Hue rotation speed when Color Cycle mode is enabled.",
         ),
         slider_control(
             "speed",
-            "Speed",
-            1.0,
+            "Effect Speed",
+            85.0,
             0.0,
-            6.0,
-            0.01,
+            100.0,
+            1.0,
             "Motion",
-            "Wave travel speed in cycles per second.",
+            "How quickly each wavefront moves across the canvas.",
         ),
         slider_control(
-            "wave_count",
-            "Wave Count",
-            3.0,
+            "spawn_delay",
+            "Wave Spawn Speed",
+            50.0,
+            0.0,
+            100.0,
             1.0,
-            12.0,
-            1.0,
-            "Shape",
-            "How many wave peaks are visible across the canvas.",
+            "Motion",
+            "How often new wavefronts are emitted.",
         ),
         dropdown_control(
             "direction",
-            "Direction",
+            "Wave Direction",
             "Right",
-            &["Right", "Left"],
+            &[
+                "Right",
+                "Left",
+                "Up",
+                "Down",
+                "Vertical Pass",
+                "Horizontal Pass",
+            ],
             "Motion",
-            "Travel direction of the wave.",
+            "Direction and pass mode for spawned wavefronts.",
+        ),
+        slider_control(
+            "wave_width",
+            "Wave Width",
+            50.0,
+            1.0,
+            100.0,
+            1.0,
+            "Shape",
+            "Thickness of each rectangular wave band.",
+        ),
+        slider_control(
+            "trail",
+            "Wave Trail",
+            50.0,
+            0.0,
+            100.0,
+            1.0,
+            "Output",
+            "How much of the previous frame remains visible behind each wave.",
         ),
         slider_control(
             "brightness",
@@ -637,7 +689,9 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             name: "Color Wave".into(),
             author: "Hypercolor".into(),
             version: "0.1.0".into(),
-            description: "Traveling sinusoidal wave of color across the canvas".into(),
+            description:
+                "Traveling wavefront strips with directional passes and configurable fade trails"
+                    .into(),
             category: EffectCategory::Ambient,
             tags: vec!["wave".into(), "animation".into(), "pattern".into()],
             controls: color_wave_controls(),

@@ -438,5 +438,5 @@ export default canvas.stateful('Wormhole', {
         ctx.stroke()
     }
 }, {
-    description: 'Community-inspired geometric tunnel with solid walls, drifting vanishing point, and LED-friendly depth control',
+    description: 'Geometric tunnel with solid walls, drifting vanishing point, and LED-friendly depth control',
 })

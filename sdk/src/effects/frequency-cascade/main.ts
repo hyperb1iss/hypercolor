@@ -10,6 +10,6 @@ export default effect('Frequency Cascade', shader, {
     glow:      [0, 100, 28],
     scene:     ['Cascade', 'Pulse Grid', 'Spectrum Tunnel', 'Prism Skyline'],
 }, {
-    description: 'Community-style spectrum cascade with scene modes and no-audio fallback motion',
+    description: 'Spectrum cascade with scene modes and no-audio fallback motion',
     audio: true,
 })

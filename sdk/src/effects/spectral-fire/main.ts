@@ -10,6 +10,6 @@ export default effect('Spectral Fire', shader, {
     emberAmount: [0, 100, 60],
     scene:       ['Classic', 'Inferno', 'Torch', 'Wildfire'],
 }, {
-    description: 'Layered community-style fire tongues with embers and optional audio lift',
+    description: 'Layered fire tongues with embers and optional audio lift',
     audio: true,
 })

@@ -549,5 +549,5 @@ export default canvas.stateful('Lava Lamp', {
         drawContours(ctx, field, cols, rows, colorA, colorB, colorC)
     }
 }, {
-    description: 'Community-inspired contour metaballs with crisp RGB blends and merge/split motion',
+    description: 'Contour metaballs with crisp RGB blends and merge/split motion',
 })
