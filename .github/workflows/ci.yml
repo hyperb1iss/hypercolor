@@ -30,8 +30,8 @@ jobs:
           - 'rust-toolchain.toml'
           - 'deny.toml'
       system-deps: >-
-        libudev-dev libdbus-1-dev libasound2-dev libturbojpeg0-dev
-        nasm pkg-config lld
+        libudev-dev libdbus-1-dev libasound2-dev
+        cmake nasm pkg-config lld
         libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
       workspace: true
       all-features: false
@@ -67,8 +67,8 @@ jobs:
     with:
       binaries: 'hypercolor hyper'
       system-deps: >-
-        libudev-dev libdbus-1-dev libasound2-dev libturbojpeg0-dev
-        nasm pkg-config lld
+        libudev-dev libdbus-1-dev libasound2-dev
+        cmake nasm pkg-config lld
         libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
       targets: 'linux-amd64 linux-arm64 macos-arm64'
     permissions:

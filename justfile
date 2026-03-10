@@ -159,13 +159,23 @@ effect-build name:
 
 # Install all project dependencies (Rust targets, UI deps, SDK deps)
 setup:
-    @echo '→ Checking rustup targets...'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo '→ Checking rustup targets...'
     rustup target add wasm32-unknown-unknown
-    @echo '→ Installing UI dependencies...'
-    cd crates/hypercolor-ui && npm install
-    @echo '→ Installing SDK dependencies...'
-    cd sdk && bun install
-    @echo '✅ All dependencies installed'
+    if ! command -v bun &>/dev/null; then
+        echo '→ Installing bun...'
+        if [[ "$(uname -s)" == "Darwin" ]] && command -v brew &>/dev/null; then
+            brew install oven-sh/bun/bun
+        else
+            curl -fsSL https://bun.sh/install | bash
+        fi
+    fi
+    echo '→ Installing UI dependencies...'
+    cd "{{justfile_directory()}}/crates/hypercolor-ui" && npm install
+    echo '→ Installing SDK dependencies...'
+    cd "{{justfile_directory()}}/sdk" && bun install
+    echo '✅ All dependencies installed'
 
 # Install Hypercolor locally under ~/.local and set up host integration
 install *args='':

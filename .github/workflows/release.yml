@@ -30,8 +30,8 @@ jobs:
       bump: ${{ inputs.bump }}
       dry_run: ${{ inputs.dry_run }}
       system-deps: >-
-        libudev-dev libdbus-1-dev libasound2-dev libturbojpeg0-dev
-        nasm pkg-config lld
+        libudev-dev libdbus-1-dev libasound2-dev
+        cmake nasm pkg-config lld
         libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
       workspace: true
       all-features: false
