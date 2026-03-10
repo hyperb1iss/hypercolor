@@ -68,8 +68,9 @@ pub enum TransportType {
     /// This keeps the OS HID stack attached and avoids claiming the USB
     /// interface directly, which is important for live input devices.
     UsbHidApi {
-        /// HID interface number.
-        interface: u8,
+        /// Optional HID interface number. `None` matches any interface that
+        /// satisfies the remaining identity and usage filters.
+        interface: Option<u8>,
         /// HID report ID.
         report_id: u8,
         /// Whether HID I/O should use feature reports or output/input reports.
@@ -134,9 +135,9 @@ pub enum TransportType {
 /// HID report path used by HIDAPI and Linux hidraw transports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HidRawReportMode {
-    /// Send and receive HID feature reports via hidapi feature-report ioctls.
+    /// Send and receive HID feature reports via native feature-report APIs.
     FeatureReport,
-    /// Send output reports with `hid_write()` and receive input reports with
-    /// `hid_read_timeout()`.
+    /// Send output reports and receive input reports through the platform HID
+    /// stack.
     OutputReport,
 }

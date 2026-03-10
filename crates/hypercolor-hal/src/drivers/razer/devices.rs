@@ -188,6 +188,32 @@ pub fn build_blade_14_2023_protocol() -> Box<dyn Protocol> {
     )
 }
 
+#[cfg(target_os = "linux")]
+macro_rules! razer_shared_hid_transport {
+    ($interface:expr, $report_id:expr, $report_mode:expr, $usage_page:expr, $usage:expr $(,)?) => {
+        TransportType::UsbHidRaw {
+            interface: $interface,
+            report_id: $report_id,
+            report_mode: $report_mode,
+            usage_page: $usage_page,
+            usage: $usage,
+        }
+    };
+}
+
+#[cfg(not(target_os = "linux"))]
+macro_rules! razer_shared_hid_transport {
+    ($interface:expr, $report_id:expr, $report_mode:expr, $usage_page:expr, $usage:expr $(,)?) => {
+        TransportType::UsbHidApi {
+            interface: Some($interface),
+            report_id: $report_id,
+            report_mode: $report_mode,
+            usage_page: $usage_page,
+            usage: $usage,
+        }
+    };
+}
+
 macro_rules! razer_descriptor {
     (
         pid: $pid:expr,
@@ -201,13 +227,13 @@ macro_rules! razer_descriptor {
             product_id: $pid,
             name: $name,
             family: DeviceFamily::Razer,
-            transport: TransportType::UsbHidApi {
-                interface: $interface,
-                report_id: 0x00,
-                report_mode: HidRawReportMode::FeatureReport,
-                usage_page: None,
-                usage: None,
-            },
+            transport: razer_shared_hid_transport!(
+                $interface,
+                0x00,
+                HidRawReportMode::FeatureReport,
+                None,
+                None,
+            ),
             protocol: ProtocolBinding {
                 id: $protocol_id,
                 build: $builder,
@@ -223,13 +249,13 @@ static RAZER_DESCRIPTORS: &[DeviceDescriptor] = &[
         product_id: PID_HUNTSMAN_V2,
         name: "Razer Huntsman V2",
         family: DeviceFamily::Razer,
-        transport: TransportType::UsbHidApi {
-            interface: 3,
-            report_id: 0x00,
-            report_mode: HidRawReportMode::FeatureReport,
-            usage_page: Some(RAZER_CONSUMER_USAGE_PAGE),
-            usage: Some(RAZER_CONSUMER_USAGE),
-        },
+        transport: razer_shared_hid_transport!(
+            3,
+            0x00,
+            HidRawReportMode::FeatureReport,
+            Some(RAZER_CONSUMER_USAGE_PAGE),
+            Some(RAZER_CONSUMER_USAGE),
+        ),
         protocol: ProtocolBinding {
             id: "razer/huntsman-v2",
             build: build_huntsman_v2_protocol,
@@ -241,13 +267,13 @@ static RAZER_DESCRIPTORS: &[DeviceDescriptor] = &[
         product_id: PID_BASILISK_V3,
         name: "Razer Basilisk V3",
         family: DeviceFamily::Razer,
-        transport: TransportType::UsbHidApi {
-            interface: 3,
-            report_id: 0x00,
-            report_mode: HidRawReportMode::FeatureReport,
-            usage_page: Some(RAZER_CONSUMER_USAGE_PAGE),
-            usage: Some(RAZER_CONSUMER_USAGE),
-        },
+        transport: razer_shared_hid_transport!(
+            3,
+            0x00,
+            HidRawReportMode::FeatureReport,
+            Some(RAZER_CONSUMER_USAGE_PAGE),
+            Some(RAZER_CONSUMER_USAGE),
+        ),
         protocol: ProtocolBinding {
             id: "razer/basilisk-v3",
             build: build_basilisk_v3_protocol,
@@ -259,13 +285,13 @@ static RAZER_DESCRIPTORS: &[DeviceDescriptor] = &[
         product_id: PID_MAMBA_ELITE,
         name: "Razer Mamba Elite",
         family: DeviceFamily::Razer,
-        transport: TransportType::UsbHidApi {
-            interface: 0,
-            report_id: 0x00,
-            report_mode: HidRawReportMode::FeatureReport,
-            usage_page: Some(0x0001),
-            usage: Some(0x0002),
-        },
+        transport: razer_shared_hid_transport!(
+            0,
+            0x00,
+            HidRawReportMode::FeatureReport,
+            Some(0x0001),
+            Some(0x0002),
+        ),
         protocol: ProtocolBinding {
             id: "razer/mamba-elite",
             build: build_mamba_elite_protocol,
@@ -284,13 +310,13 @@ static RAZER_DESCRIPTORS: &[DeviceDescriptor] = &[
         product_id: PID_SEIREN_V3_CHROMA,
         name: "Razer Seiren V3 Chroma",
         family: DeviceFamily::Razer,
-        transport: TransportType::UsbHidApi {
-            interface: 3,
-            report_id: 0x07,
-            report_mode: HidRawReportMode::FeatureReport,
-            usage_page: Some(RAZER_VENDOR_USAGE_PAGE),
-            usage: Some(RAZER_VENDOR_USAGE),
-        },
+        transport: razer_shared_hid_transport!(
+            3,
+            0x07,
+            HidRawReportMode::FeatureReport,
+            Some(RAZER_VENDOR_USAGE_PAGE),
+            Some(RAZER_VENDOR_USAGE),
+        ),
         protocol: ProtocolBinding {
             id: "razer/seiren-v3-chroma",
             build: build_seiren_v3_protocol,

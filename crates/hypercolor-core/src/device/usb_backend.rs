@@ -313,6 +313,7 @@ impl UsbBackend {
                         usage_page,
                         usage,
                     )
+                    .await
                     .with_context(|| {
                         format!(
                             "failed to open hidraw transport for {:04X}:{:04X} interface {} (report_id=0x{report_id:02X}, usage_page={}, usage={})",
@@ -1009,7 +1010,7 @@ impl UsbBackend {
 
     fn open_hidapi_transport(
         pending: &PendingUsbDevice,
-        interface: u8,
+        interface: Option<u8>,
         report_id: u8,
         report_mode: hypercolor_hal::registry::HidRawReportMode,
         usage_page: Option<u16>,
@@ -1031,7 +1032,7 @@ impl UsbBackend {
                 "failed to open HIDAPI transport for {:04X}:{:04X} interface {} (report_id=0x{report_id:02X}, usage_page={}, usage={})",
                 pending.vendor_id,
                 pending.product_id,
-                interface,
+                interface.map_or_else(|| "<any>".to_owned(), |value| value.to_string()),
                 usage_page
                     .map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
                 usage.map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}"))

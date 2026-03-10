@@ -20,6 +20,35 @@ use hypercolor_hal::drivers::razer::{
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};
 
+fn expected_razer_shared_hid_transport(
+    interface: u8,
+    report_id: u8,
+    usage_page: Option<u16>,
+    usage: Option<u16>,
+) -> TransportType {
+    #[cfg(target_os = "linux")]
+    {
+        TransportType::UsbHidRaw {
+            interface,
+            report_id,
+            report_mode: HidRawReportMode::FeatureReport,
+            usage_page,
+            usage,
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        TransportType::UsbHidApi {
+            interface: Some(interface),
+            report_id,
+            report_mode: HidRawReportMode::FeatureReport,
+            usage_page,
+            usage,
+        }
+    }
+}
+
 #[test]
 fn lookup_returns_asus_motherboard_descriptor() {
     let descriptor = ProtocolDatabase::lookup(ASUS_VID, PID_AURA_MOTHERBOARD_GEN3)
@@ -281,13 +310,7 @@ fn lookup_returns_huntsman_descriptor() {
     assert_eq!(descriptor.protocol.id, "razer/huntsman-v2");
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbHidApi {
-            interface: 3,
-            report_id: 0x00,
-            report_mode: HidRawReportMode::FeatureReport,
-            usage_page: Some(0x000C),
-            usage: Some(0x0001),
-        }
+        expected_razer_shared_hid_transport(3, 0x00, Some(0x000C), Some(0x0001))
     );
 
     let protocol = (descriptor.protocol.build)();
@@ -304,13 +327,7 @@ fn lookup_returns_basilisk_descriptor() {
     assert_eq!(descriptor.family, DeviceFamily::Razer);
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbHidApi {
-            interface: 3,
-            report_id: 0x00,
-            report_mode: HidRawReportMode::FeatureReport,
-            usage_page: Some(0x000C),
-            usage: Some(0x0001),
-        }
+        expected_razer_shared_hid_transport(3, 0x00, Some(0x000C), Some(0x0001))
     );
 }
 
@@ -324,13 +341,7 @@ fn lookup_returns_mamba_elite_descriptor() {
     assert_eq!(descriptor.protocol.id, "razer/mamba-elite");
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbHidApi {
-            interface: 0,
-            report_id: 0x00,
-            report_mode: HidRawReportMode::FeatureReport,
-            usage_page: Some(0x0001),
-            usage: Some(0x0002),
-        }
+        expected_razer_shared_hid_transport(0, 0x00, Some(0x0001), Some(0x0002))
     );
 
     let protocol = (descriptor.protocol.build)();
@@ -413,13 +424,7 @@ fn lookup_returns_seiren_v3_chroma_descriptor() {
     assert_eq!(descriptor.protocol.id, "razer/seiren-v3-chroma");
     assert_eq!(
         descriptor.transport,
-        TransportType::UsbHidApi {
-            interface: 3,
-            report_id: 0x07,
-            report_mode: HidRawReportMode::FeatureReport,
-            usage_page: Some(0xFF53),
-            usage: Some(0x0004),
-        }
+        expected_razer_shared_hid_transport(3, 0x07, Some(0xFF53), Some(0x0004))
     );
 
     let protocol = (descriptor.protocol.build)();

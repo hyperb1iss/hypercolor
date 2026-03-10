@@ -453,7 +453,7 @@ On Linux, Hypercolor uses `TransportType::UsbHidRaw` for Razer devices so the ke
 ```rust
 /// Linux HIDRAW transport for Razer devices.
 ///
-/// Sends/receives 90-byte feature reports through hidapi.
+/// Sends/receives 90-byte feature reports through async-hid on top of hidraw.
 pub struct UsbHidRawTransport {
     /// Open `/dev/hidraw*` node path.
     device_path: String,

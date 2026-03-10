@@ -60,10 +60,14 @@ impl UsbHidApiTransport {
         clippy::too_many_arguments,
         reason = "HID device selection needs transport metadata, identity filters, and collection filters together"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Device discovery, filtering, and diagnostic reporting stay together so probe failures are debuggable"
+    )]
     pub fn open(
         vendor_id: u16,
         product_id: u16,
-        interface_number: u8,
+        interface_number: Option<u8>,
         report_id: u8,
         report_mode: HidRawReportMode,
         serial: Option<&str>,
@@ -87,8 +91,10 @@ impl UsbHidApiTransport {
             .collect::<Vec<_>>();
 
         let original_candidates = candidates.clone();
-        let requested_interface = i32::from(interface_number);
-        candidates.retain(|candidate| candidate.interface_number == requested_interface);
+        if let Some(interface_number) = interface_number {
+            let requested_interface = i32::from(interface_number);
+            candidates.retain(|candidate| candidate.interface_number == requested_interface);
+        }
 
         if let Some(serial) = serial {
             candidates.retain(|candidate| candidate.serial.as_deref() == Some(serial));
@@ -139,7 +145,7 @@ impl UsbHidApiTransport {
                     "hidapi device not found for {:04X}:{:04X} interface {} (serial={}, usb_path={}, usage_page={}, usage={}); candidates=[{}]",
                     vendor_id,
                     product_id,
-                    interface_number,
+                    interface_number.map_or_else(|| "<any>".to_owned(), |value| value.to_string()),
                     serial.unwrap_or("<none>"),
                     usb_path.unwrap_or("<unknown>"),
                     usage_page.map_or_else(|| "<any>".to_owned(), |value| format!("0x{value:04X}")),
@@ -160,7 +166,8 @@ impl UsbHidApiTransport {
         debug!(
             vendor_id = format_args!("{vendor_id:04X}"),
             product_id = format_args!("{product_id:04X}"),
-            interface_number,
+            interface_number = interface_number
+                .map_or_else(|| "<any>".to_owned(), |value| value.to_string()),
             report_id = format_args!("0x{report_id:02X}"),
             report_mode = ?report_mode,
             device_path = %device_path,

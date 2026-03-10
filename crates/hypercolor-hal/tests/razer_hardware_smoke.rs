@@ -183,7 +183,8 @@ async fn basilisk_v3_custom_mode_init_and_frame_write_without_mode_command()
         Some(&usb_device_path),
         usage_page,
         usage,
-    )?;
+    )
+    .await?;
     let protocol = (descriptor.protocol.build)();
     assert!(
         protocol.init_sequence().is_empty(),
@@ -245,7 +246,8 @@ async fn basilisk_v3_sustained_frame_stream_stays_stable() -> Result<(), Box<dyn
         Some(&usb_device_path),
         usage_page,
         usage,
-    )?;
+    )
+    .await?;
     let protocol = (descriptor.protocol.build)();
     let total_leds = usize::try_from(protocol.total_leds()).expect("LED count should fit usize");
     let purple = vec![[0x50, 0x10, 0xD5]; total_leds];
@@ -321,7 +323,9 @@ async fn basilisk_v3_interface_sweep_visual_diagnostic() -> Result<(), Box<dyn E
             Some(&usb_device_path),
             None,
             None,
-        ) {
+        )
+        .await
+        {
             Ok(transport) => transport,
             Err(error) => {
                 eprintln!(
@@ -393,7 +397,8 @@ async fn basilisk_v3_interface_3_color_probe() -> Result<(), Box<dyn Error>> {
         Some(&usb_device_path),
         usage_page,
         usage,
-    )?;
+    )
+    .await?;
     let protocol = (descriptor.protocol.build)();
     let total_leds = usize::try_from(protocol.total_leds()).expect("LED count should fit usize");
     let red = vec![[0xFF, 0x00, 0x00]; total_leds];
@@ -456,7 +461,8 @@ async fn basilisk_v3_signalrgb_sequence_diagnostics() -> Result<(), Box<dyn Erro
         Some(&usb_device_path),
         usage_page,
         usage,
-    )?;
+    )
+    .await?;
 
     let transaction_ids = [0x1F_u8, 0x2F, 0x3F, 0x4F, 0x5F, 0x6F, 0x7F, 0x8F, 0x9F];
     for transaction_id in transaction_ids {
@@ -696,7 +702,8 @@ async fn seiren_v3_chroma_init_and_frame_write() -> Result<(), Box<dyn Error>> {
         Some(&usb_device_path),
         usage_page,
         usage,
-    )?;
+    )
+    .await?;
     let protocol = (descriptor.protocol.build)();
     let total_leds = usize::try_from(protocol.total_leds()).expect("LED count should fit usize");
     let white = vec![[255, 255, 255]; total_leds];

@@ -6,7 +6,10 @@ use hypercolor_hal::drivers::razer::{RAZER_REPORT_LEN, RAZER_VENDOR_ID, razer_cr
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus};
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_hal::transport::Transport;
+#[cfg(not(target_os = "linux"))]
 use hypercolor_hal::transport::hidapi::UsbHidApiTransport;
+#[cfg(target_os = "linux")]
+use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
 
 const HARDWARE_TEST_ENV: &str = "HYPERCOLOR_TEST_RAZER_HARDWARE";
 const PID_MAMBA_ELITE: u16 = 0x006C;
@@ -107,6 +110,85 @@ async fn probe_extended_effect_query(
     Ok(transport.send_receive(&query, RESPONSE_TIMEOUT).await?)
 }
 
+fn expected_mamba_transport() -> TransportType {
+    #[cfg(target_os = "linux")]
+    {
+        TransportType::UsbHidRaw {
+            interface: 0,
+            report_id: 0x00,
+            report_mode: HidRawReportMode::FeatureReport,
+            usage_page: Some(0x0001),
+            usage: Some(0x0002),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        TransportType::UsbHidApi {
+            interface: Some(0),
+            report_id: 0x00,
+            report_mode: HidRawReportMode::FeatureReport,
+            usage_page: Some(0x0001),
+            usage: Some(0x0002),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn open_mamba_transport(
+    usb: &nusb::DeviceInfo,
+    interface: u8,
+    report_id: u8,
+    report_mode: HidRawReportMode,
+    usage_page: Option<u16>,
+    usage: Option<u16>,
+) -> Result<Box<dyn Transport>, hypercolor_hal::transport::TransportError> {
+    let device_usb_path = usb_path(usb);
+
+    UsbHidRawTransport::open(
+        RAZER_VENDOR_ID,
+        PID_MAMBA_ELITE,
+        interface,
+        report_id,
+        report_mode,
+        usb.serial_number(),
+        Some(&device_usb_path),
+        usage_page,
+        usage,
+    )
+    .await
+    .map(|transport| -> Box<dyn Transport> { Box::new(transport) })
+}
+
+#[cfg(not(target_os = "linux"))]
+#[expect(
+    clippy::unused_async,
+    reason = "The Linux test helper is async, so the non-Linux fallback keeps the same call shape for shared hardware probes"
+)]
+async fn open_mamba_transport(
+    usb: &nusb::DeviceInfo,
+    interface: u8,
+    report_id: u8,
+    report_mode: HidRawReportMode,
+    usage_page: Option<u16>,
+    usage: Option<u16>,
+) -> Result<Box<dyn Transport>, hypercolor_hal::transport::TransportError> {
+    let device_usb_path = usb_path(usb);
+
+    UsbHidApiTransport::open(
+        RAZER_VENDOR_ID,
+        PID_MAMBA_ELITE,
+        Some(interface),
+        report_id,
+        report_mode,
+        usb.serial_number(),
+        Some(&device_usb_path),
+        usage_page,
+        usage,
+    )
+    .map(|transport| -> Box<dyn Transport> { Box::new(transport) })
+}
+
 #[tokio::test]
 #[ignore = "manual Mamba Elite transaction probe on connected hardware"]
 async fn mamba_elite_transaction_probe() -> Result<(), Box<dyn Error>> {
@@ -121,21 +203,18 @@ async fn mamba_elite_transaction_probe() -> Result<(), Box<dyn Error>> {
             device.vendor_id() == RAZER_VENDOR_ID && device.product_id() == PID_MAMBA_ELITE
         })
         .expect("Razer Mamba Elite USB device should be present");
-    let device_usb_path = usb_path(&usb);
-    let transport = UsbHidApiTransport::open(
-        RAZER_VENDOR_ID,
-        PID_MAMBA_ELITE,
+    let transport = open_mamba_transport(
+        &usb,
         0,
         0x00,
         HidRawReportMode::FeatureReport,
-        usb.serial_number(),
-        Some(&device_usb_path),
         Some(0x0001),
         Some(0x0002),
-    )?;
+    )
+    .await?;
 
     for transaction_id in [0x1F_u8, 0x3F_u8] {
-        match probe_transaction_id(&transport, transaction_id).await {
+        match probe_transaction_id(transport.as_ref(), transaction_id).await {
             Ok(response) => {
                 let preview_len = response.len().min(24);
                 eprintln!(
@@ -148,7 +227,7 @@ async fn mamba_elite_transaction_probe() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        match probe_extended_effect_query(&transport, transaction_id).await {
+        match probe_extended_effect_query(transport.as_ref(), transaction_id).await {
             Ok(response) => {
                 let preview_len = response.len().min(24);
                 eprintln!(
@@ -184,9 +263,23 @@ async fn mamba_elite_protocol_smoke() -> Result<(), Box<dyn Error>> {
             report_mode,
             usage_page,
             usage,
+        } => (
+            interface.expect("Mamba Elite HIDAPI descriptor should pin an interface"),
+            report_id,
+            report_mode,
+            usage_page,
+            usage,
+        ),
+        TransportType::UsbHidRaw {
+            interface,
+            report_id,
+            report_mode,
+            usage_page,
+            usage,
         } => (interface, report_id, report_mode, usage_page, usage),
         other => panic!("expected hidapi transport for Mamba Elite, got {other:?}"),
     };
+    assert_eq!(descriptor.transport, expected_mamba_transport());
 
     let usb = nusb::list_devices()
         .await?
@@ -194,18 +287,8 @@ async fn mamba_elite_protocol_smoke() -> Result<(), Box<dyn Error>> {
             device.vendor_id() == RAZER_VENDOR_ID && device.product_id() == PID_MAMBA_ELITE
         })
         .expect("Razer Mamba Elite USB device should be present");
-    let device_usb_path = usb_path(&usb);
-    let transport = UsbHidApiTransport::open(
-        RAZER_VENDOR_ID,
-        PID_MAMBA_ELITE,
-        interface,
-        report_id,
-        report_mode,
-        usb.serial_number(),
-        Some(&device_usb_path),
-        usage_page,
-        usage,
-    )?;
+    let transport =
+        open_mamba_transport(&usb, interface, report_id, report_mode, usage_page, usage).await?;
 
     let protocol = (descriptor.protocol.build)();
     let total_leds = usize::try_from(protocol.total_leds()).expect("LED count should fit usize");
@@ -213,14 +296,29 @@ async fn mamba_elite_protocol_smoke() -> Result<(), Box<dyn Error>> {
     let clear = vec![[0x00, 0x00, 0x00]; total_leds];
 
     let result = async {
-        run_commands(protocol.as_ref(), &transport, protocol.init_sequence()).await?;
-        run_commands(protocol.as_ref(), &transport, protocol.encode_frame(&white)).await?;
+        run_commands(
+            protocol.as_ref(),
+            transport.as_ref(),
+            protocol.init_sequence(),
+        )
+        .await?;
+        run_commands(
+            protocol.as_ref(),
+            transport.as_ref(),
+            protocol.encode_frame(&white),
+        )
+        .await?;
         tokio::time::sleep(IDENTIFY_FLASH_MS).await;
         Ok::<(), Box<dyn Error>>(())
     }
     .await;
 
-    let _ = run_commands(protocol.as_ref(), &transport, protocol.encode_frame(&clear)).await;
+    let _ = run_commands(
+        protocol.as_ref(),
+        transport.as_ref(),
+        protocol.encode_frame(&clear),
+    )
+    .await;
     let _ = transport.close().await;
 
     result
