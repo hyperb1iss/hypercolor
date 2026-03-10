@@ -29,6 +29,7 @@ interface ResolvedPalette {
 
 interface Slice {
     progress: number
+    alpha: number
     points: Point[]
     wall: Rgb
     rim: Rgb
@@ -94,6 +95,11 @@ const THEMES: Record<Exclude<ThemeName, 'Custom'>, ThemePalette> = {
 
 function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value))
+}
+
+function smoothstep(edge0: number, edge1: number, value: number): number {
+    const t = clamp((value - edge0) / (edge1 - edge0), 0, 1)
+    return t * t * (3 - 2 * t)
 }
 
 function lerp(start: number, end: number, amount: number): number {
@@ -311,9 +317,11 @@ export default canvas.stateful('Wormhole', {
 
         const centerX = width * 0.5
         const centerY = height * 0.5
-        const driftTime = time * (0.22 + speedMix * 0.18)
-        const vanishingX = centerX + Math.sin(driftTime * 0.93) * width * (0.04 + driftMix * 0.12)
-        const vanishingY = centerY + Math.cos(driftTime * 0.71 + 0.6) * height * (0.05 + driftMix * 0.14)
+        const driftTime = time * (0.16 + speedMix * 0.12)
+        const vanishingX = centerX + Math.sin(driftTime * 0.67) * width * (0.04 + driftMix * 0.12)
+            + Math.sin(driftTime * 0.31 + 1.8) * width * driftMix * 0.04
+        const vanishingY = centerY + Math.cos(driftTime * 0.53 + 0.6) * height * (0.05 + driftMix * 0.14)
+            + Math.cos(driftTime * 0.23 + 3.1) * height * driftMix * 0.03
 
         ctx.fillStyle = rgb(palette.background)
         ctx.fillRect(0, 0, width, height)
@@ -325,21 +333,28 @@ export default canvas.stateful('Wormhole', {
         ctx.fillStyle = aura
         ctx.fillRect(0, 0, width, height)
 
-        const sliceCount = Math.round(12 + depthMix * 18)
-        const travel = 0.05 + speedMix * 0.07
+        const sliceCount = Math.round(14 + depthMix * 18)
+        const travel = 0.04 + speedMix * 0.055
+        const fadeIn = 0.10
+        const fadeOut = 0.10
         const slices: Slice[] = []
 
         for (let index = 0; index < sliceCount; index++) {
             const progress = wrap(index / sliceCount + time * travel, 1)
-            const depthCurve = Math.pow(progress, 1.7)
+
+            // Fade envelope: smooth in/out at wrap boundaries to prevent pop
+            const alpha = smoothstep(0, fadeIn, progress) * smoothstep(0, fadeOut, 1 - progress)
+            if (alpha < 0.005) continue
+
+            const depthCurve = progress * progress * (3 - 2 * progress)  // smoothstep curve instead of pow
             const centerBlend = 1 - progress
-            const pulseWave = 1 + Math.sin(time * (1.4 + pulseMix * 1.9) + index * 0.47) * (0.04 + pulseMix * 0.08)
+            const pulseWave = 1 + Math.sin(time * (1.4 + pulseMix * 1.9) + index * 0.47) * (0.03 + pulseMix * 0.06)
             const baseRadius = minDim * (0.05 + depthCurve * (0.18 + depthMix * 0.42)) * pulseWave
             const radiusX = baseRadius * (geometry === 'Prism Rift' ? 1.08 : 1)
             const radiusY = baseRadius * (geometry === 'Pulse Ring' ? 0.72 : geometry === 'Organic Fold' ? 0.82 : 0.88)
             const ringCenterX = lerp(centerX, vanishingX, centerBlend)
             const ringCenterY = lerp(centerY, vanishingY, centerBlend)
-            const rotation = time * (0.35 + speedMix * 0.28) + index * 0.18 + depthCurve * (0.8 + twistMix * 4.2)
+            const rotation = time * (0.3 + speedMix * 0.22) + index * 0.18 + depthCurve * (0.8 + twistMix * 4.2)
             const points = buildRing(
                 geometry,
                 ringCenterX,
@@ -368,6 +383,7 @@ export default canvas.stateful('Wormhole', {
 
             slices.push({
                 progress,
+                alpha,
                 points,
                 wall,
                 rim,
@@ -377,9 +393,19 @@ export default canvas.stateful('Wormhole', {
 
         slices.sort((left, right) => left.progress - right.progress)
 
+        // Max gap between adjacent sorted slices before we skip the wall panel
+        const wrapGapThreshold = 2.5 / sliceCount
+
         for (let index = 1; index < slices.length; index++) {
             const previous = slices[index - 1]
             const current = slices[index]
+
+            // Skip wall panels that span the wrap boundary
+            if (current.progress - previous.progress > wrapGapThreshold) continue
+
+            const panelAlpha = Math.min(previous.alpha, current.alpha)
+            if (panelAlpha < 0.01) continue
+
             const pointCount = Math.min(previous.points.length, current.points.length)
 
             for (let pointIndex = 0; pointIndex < pointCount; pointIndex++) {
@@ -391,7 +417,7 @@ export default canvas.stateful('Wormhole', {
                     0.42 + pulseBand * 0.12,
                 )
 
-                ctx.fillStyle = rgb(scaleRgb(wallColor, 0.86 + contrastMix * 0.18))
+                ctx.fillStyle = rgba(scaleRgb(wallColor, 0.86 + contrastMix * 0.18), panelAlpha)
                 ctx.beginPath()
                 ctx.moveTo(previous.points[pointIndex].x, previous.points[pointIndex].y)
                 ctx.lineTo(previous.points[nextIndex].x, previous.points[nextIndex].y)
@@ -403,14 +429,16 @@ export default canvas.stateful('Wormhole', {
         }
 
         for (const slice of slices) {
+            if (slice.alpha < 0.01) continue
+
             drawClosedPath(ctx, slice.points)
             ctx.lineWidth = slice.lineWidth
-            ctx.strokeStyle = rgb(slice.rim)
+            ctx.strokeStyle = rgba(slice.rim, slice.alpha)
             ctx.stroke()
 
             drawClosedPath(ctx, slice.points)
             ctx.lineWidth = Math.max(1, slice.lineWidth * 0.38)
-            ctx.strokeStyle = rgba(mixRgb(slice.rim, palette.core, 0.35), 0.38 + pulseMix * 0.18)
+            ctx.strokeStyle = rgba(mixRgb(slice.rim, palette.core, 0.35), (0.38 + pulseMix * 0.18) * slice.alpha)
             ctx.stroke()
         }
 
