@@ -32,6 +32,27 @@ fn rendered_aspect(size: NormalizedPosition, canvas_width: u32, canvas_height: u
     (size.x / size.y) * canvas_aspect
 }
 
+fn push2_zone_summaries() -> Vec<ZoneSummary> {
+    vec![
+        zone_summary("Pads", 64, ZoneTopologySummary::Matrix { rows: 8, cols: 8 }),
+        zone_summary("Buttons Above", 8, ZoneTopologySummary::Strip),
+        zone_summary("Buttons Below", 8, ZoneTopologySummary::Strip),
+        zone_summary("Scene Launch", 8, ZoneTopologySummary::Strip),
+        zone_summary("Transport", 4, ZoneTopologySummary::Custom),
+        zone_summary("White Buttons", 37, ZoneTopologySummary::Custom),
+        zone_summary("Touch Strip", 31, ZoneTopologySummary::Strip),
+        zone_summary(
+            "Display",
+            0,
+            ZoneTopologySummary::Display {
+                width: 960,
+                height: 160,
+                circular: false,
+            },
+        ),
+    ]
+}
+
 #[test]
 fn basilisk_v3_uses_signal_sparse_layout_instead_of_flat_matrix() {
     let zone = zone_summary(
@@ -79,6 +100,90 @@ fn square_lcd_defaults_preserve_square_rendered_aspect_on_default_canvas() {
     assert!((defaults.size.x - 0.15).abs() < 0.001);
     assert!((defaults.size.y - 0.24).abs() < 0.001);
     assert!((rendered_aspect(defaults.size, 320, 200) - 1.0).abs() < 0.01);
+}
+
+#[test]
+fn seeded_push2_layout_creates_grouped_device_footprint() {
+    let seeded = layout_geometry::seeded_device_layout(
+        "usb:2982:1967:001-12",
+        "Ableton Push 2",
+        &push2_zone_summaries(),
+        320,
+        200,
+        12,
+    )
+    .expect("push2 should produce a seeded layout");
+
+    assert_eq!(seeded.group_name, "Ableton Push 2");
+    assert_eq!(seeded.group_color, "#80ffea");
+    assert_eq!(seeded.zones.len(), 8);
+    assert!(seeded
+        .zones
+        .iter()
+        .all(|zone| zone.group_id.as_deref() == Some(seeded.group_id.as_str())));
+
+    let pads = seeded
+        .zones
+        .iter()
+        .find(|zone| zone.zone_name.as_deref() == Some("Pads"))
+        .expect("pads zone should be seeded");
+    assert_eq!(
+        pads.topology,
+        LedTopology::Matrix {
+            width: 8,
+            height: 8,
+            serpentine: false,
+            start_corner: hypercolor_types::spatial::Corner::BottomLeft,
+        }
+    );
+
+    let white_buttons = seeded
+        .zones
+        .iter()
+        .find(|zone| zone.zone_name.as_deref() == Some("White Buttons"))
+        .expect("white buttons should be seeded");
+    match &white_buttons.topology {
+        LedTopology::Custom { positions } => {
+            assert_eq!(positions.len(), 37);
+            assert!(positions.iter().any(|pos| pos.x < 0.1));
+            assert!(positions.iter().any(|pos| pos.x > 0.9));
+        }
+        other => panic!("expected custom white-button topology, got {other:?}"),
+    }
+
+    let scene_launch = seeded
+        .zones
+        .iter()
+        .find(|zone| zone.zone_name.as_deref() == Some("Scene Launch"))
+        .expect("scene launch should be seeded");
+    assert_eq!(
+        scene_launch.topology,
+        LedTopology::Strip {
+            count: 8,
+            direction: StripDirection::TopToBottom,
+        }
+    );
+
+    let touch_strip = seeded
+        .zones
+        .iter()
+        .find(|zone| zone.zone_name.as_deref() == Some("Touch Strip"))
+        .expect("touch strip should be seeded");
+    assert_eq!(
+        touch_strip.topology,
+        LedTopology::Strip {
+            count: 31,
+            direction: StripDirection::BottomToTop,
+        }
+    );
+
+    let display = seeded
+        .zones
+        .iter()
+        .find(|zone| zone.zone_name.as_deref() == Some("Display"))
+        .expect("display zone should be seeded");
+    assert!(display.position.y < pads.position.y);
+    assert!(display.size.x > pads.size.x);
 }
 
 #[test]

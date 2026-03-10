@@ -1,4 +1,5 @@
-//! Effect card — cinematic card with stronger composition, live status, and category accenting.
+//! Effect card — cinematic card with category accent, favorite heart, capability badges,
+//! hover glow, and active state.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -6,13 +7,12 @@ use leptos_icons::Icon;
 use crate::api::EffectSummary;
 use crate::icons::*;
 
+/// Category -> (badge classes, accent hex for gradients).
 fn category_style(category: &str) -> (&'static str, &'static str) {
     match category {
         "ambient" => ("bg-neon-cyan/10 text-neon-cyan", "128, 255, 234"),
         "audio" => ("bg-coral/10 text-coral", "255, 106, 193"),
-        "fun" => ("bg-electric-purple/10 text-electric-purple", "225, 53, 255"),
         "gaming" => ("bg-electric-purple/10 text-electric-purple", "225, 53, 255"),
-        "particle" => ("bg-info-blue/10 text-info-blue", "130, 170, 255"),
         "reactive" => (
             "bg-electric-yellow/10 text-electric-yellow",
             "241, 250, 140",
@@ -25,6 +25,7 @@ fn category_style(category: &str) -> (&'static str, &'static str) {
     }
 }
 
+/// Source type label.
 fn source_label(source: &str) -> &'static str {
     match source {
         "native" => "Native",
@@ -34,30 +35,19 @@ fn source_label(source: &str) -> &'static str {
     }
 }
 
-fn source_icon(source: &str) -> icondata_core::Icon {
+fn source_badge_classes(source: &str) -> &'static str {
     match source {
-        "native" => LuDiamond,
-        "html" => LuGlobe,
-        "shader" => LuCode,
-        _ => LuCircleDot,
+        "native" => {
+            "bg-electric-purple/10 text-electric-purple border border-electric-purple/15 \
+             shadow-[0_0_18px_rgba(225,53,255,0.12)]"
+        }
+        "html" => "bg-neon-cyan/10 text-neon-cyan border border-neon-cyan/10",
+        "shader" => "bg-info-blue/10 text-info-blue border border-info-blue/10",
+        _ => "bg-surface-overlay/30 text-fg-tertiary/60 border border-edge-subtle",
     }
 }
 
-fn title_case_slug(value: &str) -> String {
-    value
-        .split(['-', '_'])
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            let mut chars = part.chars();
-            let Some(first) = chars.next() else {
-                return String::new();
-            };
-            format!("{}{}", first.to_uppercase(), chars.as_str())
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
+/// Cinematic effect card for the browse grid.
 #[component]
 pub fn EffectCard(
     effect: EffectSummary,
@@ -65,22 +55,30 @@ pub fn EffectCard(
     #[prop(into)] is_favorite: Signal<bool>,
     #[prop(into)] on_apply: Callback<String>,
     #[prop(into)] on_toggle_favorite: Callback<String>,
-    #[prop(default = 0)] index: usize,
+    /// Index for stagger animation (clamped to 12).
+    #[prop(default = 0)]
+    index: usize,
 ) -> impl IntoView {
     let name = effect.name.clone();
     let description = effect.description.clone();
     let author = effect.author.clone();
     let category = effect.category.clone();
-    let tags = effect.tags.clone();
+    let mut tags = effect.tags.clone();
     let runnable = effect.runnable;
     let audio_reactive = effect.audio_reactive;
     let source = effect.source.clone();
+    let is_native = source == "native";
+    if is_native && !tags.iter().any(|tag| tag.eq_ignore_ascii_case("native")) {
+        tags.insert(0, "native".to_string());
+    }
 
     let (badge_class, accent_rgb) = category_style(&category);
     let badge_class = badge_class.to_string();
     let accent_rgb = accent_rgb.to_string();
+
+    // Category-colored top accent gradient
     let accent_gradient = format!(
-        "background: linear-gradient(180deg, rgba({}, 0.08) 0%, transparent 40%)",
+        "background: linear-gradient(180deg, rgba({}, 0.06) 0%, transparent 40%)",
         accent_rgb
     );
 
@@ -88,47 +86,39 @@ pub fn EffectCard(
     let fav_id = effect.id.clone();
     let stagger = (index.min(12) + 1).to_string();
     let source_tag = source_label(&source).to_string();
-    let category_label = title_case_slug(&category);
-    let source_icon = source_icon(&source);
-
-    let source_tile = format!(
-        "background: linear-gradient(180deg, rgba({accent_rgb}, 0.18), rgba({accent_rgb}, 0.06)); \
-         border: 1px solid rgba({accent_rgb}, 0.18); \
-         box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);"
-    );
-    let top_beam = format!(
-        "background: linear-gradient(90deg, transparent, rgba({accent_rgb}, 0.75), transparent)"
-    );
+    let source_badge_class = source_badge_classes(&source).to_string();
 
     view! {
         <div
             class=move || {
-                let base = "relative rounded-[1.35rem] border text-left w-full group overflow-hidden \
+                let base = "relative rounded-2xl border text-left w-full group overflow-hidden \
                             card-hover animate-fade-in-up flex flex-col content-auto-card";
                 let state = if is_active.get() {
                     "border-accent-muted bg-surface-overlay animate-breathe"
                 } else if !runnable {
-                    "border-edge-subtle bg-surface-overlay/40 opacity-40 cursor-not-allowed"
+                    "border-edge-subtle bg-surface-overlay/40 opacity-30 cursor-not-allowed"
                 } else {
-                    "border-edge-subtle bg-surface-overlay/85 hover:border-edge-default"
+                    "border-edge-subtle bg-surface-overlay/80 hover:border-edge-default"
                 };
-                format!("{base} {state} stagger-{stagger}")
+                format!("{base} {state} stagger-{}", stagger)
             }
             style:--glow-rgb=accent_rgb.clone()
         >
-            <div class="absolute inset-0 pointer-events-none" style=accent_gradient />
-            <div class="absolute top-0 left-6 right-6 h-px rounded-full opacity-80" style=top_beam />
+            // Category accent gradient overlay
+            <div class="absolute inset-0 pointer-events-none rounded-2xl" style=accent_gradient />
 
+            // Active electric glow
             {move || is_active.get().then(|| view! {
                 <div
-                    class="absolute inset-0 pointer-events-none"
-                    style="background: radial-gradient(ellipse at 50% -10%, rgba(225, 53, 255, 0.16) 0%, transparent 65%); \
-                           box-shadow: inset 0 1px 0 rgba(225, 53, 255, 0.16)"
+                    class="absolute inset-0 rounded-2xl pointer-events-none"
+                    style="background: radial-gradient(ellipse at 50% -20%, rgba(225, 53, 255, 0.15) 0%, transparent 65%); \
+                           box-shadow: inset 0 1px 0 rgba(225, 53, 255, 0.2)"
                 />
+                <div class="absolute top-0 left-1/2 -translate-x-1/2 w-16 h-[2px] rounded-full bg-electric-purple/60 blur-[2px]" />
             })}
 
+            // Favorite heart button — top right, floats above content
             <button
-                type="button"
                 class="absolute top-3 right-3 z-10 p-1.5 rounded-full transition-all duration-200 \
                        hover:bg-surface-hover/40 hover:scale-110 active:scale-95"
                 on:click={
@@ -160,9 +150,9 @@ pub fn EffectCard(
                 }}
             </button>
 
+            // Clickable card body
             <button
-                type="button"
-                class="relative flex flex-col flex-1 px-4 pt-4 pb-4 text-left"
+                class="relative flex flex-col flex-1 px-4 pt-4 pb-3 text-left"
                 disabled=!runnable
                 on:click=move |_| {
                     if runnable {
@@ -170,81 +160,60 @@ pub fn EffectCard(
                     }
                 }
             >
-                <div class="flex items-start justify-between gap-3 pr-8 mb-4">
-                    <div class="flex items-start gap-3 min-w-0">
-                        <div
-                            class="w-11 h-11 rounded-2xl inline-flex items-center justify-center shrink-0"
-                            style=source_tile
-                        >
-                            <Icon icon=source_icon width="16px" height="16px" style="color: rgba(230, 237, 243, 0.92)" />
-                        </div>
-                        <div class="min-w-0">
-                            <div class="flex flex-wrap items-center gap-2 text-[10px] font-mono uppercase tracking-[0.16em] text-fg-tertiary/62">
-                                <span>{source_tag}</span>
-                                {audio_reactive.then(|| view! {
-                                    <span class="inline-flex items-center gap-1 text-coral/80">
-                                        <Icon icon=LuAudioLines width="10px" height="10px" />
-                                        "Reactive"
-                                    </span>
-                                })}
-                            </div>
-                            <h3 class="mt-1 text-[15px] font-medium text-fg-primary line-clamp-2 leading-snug">
-                                {name}
-                            </h3>
-                        </div>
-                    </div>
+                // Header: name + category badge
+                <div class="flex items-start justify-between gap-3 pr-6 mb-2">
+                    <h3 class="text-[15px] font-medium text-fg-primary group-hover:text-fg-primary line-clamp-2 transition-colors duration-200 leading-snug">
+                        {name}
+                    </h3>
                     <span class=format!("shrink-0 text-[9px] font-mono tracking-wide px-2 py-0.5 rounded-full capitalize {badge_class}")>
-                        {category_label}
+                        {category.clone()}
                     </span>
                 </div>
 
-                <p class="text-sm text-fg-secondary/82 line-clamp-3 leading-relaxed mb-4 min-h-[4rem]">
+                // Description
+                <p class="text-xs text-fg-secondary/80 line-clamp-2 leading-relaxed mb-3">
                     {description}
                 </p>
 
-                <div class="flex flex-wrap items-center gap-1.5 mb-4">
+                // Capability badges row
+                <div class="flex items-center gap-1.5 mb-3 flex-wrap">
+                    // Audio reactive badge
                     {audio_reactive.then(|| view! {
-                        <span class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded border border-coral/14 bg-coral/8 text-coral/82">
+                        <span class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded \
+                                     bg-coral/8 text-coral/80 border border-coral/10">
                             <Icon icon=LuAudioLines width="10px" height="10px" />
                             "Audio"
                         </span>
                     })}
-                    {tags.into_iter().take(2).map(|tag| {
-                        view! {
-                            <span class="text-[9px] font-mono text-fg-tertiary/72 bg-white/[0.03] border border-white/6 px-1.5 py-0.5 rounded whitespace-nowrap">
-                                {tag}
-                            </span>
-                        }
-                    }).collect_view()}
+
+                    // Source type badge
+                    {(!is_native).then(|| view! {
+                        <span class=format!(
+                            "inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded {}",
+                            source_badge_class
+                        )>
+                            {if source == "html" {
+                                view! { <Icon icon=LuGlobe width="10px" height="10px" /> }.into_any()
+                            } else {
+                                view! { <Icon icon=LuCode width="10px" height="10px" /> }.into_any()
+                            }}
+                            {source_tag}
+                        </span>
+                    })}
                 </div>
 
-                <div class="mt-auto pt-3 border-t border-edge-subtle flex items-center justify-between gap-3">
-                    <span class="inline-flex items-center gap-1.5 text-[10px] font-mono text-fg-tertiary/78 truncate">
-                        <Icon icon=LuUser width="11px" height="11px" />
-                        <span class="truncate">{author}</span>
-                    </span>
-                    <span
-                        class="text-[10px] font-mono uppercase tracking-[0.14em]"
-                        style=move || {
-                            if is_active.get() {
-                                "color: rgba(128, 255, 234, 0.82)"
-                            } else if runnable {
-                                "color: rgba(225, 53, 255, 0.72)"
-                            } else {
-                                "color: rgba(139, 133, 160, 0.48)"
+                // Footer: author + tags
+                <div class="flex items-center justify-between gap-2 pt-2 mt-auto border-t border-edge-subtle">
+                    <span class="text-[10px] font-mono text-fg-tertiary truncate">{author}</span>
+                    <div class="flex gap-1.5 overflow-hidden">
+                        {tags.into_iter().take(3).map(|tag| {
+                            view! {
+                                <span class="text-[9px] font-mono text-fg-tertiary/70 bg-surface-overlay/30 px-1.5 py-0.5 rounded whitespace-nowrap">
+                                    {tag}
+                                </span>
                             }
-                        }
-                    >
-                        {move || {
-                            if is_active.get() {
-                                "Now live"
-                            } else if runnable {
-                                "Load effect"
-                            } else {
-                                "Unavailable"
-                            }
-                        }}
-                    </span>
+                        }).collect_view()}
+                    </div>
                 </div>
             </button>
         </div>

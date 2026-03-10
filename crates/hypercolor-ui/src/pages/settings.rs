@@ -129,35 +129,6 @@ fn scroll_element_into_view(el: &web_sys::Element) {
 }
 
 #[component]
-fn SettingsOverviewTile(
-    title: &'static str,
-    #[prop(into)] value: Signal<String>,
-    icon: icondata_core::Icon,
-    accent_rgb: &'static str,
-) -> impl IntoView {
-    let border = format!("border-color: rgba({accent_rgb}, 0.18);");
-    let glow = format!(
-        "background: linear-gradient(180deg, rgba({accent_rgb}, 0.12), rgba({accent_rgb}, 0.04)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);"
-    );
-
-    view! {
-        <div class="settings-overview-tile" style=border>
-            <div class="settings-overview-icon" style=glow>
-                <Icon icon=icon width="14px" height="14px" style="color: rgba(128, 255, 234, 0.95)" />
-            </div>
-            <div class="min-w-0">
-                <div class="text-[10px] font-mono uppercase tracking-[0.16em] text-fg-tertiary/55">
-                    {title}
-                </div>
-                <div class="mt-1 text-sm text-fg-primary leading-snug">
-                    {move || value.get()}
-                </div>
-            </div>
-        </div>
-    }
-}
-
-#[component]
 pub fn SettingsPage() -> impl IntoView {
     let config_resource = LocalResource::new(api::fetch_config);
     let devices_resource = LocalResource::new(api::fetch_audio_devices);
@@ -191,68 +162,6 @@ pub fn SettingsPage() -> impl IntoView {
 
     // Derive config path for About section (comes from status, not config)
     let config_path = Memo::new(move |_| String::new());
-
-    let audio_summary = Signal::derive(move || {
-        config.with(|cfg| {
-            cfg.as_ref()
-                .map(|cfg| {
-                    if cfg.audio.enabled {
-                        format!("Listening at FFT {}", cfg.audio.fft_size)
-                    } else {
-                        "Reactive input disabled".to_string()
-                    }
-                })
-                .unwrap_or_else(|| "Loading audio config".to_string())
-        })
-    });
-    let capture_summary = Signal::derive(move || {
-        config.with(|cfg| {
-            cfg.as_ref()
-                .map(|cfg| {
-                    if cfg.capture.enabled {
-                        format!("{} at {} FPS", cfg.capture.source, cfg.capture.capture_fps)
-                    } else {
-                        "Ambient capture disabled".to_string()
-                    }
-                })
-                .unwrap_or_else(|| "Loading capture config".to_string())
-        })
-    });
-    let engine_summary = Signal::derive(move || {
-        config.with(|cfg| {
-            cfg.as_ref()
-                .map(|cfg| {
-                    format!(
-                        "{} renderer • watch {}",
-                        cfg.effect_engine.preferred_renderer,
-                        if cfg.effect_engine.watch_effects {
-                            "on"
-                        } else {
-                            "off"
-                        }
-                    )
-                })
-                .unwrap_or_else(|| "Loading engine config".to_string())
-        })
-    });
-    let session_summary = Signal::derive(move || {
-        config.with(|cfg| {
-            cfg.as_ref()
-                .map(|cfg| {
-                    if !cfg.session.enabled {
-                        "Session automation off".to_string()
-                    } else if cfg.session.idle_enabled {
-                        format!(
-                            "Idle dim {}s • off {}s",
-                            cfg.session.idle_dim_timeout_secs, cfg.session.idle_off_timeout_secs
-                        )
-                    } else {
-                        "Suspend and lock reactions only".to_string()
-                    }
-                })
-                .unwrap_or_else(|| "Loading power config".to_string())
-        })
-    });
 
     // Audio device options for dropdown
     let audio_devices = Memo::new(move |_| {
@@ -346,7 +255,7 @@ pub fn SettingsPage() -> impl IntoView {
         },
         TabEntry {
             id: "network",
-            label: "Runtime",
+            label: "Network",
             icon: LuGlobe,
             separator_before: false,
         },
@@ -388,10 +297,12 @@ pub fn SettingsPage() -> impl IntoView {
             <div class="sticky top-0 z-10 shrink-0 glass-dense">
                 <div class="flex items-center justify-between px-6 pt-5 pb-3">
                     <h1 class="text-base font-medium text-fg-primary tracking-wide">"Settings"</h1>
-                    <div class="flex items-center gap-2 text-[11px] font-mono text-fg-tertiary/55">
-                        <span class="setting-badge setting-badge-live">"live"</span>
-                        <span class="setting-badge setting-badge-restart">"restart"</span>
-                        <span>"Auto-saved where possible"</span>
+                    <div
+                        class="flex items-center gap-1.5 text-xs"
+                        style="color: rgba(128, 255, 234, 0.4)"
+                    >
+                        <Icon icon=LuInfo width="12px" height="12px" />
+                        "Auto-saved. Restart daemon to apply."
                     </div>
                 </div>
 
@@ -474,31 +385,11 @@ pub fn SettingsPage() -> impl IntoView {
                 // without causing DOM rebuild (no flicker on control changes).
                 {move || {
                     config_loaded.get().then(|| view! {
-                        <div class="px-6 pb-6 pt-4 max-w-5xl mx-auto space-y-4">
-                            <div class="settings-overview animate-fade-in-up stagger-1">
-                                <div class="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-                                    <div class="space-y-3 max-w-2xl">
-                                        <div class="text-[10px] font-mono uppercase tracking-[0.18em] text-electric-purple/70">
-                                            "Runtime Surface"
-                                        </div>
-                                        <div class="space-y-2">
-                                            <h2 class="text-xl font-medium text-fg-primary">
-                                                "Tighten the daemon without spelunking through TOML."
-                                            </h2>
-                                            <p class="text-sm leading-relaxed text-fg-tertiary/72">
-                                                "Changes save immediately. Rows marked restart need a daemon restart; live rows apply as soon as the config API accepts them."
-                                            </p>
-                                        </div>
-                                    </div>
-                                    <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 w-full xl:w-auto">
-                                        <SettingsOverviewTile title="Audio" value=audio_summary icon=LuAudioLines accent_rgb="255, 106, 193" />
-                                        <SettingsOverviewTile title="Capture" value=capture_summary icon=LuMonitor accent_rgb="128, 255, 234" />
-                                        <SettingsOverviewTile title="Engine" value=engine_summary icon=LuZap accent_rgb="225, 53, 255" />
-                                        <SettingsOverviewTile title="Power" value=session_summary icon=LuPower accent_rgb="241, 250, 140" />
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="settings-card animate-fade-in-up stagger-2">
+                        <div class="px-6 pb-6 pt-4 max-w-4xl mx-auto space-y-3">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.05s both"
+                            >
                                 <AudioSection
                                     config=config
                                     on_change=on_change
@@ -506,28 +397,52 @@ pub fn SettingsPage() -> impl IntoView {
                                     audio_devices=Signal::derive(move || audio_devices.get())
                                 />
                             </div>
-                            <div class="settings-card animate-fade-in-up stagger-3">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.1s both"
+                            >
                                 <CaptureSection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div class="settings-card animate-fade-in-up stagger-4">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.15s both"
+                            >
                                 <EngineSection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div class="settings-card animate-fade-in-up stagger-5">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.2s both"
+                            >
                                 <NetworkSection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div class="settings-card animate-fade-in-up stagger-6">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.25s both"
+                            >
                                 <McpSection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div class="settings-card animate-fade-in-up stagger-7">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.3s both"
+                            >
                                 <SessionSection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div class="settings-card animate-fade-in-up stagger-8">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.35s both"
+                            >
                                 <DiscoverySection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div class="settings-card animate-fade-in-up stagger-9">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.4s both"
+                            >
                                 <DeveloperSection config=config on_change=on_change on_reset=on_reset />
                             </div>
-                            <div class="settings-card animate-fade-in-up stagger-10">
+                            <div
+                                class="settings-card"
+                                style="animation: fade-in 0.4s ease-out 0.45s both"
+                            >
                                 <AboutSection config_path=Signal::derive(move || config_path.get()) />
                             </div>
                         </div>

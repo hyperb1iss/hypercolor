@@ -1058,6 +1058,7 @@ fn remove_device_zone(
             layout
                 .zones
                 .retain(|z| !(z.device_id == device_id && z.zone_name.as_deref() == zone_name));
+            prune_empty_groups(layout);
         }
     });
     set_selected_zone_id.set(None);
@@ -1074,6 +1075,7 @@ fn remove_all_device_zones(
     set_layout.update(|l| {
         if let Some(layout) = l {
             layout.zones.retain(|z| z.device_id != device_id);
+            prune_empty_groups(layout);
         }
     });
     set_selected_zone_id.set(None);
@@ -1106,6 +1108,38 @@ fn add_all_device_zones(
                 })
                 .unwrap_or_default()
         });
+
+    if existing_zone_names.is_empty() {
+        let display_order = next_display_order(layout);
+        if let Some(seed) = layout_geometry::seeded_device_layout(
+            device_id,
+            device_name,
+            zones,
+            canvas_width,
+            canvas_height,
+            display_order,
+        ) {
+            let selected_zone_id = seed.zones.first().map(|zone| zone.id.clone());
+            set_layout.update(|l| {
+                if let Some(current_layout) = l {
+                    if !current_layout.groups.iter().any(|group| group.id == seed.group_id) {
+                        current_layout.groups.push(ZoneGroup {
+                            id: seed.group_id.clone(),
+                            name: seed.group_name.clone(),
+                            color: Some(seed.group_color.clone()),
+                        });
+                    }
+                    current_layout.zones.extend(seed.zones.clone());
+                }
+            });
+
+            if let Some(zone_id) = selected_zone_id {
+                set_selected_zone_id.set(Some(zone_id));
+            }
+            set_is_dirty.set(true);
+            return;
+        }
+    }
 
     let mut first_new_id = None;
     set_layout.update(|l| {
@@ -1144,6 +1178,17 @@ fn add_all_device_zones(
         set_selected_zone_id.set(Some(id));
     }
     set_is_dirty.set(true);
+}
+
+fn prune_empty_groups(layout: &mut SpatialLayout) {
+    let active_group_ids = layout
+        .zones
+        .iter()
+        .filter_map(|zone| zone.group_id.as_deref())
+        .collect::<std::collections::HashSet<_>>();
+    layout
+        .groups
+        .retain(|group| active_group_ids.contains(group.id.as_str()));
 }
 
 /// Generate a short pseudo-random hex ID.

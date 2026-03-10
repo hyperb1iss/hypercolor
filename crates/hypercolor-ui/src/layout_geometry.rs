@@ -8,8 +8,8 @@ use std::f32::consts::FRAC_PI_2;
 
 use hypercolor_types::attachment::{AttachmentCategory, AttachmentSuggestedZone};
 use hypercolor_types::spatial::{
-    Corner, LedTopology, NormalizedPosition, Orientation, SpatialLayout, StripDirection, Winding,
-    ZoneShape,
+    Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, Orientation,
+    SamplingMode, SpatialLayout, StripDirection, Winding, ZoneShape,
 };
 
 use crate::api::{ZoneSummary, ZoneTopologySummary};
@@ -27,6 +27,11 @@ const EDITOR_STRIP_MAX_ASPECT: f32 = 8.0;
 
 const BASILISK_V3_GRID: VisualUnits = VisualUnits::new(7.0, 8.0);
 const BASILISK_V3_PRO_GRID: VisualUnits = VisualUnits::new(6.0, 7.0);
+const PUSH2_FOOTPRINT_GRID: VisualUnits = VisualUnits::new(16.5, 14.0);
+const PUSH2_FOOTPRINT_MIN_SIZE: NormalizedPosition = NormalizedPosition::new(0.42, 0.36);
+const PUSH2_FOOTPRINT_MAX_SIZE: NormalizedPosition = NormalizedPosition::new(0.72, 0.82);
+const PUSH2_FOOTPRINT_CENTER: NormalizedPosition = NormalizedPosition::new(0.5, 0.5);
+const PUSH2_GROUP_COLOR: &str = "#80ffea";
 
 const BASILISK_V3_POINTS: &[(u32, u32)] = &[
     (3, 5),
@@ -79,6 +84,14 @@ pub(crate) struct ZoneVisualDefaults {
     pub orientation: Option<Orientation>,
     pub shape: Option<ZoneShape>,
     pub shape_preset: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SeededDeviceLayout {
+    pub group_id: String,
+    pub group_name: String,
+    pub group_color: String,
+    pub zones: Vec<DeviceZone>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -170,6 +183,98 @@ pub(crate) fn default_zone_visuals(
             }
         }
     }
+}
+
+pub(crate) fn seeded_device_layout(
+    device_id: &str,
+    device_name: &str,
+    zones: &[ZoneSummary],
+    canvas_width: u32,
+    canvas_height: u32,
+    display_order_start: i32,
+) -> Option<SeededDeviceLayout> {
+    if !looks_like_push2(device_name, zones) {
+        return None;
+    }
+
+    let canvas_aspect = canvas_aspect_ratio(canvas_width, canvas_height);
+    let footprint_size = fit_visual_units_for_canvas(
+        PUSH2_FOOTPRINT_GRID,
+        PUSH2_FOOTPRINT_MIN_SIZE,
+        PUSH2_FOOTPRINT_MAX_SIZE,
+        canvas_aspect,
+    );
+    let group_id = format!("device_{}", sanitize_layout_identifier(device_id));
+    let mut zones_by_name = zones
+        .iter()
+        .map(|zone| (zone.name.as_str(), zone))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut seeded_zones = Vec::new();
+
+    for (offset, zone_name) in push2_zone_order().iter().enumerate() {
+        let Some(zone_summary) = zones_by_name.remove(zone_name) else {
+            continue;
+        };
+        let topology = push2_zone_topology(zone_summary);
+        let (position, size) = push2_zone_geometry(zone_name, footprint_size);
+        let shape = Some(ZoneShape::Rectangle);
+        let orientation = match &topology {
+            LedTopology::Strip { direction, .. } => Some(match direction {
+                StripDirection::LeftToRight | StripDirection::RightToLeft => {
+                    Orientation::Horizontal
+                }
+                StripDirection::TopToBottom | StripDirection::BottomToTop => Orientation::Vertical,
+            }),
+            LedTopology::Matrix { width, height, .. } => Some(if width >= height {
+                Orientation::Horizontal
+            } else {
+                Orientation::Vertical
+            }),
+            LedTopology::Custom { .. } => Some(Orientation::Horizontal),
+            LedTopology::Ring { .. } | LedTopology::ConcentricRings { .. } => {
+                Some(Orientation::Radial)
+            }
+            LedTopology::PerimeterLoop { .. } | LedTopology::Point => None,
+        };
+
+        seeded_zones.push(DeviceZone {
+            id: format!(
+                "zone_{}_{}",
+                sanitize_layout_identifier(device_id),
+                sanitize_layout_identifier(zone_name)
+            ),
+            name: format!("{device_name} · {zone_name}"),
+            device_id: device_id.to_owned(),
+            zone_name: Some(zone_name.to_string()),
+            group_id: Some(group_id.clone()),
+            position,
+            size,
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: display_order_start
+                + i32::try_from(offset).unwrap_or(i32::MAX.saturating_sub(display_order_start)),
+            orientation,
+            topology,
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: Some(SamplingMode::Bilinear),
+            edge_behavior: Some(EdgeBehavior::Clamp),
+            shape,
+            shape_preset: Some("ableton-push2".to_owned()),
+            attachment: None,
+        });
+    }
+
+    if seeded_zones.is_empty() {
+        return None;
+    }
+
+    Some(SeededDeviceLayout {
+        group_id,
+        group_name: device_name.to_owned(),
+        group_color: PUSH2_GROUP_COLOR.to_owned(),
+        zones: seeded_zones,
+    })
 }
 
 pub(crate) fn attachment_zone_size(
@@ -341,6 +446,171 @@ fn signal_visual_defaults(
     }
 
     None
+}
+
+fn looks_like_push2(device_name: &str, zones: &[ZoneSummary]) -> bool {
+    let normalized_name = device_name.to_ascii_lowercase();
+    if !normalized_name.contains("push 2") {
+        return false;
+    }
+
+    let zone_names = zones
+        .iter()
+        .map(|zone| zone.name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    zone_names.contains("Pads")
+        && zone_names.contains("Buttons Above")
+        && zone_names.contains("Buttons Below")
+}
+
+fn push2_zone_order() -> &'static [&'static str] {
+    &[
+        "White Buttons",
+        "Transport",
+        "Buttons Above",
+        "Display",
+        "Buttons Below",
+        "Pads",
+        "Scene Launch",
+        "Touch Strip",
+    ]
+}
+
+fn push2_zone_topology(zone: &ZoneSummary) -> LedTopology {
+    match zone.name.as_str() {
+        "Pads" => LedTopology::Matrix {
+            width: 8,
+            height: 8,
+            serpentine: false,
+            start_corner: Corner::BottomLeft,
+        },
+        "Buttons Above" => LedTopology::Strip {
+            count: 8,
+            direction: StripDirection::LeftToRight,
+        },
+        "Buttons Below" => LedTopology::Strip {
+            count: 8,
+            direction: StripDirection::LeftToRight,
+        },
+        "Scene Launch" => LedTopology::Strip {
+            count: 8,
+            direction: StripDirection::TopToBottom,
+        },
+        "Touch Strip" => LedTopology::Strip {
+            count: 31,
+            direction: StripDirection::BottomToTop,
+        },
+        "Transport" => LedTopology::Custom {
+            positions: vec![
+                NormalizedPosition::new(0.5, 0.72),
+                NormalizedPosition::new(0.5, 0.92),
+                NormalizedPosition::new(0.5, 0.12),
+                NormalizedPosition::new(0.5, 0.32),
+            ],
+        },
+        "White Buttons" => LedTopology::Custom {
+            positions: push2_white_button_positions(),
+        },
+        "Display" => LedTopology::Matrix {
+            width: 960,
+            height: 160,
+            serpentine: false,
+            start_corner: Corner::TopLeft,
+        },
+        _ => match zone.topology_hint.as_ref() {
+            Some(ZoneTopologySummary::Strip) => LedTopology::Strip {
+                count: u32::try_from(zone.led_count.max(1)).unwrap_or(u32::MAX),
+                direction: StripDirection::LeftToRight,
+            },
+            Some(ZoneTopologySummary::Matrix { rows, cols }) => LedTopology::Matrix {
+                width: *cols,
+                height: *rows,
+                serpentine: false,
+                start_corner: Corner::TopLeft,
+            },
+            Some(ZoneTopologySummary::Ring { count }) => LedTopology::Ring {
+                count: *count,
+                start_angle: -FRAC_PI_2,
+                direction: Winding::Clockwise,
+            },
+            Some(ZoneTopologySummary::Point) => LedTopology::Point,
+            Some(ZoneTopologySummary::Display { width, height, .. }) => LedTopology::Matrix {
+                width: *width,
+                height: *height,
+                serpentine: false,
+                start_corner: Corner::TopLeft,
+            },
+            Some(ZoneTopologySummary::Custom) | None => LedTopology::Custom {
+                positions: grid_points(&[(0, 0)], VisualUnits::new(1.0, 1.0)),
+            },
+        },
+    }
+}
+
+fn push2_zone_geometry(
+    zone_name: &str,
+    footprint_size: NormalizedPosition,
+) -> (NormalizedPosition, NormalizedPosition) {
+    let rect = match zone_name {
+        "White Buttons" => FootprintRect::new(0.2, 0.1, 16.1, 13.7),
+        "Transport" => FootprintRect::new(1.8, 8.1, 0.8, 4.1),
+        "Buttons Above" => FootprintRect::new(3.4, 0.45, 8.6, 0.85),
+        "Display" => FootprintRect::new(3.4, 1.55, 8.6, 1.45),
+        "Buttons Below" => FootprintRect::new(3.4, 3.15, 8.6, 0.85),
+        "Pads" => FootprintRect::new(3.4, 4.55, 8.0, 8.0),
+        "Scene Launch" => FootprintRect::new(11.95, 4.55, 0.7, 8.0),
+        "Touch Strip" => FootprintRect::new(13.25, 4.55, 0.6, 8.0),
+        _ => FootprintRect::new(0.0, 0.0, 4.0, 1.0),
+    };
+
+    rect.to_canvas(footprint_size)
+}
+
+fn push2_white_button_positions() -> Vec<NormalizedPosition> {
+    [
+        (0.9, 0.8),
+        (0.9, 1.8),
+        (0.9, 2.8),
+        (0.9, 3.8),
+        (0.9, 4.8),
+        (14.45, 6.0),
+        (15.85, 6.0),
+        (15.15, 5.0),
+        (15.15, 7.0),
+        (15.15, 6.0),
+        (0.9, 6.2),
+        (0.9, 7.2),
+        (0.9, 8.2),
+        (0.9, 9.2),
+        (0.9, 10.2),
+        (0.55, 11.3),
+        (1.25, 11.3),
+        (0.9, 12.3),
+        (14.45, 10.8),
+        (14.45, 2.6),
+        (15.85, 2.6),
+        (14.45, 0.8),
+        (15.85, 0.8),
+        (14.45, 1.7),
+        (15.85, 1.7),
+        (14.45, 8.5),
+        (15.85, 8.5),
+        (14.45, 9.5),
+        (15.85, 9.5),
+        (14.45, 12.0),
+        (15.85, 12.0),
+        (14.45, 13.0),
+        (15.85, 13.0),
+        (0.55, 13.2),
+        (1.05, 13.2),
+        (1.55, 13.2),
+        (15.85, 10.8),
+    ]
+    .into_iter()
+    .map(|(x, y)| {
+        NormalizedPosition::new(x / PUSH2_FOOTPRINT_GRID.width, y / PUSH2_FOOTPRINT_GRID.height)
+    })
+    .collect()
 }
 
 fn sparse_signal_defaults(
@@ -607,6 +877,50 @@ fn grid_points(points: &[(u32, u32)], grid: VisualUnits) -> Vec<NormalizedPositi
                 *y as f32 / (grid.height - 1.0)
             };
             NormalizedPosition::new(norm_x, norm_y)
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FootprintRect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+impl FootprintRect {
+    const fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn to_canvas(self, footprint_size: NormalizedPosition) -> (NormalizedPosition, NormalizedPosition) {
+        let size = NormalizedPosition::new(
+            footprint_size.x * (self.width / PUSH2_FOOTPRINT_GRID.width),
+            footprint_size.y * (self.height / PUSH2_FOOTPRINT_GRID.height),
+        );
+        let left = PUSH2_FOOTPRINT_CENTER.x - footprint_size.x * 0.5
+            + footprint_size.x * (self.x / PUSH2_FOOTPRINT_GRID.width);
+        let top = PUSH2_FOOTPRINT_CENTER.y - footprint_size.y * 0.5
+            + footprint_size.y * (self.y / PUSH2_FOOTPRINT_GRID.height);
+        let position = NormalizedPosition::new(left + size.x * 0.5, top + size.y * 0.5);
+        (position, size)
+    }
+}
+
+fn sanitize_layout_identifier(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
         })
         .collect()
 }

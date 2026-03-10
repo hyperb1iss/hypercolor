@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::session::{IdleBackend, SleepBehavior};
+use hypercolor_types::session::SleepBehavior;
 
 use crate::api;
 use crate::app::WsContext;
@@ -27,17 +27,6 @@ fn sleep_behavior_value(behavior: SleepBehavior) -> String {
         SleepBehavior::Dim => "dim",
         SleepBehavior::Scene => "scene",
         SleepBehavior::Ignore => "ignore",
-    }
-    .to_owned()
-}
-
-fn idle_backend_value(backend: IdleBackend) -> String {
-    match backend {
-        IdleBackend::Auto => "auto",
-        IdleBackend::Wayland => "wayland",
-        IdleBackend::X11 => "x11",
-        IdleBackend::Dbus => "dbus",
-        IdleBackend::Disabled => "disabled",
     }
     .to_owned()
 }
@@ -214,16 +203,8 @@ pub fn AudioSection(
 
     view! {
         <section id="section-audio" class="pt-5 pb-3 space-y-0">
-            <SectionHeader
-                title="Audio"
-                description="Reactive input, analysis, and beat detection for effects that listen to the room."
-                icon=LuAudioLines
-            />
+            <SectionHeader title="Audio" icon=LuAudioLines />
             <AudioVuMeter enabled=enabled />
-            <SettingGroupHeading
-                title="Input"
-                description="Choose the capture source and whether the daemon should listen at all."
-            />
             <SettingToggle
                 label="Enabled"
                 description="Enable audio capture and spectrum analysis for reactive effects"
@@ -238,10 +219,6 @@ pub fn AudioSection(
                 value=device
                 options=audio_devices
                 on_change=on_change
-            />
-            <SettingGroupHeading
-                title="Analysis"
-                description="Tune frequency resolution, smoothing, and sensitivity for the reactive pipeline."
             />
             <SettingDropdown
                 label="FFT Size"
@@ -303,11 +280,7 @@ pub fn CaptureSection(
 
     view! {
         <section id="section-capture" class="pt-5 pb-3 space-y-0">
-            <SectionHeader
-                title="Screen Capture"
-                description="Ambient capture settings for effects that mirror the display."
-                icon=LuMonitor
-            />
+            <SectionHeader title="Screen Capture" icon=LuMonitor />
             <SettingToggle
                 label="Enabled"
                 description="Enable screen capture for ambient lighting effects"
@@ -389,15 +362,7 @@ pub fn EngineSection(
 
     view! {
         <section id="section-engine" class="pt-5 pb-3 space-y-0">
-            <SectionHeader
-                title="Effect Engine"
-                description="Choose the renderer, browser runtime, and file watching behavior that power your effect library."
-                icon=LuZap
-            />
-            <SettingGroupHeading
-                title="Renderer"
-                description="These choices shape how HTML and shader effects are executed."
-            />
+            <SectionHeader title="Effect Engine" icon=LuZap />
             <SettingDropdown
                 label="Preferred Renderer"
                 description="Rendering backend for effects"
@@ -423,10 +388,6 @@ pub fn EngineSection(
                 options=Signal::stored(wgpu_options)
                 on_change=on_change
                 restart_required=true
-            />
-            <SettingGroupHeading
-                title="Library"
-                description="Watch your local effect sources and extend the search path with custom directories."
             />
             <SettingPathList
                 label="Extra Effect Directories"
@@ -475,15 +436,7 @@ pub fn NetworkSection(
 
     view! {
         <section id="section-network" class="pt-5 pb-3 space-y-0">
-            <SectionHeader
-                title="Runtime & Web"
-                description="Listener settings, render cadence, and preview streaming for the daemon and web UI."
-                icon=LuGlobe
-            />
-            <SettingGroupHeading
-                title="Daemon"
-                description="Where Hypercolor listens and how fast it pushes frames."
-            />
+            <SectionHeader title="Network" icon=LuGlobe />
             <SettingTextInput
                 label="Listen Address"
                 description="IP address the daemon binds to"
@@ -512,10 +465,6 @@ pub fn NetworkSection(
                 decimals=0
                 integer=true
             />
-            <SettingGroupHeading
-                title="Web Preview"
-                description="Control the browser preview stream and startup convenience behavior."
-            />
             <SettingSlider
                 label="WebSocket FPS"
                 description="Frame rate for the live preview stream"
@@ -533,7 +482,7 @@ pub fn NetworkSection(
                 value=open_browser
                 on_change=on_change
             />
-            <SectionReset section_label="Runtime & Web" on_reset=Callback::new(move |()| {
+            <SectionReset section_label="Network" on_reset=Callback::new(move |()| {
                 // Reset only the keys owned by this section — avoid nuking the
                 // entire "daemon" section which would wipe developer settings too.
                 for key in &[
@@ -557,18 +506,17 @@ pub fn McpSection(
 ) -> impl IntoView {
     let enabled = Signal::derive(move || read_config(config, |cfg| cfg.mcp.enabled));
     let base_path = Signal::derive(move || read_config(config, |cfg| cfg.mcp.base_path.clone()));
-    let stateful_mode = Signal::derive(move || read_config(config, |cfg| cfg.mcp.stateful_mode));
-    let json_response = Signal::derive(move || read_config(config, |cfg| cfg.mcp.json_response));
-    let sse_keep_alive_secs =
-        Signal::derive(move || read_config(config, |cfg| cfg.mcp.sse_keep_alive_secs as f64));
+    let stateful_mode =
+        Signal::derive(move || read_config(config, |cfg| cfg.mcp.stateful_mode));
+    let json_response =
+        Signal::derive(move || read_config(config, |cfg| cfg.mcp.json_response));
+    let sse_keep_alive_secs = Signal::derive(move || {
+        read_config(config, |cfg| cfg.mcp.sse_keep_alive_secs as f64)
+    });
 
     view! {
         <section id="section-mcp" class="pt-5 pb-3 space-y-0">
-            <SectionHeader
-                title="MCP"
-                description="Configure the Model Context Protocol surface exposed by the daemon."
-                icon=LuCable
-            />
+            <SectionHeader title="MCP" icon=LuCable />
             <SettingToggle
                 label="Enabled"
                 description="Expose Hypercolor's Model Context Protocol server on the main HTTP listener"
@@ -626,23 +574,15 @@ pub fn SessionSection(
 ) -> impl IntoView {
     let enabled = Signal::derive(move || read_config(config, |cfg| cfg.session.enabled));
     let idle_enabled = Signal::derive(move || read_config(config, |cfg| cfg.session.idle_enabled));
-    let idle_backend = Signal::derive(move || {
-        read_config(config, |cfg| idle_backend_value(cfg.session.idle_backend))
-    });
     let dim_timeout =
         Signal::derive(move || read_config(config, |cfg| cfg.session.idle_dim_timeout_secs as f64));
     let off_timeout =
         Signal::derive(move || read_config(config, |cfg| cfg.session.idle_off_timeout_secs as f64));
     let screen_lock_behavior = Signal::derive(move || {
-        read_config(config, |cfg| {
-            sleep_behavior_value(cfg.session.on_screen_lock)
-        })
+        read_config(config, |cfg| sleep_behavior_value(cfg.session.on_screen_lock))
     });
-    let screen_lock_scene =
-        Signal::derive(move || read_config(config, |cfg| cfg.session.screen_lock_scene.clone()));
-    let screen_lock_brightness = Signal::derive(move || {
-        read_config(config, |cfg| f64::from(cfg.session.screen_lock_brightness))
-    });
+    let screen_lock_brightness =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.session.screen_lock_brightness)));
     let screen_lock_fade =
         Signal::derive(move || read_config(config, |cfg| cfg.session.screen_lock_fade_ms as f64));
     let screen_unlock_fade =
@@ -654,55 +594,27 @@ pub fn SessionSection(
         Signal::derive(move || read_config(config, |cfg| cfg.session.suspend_fade_ms as f64));
     let resume_fade =
         Signal::derive(move || read_config(config, |cfg| cfg.session.resume_fade_ms as f64));
-    let lid_close_behavior = Signal::derive(move || {
-        read_config(config, |cfg| sleep_behavior_value(cfg.session.on_lid_close))
-    });
-    let lid_close_brightness = Signal::derive(move || {
-        read_config(config, |cfg| f64::from(cfg.session.lid_close_brightness))
-    });
-    let lid_close_scene =
-        Signal::derive(move || read_config(config, |cfg| cfg.session.lid_close_scene.clone()));
-    let lid_close_fade =
-        Signal::derive(move || read_config(config, |cfg| cfg.session.lid_close_fade_ms as f64));
-    let lid_open_fade =
-        Signal::derive(move || read_config(config, |cfg| cfg.session.lid_open_fade_ms as f64));
 
     let screen_behavior_options = Signal::stored(vec![
         ("ignore".to_string(), "Ignore".to_string()),
         ("off".to_string(), "Turn Off".to_string()),
-        ("dim".to_string(), "Dim output".to_string()),
-        ("scene".to_string(), "Activate scene".to_string()),
+        ("dim".to_string(), "Dim".to_string()),
     ]);
     let suspend_behavior_options = Signal::stored(vec![
         ("ignore".to_string(), "Ignore".to_string()),
         ("off".to_string(), "Turn Off".to_string()),
-        ("dim".to_string(), "Dim output".to_string()),
-    ]);
-    let idle_backend_options = Signal::stored(vec![
-        ("auto".to_string(), "Auto".to_string()),
-        ("wayland".to_string(), "Wayland".to_string()),
-        ("x11".to_string(), "X11".to_string()),
-        ("dbus".to_string(), "D-Bus".to_string()),
-        ("disabled".to_string(), "Disabled".to_string()),
+        ("dim".to_string(), "Fade Black".to_string()),
     ]);
 
     view! {
         <section id="section-session" class="pt-5 pb-3 space-y-0">
-            <SectionHeader
-                title="Session & Power"
-                description="Actual suspend, lock, idle, and lid policies so the lighting engine behaves predictably around the desktop."
-                icon=LuPower
-            />
+            <SectionHeader title="Session & Power" icon=LuPower />
             <SettingToggle
                 label="Session Awareness"
                 description="React to actual suspend/resume, screen lock, and other desktop power events"
                 key="session.enabled"
                 value=enabled
                 on_change=on_change
-            />
-            <SettingGroupHeading
-                title="Lock"
-                description="Control what happens when the session locks and how quickly the output recovers."
             />
             <SettingDropdown
                 label="Screen Lock Behavior"
@@ -722,16 +634,6 @@ pub fn SessionSection(
                     min=0.0 max=1.0 step=0.05
                 />
             </Show>
-            <Show when=move || screen_lock_behavior.get() == "scene">
-                <SettingTextInput
-                    label="Screen Lock Scene"
-                    description="Named scene to activate while the screen is locked"
-                    key="session.screen_lock_scene"
-                    value=screen_lock_scene
-                    on_change=on_change
-                    placeholder="night-mode"
-                />
-            </Show>
             <SettingNumberInput
                 label="Screen Lock Fade"
                 description="Milliseconds to fade into the screen-lock state"
@@ -747,10 +649,6 @@ pub fn SessionSection(
                 value=screen_unlock_fade
                 on_change=on_change
                 min=0.0 max=10000.0 step=50.0
-            />
-            <SettingGroupHeading
-                title="Suspend"
-                description="Tune how Hypercolor fades before suspend and restores after resume."
             />
             <SettingDropdown
                 label="Suspend Behavior"
@@ -776,23 +674,11 @@ pub fn SessionSection(
                 on_change=on_change
                 min=0.0 max=5000.0 step=25.0
             />
-            <SettingGroupHeading
-                title="Idle"
-                description="Use activity detection to dim or switch off LEDs after inactivity."
-            />
             <SettingToggle
                 label="Idle Detection"
                 description="Dim or turn off LEDs after a period of inactivity"
                 key="session.idle_enabled"
                 value=idle_enabled
-                on_change=on_change
-            />
-            <SettingDropdown
-                label="Idle Backend"
-                description="Preferred source for idle state detection on this machine"
-                key="session.idle_backend"
-                value=idle_backend
-                options=idle_backend_options
                 on_change=on_change
             />
             <SettingNumberInput
@@ -810,54 +696,6 @@ pub fn SessionSection(
                 value=off_timeout
                 on_change=on_change
                 min=0.0 max=7200.0 step=30.0
-            />
-            <SettingGroupHeading
-                title="Lid"
-                description="Laptop-only behavior for lid close and reopen events."
-            />
-            <SettingDropdown
-                label="Lid Close Behavior"
-                description="Policy to apply when the laptop lid closes"
-                key="session.on_lid_close"
-                value=lid_close_behavior
-                options=screen_behavior_options
-                on_change=on_change
-            />
-            <Show when=move || lid_close_behavior.get() == "dim">
-                <SettingSlider
-                    label="Lid Close Brightness"
-                    description="Brightness multiplier applied while the lid is closed"
-                    key="session.lid_close_brightness"
-                    value=lid_close_brightness
-                    on_change=on_change
-                    min=0.0 max=1.0 step=0.05
-                />
-            </Show>
-            <Show when=move || lid_close_behavior.get() == "scene">
-                <SettingTextInput
-                    label="Lid Close Scene"
-                    description="Named scene to activate while the lid is closed"
-                    key="session.lid_close_scene"
-                    value=lid_close_scene
-                    on_change=on_change
-                    placeholder="sleep-scene"
-                />
-            </Show>
-            <SettingNumberInput
-                label="Lid Close Fade"
-                description="Milliseconds to fade into the lid-close state"
-                key="session.lid_close_fade_ms"
-                value=lid_close_fade
-                on_change=on_change
-                min=0.0 max=5000.0 step=25.0
-            />
-            <SettingNumberInput
-                label="Lid Open Fade"
-                description="Milliseconds to restore output after the lid opens"
-                key="session.lid_open_fade_ms"
-                value=lid_open_fade
-                on_change=on_change
-                min=0.0 max=5000.0 step=25.0
             />
             <SectionReset section_label="Session" on_reset=Callback::new(move |()| on_reset.run("session".to_string())) />
         </section>
@@ -879,11 +717,7 @@ pub fn DiscoverySection(
     let hue = Signal::derive(move || read_config(config, |cfg| cfg.discovery.hue_scan));
     view! {
         <section id="section-discovery" class="pt-5 pb-3 space-y-0">
-            <SectionHeader
-                title="Device Discovery"
-                description="Background scanning for local controllers, bridges, and lighting endpoints."
-                icon=LuRadar
-            />
+            <SectionHeader title="Device Discovery" icon=LuRadar />
             <SettingToggle
                 label="mDNS Discovery"
                 description="Use multicast DNS to find devices on the local network"
@@ -953,15 +787,8 @@ pub fn DeveloperSection(
 
     view! {
         <section id="section-developer" class="pt-5 pb-3 space-y-0">
-            <SectionHeader
-                title="Developer"
-                description="Diagnostics, canvas overrides, and explicitly experimental runtime features."
-                icon=LuCode
-            />
-            <SettingGroupHeading
-                title="Diagnostics"
-                description="Low-level controls used for development, profiling, and debugging."
-            />
+            <SectionHeader title="Developer" icon=LuCode />
+            <div class="text-xs text-fg-tertiary/50 -mt-2 mb-4">"Advanced options for development and debugging"</div>
             <SettingDropdown
                 label="Log Level"
                 description="Daemon logging verbosity"
@@ -1029,9 +856,10 @@ pub fn DeveloperSection(
             <SectionReset section_label="Developer" on_reset=Callback::new(move |()| {
                 // Developer section spans multiple config keys — reset individually
                 for key in &[
-                    "daemon.log_level",
+                    "daemon.log_level", "daemon.log_file",
                     "daemon.canvas_width", "daemon.canvas_height",
-                    "daemon.max_devices", "features",
+                    "daemon.max_devices", "daemon.shutdown_behavior",
+                    "daemon.shutdown_color", "features",
                 ] {
                     on_reset.run(key.to_string());
                 }
@@ -1048,24 +876,17 @@ pub fn AboutSection(#[prop(into)] config_path: Signal<String>) -> impl IntoView 
 
     view! {
         <section id="section-about" class="pt-5 pb-3 space-y-0">
-            <SectionHeader
-                title="About"
-                description="Runtime status and project metadata for the daemon currently serving this UI."
-                icon=LuInfo
-            />
+            <SectionHeader title="About" icon=LuInfo />
 
             {move || {
                 let stat = status.get().and_then(|r| r.ok());
-                let path = config_path.get();
                 view! {
                     <div class="space-y-3">
                         <AboutRow label="Version" value=stat.as_ref().map(|s| s.version.clone()).unwrap_or_else(|| "—".to_string()) />
                         <AboutRow label="Uptime" value=stat.as_ref().map(|s| format_uptime(s.uptime_seconds)).unwrap_or_else(|| "—".to_string()) />
                         <AboutRow label="Devices" value=stat.as_ref().map(|s| s.device_count.to_string()).unwrap_or_else(|| "—".to_string()) />
                         <AboutRow label="Effects" value=stat.as_ref().map(|s| s.effect_count.to_string()).unwrap_or_else(|| "—".to_string()) />
-                        {(!path.is_empty()).then(|| view! {
-                            <AboutRow label="Config" value=path.clone() />
-                        })}
+                        <AboutRow label="Config" value=config_path.get() />
                     </div>
                 }
             }}
