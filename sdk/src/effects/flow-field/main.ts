@@ -306,10 +306,28 @@ export default canvas.stateful(
             radius: number,
             brightness: number,
             glowMix: number,
+            time: number,
         ): void {
+            const bloomPhase = 0.5 + 0.5 * Math.sin(time * (0.9 + firefly.driftBias * 0.22) + firefly.phase * 2.6)
+            const ringPhase = 0.5 + 0.5 * Math.sin(time * (1.4 + firefly.driftBias * 0.28) + firefly.phase * 4.9)
+            const bloomColor = mixRgb(color, { b: 228, g: 255, r: 244 }, 0.22)
+            const ringColor = mixRgb(color, { b: 234, g: 255, r: 128 }, 0.34)
             const haloColor = mixRgb(color, { b: 234, g: 255, r: 128 }, 0.1)
             const coreColor = mixRgb(color, { b: 255, g: 53, r: 225 }, 0.12)
+            const bloomRadius = radius * (2.9 + glowMix * 2.4 + bloomPhase * 1.15)
+            const ringRadius = radius * (1.8 + glowMix * 0.95 + ringPhase * 0.4)
             const haloRadius = radius * (2.5 + glowMix * 2.1)
+
+            ctx.fillStyle = rgba(bloomColor, (0.04 + glowMix * 0.15) * brightness * (0.4 + bloomPhase * 0.6))
+            ctx.beginPath()
+            ctx.arc(firefly.x, firefly.y, bloomRadius, 0, TAU)
+            ctx.fill()
+
+            ctx.strokeStyle = rgba(ringColor, (0.08 + glowMix * 0.12) * brightness * (0.35 + ringPhase * 0.65))
+            ctx.lineWidth = Math.max(0.45, radius * (0.22 + glowMix * 0.16))
+            ctx.beginPath()
+            ctx.arc(firefly.x, firefly.y, ringRadius, 0, TAU)
+            ctx.stroke()
 
             ctx.fillStyle = rgba(haloColor, (0.08 + glowMix * 0.22) * brightness)
             ctx.beginPath()
@@ -368,13 +386,13 @@ export default canvas.stateful(
                 const color = resolveColor(firefly, i, time, brightness, particleCount, colorMode)
                 const radius = Math.max(0.8, baseSize * (0.72 + brightness * 0.48) * firefly.sizeJitter)
 
-                drawBody(ctx, firefly, color, radius, brightness, glowMix)
+                drawBody(ctx, firefly, color, radius, brightness, glowMix, time)
             }
 
             ctx.restore()
         }
     },
     {
-        description: 'Fiberflies with neon palette modes, soft glow, and gentle drift',
+        description: 'Fiberflies with breathing halo blooms, neon palette modes, and gentle drift',
     },
 )
