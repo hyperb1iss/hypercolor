@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use hypercolor_core::device::{
-    BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, LifecycleAction,
+    BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DiscoveryConnectBehavior,
+    LifecycleAction,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
@@ -262,6 +263,41 @@ async fn lifecycle_discovery_connect_and_frame_write() {
     let writes = writes.lock().await.clone();
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0], vec![[255, 0, 128]; 4]);
+}
+
+#[test]
+fn deferred_discovery_waits_for_readiness_upgrade_before_connecting() {
+    let mut lifecycle = DeviceLifecycleManager::new();
+    let device_id = DeviceId::new();
+    let info = device_info(device_id, "Studio Strip");
+    let fingerprint = DeviceFingerprint("net:wled:wled-studio.local".to_owned());
+
+    let deferred_actions = lifecycle.on_discovered_with_behavior(
+        device_id,
+        &info,
+        "wled",
+        Some(&fingerprint),
+        DiscoveryConnectBehavior::Deferred,
+    );
+    assert!(
+        deferred_actions.is_empty(),
+        "placeholder discovery should not trigger an eager connect"
+    );
+    assert_eq!(lifecycle.state(device_id), Some(DeviceState::Known));
+
+    let upgraded_actions = lifecycle.on_discovered_with_behavior(
+        device_id,
+        &info,
+        "wled",
+        Some(&fingerprint),
+        DiscoveryConnectBehavior::AutoConnect,
+    );
+    assert!(
+        upgraded_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Connect { .. })),
+        "verified discovery should upgrade the same known device into auto-connect"
+    );
 }
 
 #[test]

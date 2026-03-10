@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use hypercolor_types::device::{ConnectionType, DeviceFingerprint, DeviceInfo};
 
-use super::discovery::{DiscoveredDevice, TransportScanner};
+use super::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 
 #[cfg(target_os = "linux")]
 use anyhow::anyhow;
@@ -150,6 +150,7 @@ impl TransportScanner for SmBusScanner {
                 name: probe.info.name.clone(),
                 family: probe.info.family.clone(),
                 fingerprint: probe.fingerprint,
+                connect_behavior: DiscoveryConnectBehavior::AutoConnect,
                 info: probe.info,
                 metadata: probe.metadata,
             })

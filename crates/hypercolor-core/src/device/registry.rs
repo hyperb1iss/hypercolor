@@ -10,6 +10,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+use super::{DiscoveredDevice, DiscoveryConnectBehavior};
 use crate::types::device::{
     DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceUserSettings,
 };
@@ -24,6 +25,9 @@ pub struct TrackedDevice {
 
     /// Current lifecycle state.
     pub state: DeviceState,
+
+    /// Whether lifecycle should auto-connect this device when it is discovered.
+    pub connect_behavior: DiscoveryConnectBehavior,
 
     /// Persisted user-facing settings layered on top of discovered metadata.
     pub user_settings: DeviceUserSettings,
@@ -99,6 +103,33 @@ impl DeviceRegistry {
         fingerprint: DeviceFingerprint,
         metadata: HashMap<String, String>,
     ) -> DeviceId {
+        self.add_entry(
+            info,
+            fingerprint,
+            metadata,
+            DiscoveryConnectBehavior::AutoConnect,
+        )
+        .await
+    }
+
+    /// Register a scanner-produced device with explicit connection behavior.
+    pub async fn add_discovered(&self, discovered: DiscoveredDevice) -> DeviceId {
+        self.add_entry(
+            discovered.info,
+            discovered.fingerprint,
+            discovered.metadata,
+            discovered.connect_behavior,
+        )
+        .await
+    }
+
+    async fn add_entry(
+        &self,
+        info: DeviceInfo,
+        fingerprint: DeviceFingerprint,
+        metadata: HashMap<String, String>,
+        connect_behavior: DiscoveryConnectBehavior,
+    ) -> DeviceId {
         let mut inner = self.inner.write().await;
 
         // Check for existing device by fingerprint
@@ -115,6 +146,7 @@ impl DeviceRegistry {
                     "Updating existing device in registry"
                 );
                 entry.info = updated_info;
+                entry.connect_behavior = connect_behavior;
                 inner
                     .id_to_fingerprint
                     .insert(existing_id, fingerprint.clone());
@@ -148,6 +180,7 @@ impl DeviceRegistry {
         let tracked = TrackedDevice {
             info: tracked_info,
             state: DeviceState::Known,
+            connect_behavior,
             user_settings: DeviceUserSettings::default(),
         };
 

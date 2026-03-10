@@ -654,13 +654,21 @@ async fn process_discovered_device(
     let metadata = runtime.device_registry.metadata_for_id(&device_id).await;
     let backend = backend_id_for_device(&tracked_before.info.family, metadata.as_ref());
     let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
+    if !tracked_before.connect_behavior.should_auto_connect() {
+        debug!(
+            device = %tracked_before.info.name,
+            device_id = %device_id,
+            "deferring auto-connect until discovery upgrades device readiness"
+        );
+    }
     let actions = {
         let mut lifecycle = runtime.lifecycle_manager.lock().await;
-        let mut actions = lifecycle.on_discovered(
+        let mut actions = lifecycle.on_discovered_with_behavior(
             device_id,
             &tracked_before.info,
             &backend,
             fingerprint.as_ref(),
+            tracked_before.connect_behavior,
         );
         if !persisted_settings.enabled {
             match lifecycle.on_user_disable(device_id) {

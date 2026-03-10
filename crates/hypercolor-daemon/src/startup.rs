@@ -1307,8 +1307,7 @@ fn cached_wled_backend_seed(
     let led_count = target.led_count?;
     let fps = target
         .max_fps
-        .map(|value| u8::try_from(value).unwrap_or(u8::MAX))
-        .unwrap_or(60);
+        .map_or(60, |value| u8::try_from(value).unwrap_or(u8::MAX));
 
     Some((
         fingerprint.stable_device_id(),

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-use crate::device::discovery::{DiscoveredDevice, TransportScanner};
+use crate::device::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 use crate::types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
     DeviceInfo, DeviceTopologyHint, ZoneInfo,
@@ -74,19 +74,19 @@ impl WledKnownTarget {
     /// Merge richer cached identity fields from another target.
     pub fn merge_from(&mut self, other: &Self) {
         if self.hostname.is_none() {
-            self.hostname = other.hostname.clone();
+            self.hostname.clone_from(&other.hostname);
         }
         if self.fingerprint.is_none() {
-            self.fingerprint = other.fingerprint.clone();
+            self.fingerprint.clone_from(&other.fingerprint);
         }
         if self.name.is_none() {
-            self.name = other.name.clone();
+            self.name.clone_from(&other.name);
         }
         if self.led_count.is_none() {
             self.led_count = other.led_count;
         }
         if self.firmware_version.is_none() {
-            self.firmware_version = other.firmware_version.clone();
+            self.firmware_version.clone_from(&other.firmware_version);
         }
         if self.max_fps.is_none() {
             self.max_fps = other.max_fps;
@@ -230,6 +230,11 @@ impl WledScanner {
             name,
             family: DeviceFamily::Wled,
             fingerprint,
+            connect_behavior: if wled_info.is_some() {
+                DiscoveryConnectBehavior::AutoConnect
+            } else {
+                DiscoveryConnectBehavior::Deferred
+            },
             info: device_info,
             metadata,
         }
@@ -296,6 +301,7 @@ impl WledScanner {
             name,
             family: DeviceFamily::Wled,
             fingerprint,
+            connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: device_info,
             metadata,
         })
@@ -457,6 +463,18 @@ impl TransportScanner for WledScanner {
                 && let Some(cached) = Self::build_discovered_from_known_target(&target)
             {
                 discovered.push(cached);
+                continue;
+            }
+
+            if mdns_seen_ips.contains(&ip)
+                && let Some(hostname) = target.hostname.as_deref()
+            {
+                debug!(
+                    ip = %ip,
+                    hostname = %hostname,
+                    "Using mDNS-only WLED placeholder until HTTP enrichment succeeds"
+                );
+                discovered.push(Self::build_discovered(hostname, ip, None));
                 continue;
             }
 

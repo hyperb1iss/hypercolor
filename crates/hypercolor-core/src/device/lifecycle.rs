@@ -11,6 +11,7 @@ use crate::types::device::{
     DeviceState,
 };
 
+use super::discovery::DiscoveryConnectBehavior;
 use super::state_machine::{DeviceStateMachine, ReconnectPolicy};
 
 const DEFAULT_MAX_RECONNECT_ATTEMPTS: u32 = 6;
@@ -56,6 +57,7 @@ struct ManagedDevice {
     backend_id: String,
     layout_device_id: String,
     identifier: DeviceIdentifier,
+    connect_behavior: DiscoveryConnectBehavior,
 }
 
 /// Pure lifecycle coordinator for discovered devices.
@@ -138,6 +140,24 @@ impl DeviceLifecycleManager {
         backend_id: &str,
         fingerprint: Option<&DeviceFingerprint>,
     ) -> Vec<LifecycleAction> {
+        self.on_discovered_with_behavior(
+            device_id,
+            device_info,
+            backend_id,
+            fingerprint,
+            DiscoveryConnectBehavior::AutoConnect,
+        )
+    }
+
+    /// Handle a discovered or reappeared device with explicit connect behavior.
+    pub fn on_discovered_with_behavior(
+        &mut self,
+        device_id: DeviceId,
+        device_info: &DeviceInfo,
+        backend_id: &str,
+        fingerprint: Option<&DeviceFingerprint>,
+        connect_behavior: DiscoveryConnectBehavior,
+    ) -> Vec<LifecycleAction> {
         let backend_id = backend_id.to_ascii_lowercase();
         let layout_device_id =
             Self::layout_device_id_with_fingerprint(&backend_id, device_info, fingerprint);
@@ -152,18 +172,22 @@ impl DeviceLifecycleManager {
                 backend_id: backend_id.clone(),
                 layout_device_id: layout_device_id.clone(),
                 identifier,
+                connect_behavior,
             }
         });
 
         managed.backend_id = backend_id;
         managed.layout_device_id = layout_device_id;
+        managed.connect_behavior = connect_behavior;
 
         let mut actions = Vec::new();
         if self.reconnect_scheduled.remove(&device_id) {
             actions.push(LifecycleAction::CancelReconnect { device_id });
         }
 
-        if *managed.state_machine.state() == DeviceState::Known {
+        if *managed.state_machine.state() == DeviceState::Known
+            && managed.connect_behavior.should_auto_connect()
+        {
             actions.push(Self::connect_action(device_id, managed));
         }
 
@@ -329,7 +353,10 @@ impl DeviceLifecycleManager {
         managed.state_machine.on_user_enable();
 
         let mut actions = Vec::new();
-        if was_disabled && *managed.state_machine.state() == DeviceState::Known {
+        if was_disabled
+            && *managed.state_machine.state() == DeviceState::Known
+            && managed.connect_behavior.should_auto_connect()
+        {
             actions.push(Self::connect_action(device_id, managed));
         }
         Ok(actions)

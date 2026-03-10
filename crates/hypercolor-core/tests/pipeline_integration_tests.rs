@@ -13,7 +13,8 @@ use uuid::Uuid;
 
 use hypercolor_core::bus::{EventFilter, HypercolorBus};
 use hypercolor_core::device::{
-    DeviceRegistry, DiscoveredDevice, DiscoveryOrchestrator, TransportScanner,
+    DeviceRegistry, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryOrchestrator,
+    TransportScanner,
 };
 use hypercolor_core::effect::{
     EffectEngine, EffectEntry, EffectRegistry, EffectRenderer, FrameInput,
@@ -202,6 +203,7 @@ fn make_discovered_device(name: &str, led_count: u32) -> DiscoveredDevice {
         name: name.to_string(),
         family: DeviceFamily::Wled,
         fingerprint: fp,
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info,
         metadata: HashMap::new(),
     }
@@ -1435,6 +1437,7 @@ async fn multiple_scanners_aggregate_results() {
             name: "USB HID Controller".to_string(),
             family: DeviceFamily::Custom("prism".to_string()),
             fingerprint: DeviceFingerprint("usb:prism-1".to_string()),
+            connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info,
             metadata: HashMap::new(),
         }

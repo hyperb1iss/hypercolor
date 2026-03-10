@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 use hypercolor_core::device::{
     BackendInfo, DeviceBackend, DevicePlugin, DeviceRegistry, DeviceStateMachine, DiscoveredDevice,
-    DiscoveryOrchestrator, ReconnectPolicy, TransportScanner,
+    DiscoveryConnectBehavior, DiscoveryOrchestrator, ReconnectPolicy, TransportScanner,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
@@ -225,6 +225,7 @@ fn mock_discovered(name: &str, fingerprint: &str) -> DiscoveredDevice {
         name: name.to_owned(),
         family: DeviceFamily::Wled,
         fingerprint: DeviceFingerprint(fingerprint.to_owned()),
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info: mock_device_info(name),
         metadata: HashMap::new(),
     }
@@ -1232,6 +1233,7 @@ async fn orchestrator_tracks_reappeared_devices() {
         name: "Known Device".to_owned(),
         family: DeviceFamily::Wled,
         fingerprint,
+        connect_behavior: DiscoveryConnectBehavior::AutoConnect,
         info: existing,
         metadata: HashMap::new(),
     };
@@ -1270,6 +1272,7 @@ async fn orchestrator_tracks_vanished_devices() {
             name: keep.name.clone(),
             family: keep.family.clone(),
             fingerprint: keep_fingerprint,
+            connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: keep,
             metadata: HashMap::new(),
         }],
@@ -1301,6 +1304,7 @@ async fn orchestrator_reappeared_device_keeps_stable_id_when_scanner_emits_new_i
             name: "Stable".to_owned(),
             family: DeviceFamily::Wled,
             fingerprint,
+            connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info: rediscovered,
             metadata: HashMap::new(),
         }],

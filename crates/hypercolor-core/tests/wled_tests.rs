@@ -6,6 +6,7 @@ use std::net::IpAddr;
 use std::sync::{Mutex, Once, OnceLock};
 use std::time::Duration;
 
+use hypercolor_core::device::DiscoveryConnectBehavior;
 use hypercolor_core::device::wled::{
     DdpPacket, DdpSequence, E131Packet, E131SequenceTracker, WledBackend, WledColorFormat,
     WledDeviceInfo, WledLiveReceiverConfig, WledProtocol, WledScanner, WledSegmentInfo,
@@ -13,6 +14,7 @@ use hypercolor_core::device::wled::{
 };
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_types::device::DeviceId;
+use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
@@ -1395,6 +1397,58 @@ async fn scanner_skips_stale_known_ip_without_enrichment() {
         discovered.is_empty(),
         "known IPs that cannot be enriched should not surface as placeholder devices"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scanner_surfaces_mdns_only_wled_as_deferred_placeholder() {
+    let _guard = mdns_test_log_lock().lock().await;
+    let mdns = ServiceDaemon::new().expect("mDNS daemon should start");
+    let service_info = ServiceInfo::new(
+        "_wled._tcp.local.",
+        "hypercolor-placeholder-test",
+        "wled-placeholder.local.",
+        "",
+        80,
+        None,
+    )
+    .expect("service info should be valid")
+    .enable_addr_auto();
+    let service_fullname = service_info.get_fullname().to_string();
+
+    mdns.register(service_info)
+        .expect("placeholder service should register");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut scanner = WledScanner::with_known_ips(Vec::new(), true, Duration::from_secs(2));
+    let discovered = scanner.scan().await.expect("scan should complete");
+
+    let placeholder = discovered
+        .iter()
+        .find(|device| {
+            device
+                .metadata
+                .get("hostname")
+                .is_some_and(|hostname| hostname.eq_ignore_ascii_case("wled-placeholder.local"))
+        })
+        .expect("scanner should surface the mDNS-only placeholder device");
+
+    assert_eq!(
+        placeholder.connect_behavior,
+        DiscoveryConnectBehavior::Deferred
+    );
+    assert_eq!(placeholder.info.capabilities.led_count, 0);
+    assert!(
+        placeholder.metadata.contains_key("ip"),
+        "placeholder discovery should still include the resolved address"
+    );
+
+    let unregister = mdns
+        .unregister(&service_fullname)
+        .expect("service should unregister");
+    let _ = timeout(Duration::from_secs(1), unregister.recv_async()).await;
+
+    let shutdown = mdns.shutdown().expect("mDNS daemon should shut down");
+    let _ = timeout(Duration::from_secs(1), shutdown.recv_async()).await;
 }
 
 fn test_wled_info(led_count: u16, rgbw: bool, fps: u8, is_wifi: bool) -> WledDeviceInfo {

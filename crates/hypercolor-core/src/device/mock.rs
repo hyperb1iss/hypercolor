@@ -18,7 +18,7 @@ use hypercolor_types::device::{
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::spatial::LedTopology;
 
-use super::discovery::DiscoveredDevice;
+use super::discovery::{DiscoveredDevice, DiscoveryConnectBehavior};
 use super::traits::{BackendInfo, DeviceBackend};
 use crate::device::TransportScanner;
 use crate::effect::{EffectRenderer, FrameInput};
@@ -263,6 +263,7 @@ impl MockTransportScanner {
             name: config.name.clone(),
             family: DeviceFamily::Custom("Mock".to_owned()),
             fingerprint: DeviceFingerprint(fingerprint_key),
+            connect_behavior: DiscoveryConnectBehavior::AutoConnect,
             info,
             metadata: HashMap::new(),
         });

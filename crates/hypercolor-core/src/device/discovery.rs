@@ -45,6 +45,35 @@ pub trait TransportScanner: Send + Sync {
     async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>>;
 }
 
+/// Whether a discovered device should trigger an immediate lifecycle connect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoveryConnectBehavior {
+    /// Safe to auto-connect as soon as discovery sees the device.
+    AutoConnect,
+
+    /// Keep the device visible in inventory, but defer auto-connect until a
+    /// later discovery pass upgrades it to `AutoConnect`.
+    Deferred,
+}
+
+impl DiscoveryConnectBehavior {
+    /// Whether this behavior should emit a connect action on discovery.
+    #[must_use]
+    pub const fn should_auto_connect(self) -> bool {
+        matches!(self, Self::AutoConnect)
+    }
+
+    /// Merge two behaviors, preserving the more capable auto-connect mode.
+    #[must_use]
+    pub const fn merge(self, other: Self) -> Self {
+        if matches!(self, Self::AutoConnect) || matches!(other, Self::AutoConnect) {
+            Self::AutoConnect
+        } else {
+            Self::Deferred
+        }
+    }
+}
+
 // ── DiscoveredDevice ─────────────────────────────────────────────────────
 
 /// Raw discovery result from a single scanner.
@@ -64,6 +93,9 @@ pub struct DiscoveredDevice {
 
     /// Stable identity fingerprint for deduplication.
     pub fingerprint: DeviceFingerprint,
+
+    /// Whether discovery should trigger an immediate lifecycle connect.
+    pub connect_behavior: DiscoveryConnectBehavior,
 
     /// Pre-built device info ready for registry insertion.
     pub info: DeviceInfo,
@@ -247,14 +279,7 @@ impl DiscoveryOrchestrator {
                                             .expect("inserted discovery entry should exist")
                                     };
 
-                                let id = self
-                                    .registry
-                                    .add_with_fingerprint_and_metadata(
-                                        merged.info,
-                                        fingerprint.clone(),
-                                        merged.metadata,
-                                    )
-                                    .await;
+                                let id = self.registry.add_discovered(merged).await;
 
                                 if seen_fingerprints.insert(fingerprint.clone()) {
                                     if known_before.contains_key(&fingerprint) {
@@ -351,6 +376,8 @@ impl DiscoveryOrchestrator {
     }
 
     fn merge_discovered(existing: &mut DiscoveredDevice, incoming: &DiscoveredDevice) {
+        existing.connect_behavior = existing.connect_behavior.merge(incoming.connect_behavior);
+
         for (key, value) in &incoming.metadata {
             existing
                 .metadata
