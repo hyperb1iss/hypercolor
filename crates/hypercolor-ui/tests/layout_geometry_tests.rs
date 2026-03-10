@@ -158,6 +158,35 @@ fn attachment_strip_size_preserves_thin_signal_like_aspect() {
 }
 
 #[test]
+fn attachment_fan_size_prefers_ring_footprint_over_strip_topology() {
+    let suggested = AttachmentSuggestedZone {
+        slot_id: "channel-1".to_owned(),
+        template_id: "lian-li-sl-unifan-fan".to_owned(),
+        template_name: "Lian Li UNIFan SL120 - 16 LED".to_owned(),
+        name: "Front Fan".to_owned(),
+        instance: 0,
+        led_start: 0,
+        led_count: 16,
+        category: AttachmentCategory::Fan,
+        default_size: AttachmentCanvasSize {
+            width: 0.24,
+            height: 0.08,
+        },
+        topology: LedTopology::Strip {
+            count: 16,
+            direction: StripDirection::LeftToRight,
+        },
+        led_mapping: None,
+    };
+
+    let size =
+        layout_geometry::attachment_zone_size(&suggested, NormalizedPosition::new(0.22, 0.18));
+
+    assert!((size.x - size.y).abs() < 0.01);
+    assert!(size.x > 0.17);
+}
+
+#[test]
 fn editor_normalization_gives_horizontal_strips_visible_height() {
     let size = layout_geometry::normalize_zone_size_for_editor(
         NormalizedPosition::new(0.5, 0.5),

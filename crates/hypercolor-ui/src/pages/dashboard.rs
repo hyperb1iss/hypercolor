@@ -140,9 +140,7 @@ fn FavoriteRow(effect: EffectSummary, delay: String) -> impl IntoView {
     let (badge_class, _) = category_style(&category);
 
     let is_active = Signal::derive(move || {
-        fx.active_effect_id
-            .get()
-            .as_deref() == Some(active_check_id.as_str())
+        fx.active_effect_id.get().as_deref() == Some(active_check_id.as_str())
     });
 
     view! {
@@ -215,10 +213,7 @@ fn category_style(category: &str) -> (&'static str, &'static str) {
     match category {
         "ambient" => ("bg-neon-cyan/10 text-neon-cyan", "128, 255, 234"),
         "audio" => ("bg-coral/10 text-coral", "255, 106, 193"),
-        "gaming" => (
-            "bg-electric-purple/10 text-electric-purple",
-            "225, 53, 255",
-        ),
+        "gaming" => ("bg-electric-purple/10 text-electric-purple", "225, 53, 255"),
         "reactive" => (
             "bg-electric-yellow/10 text-electric-yellow",
             "241, 250, 140",
@@ -279,9 +274,8 @@ fn PerformancePanel(
             .map(|m| format!("p95 {:.2} ms", m.frame_time.p95_ms))
             .unwrap_or_else(|| "collecting samples".to_string())
     });
-    let preview_text = Memo::new(move |_| {
-        format!("{:.1}/{} fps", preview_fps.get(), preview_target_fps.get())
-    });
+    let preview_text =
+        Memo::new(move |_| format!("{:.1}/{} fps", preview_fps.get(), preview_target_fps.get()));
     let preview_hint = Memo::new(move |_| {
         if preview_target_fps.get() <= 15 {
             "debug preview cap".to_string()

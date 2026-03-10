@@ -3,13 +3,14 @@
 use leptos::prelude::*;
 use leptos_icons::Icon;
 
-use hypercolor_types::attachment::{AttachmentCategory, AttachmentSuggestedZone};
+use hypercolor_types::attachment::AttachmentSuggestedZone;
 use hypercolor_types::spatial::{
-    DeviceZone, LedTopology, NormalizedPosition, Orientation, ZoneAttachment, ZoneShape,
+    DeviceZone, LedTopology, NormalizedPosition, Orientation, ZoneAttachment,
 };
 
 use crate::api;
 use crate::app::DevicesContext;
+use crate::components::attachment_editor;
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::toasts;
@@ -123,12 +124,12 @@ pub fn AttachmentPanel(
                     </h3>
                 </div>
                 <button
-                    class="px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all btn-press disabled:opacity-50 disabled:cursor-not-allowed"
+                    class="px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press disabled:opacity-50 disabled:cursor-not-allowed"
                     style="background: rgba(128, 255, 234, 0.08); border: 1px solid rgba(128, 255, 234, 0.16); color: rgb(128, 255, 234)"
                     disabled=move || import_in_flight.get()
                     on:click=move |_| import_to_layout()
                 >
-                    {move || if import_in_flight.get() { "Importing..." } else { "Import To Layout" }}
+                    {move || if import_in_flight.get() { "Importing..." } else { "Import" }}
                 </button>
             </div>
 
@@ -137,12 +138,16 @@ pub fn AttachmentPanel(
                     <div class="text-xs text-fg-tertiary animate-pulse">"Loading attachments..."</div>
                 }>
                     {move || {
-                        let all_templates = templates.get().map(|t| t.to_vec()).unwrap_or_default();
+                        let all_templates = templates.get().map(|loaded| loaded.to_vec()).unwrap_or_default();
 
                         attachments.get().map(|result| match result {
                             Ok(profile) => {
                                 let slots = profile.slots.clone();
                                 let bindings = profile.bindings.clone();
+                                let total_attachments: u32 = bindings
+                                    .iter()
+                                    .map(|binding| binding.instances.max(1))
+                                    .sum();
                                 let ready_count = profile.suggested_zones.len();
 
                                 if slots.is_empty() {
@@ -150,28 +155,48 @@ pub fn AttachmentPanel(
                                         <div class="text-xs text-fg-tertiary text-center py-3">
                                             "No attachment slots reported for this device"
                                         </div>
-                                    }.into_any();
+                                    }
+                                    .into_any();
                                 }
 
                                 view! {
                                     <div class="space-y-3">
                                         <div class="flex items-center justify-between text-[11px] font-mono text-fg-tertiary">
-                                            <span>{bindings.len()} " bindings"</span>
-                                            <span>{ready_count} " zones ready"</span>
+                                            <span>{total_attachments} " attached"</span>
+                                            <span>{ready_count} " ready for layout"</span>
                                         </div>
 
                                         <div class="space-y-2">
                                             {slots.into_iter().map(|slot| {
                                                 let slot_id = slot.id.clone();
-                                                let slot_bindings: Vec<_> = bindings
+                                                let slot_bindings = bindings
                                                     .iter()
                                                     .filter(|binding| binding.slot_id == slot.id)
                                                     .cloned()
-                                                    .collect();
+                                                    .collect::<Vec<_>>();
                                                 let used_leds: u32 = slot_bindings
                                                     .iter()
                                                     .map(|binding| binding.effective_led_count)
                                                     .sum();
+                                                let attachment_count: u32 = slot_bindings
+                                                    .iter()
+                                                    .map(|binding| binding.instances.max(1))
+                                                    .sum();
+                                                let binding_summary = slot_bindings
+                                                    .iter()
+                                                    .map(|binding| {
+                                                        let name = binding
+                                                            .name
+                                                            .clone()
+                                                            .unwrap_or_else(|| binding.template_name.clone());
+                                                        if binding.instances > 1 {
+                                                            format!("{name} ×{}", binding.instances)
+                                                        } else {
+                                                            name
+                                                        }
+                                                    })
+                                                    .collect::<Vec<_>>()
+                                                    .join(", ");
 
                                                 let is_expanded = {
                                                     let slot_id = slot_id.clone();
@@ -190,394 +215,573 @@ pub fn AttachmentPanel(
                                                     }
                                                 };
 
-                                                let has_binding = !slot_bindings.is_empty();
-                                                let binding_summary: String = if has_binding {
-                                                    slot_bindings.iter().map(|b| {
-                                                        b.name.clone().unwrap_or_else(|| b.template_name.clone())
-                                                    }).collect::<Vec<_>>().join(", ")
-                                                } else {
-                                                    String::new()
-                                                };
-
-                                                // Config form state
-                                                let first_binding = slot_bindings.first().cloned();
-                                                let initial_template_id = first_binding
-                                                    .as_ref()
-                                                    .map(|b| b.template_id.clone())
-                                                    .unwrap_or_default();
-                                                let initial_instances = first_binding
-                                                    .as_ref()
-                                                    .map(|b| b.instances)
-                                                    .unwrap_or(1);
-                                                let initial_offset = first_binding
-                                                    .as_ref()
-                                                    .map(|b| b.led_offset)
-                                                    .unwrap_or(0);
-
-                                                let (selected_template, set_selected_template) = signal(initial_template_id);
-                                                let (instances, set_instances) = signal(initial_instances);
-                                                let (led_offset, set_led_offset) = signal(initial_offset);
+                                                let initial_rows =
+                                                    attachment_editor::expand_slot_bindings(
+                                                        &slot.id,
+                                                        &bindings,
+                                                    );
+                                                let initial_rows_store =
+                                                    StoredValue::new(initial_rows.clone());
+                                                let (draft_rows, set_draft_rows) =
+                                                    signal(initial_rows.clone());
 
                                                 let slot_categories = slot.suggested_categories.clone();
-                                                let slot_led_count = slot.led_count;
-
-                                                // Sort templates: matching categories first
-                                                let relevant_templates: Vec<_> = if slot_categories.is_empty() {
+                                                let relevant_templates = if slot_categories.is_empty() {
                                                     all_templates.clone()
                                                 } else {
-                                                    let mut matching: Vec<_> = all_templates
+                                                    let matching = all_templates
                                                         .iter()
-                                                        .filter(|t| slot_categories.iter().any(|c| c.matches_category(&t.category)))
+                                                        .filter(|template| {
+                                                            slot_categories.iter().any(|category| {
+                                                                category.matches_category(
+                                                                    &template.category,
+                                                                )
+                                                            })
+                                                        })
                                                         .cloned()
-                                                        .collect();
-                                                    let matching_ids: Vec<_> = matching.iter().map(|t| t.id.clone()).collect();
-                                                    let mut others: Vec<_> = all_templates
+                                                        .collect::<Vec<_>>();
+                                                    let matching_ids = matching
                                                         .iter()
-                                                        .filter(|t| !matching_ids.contains(&t.id))
-                                                        .cloned()
-                                                        .collect();
-                                                    matching.append(&mut others);
-                                                    matching
+                                                        .map(|template| template.id.clone())
+                                                        .collect::<std::collections::HashSet<_>>();
+                                                    let mut ordered = matching;
+                                                    ordered.extend(
+                                                        all_templates
+                                                            .iter()
+                                                            .filter(|template| {
+                                                                !matching_ids.contains(
+                                                                    &template.id,
+                                                                )
+                                                            })
+                                                            .cloned(),
+                                                    );
+                                                    ordered
                                                 };
-
                                                 let category_count = relevant_templates
                                                     .iter()
-                                                    .take_while(|t| {
+                                                    .take_while(|template| {
                                                         slot_categories.is_empty()
-                                                            || slot_categories.iter().any(|c| c.matches_category(&t.category))
+                                                            || slot_categories.iter().any(|category| {
+                                                                category.matches_category(
+                                                                    &template.category,
+                                                                )
+                                                            })
                                                     })
                                                     .count();
+                                                let templates_store =
+                                                    StoredValue::new(relevant_templates.clone());
 
-                                                let templates_for_select = relevant_templates.clone();
-                                                let stored_templates = StoredValue::new(relevant_templates);
-
-                                                let selected_info = move || {
-                                                    let tid = selected_template.get();
-                                                    if tid.is_empty() {
-                                                        return None;
+                                                let draft_summary = Signal::derive({
+                                                    let slot = slot.clone();
+                                                    move || {
+                                                        templates_store.with_value(|templates| {
+                                                            attachment_editor::summarize_slot_rows(
+                                                                &slot,
+                                                                &draft_rows.get(),
+                                                                templates,
+                                                            )
+                                                        })
                                                     }
-                                                    stored_templates.with_value(|ts| {
-                                                        ts.iter().find(|t| t.id == tid).cloned()
+                                                });
+                                                let draft_is_dirty = Signal::derive(move || {
+                                                    initial_rows_store.with_value(|saved| {
+                                                        draft_rows.get() != *saved
                                                     })
-                                                };
+                                                });
 
-                                                let selected_info_preview = selected_info;
-
-                                                let save_binding = {
-                                                    let slot_id = slot_id.clone();
-                                                    move || {
-                                                        let template_id = selected_template.get_untracked();
-                                                        if template_id.is_empty() {
-                                                            toasts::toast_info("Select a template first");
-                                                            return;
-                                                        }
-                                                        set_save_in_flight.set(true);
-                                                        let slot_id = slot_id.clone();
-                                                        let did = device_id.get_untracked();
-                                                        let inst = instances.get_untracked();
-                                                        let off = led_offset.get_untracked();
-
-                                                        leptos::task::spawn_local(async move {
-                                                            let result = async {
-                                                                let current = api::fetch_device_attachments(&did).await?;
-                                                                let mut api_bindings: Vec<api::AttachmentBindingRequest> = current
-                                                                    .bindings
-                                                                    .iter()
-                                                                    .filter(|b| b.slot_id != slot_id)
-                                                                    .map(|b| api::AttachmentBindingRequest {
-                                                                        slot_id: b.slot_id.clone(),
-                                                                        template_id: b.template_id.clone(),
-                                                                        name: b.name.clone(),
-                                                                        enabled: b.enabled,
-                                                                        instances: b.instances,
-                                                                        led_offset: b.led_offset,
-                                                                    })
-                                                                    .collect();
-
-                                                                api_bindings.push(api::AttachmentBindingRequest {
-                                                                    slot_id,
-                                                                    template_id,
-                                                                    name: None,
-                                                                    enabled: true,
-                                                                    instances: inst,
-                                                                    led_offset: off,
-                                                                });
-
-                                                                api::update_device_attachments(&did, &api::UpdateAttachmentsRequest {
-                                                                    bindings: api_bindings,
-                                                                }).await
-                                                            }.await;
-
-                                                            set_save_in_flight.set(false);
-                                                            match result {
-                                                                Ok(_) => {
-                                                                    toasts::toast_success("Attachment saved");
-                                                                    set_refetch_tick.update(|t| *t += 1);
-                                                                }
-                                                                Err(error) => {
-                                                                    toasts::toast_error(&format!("Save failed: {error}"));
-                                                                }
-                                                            }
+                                                let reset_rows = {
+                                                    move |_: web_sys::MouseEvent| {
+                                                        initial_rows_store.with_value(|saved| {
+                                                            set_draft_rows.set(saved.clone());
                                                         });
                                                     }
                                                 };
-
-                                                let remove_binding = {
-                                                    let slot_id = slot_id.clone();
-                                                    move || {
-                                                        set_save_in_flight.set(true);
-                                                        let slot_id = slot_id.clone();
-                                                        let did = device_id.get_untracked();
-
-                                                        leptos::task::spawn_local(async move {
-                                                            let result = async {
-                                                                let current = api::fetch_device_attachments(&did).await?;
-                                                                let api_bindings: Vec<api::AttachmentBindingRequest> = current
-                                                                    .bindings
-                                                                    .iter()
-                                                                    .filter(|b| b.slot_id != slot_id)
-                                                                    .map(|b| api::AttachmentBindingRequest {
-                                                                        slot_id: b.slot_id.clone(),
-                                                                        template_id: b.template_id.clone(),
-                                                                        name: b.name.clone(),
-                                                                        enabled: b.enabled,
-                                                                        instances: b.instances,
-                                                                        led_offset: b.led_offset,
-                                                                    })
-                                                                    .collect();
-
-                                                                api::update_device_attachments(&did, &api::UpdateAttachmentsRequest {
-                                                                    bindings: api_bindings,
-                                                                }).await
-                                                            }.await;
-
-                                                            set_save_in_flight.set(false);
-                                                            match result {
-                                                                Ok(_) => {
-                                                                    set_selected_template.set(String::new());
-                                                                    set_instances.set(1);
-                                                                    set_led_offset.set(0);
-                                                                    toasts::toast_success("Attachment removed");
-                                                                    set_refetch_tick.update(|t| *t += 1);
-                                                                }
-                                                                Err(error) => {
-                                                                    toasts::toast_error(&format!("Remove failed: {error}"));
-                                                                }
-                                                            }
+                                                let add_row = {
+                                                    move |_: web_sys::MouseEvent| {
+                                                        set_draft_rows.update(|rows| {
+                                                            rows.push(
+                                                                attachment_editor::AttachmentDraftRow::empty(),
+                                                            );
                                                         });
                                                     }
                                                 };
-
                                                 view! {
                                                     <div class="rounded-lg border border-edge-subtle bg-surface-overlay/20 overflow-hidden transition-all">
-                                                        // Slot header — clickable
                                                         <button
                                                             class="w-full px-3 py-2.5 text-left hover:bg-surface-hover/30 transition-colors"
                                                             on:click=toggle_slot
                                                         >
                                                             <div class="flex items-start justify-between gap-3">
                                                                 <div class="min-w-0">
-                                                                    <div class="text-xs font-medium text-fg-primary">{slot.name.clone()}</div>
+                                                                    <div class="text-xs font-medium text-fg-primary">
+                                                                        {slot.name.clone()}
+                                                                    </div>
                                                                     <div class="text-[11px] font-mono text-fg-tertiary">
                                                                         {slot.id.clone()} " · " {used_leds} "/" {slot.led_count} " LEDs"
                                                                     </div>
                                                                 </div>
                                                                 <div class="flex items-center gap-2 shrink-0">
-                                                                    {if has_binding {
+                                                                    {if attachment_count > 0 {
                                                                         view! {
                                                                             <span class="rounded-full bg-[rgba(128,255,234,0.1)] border border-[rgba(128,255,234,0.2)] px-2 py-0.5 text-[10px] font-mono"
                                                                                 style="color: rgb(128, 255, 234)"
                                                                             >
-                                                                                {slot_bindings.len()} " bound"
+                                                                                {attachment_count} " attached"
                                                                             </span>
-                                                                        }.into_any()
+                                                                        }
+                                                                            .into_any()
                                                                     } else {
                                                                         view! {
                                                                             <span class="rounded-full border border-edge-subtle bg-surface-overlay/40 px-2 py-0.5 text-[10px] font-mono text-fg-tertiary">
                                                                                 {slot.suggested_categories.len()} " hints"
                                                                             </span>
-                                                                        }.into_any()
+                                                                        }
+                                                                            .into_any()
                                                                     }}
                                                                     {if is_expanded() {
-                                                                        view! { <Icon icon=LuChevronUp width="12px" height="12px" style="color: rgba(139, 133, 160, 0.7)" /> }.into_any()
+                                                                        view! {
+                                                                            <Icon icon=LuChevronUp width="12px" height="12px" style="color: rgba(139, 133, 160, 0.7)" />
+                                                                        }
+                                                                            .into_any()
                                                                     } else {
-                                                                        view! { <Icon icon=LuChevronDown width="12px" height="12px" style="color: rgba(139, 133, 160, 0.7)" /> }.into_any()
+                                                                        view! {
+                                                                            <Icon icon=LuChevronDown width="12px" height="12px" style="color: rgba(139, 133, 160, 0.7)" />
+                                                                        }
+                                                                            .into_any()
                                                                     }}
                                                                 </div>
                                                             </div>
 
-                                                            // Collapsed summary
-                                                            {if has_binding && !is_expanded() {
+                                                            {if attachment_count > 0 && !is_expanded() {
                                                                 Some(view! {
                                                                     <div class="mt-1.5 text-[11px] text-fg-tertiary truncate">
                                                                         {binding_summary.clone()}
                                                                     </div>
-                                                                }.into_any())
+                                                                }
+                                                                .into_any())
                                                             } else if !is_expanded() {
                                                                 Some(view! {
                                                                     <div class="mt-1.5 text-[11px] text-fg-tertiary">
-                                                                        {"Click to configure".to_string()}
+                                                                        "Add attachments in order. Hypercolor will pack the LEDs automatically."
                                                                     </div>
-                                                                }.into_any())
+                                                                }
+                                                                .into_any())
                                                             } else {
                                                                 None
                                                             }}
                                                         </button>
 
-                                                        // Expanded configuration
                                                         <Show when=is_expanded>
                                                             <div class="px-3 pb-3 space-y-3 border-t border-edge-subtle bg-surface-sunken/30 animate-fade-in">
-                                                                // Template selector
-                                                                <div class="pt-3">
-                                                                    <label class="block text-[11px] font-mono text-fg-tertiary mb-1.5">"Template"</label>
-                                                                    <select
-                                                                        class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg px-3 py-1.5 text-xs text-fg-primary focus:outline-none focus:border-accent-muted cursor-pointer"
-                                                                        prop:value=move || selected_template.get()
-                                                                        on:change=move |ev| {
-                                                                            set_selected_template.set(event_target_value(&ev));
-                                                                        }
-                                                                    >
-                                                                        <option value="" disabled=true selected=move || selected_template.get().is_empty()>
-                                                                            "Select a template..."
-                                                                        </option>
-                                                                        {if category_count > 0 && category_count < templates_for_select.len() {
-                                                                            let suggested: Vec<_> = templates_for_select[..category_count].to_vec();
-                                                                            let others: Vec<_> = templates_for_select[category_count..].to_vec();
-                                                                            view! {
-                                                                                <optgroup label="Suggested">
-                                                                                    {suggested.into_iter().map(|t| {
-                                                                                        let id = t.id.clone();
-                                                                                        let label = format!("{} — {} LEDs", t.name, t.led_count);
-                                                                                        view! { <option value=id>{label}</option> }
-                                                                                    }).collect_view()}
-                                                                                </optgroup>
-                                                                                <optgroup label="All Templates">
-                                                                                    {others.into_iter().map(|t| {
-                                                                                        let id = t.id.clone();
-                                                                                        let label = format!("{} — {} LEDs", t.name, t.led_count);
-                                                                                        view! { <option value=id>{label}</option> }
-                                                                                    }).collect_view()}
-                                                                                </optgroup>
-                                                                            }.into_any()
-                                                                        } else {
-                                                                            templates_for_select.clone().into_iter().map(|t| {
-                                                                                let id = t.id.clone();
-                                                                                let label = format!("{} — {} LEDs", t.name, t.led_count);
-                                                                                view! { <option value=id>{label}</option> }
-                                                                            }).collect_view().into_any()
+                                                                <div class="pt-3 flex items-center justify-between gap-3">
+                                                                    <div class="text-[11px] text-fg-tertiary">
+                                                                        "Add attachments in order. LED ranges are packed automatically."
+                                                                    </div>
+                                                                    <div class="text-[10px] font-mono text-fg-tertiary whitespace-nowrap">
+                                                                        {move || {
+                                                                            let summary = draft_summary.get();
+                                                                            format!(
+                                                                                "{} / {} LEDs",
+                                                                                summary.total_leds,
+                                                                                summary.available_leds
+                                                                            )
                                                                         }}
-                                                                    </select>
+                                                                    </div>
                                                                 </div>
 
-                                                                // Template info
-                                                                {move || selected_info().map(|info| view! {
-                                                                    <div class="rounded-md bg-surface-overlay/40 border border-edge-subtle px-2.5 py-2 text-[11px] font-mono text-fg-tertiary space-y-0.5">
-                                                                        <div class="flex justify-between">
-                                                                            <span>"Category"</span>
-                                                                            <span class="text-fg-secondary">{info.category.as_str().to_owned()}</span>
-                                                                        </div>
-                                                                        <div class="flex justify-between">
-                                                                            <span>"LEDs"</span>
-                                                                            <span class="text-fg-secondary">{info.led_count}</span>
-                                                                        </div>
-                                                                        {(!info.vendor.is_empty()).then(|| view! {
-                                                                            <div class="flex justify-between">
-                                                                                <span>"Vendor"</span>
-                                                                                <span class="text-fg-secondary">{info.vendor.clone()}</span>
-                                                                            </div>
-                                                                        })}
-                                                                    </div>
-                                                                })}
+                                                                <div class="space-y-2">
+                                                                    {move || {
+                                                                        let rows = draft_rows.get();
+                                                                        let summary = draft_summary.get();
 
-                                                                // Instances + offset
-                                                                <div class="grid grid-cols-2 gap-2">
-                                                                    <div>
-                                                                        <label class="block text-[11px] font-mono text-fg-tertiary mb-1">"Instances"</label>
-                                                                        <div class="flex items-center gap-1">
-                                                                            <button
-                                                                                class="w-6 h-6 flex items-center justify-center rounded border border-edge-subtle bg-surface-overlay/40 text-fg-tertiary hover:text-fg-primary hover:border-edge-default transition-colors btn-press"
-                                                                                on:click=move |_| set_instances.update(|v| *v = (*v).saturating_sub(1).max(1))
-                                                                            >
-                                                                                <Icon icon=LuMinus width="10px" height="10px" style="color: inherit" />
-                                                                            </button>
-                                                                            <input
-                                                                                type="number"
-                                                                                min="1"
-                                                                                class="flex-1 w-full bg-surface-base/60 border border-edge-subtle rounded px-2 py-1 text-xs text-fg-primary font-mono text-center focus:outline-none focus:border-accent-muted [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                                                                                prop:value=move || instances.get().to_string()
-                                                                                on:change=move |ev| {
-                                                                                    let val: u32 = event_target_value(&ev).parse().unwrap_or(1);
-                                                                                    set_instances.set(val.max(1));
-                                                                                }
-                                                                            />
-                                                                            <button
-                                                                                class="w-6 h-6 flex items-center justify-center rounded border border-edge-subtle bg-surface-overlay/40 text-fg-tertiary hover:text-fg-primary hover:border-edge-default transition-colors btn-press"
-                                                                                on:click=move |_| set_instances.update(|v| *v += 1)
-                                                                            >
-                                                                                <Icon icon=LuPlus width="10px" height="10px" style="color: inherit" />
-                                                                            </button>
-                                                                        </div>
-                                                                    </div>
-                                                                    <div>
-                                                                        <label class="block text-[11px] font-mono text-fg-tertiary mb-1">"LED Offset"</label>
-                                                                        <input
-                                                                            type="number"
-                                                                            min="0"
-                                                                            class="w-full bg-surface-base/60 border border-edge-subtle rounded px-2 py-1 text-xs text-fg-primary font-mono text-center focus:outline-none focus:border-accent-muted [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                                                                            prop:value=move || led_offset.get().to_string()
-                                                                            on:change=move |ev| {
-                                                                                let val: u32 = event_target_value(&ev).parse().unwrap_or(0);
-                                                                                set_led_offset.set(val.min(slot_led_count));
+                                                                        if rows.is_empty() {
+                                                                            return view! {
+                                                                                <div class="rounded-lg border border-dashed border-edge-subtle bg-surface-base/30 px-3 py-3 text-[11px] text-fg-tertiary">
+                                                                                    "No attachments on this channel yet."
+                                                                                </div>
                                                                             }
-                                                                        />
-                                                                    </div>
+                                                                            .into_any();
+                                                                        }
+
+                                                                        rows.into_iter()
+                                                                            .enumerate()
+                                                                            .map(|(index, row)| {
+                                                                                let placement = summary
+                                                                                    .rows
+                                                                                    .get(index)
+                                                                                    .cloned()
+                                                                                    .flatten();
+                                                                                let placement_label =
+                                                                                    placement
+                                                                                        .clone();
+                                                                                let placement_style =
+                                                                                    placement
+                                                                                        .clone();
+                                                                                let template_info = templates_store
+                                                                                    .with_value(|templates| {
+                                                                                        templates
+                                                                                            .iter()
+                                                                                            .find(|template| {
+                                                                                                template.id
+                                                                                                    == row.template_id
+                                                                                            })
+                                                                                            .cloned()
+                                                                                    });
+                                                                                let options = templates_store
+                                                                                    .with_value(|templates| {
+                                                                                        templates.clone()
+                                                                                    });
+
+                                                                                view! {
+                                                                                    <div class="rounded-lg border border-edge-subtle bg-surface-base/40 px-2.5 py-2 space-y-2">
+                                                                                        <div class="flex items-center justify-between gap-2">
+                                                                                            <div class="text-[10px] font-mono text-fg-tertiary">
+                                                                                                "Attachment " {index + 1}
+                                                                                            </div>
+                                                                                            <div class="flex items-center gap-1">
+                                                                                                <button
+                                                                                                    class="w-6 h-6 flex items-center justify-center rounded border border-edge-subtle bg-surface-overlay/40 text-fg-tertiary hover:text-fg-primary hover:border-edge-default transition-colors btn-press disabled:opacity-30"
+                                                                                                    disabled=index == 0
+                                                                                                    on:click={
+                                                                                                        let set_rows = set_draft_rows;
+                                                                                                        move |ev: web_sys::MouseEvent| {
+                                                                                                            ev.stop_propagation();
+                                                                                                            set_rows.update(|rows| {
+                                                                                                                if index > 0 {
+                                                                                                                    rows.swap(index - 1, index);
+                                                                                                                }
+                                                                                                            });
+                                                                                                        }
+                                                                                                    }
+                                                                                                >
+                                                                                                    <Icon icon=LuChevronUp width="10px" height="10px" style="color: inherit" />
+                                                                                                </button>
+                                                                                                <button
+                                                                                                    class="w-6 h-6 flex items-center justify-center rounded border border-edge-subtle bg-surface-overlay/40 text-fg-tertiary hover:text-fg-primary hover:border-edge-default transition-colors btn-press disabled:opacity-30"
+                                                                                                    disabled=move || { index + 1 >= draft_rows.get().len() }
+                                                                                                    on:click={
+                                                                                                        let set_rows = set_draft_rows;
+                                                                                                        move |ev: web_sys::MouseEvent| {
+                                                                                                            ev.stop_propagation();
+                                                                                                            set_rows.update(|rows| {
+                                                                                                                if index + 1 < rows.len() {
+                                                                                                                    rows.swap(index, index + 1);
+                                                                                                                }
+                                                                                                            });
+                                                                                                        }
+                                                                                                    }
+                                                                                                >
+                                                                                                    <Icon icon=LuChevronDown width="10px" height="10px" style="color: inherit" />
+                                                                                                </button>
+                                                                                                <button
+                                                                                                    class="w-6 h-6 flex items-center justify-center rounded border border-[rgba(255,99,99,0.16)] bg-[rgba(255,99,99,0.06)] text-[rgb(255,99,99)] transition-colors btn-press"
+                                                                                                    on:click={
+                                                                                                        let set_rows = set_draft_rows;
+                                                                                                        move |ev: web_sys::MouseEvent| {
+                                                                                                            ev.stop_propagation();
+                                                                                                            set_rows.update(|rows| {
+                                                                                                                if index < rows.len() {
+                                                                                                                    rows.remove(index);
+                                                                                                                }
+                                                                                                            });
+                                                                                                        }
+                                                                                                    }
+                                                                                                >
+                                                                                                    <Icon icon=LuX width="10px" height="10px" style="color: inherit" />
+                                                                                                </button>
+                                                                                            </div>
+                                                                                        </div>
+
+                                                                                        <select
+                                                                                            class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg px-3 py-1.5 text-xs text-fg-primary focus:outline-none focus:border-accent-muted cursor-pointer"
+                                                                                            prop:value=row.template_id.clone()
+                                                                                            on:change={
+                                                                                                let set_rows = set_draft_rows;
+                                                                                                move |ev| {
+                                                                                                    let value = event_target_value(&ev);
+                                                                                                    set_rows.update(|rows| {
+                                                                                                        if let Some(row) = rows.get_mut(index) {
+                                                                                                            row.template_id = value.clone();
+                                                                                                        }
+                                                                                                    });
+                                                                                                }
+                                                                                            }
+                                                                                        >
+                                                                                            <option value="">
+                                                                                                "Select an attachment..."
+                                                                                            </option>
+                                                                                            {if category_count > 0 && category_count < options.len() {
+                                                                                                let suggested =
+                                                                                                    options[..category_count]
+                                                                                                        .to_vec();
+                                                                                                let others =
+                                                                                                    options[category_count..]
+                                                                                                        .to_vec();
+                                                                                                view! {
+                                                                                                    <optgroup label="Suggested">
+                                                                                                        {suggested.into_iter().map(|template| {
+                                                                                                            let id = template.id.clone();
+                                                                                                            let label = format!(
+                                                                                                                "{} — {} LEDs",
+                                                                                                                template.name,
+                                                                                                                template.led_count
+                                                                                                            );
+                                                                                                            view! { <option value=id>{label}</option> }
+                                                                                                        }).collect_view()}
+                                                                                                    </optgroup>
+                                                                                                    <optgroup label="All Templates">
+                                                                                                        {others.into_iter().map(|template| {
+                                                                                                            let id = template.id.clone();
+                                                                                                            let label = format!(
+                                                                                                                "{} — {} LEDs",
+                                                                                                                template.name,
+                                                                                                                template.led_count
+                                                                                                            );
+                                                                                                            view! { <option value=id>{label}</option> }
+                                                                                                        }).collect_view()}
+                                                                                                    </optgroup>
+                                                                                                }
+                                                                                                    .into_any()
+                                                                                            } else {
+                                                                                                options.into_iter().map(|template| {
+                                                                                                    let id = template.id.clone();
+                                                                                                    let label = format!(
+                                                                                                        "{} — {} LEDs",
+                                                                                                        template.name,
+                                                                                                        template.led_count
+                                                                                                    );
+                                                                                                    view! { <option value=id>{label}</option> }
+                                                                                                }).collect_view().into_any()
+                                                                                            }}
+                                                                                        </select>
+
+                                                                                        <div class="flex items-center justify-between gap-3 text-[11px] font-mono text-fg-tertiary">
+                                                                                            <div class="min-w-0 truncate">
+                                                                                                {match template_info {
+                                                                                                    Some(template) => {
+                                                                                                        let vendor = if template.vendor.is_empty() {
+                                                                                                            "Custom".to_owned()
+                                                                                                        } else {
+                                                                                                            template.vendor
+                                                                                                        };
+                                                                                                        format!(
+                                                                                                            "{} · {} LEDs · {}",
+                                                                                                            vendor,
+                                                                                                            template.led_count,
+                                                                                                            template.category.as_str()
+                                                                                                        )
+                                                                                                    }
+                                                                                                    None if row.template_id.is_empty() => {
+                                                                                                        "Choose an attachment template".to_owned()
+                                                                                                    }
+                                                                                                    None => {
+                                                                                                        "Template is unavailable".to_owned()
+                                                                                                    }
+                                                                                                }}
+                                                                                            </div>
+                                                                                            <div class="shrink-0"
+                                                                                                style=move || {
+                                                                                                    if placement_style.is_some() {
+                                                                                                        if summary.overflow_leds > 0 {
+                                                                                                            "color: rgb(255, 99, 99)".to_owned()
+                                                                                                        } else {
+                                                                                                            "color: rgba(128, 255, 234, 0.95)".to_owned()
+                                                                                                        }
+                                                                                                    } else {
+                                                                                                        "color: rgba(139, 133, 160, 0.8)".to_owned()
+                                                                                                    }
+                                                                                                }
+                                                                                            >
+                                                                                                {match placement_label {
+                                                                                                    Some(placement) => format!(
+                                                                                                        "LED {}-{}",
+                                                                                                        placement.led_offset,
+                                                                                                        placement.led_end.saturating_sub(1)
+                                                                                                    ),
+                                                                                                    None => "Pending".to_owned(),
+                                                                                                }}
+                                                                                            </div>
+                                                                                        </div>
+                                                                                    </div>
+                                                                                }
+                                                                            })
+                                                                            .collect_view()
+                                                                            .into_any()
+                                                                    }}
                                                                 </div>
 
-                                                                // LED range preview
-                                                                {move || {
-                                                                    selected_info_preview().map(|t| {
-                                                                        let total = t.led_count * instances.get();
-                                                                        let offset = led_offset.get();
-                                                                        let over = (offset + total) > slot_led_count;
-                                                                        view! {
-                                                                            <div class="text-[11px] font-mono"
-                                                                                style=if over { "color: rgb(255, 99, 99)" } else { "color: rgba(139, 133, 160, 0.8)" }
-                                                                            >
-                                                                                {format!("Range: LED {} – {} of {}", offset, offset + total, slot_led_count)}
-                                                                                {over.then_some(" (exceeds slot)")}
-                                                                            </div>
-                                                                        }
-                                                                    })
-                                                                }}
+                                                                <div class="flex items-center justify-between gap-2 pt-1">
+                                                                    <div class="flex items-center gap-2">
+                                                                        <button
+                                                                            class="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press"
+                                                                            style="background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.14); color: rgb(128, 255, 234)"
+                                                                            on:click=add_row
+                                                                        >
+                                                                            <Icon icon=LuPlus width="10px" height="10px" style="color: inherit" />
+                                                                            "Add Attachment"
+                                                                        </button>
+                                                                        <div class="text-[10px] font-mono"
+                                                                            style=move || {
+                                                                                let summary = draft_summary.get();
+                                                                                if summary.overflow_leds > 0 {
+                                                                                    "color: rgb(255, 99, 99)".to_owned()
+                                                                                } else if summary.has_incomplete_rows {
+                                                                                    "color: rgb(241, 250, 140)".to_owned()
+                                                                                } else {
+                                                                                    "color: rgba(139, 133, 160, 0.8)".to_owned()
+                                                                                }
+                                                                            }
+                                                                        >
+                                                                            {move || {
+                                                                                let summary = draft_summary.get();
+                                                                                if summary.overflow_leds > 0 {
+                                                                                    format!(
+                                                                                        "{} LEDs over budget",
+                                                                                        summary.overflow_leds
+                                                                                    )
+                                                                                } else if summary.has_incomplete_rows {
+                                                                                    "Select a template for every row".to_owned()
+                                                                                } else {
+                                                                                    "Ready to apply".to_owned()
+                                                                                }
+                                                                            }}
+                                                                        </div>
+                                                                    </div>
 
-                                                                // Actions
-                                                                <div class="flex items-center gap-2 pt-1">
-                                                                    <button
-                                                                        class="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press disabled:opacity-40 disabled:cursor-not-allowed"
-                                                                        style="background: rgba(128, 255, 234, 0.1); border: 1px solid rgba(128, 255, 234, 0.2); color: rgb(128, 255, 234)"
-                                                                        disabled=move || save_in_flight.get() || selected_template.get().is_empty()
-                                                                        on:click={
-                                                                            let save = save_binding.clone();
-                                                                            move |_| save()
-                                                                        }
-                                                                    >
-                                                                        <Icon icon=LuCheck width="12px" height="12px" style="color: inherit" />
-                                                                        {move || if save_in_flight.get() { "Saving..." } else { "Save" }}
-                                                                    </button>
-                                                                    {has_binding.then(|| {
-                                                                        let remove = remove_binding.clone();
-                                                                        view! {
+                                                                    <div class="flex items-center gap-2">
+                                                                        <Show when=move || draft_is_dirty.get()>
                                                                             <button
-                                                                                class="flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press disabled:opacity-40 disabled:cursor-not-allowed"
-                                                                                style="background: rgba(255, 99, 99, 0.08); border: 1px solid rgba(255, 99, 99, 0.16); color: rgb(255, 99, 99)"
-                                                                                disabled=move || save_in_flight.get()
-                                                                                on:click=move |_| remove()
+                                                                                class="px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press"
+                                                                                style="background: rgba(139, 133, 160, 0.08); border: 1px solid rgba(139, 133, 160, 0.16); color: rgba(214, 208, 232, 0.9)"
+                                                                                on:click=reset_rows
                                                                             >
-                                                                                <Icon icon=LuX width="12px" height="12px" style="color: inherit" />
-                                                                                "Remove"
+                                                                                "Reset"
                                                                             </button>
-                                                                        }
-                                                                    })}
+                                                                        </Show>
+                                                                        <button
+                                                                            class="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                            style="background: rgba(128, 255, 234, 0.1); border: 1px solid rgba(128, 255, 234, 0.2); color: rgb(128, 255, 234)"
+                                                                            disabled=move || {
+                                                                                let summary = draft_summary.get();
+                                                                                save_in_flight.get()
+                                                                                    || !draft_is_dirty.get()
+                                                                                    || !summary.is_valid()
+                                                                            }
+                                                                            on:click={
+                                                                                let slot = slot.clone();
+                                                                                let slot_id = slot_id.clone();
+                                                                                move |_: web_sys::MouseEvent| {
+                                                                                    let packed_rows = match templates_store
+                                                                                        .with_value(|templates| {
+                                                                                            attachment_editor::pack_slot_rows(
+                                                                                                &slot,
+                                                                                                &draft_rows.get_untracked(),
+                                                                                                templates,
+                                                                                            )
+                                                                                        }) {
+                                                                                        Ok(packed_rows) => packed_rows,
+                                                                                        Err(error) => {
+                                                                                            toasts::toast_error(&error);
+                                                                                            return;
+                                                                                        }
+                                                                                    };
+
+                                                                                    set_save_in_flight.set(true);
+                                                                                    let did = device_id.get_untracked();
+                                                                                    let slot_id = slot_id.clone();
+                                                                                    leptos::task::spawn_local(async move {
+                                                                                        let result = async {
+                                                                                            let current =
+                                                                                                api::fetch_device_attachments(&did)
+                                                                                                    .await?;
+                                                                                            let mut api_bindings = current
+                                                                                                .bindings
+                                                                                                .iter()
+                                                                                                .filter(|binding| {
+                                                                                                    binding.slot_id
+                                                                                                        != slot_id
+                                                                                                })
+                                                                                                .map(|binding| {
+                                                                                                    api::AttachmentBindingRequest {
+                                                                                                        slot_id: binding.slot_id.clone(),
+                                                                                                        template_id: binding.template_id.clone(),
+                                                                                                        name: binding.name.clone(),
+                                                                                                        enabled: binding.enabled,
+                                                                                                        instances: binding.instances,
+                                                                                                        led_offset: binding.led_offset,
+                                                                                                    }
+                                                                                                })
+                                                                                                .collect::<Vec<_>>();
+
+                                                                                            api_bindings.extend(
+                                                                                                packed_rows.into_iter().map(
+                                                                                                    |binding| {
+                                                                                                        api::AttachmentBindingRequest {
+                                                                                                            slot_id: slot_id.clone(),
+                                                                                                            template_id: binding.template_id,
+                                                                                                            name: binding.name,
+                                                                                                            enabled: true,
+                                                                                                            instances: 1,
+                                                                                                            led_offset: binding.led_offset,
+                                                                                                        }
+                                                                                                    },
+                                                                                                ),
+                                                                                            );
+
+                                                                                            api::update_device_attachments(
+                                                                                                &did,
+                                                                                                &api::UpdateAttachmentsRequest {
+                                                                                                    bindings: api_bindings,
+                                                                                                },
+                                                                                            )
+                                                                                            .await
+                                                                                        }
+                                                                                        .await;
+
+                                                                                        set_save_in_flight.set(false);
+                                                                                        match result {
+                                                                                            Ok(updated) => {
+                                                                                                let saved_rows =
+                                                                                                    attachment_editor::expand_slot_bindings(
+                                                                                                        &slot_id,
+                                                                                                        &updated.bindings,
+                                                                                                    );
+                                                                                                initial_rows_store
+                                                                                                    .set_value(saved_rows.clone());
+                                                                                                set_draft_rows
+                                                                                                    .set(saved_rows);
+                                                                                                toasts::toast_success(
+                                                                                                    if updated
+                                                                                                        .bindings
+                                                                                                        .iter()
+                                                                                                        .any(|binding| {
+                                                                                                            binding.slot_id
+                                                                                                                == slot_id
+                                                                                                        }) {
+                                                                                                        "Attachments updated"
+                                                                                                    } else {
+                                                                                                        "Attachments cleared"
+                                                                                                    },
+                                                                                                );
+                                                                                                set_refetch_tick
+                                                                                                    .update(|tick| *tick += 1);
+                                                                                            }
+                                                                                            Err(error) => {
+                                                                                                toasts::toast_error(
+                                                                                                    &format!(
+                                                                                                        "Update failed: {error}"
+                                                                                                    ),
+                                                                                                );
+                                                                                            }
+                                                                                        }
+                                                                                    });
+                                                                                }
+                                                                            }
+                                                                        >
+                                                                            <Icon icon=LuCheck width="10px" height="10px" style="color: inherit" />
+                                                                            {move || if save_in_flight.get() { "Applying..." } else { "Apply" }}
+                                                                        </button>
+                                                                    </div>
                                                                 </div>
                                                             </div>
                                                         </Show>
@@ -586,11 +790,13 @@ pub fn AttachmentPanel(
                                             }).collect_view()}
                                         </div>
                                     </div>
-                                }.into_any()
+                                }
+                                    .into_any()
                             }
                             Err(error) => view! {
                                 <div class="text-xs text-error-red py-2">{error}</div>
-                            }.into_any(),
+                            }
+                            .into_any(),
                         })
                     }}
                 </Suspense>
@@ -624,6 +830,7 @@ pub fn build_attachment_layout_zones(
                 0.18 + cell_height * (row as f32 + 0.5),
             );
             let max_size = NormalizedPosition::new(cell_width * 0.82, cell_height * 0.82);
+            let shape = layout_geometry::attachment_zone_shape(&suggested.category);
             let size = layout_geometry::normalize_zone_size_for_editor(
                 position,
                 layout_geometry::attachment_zone_size(suggested, max_size),
@@ -640,13 +847,17 @@ pub fn build_attachment_layout_zones(
                 size,
                 rotation: 0.0,
                 scale: 1.0,
-                orientation: orientation_for_topology(&suggested.topology),
+                orientation: if matches!(shape, Some(hypercolor_types::spatial::ZoneShape::Ring)) {
+                    Some(Orientation::Radial)
+                } else {
+                    orientation_for_topology(&suggested.topology)
+                },
                 topology: suggested.topology.clone(),
                 led_positions: Vec::new(),
                 led_mapping: suggested.led_mapping.clone(),
                 sampling_mode: None,
                 edge_behavior: None,
-                shape: shape_for_category(&suggested.category),
+                shape,
                 shape_preset: None,
                 display_order: 0,
                 attachment: Some(ZoneAttachment {
@@ -660,21 +871,6 @@ pub fn build_attachment_layout_zones(
             }
         })
         .collect()
-}
-
-fn shape_for_category(category: &AttachmentCategory) -> Option<ZoneShape> {
-    match category {
-        AttachmentCategory::Fan
-        | AttachmentCategory::Aio
-        | AttachmentCategory::Heatsink
-        | AttachmentCategory::Ring => Some(ZoneShape::Ring),
-        AttachmentCategory::Strip
-        | AttachmentCategory::Strimer
-        | AttachmentCategory::Case
-        | AttachmentCategory::Radiator
-        | AttachmentCategory::Matrix => Some(ZoneShape::Rectangle),
-        AttachmentCategory::Bulb | AttachmentCategory::Other(_) => None,
-    }
 }
 
 fn orientation_for_topology(topology: &LedTopology) -> Option<Orientation> {
@@ -691,9 +887,10 @@ fn orientation_for_topology(topology: &LedTopology) -> Option<Orientation> {
 
 fn attachment_zone_id(layout_device_id: &str, suggested: &AttachmentSuggestedZone) -> String {
     format!(
-        "attachment-{}-{}-{}",
+        "attachment-{}-{}-{}-{}",
         slugify(layout_device_id),
         slugify(&suggested.slot_id),
+        suggested.led_start,
         suggested.instance
     )
 }

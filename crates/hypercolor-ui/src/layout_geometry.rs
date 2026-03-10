@@ -6,7 +6,7 @@
 
 use std::f32::consts::FRAC_PI_2;
 
-use hypercolor_types::attachment::AttachmentSuggestedZone;
+use hypercolor_types::attachment::{AttachmentCategory, AttachmentSuggestedZone};
 use hypercolor_types::spatial::{
     Corner, LedTopology, NormalizedPosition, Orientation, SpatialLayout, StripDirection, Winding,
     ZoneShape,
@@ -176,8 +176,23 @@ pub(crate) fn attachment_zone_size(
     suggested: &AttachmentSuggestedZone,
     max_size: NormalizedPosition,
 ) -> NormalizedPosition {
-    let units = topology_visual_units(&suggested.topology);
+    let units = attachment_visual_units(suggested);
     fit_visual_units(units, ATTACHMENT_MIN_SIZE, max_size)
+}
+
+pub(crate) fn attachment_zone_shape(category: &AttachmentCategory) -> Option<ZoneShape> {
+    match category {
+        AttachmentCategory::Fan
+        | AttachmentCategory::Aio
+        | AttachmentCategory::Heatsink
+        | AttachmentCategory::Ring => Some(ZoneShape::Ring),
+        AttachmentCategory::Strip
+        | AttachmentCategory::Strimer
+        | AttachmentCategory::Case
+        | AttachmentCategory::Radiator
+        | AttachmentCategory::Matrix => Some(ZoneShape::Rectangle),
+        AttachmentCategory::Bulb | AttachmentCategory::Other(_) => None,
+    }
 }
 
 pub(crate) fn normalize_layout_for_editor(mut layout: SpatialLayout) -> SpatialLayout {
@@ -558,6 +573,23 @@ fn custom_visual_units(positions: &[NormalizedPosition]) -> VisualUnits {
     }
 
     VisualUnits::new((max_x - min_x).max(0.25), (max_y - min_y).max(0.25))
+}
+
+fn attachment_visual_units(suggested: &AttachmentSuggestedZone) -> VisualUnits {
+    match suggested.category {
+        AttachmentCategory::Fan
+        | AttachmentCategory::Aio
+        | AttachmentCategory::Heatsink
+        | AttachmentCategory::Ring
+        | AttachmentCategory::Bulb => VisualUnits::new(1.0, 1.0),
+        AttachmentCategory::Strimer | AttachmentCategory::Matrix => {
+            topology_visual_units(&suggested.topology)
+        }
+        AttachmentCategory::Strip
+        | AttachmentCategory::Case
+        | AttachmentCategory::Radiator
+        | AttachmentCategory::Other(_) => topology_visual_units(&suggested.topology),
+    }
 }
 
 fn grid_points(points: &[(u32, u32)], grid: VisualUnits) -> Vec<NormalizedPosition> {

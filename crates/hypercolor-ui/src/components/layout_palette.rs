@@ -41,8 +41,10 @@ pub fn LayoutPalette(
         signal(std::collections::HashSet::<String>::new());
 
     // Cached attachment bindings per device — fetched lazily on expand.
-    let (attachment_cache, set_attachment_cache) =
-        signal(std::collections::HashMap::<String, Vec<api::AttachmentBindingSummary>>::new());
+    let (attachment_cache, set_attachment_cache) = signal(std::collections::HashMap::<
+        String,
+        Vec<api::AttachmentBindingSummary>,
+    >::new());
     let (import_in_flight, set_import_in_flight) = signal(false);
 
     // Fetch attachments for a device (if not already cached).
@@ -727,14 +729,22 @@ pub fn LayoutPalette(
                                                                         // Attachment binding for this zone/slot
                                                                         let binding_zone_name = display_name.clone();
                                                                         let binding_device_id = device_id.clone();
-                                                                        let zone_binding = Signal::derive(move || {
+                                                                        let zone_bindings = Signal::derive(move || {
                                                                             let cache = attachment_cache.get();
-                                                                            cache.get(&binding_device_id).and_then(|bindings| {
-                                                                                bindings.iter().find(|b| {
-                                                                                    b.slot_id.eq_ignore_ascii_case(&binding_zone_name)
-                                                                                        || b.slot_id == binding_zone_name
-                                                                                }).cloned()
-                                                                            })
+                                                                            cache.get(&binding_device_id)
+                                                                                .map(|bindings| {
+                                                                                    bindings
+                                                                                        .iter()
+                                                                                        .filter(|binding| {
+                                                                                            slot_id_matches_zone_name(
+                                                                                                &binding.slot_id,
+                                                                                                &binding_zone_name,
+                                                                                            )
+                                                                                        })
+                                                                                        .cloned()
+                                                                                        .collect::<Vec<_>>()
+                                                                                })
+                                                                                .unwrap_or_default()
                                                                         });
 
                                                                         view! {
@@ -769,20 +779,58 @@ pub fn LayoutPalette(
                                                                                         <span class="text-[8px] text-fg-tertiary/60 font-mono tabular-nums">
                                                                                             {led_count} " LEDs"
                                                                                         </span>
-                                                                                        {move || zone_binding.get().map(|binding| {
-                                                                                            let name = binding.name.clone()
-                                                                                                .unwrap_or_else(|| binding.template_name.clone());
-                                                                                            let title = format!("{} ({} LEDs)", &name, binding.effective_led_count);
-                                                                                            view! {
+                                                                                        {move || {
+                                                                                            let bindings = zone_bindings.get();
+                                                                                            let attachment_count: u32 = bindings
+                                                                                                .iter()
+                                                                                                .map(|binding| binding.instances.max(1))
+                                                                                                .sum();
+                                                                                            if attachment_count == 0 {
+                                                                                                return None;
+                                                                                            }
+
+                                                                                            let title = bindings
+                                                                                                .iter()
+                                                                                                .map(|binding| {
+                                                                                                    let name = binding
+                                                                                                        .name
+                                                                                                        .clone()
+                                                                                                        .unwrap_or_else(|| binding.template_name.clone());
+                                                                                                    if binding.instances > 1 {
+                                                                                                        format!(
+                                                                                                            "{name} ×{} ({} LEDs)",
+                                                                                                            binding.instances,
+                                                                                                            binding.effective_led_count
+                                                                                                        )
+                                                                                                    } else {
+                                                                                                        format!(
+                                                                                                            "{name} ({} LEDs)",
+                                                                                                            binding.effective_led_count
+                                                                                                        )
+                                                                                                    }
+                                                                                                })
+                                                                                                .collect::<Vec<_>>()
+                                                                                                .join(", ");
+
+                                                                                            let label = if attachment_count == 1 {
+                                                                                                bindings[0]
+                                                                                                    .name
+                                                                                                    .clone()
+                                                                                                    .unwrap_or_else(|| bindings[0].template_name.clone())
+                                                                                            } else {
+                                                                                                format!("{attachment_count} attached")
+                                                                                            };
+
+                                                                                            Some(view! {
                                                                                                 <span class="text-[8px] font-mono px-1 py-0.5 rounded truncate max-w-[100px]"
                                                                                                     style="color: rgb(128, 255, 234); background: rgba(128, 255, 234, 0.08); border: 1px solid rgba(128, 255, 234, 0.12)"
                                                                                                     title=title
                                                                                                 >
                                                                                                     <Icon icon=LuCable width="8px" height="8px" style="display: inline; vertical-align: -1px; margin-right: 2px" />
-                                                                                                    {name}
+                                                                                                    {label}
                                                                                                 </span>
-                                                                                            }
-                                                                                        })}
+                                                                                            })
+                                                                                        }}
                                                                                     </div>
                                                                                 </div>
                                                                                 // Toggle button — add or remove zone
@@ -1133,11 +1181,10 @@ fn import_device_attachments(
             let mut layout = api::fetch_active_layout().await?;
             let layout_name = layout.name.clone();
             let layout_id = layout.id.clone();
-            let imported_zones =
-                crate::components::attachment_panel::build_attachment_layout_zones(
-                    &device,
-                    &attachments.suggested_zones,
-                );
+            let imported_zones = crate::components::attachment_panel::build_attachment_layout_zones(
+                &device,
+                &attachments.suggested_zones,
+            );
             let imported_count = imported_zones.len();
 
             layout.zones.retain(|zone| {
@@ -1187,4 +1234,28 @@ fn hex_to_rgb(hex: &str) -> String {
     let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(53);
     let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255);
     format!("{r}, {g}, {b}")
+}
+
+fn slot_id_matches_zone_name(slot_id: &str, zone_name: &str) -> bool {
+    slot_id.eq_ignore_ascii_case(zone_name) || slot_id == slugify_slot_name(zone_name)
+}
+
+fn slugify_slot_name(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut previous_dash = false;
+
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            previous_dash = false;
+            continue;
+        }
+
+        if !out.is_empty() && !previous_dash {
+            out.push('-');
+            previous_dash = true;
+        }
+    }
+
+    out.trim_matches('-').to_owned()
 }

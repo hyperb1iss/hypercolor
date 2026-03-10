@@ -23,7 +23,7 @@ use hypercolor_types::spatial::SpatialLayout;
 const SIDEBAR_DEFAULT: f64 = 280.0;
 const SIDEBAR_MIN: f64 = 180.0;
 const SIDEBAR_MAX: f64 = 480.0;
-const BOTTOM_DEFAULT: f64 = 160.0;
+const BOTTOM_DEFAULT: f64 = 96.0;
 const BOTTOM_MIN: f64 = 72.0;
 const BOTTOM_MAX: f64 = 400.0;
 

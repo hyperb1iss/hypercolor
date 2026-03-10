@@ -6,7 +6,7 @@ use leptos::prelude::*;
 use crate::app::WsContext;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::layout_geometry::{self, ResizeHandle};
-use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout};
+use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout, ZoneShape};
 
 /// Canvas viewport with zone overlay divs and group containers.
 #[component]
@@ -343,6 +343,7 @@ pub fn LayoutCanvas(
                                             secondary_rgb: secondary,
                                             name: zone.name.clone(),
                                             led_count: zone.topology.led_count(),
+                                            shape: zone.shape.clone(),
                                         })
                                     })
                                 }
@@ -386,10 +387,11 @@ pub fn LayoutCanvas(
                                             "box-shadow: 0 2px 8px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.03)"
                                                 .to_string()
                                         };
+                                        let shape = zone_shape_style(&zd.shape);
                                         let z = if selected { elevated_z_index } else { base_z_index };
                                         format!(
-                                            "{}; {}; {}; {}; z-index: {z}; backdrop-filter: blur(4px) saturate(120%)",
-                                            zd.position_style, border, bg, shadow
+                                            "{}; {}; {}; {}; {}; z-index: {z}; backdrop-filter: blur(4px) saturate(120%)",
+                                            zd.position_style, border, bg, shadow, shape
                                         )
                                     }
                                     on:mousedown=move |ev| {
@@ -427,6 +429,25 @@ pub fn LayoutCanvas(
                                         ev.stop_propagation();
                                     }
                                 >
+                                    {move || {
+                                        zone_style.get().and_then(|zd| {
+                                            ring_inner_style(
+                                                &zd.shape,
+                                                &zd.primary_rgb,
+                                                &zd.secondary_rgb,
+                                            )
+                                            .map(|style| {
+                                                view! {
+                                                    <div
+                                                        class="absolute inset-[20%] rounded-full pointer-events-none"
+                                                        style=style
+                                                    />
+                                                }
+                                                    .into_any()
+                                            })
+                                        })
+                                    }}
+
                                     // Zone label — glass micro-panel (hover)
                                     <div
                                         class="absolute -top-6 left-0 text-[9px] font-mono whitespace-nowrap
@@ -561,6 +582,7 @@ struct ZoneRenderData {
     secondary_rgb: String,
     name: String,
     led_count: u32,
+    shape: Option<ZoneShape>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -655,6 +677,29 @@ fn update_canvas_slot_size(
         set_canvas_slot_size.set((rect.width(), rect.height()));
     }
 }
+
+fn zone_shape_style(shape: &Option<ZoneShape>) -> String {
+    match shape {
+        Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. }) => "border-radius: 999px".to_owned(),
+        _ => String::new(),
+    }
+}
+
+fn ring_inner_style(
+    shape: &Option<ZoneShape>,
+    primary_rgb: &str,
+    secondary_rgb: &str,
+) -> Option<String> {
+    match shape {
+        Some(ZoneShape::Ring) => Some(format!(
+            "border: 1px solid rgba({primary_rgb}, 0.16); \
+             background: radial-gradient(circle, rgba(0, 0, 0, 0.5), rgba({secondary_rgb}, 0.04)); \
+             box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.45)"
+        )),
+        _ => None,
+    }
+}
+
 /// Convert a hex color like "#e135ff" to "225, 53, 255" RGB string.
 fn hex_to_rgb(hex: &str) -> String {
     let hex = hex.trim_start_matches('#');

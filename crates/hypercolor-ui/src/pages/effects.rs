@@ -21,7 +21,9 @@ fn category_accent_rgb(category: &str) -> &'static str {
     match category {
         "ambient" => "128, 255, 234",
         "audio" => "255, 106, 193",
+        "fun" => "225, 53, 255",
         "gaming" => "225, 53, 255",
+        "particle" => "130, 170, 255",
         "reactive" => "241, 250, 140",
         "generative" => "80, 250, 123",
         "interactive" => "130, 170, 255",
@@ -31,17 +33,68 @@ fn category_accent_rgb(category: &str) -> &'static str {
     }
 }
 
-/// Category filter options.
-const CATEGORIES: &[&str] = &[
-    "all",
-    "ambient",
-    "gaming",
-    "reactive",
-    "generative",
-    "interactive",
-    "productivity",
-    "utility",
-];
+fn category_sort_rank(category: &str) -> (u8, &str) {
+    match category {
+        "audio" => (0, category),
+        "interactive" => (1, category),
+        "particle" => (2, category),
+        "ambient" => (3, category),
+        "fun" => (4, category),
+        "gaming" => (5, category),
+        "reactive" => (6, category),
+        "generative" => (7, category),
+        "productivity" => (8, category),
+        "utility" => (9, category),
+        _ => (10, category),
+    }
+}
+
+fn title_case_slug(value: &str) -> String {
+    value
+        .split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            let Some(first) = chars.next() else {
+                return String::new();
+            };
+            format!("{}{}", first.to_uppercase(), chars.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[component]
+fn EffectsHeroTile(
+    title: &'static str,
+    #[prop(into)] value: Signal<usize>,
+    label: &'static str,
+    icon: icondata_core::Icon,
+    accent_rgb: &'static str,
+) -> impl IntoView {
+    let tile_style = format!(
+        "border-color: rgba({accent_rgb}, 0.16); background: linear-gradient(180deg, rgba({accent_rgb}, 0.12), rgba({accent_rgb}, 0.04));"
+    );
+
+    view! {
+        <div class="effects-hero-tile" style=tile_style>
+            <div class="effects-hero-icon">
+                <Icon icon=icon width="14px" height="14px" style="color: rgba(230, 237, 243, 0.92)" />
+            </div>
+            <div class="min-w-0">
+                <div class="text-[10px] font-mono uppercase tracking-[0.16em] text-fg-tertiary/58">
+                    {title}
+                </div>
+                <div class="mt-1 flex items-baseline gap-1.5">
+                    <span class="text-lg font-medium text-fg-primary tabular-nums">
+                        {move || value.get()}
+                    </span>
+                    <span class="text-[11px] text-fg-tertiary/66">{label}</span>
+                </div>
+            </div>
+        </div>
+    }
+}
 
 /// Effects browse page with compact grid, search, category filtering, and live preview.
 #[component]
@@ -128,9 +181,54 @@ pub fn EffectsPage() -> impl IntoView {
 
     // Count how many effects are favorited (for the badge)
     let favorites_count = Memo::new(move |_| fx.favorite_ids.get().len());
+    let total_effect_count = Memo::new(move |_| fx.effects_index.with(|effects| effects.len()));
+    let audio_effect_count = Memo::new(move |_| {
+        fx.effects_index.with(|effects| {
+            effects
+                .iter()
+                .filter(|entry| entry.effect.audio_reactive)
+                .count()
+        })
+    });
+    let category_counts = Memo::new(move |_| {
+        let mut counts = std::collections::BTreeMap::new();
+        fx.effects_index.with(|effects| {
+            for entry in effects {
+                *counts
+                    .entry(entry.effect.category.clone())
+                    .or_insert(0usize) += 1;
+            }
+        });
+        counts
+    });
+    let categories = Memo::new(move |_| {
+        let mut items = category_counts
+            .get()
+            .into_iter()
+            .collect::<Vec<(String, usize)>>();
+        items.sort_by(|(left, _), (right, _)| {
+            category_sort_rank(left).cmp(&category_sort_rank(right))
+        });
+
+        let mut ordered = Vec::with_capacity(items.len() + 1);
+        ordered.push(("all".to_string(), total_effect_count.get()));
+        ordered.extend(items);
+        ordered
+    });
+    Effect::new(move |_| {
+        let current = category_filter.get();
+        let available = categories
+            .get()
+            .iter()
+            .any(|(category, _)| category == &current);
+        if !available {
+            set_category_filter.set("all".to_string());
+        }
+    });
 
     let controls: Signal<Vec<ControlDefinition>> = fx.active_controls.into();
-    let control_values: Signal<std::collections::HashMap<String, ControlValue>> = fx.active_control_values.into();
+    let control_values: Signal<std::collections::HashMap<String, ControlValue>> =
+        fx.active_control_values.into();
     let accent_rgb =
         Signal::derive(move || category_accent_rgb(&fx.active_effect_category.get()).to_string());
 
@@ -170,6 +268,13 @@ pub fn EffectsPage() -> impl IntoView {
     });
 
     let effect_count = Memo::new(move |_| filtered_effects.get().len());
+    let filtered_cards = Memo::new(move |_| {
+        filtered_effects
+            .get()
+            .into_iter()
+            .enumerate()
+            .collect::<Vec<_>>()
+    });
 
     // Apply effect handler — delegates to shared context
     let on_apply = Callback::new(move |id: String| {
@@ -221,217 +326,248 @@ pub fn EffectsPage() -> impl IntoView {
 
     view! {
         <div class="flex flex-col h-full -m-6 animate-fade-in">
-            // Fixed header — title + search + categories + capability filters
-            <div class="shrink-0 px-6 pt-6 pb-4 space-y-4 bg-surface-base z-10">
-                // Title row
-                <div class="flex items-baseline justify-between">
-                    <h1 class="text-lg font-medium text-fg-primary">"Effects"</h1>
-                    <span class="text-[11px] font-mono text-fg-tertiary tabular-nums">
-                        {move || effect_count.get()} " effects"
-                    </span>
-                </div>
+            <div class="shrink-0 px-6 pt-6 pb-4 bg-surface-base z-10">
+                <div class="effects-hero animate-fade-in-up">
+                    <div class="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+                        <div class="space-y-3 max-w-2xl">
+                            <div class="text-[10px] font-mono uppercase tracking-[0.18em] text-electric-purple/70">
+                                "Installed Library"
+                            </div>
+                            <div class="space-y-2">
+                                <div class="flex items-baseline justify-between gap-4 flex-wrap">
+                                    <h1 class="text-2xl font-medium text-fg-primary">"Effects"</h1>
+                                    <span class="text-[11px] font-mono text-fg-tertiary tabular-nums">
+                                        {move || effect_count.get()} " shown"
+                                    </span>
+                                </div>
+                                <p class="text-sm leading-relaxed text-fg-tertiary/72">
+                                    "Browse the effects that actually exist on this daemon, filter the library by real categories, and jump straight into live controls."
+                                </p>
+                            </div>
+                        </div>
 
-                // Search bar
-                <div class="relative">
-                    <span class="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
-                        <Icon icon=LuSearch width="14px" height="14px" />
-                    </span>
-                    <input
-                        type="text"
-                        placeholder="Search effects..."
-                        class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg pl-9 pr-10 py-2 text-sm text-fg-primary
-                               placeholder-fg-tertiary focus:outline-none focus:border-accent-muted
-                               search-glow glow-ring transition-all duration-300"
-                        prop:value=move || search.get()
-                        on:input=move |ev| {
-                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                            if let Some(el) = target {
-                                set_search.set(el.value());
-                            }
-                        }
-                    />
-                    <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-edge-subtle">"/"</kbd>
-                </div>
-
-                // Category + capability filter bar
-                <div class="flex items-center gap-3 flex-wrap">
-                    // Category chips
-                    <div class="flex gap-1.5 flex-wrap">
-                        {CATEGORIES.iter().map(|cat| {
-                            let cat = cat.to_string();
-                            let cat_clone = cat.clone();
-                            let rgb = if cat == "all" { "225, 53, 255" } else { category_accent_rgb(&cat) }.to_string();
-                            let is_active = {
-                                let cat = cat.clone();
-                                Memo::new(move |_| category_filter.get() == cat)
-                            };
-                            let active_style = format!(
-                                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 12px rgba({rgb}, 0.2), inset 0 0 8px rgba({rgb}, 0.05)"
-                            );
-                            let inactive_style = format!(
-                                "color: rgba({rgb}, 0.6); border-color: rgba({rgb}, 0.1); background: rgba({rgb}, 0.03)"
-                            );
-                            view! {
-                                <button
-                                    class="px-2.5 py-1 rounded-full text-xs font-medium capitalize border chip-interactive"
-                                    style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
-                                    on:click=move |_| set_category_filter.set(cat_clone.clone())
-                                >
-                                    {cat.clone()}
-                                </button>
-                            }
-                        }).collect_view()}
+                        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                            <EffectsHeroTile title="Library" value=Signal::derive(move || total_effect_count.get()) label="installed" icon=LuLayers accent_rgb="225, 53, 255" />
+                            <EffectsHeroTile title="Reactive" value=Signal::derive(move || audio_effect_count.get()) label="audio-driven" icon=LuAudioLines accent_rgb="255, 106, 193" />
+                            <EffectsHeroTile title="Authors" value=Signal::derive(move || authors.get().len()) label="voices" icon=LuUser accent_rgb="128, 255, 234" />
+                            <EffectsHeroTile title="Favorites" value=Signal::derive(move || favorites_count.get()) label="saved" icon=LuHeart accent_rgb="255, 106, 193" />
+                        </div>
                     </div>
 
-                    // Divider
-                    <div class="w-px h-5 bg-border-subtle" />
+                    <div class="mt-5 grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center">
+                        <div class="relative">
+                            <span class="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
+                                <Icon icon=LuSearch width="14px" height="14px" />
+                            </span>
+                            <input
+                                type="text"
+                                placeholder="Search installed effects..."
+                                class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-xl pl-9 pr-10 py-2.5 text-sm text-fg-primary
+                                       placeholder-fg-tertiary focus:outline-none focus:border-accent-muted
+                                       search-glow glow-ring transition-all duration-300"
+                                prop:value=move || search.get()
+                                on:input=move |ev| {
+                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                    if let Some(el) = target {
+                                        set_search.set(el.value());
+                                    }
+                                }
+                            />
+                            <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-edge-subtle">"/"</kbd>
+                        </div>
 
-                    // Favorites toggle chip
-                    <button
-                        class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border chip-interactive transition-all duration-200"
-                        style=move || if favorites_only.get() {
-                            "background: rgba(255, 106, 193, 0.15); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.3); \
-                             box-shadow: 0 0 12px rgba(255, 106, 193, 0.2), inset 0 0 8px rgba(255, 106, 193, 0.05)"
-                        } else {
-                            "color: rgba(255, 106, 193, 0.5); border-color: rgba(255, 106, 193, 0.1); background: rgba(255, 106, 193, 0.03)"
-                        }
-                        on:click=move |_| set_favorites_only.update(|v| *v = !*v)
-                    >
                         {move || {
-                            let fav_style = if favorites_only.get() { "fill: currentColor" } else { "" };
-                            view! { <Icon icon=LuHeart width="11px" height="11px" style=fav_style /> }
+                            fx.active_effect_name.get().map(|active| {
+                                view! {
+                                    <div class="effects-active-pill">
+                                        <span class="effects-active-dot" style=move || format!("background: rgb({}); box-shadow: 0 0 12px rgba({}, 0.55)", accent_rgb.get(), accent_rgb.get()) />
+                                        <div class="min-w-0">
+                                            <div class="text-[10px] font-mono uppercase tracking-[0.16em] text-fg-tertiary/58">
+                                                "Active"
+                                            </div>
+                                            <div class="text-sm text-fg-primary truncate">{active}</div>
+                                        </div>
+                                    </div>
+                                }
+                                .into_any()
+                            }).unwrap_or_else(|| view! {
+                                <div class="effects-active-pill effects-active-pill-muted">
+                                    <div class="min-w-0">
+                                        <div class="text-[10px] font-mono uppercase tracking-[0.16em] text-fg-tertiary/58">
+                                            "Preview"
+                                        </div>
+                                        <div class="text-sm text-fg-tertiary/70">
+                                            "Pick an effect to open controls and presets."
+                                        </div>
+                                    </div>
+                                </div>
+                            }.into_any())
                         }}
-                        "Favorites"
-                        {move || {
-                            let count = favorites_count.get();
-                            (count > 0).then(|| view! {
-                                <span class="text-[9px] font-mono opacity-70">{count}</span>
-                            })
-                        }}
-                    </button>
+                    </div>
 
-                    // Audio reactive filter chip
-                    <button
-                        class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border chip-interactive transition-all duration-200"
-                        style=move || if audio_reactive_only.get() {
-                            "background: rgba(255, 106, 193, 0.15); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.3); \
-                             box-shadow: 0 0 12px rgba(255, 106, 193, 0.2), inset 0 0 8px rgba(255, 106, 193, 0.05)"
-                        } else {
-                            "color: rgba(139, 133, 160, 0.5); border-color: rgba(139, 133, 160, 0.1); background: rgba(139, 133, 160, 0.03)"
-                        }
-                        on:click=move |_| set_audio_reactive_only.update(|v| *v = !*v)
-                    >
-                        <Icon icon=LuAudioLines width="11px" height="11px" />
-                        "Audio"
-                    </button>
-
-                    // Author multiselect dropdown
-                    {move || {
-                        let author_list = authors.get();
-                        (author_list.len() > 1).then(move || {
-                            let sel = selected_authors.get();
-                            let count = sel.len();
-                            let label = if count == 0 {
-                                "All authors".to_string()
-                            } else if count == 1 {
-                                sel.iter().next().unwrap_or(&String::new()).clone()
-                            } else {
-                                format!("{count} authors")
-                            };
-
-                            view! {
-                                <div class="relative">
-                                    // Trigger button
+                    <div class="mt-5 space-y-3">
+                        <div class="flex flex-wrap gap-2">
+                            {move || categories.get().into_iter().map(|(cat, count)| {
+                                let cat_clone = cat.clone();
+                                let label = if cat == "all" { "All".to_string() } else { title_case_slug(&cat) };
+                                let rgb = if cat == "all" { "225, 53, 255" } else { category_accent_rgb(&cat) }.to_string();
+                                let active_style = format!(
+                                    "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.32); box-shadow: 0 0 12px rgba({rgb}, 0.18), inset 0 0 8px rgba({rgb}, 0.05)"
+                                );
+                                let inactive_style = format!(
+                                    "color: rgba({rgb}, 0.68); border-color: rgba({rgb}, 0.12); background: rgba({rgb}, 0.03)"
+                                );
+                                view! {
                                     <button
-                                        class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200"
-                                        style=move || if selected_authors.get().is_empty() {
-                                            "color: rgba(255, 106, 193, 0.6); border-color: rgba(255, 106, 193, 0.1); background: rgba(255, 106, 193, 0.03)"
-                                        } else {
-                                            "background: rgba(255, 106, 193, 0.12); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.25); box-shadow: 0 0 10px rgba(255, 106, 193, 0.15)"
-                                        }
-                                        on:click=move |_| set_author_dropdown_open.update(|v| *v = !*v)
+                                        type="button"
+                                        class="px-3 py-1.5 rounded-full text-xs font-medium border chip-interactive inline-flex items-center gap-2"
+                                        style=move || if category_filter.get() == cat { active_style.clone() } else { inactive_style.clone() }
+                                        on:click=move |_| set_category_filter.set(cat_clone.clone())
                                     >
-                                        <Icon icon=LuUser width="12px" height="12px" />
-                                        <span>{label.clone()}</span>
-                                        <span
-                                            class="w-3 h-3 flex items-center justify-center transition-transform duration-200"
-                                            class:rotate-180=move || author_dropdown_open.get()
-                                        >
-                                            <Icon icon=LuChevronDown width="12px" height="12px" />
-                                        </span>
+                                        <span>{label}</span>
+                                        <span class="text-[10px] font-mono opacity-70 tabular-nums">{count}</span>
                                     </button>
+                                }
+                            }).collect_view()}
+                        </div>
 
-                                    // Dropdown panel
-                                    {move || author_dropdown_open.get().then(|| {
-                                        let list = authors.get();
-                                        view! {
-                                            // Invisible backdrop to close on outside click
-                                            <div
-                                                class="fixed inset-0 z-20"
-                                                on:click=move |_| set_author_dropdown_open.set(false)
-                                            />
-                                            <div
-                                                class="absolute top-full left-0 mt-1 z-30 min-w-[200px] max-h-[280px] overflow-y-auto
-                                                       rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
-                                                       py-1 animate-fade-in animate-glow-reveal scrollbar-none"
+                        <div class="flex flex-wrap gap-2">
+                            <button
+                                type="button"
+                                class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border chip-interactive transition-all duration-200"
+                                style=move || if favorites_only.get() {
+                                    "background: rgba(255, 106, 193, 0.15); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.3); box-shadow: 0 0 12px rgba(255, 106, 193, 0.2), inset 0 0 8px rgba(255, 106, 193, 0.05)"
+                                } else {
+                                    "color: rgba(255, 106, 193, 0.6); border-color: rgba(255, 106, 193, 0.1); background: rgba(255, 106, 193, 0.03)"
+                                }
+                                on:click=move |_| set_favorites_only.update(|v| *v = !*v)
+                            >
+                                {move || {
+                                    let fav_style = if favorites_only.get() { "fill: currentColor" } else { "" };
+                                    view! { <Icon icon=LuHeart width="11px" height="11px" style=fav_style /> }
+                                }}
+                                <span>"Favorites"</span>
+                                {move || {
+                                    let count = favorites_count.get();
+                                    (count > 0).then(|| view! {
+                                        <span class="text-[9px] font-mono opacity-70">{count}</span>
+                                    })
+                                }}
+                            </button>
+
+                            <button
+                                type="button"
+                                class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border chip-interactive transition-all duration-200"
+                                style=move || if audio_reactive_only.get() {
+                                    "background: rgba(255, 106, 193, 0.15); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.3); box-shadow: 0 0 12px rgba(255, 106, 193, 0.2), inset 0 0 8px rgba(255, 106, 193, 0.05)"
+                                } else {
+                                    "color: rgba(139, 133, 160, 0.58); border-color: rgba(139, 133, 160, 0.1); background: rgba(139, 133, 160, 0.03)"
+                                }
+                                on:click=move |_| set_audio_reactive_only.update(|v| *v = !*v)
+                            >
+                                <Icon icon=LuAudioLines width="11px" height="11px" />
+                                <span>"Audio reactive"</span>
+                            </button>
+
+                            {move || {
+                                let author_list = authors.get();
+                                (author_list.len() > 1).then(move || {
+                                    let sel = selected_authors.get();
+                                    let count = sel.len();
+                                    let label = if count == 0 {
+                                        "All authors".to_string()
+                                    } else if count == 1 {
+                                        sel.iter().next().unwrap_or(&String::new()).clone()
+                                    } else {
+                                        format!("{count} authors")
+                                    };
+
+                                    view! {
+                                        <div class="relative">
+                                            <button
+                                                type="button"
+                                                class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border transition-all duration-200"
+                                                style=move || if selected_authors.get().is_empty() {
+                                                    "color: rgba(128, 255, 234, 0.66); border-color: rgba(128, 255, 234, 0.1); background: rgba(128, 255, 234, 0.03)"
+                                                } else {
+                                                    "background: rgba(128, 255, 234, 0.12); color: rgb(128, 255, 234); border-color: rgba(128, 255, 234, 0.25); box-shadow: 0 0 10px rgba(128, 255, 234, 0.12)"
+                                                }
+                                                on:click=move |_| set_author_dropdown_open.update(|v| *v = !*v)
                                             >
-                                                // Clear all option
-                                                <button
-                                                    class="w-full text-left px-3 py-1.5 text-xs text-fg-tertiary hover:bg-surface-hover/40 transition-colors"
-                                                    on:click=move |_| {
-                                                        set_selected_authors.set(std::collections::BTreeSet::new());
-                                                        set_author_dropdown_open.set(false);
-                                                    }
-                                                >
-                                                    "All authors"
-                                                </button>
-                                                <div class="h-px bg-border-subtle mx-2 my-0.5" />
-                                                // Author checkboxes
-                                                {list.into_iter().map(|author| {
-                                                    let author_toggle = author.clone();
-                                                    let author_check = author.clone();
-                                                    let author_check2 = author.clone();
-                                                    let author_label = author.clone();
-                                                    view! {
+                                                <Icon icon=LuUser width="12px" height="12px" />
+                                                <span>{label.clone()}</span>
+                                                <span class="w-3 h-3 flex items-center justify-center transition-transform duration-200" class:rotate-180=move || author_dropdown_open.get()>
+                                                    <Icon icon=LuChevronDown width="12px" height="12px" />
+                                                </span>
+                                            </button>
+
+                                            {move || author_dropdown_open.get().then(|| {
+                                                let list = authors.get();
+                                                view! {
+                                                    <div class="fixed inset-0 z-20" on:click=move |_| set_author_dropdown_open.set(false) />
+                                                    <div
+                                                        class="absolute top-full left-0 mt-1 z-30 min-w-[220px] max-h-[280px] overflow-y-auto
+                                                               rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
+                                                               py-1 animate-fade-in animate-glow-reveal scrollbar-none"
+                                                    >
                                                         <button
-                                                            class="w-full text-left px-3 py-1.5 flex items-center gap-2.5 text-xs hover:bg-surface-hover/40 transition-colors group"
+                                                            type="button"
+                                                            class="w-full text-left px-3 py-1.5 text-xs text-fg-tertiary hover:bg-surface-hover/40 transition-colors"
                                                             on:click=move |_| {
-                                                                let a = author_toggle.clone();
-                                                                set_selected_authors.update(move |set| {
-                                                                    if !set.remove(&a) {
-                                                                        set.insert(a);
-                                                                    }
-                                                                });
+                                                                set_selected_authors.set(std::collections::BTreeSet::new());
+                                                                set_author_dropdown_open.set(false);
                                                             }
                                                         >
-                                                            // Checkbox indicator
-                                                            <div
-                                                                class="w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all duration-150"
-                                                                style=move || {
-                                                                    if selected_authors.get().contains(&author_check) {
-                                                                        "background: rgba(255, 106, 193, 0.8); border-color: rgb(255, 106, 193)"
-                                                                    } else {
-                                                                        "border-color: rgba(255, 255, 255, 0.1); background: transparent"
-                                                                    }
-                                                                }
-                                                            >
-                                                                {move || selected_authors.get().contains(&author_check2).then(|| view! {
-                                                                    <Icon icon=LuCheck width="10px" height="10px" style="color: white" />
-                                                                })}
-                                                            </div>
-                                                            <span class="text-fg-secondary group-hover:text-fg-primary transition-colors truncate">
-                                                                {author_label.clone()}
-                                                            </span>
+                                                            "All authors"
                                                         </button>
-                                                    }
-                                                }).collect_view()}
-                                            </div>
-                                        }
-                                    })}
-                                </div>
-                            }
-                        })
-                    }}
+                                                        <div class="h-px bg-border-subtle mx-2 my-0.5" />
+                                                        {list.into_iter().map(|author| {
+                                                            let author_toggle = author.clone();
+                                                            let author_check = author.clone();
+                                                            let author_check2 = author.clone();
+                                                            let author_label = author.clone();
+                                                            view! {
+                                                                <button
+                                                                    type="button"
+                                                                    class="w-full text-left px-3 py-1.5 flex items-center gap-2.5 text-xs hover:bg-surface-hover/40 transition-colors group"
+                                                                    on:click=move |_| {
+                                                                        let a = author_toggle.clone();
+                                                                        set_selected_authors.update(move |set| {
+                                                                            if !set.remove(&a) {
+                                                                                set.insert(a);
+                                                                            }
+                                                                        });
+                                                                    }
+                                                                >
+                                                                    <div
+                                                                        class="w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all duration-150"
+                                                                        style=move || {
+                                                                            if selected_authors.get().contains(&author_check) {
+                                                                                "background: rgba(128, 255, 234, 0.82); border-color: rgb(128, 255, 234)"
+                                                                            } else {
+                                                                                "border-color: rgba(255, 255, 255, 0.1); background: transparent"
+                                                                            }
+                                                                        }
+                                                                    >
+                                                                        {move || selected_authors.get().contains(&author_check2).then(|| view! {
+                                                                            <Icon icon=LuCheck width="10px" height="10px" style="color: #091019" />
+                                                                        })}
+                                                                    </div>
+                                                                    <span class="text-fg-secondary group-hover:text-fg-primary transition-colors truncate">
+                                                                        {author_label.clone()}
+                                                                    </span>
+                                                                </button>
+                                                            }
+                                                        }).collect_view()}
+                                                    </div>
+                                                }
+                                            })}
+                                        </div>
+                                    }
+                                })
+                            }}
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -441,12 +577,28 @@ pub fn EffectsPage() -> impl IntoView {
                 <div class="flex-1 min-w-0 overflow-y-auto pr-1">
                     <Suspense fallback=move || view! { <LoadingSkeleton /> }>
                         {move || {
-                            let effects = filtered_effects.get();
+                            let effects = filtered_cards.get();
                             if effects.is_empty() {
                                 view! {
-                                    <div class="text-center py-20">
-                                        <div class="text-fg-tertiary text-sm">"No effects found"</div>
-                                        <div class="text-fg-tertiary/50 text-xs mt-1">"Try a different search or category"</div>
+                                    <div class="effects-empty-state">
+                                        <div class="text-lg text-fg-tertiary">"No effects found"</div>
+                                        <div class="text-sm text-fg-tertiary/60 mt-2">
+                                            "Try a different search, category, or author filter."
+                                        </div>
+                                        <button
+                                            type="button"
+                                            class="mt-4 inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/[0.03] px-3 py-1.5 text-xs font-medium text-fg-secondary hover:text-fg-primary hover:border-white/12 transition-colors"
+                                            on:click=move |_| {
+                                                set_search.set(String::new());
+                                                set_category_filter.set("all".to_string());
+                                                set_selected_authors.set(std::collections::BTreeSet::new());
+                                                set_favorites_only.set(false);
+                                                set_audio_reactive_only.set(false);
+                                            }
+                                        >
+                                            <Icon icon=LuRotateCcw width="12px" height="12px" />
+                                            "Reset filters"
+                                        </button>
                                     </div>
                                 }.into_any()
                             } else {
@@ -458,9 +610,9 @@ pub fn EffectsPage() -> impl IntoView {
                                 view! {
                                     <div class=grid_class>
                                         <For
-                                            each=move || filtered_effects.get()
-                                            key=|effect| effect.id.clone()
-                                            children=move |effect| {
+                                            each=move || filtered_cards.get()
+                                            key=|(index, effect)| format!("{index}-{}", effect.id)
+                                            children=move |(index, effect)| {
                                                 let effect_id = effect.id.clone();
                                                 let fav_effect_id = effect.id.clone();
                                                 let is_active = Signal::derive(move || {
@@ -476,6 +628,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                         is_favorite=is_favorite
                                                         on_apply=on_apply
                                                         on_toggle_favorite=on_toggle_favorite
+                                                        index=index
                                                     />
                                                 }
                                             }

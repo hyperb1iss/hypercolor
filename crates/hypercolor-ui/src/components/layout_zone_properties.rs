@@ -60,7 +60,7 @@ pub fn LayoutZoneProperties(
         };
 
     view! {
-        <div class="h-full px-4 py-2.5">
+        <div class="h-full px-4 py-2">
             {move || {
                 let Some(zone) = zone_snapshot.get() else {
                     return view! {
@@ -76,6 +76,7 @@ pub fn LayoutZoneProperties(
                 let zone_id = zone.id.clone();
                 let zone_name = zone.name.clone();
                 let device_id_display = zone.device_id.clone();
+                let device_id_title = zone.device_id.clone();
                 let channel_name = zone.zone_name.clone();
                 let pos_x = zone.position.x;
                 let pos_y = zone.position.y;
@@ -128,82 +129,58 @@ pub fn LayoutZoneProperties(
                 let zid_remove = zone_id;
 
                 view! {
-                    <div class="space-y-3">
-                        // Header row: title + remove button
-                        <div class="flex items-center justify-between">
-                            <h3 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary flex items-center gap-1.5">
-                                <Icon icon=LuSettings2 width="12px" height="12px" />
-                                "Zone Properties"
-                            </h3>
-                            <button
-                                class="flex items-center gap-1 px-2 py-0.5 rounded-md text-[9px] font-medium
-                                       border transition-all btn-press text-status-error/50 hover:text-status-error"
-                                style="background: rgba(255, 99, 99, 0.04); border-color: rgba(255, 99, 99, 0.12)"
-                                on:click=move |_| {
-                                    let zid = zid_remove.clone();
-                                    set_layout.update(|l| {
-                                        if let Some(layout) = l {
-                                            layout.zones.retain(|z| z.id != zid);
-                                        }
-                                    });
-                                    set_selected_zone_id.set(None);
-                                    set_is_dirty.set(true);
-                                }
-                            >
-                                <Icon icon=LuTrash2 width="10px" height="10px" />
-                                "Remove"
-                            </button>
-                        </div>
+                    <div class="space-y-1.5">
+                        // Row 1: Name + metadata badges + layer + actions — all inline
+                        <div class="flex items-center gap-1.5 min-w-0">
+                            // Settings icon
+                            <Icon icon=LuSettings2 width="11px" height="11px" style="color: rgba(139, 133, 160, 0.35); flex-shrink: 0" />
 
-                        // Row 1: Identity — name, channel, device, topology, group
-                        <div class="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-5">
-                            // Name (with reset button)
-                            <div class="space-y-0.5">
-                                <div class="flex items-center justify-between">
-                                    <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Name"</label>
-                                    {(!name_is_default).then(|| {
-                                        let default = default_name.clone();
-                                        view! {
-                                            <button
-                                                class="flex items-center gap-0.5 text-[7px] font-mono text-fg-tertiary/50 hover:text-accent
-                                                       transition-colors btn-press"
-                                                title="Reset to default name"
-                                                on:click=move |_| {
-                                                    let val = default.clone();
-                                                    let zid = zid_name_reset.clone();
-                                                    update_zone(zid, Box::new(move |z| z.name = val));
-                                                }
-                                            >
-                                                <Icon icon=LuRotateCcw width="8px" height="8px" />
-                                                "Reset"
-                                            </button>
-                                        }
-                                    })}
-                                </div>
-                                <input
-                                    type="text"
-                                    class="w-full bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[11px] text-fg-primary
-                                           placeholder-fg-tertiary focus:outline-none focus:border-accent-muted glow-ring transition-all"
-                                    prop:value=zone_name
-                                    on:change=move |ev| {
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target {
-                                            let val = el.value();
-                                            let zid = zid_name.clone();
+                            // Name input (flexible, takes available space)
+                            <input
+                                type="text"
+                                class="min-w-0 flex-1 max-w-72 bg-surface-sunken border border-edge-subtle rounded px-1.5 py-0.5
+                                       text-[11px] text-fg-primary placeholder-fg-tertiary
+                                       focus:outline-none focus:border-accent-muted glow-ring transition-all"
+                                prop:value=zone_name
+                                on:change=move |ev| {
+                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                    if let Some(el) = target {
+                                        let val = el.value();
+                                        let zid = zid_name.clone();
+                                        update_zone(zid, Box::new(move |z| z.name = val));
+                                    }
+                                }
+                            />
+
+                            // Name reset (only if custom)
+                            {(!name_is_default).then(|| {
+                                let default = default_name.clone();
+                                view! {
+                                    <button
+                                        class="shrink-0 text-fg-tertiary/40 hover:text-accent transition-colors btn-press"
+                                        title="Reset to default name"
+                                        on:click=move |_| {
+                                            let val = default.clone();
+                                            let zid = zid_name_reset.clone();
                                             update_zone(zid, Box::new(move |z| z.name = val));
                                         }
-                                    }
-                                />
-                            </div>
+                                    >
+                                        <Icon icon=LuRotateCcw width="10px" height="10px" />
+                                    </button>
+                                }
+                            })}
 
-                            // Channel (editable, resettable)
-                            <div class="space-y-0.5">
-                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Channel"</label>
+                            <div class="w-px h-3.5 bg-edge-subtle/30 shrink-0" />
+
+                            // Channel (compact inline input)
+                            <div class="flex items-center gap-1 shrink-0">
+                                <span class="text-[8px] text-fg-tertiary/60 font-mono uppercase">"Ch"</span>
                                 <input
                                     type="text"
-                                    placeholder="(none)"
-                                    class="w-full bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[11px] text-fg-primary font-mono
-                                           placeholder-fg-tertiary/40 focus:outline-none focus:border-accent-muted glow-ring transition-all"
+                                    placeholder="\u{2014}"
+                                    class="w-24 bg-surface-sunken border border-edge-subtle rounded px-1.5 py-0.5
+                                           text-[10px] text-fg-primary font-mono placeholder-fg-tertiary/30
+                                           focus:outline-none focus:border-accent-muted glow-ring transition-all"
                                     prop:value=channel_name.clone().unwrap_or_default()
                                     on:change=move |ev| {
                                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -217,63 +194,60 @@ pub fn LayoutZoneProperties(
                                 />
                             </div>
 
-                            // Device (read-only)
-                            <div class="space-y-0.5">
-                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Device"</label>
-                                <div class="text-[11px] text-fg-primary font-mono bg-surface-overlay/60 rounded-md px-2 py-1 border border-edge-subtle truncate">
-                                    {device_id_display}
-                                </div>
+                            <div class="w-px h-3.5 bg-edge-subtle/30 shrink-0" />
+
+                            // Device ID (truncated badge, hover for full)
+                            <div
+                                class="shrink-0 max-w-40 text-[10px] text-fg-tertiary/70 font-mono bg-surface-overlay/40
+                                       rounded px-1.5 py-0.5 border border-edge-subtle/60 truncate cursor-default"
+                                title=device_id_title
+                            >
+                                {device_id_display}
                             </div>
 
-                            // Topology (read-only)
-                            <div class="space-y-0.5">
-                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Topology"</label>
-                                <div class="text-[11px] text-fg-primary bg-surface-overlay/60 rounded-md px-2 py-1 border border-edge-subtle">
-                                    {topology_label} " · " {led_count} " LEDs"
-                                </div>
-                            </div>
+                            // Topology badge
+                            <span class="shrink-0 text-[10px] text-fg-tertiary/70 font-mono bg-surface-overlay/40
+                                         rounded px-1.5 py-0.5 border border-edge-subtle/60 whitespace-nowrap">
+                                {topology_label} " \u{00b7} " {led_count}
+                            </span>
 
-                            // Group
-                            <div class="space-y-0.5">
-                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Group"</label>
-                                <select
-                                    class="w-full bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-[11px] text-fg-primary
-                                           focus:outline-none focus:border-accent-muted glow-ring transition-all"
-                                    on:change=move |ev| {
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
-                                        if let Some(el) = target {
-                                            let val = el.value();
-                                            let group_id = if val.is_empty() { None } else { Some(val) };
-                                            let zid = zid_group.clone();
-                                            update_zone(zid, Box::new(move |z| z.group_id = group_id));
-                                        }
+                            // Group dropdown (compact)
+                            <select
+                                class="shrink-0 bg-surface-sunken border border-edge-subtle rounded px-1.5 py-0.5
+                                       text-[10px] text-fg-primary focus:outline-none focus:border-accent-muted glow-ring transition-all"
+                                on:change=move |ev| {
+                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
+                                    if let Some(el) = target {
+                                        let val = el.value();
+                                        let group_id = if val.is_empty() { None } else { Some(val) };
+                                        let zid = zid_group.clone();
+                                        update_zone(zid, Box::new(move |z| z.group_id = group_id));
                                     }
-                                >
-                                    <option value="" selected=current_group_id.is_none()>"None"</option>
-                                    {available_groups.get().into_iter().map(|group| {
-                                        let gid = group.id.clone();
-                                        let is_current = current_group_id.as_deref() == Some(&gid);
-                                        let color = group.color.clone().unwrap_or_else(|| "#e135ff".to_string());
-                                        let rgb = hex_to_rgb(&color);
-                                        view! {
-                                            <option
-                                                value=gid
-                                                selected=is_current
-                                                style=format!("color: rgb({rgb})")
-                                            >
-                                                {group.name}
-                                            </option>
-                                        }
-                                    }).collect_view()}
-                                </select>
-                            </div>
-                        </div>
+                                }
+                            >
+                                <option value="" selected=current_group_id.is_none()>"None"</option>
+                                {available_groups.get().into_iter().map(|group| {
+                                    let gid = group.id.clone();
+                                    let is_current = current_group_id.as_deref() == Some(&gid);
+                                    let color = group.color.clone().unwrap_or_else(|| "#e135ff".to_string());
+                                    let rgb = hex_to_rgb(&color);
+                                    view! {
+                                        <option
+                                            value=gid
+                                            selected=is_current
+                                            style=format!("color: rgb({rgb})")
+                                        >
+                                            {group.name}
+                                        </option>
+                                    }
+                                }).collect_view()}
+                            </select>
 
-                        // Layer order controls
-                        <div class="flex items-center gap-3">
-                            <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider shrink-0">"Layer"</label>
-                            <div class="flex items-center gap-1">
-                                {layer_button("Front", LuSkipForward, "Bring to front", {
+                            <div class="w-px h-3.5 bg-edge-subtle/30 shrink-0" />
+
+                            // Layer controls (icon-only, compact)
+                            <div class="flex items-center gap-0.5 shrink-0">
+                                {layer_icon_button(LuSkipForward, "Bring to front", {
                                     let zid = zid_front;
                                     move |_| {
                                         let zid = zid.clone();
@@ -288,7 +262,7 @@ pub fn LayoutZoneProperties(
                                         set_is_dirty.set(true);
                                     }
                                 })}
-                                {layer_button("Up", LuChevronUp, "Move up one layer", {
+                                {layer_icon_button(LuChevronUp, "Move up one layer", {
                                     let zid = zid_up;
                                     move |_| {
                                         let zid = zid.clone();
@@ -298,13 +272,11 @@ pub fn LayoutZoneProperties(
                                                     .find(|z| z.id == zid)
                                                     .map(|z| z.display_order);
                                                 if let Some(order) = current_order {
-                                                    // Find next higher order value
                                                     let next_up = layout.zones.iter()
                                                         .filter(|z| z.display_order > order)
                                                         .map(|z| z.display_order)
                                                         .min();
                                                     if let Some(swap_order) = next_up {
-                                                        // Swap: push the other zone down, this one up
                                                         for z in &mut layout.zones {
                                                             if z.id == zid {
                                                                 z.display_order = swap_order;
@@ -313,7 +285,6 @@ pub fn LayoutZoneProperties(
                                                             }
                                                         }
                                                     } else {
-                                                        // Already at top — bump by 1 anyway
                                                         if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
                                                             zone.display_order += 1;
                                                         }
@@ -324,7 +295,7 @@ pub fn LayoutZoneProperties(
                                         set_is_dirty.set(true);
                                     }
                                 })}
-                                {layer_button("Down", LuChevronDown, "Move down one layer", {
+                                {layer_icon_button(LuChevronDown, "Move down one layer", {
                                     let zid = zid_down;
                                     move |_| {
                                         let zid = zid.clone();
@@ -355,7 +326,7 @@ pub fn LayoutZoneProperties(
                                         set_is_dirty.set(true);
                                     }
                                 })}
-                                {layer_button("Back", LuSkipBack, "Send to back", {
+                                {layer_icon_button(LuSkipBack, "Send to back", {
                                     let zid = zid_back;
                                     move |_| {
                                         let zid = zid.clone();
@@ -370,139 +341,148 @@ pub fn LayoutZoneProperties(
                                         set_is_dirty.set(true);
                                     }
                                 })}
+                                <span class="text-[9px] font-mono text-fg-tertiary/40 tabular-nums ml-0.5">
+                                    {display_order}
+                                </span>
                             </div>
-                            <span class="text-[9px] font-mono text-fg-tertiary/50 tabular-nums">
-                                {display_order}
-                            </span>
+
+                            <div class="w-px h-3.5 bg-edge-subtle/30 shrink-0" />
+
+                            // Remove button (icon-only)
+                            <button
+                                class="shrink-0 p-1 rounded text-status-error/40 hover:text-status-error hover:bg-status-error/10
+                                       transition-all btn-press"
+                                title="Remove zone from layout"
+                                on:click=move |_| {
+                                    let zid = zid_remove.clone();
+                                    set_layout.update(|l| {
+                                        if let Some(layout) = l {
+                                            layout.zones.retain(|z| z.id != zid);
+                                        }
+                                    });
+                                    set_selected_zone_id.set(None);
+                                    set_is_dirty.set(true);
+                                }
+                            >
+                                <Icon icon=LuTrash2 width="11px" height="11px" />
+                            </button>
                         </div>
 
-                        // Row 2: Transform — position, size, rotation, scale
-                        <div class="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-[auto_auto_minmax(0,1fr)_minmax(0,1fr)] items-end">
+                        // Row 2: Transforms — position, size, rotation, scale (all inline)
+                        <div class="flex items-center gap-4 flex-wrap">
                             // Position
-                            <div class="space-y-0.5">
-                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Position"</label>
-                                <div class="flex items-center gap-1.5">
-                                    {zone_number_input("X", pos_x, "0.01", 3, {
-                                        let zid = zid_pos_x;
-                                        move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.x = val))
-                                    })}
-                                    {zone_number_input("Y", pos_y, "0.01", 3, {
-                                        let zid = zid_pos_y;
-                                        move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.y = val))
-                                    })}
-                                </div>
+                            <div class="flex items-center gap-1.5">
+                                <span class="text-[8px] text-fg-tertiary/60 font-mono uppercase shrink-0">"Pos"</span>
+                                {zone_number_input("X", pos_x, "0.01", 3, {
+                                    let zid = zid_pos_x;
+                                    move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.x = val))
+                                })}
+                                {zone_number_input("Y", pos_y, "0.01", 3, {
+                                    let zid = zid_pos_y;
+                                    move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.y = val))
+                                })}
                             </div>
 
                             // Size
-                            <div class="space-y-0.5">
-                                <div class="flex items-center justify-between gap-2">
-                                    <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Size"</label>
-                                    <button
-                                        class="flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[8px] font-mono uppercase tracking-[0.08em] transition-all btn-press"
-                                        style=move || {
-                                            if keep_aspect_ratio.get() {
-                                                "background: rgba(128, 255, 234, 0.08); border-color: rgba(128, 255, 234, 0.2); color: rgb(128, 255, 234)".to_string()
-                                            } else {
-                                                "background: rgba(139, 133, 160, 0.06); border-color: rgba(139, 133, 160, 0.16); color: rgba(139, 133, 160, 0.9)".to_string()
-                                            }
-                                        }
-                                        on:click=move |_| {
-                                            set_keep_aspect_ratio.update(|locked| *locked = !*locked);
-                                        }
-                                    >
-                                        {move || if keep_aspect_ratio.get() { "Linked" } else { "Free" }}
-                                        {move || if keep_aspect_ratio.get() {
-                                            view! {
-                                                <Icon icon=LuCheck width="10px" height="10px" />
-                                            }.into_any()
+                            <div class="flex items-center gap-1.5">
+                                <span class="text-[8px] text-fg-tertiary/60 font-mono uppercase shrink-0">"Size"</span>
+                                {zone_number_input("W", size_w, "0.0001", 4, {
+                                    let zid = zid_size_w;
+                                    move |val: f32| {
+                                        let locked = keep_aspect_ratio.get_untracked();
+                                        update_zone(zid.clone(), Box::new(move |z| {
+                                            z.size = layout_geometry::update_zone_size(
+                                                z.size,
+                                                SizeAxis::Width,
+                                                val,
+                                                locked,
+                                            );
+                                        }))
+                                    }
+                                })}
+                                {zone_number_input("H", size_h, "0.0001", 4, {
+                                    let zid = zid_size_h;
+                                    move |val: f32| {
+                                        let locked = keep_aspect_ratio.get_untracked();
+                                        update_zone(zid.clone(), Box::new(move |z| {
+                                            z.size = layout_geometry::update_zone_size(
+                                                z.size,
+                                                SizeAxis::Height,
+                                                val,
+                                                locked,
+                                            );
+                                        }))
+                                    }
+                                })}
+                                <button
+                                    class="shrink-0 p-0.5 rounded border transition-all btn-press"
+                                    title=move || if keep_aspect_ratio.get() { "Aspect ratio linked" } else { "Aspect ratio free" }
+                                    style=move || {
+                                        if keep_aspect_ratio.get() {
+                                            "background: rgba(128, 255, 234, 0.08); border-color: rgba(128, 255, 234, 0.25); color: rgb(128, 255, 234)".to_string()
                                         } else {
-                                            view! {
-                                                <Icon icon=LuX width="10px" height="10px" />
-                                            }.into_any()
-                                        }}
-                                    </button>
-                                </div>
-                                <div class="flex items-center gap-1.5">
-                                    {zone_number_input("W", size_w, "0.0001", 4, {
-                                        let zid = zid_size_w;
-                                        move |val: f32| {
-                                            let locked = keep_aspect_ratio.get_untracked();
-                                            update_zone(zid.clone(), Box::new(move |z| {
-                                                z.size = layout_geometry::update_zone_size(
-                                                    z.size,
-                                                    SizeAxis::Width,
-                                                    val,
-                                                    locked,
-                                                );
-                                            }))
+                                            "background: rgba(139, 133, 160, 0.04); border-color: rgba(139, 133, 160, 0.14); color: rgba(139, 133, 160, 0.6)".to_string()
                                         }
-                                    })}
-                                    {zone_number_input("H", size_h, "0.0001", 4, {
-                                        let zid = zid_size_h;
-                                        move |val: f32| {
-                                            let locked = keep_aspect_ratio.get_untracked();
-                                            update_zone(zid.clone(), Box::new(move |z| {
-                                                z.size = layout_geometry::update_zone_size(
-                                                    z.size,
-                                                    SizeAxis::Height,
-                                                    val,
-                                                    locked,
-                                                );
-                                            }))
-                                        }
-                                    })}
-                                </div>
+                                    }
+                                    on:click=move |_| {
+                                        set_keep_aspect_ratio.update(|locked| *locked = !*locked);
+                                    }
+                                >
+                                    {move || if keep_aspect_ratio.get() {
+                                        view! { <Icon icon=LuLink width="10px" height="10px" /> }.into_any()
+                                    } else {
+                                        view! { <Icon icon=LuUnlink width="10px" height="10px" /> }.into_any()
+                                    }}
+                                </button>
                             </div>
 
+                            <div class="w-px h-3.5 bg-edge-subtle/20 shrink-0" />
+
                             // Rotation
-                            <div class="space-y-0.5">
-                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Rotation"</label>
-                                <div class="flex items-center gap-2">
-                                    <input
-                                        type="range"
-                                        min="0" max="360" step="1"
-                                        class="min-w-0 flex-1"
-                                        prop:value=format!("{rotation_deg:.0}")
-                                        on:input=move |ev| {
-                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                            if let Some(el) = target {
-                                                if let Ok(deg) = el.value().parse::<f32>() {
-                                                    let rad = deg.to_radians();
-                                                    let zid = zid_rotation.clone();
-                                                    update_zone(zid, Box::new(move |z| z.rotation = rad));
-                                                }
+                            <div class="flex items-center gap-1.5 flex-1 min-w-32">
+                                <span class="text-[8px] text-fg-tertiary/60 font-mono uppercase shrink-0">"Rot"</span>
+                                <input
+                                    type="range"
+                                    min="0" max="360" step="1"
+                                    class="min-w-0 flex-1"
+                                    prop:value=format!("{rotation_deg:.0}")
+                                    on:input=move |ev| {
+                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                        if let Some(el) = target {
+                                            if let Ok(deg) = el.value().parse::<f32>() {
+                                                let rad = deg.to_radians();
+                                                let zid = zid_rotation.clone();
+                                                update_zone(zid, Box::new(move |z| z.rotation = rad));
                                             }
                                         }
-                                    />
-                                    <span class="text-[10px] font-mono text-fg-tertiary tabular-nums w-7 text-right shrink-0">
-                                        {format!("{rotation_deg:.0}")} "\u{00b0}"
-                                    </span>
-                                </div>
+                                    }
+                                />
+                                <span class="text-[10px] font-mono text-fg-tertiary/60 tabular-nums w-7 text-right shrink-0">
+                                    {format!("{rotation_deg:.0}")} "\u{00b0}"
+                                </span>
                             </div>
 
                             // Scale
-                            <div class="space-y-0.5">
-                                <label class="text-[8px] text-fg-tertiary font-mono uppercase tracking-wider">"Scale"</label>
-                                <div class="flex items-center gap-2">
-                                    <input
-                                        type="range"
-                                        min="0.5" max="3.0" step="0.1"
-                                        class="min-w-0 flex-1"
-                                        prop:value=format!("{scale:.1}")
-                                        on:input=move |ev| {
-                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                            if let Some(el) = target {
-                                                if let Ok(s) = el.value().parse::<f32>() {
-                                                    let zid = zid_scale.clone();
-                                                    update_zone(zid, Box::new(move |z| z.scale = s));
-                                                }
+                            <div class="flex items-center gap-1.5 flex-1 min-w-32">
+                                <span class="text-[8px] text-fg-tertiary/60 font-mono uppercase shrink-0">"Scale"</span>
+                                <input
+                                    type="range"
+                                    min="0.5" max="3.0" step="0.1"
+                                    class="min-w-0 flex-1"
+                                    prop:value=format!("{scale:.1}")
+                                    on:input=move |ev| {
+                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                        if let Some(el) = target {
+                                            if let Ok(s) = el.value().parse::<f32>() {
+                                                let zid = zid_scale.clone();
+                                                update_zone(zid, Box::new(move |z| z.scale = s));
                                             }
                                         }
-                                    />
-                                    <span class="text-[10px] font-mono text-fg-tertiary tabular-nums w-7 text-right shrink-0">
-                                        {format!("{scale:.1}")} "x"
-                                    </span>
-                                </div>
+                                    }
+                                />
+                                <span class="text-[10px] font-mono text-fg-tertiary/60 tabular-nums w-7 text-right shrink-0">
+                                    {format!("{scale:.1}")} "x"
+                                </span>
                             </div>
                         </div>
                     </div>
@@ -512,23 +492,19 @@ pub fn LayoutZoneProperties(
     }
 }
 
-/// Compact button for layer ordering controls.
-fn layer_button(
-    label: &'static str,
+/// Icon-only button for layer ordering controls.
+fn layer_icon_button(
     icon: icondata_core::Icon,
     title: &'static str,
     on_click: impl Fn(web_sys::MouseEvent) + 'static,
 ) -> impl IntoView {
     view! {
         <button
-            class="flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[8px] font-mono uppercase tracking-[0.06em]
-                   border transition-all btn-press text-fg-tertiary/70 hover:text-accent"
-            style="background: rgba(139, 133, 160, 0.04); border-color: rgba(139, 133, 160, 0.12)"
+            class="p-0.5 rounded text-fg-tertiary/50 hover:text-accent transition-all btn-press"
             title=title
             on:click=on_click
         >
-            <Icon icon=icon width="10px" height="10px" />
-            {label}
+            <Icon icon=icon width="11px" height="11px" />
         </button>
     }
 }

@@ -646,20 +646,13 @@ fn handle_json_message(
                     set_active.set(None);
                 } else if event_type == "audio_level_update" {
                     if let Some(data) = msg.get("data") {
-                        let f = |key| {
-                            data.get(key)
-                                .and_then(|v| v.as_f64())
-                                .unwrap_or(0.0) as f32
-                        };
+                        let f = |key| data.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
                         set_audio_level.set(AudioLevel {
                             level: f("level"),
                             bass: f("bass"),
                             mid: f("mid"),
                             treble: f("treble"),
-                            beat: data
-                                .get("beat")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false),
+                            beat: data.get("beat").and_then(|v| v.as_bool()).unwrap_or(false),
                         });
                     }
                 } else if matches!(
