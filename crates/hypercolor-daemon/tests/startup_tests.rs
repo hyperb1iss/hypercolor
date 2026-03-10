@@ -997,6 +997,90 @@ fn append_auto_layout_zones_for_basilisk_v3_uses_custom_mouse_geometry() {
 }
 
 #[test]
+fn append_auto_layout_zones_for_dense_matrix_device_clamps_height_without_panicking() {
+    let device_id = DeviceId::new();
+    let info = DeviceInfo {
+        id: device_id,
+        name: "Ableton Push 2".to_owned(),
+        vendor: "Ableton".to_owned(),
+        family: DeviceFamily::Custom("Ableton".to_owned()),
+        model: Some("push2".to_owned()),
+        connection_type: ConnectionType::Usb,
+        zones: vec![
+            ZoneInfo {
+                name: "Pads".to_owned(),
+                led_count: 64,
+                topology: DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
+                color_format: DeviceColorFormat::Rgb,
+            },
+            ZoneInfo {
+                name: "Buttons Above".to_owned(),
+                led_count: 8,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            },
+            ZoneInfo {
+                name: "Buttons Below".to_owned(),
+                led_count: 8,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            },
+            ZoneInfo {
+                name: "Scene Launch".to_owned(),
+                led_count: 8,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            },
+            ZoneInfo {
+                name: "Transport".to_owned(),
+                led_count: 4,
+                topology: DeviceTopologyHint::Custom,
+                color_format: DeviceColorFormat::Rgb,
+            },
+            ZoneInfo {
+                name: "Touch Strip".to_owned(),
+                led_count: 31,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            },
+        ],
+        firmware_version: None,
+        capabilities: DeviceCapabilities::default(),
+    };
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    let added =
+        discovery::append_auto_layout_zones_for_device(&mut layout, "usb:2982:1967:test", &info);
+
+    assert_eq!(added, 6);
+    assert_eq!(layout.zones.len(), 6);
+    assert_eq!(layout.zones[0].name, "Ableton Push 2: Pads");
+    assert!((layout.zones[0].size.x - 0.18).abs() < 0.001);
+    assert!((layout.zones[0].size.y - 0.03).abs() < 0.001);
+    assert_eq!(
+        layout.zones[0].topology,
+        LedTopology::Matrix {
+            width: 8,
+            height: 8,
+            serpentine: false,
+            start_corner: hypercolor_types::spatial::Corner::TopLeft,
+        }
+    );
+}
+
+#[test]
 fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
     let device_id = DeviceId::new();
     let info = DeviceInfo {

@@ -1766,7 +1766,10 @@ fn auto_layout_geometry(
                 cols_f32 / rows_f32
             };
             let width = 0.18_f32.clamp(0.12, slot_width);
-            let height = (width / aspect).clamp(0.08, 0.18 / zone_count_f32);
+            // Dense multi-zone devices cannot always preserve the preferred minimum matrix height.
+            let max_height = slot_height / zone_count_f32;
+            let min_height = max_height.min(0.08);
+            let height = (width / aspect).clamp(min_height, max_height);
             NormalizedPosition::new(width, height)
         }
         DeviceTopologyHint::Ring { .. } => {
