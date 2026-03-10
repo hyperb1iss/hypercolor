@@ -6,11 +6,11 @@ use std::time::{Duration, Instant};
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
 
 use crate::drivers::corsair::framing::{
-    LCD_DATA_PER_PACKET, build_lcd_display_packet, build_lcd_report, pad_to,
+    LCD_DATA_PER_PACKET, append_lcd_display_packet, build_lcd_report, pad_to,
 };
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
+    ProtocolZone, ResponseStatus, TransferType,
 };
 
 const DEFAULT_TARGET_FPS: u32 = 30;
@@ -241,30 +241,55 @@ impl Protocol for CorsairLcdProtocol {
     }
 
     fn encode_display_frame(&self, jpeg_data: &[u8]) -> Option<Vec<ProtocolCommand>> {
+        let mut commands = Vec::new();
+        self.encode_display_frame_into(jpeg_data, &mut commands)?;
+        Some(commands)
+    }
+
+    fn encode_display_frame_into(
+        &self,
+        jpeg_data: &[u8],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Option<()> {
         let chunk_count = jpeg_data.len().div_ceil(LCD_DATA_PER_PACKET);
-        let mut commands = jpeg_data
-            .chunks(LCD_DATA_PER_PACKET)
-            .enumerate()
-            .map(|(index, chunk)| {
-                Self::bulk_command(build_lcd_display_packet(
-                    self.data_zone_byte,
-                    index + 1 == chunk_count,
-                    u8::try_from(index).unwrap_or(u8::MAX),
-                    chunk,
-                ))
-            })
-            .collect::<Vec<_>>();
+        let mut buffer = CommandBuffer::new(commands);
+        for (index, chunk) in jpeg_data.chunks(LCD_DATA_PER_PACKET).enumerate() {
+            let is_final = index + 1 == chunk_count;
+            buffer.push_fill(
+                false,
+                Duration::ZERO,
+                Duration::ZERO,
+                TransferType::Bulk,
+                |packet| {
+                    append_lcd_display_packet(
+                        packet,
+                        self.data_zone_byte,
+                        is_final,
+                        u8::try_from(index).unwrap_or(u8::MAX),
+                        chunk,
+                    );
+                },
+            );
+        }
 
         if self.keepalive_due() {
             let packets_sent = u8::try_from(chunk_count).unwrap_or(u8::MAX);
-            commands.push(self.keepalive_command(
+            let keepalive = self.keepalive_command(
                 0x01,
                 packets_sent,
                 u16::try_from(LCD_DATA_PER_PACKET).unwrap_or(u16::MAX),
-            ));
+            );
+            buffer.push_slice(
+                keepalive.data.as_slice(),
+                keepalive.expects_response,
+                keepalive.response_delay,
+                keepalive.post_delay,
+                keepalive.transfer_type,
+            );
         }
+        buffer.finish();
 
-        Some(commands)
+        Some(())
     }
 
     fn keepalive(&self) -> Option<ProtocolKeepalive> {

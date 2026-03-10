@@ -4,7 +4,8 @@
 //! disturbing the existing LED frame routing path.
 
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -75,6 +76,15 @@ struct DisplayTarget {
 }
 
 type DisplayWorkerKey = (String, DeviceId);
+
+#[derive(Default)]
+struct DisplayTargetCache {
+    initialized: bool,
+    registry_generation: u64,
+    layout_ptr: usize,
+    logical_signature: u64,
+    targets: Vec<DisplayTarget>,
+}
 
 #[derive(Clone)]
 struct DisplayWorkItem {
@@ -150,6 +160,61 @@ struct PreparedDisplaySample {
     x_upper_weight: u16,
     y_lower_weight: u16,
     y_upper_weight: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DisplayFrameInputState {
+    source_width: u32,
+    source_height: u32,
+    brightness_factor: u16,
+    geometry: DisplayGeometry,
+    viewport: DisplayViewportSignature,
+    source_rgba: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DisplayViewportSignature {
+    position_x_bits: u32,
+    position_y_bits: u32,
+    size_x_bits: u32,
+    size_y_bits: u32,
+    rotation_bits: u32,
+    scale_bits: u32,
+    edge_behavior: u8,
+    fade_falloff_bits: u32,
+}
+
+impl DisplayFrameInputState {
+    fn matches(
+        &self,
+        source: &CanvasFrame,
+        viewport: &DisplayViewport,
+        geometry: &DisplayGeometry,
+        brightness: f32,
+    ) -> bool {
+        self.source_width == source.width
+            && self.source_height == source.height
+            && self.brightness_factor == display_brightness_factor(brightness)
+            && self.geometry == *geometry
+            && self.viewport == display_viewport_signature(viewport)
+            && self.source_rgba.as_slice() == source.rgba_bytes()
+    }
+
+    fn capture(
+        source: &CanvasFrame,
+        viewport: &DisplayViewport,
+        geometry: &DisplayGeometry,
+        brightness: f32,
+    ) -> Self {
+        Self {
+            source_width: source.width,
+            source_height: source.height,
+            brightness_factor: display_brightness_factor(brightness),
+            geometry: geometry.clone(),
+            viewport: display_viewport_signature(viewport),
+            source_rgba: source.rgba_bytes().to_vec(),
+        }
+    }
 }
 
 impl DisplayWorkerHandle {
@@ -244,6 +309,7 @@ async fn run_display_output(
     mut shutdown_rx: oneshot::Receiver<()>,
 ) {
     let mut workers = HashMap::<DisplayWorkerKey, DisplayWorkerHandle>::new();
+    let mut targets_cache = DisplayTargetCache::default();
 
     loop {
         tokio::select! {
@@ -271,6 +337,7 @@ async fn run_display_output(
             &state.device_registry,
             &state.spatial_engine,
             &state.logical_devices,
+            &mut targets_cache,
         )
         .await;
         reconcile_display_workers(&state, &mut workers, &targets).await;
@@ -363,6 +430,7 @@ async fn run_display_worker(
 ) {
     let mut interval = interval_for_target_fps(target_fps);
     let mut last_warned_at = None::<Instant>;
+    let mut last_delivered_input = None::<DisplayFrameInputState>;
     let mut encode_state = match DisplayEncodeState::new() {
         Ok(state) => state,
         Err(error) => {
@@ -394,10 +462,31 @@ async fn run_display_worker(
         let geometry = work.target.geometry.clone();
         let brightness = work.target.brightness;
         let target = work.target.clone();
+        if last_delivered_input
+            .as_ref()
+            .is_some_and(|previous| previous.matches(&source, &viewport, &geometry, brightness))
+        {
+            trace!(
+                device = %target.name,
+                backend_id = %backend_key,
+                device_id = %device_id,
+                target_fps,
+                "skipping unchanged display frame"
+            );
+            continue;
+        }
+        let encode_source = source.clone();
+        let encode_viewport = viewport.clone();
+        let encode_geometry = geometry.clone();
         let encode_result = tokio::task::spawn_blocking(move || {
             let mut encode_state = encode_state;
-            let encoded =
-                encode_canvas_frame(&source, &viewport, &geometry, brightness, &mut encode_state);
+            let encoded = encode_canvas_frame(
+                &encode_source,
+                &encode_viewport,
+                &encode_geometry,
+                brightness,
+                &mut encode_state,
+            );
             (encode_state, encoded)
         })
         .await;
@@ -447,6 +536,9 @@ async fn run_display_worker(
             maybe_warn_display_error(&mut last_warned_at, &target, &error);
             continue;
         }
+        last_delivered_input = Some(DisplayFrameInputState::capture(
+            &source, &viewport, &geometry, brightness,
+        ));
 
         trace!(
             device = %target.name,
@@ -477,12 +569,24 @@ async fn display_targets(
     registry: &DeviceRegistry,
     spatial_engine: &Arc<RwLock<SpatialEngine>>,
     logical_devices: &Arc<RwLock<HashMap<String, LogicalDevice>>>,
+    cache: &mut DisplayTargetCache,
 ) -> Vec<DisplayTarget> {
     let layout = {
         let spatial = spatial_engine.read().await;
-        spatial.layout().as_ref().clone()
+        spatial.layout()
     };
     let logical_store = logical_devices.read().await;
+    let registry_generation = registry.generation();
+    let layout_ptr = Arc::as_ptr(&layout) as usize;
+    let logical_signature = logical_device_store_signature(&logical_store);
+
+    if cache.initialized
+        && cache.registry_generation == registry_generation
+        && cache.layout_ptr == layout_ptr
+        && cache.logical_signature == logical_signature
+    {
+        return cache.targets.clone();
+    }
 
     let mut targets = Vec::new();
     for tracked in registry
@@ -505,7 +609,8 @@ async fn display_targets(
         }) else {
             continue;
         };
-        let Some(viewport) = display_viewport_for_device(&layout, &logical_store, tracked.info.id)
+        let Some(viewport) =
+            display_viewport_for_device(layout.as_ref(), &logical_store, tracked.info.id)
         else {
             continue;
         };
@@ -526,6 +631,11 @@ async fn display_targets(
             .cmp(&right.backend_id)
             .then(left.device_id.to_string().cmp(&right.device_id.to_string()))
     });
+    cache.initialized = true;
+    cache.registry_generation = registry_generation;
+    cache.layout_ptr = layout_ptr;
+    cache.logical_signature = logical_signature;
+    cache.targets = targets.clone();
     targets
 }
 
@@ -615,16 +725,15 @@ fn encode_rgb_to_jpeg(
 }
 
 fn apply_display_brightness(image: &mut [u8], brightness: f32) {
-    let brightness = brightness.clamp(0.0, 1.0);
-    if brightness >= 0.999 {
+    let factor = display_brightness_factor(brightness);
+    if factor >= u16::from(u8::MAX) {
         return;
     }
-    if brightness <= 0.0 {
+    if factor == 0 {
         image.fill(0);
         return;
     }
 
-    let factor = round_unit_to_u16(brightness);
     for pixel in image.chunks_exact_mut(3) {
         pixel[0] = scale_channel(pixel[0], factor);
         pixel[1] = scale_channel(pixel[1], factor);
@@ -635,6 +744,10 @@ fn apply_display_brightness(image: &mut [u8], brightness: f32) {
 fn scale_channel(channel: u8, factor: u16) -> u8 {
     let scaled = (u16::from(channel) * factor) / u16::from(u8::MAX);
     u8::try_from(scaled).expect("display brightness scaling should remain within byte range")
+}
+
+fn display_brightness_factor(brightness: f32) -> u16 {
+    round_unit_to_u16(brightness.clamp(0.0, 1.0))
 }
 
 fn display_viewport_for_device(
@@ -1132,6 +1245,38 @@ fn round_unit_to_u16(value: f32) -> u16 {
     }
 
     ((value * f32::from(u8::MAX)) + 0.5) as u16
+}
+
+fn display_viewport_signature(viewport: &DisplayViewport) -> DisplayViewportSignature {
+    let (edge_behavior, fade_falloff_bits) = match viewport.edge_behavior {
+        EdgeBehavior::Clamp => (0, 0),
+        EdgeBehavior::Wrap => (1, 0),
+        EdgeBehavior::Mirror => (2, 0),
+        EdgeBehavior::FadeToBlack { falloff } => (3, falloff.to_bits()),
+    };
+
+    DisplayViewportSignature {
+        position_x_bits: viewport.position.x.to_bits(),
+        position_y_bits: viewport.position.y.to_bits(),
+        size_x_bits: viewport.size.x.to_bits(),
+        size_y_bits: viewport.size.y.to_bits(),
+        rotation_bits: viewport.rotation.to_bits(),
+        scale_bits: viewport.scale.to_bits(),
+        edge_behavior,
+        fade_falloff_bits,
+    }
+}
+
+fn logical_device_store_signature(store: &HashMap<String, LogicalDevice>) -> u64 {
+    let mut combined = u64::try_from(store.len()).unwrap_or(u64::MAX);
+    for entry in store.values() {
+        let mut hasher = DefaultHasher::new();
+        entry.id.hash(&mut hasher);
+        entry.physical_device_id.hash(&mut hasher);
+        combined ^= hasher.finish().rotate_left(1);
+    }
+
+    combined
 }
 
 fn write_rgb_pixel(image: &mut [u8], width: u32, x: u32, y: u32, pixel: [u8; 3]) {

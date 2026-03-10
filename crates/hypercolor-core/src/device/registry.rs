@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -46,6 +47,7 @@ pub struct TrackedDevice {
 #[derive(Debug, Clone)]
 pub struct DeviceRegistry {
     inner: Arc<RwLock<RegistryInner>>,
+    generation: Arc<AtomicU64>,
 }
 
 #[derive(Debug, Default)]
@@ -69,6 +71,7 @@ impl DeviceRegistry {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(RegistryInner::default())),
+            generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -153,6 +156,7 @@ impl DeviceRegistry {
                 if !metadata.is_empty() {
                     inner.metadata_by_id.insert(existing_id, metadata);
                 }
+                self.bump_generation();
                 return existing_id;
             }
 
@@ -190,6 +194,7 @@ impl DeviceRegistry {
             inner.metadata_by_id.insert(id, metadata);
         }
         inner.devices.insert(id, tracked);
+        self.bump_generation();
 
         info!(device_id = %id, name = %name, "Device added to registry");
         id
@@ -211,6 +216,7 @@ impl DeviceRegistry {
                 inner.fingerprints.remove(&fallback);
             }
             inner.metadata_by_id.remove(id);
+            self.bump_generation();
             info!(device_id = %id, "Device removed from registry");
         } else {
             warn!(device_id = %id, "Attempted to remove unknown device");
@@ -253,6 +259,7 @@ impl DeviceRegistry {
                 "Device state transition"
             );
             entry.state = state;
+            self.bump_generation();
             true
         } else {
             warn!(device_id = %id, "State update for unknown device");
@@ -270,6 +277,7 @@ impl DeviceRegistry {
         updated_info.id = *id;
         apply_user_settings_to_info(&mut updated_info, &entry.user_settings);
         entry.info = updated_info;
+        self.bump_generation();
 
         debug!(device_id = %id, "Updated device metadata in registry");
         Some(entry.clone())
@@ -308,6 +316,7 @@ impl DeviceRegistry {
             entry.user_settings.brightness = brightness.clamp(0.0, 1.0);
         }
 
+        self.bump_generation();
         Some(entry.clone())
     }
 
@@ -323,7 +332,14 @@ impl DeviceRegistry {
         entry.user_settings = settings;
         apply_user_settings_to_info(&mut entry.info, &entry.user_settings);
 
+        self.bump_generation();
         Some(entry.clone())
+    }
+
+    /// Monotonic mutation counter for cheap cache invalidation.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
     }
 
     /// Number of devices currently tracked.
@@ -392,6 +408,10 @@ impl DeviceRegistry {
             .filter(|d| &d.state == state)
             .cloned()
             .collect()
+    }
+
+    fn bump_generation(&self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 }
 

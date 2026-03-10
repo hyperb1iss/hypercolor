@@ -529,6 +529,7 @@ impl UsbBackend {
             interval
         });
         let mut frame_commands = Vec::new();
+        let mut display_commands = Vec::new();
 
         loop {
             tokio::select! {
@@ -633,6 +634,7 @@ impl UsbBackend {
                         protocol.as_ref(),
                         transport.as_ref(),
                         &frame,
+                        &mut display_commands,
                     )
                     .await?;
                 }
@@ -694,9 +696,10 @@ impl UsbBackend {
         protocol: &dyn Protocol,
         transport: &dyn Transport,
         frame: &UsbDisplayPayload,
+        commands: &mut Vec<ProtocolCommand>,
     ) -> Result<()> {
-        let commands = protocol
-            .encode_display_frame(frame.jpeg_data.as_slice())
+        protocol
+            .encode_display_frame_into(frame.jpeg_data.as_slice(), commands)
             .with_context(|| {
                 format!("USB protocol does not support display output for device {device_id}")
             })?;

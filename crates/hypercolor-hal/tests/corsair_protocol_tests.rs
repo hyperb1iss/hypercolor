@@ -8,7 +8,7 @@ use hypercolor_hal::drivers::corsair::{
     CorsairLinkProtocol, EP_GET_DEVICES, build_icue_link_lcd_protocol,
     build_xd6_elite_lcd_protocol,
 };
-use hypercolor_hal::protocol::{Protocol, ResponseStatus, TransferType};
+use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus, TransferType};
 use hypercolor_types::device::DeviceTopologyHint;
 
 fn link_enumeration_response(records: &[(u8, u8, &str)]) -> Vec<u8> {
@@ -257,6 +257,40 @@ fn lcd_encode_display_frame_chunks_bulk_packets_and_appends_keepalive() {
     assert_eq!(
         &commands[2].data[..8],
         &[0x03, 0x19, 0x40, 0x01, 0x02, 0x00, 0xF8, 0x03]
+    );
+}
+
+#[test]
+fn lcd_encode_display_frame_into_reuses_command_buffer() {
+    let protocol = CorsairLcdProtocol::new("Test LCD", 480, 480, 0x40, 0x40, true, 0);
+    let jpeg = vec![0x55; 32];
+    let mut commands = vec![ProtocolCommand {
+        data: vec![0xAA; LCD_PACKET_SIZE],
+        expects_response: true,
+        response_delay: Duration::from_millis(1),
+        post_delay: Duration::from_millis(1),
+        transfer_type: TransferType::Primary,
+    }];
+
+    protocol
+        .encode_display_frame_into(&jpeg, &mut commands)
+        .expect("display frames should be supported");
+    assert_eq!(commands.len(), 2);
+    assert_eq!(commands[0].transfer_type, TransferType::Bulk);
+    assert_eq!(commands[1].transfer_type, TransferType::HidReport);
+    assert_eq!(
+        &commands[0].data[..8],
+        &[0x02, 0x05, 0x40, 0x01, 0x00, 0x00, 0xF8, 0x03]
+    );
+
+    protocol
+        .encode_display_frame_into(&jpeg[..8], &mut commands)
+        .expect("display frames should still be supported on buffer reuse");
+    assert_eq!(commands.len(), 1);
+    assert_eq!(commands[0].transfer_type, TransferType::Bulk);
+    assert_eq!(
+        &commands[0].data[..8],
+        &[0x02, 0x05, 0x40, 0x01, 0x00, 0x00, 0xF8, 0x03]
     );
 }
 

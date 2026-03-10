@@ -79,6 +79,17 @@ pub trait Protocol: Send + Sync {
         None
     }
 
+    /// Encode a display frame into a reusable command buffer.
+    fn encode_display_frame_into(
+        &self,
+        jpeg_data: &[u8],
+        commands: &mut Vec<ProtocolCommand>,
+    ) -> Option<()> {
+        commands.clear();
+        commands.extend(self.encode_display_frame(jpeg_data)?);
+        Some(())
+    }
+
     /// Zone descriptors for this device.
     fn zones(&self) -> Vec<ProtocolZone>;
 

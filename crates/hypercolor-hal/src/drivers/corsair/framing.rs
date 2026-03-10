@@ -112,6 +112,19 @@ pub fn build_lcd_display_packet(
     packet_number: u8,
     payload: &[u8],
 ) -> Vec<u8> {
+    let mut buffer = Vec::with_capacity(LCD_PACKET_SIZE);
+    append_lcd_display_packet(&mut buffer, zone_byte, final_packet, packet_number, payload);
+    buffer
+}
+
+/// Append one fixed-size Corsair LCD display packet to an existing buffer.
+pub fn append_lcd_display_packet(
+    buffer: &mut Vec<u8>,
+    zone_byte: u8,
+    final_packet: bool,
+    packet_number: u8,
+    payload: &[u8],
+) {
     let mut packet = LcdDisplayPacket::new_zeroed();
     packet.command = 0x02;
     packet.sub_command = 0x05;
@@ -122,7 +135,7 @@ pub fn build_lcd_display_packet(
 
     let copy_len = payload.len().min(LCD_DATA_PER_PACKET);
     packet.data[..copy_len].copy_from_slice(&payload[..copy_len]);
-    packet.as_bytes().to_vec()
+    buffer.extend_from_slice(packet.as_bytes());
 }
 
 /// Build a fixed-size Corsair LCD HID feature report.

@@ -519,6 +519,44 @@ async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_r
 }
 
 #[tokio::test]
+async fn registry_generation_advances_on_mutation() {
+    let registry = DeviceRegistry::new();
+    assert_eq!(registry.generation(), 0);
+
+    let device = mock_device_info("Generation Test");
+    let id = device.id;
+    registry.add(device).await;
+    let after_add = registry.generation();
+    assert!(after_add > 0, "add should advance generation");
+
+    assert!(registry.set_state(&id, DeviceState::Active).await);
+    let after_state = registry.generation();
+    assert!(
+        after_state > after_add,
+        "state changes should advance generation"
+    );
+
+    registry
+        .update_user_settings(&id, None, None, Some(0.5))
+        .await
+        .expect("device should exist");
+    let after_settings = registry.generation();
+    assert!(
+        after_settings > after_state,
+        "user setting updates should advance generation"
+    );
+
+    registry
+        .remove(&id)
+        .await
+        .expect("device should be removed");
+    assert!(
+        registry.generation() > after_settings,
+        "removal should advance generation"
+    );
+}
+
+#[tokio::test]
 async fn registry_fingerprint_lookup_round_trips_device_id() {
     let registry = DeviceRegistry::new();
     let fingerprint = DeviceFingerprint("net:12:34:56:78:9a:bc".to_owned());

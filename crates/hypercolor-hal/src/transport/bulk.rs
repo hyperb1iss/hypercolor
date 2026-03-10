@@ -30,6 +30,7 @@ pub struct UsbBulkTransport {
     in_max_packet_size: usize,
     out_endpoint: Arc<Mutex<nusb::Endpoint<Bulk, Out>>>,
     in_endpoint: Arc<Mutex<nusb::Endpoint<Bulk, In>>>,
+    out_buffer: Arc<Mutex<Option<Buffer>>>,
     report_len: usize,
     closed: AtomicBool,
     op_lock: Arc<Mutex<()>>,
@@ -116,6 +117,7 @@ impl UsbBulkTransport {
             in_max_packet_size,
             out_endpoint: Arc::new(Mutex::new(out_handle)),
             in_endpoint: Arc::new(Mutex::new(in_handle)),
+            out_buffer: Arc::new(Mutex::new(Some(Buffer::new(out_max_packet_size.into())))),
             report_len: DEFAULT_REPORT_LEN,
             closed: AtomicBool::new(false),
             op_lock: Arc::new(Mutex::new(())),
@@ -131,7 +133,32 @@ impl UsbBulkTransport {
     }
 
     fn send_bulk_locked(&self, data: &[u8]) -> Result<(), TransportError> {
-        self.send_bulk_owned_locked(data.to_vec())
+        let mut endpoint = lock_mutex(&self.out_endpoint, "bulk OUT endpoint")?;
+        let mut scratch = lock_mutex(&self.out_buffer, "bulk OUT scratch buffer")?;
+        let mut buffer = scratch.take().unwrap_or_else(|| Buffer::new(data.len()));
+        if buffer.capacity() < data.len() {
+            buffer = Buffer::new(data.len());
+        }
+        buffer.clear();
+        buffer.set_requested_len(data.len());
+        buffer.extend_from_slice(data);
+
+        trace!(
+            interface_number = self.interface_number,
+            endpoint = format_args!("0x{:02X}", self.out_endpoint_address),
+            packet_len = data.len(),
+            packet_hex = %format_hex_preview(data, 32),
+            "usb bulk send"
+        );
+
+        let completion = endpoint.transfer_blocking(buffer, DEFAULT_IO_TIMEOUT);
+        let mut returned_buffer = completion.buffer;
+        returned_buffer.clear();
+        *scratch = Some(returned_buffer);
+
+        completion
+            .status
+            .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
     }
 
     fn send_bulk_owned_locked(&self, data: Vec<u8>) -> Result<(), TransportError> {
@@ -145,10 +172,16 @@ impl UsbBulkTransport {
             "usb bulk send"
         );
 
-        endpoint
-            .transfer_blocking(data.into(), DEFAULT_IO_TIMEOUT)
-            .into_result()
-            .map(|_| ())
+        let completion = endpoint.transfer_blocking(data.into(), DEFAULT_IO_TIMEOUT);
+        let mut returned_buffer = completion.buffer;
+        returned_buffer.clear();
+
+        if let Ok(mut scratch) = self.out_buffer.lock() {
+            *scratch = Some(returned_buffer);
+        }
+
+        completion
+            .status
             .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
     }
 
