@@ -30,7 +30,7 @@ fn push2_init_sequence_reads_palette_and_clears_zones() {
     let protocol = build_push2_protocol();
     let commands = protocol.init_sequence();
 
-    assert_eq!(commands.len(), 224);
+    assert_eq!(commands.len(), 261);
     assert!(commands[0].expects_response);
     assert_eq!(commands[0].data, vec![0xF0, 0x7E, 0x01, 0x06, 0x01, 0xF7]);
     assert_eq!(commands[1].transfer_type, TransferType::Primary);
@@ -56,8 +56,10 @@ fn push2_init_sequence_reads_palette_and_clears_zones() {
     assert_eq!(commands[194].data, vec![0x90, 99, 0x00]);
     assert_eq!(commands[195].data, vec![0xB0, 102, 0x00]);
     assert_eq!(commands[222].data, vec![0xB0, 9, 0x00]);
+    assert_eq!(commands[223].data, vec![0xB0, 28, 0x00]);
+    assert_eq!(commands[259].data, vec![0xB0, 60, 0x00]);
     assert_eq!(
-        commands[223].data,
+        commands[260].data,
         vec![
             0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7
@@ -68,14 +70,15 @@ fn push2_init_sequence_reads_palette_and_clears_zones() {
 #[test]
 fn push2_frame_encoding_deduplicates_palette_and_tracks_diff() {
     let protocol = Push2Protocol::new();
-    let mut colors = vec![[0_u8, 0_u8, 0_u8]; 123];
+    let mut colors = vec![[0_u8, 0_u8, 0_u8]; 160];
     colors[0] = [255, 0, 0];
     colors[1] = [255, 0, 0];
     colors[64] = [0, 255, 0];
     colors[92] = [255, 255, 255];
+    colors[129] = [255, 255, 255];
 
     let commands = protocol.encode_frame(&colors);
-    assert_eq!(commands.len(), 7);
+    assert_eq!(commands.len(), 9);
     assert_eq!(
         commands[0].data,
         vec![
@@ -92,13 +95,21 @@ fn push2_frame_encoding_deduplicates_palette_and_tracks_diff() {
     );
     assert_eq!(
         commands[2].data,
+        vec![
+            0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x03, 0x7F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x7F, 0x01, 0xF7
+        ]
+    );
+    assert_eq!(
+        commands[3].data,
         vec![0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x05, 0xF7]
     );
-    assert_eq!(commands[3].data, vec![0x90, 36, 0x01]);
-    assert_eq!(commands[4].data, vec![0x90, 37, 0x01]);
-    assert_eq!(commands[5].data, vec![0xB0, 102, 0x02]);
+    assert_eq!(commands[4].data, vec![0x90, 36, 0x01]);
+    assert_eq!(commands[5].data, vec![0x90, 37, 0x01]);
+    assert_eq!(commands[6].data, vec![0xB0, 102, 0x02]);
+    assert_eq!(commands[7].data, vec![0xB0, 28, 0x7F]);
     assert_eq!(
-        commands[6].data,
+        commands[8].data,
         vec![
             0xF0, 0x00, 0x21, 0x1D, 0x01, 0x01, 0x19, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF7
@@ -116,7 +127,7 @@ fn push2_shutdown_restores_cached_factory_palette() {
         .parse_response(&palette_reply(1, [0, 0, 255, 18]))
         .expect("palette reply should parse");
 
-    let mut colors = vec![[0_u8, 0_u8, 0_u8]; 123];
+    let mut colors = vec![[0_u8, 0_u8, 0_u8]; 160];
     colors[0] = [255, 0, 0];
     let _ = protocol.encode_frame(&colors);
 
@@ -205,15 +216,16 @@ fn push2_parse_response_accepts_identity_reply_and_reports_capabilities() {
     assert_eq!(parsed.status, ResponseStatus::Ok);
 
     let zones = protocol.zones();
-    assert_eq!(zones.len(), 7);
+    assert_eq!(zones.len(), 8);
     assert_eq!(
         zones[0].topology,
         DeviceTopologyHint::Matrix { rows: 8, cols: 8 }
     );
-    assert_eq!(zones[5].led_count, 31);
-    assert_eq!(zones[6].color_format, DeviceColorFormat::Jpeg);
+    assert_eq!(zones[5].led_count, 37);
+    assert_eq!(zones[6].led_count, 31);
+    assert_eq!(zones[7].color_format, DeviceColorFormat::Jpeg);
     assert_eq!(
-        zones[6].topology,
+        zones[7].topology,
         DeviceTopologyHint::Display {
             width: 960,
             height: 160,
@@ -222,11 +234,11 @@ fn push2_parse_response_accepts_identity_reply_and_reports_capabilities() {
     );
 
     let capabilities = protocol.capabilities();
-    assert_eq!(capabilities.led_count, 123);
+    assert_eq!(capabilities.led_count, 160);
     assert!(capabilities.supports_direct);
     assert!(capabilities.supports_brightness);
     assert!(capabilities.has_display);
     assert_eq!(capabilities.display_resolution, Some((960, 160)));
-    assert_eq!(protocol.total_leds(), 123);
+    assert_eq!(protocol.total_leds(), 160);
     assert_eq!(protocol.frame_interval(), Duration::from_millis(16));
 }

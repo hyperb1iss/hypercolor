@@ -635,9 +635,15 @@ async fn display_targets(
         }) else {
             continue;
         };
-        let Some(viewport) =
-            display_viewport_for_device(layout.as_ref(), &logical_store, tracked.info.id)
-        else {
+        let has_non_display_led_zones = tracked.info.zones.iter().any(|zone| {
+            zone.led_count > 0 && !matches!(zone.topology, DeviceTopologyHint::Display { .. })
+        });
+        let Some(viewport) = display_viewport_for_device(
+            layout.as_ref(),
+            &logical_store,
+            tracked.info.id,
+            has_non_display_led_zones,
+        ) else {
             continue;
         };
 
@@ -780,20 +786,57 @@ fn display_viewport_for_device(
     layout: &SpatialLayout,
     logical_store: &HashMap<String, LogicalDevice>,
     physical_device_id: DeviceId,
+    has_non_display_led_zones: bool,
 ) -> Option<DisplayViewport> {
     let aliases = layout_device_aliases(logical_store, physical_device_id);
-    let zone = layout
+    let matching_zones = layout
         .zones
         .iter()
-        .find(|zone| aliases.iter().any(|candidate| candidate == &zone.device_id))?;
+        .filter(|zone| aliases.iter().any(|candidate| candidate == &zone.device_id))
+        .collect::<Vec<_>>();
+    if matching_zones.is_empty() {
+        return None;
+    }
 
-    Some(DisplayViewport {
-        position: zone.position,
-        size: zone.size,
-        rotation: zone.rotation,
-        scale: zone.scale,
-        edge_behavior: zone.edge_behavior.unwrap_or(layout.default_edge_behavior),
-    })
+    let explicit_display_zone = matching_zones
+        .iter()
+        .copied()
+        .find(|zone| zone.zone_name.as_deref() == Some("Display"));
+    let generic_display_zone = matching_zones
+        .iter()
+        .copied()
+        .find(|zone| zone.zone_name.is_none());
+
+    explicit_display_zone.or(generic_display_zone).map_or_else(
+        || {
+            if !has_non_display_led_zones {
+                return matching_zones.first().map(|zone| DisplayViewport {
+                    position: zone.position,
+                    size: zone.size,
+                    rotation: zone.rotation,
+                    scale: zone.scale,
+                    edge_behavior: zone.edge_behavior.unwrap_or(layout.default_edge_behavior),
+                });
+            }
+
+            Some(DisplayViewport {
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(1.0, 1.0),
+                rotation: 0.0,
+                scale: 1.0,
+                edge_behavior: layout.default_edge_behavior,
+            })
+        },
+        |zone| {
+            Some(DisplayViewport {
+                position: zone.position,
+                size: zone.size,
+                rotation: zone.rotation,
+                scale: zone.scale,
+                edge_behavior: zone.edge_behavior.unwrap_or(layout.default_edge_behavior),
+            })
+        },
+    )
 }
 
 fn layout_device_aliases(

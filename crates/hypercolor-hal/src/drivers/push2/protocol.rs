@@ -15,12 +15,17 @@ use crate::protocol::{
     ResponseStatus, TransferType,
 };
 
-const PUSH2_TOTAL_LEDS: usize = 123;
 const PUSH2_RGB_LED_COUNT: usize = 92;
+const PUSH2_WHITE_BUTTON_COUNT: usize = 37;
+const PUSH2_MIDI_LED_COUNT: usize = PUSH2_RGB_LED_COUNT + PUSH2_WHITE_BUTTON_COUNT;
+const PUSH2_TOTAL_LEDS: usize = PUSH2_MIDI_LED_COUNT + PUSH2_TOUCH_STRIP_LED_COUNT;
 const PUSH2_PAD_COUNT: usize = 64;
 const PUSH2_TOUCH_STRIP_LED_COUNT: usize = 31;
-const PUSH2_BUTTON_COUNT: usize = 28;
+const PUSH2_RGB_BUTTON_COUNT: usize = 28;
 const PUSH2_PALETTE_SIZE: usize = 128;
+const PUSH2_RGB_SLOT_LIMIT: usize = 97;
+const PUSH2_WHITE_SLOT_START: u8 = 97;
+const PUSH2_WHITE_SLOT_COUNT: u8 = 31;
 const PUSH2_DISPLAY_WIDTH: usize = 960;
 const PUSH2_DISPLAY_HEIGHT: usize = 160;
 const PUSH2_DISPLAY_PACKET_SIZE: usize = 512;
@@ -51,9 +56,14 @@ const PAD_NOTE_MAP: [u8; PUSH2_PAD_COUNT] = [
     84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99,
 ];
 
-const BUTTON_CC_MAP: [u8; PUSH2_BUTTON_COUNT] = [
+const RGB_BUTTON_CC_MAP: [u8; PUSH2_RGB_BUTTON_COUNT] = [
     102, 103, 104, 105, 106, 107, 108, 109, 20, 21, 22, 23, 24, 25, 26, 27, 43, 42, 41, 40, 39, 38,
     37, 36, 85, 86, 3, 9,
+];
+
+const WHITE_BUTTON_CC_MAP: [u8; PUSH2_WHITE_BUTTON_COUNT] = [
+    28, 29, 30, 31, 35, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 59, 61, 62, 63, 87, 88, 89,
+    90, 110, 111, 112, 113, 116, 117, 118, 119, 56, 57, 58, 60,
 ];
 
 const _: () = assert!(
@@ -89,7 +99,7 @@ struct Push2State {
     palette: [[u8; 4]; PUSH2_PALETTE_SIZE],
     factory_palette: [[u8; 4]; PUSH2_PALETTE_SIZE],
     factory_palette_valid: [bool; PUSH2_PALETTE_SIZE],
-    prev_led_indices: [u8; PUSH2_RGB_LED_COUNT],
+    prev_led_indices: [u8; PUSH2_MIDI_LED_COUNT],
     prev_touch_strip: [u8; PUSH2_TOUCH_STRIP_LED_COUNT],
 }
 
@@ -99,7 +109,7 @@ impl Default for Push2State {
             palette: [[0; 4]; PUSH2_PALETTE_SIZE],
             factory_palette: [[0; 4]; PUSH2_PALETTE_SIZE],
             factory_palette_valid: [false; PUSH2_PALETTE_SIZE],
-            prev_led_indices: [0; PUSH2_RGB_LED_COUNT],
+            prev_led_indices: [0; PUSH2_MIDI_LED_COUNT],
             prev_touch_strip: [0; PUSH2_TOUCH_STRIP_LED_COUNT],
         }
     }
@@ -227,11 +237,11 @@ impl Protocol for Push2Protocol {
             .state
             .write()
             .expect("Push 2 state lock should not be poisoned");
-        state.prev_led_indices = [0; PUSH2_RGB_LED_COUNT];
+        state.prev_led_indices = [0; PUSH2_MIDI_LED_COUNT];
         state.prev_touch_strip = [0; PUSH2_TOUCH_STRIP_LED_COUNT];
         drop(state);
 
-        let mut commands = Vec::with_capacity(3 + PUSH2_PALETTE_SIZE + PUSH2_RGB_LED_COUNT + 1);
+        let mut commands = Vec::with_capacity(3 + PUSH2_PALETTE_SIZE + PUSH2_MIDI_LED_COUNT + 1);
         commands.push(ProtocolCommand {
             data: PUSH2_IDENTITY_REQUEST.to_vec(),
             expects_response: true,
@@ -269,7 +279,7 @@ impl Protocol for Push2Protocol {
             .write()
             .expect("Push 2 state lock should not be poisoned");
         let mut commands = Self::restore_factory_palette_commands(&mut state);
-        state.prev_led_indices = [0; PUSH2_RGB_LED_COUNT];
+        state.prev_led_indices = [0; PUSH2_MIDI_LED_COUNT];
         state.prev_touch_strip = [0; PUSH2_TOUCH_STRIP_LED_COUNT];
         drop(state);
 
@@ -297,14 +307,17 @@ impl Protocol for Push2Protocol {
         let normalized = self.normalize_colors(colors);
         let normalized = normalized.as_ref();
         let rgb_colors = &normalized[..PUSH2_RGB_LED_COUNT];
-        let touch_strip_colors = &normalized[PUSH2_RGB_LED_COUNT..];
+        let white_button_colors = &normalized[PUSH2_RGB_LED_COUNT..PUSH2_MIDI_LED_COUNT];
+        let touch_strip_colors = &normalized[PUSH2_MIDI_LED_COUNT..];
         let mut state = self
             .state
             .write()
             .expect("Push 2 state lock should not be poisoned");
         let mut color_slots = HashMap::with_capacity(PUSH2_RGB_LED_COUNT);
         let mut assigned_slots = [false; PUSH2_PALETTE_SIZE];
+        let mut white_button_slots = [0_u8; PUSH2_WHITE_BUTTON_COUNT];
         assigned_slots[0] = true;
+        assigned_slots[PUSH2_RGB_SLOT_LIMIT..].fill(true);
         color_slots.insert([0, 0, 0], 0_u8);
 
         let mut command_buffer = CommandBuffer::new(commands);
@@ -336,6 +349,22 @@ impl Protocol for Push2Protocol {
             };
             assigned_slots[usize::from(slot)] = true;
             color_slots.insert(*color, slot);
+        }
+
+        for (index, color) in white_button_colors.iter().enumerate() {
+            let (slot, entry) = white_button_palette_slot(*color);
+            white_button_slots[index] = slot;
+            if slot != 0 && state.palette[usize::from(slot)] != entry {
+                command_buffer.push_slice(
+                    &set_palette_entry_message(slot, entry),
+                    false,
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    TransferType::Primary,
+                );
+                state.palette[usize::from(slot)] = entry;
+                palette_dirty = true;
+            }
         }
 
         if palette_dirty {
@@ -376,7 +405,23 @@ impl Protocol for Push2Protocol {
             }
 
             command_buffer.push_slice(
-                &[0xB0, BUTTON_CC_MAP[index], slot],
+                &[0xB0, RGB_BUTTON_CC_MAP[index], slot],
+                false,
+                Duration::ZERO,
+                Duration::ZERO,
+                TransferType::Primary,
+            );
+            state.prev_led_indices[led_index] = slot;
+        }
+
+        for (index, slot) in white_button_slots.iter().copied().enumerate() {
+            let led_index = PUSH2_RGB_LED_COUNT + index;
+            if state.prev_led_indices[led_index] == slot {
+                continue;
+            }
+
+            command_buffer.push_slice(
+                &[0xB0, WHITE_BUTTON_CC_MAP[index], slot],
                 false,
                 Duration::ZERO,
                 Duration::ZERO,
@@ -514,6 +559,12 @@ impl Protocol for Push2Protocol {
                 color_format: DeviceColorFormat::Rgb,
             },
             ProtocolZone {
+                name: "White Buttons".to_owned(),
+                led_count: u32::try_from(PUSH2_WHITE_BUTTON_COUNT).unwrap_or(u32::MAX),
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            },
+            ProtocolZone {
                 name: "Touch Strip".to_owned(),
                 led_count: 31,
                 topology: DeviceTopologyHint::Strip,
@@ -534,7 +585,7 @@ impl Protocol for Push2Protocol {
 
     fn capabilities(&self) -> DeviceCapabilities {
         DeviceCapabilities {
-            led_count: 123,
+            led_count: 160,
             supports_direct: true,
             supports_brightness: true,
             has_display: true,
@@ -544,7 +595,7 @@ impl Protocol for Push2Protocol {
     }
 
     fn total_leds(&self) -> u32 {
-        123
+        160
     }
 
     fn frame_interval(&self) -> Duration {
@@ -656,8 +707,32 @@ fn next_free_slot(assigned_slots: &[bool; 128]) -> Option<u8> {
         .iter()
         .enumerate()
         .skip(1)
+        .take(PUSH2_RGB_SLOT_LIMIT - 1)
         .find_map(|(index, assigned)| (!assigned).then(|| u8::try_from(index).ok()))
         .flatten()
+}
+
+fn white_button_palette_slot(rgb: [u8; 3]) -> (u8, [u8; 4]) {
+    let white = derive_white_channel(rgb);
+    if white == 0 {
+        return (0, [0; 4]);
+    }
+
+    let level = 1_u8.saturating_add(
+        u8::try_from(
+            (u16::from(white.saturating_sub(1)) * u16::from(PUSH2_WHITE_SLOT_COUNT.saturating_sub(1)))
+                / 254,
+        )
+        .unwrap_or(PUSH2_WHITE_SLOT_COUNT.saturating_sub(1)),
+    );
+
+    let quantized_white =
+        u8::try_from((u16::from(level) * 255 + 15) / u16::from(PUSH2_WHITE_SLOT_COUNT))
+            .unwrap_or(u8::MAX);
+    (
+        PUSH2_WHITE_SLOT_START + level - 1,
+        [0, 0, 0, quantized_white],
+    )
 }
 
 fn encode_touch_strip(levels: &[u8; PUSH2_TOUCH_STRIP_LED_COUNT]) -> [u8; 16] {
@@ -681,11 +756,15 @@ fn quantize_touch_strip(colors: &[[u8; 3]]) -> [u8; PUSH2_TOUCH_STRIP_LED_COUNT]
 }
 
 fn all_leds_off_commands() -> Vec<ProtocolCommand> {
-    let mut commands = Vec::with_capacity(PUSH2_PAD_COUNT + PUSH2_BUTTON_COUNT + 1);
+    let mut commands =
+        Vec::with_capacity(PUSH2_PAD_COUNT + PUSH2_RGB_BUTTON_COUNT + PUSH2_WHITE_BUTTON_COUNT + 1);
     for note in PAD_NOTE_MAP {
         commands.push(primary_command(vec![0x90, note, 0x00], false));
     }
-    for cc in BUTTON_CC_MAP {
+    for cc in RGB_BUTTON_CC_MAP {
+        commands.push(primary_command(vec![0xB0, cc, 0x00], false));
+    }
+    for cc in WHITE_BUTTON_CC_MAP {
         commands.push(primary_command(vec![0xB0, cc, 0x00], false));
     }
     commands.push(primary_command(

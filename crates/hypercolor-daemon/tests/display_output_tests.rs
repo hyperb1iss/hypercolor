@@ -192,6 +192,38 @@ fn display_zone(
     }
 }
 
+fn led_zone(
+    device_id: &str,
+    zone_name: &str,
+    position: NormalizedPosition,
+    size: NormalizedPosition,
+) -> DeviceZone {
+    DeviceZone {
+        id: format!("zone-{}", zone_name.to_lowercase().replace(' ', "-")),
+        name: zone_name.to_owned(),
+        device_id: device_id.to_owned(),
+        zone_name: Some(zone_name.to_owned()),
+        group_id: None,
+        position,
+        size,
+        rotation: 0.0,
+        scale: 1.0,
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: 16,
+            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+        },
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        display_order: 0,
+        attachment: None,
+    }
+}
+
 fn sample_canvas() -> Canvas {
     let mut canvas = Canvas::new(320, 200);
     canvas.fill(Rgba::new(8, 16, 24, 255));
@@ -260,6 +292,44 @@ fn decode_jpeg(bytes: &[u8]) -> image::RgbaImage {
     image::load_from_memory(bytes)
         .expect("display output should decode as an image")
         .into_rgba8()
+}
+
+fn mixed_led_display_device_info(device_id: DeviceId, width: u32, height: u32) -> DeviceInfo {
+    DeviceInfo {
+        id: device_id,
+        name: "Hybrid Display Device".to_owned(),
+        vendor: "Corsair".to_owned(),
+        family: DeviceFamily::Corsair,
+        model: Some("hybrid-display".to_owned()),
+        connection_type: ConnectionType::Usb,
+        zones: vec![
+            ZoneInfo {
+                name: "Pads".to_owned(),
+                led_count: 64,
+                topology: DeviceTopologyHint::Matrix { rows: 8, cols: 8 },
+                color_format: DeviceColorFormat::Rgb,
+            },
+            ZoneInfo {
+                name: "Display".to_owned(),
+                led_count: 0,
+                topology: DeviceTopologyHint::Display {
+                    width,
+                    height,
+                    circular: false,
+                },
+                color_format: DeviceColorFormat::Jpeg,
+            },
+        ],
+        firmware_version: None,
+        capabilities: DeviceCapabilities {
+            led_count: 64,
+            supports_direct: true,
+            supports_brightness: false,
+            has_display: true,
+            display_resolution: Some((width, height)),
+            max_fps: 30,
+        },
+    }
 }
 
 #[tokio::test]
@@ -474,6 +544,75 @@ async fn automatic_display_output_uses_layout_zone_viewport() {
     assert!(
         pixel[2] < 80,
         "expected viewport to exclude blue half, got {pixel:?}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
+async fn automatic_display_output_defaults_mixed_devices_to_full_canvas_without_display_zone() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![led_zone(
+            &format!("device:{device_id}"),
+            "Pads",
+            NormalizedPosition::new(0.25, 0.5),
+            NormalizedPosition::new(0.5, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "push2:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(mixed_led_display_device_info(device_id, 320, 200))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+    });
+
+    let canvas = split_color_canvas();
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&canvas, 1, 16));
+
+    let writes = wait_for_display_writes(&display_writes).await;
+    let image = decode_jpeg(&writes[0]);
+    let left_pixel = image.get_pixel(image.width() / 4, image.height() / 2);
+    let right_pixel = image.get_pixel((image.width() * 3) / 4, image.height() / 2);
+
+    assert!(
+        left_pixel[0] > 200 && left_pixel[2] < 80,
+        "expected left side to stay red under full-canvas fallback, got {left_pixel:?}"
+    );
+    assert!(
+        right_pixel[2] > 200 && right_pixel[0] < 80,
+        "expected right side to stay blue under full-canvas fallback, got {right_pixel:?}"
     );
 
     thread.shutdown().await.expect("display thread should stop");

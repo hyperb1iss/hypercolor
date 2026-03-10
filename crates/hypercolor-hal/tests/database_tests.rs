@@ -154,8 +154,8 @@ fn lookup_returns_push2_descriptor() {
 
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Ableton Push 2");
-    assert_eq!(protocol.total_leds(), 123);
-    assert_eq!(protocol.zones().len(), 7);
+    assert_eq!(protocol.total_leds(), 160);
+    assert_eq!(protocol.zones().len(), 8);
     assert_eq!(protocol.capabilities().display_resolution, Some((960, 160)));
 }
 
