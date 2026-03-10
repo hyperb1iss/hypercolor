@@ -26,6 +26,37 @@ use crate::icons::{IconState, build_icon};
 use crate::menu::build_menu;
 use crate::state::{AppState, DaemonMessage, EffectInfo, StateUpdate, TrayCommand};
 
+/// Initialize the macOS `NSApplication` and set it to accessory mode (no dock icon).
+#[cfg(target_os = "macos")]
+fn init_platform() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+    let mtm = MainThreadMarker::new().expect("must be called from the main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn init_platform() {}
+
+/// Pump platform events. On macOS this runs the `AppKit` run loop for one tick,
+/// processing pending events (tray icon interactions, menu clicks, etc.).
+/// On other platforms this just sleeps.
+#[cfg(target_os = "macos")]
+fn pump_events(timeout: Duration) {
+    use objc2_foundation::{NSDate, NSRunLoop};
+    // Run the main run loop for the timeout duration. This processes all pending
+    // AppKit events (menu clicks, tray icon display, etc.) without needing to
+    // access extern statics or use unsafe.
+    let date = NSDate::dateWithTimeIntervalSinceNow(timeout.as_secs_f64());
+    NSRunLoop::mainRunLoop().runUntilDate(&date);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn pump_events(timeout: Duration) {
+    std::thread::sleep(timeout);
+}
+
 /// Poll interval for the main event loop (milliseconds).
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -41,6 +72,9 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     info!("Starting Hypercolor tray applet");
+
+    // Initialize platform (NSApplication on macOS).
+    init_platform();
 
     // Initial state: disconnected.
     let mut app_state = AppState::disconnected();
@@ -122,7 +156,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
 
-        std::thread::sleep(POLL_INTERVAL);
+        pump_events(POLL_INTERVAL);
     }
 }
 
