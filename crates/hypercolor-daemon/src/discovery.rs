@@ -2085,6 +2085,20 @@ pub(crate) fn backend_id_for_device(
     family: &DeviceFamily,
     metadata: Option<&HashMap<String, String>>,
 ) -> String {
+    if let Some(metadata) = metadata {
+        if let Some(backend_id) = metadata.get("backend_id")
+            && !backend_id.trim().is_empty()
+        {
+            return backend_id.clone();
+        }
+
+        let has_usb_identity = metadata.contains_key("usb_path")
+            || (metadata.contains_key("vendor_id") && metadata.contains_key("product_id"));
+        if has_usb_identity {
+            return "usb".to_owned();
+        }
+    }
+
     metadata
         .and_then(|metadata| metadata.get("backend_id"))
         .filter(|backend_id| !backend_id.trim().is_empty())
@@ -2209,6 +2223,27 @@ mod tests {
         assert_eq!(
             backend_id_for_device(&DeviceFamily::Asus, Some(&metadata)),
             "smbus"
+        );
+    }
+
+    #[test]
+    fn backend_id_for_device_infers_usb_from_usb_metadata() {
+        let mut metadata = HashMap::new();
+        metadata.insert("vendor_id".to_owned(), "0x2982".to_owned());
+        metadata.insert("product_id".to_owned(), "0x1967".to_owned());
+        metadata.insert("usb_path".to_owned(), "001-12".to_owned());
+
+        assert_eq!(
+            backend_id_for_device(&DeviceFamily::Custom("Ableton".to_owned()), Some(&metadata)),
+            "usb"
+        );
+    }
+
+    #[test]
+    fn backend_id_for_device_keeps_custom_fallback_without_usb_metadata() {
+        assert_eq!(
+            backend_id_for_device(&DeviceFamily::Custom("Ableton".to_owned()), None),
+            "ableton"
         );
     }
 }
