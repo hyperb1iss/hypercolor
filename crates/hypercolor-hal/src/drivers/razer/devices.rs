@@ -39,6 +39,9 @@ pub const PID_HUNTSMAN_V2: u16 = 0x026C;
 /// Razer Basilisk V3.
 pub const PID_BASILISK_V3: u16 = 0x0099;
 
+/// Razer Tartarus Chroma.
+pub const PID_TARTARUS_CHROMA: u16 = 0x0208;
+
 /// Razer Mamba Elite.
 pub const PID_MAMBA_ELITE: u16 = 0x006C;
 
@@ -108,6 +111,25 @@ pub fn build_mamba_elite_protocol() -> Box<dyn Protocol> {
         )
         .with_init_custom_effect()
         .with_write_only_frame_uploads(),
+    )
+}
+
+/// Build a Tartarus Chroma protocol instance.
+pub fn build_tartarus_chroma_protocol() -> Box<dyn Protocol> {
+    Box::new(
+        RazerProtocol::new(
+            RazerProtocolVersion::Modern,
+            RazerLightingCommandSet::Standard,
+            RazerMatrixType::None,
+            (1, 1),
+            LED_ID_BACKLIGHT,
+        )
+        .without_device_mode_commands()
+        .with_init_custom_effect()
+        .with_standard_led_effect_activation(NOSTORE, LED_ID_BACKLIGHT, 0x00)
+        .with_write_only_custom_effect_activation(Duration::ZERO)
+        .with_write_only_frame_uploads()
+        .without_brightness(),
     )
 }
 
@@ -871,6 +893,16 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         Some(RAZER_CONSUMER_USAGE_PAGE),
         Some(RAZER_CONSUMER_USAGE),
         build_basilisk_v3_protocol,
+    ));
+    descriptors.push(hidapi_descriptor(
+        PID_TARTARUS_CHROMA,
+        "Razer Tartarus Chroma",
+        "razer/tartarus-chroma",
+        Some(2),
+        HID_REPORT_ID_DEFAULT,
+        Some(0x0001),
+        Some(0x0002),
+        build_tartarus_chroma_protocol,
     ));
     descriptors.push(hidapi_descriptor(
         PID_MAMBA_ELITE,
@@ -1682,7 +1714,7 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
 
     // Excluded for now:
     // - Custom-matrix generic devices (DeathAdder Chroma, Naga Epic Chroma,
-    //   Mamba 2012, Orbweaver Chroma, Tartarus Chroma) because they need
+    //   Mamba 2012, Orbweaver Chroma) because they need
     //   device-specific LED/effect packet routing instead of shared matrix I/O.
     // - Chroma ARGB Controller, Kraken classic/V3/V4, Hanbo, and other
     //   specialty controller families because they use dedicated controllers.

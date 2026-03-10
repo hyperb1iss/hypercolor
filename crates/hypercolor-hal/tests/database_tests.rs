@@ -15,13 +15,13 @@ use hypercolor_hal::drivers::prismrgb::{
 use hypercolor_hal::drivers::razer::{
     PID_BASILISK_V3, PID_BLADE_14_2021, PID_BLADE_14_2023, PID_BLADE_15_2022,
     PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, PID_MAMBA_ELITE, PID_SEIREN_EMOTE,
-    PID_SEIREN_V3_CHROMA, RAZER_VENDOR_ID,
+    PID_SEIREN_V3_CHROMA, PID_TARTARUS_CHROMA, RAZER_VENDOR_ID,
 };
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};
 
-const PID_BLACKWIDOW_V3: u16 = 0x024E;
 const PID_BLADE_14_2022: u16 = 0x028C;
+const PID_BLACKWIDOW_V3: u16 = 0x024E;
 const PID_FIREFLY: u16 = 0x0C00;
 const PID_LAPTOP_STAND_CHROMA: u16 = 0x0F0D;
 const PID_THUNDERBOLT_4_DOCK_CHROMA: u16 = 0x0F21;
@@ -339,6 +339,25 @@ fn lookup_returns_mamba_elite_descriptor() {
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Razer Modern");
     assert_eq!(protocol.total_leds(), 20);
+}
+
+#[test]
+fn lookup_returns_tartarus_chroma_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_TARTARUS_CHROMA)
+        .expect("Tartarus Chroma descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Tartarus Chroma");
+    assert_eq!(descriptor.family, DeviceFamily::Razer);
+    assert_eq!(descriptor.protocol.id, "razer/tartarus-chroma");
+    assert_eq!(
+        descriptor.transport,
+        expected_razer_shared_hid_transport(2, 0x00, Some(0x0001), Some(0x0002))
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Razer 0x1F Standard");
+    assert_eq!(protocol.total_leds(), 1);
+    assert!(!protocol.capabilities().supports_brightness);
 }
 
 #[test]

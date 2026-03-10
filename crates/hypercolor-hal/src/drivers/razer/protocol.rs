@@ -35,6 +35,11 @@ enum CustomEffectActivationStyle {
     LegacyStandard {
         storage: u8,
     },
+    StandardLedEffect {
+        storage: u8,
+        led_id: u8,
+        effect: u8,
+    },
     ExtendedMatrix {
         declared_data_size: u8,
         args: [u8; 5],
@@ -67,6 +72,7 @@ pub struct RazerProtocol {
     frame_commands_expect_response: bool,
     activation_expects_response: bool,
     activation_post_delay: Duration,
+    supports_brightness: bool,
 }
 
 impl RazerProtocol {
@@ -98,6 +104,7 @@ impl RazerProtocol {
             frame_commands_expect_response: true,
             activation_expects_response: true,
             activation_post_delay: Duration::ZERO,
+            supports_brightness: true,
         }
     }
 
@@ -178,6 +185,23 @@ impl RazerProtocol {
         self
     }
 
+    /// Activate software control with a per-LED effect command instead of the
+    /// matrix-wide custom-mode packet.
+    #[must_use]
+    pub const fn with_standard_led_effect_activation(
+        mut self,
+        storage: u8,
+        led_id: u8,
+        effect: u8,
+    ) -> Self {
+        self.activation_style = CustomEffectActivationStyle::StandardLedEffect {
+            storage,
+            led_id,
+            effect,
+        };
+        self
+    }
+
     /// Override the extended custom-effect payload shape for devices with a
     /// vendor-specific apply packet.
     #[must_use]
@@ -208,6 +232,14 @@ impl RazerProtocol {
     pub const fn with_write_only_custom_effect_activation(mut self, post_delay: Duration) -> Self {
         self.activation_expects_response = false;
         self.activation_post_delay = post_delay;
+        self
+    }
+
+    /// Disable brightness support for devices that only expose direct color and
+    /// effect control.
+    #[must_use]
+    pub const fn without_brightness(mut self) -> Self {
+        self.supports_brightness = false;
         self
     }
 
@@ -461,6 +493,17 @@ impl RazerProtocol {
                 self.activation_expects_response,
                 self.activation_post_delay,
             ),
+            CustomEffectActivationStyle::StandardLedEffect {
+                storage,
+                led_id,
+                effect,
+            } => self.build_packet(
+                0x03,
+                0x02,
+                &[storage, led_id, effect],
+                self.activation_expects_response,
+                self.activation_post_delay,
+            ),
             CustomEffectActivationStyle::ExtendedMatrix {
                 declared_data_size,
                 args,
@@ -533,6 +576,13 @@ impl RazerProtocol {
         };
 
         self.build_packet(command_class, command_id, &args, true, Duration::ZERO)
+            .map(|mut command| {
+                command.expects_response = self.frame_commands_expect_response;
+                if !self.frame_commands_expect_response {
+                    command.response_delay = Duration::ZERO;
+                }
+                command
+            })
             .into_iter()
             .collect()
     }
@@ -724,6 +774,10 @@ impl Protocol for RazerProtocol {
     }
 
     fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {
+        if !self.supports_brightness {
+            return None;
+        }
+
         let (command_class, command_id) = match self.command_set {
             RazerLightingCommandSet::Standard => (0x03, 0x03),
             RazerLightingCommandSet::Extended => (0x0F, 0x04),
@@ -838,7 +892,7 @@ impl Protocol for RazerProtocol {
         DeviceCapabilities {
             led_count: self.total_leds(),
             supports_direct: true,
-            supports_brightness: true,
+            supports_brightness: self.supports_brightness,
             has_display: false,
             display_resolution: None,
             max_fps,

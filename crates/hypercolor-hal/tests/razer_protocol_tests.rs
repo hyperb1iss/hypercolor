@@ -2,7 +2,8 @@ use hypercolor_hal::drivers::razer::{
     LED_ID_BACKLIGHT, LED_ID_LOGO, RAZER_REPORT_LEN, RazerLightingCommandSet, RazerMatrixType,
     RazerProtocol, RazerProtocolVersion, build_basilisk_v3_protocol, build_blade_14_2021_protocol,
     build_blade_15_late_2021_advanced_protocol, build_huntsman_v2_protocol,
-    build_mamba_elite_protocol, build_seiren_v3_protocol, razer_crc,
+    build_mamba_elite_protocol, build_seiren_v3_protocol, build_tartarus_chroma_protocol,
+    razer_crc,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolError, ResponseStatus};
 use hypercolor_types::device::DeviceTopologyHint;
@@ -184,6 +185,44 @@ fn mamba_elite_protocol_initializes_custom_mode_once() {
     assert_eq!(frame[10], 0x00);
     assert_eq!(frame[11], 0x00);
     assert_eq!(frame[12], 0x13);
+}
+
+#[test]
+fn tartarus_chroma_protocol_initializes_led_effect_and_streams_scalar_color() {
+    let protocol = build_tartarus_chroma_protocol();
+
+    let init = protocol.init_sequence();
+    assert_eq!(init.len(), 1, "custom backlight effect should be enabled once");
+    assert!(!init[0].expects_response);
+    assert_eq!(init[0].data[1], 0x1F);
+    assert_eq!(init[0].data[5], 0x03);
+    assert_eq!(init[0].data[6], 0x03);
+    assert_eq!(init[0].data[7], 0x02);
+    assert_eq!(init[0].data[8], 0x00);
+    assert_eq!(init[0].data[9], LED_ID_BACKLIGHT);
+    assert_eq!(init[0].data[10], 0x00);
+
+    let commands = protocol.encode_frame(&[[0x12, 0x34, 0x56]]);
+    assert_eq!(commands.len(), 1);
+    assert!(!commands[0].expects_response);
+    assert_eq!(commands[0].data[1], 0x1F);
+    assert_eq!(commands[0].data[5], 0x05);
+    assert_eq!(commands[0].data[6], 0x03);
+    assert_eq!(commands[0].data[7], 0x01);
+    assert_eq!(commands[0].data[8], 0x00);
+    assert_eq!(commands[0].data[9], LED_ID_BACKLIGHT);
+    assert_eq!(commands[0].data[10], 0x12);
+    assert_eq!(commands[0].data[11], 0x34);
+    assert_eq!(commands[0].data[12], 0x56);
+
+    let diagnostics = protocol.connection_diagnostics();
+    assert_eq!(diagnostics.len(), 1, "write-only path should expose a probe");
+    assert!(diagnostics[0].expects_response);
+    assert_eq!(diagnostics[0].data[6], 0x00);
+    assert_eq!(diagnostics[0].data[7], 0x82);
+
+    assert!(protocol.encode_brightness(0x80).is_none());
+    assert_eq!(protocol.zones()[0].topology, DeviceTopologyHint::Point);
 }
 
 #[test]
