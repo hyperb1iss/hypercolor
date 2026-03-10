@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -61,7 +61,11 @@ pub struct ServoRenderer {
     initialized: bool,
     pending_scripts: Vec<String>,
     worker: Option<ServoWorkerClient>,
+    queued_frame: Option<QueuedFrameInput>,
+    in_flight_render: Option<PendingServoFrame>,
+    last_canvas: Option<Canvas>,
     warned_fallback_frame: bool,
+    warned_stalled_frame: bool,
     include_audio_updates: bool,
     last_animation_fps_cap: Option<u32>,
 }
@@ -79,7 +83,11 @@ impl ServoRenderer {
             initialized: false,
             pending_scripts: Vec::new(),
             worker: None,
+            queued_frame: None,
+            in_flight_render: None,
+            last_canvas: None,
             warned_fallback_frame: false,
+            warned_stalled_frame: false,
             include_audio_updates: true,
             last_animation_fps_cap: None,
         }
@@ -145,6 +153,93 @@ impl ServoRenderer {
             }
         }
     }
+
+    fn queue_frame(&mut self, input: &FrameInput<'_>) {
+        if let Some(frame) = self.queued_frame.as_mut() {
+            frame.merge_from_input(input);
+            return;
+        }
+
+        self.queued_frame = Some(QueuedFrameInput::from_input(input));
+    }
+
+    fn poll_in_flight_render(&mut self) {
+        let Some(render) = self.in_flight_render.as_mut() else {
+            return;
+        };
+
+        match render.response_rx.try_recv() {
+            Ok(result) => {
+                self.in_flight_render = None;
+                self.warned_stalled_frame = false;
+
+                match result {
+                    Ok(canvas) => {
+                        self.last_canvas = Some(canvas);
+                        self.warned_fallback_frame = false;
+                    }
+                    Err(error) => {
+                        warn!(%error, "Servo frame render failed");
+                        if !self.warned_fallback_frame {
+                            warn!("Falling back to the previous completed frame for this effect");
+                            self.warned_fallback_frame = true;
+                        }
+                    }
+                }
+            }
+            Err(TryRecvError::Empty) => {
+                if !self.warned_stalled_frame
+                    && render.submitted_at.elapsed() >= RENDER_RESPONSE_TIMEOUT
+                {
+                    warn!(
+                        timeout_ms = RENDER_RESPONSE_TIMEOUT.as_millis(),
+                        "Servo frame render is late; reusing previous frame"
+                    );
+                    self.warned_stalled_frame = true;
+                }
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.in_flight_render = None;
+                self.worker = None;
+                warn!("Servo worker disconnected before sending frame response");
+                if !self.warned_fallback_frame {
+                    warn!("Falling back to the previous completed frame for this effect");
+                    self.warned_fallback_frame = true;
+                }
+            }
+        }
+    }
+
+    fn try_submit_queued_frame(&mut self) {
+        if self.in_flight_render.is_some() {
+            return;
+        }
+
+        let Some(worker) = self.worker.clone() else {
+            return;
+        };
+        let Some(frame) = self.queued_frame.take() else {
+            return;
+        };
+
+        let frame_input = frame.as_frame_input();
+        self.enqueue_frame_scripts(&frame_input);
+        let scripts = std::mem::take(&mut self.pending_scripts);
+        match worker.submit_render(scripts, frame.canvas_width, frame.canvas_height) {
+            Ok(render) => {
+                self.in_flight_render = Some(render);
+                self.warned_stalled_frame = false;
+            }
+            Err(error) => {
+                self.worker = None;
+                warn!(%error, "Failed to queue Servo frame render");
+                if !self.warned_fallback_frame {
+                    warn!("Falling back to the previous completed frame for this effect");
+                    self.warned_fallback_frame = true;
+                }
+            }
+        }
+    }
 }
 
 impl EffectRenderer for ServoRenderer {
@@ -171,8 +266,12 @@ impl EffectRenderer for ServoRenderer {
         self.runtime = LightscriptRuntime::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
         self.pending_scripts.clear();
         self.warned_fallback_frame = false;
+        self.warned_stalled_frame = false;
         self.include_audio_updates = effect_is_audio_reactive(metadata);
         self.last_animation_fps_cap = None;
+        self.queued_frame = None;
+        self.in_flight_render = None;
+        self.last_canvas = None;
         self.controls = metadata
             .controls
             .iter()
@@ -224,24 +323,14 @@ impl EffectRenderer for ServoRenderer {
             bail!("ServoRenderer tick called before init");
         }
 
-        self.enqueue_frame_scripts(input);
-        let scripts = std::mem::take(&mut self.pending_scripts);
+        self.queue_frame(input);
+        self.poll_in_flight_render();
+        self.try_submit_queued_frame();
 
-        let Some(worker) = self.worker.as_ref() else {
-            return Ok(Self::placeholder_canvas(input));
-        };
-
-        match worker.render_frame(scripts, input.canvas_width, input.canvas_height) {
-            Ok(canvas) => Ok(canvas),
-            Err(error) => {
-                warn!(%error, "Servo frame render failed");
-                if !self.warned_fallback_frame {
-                    warn!("Falling back to placeholder frame for this effect");
-                    self.warned_fallback_frame = true;
-                }
-                Ok(Self::placeholder_canvas(input))
-            }
-        }
+        Ok(self
+            .last_canvas
+            .clone()
+            .unwrap_or_else(|| Self::placeholder_canvas(input)))
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {
@@ -251,15 +340,76 @@ impl EffectRenderer for ServoRenderer {
     fn destroy(&mut self) {
         self.worker = None;
         self.pending_scripts.clear();
+        self.queued_frame = None;
+        self.in_flight_render = None;
+        self.last_canvas = None;
         self.controls.clear();
         self.html_source = None;
         self.html_resolved_path = None;
         self.cleanup_runtime_html();
         self.initialized = false;
         self.warned_fallback_frame = false;
+        self.warned_stalled_frame = false;
         self.include_audio_updates = true;
         self.last_animation_fps_cap = None;
     }
+}
+
+#[derive(Debug, Clone)]
+struct QueuedFrameInput {
+    time_secs: f32,
+    delta_secs: f32,
+    frame_number: u64,
+    audio: hypercolor_types::audio::AudioData,
+    interaction: crate::input::InteractionData,
+    canvas_width: u32,
+    canvas_height: u32,
+}
+
+impl QueuedFrameInput {
+    fn from_input(input: &FrameInput<'_>) -> Self {
+        Self {
+            time_secs: input.time_secs,
+            delta_secs: input.delta_secs,
+            frame_number: input.frame_number,
+            audio: input.audio.clone(),
+            interaction: input.interaction.clone(),
+            canvas_width: input.canvas_width,
+            canvas_height: input.canvas_height,
+        }
+    }
+
+    fn merge_from_input(&mut self, input: &FrameInput<'_>) {
+        let prior_recent_keys = self.interaction.keyboard.recent_keys.clone();
+        self.time_secs = input.time_secs;
+        self.delta_secs = input.delta_secs;
+        self.frame_number = input.frame_number;
+        self.audio = input.audio.clone();
+        self.interaction = input.interaction.clone();
+        merge_unique_strings(
+            &mut self.interaction.keyboard.recent_keys,
+            prior_recent_keys.into_iter(),
+        );
+        self.canvas_width = input.canvas_width;
+        self.canvas_height = input.canvas_height;
+    }
+
+    fn as_frame_input(&self) -> FrameInput<'_> {
+        FrameInput {
+            time_secs: self.time_secs,
+            delta_secs: self.delta_secs,
+            frame_number: self.frame_number,
+            audio: &self.audio,
+            interaction: &self.interaction,
+            canvas_width: self.canvas_width,
+            canvas_height: self.canvas_height,
+        }
+    }
+}
+
+struct PendingServoFrame {
+    response_rx: Receiver<Result<Canvas>>,
+    submitted_at: Instant,
 }
 
 impl Default for ServoRenderer {
@@ -305,7 +455,12 @@ impl ServoWorkerClient {
         }
     }
 
-    fn render_frame(&self, scripts: Vec<String>, width: u32, height: u32) -> Result<Canvas> {
+    fn submit_render(
+        &self,
+        scripts: Vec<String>,
+        width: u32,
+        height: u32,
+    ) -> Result<PendingServoFrame> {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         self.command_tx
             .send(WorkerCommand::Render {
@@ -315,16 +470,10 @@ impl ServoWorkerClient {
                 response_tx,
             })
             .context("failed to send render command to Servo worker")?;
-        match response_rx.recv_timeout(RENDER_RESPONSE_TIMEOUT) {
-            Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => bail!(
-                "timed out waiting for Servo frame response after {}ms",
-                RENDER_RESPONSE_TIMEOUT.as_millis()
-            ),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                bail!("Servo worker disconnected before sending frame response")
-            }
-        }
+        Ok(PendingServoFrame {
+            response_rx,
+            submitted_at: Instant::now(),
+        })
     }
 }
 
@@ -924,6 +1073,15 @@ fn combined_script(scripts: &[String]) -> String {
     combined
 }
 
+fn merge_unique_strings(destination: &mut Vec<String>, values: impl IntoIterator<Item = String>) {
+    for value in values {
+        if destination.iter().any(|existing| existing == &value) {
+            continue;
+        }
+        destination.push(value);
+    }
+}
+
 fn install_rustls_provider() {
     if let Err(error) = rustls::crypto::aws_lc_rs::default_provider().install_default() {
         trace!(?error, "Rustls provider already initialized or unavailable");
@@ -1097,16 +1255,6 @@ fn shutdown_shared_servo_worker() -> Result<()> {
 }
 
 #[cfg(test)]
-fn replace_shared_servo_worker_for_test(worker: Option<ServoWorker>) -> Option<ServoWorker> {
-    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(None));
-    let mut guard = match slot.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    std::mem::replace(&mut *guard, worker)
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use hypercolor_types::audio::AudioData;
@@ -1118,6 +1266,13 @@ mod tests {
     static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
     static DEFAULT_INTERACTION: LazyLock<crate::input::InteractionData> =
         LazyLock::new(crate::input::InteractionData::default);
+
+    #[derive(Debug)]
+    struct RecordedRenderCommand {
+        scripts: Vec<String>,
+        width: u32,
+        height: u32,
+    }
 
     fn spawn_test_worker() -> (ServoWorker, Arc<AtomicBool>) {
         let (command_tx, command_rx) = mpsc::channel();
@@ -1142,6 +1297,63 @@ mod tests {
         )
     }
 
+    fn spawn_render_test_worker() -> (
+        ServoWorker,
+        Receiver<RecordedRenderCommand>,
+        Sender<Result<Canvas>>,
+        Receiver<()>,
+        Arc<AtomicBool>,
+    ) {
+        let (command_tx, command_rx) = mpsc::channel();
+        let (render_tx, render_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let (delivered_tx, delivered_rx) = mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_clone = Arc::clone(&stopped);
+        let thread_handle = thread::spawn(move || {
+            while let Ok(command) = command_rx.recv() {
+                match command {
+                    WorkerCommand::Render {
+                        scripts,
+                        width,
+                        height,
+                        response_tx,
+                    } => {
+                        let _ = render_tx.send(RecordedRenderCommand {
+                            scripts,
+                            width,
+                            height,
+                        });
+                        let result = result_rx
+                            .recv()
+                            .unwrap_or_else(|_| Ok(solid_canvas(12, 34, 56)));
+                        let _ = response_tx.send(result);
+                        let _ = delivered_tx.send(());
+                    }
+                    WorkerCommand::Shutdown { response_tx } => {
+                        stopped_clone.store(true, Ordering::SeqCst);
+                        let _ = response_tx.send(());
+                        break;
+                    }
+                    WorkerCommand::Load { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                }
+            }
+        });
+
+        (
+            ServoWorker {
+                command_tx: Some(command_tx),
+                thread_handle: Some(thread_handle),
+            },
+            render_rx,
+            result_tx,
+            delivered_rx,
+            stopped,
+        )
+    }
+
     fn frame_input(delta_secs: f32) -> FrameInput<'static> {
         FrameInput {
             time_secs: 0.0,
@@ -1152,6 +1364,50 @@ mod tests {
             canvas_width: DEFAULT_WIDTH,
             canvas_height: DEFAULT_HEIGHT,
         }
+    }
+
+    fn custom_interaction(
+        recent_keys: &[&str],
+        pressed_keys: &[&str],
+    ) -> crate::input::InteractionData {
+        crate::input::InteractionData {
+            keyboard: crate::input::KeyboardData {
+                pressed_keys: pressed_keys.iter().map(ToString::to_string).collect(),
+                recent_keys: recent_keys.iter().map(ToString::to_string).collect(),
+            },
+            mouse: crate::input::MouseData::default(),
+        }
+    }
+
+    fn custom_audio(rms_level: f32) -> AudioData {
+        let mut audio = AudioData::silence();
+        audio.rms_level = rms_level;
+        audio
+    }
+
+    fn frame_input_with<'a>(
+        delta_secs: f32,
+        frame_number: u64,
+        audio: &'a AudioData,
+        interaction: &'a crate::input::InteractionData,
+        canvas_width: u32,
+        canvas_height: u32,
+    ) -> FrameInput<'a> {
+        FrameInput {
+            time_secs: delta_secs * frame_number as f32,
+            delta_secs,
+            frame_number,
+            audio,
+            interaction,
+            canvas_width,
+            canvas_height,
+        }
+    }
+
+    fn solid_canvas(r: u8, g: u8, b: u8) -> Canvas {
+        let mut canvas = Canvas::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+        canvas.fill(Rgba::new(r, g, b, 255));
+        canvas
     }
 
     #[test]
@@ -1317,11 +1573,9 @@ mod tests {
     #[test]
     fn destroy_clears_renderer_state_without_shutting_down_shared_worker() {
         let (worker, stopped) = spawn_test_worker();
-        let previous_worker = replace_shared_servo_worker_for_test(Some(worker));
 
         let mut renderer = ServoRenderer::new();
-        renderer.worker =
-            Some(acquire_servo_worker(DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("shared worker"));
+        renderer.worker = Some(worker.client().expect("test worker client"));
         renderer.initialized = true;
         renderer.pending_scripts.push("tick()".to_owned());
         renderer
@@ -1331,23 +1585,33 @@ mod tests {
         renderer.html_resolved_path = Some(PathBuf::from("resolved.html"));
         renderer.runtime_html_path = Some(PathBuf::from("runtime.html"));
         renderer.warned_fallback_frame = true;
+        renderer.warned_stalled_frame = true;
         renderer.include_audio_updates = false;
+        renderer.queued_frame = Some(QueuedFrameInput::from_input(&frame_input(1.0 / 30.0)));
+        renderer.in_flight_render = Some(PendingServoFrame {
+            response_rx: mpsc::channel().1,
+            submitted_at: Instant::now(),
+        });
+        renderer.last_canvas = Some(solid_canvas(1, 2, 3));
 
         renderer.destroy();
 
         assert!(!stopped.load(Ordering::SeqCst));
         assert!(renderer.worker.is_none());
         assert!(renderer.pending_scripts.is_empty());
+        assert!(renderer.queued_frame.is_none());
+        assert!(renderer.in_flight_render.is_none());
+        assert!(renderer.last_canvas.is_none());
         assert!(renderer.controls.is_empty());
         assert!(renderer.html_source.is_none());
         assert!(renderer.html_resolved_path.is_none());
         assert!(renderer.runtime_html_path.is_none());
         assert!(!renderer.initialized);
         assert!(!renderer.warned_fallback_frame);
+        assert!(!renderer.warned_stalled_frame);
         assert!(renderer.include_audio_updates);
 
-        let removed_worker = replace_shared_servo_worker_for_test(previous_worker);
-        drop(removed_worker);
+        drop(worker);
         assert!(stopped.load(Ordering::SeqCst));
     }
 
@@ -1414,5 +1678,149 @@ mod tests {
             .filter(|script| script.contains("window.engine.keyboard.keys"))
             .count();
         assert_eq!(second_input_scripts, 0);
+    }
+
+    #[test]
+    fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
+        let (worker, render_rx, result_tx, delivered_rx, stopped) = spawn_render_test_worker();
+
+        let mut renderer = ServoRenderer::new();
+        renderer.worker = Some(worker.client().expect("test worker client"));
+        renderer.initialized = true;
+        renderer.enqueue_bootstrap_scripts();
+        renderer.set_control("speed", &ControlValue::Float(0.25));
+
+        let first_audio = custom_audio(0.1);
+        let first_interaction = custom_interaction(&["a"], &["a"]);
+        let first_frame =
+            frame_input_with(1.0 / 30.0, 1, &first_audio, &first_interaction, 320, 200);
+
+        let first_output = renderer.tick(&first_frame).expect("first tick");
+        assert_eq!(first_output.width(), 320);
+        assert_eq!(first_output.height(), 200);
+
+        let first_render = render_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("first render command");
+        assert_eq!(first_render.width, 320);
+        assert_eq!(first_render.height, 200);
+        assert!(
+            first_render
+                .scripts
+                .iter()
+                .any(|script| script.contains("window[\"speed\"] = 0.25"))
+        );
+
+        renderer.set_control("speed", &ControlValue::Float(0.75));
+        let second_audio = custom_audio(0.6);
+        let second_interaction = custom_interaction(&["b"], &["b"]);
+        let second_frame =
+            frame_input_with(1.0 / 15.0, 2, &second_audio, &second_interaction, 640, 360);
+        renderer.tick(&second_frame).expect("second tick");
+        assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
+
+        let third_interaction = custom_interaction(&["c"], &["c"]);
+        let third_frame =
+            frame_input_with(1.0 / 15.0, 3, &second_audio, &third_interaction, 640, 360);
+        renderer.tick(&third_frame).expect("third tick");
+        assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
+
+        result_tx
+            .send(Ok(solid_canvas(9, 8, 7)))
+            .expect("first result should be delivered");
+        delivered_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("first result delivery ack");
+
+        let resumed_output = renderer.tick(&third_frame).expect("resume tick");
+        assert_eq!(resumed_output.get_pixel(0, 0), Rgba::new(9, 8, 7, 255));
+
+        let second_render = render_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("second render command");
+        assert_eq!(second_render.width, 640);
+        assert_eq!(second_render.height, 360);
+        assert!(
+            second_render
+                .scripts
+                .iter()
+                .any(|script| script == "window.__hypercolorFpsCap = 15;")
+        );
+        assert!(
+            second_render
+                .scripts
+                .iter()
+                .any(|script| script.contains("window.engine.width = 640"))
+        );
+        assert!(
+            second_render
+                .scripts
+                .iter()
+                .any(|script| script.contains("window[\"speed\"] = 0.75"))
+        );
+        let interaction_script = second_render
+            .scripts
+            .iter()
+            .find(|script| script.contains("window.engine.keyboard.recent"))
+            .expect("interaction update script");
+        assert!(interaction_script.contains("\"b\""));
+        assert!(interaction_script.contains("\"c\""));
+        assert!(interaction_script.contains("window.engine.mouse.down = false"));
+
+        result_tx
+            .send(Ok(solid_canvas(1, 1, 1)))
+            .expect("cleanup render result");
+        delivered_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("cleanup result delivery ack");
+
+        drop(worker);
+        assert!(stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn tick_reuses_last_completed_canvas_while_next_servo_frame_is_pending() {
+        let (worker, render_rx, result_tx, delivered_rx, stopped) = spawn_render_test_worker();
+
+        let mut renderer = ServoRenderer::new();
+        renderer.worker = Some(worker.client().expect("test worker client"));
+        renderer.initialized = true;
+        renderer.enqueue_bootstrap_scripts();
+
+        let interaction = custom_interaction(&[], &[]);
+        let audio = custom_audio(0.0);
+        let frame = frame_input_with(1.0 / 30.0, 1, &audio, &interaction, 320, 200);
+
+        renderer.tick(&frame).expect("initial tick");
+        let _ = render_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("first render command");
+
+        result_tx
+            .send(Ok(solid_canvas(20, 40, 60)))
+            .expect("first result should be delivered");
+        delivered_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("first result delivery ack");
+
+        let first_completed = renderer.tick(&frame).expect("completed tick");
+        assert_eq!(first_completed.get_pixel(0, 0), Rgba::new(20, 40, 60, 255));
+        let _ = render_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("second render command");
+
+        let reused = renderer.tick(&frame).expect("reused frame");
+        assert_eq!(reused.get_pixel(0, 0), Rgba::new(20, 40, 60, 255));
+        assert!(render_rx.recv_timeout(Duration::from_millis(20)).is_err());
+
+        result_tx
+            .send(Ok(solid_canvas(1, 1, 1)))
+            .expect("cleanup render result");
+        delivered_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("cleanup result delivery ack");
+
+        drop(worker);
+        assert!(stopped.load(Ordering::SeqCst));
     }
 }
