@@ -10,7 +10,7 @@ authors = ["Stefanie Jane <stef@hyperbliss.tech>"]
 license = "Apache-2.0"
 repository = "https://github.com/hyperb1iss/hypercolor"
 homepage = "https://github.com/hyperb1iss/hypercolor"
-rust-version = "1.85"
+rust-version = "1.94"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -129,8 +129,10 @@ turbojpeg = { version = "1.4.0", default-features = false, features = ["pkg-conf
 tempfile = "3.14"
 
 [profile.release]
+opt-level = 3
 lto = true
 codegen-units = 1
+panic = "abort"
 strip = true
 
 # Keep local development responsive without the massive runtime cliff of

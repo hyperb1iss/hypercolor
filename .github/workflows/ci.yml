@@ -1,0 +1,101 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*.*.*"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_run_id:
+        description: "Run ID of the release workflow (for artifact download)"
+        required: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Rust Workspace ───────────────────────────────────────────
+  rust:
+    uses: hyperb1iss/shared-workflows/.github/workflows/rust-ci.yml@main
+    with:
+      change-detection: true
+      change-filters: |
+        rust:
+          - 'crates/**'
+          - 'Cargo.toml'
+          - 'Cargo.lock'
+          - 'rust-toolchain.toml'
+          - 'deny.toml'
+      system-deps: >-
+        libudev-dev libdbus-1-dev libasound2-dev libturbojpeg0-dev
+        nasm pkg-config lld
+        libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+      workspace: true
+      all-features: false
+      all-targets: true
+      nextest: true
+      cargo-deny: true
+      nightly-fmt: false
+    permissions:
+      contents: read
+      pull-requests: read
+    secrets: inherit
+
+  # ── SDK (TypeScript / Bun) ───────────────────────────────────
+  sdk:
+    name: SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - run: bun run typecheck
+      - run: bun run check
+      - run: bun run build
+
+  # ── Build Artifacts ──────────────────────────────────────────
+  build-artifacts:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [rust, sdk]
+    uses: hyperb1iss/shared-workflows/.github/workflows/rust-build-artifacts.yml@main
+    with:
+      binaries: 'hypercolor hyper'
+      system-deps: >-
+        libudev-dev libdbus-1-dev libasound2-dev libturbojpeg0-dev
+        nasm pkg-config lld
+        libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+      targets: 'linux-amd64 linux-arm64 macos-arm64'
+    permissions:
+      contents: read
+    secrets: inherit
+
+  # ── Create GitHub Release ────────────────────────────────────
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build-artifacts
+    uses: hyperb1iss/shared-workflows/.github/workflows/github-release.yml@main
+    with:
+      attach-artifacts: true
+      release-notes-run-id: ${{ inputs.release_run_id }}
+    permissions:
+      contents: write
+      actions: read
+    secrets: inherit
+
+  # ── Update Homebrew Tap ──────────────────────────────────────
+  update-homebrew:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: create-release
+    uses: hyperb1iss/shared-workflows/.github/workflows/homebrew-update.yml@main
+    with:
+      formula-name: hypercolor
+      description: "Open-source RGB lighting orchestration engine"
+      homepage: "https://github.com/hyperb1iss/hypercolor"
+      binary-names: 'hypercolor hyper'
+    secrets: inherit

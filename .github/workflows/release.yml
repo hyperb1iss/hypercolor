@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Explicit version (e.g., 1.2.3) — leave empty to use bump type"
+        required: false
+        default: ""
+      bump:
+        description: "Version bump type (if version not specified)"
+        required: false
+        type: choice
+        default: "patch"
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: "Dry run (build & test only, skip publish)"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  release:
+    uses: hyperb1iss/shared-workflows/.github/workflows/rust-release.yml@main
+    with:
+      version: ${{ inputs.version }}
+      bump: ${{ inputs.bump }}
+      dry_run: ${{ inputs.dry_run }}
+      system-deps: >-
+        libudev-dev libdbus-1-dev libasound2-dev libturbojpeg0-dev
+        nasm pkg-config lld
+        libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+      workspace: true
+      all-features: false
+      nextest: true
+      generate-release-notes: true
+      pass-run-id: true
+      patch-workspace-dep-versions: true
+    permissions:
+      contents: write
+      actions: write
+    secrets: inherit
