@@ -350,6 +350,78 @@ pub(crate) fn normalize_zone_size_for_editor(
     }
 }
 
+pub(crate) fn drag_zone_to_position(
+    layout: &mut SpatialLayout,
+    zone_id: &str,
+    desired_position: NormalizedPosition,
+) -> bool {
+    let Some(zone_index) = layout.zones.iter().position(|zone| zone.id == zone_id) else {
+        return false;
+    };
+
+    let current_position = layout.zones[zone_index].position;
+    let desired_position = NormalizedPosition::new(
+        desired_position.x.clamp(0.0, 1.0),
+        desired_position.y.clamp(0.0, 1.0),
+    );
+
+    let Some(group_id) = layout.zones[zone_index].group_id.clone() else {
+        let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
+        if current_position == clamped {
+            return false;
+        }
+        layout.zones[zone_index].position = clamped;
+        return true;
+    };
+
+    let member_indices = layout
+        .zones
+        .iter()
+        .enumerate()
+        .filter_map(|(index, zone)| (zone.group_id.as_deref() == Some(group_id.as_str())).then_some(index))
+        .collect::<Vec<_>>();
+
+    if member_indices.len() <= 1 {
+        let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
+        if current_position == clamped {
+            return false;
+        }
+        layout.zones[zone_index].position = clamped;
+        return true;
+    }
+
+    let desired_dx = desired_position.x - current_position.x;
+    let desired_dy = desired_position.y - current_position.y;
+    let mut min_dx = f32::NEG_INFINITY;
+    let mut max_dx = f32::INFINITY;
+    let mut min_dy = f32::NEG_INFINITY;
+    let mut max_dy = f32::INFINITY;
+
+    for index in &member_indices {
+        let zone = &layout.zones[*index];
+        min_dx = min_dx.max(zone.size.x * 0.5 - zone.position.x);
+        max_dx = max_dx.min(1.0 - zone.size.x * 0.5 - zone.position.x);
+        min_dy = min_dy.max(zone.size.y * 0.5 - zone.position.y);
+        max_dy = max_dy.min(1.0 - zone.size.y * 0.5 - zone.position.y);
+    }
+
+    let clamped_dx = desired_dx.clamp(min_dx, max_dx);
+    let clamped_dy = desired_dy.clamp(min_dy, max_dy);
+    if clamped_dx.abs() <= GRID_EPSILON && clamped_dy.abs() <= GRID_EPSILON {
+        return false;
+    }
+
+    for index in member_indices {
+        let zone = &mut layout.zones[index];
+        zone.position = NormalizedPosition::new(
+            zone.position.x + clamped_dx,
+            zone.position.y + clamped_dy,
+        );
+    }
+
+    true
+}
+
 pub(crate) fn resize_zone_from_handle(
     start_center: NormalizedPosition,
     start_size: NormalizedPosition,
@@ -1177,6 +1249,17 @@ fn clamp_strip_size(
     }
 
     NormalizedPosition::new(width, height)
+}
+
+fn clamp_zone_center(position: NormalizedPosition, size: NormalizedPosition) -> NormalizedPosition {
+    NormalizedPosition::new(
+        position
+            .x
+            .clamp(size.x.mul_add(0.5, 0.0).min(1.0), (1.0 - size.x * 0.5).max(0.0)),
+        position
+            .y
+            .clamp(size.y.mul_add(0.5, 0.0).min(1.0), (1.0 - size.y * 0.5).max(0.0)),
+    )
 }
 
 fn available_axis_span(center: f32) -> f32 {

@@ -189,15 +189,11 @@ pub fn LayoutCanvas(
                         let zone_id = drag.zone_id.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
-                                    zone.position.x = norm_x;
-                                    zone.position.y = norm_y;
-                                    zone.size = layout_geometry::normalize_zone_size_for_editor(
-                                        zone.position,
-                                        zone.size,
-                                        &zone.topology,
-                                    );
-                                }
+                                let _ = layout_geometry::drag_zone_to_position(
+                                    layout,
+                                    &zone_id,
+                                    NormalizedPosition::new(norm_x, norm_y),
+                                );
                             }
                         });
                     }

@@ -187,6 +187,168 @@ fn seeded_push2_layout_creates_grouped_device_footprint() {
 }
 
 #[test]
+fn drag_zone_to_position_moves_grouped_members_together() {
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![
+            DeviceZone {
+                id: "zone-a".to_owned(),
+                name: "A".to_owned(),
+                device_id: "usb:a".to_owned(),
+                zone_name: Some("A".to_owned()),
+                group_id: Some("push2".to_owned()),
+                position: NormalizedPosition::new(0.3, 0.4),
+                size: NormalizedPosition::new(0.2, 0.1),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Strip {
+                    count: 8,
+                    direction: StripDirection::LeftToRight,
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: None,
+                edge_behavior: None,
+                shape: Some(ZoneShape::Rectangle),
+                shape_preset: None,
+                display_order: 0,
+                attachment: None,
+            },
+            DeviceZone {
+                id: "zone-b".to_owned(),
+                name: "B".to_owned(),
+                device_id: "usb:a".to_owned(),
+                zone_name: Some("B".to_owned()),
+                group_id: Some("push2".to_owned()),
+                position: NormalizedPosition::new(0.6, 0.6),
+                size: NormalizedPosition::new(0.1, 0.2),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Strip {
+                    count: 8,
+                    direction: StripDirection::TopToBottom,
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: None,
+                edge_behavior: None,
+                shape: Some(ZoneShape::Rectangle),
+                shape_preset: None,
+                display_order: 1,
+                attachment: None,
+            },
+        ],
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    assert!(layout_geometry::drag_zone_to_position(
+        &mut layout,
+        "zone-a",
+        NormalizedPosition::new(0.45, 0.55),
+    ));
+
+    assert!((layout.zones[0].position.x - 0.45).abs() < 0.001);
+    assert!((layout.zones[0].position.y - 0.55).abs() < 0.001);
+    assert!((layout.zones[1].position.x - 0.75).abs() < 0.001);
+    assert!((layout.zones[1].position.y - 0.75).abs() < 0.001);
+}
+
+#[test]
+fn drag_zone_to_position_unlocks_independent_movement_and_clamps_group_bounds() {
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![
+            DeviceZone {
+                id: "zone-a".to_owned(),
+                name: "A".to_owned(),
+                device_id: "usb:a".to_owned(),
+                zone_name: Some("A".to_owned()),
+                group_id: Some("push2".to_owned()),
+                position: NormalizedPosition::new(0.35, 0.4),
+                size: NormalizedPosition::new(0.2, 0.1),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Strip {
+                    count: 8,
+                    direction: StripDirection::LeftToRight,
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: None,
+                edge_behavior: None,
+                shape: Some(ZoneShape::Rectangle),
+                shape_preset: None,
+                display_order: 0,
+                attachment: None,
+            },
+            DeviceZone {
+                id: "zone-b".to_owned(),
+                name: "B".to_owned(),
+                device_id: "usb:a".to_owned(),
+                zone_name: Some("B".to_owned()),
+                group_id: Some("push2".to_owned()),
+                position: NormalizedPosition::new(0.8, 0.4),
+                size: NormalizedPosition::new(0.2, 0.1),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Strip {
+                    count: 8,
+                    direction: StripDirection::LeftToRight,
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: None,
+                edge_behavior: None,
+                shape: Some(ZoneShape::Rectangle),
+                shape_preset: None,
+                display_order: 1,
+                attachment: None,
+            },
+        ],
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    assert!(layout_geometry::drag_zone_to_position(
+        &mut layout,
+        "zone-a",
+        NormalizedPosition::new(0.9, 0.4),
+    ));
+    assert!((layout.zones[0].position.x - 0.45).abs() < 0.001);
+    assert!((layout.zones[1].position.x - 0.9).abs() < 0.001);
+
+    layout.zones[1].group_id = None;
+    assert!(layout_geometry::drag_zone_to_position(
+        &mut layout,
+        "zone-b",
+        NormalizedPosition::new(0.2, 0.7),
+    ));
+    assert!((layout.zones[0].position.x - 0.45).abs() < 0.001);
+    assert!((layout.zones[0].position.y - 0.4).abs() < 0.001);
+    assert!((layout.zones[1].position.x - 0.2).abs() < 0.001);
+    assert!((layout.zones[1].position.y - 0.7).abs() < 0.001);
+}
+
+#[test]
 fn repair_legacy_lcd_defaults_updates_untouched_square_display_zone() {
     let mut layout = SpatialLayout {
         id: "default".to_owned(),
