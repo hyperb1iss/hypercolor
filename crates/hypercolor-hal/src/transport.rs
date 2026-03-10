@@ -12,6 +12,7 @@ pub mod hid;
 pub mod hidapi;
 #[cfg(target_os = "linux")]
 pub mod hidraw;
+pub mod midi;
 pub mod serial;
 pub mod smbus;
 pub mod vendor;

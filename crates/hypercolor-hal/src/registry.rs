@@ -116,6 +116,16 @@ pub enum TransportType {
         report_id: u8,
     },
 
+    /// Composite transport with USB MIDI for control and USB bulk for display.
+    UsbMidi {
+        /// MIDI interface number associated with the device's user port.
+        midi_interface: u8,
+        /// Bulk display interface number to claim.
+        display_interface: u8,
+        /// Bulk OUT endpoint used for display frames.
+        display_endpoint: u8,
+    },
+
     /// USB CDC-ACM serial transport.
     UsbSerial {
         /// Serial port baud rate hint.

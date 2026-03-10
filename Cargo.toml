@@ -3,6 +3,9 @@ members = ["crates/*"]
 exclude = ["crates/hypercolor-ui"]
 resolver = "3"
 
+[patch.crates-io]
+midir = { path = "vendor/midir" }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

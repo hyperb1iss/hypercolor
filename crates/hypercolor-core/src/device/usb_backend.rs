@@ -14,6 +14,7 @@ use hypercolor_hal::transport::bulk::UsbBulkTransport;
 use hypercolor_hal::transport::control::UsbControlTransport;
 use hypercolor_hal::transport::hid::UsbHidTransport;
 use hypercolor_hal::transport::hidapi::UsbHidApiTransport;
+use hypercolor_hal::transport::midi::Push2Transport;
 use hypercolor_hal::transport::serial::UsbSerialTransport;
 use hypercolor_hal::transport::vendor::UsbVendorTransport;
 use hypercolor_hal::transport::{Transport, TransportError};
@@ -358,6 +359,20 @@ impl UsbBackend {
                 interface,
                 report_id,
             } => Self::open_bulk_transport(pending, usb, interface, report_id).await,
+            TransportType::UsbMidi {
+                midi_interface,
+                display_interface,
+                display_endpoint,
+            } => {
+                Self::open_midi_transport(
+                    pending,
+                    usb,
+                    midi_interface,
+                    display_interface,
+                    display_endpoint,
+                )
+                .await
+            }
             TransportType::UsbSerial { baud_rate } => {
                 Self::open_serial_transport(pending, baud_rate)
             }
@@ -416,6 +431,34 @@ impl UsbBackend {
                     "failed to claim USB interface {interface} for bulk transport (report_id=0x{report_id:02X})"
                 )
             })?;
+        Ok(Box::new(transport))
+    }
+
+    async fn open_midi_transport(
+        pending: &PendingUsbDevice,
+        usb: &nusb::DeviceInfo,
+        midi_interface: u8,
+        display_interface: u8,
+        display_endpoint: u8,
+    ) -> Result<Box<dyn Transport>> {
+        let device = Self::open_usb_device(pending, usb).await?;
+        let transport = Push2Transport::new(
+            device,
+            pending.vendor_id,
+            pending.product_id,
+            pending.serial.as_deref(),
+            pending.usb_path.as_deref(),
+            midi_interface,
+            display_interface,
+            display_endpoint,
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "failed to open USB MIDI transport for {:04X}:{:04X} (midi_interface={}, display_interface={}, display_endpoint=0x{display_endpoint:02X})",
+                pending.vendor_id, pending.product_id, midi_interface, display_interface
+            )
+        })?;
         Ok(Box::new(transport))
     }
 
