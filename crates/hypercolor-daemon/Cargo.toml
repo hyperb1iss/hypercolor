@@ -43,6 +43,9 @@ image = { workspace = true }
 turbojpeg = { workspace = true }
 tokio-util = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+sd-notify = "0.4"
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

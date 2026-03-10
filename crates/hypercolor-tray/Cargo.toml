@@ -1,0 +1,42 @@
+[package]
+name = "hypercolor-tray"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "System tray applet for the Hypercolor RGB lighting daemon"
+
+[[bin]]
+name = "hypercolor-tray"
+path = "src/main.rs"
+
+[dependencies]
+# Tray icon (cross-platform: Linux via libappindicator, macOS via AppKit)
+# muda is re-exported by tray-icon as tray_icon::menu — no separate dep needed.
+tray-icon = "0.19"
+
+# Async runtime + HTTP/WS client
+tokio = { workspace = true }
+reqwest = { workspace = true }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling + logging
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Image for tray icon
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Open browser
+open = "5"
+
+[lints]
+workspace = true

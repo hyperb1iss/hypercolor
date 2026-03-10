@@ -101,6 +101,9 @@ async fn main() -> Result<()> {
     }
     info!(bind = %bind, "API server listening");
 
+    notify_ready();
+    spawn_watchdog();
+
     // 7. Install signal handlers for graceful shutdown.
     let mut shutdown_rx = install_signal_handlers();
 
@@ -122,6 +125,34 @@ async fn main() -> Result<()> {
     info!("Hypercolor daemon exited cleanly");
     Ok(())
 }
+
+// ── systemd Integration ────────────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+fn notify_ready() {
+    if let Err(e) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]) {
+        tracing::warn!("failed to notify systemd: {e}");
+    } else {
+        tracing::debug!("notified systemd: READY=1");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn notify_ready() {}
+
+#[cfg(target_os = "linux")]
+fn spawn_watchdog() {
+    tokio::spawn(async {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        loop {
+            interval.tick().await;
+            let _ = sd_notify::notify(false, &[sd_notify::NotifyState::Watchdog]);
+        }
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn spawn_watchdog() {}
 
 fn default_env_filter(log_level: &str) -> String {
     let normalized = log_level.trim().to_ascii_lowercase();

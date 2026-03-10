@@ -70,6 +70,8 @@ pub enum Commands {
     Layouts(commands::layouts::LayoutsArgs),
     /// Configuration management.
     Config(commands::config::ConfigArgs),
+    /// Daemon service lifecycle management.
+    Service(commands::service::ServiceArgs),
     /// Run system diagnostics and health checks.
     Diagnose(commands::diagnose::DiagnoseArgs),
     /// Generate shell completion scripts.
@@ -97,6 +99,7 @@ async fn main() -> Result<()> {
         Commands::Library(args) => commands::library::execute(args, &client, &ctx).await,
         Commands::Layouts(args) => commands::layouts::execute(args, &client, &ctx).await,
         Commands::Config(args) => commands::config::execute(args, &client, &ctx).await,
+        Commands::Service(args) => commands::service::execute(args, &ctx).await,
         Commands::Diagnose(args) => commands::diagnose::execute(args, &client, &ctx).await,
         Commands::Completions(args) => {
             let mut cmd = <Cli as clap::CommandFactory>::command();
