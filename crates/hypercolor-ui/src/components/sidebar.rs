@@ -387,11 +387,12 @@ pub fn Sidebar() -> impl IntoView {
                             {move || {
                                 let mode = logo_mode.get();
                                 match mode {
-                                    // 0: Circuit — the OG
+                                    // 0: Circuit — PCB silkscreen, trace separator, technical precision
                                     0 => view! {
-                                        <div class="logo-circuit flex flex-col items-center leading-none">
-                                            <span class="logo-gradient-text text-[28px] font-bold tracking-[0.15em]">"HYPER"</span>
-                                            <span class="logo-gradient-text text-[28px] font-medium tracking-[0.35em] mt-0.5">"COLOR"</span>
+                                        <div class="logo-circuit flex flex-col items-center leading-none gap-1.5">
+                                            <span class="logo-gradient-text text-[20px] font-semibold tracking-[0.45em]">"HYPER"</span>
+                                            <div class="logo-circuit-trace" />
+                                            <span class="logo-gradient-text text-[20px] font-semibold tracking-[0.45em]">"COLOR"</span>
                                         </div>
                                     }.into_any(),
 
@@ -458,11 +459,11 @@ pub fn Sidebar() -> impl IntoView {
                                         </div>
                                     }.into_any(),
 
-                                    // 8: Glitch — chromatic aberration, edgy
+                                    // 8: Glitch — chromatic aberration, chaotic weight/offset
                                     _ => view! {
-                                        <div class="logo-glitch flex flex-col items-center leading-none">
-                                            <span class="logo-gradient-text text-[28px] font-bold tracking-[0.15em]">"HYPER"</span>
-                                            <span class="logo-gradient-text text-[28px] font-medium tracking-[0.35em] mt-0.5">"COLOR"</span>
+                                        <div class="logo-glitch flex flex-col items-start leading-none">
+                                            <span class="logo-gradient-text text-[32px] font-black tracking-[0.06em]">"HYPER"</span>
+                                            <span class="logo-gradient-text text-[18px] font-light tracking-[0.5em] -mt-1 ml-4">"COLOR"</span>
                                         </div>
                                     }.into_any(),
                                 }
