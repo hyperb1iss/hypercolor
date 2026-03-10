@@ -122,6 +122,16 @@ run-servo-release-bin *args='':
 
 # ─── UI ──────────────────────────────────────────────────
 
+# Run daemon + UI dev server together (daemon on :9420, UI on :9430 proxying API)
+dev *args='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'kill 0' EXIT
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }} &
+    sleep 2
+    cd crates/hypercolor-ui && trunk serve --dist .dist-dev &
+    wait
+
 # Start the UI dev server (Trunk + hot reload on :9430)
 ui-dev:
     cd crates/hypercolor-ui && trunk serve --dist .dist-dev

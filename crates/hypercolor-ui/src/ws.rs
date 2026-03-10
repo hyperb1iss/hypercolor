@@ -428,15 +428,32 @@ impl WsManager {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Build WS URL from current page origin.
+///
+/// When running on the Trunk dev server (:9430), connects directly to the
+/// daemon (:9420) since Trunk's proxy doesn't reliably handle WebSocket
+/// upgrades. In production the daemon serves the UI itself, so same-origin works.
 fn build_ws_url() -> String {
     let window = web_sys::window().expect("no window");
     let location = window.location();
     let protocol = location.protocol().unwrap_or_else(|_| "http:".to_string());
-    let host = location
-        .host()
-        .unwrap_or_else(|_| "127.0.0.1:9420".to_string());
+    let hostname = location
+        .hostname()
+        .unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = location
+        .port()
+        .unwrap_or_default();
 
     let ws_protocol = if protocol == "https:" { "wss:" } else { "ws:" };
+
+    // Trunk dev server → bypass proxy, connect directly to daemon
+    let host = if port == "9430" {
+        format!("{hostname}:9420")
+    } else if port.is_empty() {
+        hostname
+    } else {
+        format!("{hostname}:{port}")
+    };
+
     format!("{ws_protocol}//{host}/api/v1/ws")
 }
 

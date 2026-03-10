@@ -20,7 +20,3 @@ command_arguments = ["@tailwindcss/cli", "-i", "input.css", "-o", "tailwind-out.
 
 [[proxy]]
 backend = "http://127.0.0.1:9420/api"
-
-[[proxy]]
-backend = "http://127.0.0.1:9420/ws"
-ws = true

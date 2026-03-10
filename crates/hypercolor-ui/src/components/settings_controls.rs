@@ -66,11 +66,11 @@ pub fn SettingToggle(
                 }
             >
                 <span
-                    class="absolute top-0.5 w-5 h-5 rounded-full shadow-sm transition-transform duration-200"
+                    class="absolute left-0.5 top-0.5 w-5 h-5 rounded-full shadow-sm transition-transform duration-200"
                     style=move || if value.get() {
                         "transform: translateX(22px); background: rgb(225, 53, 255)"
                     } else {
-                        "transform: translateX(2px); background: rgba(200, 200, 210, 0.6)"
+                        "transform: translateX(0); background: rgba(200, 200, 210, 0.6)"
                     }
                 />
             </button>
