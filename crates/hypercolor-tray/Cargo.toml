@@ -40,8 +40,14 @@ open = "5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSRunningApplication"] }
-objc2-foundation = { version = "0.3", features = ["NSDate", "NSRunLoop"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSRunningApplication", "NSEvent"] }
+objc2-foundation = { version = "0.3", features = ["NSDate", "NSRunLoop", "NSObjCRuntime", "NSString"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }
 
 [lints]
 workspace = true

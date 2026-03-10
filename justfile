@@ -91,6 +91,10 @@ daemon *args='':
 cli *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-cli -- {{ args }}
 
+# Run the system tray applet
+tray *args='':
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-tray -- {{ args }}
+
 # Run the daemon in release mode
 daemon-release *args='':
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --release -- {{ args }}

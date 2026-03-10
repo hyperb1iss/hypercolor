@@ -330,7 +330,8 @@ impl DaemonClient {
                 warn!("Pause/resume toggle not yet implemented in daemon API");
             }
             TrayCommand::OpenWebUi => {
-                open_web_ui(&self.base_url);
+                let url = self.base_url.clone();
+                tokio::task::spawn_blocking(move || open_web_ui(&url));
             }
             TrayCommand::Quit => {
                 // Handled in the event loop before reaching here.

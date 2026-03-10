@@ -27,6 +27,9 @@ use crate::menu::build_menu;
 use crate::state::{AppState, DaemonMessage, EffectInfo, StateUpdate, TrayCommand};
 
 /// Initialize the macOS `NSApplication` and set it to accessory mode (no dock icon).
+///
+/// Without calling `finishLaunching`, the `AppKit` menu subsystem is not fully
+/// initialized, so status-item popup menus will not appear on click.
 #[cfg(target_os = "macos")]
 fn init_platform() {
     use objc2::MainThreadMarker;
@@ -34,31 +37,97 @@ fn init_platform() {
     let mtm = MainThreadMarker::new().expect("must be called from the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    // Complete the launch sequence so AppKit menus work properly.
+    app.finishLaunching();
+    app.activate();
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Initialize GTK on Linux (required by tray-icon's libappindicator backend).
+#[cfg(target_os = "linux")]
+fn init_platform() {
+    gtk::init().expect("failed to initialize GTK");
+}
+
+/// No special initialization needed on Windows.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn init_platform() {}
 
-/// Pump platform events. On macOS this runs the `AppKit` run loop for one tick,
-/// processing pending events (tray icon interactions, menu clicks, etc.).
-/// On other platforms this just sleeps.
+/// Pump platform events on macOS by explicitly pulling events from the
+/// `NSApplication` event queue and dispatching them via `sendEvent:`.
+///
+/// Using `NSRunLoop::runUntilDate` alone does NOT process mouse events through
+/// `NSApplication`, so status-item clicks (and their popup menus) are never
+/// delivered. The `nextEvent`/`sendEvent` loop is the canonical pattern used
+/// by winit, tao, and other non-`[NSApp run]` hosts.
 #[cfg(target_os = "macos")]
 fn pump_events(timeout: Duration) {
-    use objc2_foundation::{NSDate, NSRunLoop};
-    // Run the main run loop for the timeout duration. This processes all pending
-    // AppKit events (menu clicks, tray icon display, etc.) without needing to
-    // access extern statics or use unsafe.
-    let date = NSDate::dateWithTimeIntervalSinceNow(timeout.as_secs_f64());
-    NSRunLoop::mainRunLoop().runUntilDate(&date);
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSEventMask};
+    use objc2_foundation::{NSDate, NSString};
+
+    let mtm = MainThreadMarker::new().expect("pump_events must be called from the main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    let until_date = NSDate::dateWithTimeIntervalSinceNow(timeout.as_secs_f64());
+    // NSDefaultRunLoopMode value — constructed directly to avoid `unsafe` extern static access.
+    let mode = NSString::from_str("kCFRunLoopDefaultMode");
+
+    loop {
+        let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
+            NSEventMask::Any,
+            Some(&until_date),
+            &mode,
+            true,
+        );
+        match event {
+            Some(event) => {
+                app.sendEvent(&event);
+            }
+            None => break,
+        }
+    }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// On Linux, pump the GTK event loop to dispatch menu and tray events.
+#[cfg(target_os = "linux")]
+fn pump_events(_timeout: Duration) {
+    while gtk::events_pending() {
+        gtk::main_iteration_do(false);
+    }
+    // Brief sleep to avoid busy-waiting when no events are pending.
+    std::thread::sleep(Duration::from_millis(16));
+}
+
+/// On Windows, pump the Win32 message loop for tray icon events.
+#[cfg(target_os = "windows")]
+fn pump_events(timeout: Duration) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let mut msg: MSG = unsafe { std::mem::zeroed() };
+        let has_msg = unsafe { PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
+        if has_msg != 0 {
+            unsafe {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        } else if std::time::Instant::now() >= deadline {
+            break;
+        } else {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+/// Fallback for other platforms: just sleep.
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn pump_events(timeout: Duration) {
     std::thread::sleep(timeout);
 }
 
 /// Poll interval for the main event loop (milliseconds).
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const POLL_INTERVAL: Duration = Duration::from_millis(16);
 
 fn main() -> anyhow::Result<()> {
     // Initialize tracing subscriber.
@@ -76,6 +145,11 @@ fn main() -> anyhow::Result<()> {
     // Initialize platform (NSApplication on macOS).
     init_platform();
 
+    // Pump the event loop once before creating the tray icon.
+    // On macOS, the tray icon must be created after the NSApplication
+    // run loop is active to properly register with the system menu bar.
+    pump_events(Duration::from_millis(1));
+
     // Initial state: disconnected.
     let mut app_state = AppState::disconnected();
 
@@ -83,12 +157,15 @@ fn main() -> anyhow::Result<()> {
     let icon = build_icon(IconState::Disconnected)?;
     let tray_menu = build_menu(&app_state)?;
 
-    // Create the tray icon.
+    // Create the tray icon (after the event loop is primed).
     let tray_icon = TrayIconBuilder::new()
         .with_tooltip("Hypercolor")
         .with_icon(icon)
         .with_menu(Box::new(tray_menu))
         .build()?;
+
+    // Pump again to let the system process the new tray icon registration.
+    pump_events(Duration::from_millis(1));
 
     // Channels: daemon -> tray UI (state updates).
     let (daemon_tx, daemon_rx) = mpsc::channel::<DaemonMessage>();
@@ -115,7 +192,12 @@ fn main() -> anyhow::Result<()> {
     info!("Tray applet running; waiting for daemon connection");
 
     // Main event loop on the main thread.
-    loop {
+    let mut running = true;
+    while running {
+        // Pump platform events first so pending clicks/menu interactions are
+        // delivered to the channel receivers before we drain them.
+        pump_events(POLL_INTERVAL);
+
         // Process all pending daemon messages.
         while let Ok(msg) = daemon_rx.try_recv() {
             match msg {
@@ -142,10 +224,14 @@ fn main() -> anyhow::Result<()> {
 
         // Process menu click events.
         while let Ok(event) = menu_channel.try_recv() {
-            handle_menu_event(&event, &app_state, &cmd_tx);
+            if handle_menu_event(&event, &app_state, &cmd_tx) {
+                running = false;
+            }
         }
 
         // Process tray icon click events (left-click opens web UI).
+        // Note: on macOS, click events are NOT fired when a menu is set —
+        // the menu shows automatically. This handler is for Linux.
         while let Ok(event) = tray_channel.try_recv() {
             if let tray_icon::TrayIconEvent::Click {
                 button: tray_icon::MouseButton::Left,
@@ -155,9 +241,13 @@ fn main() -> anyhow::Result<()> {
                 let _ = cmd_tx.send(TrayCommand::OpenWebUi);
             }
         }
-
-        pump_events(POLL_INTERVAL);
     }
+
+    // Drop tray_icon cleanly so platform cleanup (remove status item, delete
+    // temp icon files, etc.) runs via the Drop impl.
+    drop(tray_icon);
+    info!("Tray applet exiting");
+    Ok(())
 }
 
 /// Apply an incremental state update to the app state.
@@ -227,12 +317,12 @@ fn update_tray(tray_icon: &tray_icon::TrayIcon, state: &AppState) {
     }
 }
 
-/// Handle a menu item click event.
+/// Handle a menu item click event. Returns `true` if the applet should quit.
 fn handle_menu_event(
     event: &tray_icon::menu::MenuEvent,
     _state: &AppState,
     cmd_tx: &tokio::sync::mpsc::UnboundedSender<TrayCommand>,
-) {
+) -> bool {
     let id = event.id().as_ref();
 
     match id {
@@ -247,9 +337,7 @@ fn handle_menu_event(
         }
         menu::ids::QUIT => {
             let _ = cmd_tx.send(TrayCommand::Quit);
-            // Give the daemon client a moment to shut down cleanly.
-            std::thread::sleep(Duration::from_millis(100));
-            std::process::exit(0);
+            return true;
         }
         other => {
             if let Some(effect_id) = other.strip_prefix(menu::ids::EFFECT_PREFIX) {
@@ -259,4 +347,5 @@ fn handle_menu_event(
             }
         }
     }
+    false
 }
