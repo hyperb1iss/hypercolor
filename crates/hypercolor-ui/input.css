@@ -222,6 +222,11 @@ input[type="color"]::-webkit-color-swatch {
     to   { opacity: 1; transform: scale(1); }
 }
 
+@keyframes pickerIn {
+    from { opacity: 0; transform: translateX(-50%) scale(0.92) translateY(6px); }
+    to   { opacity: 1; transform: translateX(-50%) scale(1) translateY(0); }
+}
+
 @keyframes popIn {
     0%   { opacity: 0; transform: scale(0.8); }
     70%  { transform: scale(1.04); }
@@ -304,6 +309,7 @@ input[type="color"]::-webkit-color-swatch {
 .animate-slide-in-right { animation: slideInRight 0.35s var(--ease-silk) both; }
 .animate-slide-in-left  { animation: slideInLeft 0.35s var(--ease-silk) both; }
 .animate-scale-in       { animation: scaleIn 0.25s var(--ease-spring) both; }
+.animate-picker-in      { animation: pickerIn 0.2s var(--ease-spring) both; }
 .animate-pop-in         { animation: popIn 0.35s var(--ease-spring) both; }
 .animate-slide-down     { animation: slideDown 0.3s var(--ease-silk) both; }
 .animate-breathe        { animation: breathe 3s ease-in-out infinite; }
@@ -522,9 +528,10 @@ input[type="color"]::-webkit-color-swatch {
 
 /* Color picker popover — floating wheel container */
 .color-picker-popover {
-    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5),
-                0 0 1px rgba(225, 53, 255, 0.15),
-                inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6),
+                0 4px 16px rgba(0, 0, 0, 0.4),
+                0 0 1px rgba(225, 53, 255, 0.12),
+                inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 /* ── Glass (Prism) ───────────────────────────────────────────────────────── */

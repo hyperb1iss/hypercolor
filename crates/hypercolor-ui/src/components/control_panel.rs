@@ -5,6 +5,7 @@
 use leptos::prelude::*;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
+use wasm_bindgen::prelude::*;
 
 use hypercolor_types::canvas::{linear_to_srgb, srgb_to_linear};
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
@@ -37,6 +38,11 @@ pub fn ControlPanel(
 ) -> impl IntoView {
     // Lifted state: which color picker is currently expanded (survives inner re-renders)
     let (expanded_picker_id, set_expanded_picker_id) = signal(Option::<String>::None);
+
+    // Global click-outside handler — closes any open color picker when clicking
+    // outside its popover. Uses document-level mousedown so it works regardless
+    // of sidebar stacking contexts / overflow clipping.
+    install_click_outside_handler(set_expanded_picker_id);
 
     // Group by definition structure only — NOT by control_values.
     // This prevents the entire widget tree from being torn down on every value change.
@@ -93,6 +99,35 @@ pub fn ControlPanel(
             }}
         </div>
     }
+}
+
+/// Install a one-time document-level mousedown listener that closes the color
+/// picker when clicking outside `.color-picker-popover` or `.swatch-glow`.
+/// ControlPanel is effectively a singleton so the leak from `forget()` is fine.
+fn install_click_outside_handler(set_expanded: WriteSignal<Option<String>>) {
+    let handler = Closure::<dyn Fn(web_sys::Event)>::new(move |ev: web_sys::Event| {
+        let inside = ev
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .map(|el| {
+                el.closest(".color-picker-popover")
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    || el.closest(".swatch-glow").ok().flatten().is_some()
+            })
+            .unwrap_or(false);
+
+        if !inside {
+            set_expanded.set(None);
+        }
+    });
+
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        let _ = doc
+            .add_event_listener_with_callback("mousedown", handler.as_ref().unchecked_ref());
+    }
+    handler.forget();
 }
 
 /// A single control widget, dispatched by ControlType.
@@ -266,30 +301,17 @@ fn ControlWidget(
                         </div>
                     </div>
 
-                    // Popover color picker — overlays above the control
+                    // Popover color picker — floats above the control
                     <Show when=move || is_open.get()>
-                        // Backdrop scrim — click anywhere outside to close
                         <div
-                            class="fixed inset-0 z-40 bg-black/20"
-                            on:click={
-                                let picker_id = picker_id.clone();
-                                move |_| {
-                                    set_expanded_picker_id.update(|current| {
-                                        if current.as_deref() == Some(picker_id.as_str()) {
-                                            *current = None;
-                                        }
-                                    });
-                                }
-                            }
-                        />
-                        // Popover panel
-                        <div class="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-50
-                                    w-[260px] rounded-2xl
-                                    bg-surface-sunken/95 backdrop-blur-xl
-                                    border border-edge-subtle
-                                    p-4 space-y-3
-                                    color-picker-popover animate-scale-in">
-
+                            class="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-50
+                                   w-[252px] rounded-2xl
+                                   bg-[#0d0b16]/98 backdrop-blur-xl
+                                   border border-white/[0.06]
+                                   p-3.5 space-y-2.5
+                                   color-picker-popover animate-picker-in"
+                            on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
+                        >
                             // Color wheel canvas
                             <div class="flex justify-center">
                                 <ColorWheel
@@ -301,18 +323,18 @@ fn ControlWidget(
                             // Hex input + preview swatch
                             <div class="flex items-center gap-2">
                                 <div
-                                    class="h-8 w-8 shrink-0 rounded-lg border border-edge-subtle"
+                                    class="h-7 w-7 shrink-0 rounded-lg border border-white/[0.08]"
                                     style=move || format!(
-                                        "background: {}; box-shadow: 0 0 14px {}44",
+                                        "background: {}; box-shadow: 0 0 12px {}55",
                                         color.get(), color.get()
                                     )
                                 />
                                 <input
                                     type="text"
-                                    class="flex-1 rounded-lg border border-edge-subtle bg-surface-overlay/40
+                                    class="flex-1 min-w-0 rounded-lg border border-white/[0.06] bg-white/[0.04]
                                            px-2.5 py-1.5 text-xs font-mono uppercase text-fg-primary
                                            placeholder-fg-tertiary/30 focus:outline-none
-                                           focus:border-accent-muted transition-all duration-150"
+                                           focus:border-accent-muted/50 transition-all duration-150"
                                     maxlength="7"
                                     placeholder="#E135FF"
                                     prop:value=move || hex_input.get()
@@ -335,8 +357,8 @@ fn ControlWidget(
                                     }
                                     on:blur=move |_| {
                                         let next = hex_input.get();
-                                        if normalize_hex(&next).is_some() {
-                                            set_hex_input.set(normalize_hex(&next).expect("validated"));
+                                        if let Some(n) = normalize_hex(&next) {
+                                            set_hex_input.set(n);
                                         } else {
                                             set_hex_input.set(color.get());
                                         }
