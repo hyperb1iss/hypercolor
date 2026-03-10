@@ -271,10 +271,10 @@ impl TransportScanner for WledScanner {
 
         let mut discovered: Vec<DiscoveredDevice> = Vec::with_capacity(candidates.len());
         for (ip, hostname) in candidates {
-            let host_label = hostname.unwrap_or_else(|| ip.to_string());
             let wled_info = match enriched.remove(&ip) {
                 Some(Ok(info)) => Some(info),
                 Some(Err(error)) => {
+                    let host_label = hostname.as_deref().unwrap_or("<unknown>");
                     warn!(
                         ip = %ip,
                         hostname = %host_label,
@@ -285,6 +285,16 @@ impl TransportScanner for WledScanner {
                 }
                 None => None,
             };
+
+            if wled_info.is_none() && hostname.is_none() {
+                debug!(
+                    ip = %ip,
+                    "Skipping stale WLED probe candidate without mDNS hostname or HTTP enrichment"
+                );
+                continue;
+            }
+
+            let host_label = hostname.unwrap_or_else(|| ip.to_string());
 
             discovered.push(Self::build_discovered(&host_label, ip, wled_info.as_ref()));
         }

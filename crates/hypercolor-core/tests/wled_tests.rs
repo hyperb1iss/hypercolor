@@ -933,7 +933,7 @@ async fn backend_disconnect_unknown_fails() {
 }
 
 #[tokio::test]
-async fn backend_disconnect_sends_final_black_frame() {
+async fn backend_disconnect_unused_device_sends_no_packets() {
     let _guard = ddp_test_port_lock().lock().await;
     let receiver = UdpSocket::bind("127.0.0.1:4048")
         .await
@@ -951,6 +951,56 @@ async fn backend_disconnect_sends_final_black_frame() {
         .connect(&device_id)
         .await
         .expect("connect should succeed");
+
+    backend
+        .disconnect(&device_id)
+        .await
+        .expect("disconnect should succeed");
+
+    let mut packet = [0_u8; 64];
+    assert!(
+        timeout(Duration::from_millis(200), receiver.recv_from(&mut packet))
+            .await
+            .is_err(),
+        "unused connect/disconnect should not send any UDP packets"
+    );
+}
+
+#[tokio::test]
+async fn backend_disconnect_sends_final_black_frame_after_output() {
+    let _guard = ddp_test_port_lock().lock().await;
+    let receiver = UdpSocket::bind("127.0.0.1:4048")
+        .await
+        .expect("bind loopback DDP receiver");
+    let mut backend = WledBackend::new(vec![]);
+    backend.set_realtime_http_enabled(false);
+
+    let device_id = DeviceId::new();
+    backend.remember_device(
+        device_id,
+        "127.0.0.1".parse().expect("valid loopback IP"),
+        test_wled_info(4, false, 30, true),
+    );
+    backend
+        .connect(&device_id)
+        .await
+        .expect("connect should succeed");
+
+    let colors = [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]];
+    backend
+        .write_colors(&device_id, &colors)
+        .await
+        .expect("write should succeed");
+
+    let mut first_packet = [0_u8; 64];
+    let (first_len, _) = timeout(
+        Duration::from_millis(200),
+        receiver.recv_from(&mut first_packet),
+    )
+    .await
+    .expect("expected initial DDP frame")
+    .expect("recv initial DDP frame");
+    assert_eq!(first_len, DDP_HEADER_SIZE + 12);
 
     backend
         .disconnect(&device_id)
@@ -1332,6 +1382,18 @@ async fn scanner_shutdown_drains_mdns_status_receiver() {
             .iter()
             .all(|message| !message.contains("failed to send response of shutdown")),
         "unexpected mdns shutdown error logs: {messages:?}"
+    );
+}
+
+#[tokio::test]
+async fn scanner_skips_stale_known_ip_without_enrichment() {
+    let ip: IpAddr = "192.0.2.1".parse().expect("valid documentation IP");
+    let mut scanner = WledScanner::with_known_ips(vec![ip], false, Duration::from_millis(50));
+
+    let discovered = scanner.scan().await.expect("scan should complete");
+    assert!(
+        discovered.is_empty(),
+        "known IPs that cannot be enriched should not surface as placeholder devices"
     );
 }
 

@@ -263,6 +263,10 @@ pub struct WledDevice {
     last_success_at: Option<Instant>,
     /// Timestamp of the most recent frame-size mismatch warning.
     last_size_mismatch_warn_at: Option<Instant>,
+    /// Whether WLED realtime mode has been enabled for this session.
+    realtime_mode_active: bool,
+    /// Whether the device's output stream has been initialized.
+    stream_initialized: bool,
 
     /// Frames successfully sent.
     pub frames_sent: u64,
@@ -913,6 +917,47 @@ impl WledBackend {
         Ok(socket)
     }
 
+    async fn ensure_device_ready_for_output(&mut self, id: &DeviceId) -> Result<()> {
+        let realtime_http_enabled = self.realtime_http_enabled;
+        let device = self
+            .devices
+            .get_mut(id)
+            .with_context(|| format!("WLED device {id} is not connected"))?;
+
+        if device.stream_initialized {
+            return Ok(());
+        }
+
+        if realtime_http_enabled {
+            enter_realtime_mode(device.ip)
+                .await
+                .with_context(|| format!("Failed to enter realtime mode for WLED device {id}"))?;
+            device.realtime_mode_active = true;
+            validate_wled_receiver_config(
+                device.ip,
+                device.protocol,
+                device.color_format,
+                device.e131_start_universe,
+            )
+            .await;
+            if let Err(error) = prime_device(device).await {
+                if let Err(exit_error) = exit_realtime_mode(device.ip).await {
+                    debug!(
+                        device_id = %id,
+                        ip = %device.ip,
+                        error = %exit_error,
+                        "best-effort exit from WLED realtime mode failed after priming error"
+                    );
+                }
+                device.realtime_mode_active = false;
+                return Err(error).with_context(|| format!("Failed to prime WLED device {id}"));
+            }
+        }
+
+        device.stream_initialized = true;
+        Ok(())
+    }
+
     fn allocate_e131_start_universe(
         &mut self,
         color_format: WledColorFormat,
@@ -1062,11 +1107,6 @@ impl DeviceBackend for WledBackend {
             );
         };
         let socket = self.ensure_shared_socket().await?;
-        if self.realtime_http_enabled {
-            enter_realtime_mode(ip)
-                .await
-                .with_context(|| format!("Failed to enter realtime mode for WLED device {id}"))?;
-        }
 
         let port = match self.default_protocol {
             WledProtocol::Ddp => DDP_PORT,
@@ -1083,11 +1123,7 @@ impl DeviceBackend for WledBackend {
         let e131_start_universe =
             self.allocate_e131_start_universe(color_format, wled_info.led_count, protocol);
 
-        if self.realtime_http_enabled {
-            validate_wled_receiver_config(ip, protocol, color_format, e131_start_universe).await;
-        }
-
-        let mut device = WledDevice {
+        let device = WledDevice {
             device_id: *id,
             ip,
             protocol,
@@ -1105,15 +1141,11 @@ impl DeviceBackend for WledBackend {
             consecutive_failures: 0,
             last_success_at: None,
             last_size_mismatch_warn_at: None,
+            realtime_mode_active: false,
+            stream_initialized: false,
             frames_sent: 0,
             last_frame_at: None,
         };
-
-        if self.realtime_http_enabled {
-            prime_device(&mut device)
-                .await
-                .with_context(|| format!("Failed to prime WLED device {id}"))?;
-        }
 
         info!(
             device_id = %id,
@@ -1130,7 +1162,9 @@ impl DeviceBackend for WledBackend {
 
     async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
         if let Some(mut device) = self.devices.remove(id) {
-            if let Err(error) = clear_device(&mut device).await {
+            if device.last_sent_pixels.is_some()
+                && let Err(error) = clear_device(&mut device).await
+            {
                 debug!(
                     device_id = %id,
                     ip = %device.ip,
@@ -1138,7 +1172,7 @@ impl DeviceBackend for WledBackend {
                     "best-effort WLED clear frame failed during disconnect"
                 );
             }
-            if self.realtime_http_enabled
+            if device.realtime_mode_active
                 && let Err(error) = exit_realtime_mode(device.ip).await
             {
                 debug!(
@@ -1156,6 +1190,7 @@ impl DeviceBackend for WledBackend {
     }
 
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        self.ensure_device_ready_for_output(id).await?;
         let device = self
             .devices
             .get_mut(id)
