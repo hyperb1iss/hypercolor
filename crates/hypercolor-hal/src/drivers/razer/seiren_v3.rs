@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+use zerocopy::{FromZeros, IntoBytes, KnownLayout, Immutable};
 
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
@@ -15,7 +16,41 @@ const SEIREN_V3_LED_ORDER: [usize; 10] = [7, 6, 8, 9, 2, 1, 3, 0, 4, 5];
 const SOFTWARE_MODE_DATA_SIZE: u8 = 0x02;
 const MODERN_EFFECT_DATA_SIZE: u8 = 0x06;
 const FRAME_DATA_SIZE: u8 = 0x23;
-const CRC_OFFSET: usize = 61;
+
+const _: () = assert!(
+    std::mem::size_of::<SeirenV3Report>() == SEIREN_V3_PAYLOAD_LEN,
+    "SeirenV3Report must match SEIREN_V3_PAYLOAD_LEN (63 bytes)"
+);
+
+/// Wire-format Razer Seiren V3 HID report (63 bytes).
+///
+/// Compact Razer-family report used by the Seiren V3 Chroma microphone.
+/// Same field layout as the standard 90-byte [`RazerReport`] but with a
+/// smaller args region (53 bytes).
+#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+struct SeirenV3Report {
+    /// Response status (always `0x00` for outgoing requests).
+    status: u8,
+    /// Transaction ID (always `0x1F`).
+    transaction_id: u8,
+    /// Remaining packets (always `0x0000`).
+    remaining_packets: [u8; 2],
+    /// Protocol type marker (always `0x00`).
+    protocol_type: u8,
+    /// Declared argument payload size.
+    data_size: u8,
+    /// Command class.
+    command_class: u8,
+    /// Command ID.
+    command_id: u8,
+    /// Variable-length argument field (up to 53 bytes).
+    args: [u8; 53],
+    /// XOR checksum of bytes `[1..61]`.
+    crc: u8,
+    /// Reserved trailing byte (always `0x00`).
+    reserved: u8,
+}
 
 /// Write-only protocol for the Seiren V3 Chroma microphone ring.
 #[derive(Debug, Clone, Copy, Default)]
@@ -27,8 +62,9 @@ impl SeirenV3Protocol {
         [color[0], color[2], color[1]]
     }
 
-    fn crc(payload: &[u8; SEIREN_V3_PAYLOAD_LEN]) -> u8 {
-        payload[1..].iter().fold(0_u8, |acc, byte| acc ^ byte)
+    fn seiren_crc(report: &SeirenV3Report) -> u8 {
+        let bytes = report.as_bytes();
+        bytes[1..61].iter().fold(0_u8, |acc, byte| acc ^ byte)
     }
 
     fn write_packet(
@@ -38,15 +74,15 @@ impl SeirenV3Protocol {
         command_id: u8,
         args: &[u8],
     ) {
-        let mut payload = [0_u8; SEIREN_V3_PAYLOAD_LEN];
-        payload[1] = SEIREN_V3_TRANSACTION_ID;
-        payload[5] = data_size;
-        payload[6] = command_class;
-        payload[7] = command_id;
-        payload[8..8 + args.len()].copy_from_slice(args);
-        payload[CRC_OFFSET] = Self::crc(&payload);
+        let mut report = SeirenV3Report::new_zeroed();
+        report.transaction_id = SEIREN_V3_TRANSACTION_ID;
+        report.data_size = data_size;
+        report.command_class = command_class;
+        report.command_id = command_id;
+        report.args[..args.len()].copy_from_slice(args);
+        report.crc = Self::seiren_crc(&report);
 
-        buffer.extend_from_slice(&payload);
+        buffer.extend_from_slice(report.as_bytes());
     }
 
     fn build_packet(

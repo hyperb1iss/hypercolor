@@ -1,5 +1,8 @@
 //! Shared framing helpers for Corsair packet formats.
 
+use zerocopy::byteorder::{LittleEndian, U16};
+use zerocopy::{FromZeros, IntoBytes, KnownLayout, Immutable};
+
 /// LINK Hub write buffer geometry.
 pub const LINK_WRITE_BUF_SIZE: usize = 513;
 
@@ -23,6 +26,36 @@ pub const LCD_DATA_PER_PACKET: usize = 1_016;
 
 /// Corsair LCD HID report size.
 pub const LCD_REPORT_SIZE: usize = 32;
+
+const _: () = assert!(
+    std::mem::size_of::<LcdDisplayPacket>() == LCD_PACKET_SIZE,
+    "LcdDisplayPacket must match LCD_PACKET_SIZE (1024 bytes)"
+);
+
+/// Wire-format Corsair LCD display bulk packet (1024 bytes).
+///
+/// Each packet carries up to 1016 bytes of JPEG payload for one display
+/// zone. The final packet in a sequence sets `is_final` to `0x01`.
+#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+struct LcdDisplayPacket {
+    /// Command marker (always `0x02`).
+    command: u8,
+    /// Sub-command marker (always `0x05`).
+    sub_command: u8,
+    /// Target display zone.
+    zone: u8,
+    /// `0x01` for the final packet in the sequence, `0x00` otherwise.
+    is_final: u8,
+    /// Packet sequence number.
+    packet_number: u8,
+    /// Reserved (always `0x00`).
+    reserved: u8,
+    /// Declared payload length (always `LCD_DATA_PER_PACKET`, little-endian).
+    data_length: U16<LittleEndian>,
+    /// JPEG payload (up to 1016 bytes, zero-padded).
+    data: [u8; LCD_DATA_PER_PACKET],
+}
 
 /// Pad a byte slice to a fixed length with zeros.
 #[must_use]
@@ -79,21 +112,18 @@ pub fn build_lcd_display_packet(
     packet_number: u8,
     payload: &[u8],
 ) -> Vec<u8> {
-    let mut packet = vec![0_u8; LCD_PACKET_SIZE];
-    packet[0] = 0x02;
-    packet[1] = 0x05;
-    packet[2] = zone_byte;
-    packet[3] = u8::from(final_packet);
-    packet[4] = packet_number;
-    packet[6..8].copy_from_slice(
-        &u16::try_from(LCD_DATA_PER_PACKET)
-            .unwrap_or(u16::MAX)
-            .to_le_bytes(),
-    );
+    let mut packet = LcdDisplayPacket::new_zeroed();
+    packet.command = 0x02;
+    packet.sub_command = 0x05;
+    packet.zone = zone_byte;
+    packet.is_final = u8::from(final_packet);
+    packet.packet_number = packet_number;
+    packet.data_length =
+        U16::new(u16::try_from(LCD_DATA_PER_PACKET).unwrap_or(u16::MAX));
 
     let copy_len = payload.len().min(LCD_DATA_PER_PACKET);
-    packet[8..8 + copy_len].copy_from_slice(&payload[..copy_len]);
-    packet
+    packet.data[..copy_len].copy_from_slice(&payload[..copy_len]);
+    packet.as_bytes().to_vec()
 }
 
 /// Build a fixed-size Corsair LCD HID feature report.
