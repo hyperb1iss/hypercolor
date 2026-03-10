@@ -42,7 +42,8 @@ fn razer_report_crc_covers_expected_fields() {
 fn crc_uses_expected_byte_window() {
     let mut report = RazerReport::new_zeroed();
     report.transaction_id = 0x12; // byte 1, out of CRC range [2..88]
-    report.remaining_packets = zerocopy::byteorder::U16::<zerocopy::byteorder::LittleEndian>::new(0x0034);
+    report.remaining_packets =
+        zerocopy::byteorder::U16::<zerocopy::byteorder::LittleEndian>::new(0x0034);
 
     // Byte 87 falls in args[79] (args starts at byte 8, so byte 87 = args[79])
     report.args[79] = 0x56;
@@ -227,7 +228,11 @@ fn tartarus_chroma_protocol_initializes_led_effect_and_streams_scalar_color() {
     let protocol = build_tartarus_chroma_protocol();
 
     let init = protocol.init_sequence();
-    assert_eq!(init.len(), 1, "custom backlight effect should be enabled once");
+    assert_eq!(
+        init.len(),
+        1,
+        "custom backlight effect should be enabled once"
+    );
     assert!(!init[0].expects_response);
     assert_eq!(init[0].data[1], 0x1F);
     assert_eq!(init[0].data[5], 0x03);
@@ -251,7 +256,11 @@ fn tartarus_chroma_protocol_initializes_led_effect_and_streams_scalar_color() {
     assert_eq!(commands[0].data[12], 0x56);
 
     let diagnostics = protocol.connection_diagnostics();
-    assert_eq!(diagnostics.len(), 1, "write-only path should expose a probe");
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "write-only path should expose a probe"
+    );
     assert!(diagnostics[0].expects_response);
     assert_eq!(diagnostics[0].data[6], 0x00);
     assert_eq!(diagnostics[0].data[7], 0x82);

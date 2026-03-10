@@ -70,6 +70,10 @@ impl UsbHidRawTransport {
         clippy::too_many_arguments,
         reason = "HID device selection needs transport metadata, identity filters, and collection filters together"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "HID device matching logic is sequential with clear stages — splitting would obscure the flow"
+    )]
     pub async fn open(
         vendor_id: u16,
         product_id: u16,
@@ -490,7 +494,9 @@ fn map_error_detail(detail: String) -> TransportError {
 }
 
 fn hidraw_sysfs_path(device_id: &DeviceId) -> &Path {
-    let DeviceId::DevPath(path) = device_id;
+    let DeviceId::DevPath(path) = device_id else {
+        unreachable!("only DevPath variant exists on Linux")
+    };
     path.as_path()
 }
 

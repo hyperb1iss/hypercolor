@@ -243,9 +243,8 @@ async fn probe_dram_bus(bus_path: &str) -> Result<Vec<SmBusProbe>> {
 
     let mut remapped_addresses = Vec::new();
     if hub_present {
-        let hub_transport = match SmBusTransport::open(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS) {
-            Ok(transport) => transport,
-            Err(_) => return Ok(Vec::new()),
+        let Ok(hub_transport) = SmBusTransport::open(bus_path, ASUS_DRAM_REMAP_HUB_ADDRESS) else {
+            return Ok(Vec::new());
         };
 
         let mut next_address_index = 0_usize;
@@ -351,6 +350,10 @@ async fn probe_bus_address(
 }
 
 #[cfg(target_os = "linux")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "SMBus probe walks sequential register reads with per-vendor branching"
+)]
 async fn probe_with_transport(
     transport: &SmBusTransport,
     bus_path: &str,

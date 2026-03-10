@@ -8,11 +8,11 @@ use hypercolor_hal::drivers::razer::{
     PID_BASILISK_V3, PID_BLADE_15_LATE_2021_ADVANCED, PID_SEIREN_V3_CHROMA, RAZER_VENDOR_ID,
     RazerReport, razer_crc,
 };
-use zerocopy::{FromZeros, IntoBytes};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus};
 use hypercolor_hal::transport::Transport;
 use hypercolor_hal::transport::control::UsbControlTransport;
 use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
+use zerocopy::{FromZeros, IntoBytes};
 
 const HARDWARE_TEST_ENV: &str = "HYPERCOLOR_TEST_RAZER_HARDWARE";
 const RESPONSE_TIMEOUT: Duration = Duration::from_millis(1_000);
@@ -426,6 +426,11 @@ async fn basilisk_v3_interface_3_color_probe() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 #[ignore = "manual Basilisk V3 packet diagnostics on connected hardware"]
+#[allow(
+    clippy::too_many_lines,
+    clippy::similar_names,
+    reason = "manual diagnostic test exercising raw HID packet sequences"
+)]
 async fn basilisk_v3_signalrgb_sequence_diagnostics() -> Result<(), Box<dyn Error>> {
     if !hardware_tests_enabled() {
         eprintln!("skipping hardware smoke test; set {HARDWARE_TEST_ENV}=1 to enable it");

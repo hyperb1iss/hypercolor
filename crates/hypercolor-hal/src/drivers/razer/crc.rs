@@ -62,8 +62,8 @@ pub fn razer_crc(report: &RazerReport) -> u8 {
 
     // Horizontal XOR: fold all 8 bytes of the accumulator into one
     let bytes = acc.to_ne_bytes();
-    let mut result = bytes[0] ^ bytes[1] ^ bytes[2] ^ bytes[3]
-        ^ bytes[4] ^ bytes[5] ^ bytes[6] ^ bytes[7];
+    let mut result =
+        bytes[0] ^ bytes[1] ^ bytes[2] ^ bytes[3] ^ bytes[4] ^ bytes[5] ^ bytes[6] ^ bytes[7];
 
     for &byte in remainder {
         result ^= byte;

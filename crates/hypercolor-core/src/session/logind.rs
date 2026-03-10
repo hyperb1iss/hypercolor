@@ -109,6 +109,10 @@ enum RunResult {
     Reconnect,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "logind session monitor is a single event loop with sequential D-Bus setup"
+)]
 async fn run_logind_monitor_once(
     suspend_fade: Duration,
     tx: &mpsc::Sender<SessionEvent>,

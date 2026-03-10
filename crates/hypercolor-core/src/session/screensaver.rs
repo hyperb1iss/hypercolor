@@ -168,9 +168,9 @@ async fn run_screensaver_monitor_once(
     }
 }
 
-async fn connect_screensaver_proxy<'a>(
-    connection: &'a Connection,
-) -> anyhow::Result<(ScreensaverCandidate, Proxy<'a>)> {
+async fn connect_screensaver_proxy(
+    connection: &Connection,
+) -> anyhow::Result<(ScreensaverCandidate, Proxy<'_>)> {
     for candidate in SCREENSAVER_CANDIDATES {
         match Proxy::new(
             connection,

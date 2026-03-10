@@ -223,7 +223,7 @@ impl SmBusTransport {
     pub fn open<P: AsRef<Path>>(path: P, address: u16) -> Result<Self, TransportError> {
         let path_string = path.as_ref().display().to_string();
         let device = LinuxI2CDevice::new(path.as_ref(), address)
-            .map_err(|error| map_linux_i2c_error(&path_string, address, error))?;
+            .map_err(|error| map_linux_i2c_error(&path_string, address, &error))?;
 
         Ok(Self {
             path: path_string,
@@ -246,7 +246,7 @@ impl SmBusTransport {
     pub fn probe_presence<P: AsRef<Path>>(path: P, address: u16) -> Result<bool, TransportError> {
         let path_string = path.as_ref().display().to_string();
         let mut device = LinuxI2CDevice::new(path.as_ref(), address)
-            .map_err(|error| map_linux_i2c_error(&path_string, address, error))?;
+            .map_err(|error| map_linux_i2c_error(&path_string, address, &error))?;
 
         if device.smbus_write_quick(false).is_ok() {
             return Ok(true);
@@ -270,7 +270,7 @@ impl SmBusTransport {
     ) -> Result<bool, TransportError> {
         let path_string = path.as_ref().display().to_string();
         let mut device = LinuxI2CDevice::new(path.as_ref(), address)
-            .map_err(|error| map_linux_i2c_error(&path_string, address, error))?;
+            .map_err(|error| map_linux_i2c_error(&path_string, address, &error))?;
 
         Ok(device.smbus_write_quick(false).is_ok())
     }
@@ -297,18 +297,18 @@ impl SmBusTransport {
             match operation {
                 SmBusOperation::WriteWordData { register, value } => device
                     .smbus_write_word_data(*register, *value)
-                    .map_err(|error| map_linux_i2c_error(path, address, error))?,
+                    .map_err(|error| map_linux_i2c_error(path, address, &error))?,
                 SmBusOperation::WriteByteData { register, value } => device
                     .smbus_write_byte_data(*register, *value)
-                    .map_err(|error| map_linux_i2c_error(path, address, error))?,
+                    .map_err(|error| map_linux_i2c_error(path, address, &error))?,
                 SmBusOperation::ReadByteData { register } => reads.push(
                     device
                         .smbus_read_byte_data(*register)
-                        .map_err(|error| map_linux_i2c_error(path, address, error))?,
+                        .map_err(|error| map_linux_i2c_error(path, address, &error))?,
                 ),
                 SmBusOperation::WriteBlockData { register, data } => device
                     .smbus_write_block_data(*register, data)
-                    .map_err(|error| map_linux_i2c_error(path, address, error))?,
+                    .map_err(|error| map_linux_i2c_error(path, address, &error))?,
                 SmBusOperation::Delay { duration } => std::thread::sleep(*duration),
             }
         }
@@ -429,7 +429,7 @@ impl Transport for SmBusTransport {
 }
 
 #[cfg(target_os = "linux")]
-fn map_linux_i2c_error(path: &str, address: u16, error: LinuxI2CError) -> TransportError {
+fn map_linux_i2c_error(path: &str, address: u16, error: &LinuxI2CError) -> TransportError {
     let detail = format!("{error} (path={path}, address=0x{address:02X})");
     let lowered = detail.to_ascii_lowercase();
 

@@ -1,7 +1,7 @@
 //! Shared framing helpers for Corsair packet formats.
 
 use zerocopy::byteorder::{LittleEndian, U16};
-use zerocopy::{FromZeros, IntoBytes, KnownLayout, Immutable};
+use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 /// LINK Hub write buffer geometry.
 pub const LINK_WRITE_BUF_SIZE: usize = 513;
@@ -118,8 +118,7 @@ pub fn build_lcd_display_packet(
     packet.zone = zone_byte;
     packet.is_final = u8::from(final_packet);
     packet.packet_number = packet_number;
-    packet.data_length =
-        U16::new(u16::try_from(LCD_DATA_PER_PACKET).unwrap_or(u16::MAX));
+    packet.data_length = U16::new(u16::try_from(LCD_DATA_PER_PACKET).unwrap_or(u16::MAX));
 
     let copy_len = payload.len().min(LCD_DATA_PER_PACKET);
     packet.data[..copy_len].copy_from_slice(&payload[..copy_len]);

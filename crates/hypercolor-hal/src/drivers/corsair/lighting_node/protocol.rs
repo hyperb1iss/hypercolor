@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
 use tracing::warn;
-use zerocopy::{FromZeros, IntoBytes, KnownLayout, Immutable};
+use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::drivers::corsair::CORSAIR_KEEPALIVE_INTERVAL;
 use crate::drivers::corsair::framing::LN_WRITE_BUF_SIZE;

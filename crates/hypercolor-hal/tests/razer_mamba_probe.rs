@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use hypercolor_hal::database::ProtocolDatabase;
 use hypercolor_hal::drivers::razer::{RAZER_VENDOR_ID, RazerReport, razer_crc};
-use zerocopy::{FromZeros, IntoBytes};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus};
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_hal::transport::Transport;
@@ -11,6 +10,7 @@ use hypercolor_hal::transport::Transport;
 use hypercolor_hal::transport::hidapi::UsbHidApiTransport;
 #[cfg(target_os = "linux")]
 use hypercolor_hal::transport::hidraw::UsbHidRawTransport;
+use zerocopy::{FromZeros, IntoBytes};
 
 const HARDWARE_TEST_ENV: &str = "HYPERCOLOR_TEST_RAZER_HARDWARE";
 const PID_MAMBA_ELITE: u16 = 0x006C;

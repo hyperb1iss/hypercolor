@@ -7,7 +7,7 @@ use std::time::Duration;
 use std::fs;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
-use zerocopy::{FromZeros, IntoBytes, KnownLayout, Immutable};
+use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,

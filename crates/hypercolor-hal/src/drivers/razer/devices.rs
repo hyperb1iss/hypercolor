@@ -1187,7 +1187,10 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         HID_REPORT_ID_DEFAULT,
         Some(0x0001),
         Some(0x0002),
-        &[(0x0C01, "Razer Goliathus"), (0x0C02, "Razer Goliathus Extended")],
+        &[
+            (0x0C01, "Razer Goliathus"),
+            (0x0C02, "Razer Goliathus Extended"),
+        ],
     );
     push_hidapi_group(
         &mut descriptors,
@@ -1214,7 +1217,10 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         HID_REPORT_ID_DEFAULT,
         Some(0x0001),
         Some(0x0002),
-        &[(0x005C, "Razer DeathAdder Elite"), (0x0069, "Razer Mamba Hyperflux (Wired)")],
+        &[
+            (0x005C, "Razer DeathAdder Elite"),
+            (0x0069, "Razer Mamba Hyperflux (Wired)"),
+        ],
     );
     push_hidapi_group(
         &mut descriptors,
@@ -1260,7 +1266,10 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         HID_REPORT_ID_DEFAULT,
         Some(0x0001),
         Some(0x0002),
-        &[(0x0C04, "Razer Firefly V2"), (0x0C05, "Razer Strider Chroma")],
+        &[
+            (0x0C04, "Razer Firefly V2"),
+            (0x0C05, "Razer Strider Chroma"),
+        ],
     );
     push_hidapi_group(
         &mut descriptors,
@@ -1408,7 +1417,10 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         HID_REPORT_ID_DEFAULT,
         Some(0x0001),
         Some(0x0002),
-        &[(0x008F, "Razer Naga Pro (Wired)"), (0x0090, "Razer Naga Pro (Wireless)")],
+        &[
+            (0x008F, "Razer Naga Pro (Wired)"),
+            (0x0090, "Razer Naga Pro (Wireless)"),
+        ],
     );
     push_hidapi_group(
         &mut descriptors,
@@ -1418,7 +1430,10 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         HID_REPORT_ID_DEFAULT,
         Some(0x0001),
         Some(0x0002),
-        &[(0x0093, "Razer Naga Classic"), (0x008D, "Razer Naga Left Handed")],
+        &[
+            (0x0093, "Razer Naga Classic"),
+            (0x008D, "Razer Naga Left Handed"),
+        ],
     );
     push_hidapi_group(
         &mut descriptors,
@@ -1428,7 +1443,10 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         HID_REPORT_ID_DEFAULT,
         Some(0x0001),
         Some(0x0002),
-        &[(0x0F1D, "Razer Mouse Bungee V3 Chroma"), (0x0F20, "Razer Base Station V2 Chroma")],
+        &[
+            (0x0F1D, "Razer Mouse Bungee V3 Chroma"),
+            (0x0F20, "Razer Base Station V2 Chroma"),
+        ],
     );
     push_hidapi_group(
         &mut descriptors,
@@ -1448,7 +1466,10 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         HID_REPORT_ID_DEFAULT,
         Some(0x0001),
         Some(0x0002),
-        &[(0x00AF, "Razer Cobra Pro (Wired)"), (0x00B0, "Razer Cobra Pro (Wireless)")],
+        &[
+            (0x00AF, "Razer Cobra Pro (Wired)"),
+            (0x00B0, "Razer Cobra Pro (Wireless)"),
+        ],
     );
     push_hidapi_group(
         &mut descriptors,
@@ -1463,8 +1484,14 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
             (0x00AB, "Razer Basilisk V3 Pro (Wireless)"),
             (0x00CC, "Razer Basilisk V3 Pro 35K (Wired)"),
             (0x00CD, "Razer Basilisk V3 Pro 35K (Wireless)"),
-            (0x00D6, "Razer Basilisk V3 Pro 35K Phantom Green Edition (Wired)"),
-            (0x00D7, "Razer Basilisk V3 Pro 35K Phantom Green Edition (Wireless)"),
+            (
+                0x00D6,
+                "Razer Basilisk V3 Pro 35K Phantom Green Edition (Wired)",
+            ),
+            (
+                0x00D7,
+                "Razer Basilisk V3 Pro 35K Phantom Green Edition (Wireless)",
+            ),
         ],
     );
     push_hidapi_group(
@@ -1475,7 +1502,10 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         HID_REPORT_ID_DEFAULT,
         Some(0x0001),
         Some(0x0002),
-        &[(0x0086, "Razer Basilisk Ultimate"), (0x0088, "Razer Basilisk Ultimate (Wireless)")],
+        &[
+            (0x0086, "Razer Basilisk Ultimate"),
+            (0x0088, "Razer Basilisk Ultimate (Wireless)"),
+        ],
     );
     push_hidapi_group(
         &mut descriptors,
@@ -1485,7 +1515,10 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         HID_REPORT_ID_DEFAULT,
         Some(0x0001),
         Some(0x0002),
-        &[(0x0F0D, "Razer Laptop Stand Chroma"), (0x0F2B, "Razer Laptop Stand Chroma V2")],
+        &[
+            (0x0F0D, "Razer Laptop Stand Chroma"),
+            (0x0F2B, "Razer Laptop Stand Chroma V2"),
+        ],
     );
     push_hidapi_group(
         &mut descriptors,
@@ -1575,7 +1608,10 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         HID_REPORT_ID_DEFAULT,
         Some(0x0001),
         Some(0x0000),
-        &[(0x0287, "Razer Blackwidow V4"), (0x028D, "Razer Blackwidow V4 Pro")],
+        &[
+            (0x0287, "Razer Blackwidow V4"),
+            (0x028D, "Razer Blackwidow V4 Pro"),
+        ],
     );
 
     push_hidapi_group(
