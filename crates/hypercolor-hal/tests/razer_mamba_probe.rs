@@ -2,7 +2,8 @@ use std::error::Error;
 use std::time::Duration;
 
 use hypercolor_hal::database::ProtocolDatabase;
-use hypercolor_hal::drivers::razer::{RAZER_REPORT_LEN, RAZER_VENDOR_ID, razer_crc};
+use hypercolor_hal::drivers::razer::{RAZER_VENDOR_ID, RazerReport, razer_crc};
+use zerocopy::{FromZeros, IntoBytes};
 use hypercolor_hal::protocol::{Protocol, ProtocolCommand, ResponseStatus};
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_hal::transport::Transport;
@@ -47,14 +48,14 @@ fn raw_razer_packet(
     command_id: u8,
     args: &[u8],
 ) -> Vec<u8> {
-    let mut packet = [0_u8; RAZER_REPORT_LEN];
-    packet[1] = transaction_id;
-    packet[5] = data_size;
-    packet[6] = command_class;
-    packet[7] = command_id;
-    packet[8..8 + args.len()].copy_from_slice(args);
-    packet[88] = razer_crc(&packet);
-    packet.to_vec()
+    let mut report = RazerReport::new_zeroed();
+    report.transaction_id = transaction_id;
+    report.data_size = data_size;
+    report.command_class = command_class;
+    report.command_id = command_id;
+    report.args[..args.len()].copy_from_slice(args);
+    report.crc = razer_crc(&report);
+    report.as_bytes().to_vec()
 }
 
 async fn run_commands(

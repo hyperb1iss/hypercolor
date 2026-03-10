@@ -93,6 +93,9 @@ device_query = "4.0.1"
 # HTTP client
 reqwest = { version = "0.12", features = ["json"] }
 
+# Zero-copy byte reinterpretation for wire-format protocol structs
+zerocopy = { version = "0.8", features = ["derive"] }
+
 # Network / device backends
 mdns-sd = "0.11"
 tonic = "0.12"

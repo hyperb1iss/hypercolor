@@ -11,19 +11,16 @@ use crate::protocol::{
     ResponseStatus, TransferType,
 };
 
-use super::crc::{RAZER_REPORT_LEN, razer_crc};
+use zerocopy::{FromBytes, FromZeros, IntoBytes};
+
+use super::crc::{RAZER_REPORT_LEN, RazerReport, razer_crc};
 use super::types::{
     EFFECT_CUSTOM_FRAME, LED_ID_BACKLIGHT, LED_ID_LOGO, LED_ID_SCROLL_WHEEL, LED_ID_ZERO, NOSTORE,
     RazerLightingCommandSet, RazerMatrixType, RazerProtocolVersion,
 };
 
-const STATUS_OFFSET: usize = 0;
-const DATA_SIZE_OFFSET: usize = 5;
-const COMMAND_CLASS_OFFSET: usize = 6;
-const COMMAND_ID_OFFSET: usize = 7;
-const ARGS_OFFSET: usize = 8;
+/// Maximum argument payload size within a [`RazerReport`].
 const ARGS_LEN: usize = 80;
-const CRC_OFFSET: usize = 88;
 const STANDARD_MATRIX_FRAME_DATA_SIZE: u8 = 0x46;
 // Modern custom-effect activation declares a 6-byte payload even though the
 // meaningful arguments only consume 5 bytes.
@@ -455,16 +452,16 @@ impl RazerProtocol {
             return None;
         }
 
-        let mut packet = [0_u8; RAZER_REPORT_LEN];
-        packet[1] = transaction_id;
-        packet[DATA_SIZE_OFFSET] = data_size;
-        packet[COMMAND_CLASS_OFFSET] = command_class;
-        packet[COMMAND_ID_OFFSET] = command_id;
-        packet[ARGS_OFFSET..ARGS_OFFSET + args.len()].copy_from_slice(args);
-        packet[CRC_OFFSET] = razer_crc(&packet);
+        let mut report = RazerReport::new_zeroed();
+        report.transaction_id = transaction_id;
+        report.data_size = data_size;
+        report.command_class = command_class;
+        report.command_id = command_id;
+        report.args[..args.len()].copy_from_slice(args);
+        report.crc = razer_crc(&report);
 
         Some(ProtocolCommand {
-            data: packet.to_vec(),
+            data: report.as_bytes().to_vec(),
             expects_response,
             response_delay: if expects_response {
                 self.response_delay
@@ -819,33 +816,31 @@ impl Protocol for RazerProtocol {
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
-        if data.len() < RAZER_REPORT_LEN {
-            return Err(ProtocolError::MalformedResponse {
+        // Use read_from_prefix — NOT read_from_bytes — because HID transport
+        // can return >90 byte buffers (report ID still attached from decode
+        // fallback in hidapi/hidraw).
+        let (report, _remainder) =
+            RazerReport::read_from_prefix(data).map_err(|_| ProtocolError::MalformedResponse {
                 detail: format!(
                     "expected at least {} bytes, got {}",
                     RAZER_REPORT_LEN,
                     data.len()
                 ),
-            });
-        }
+            })?;
 
-        let mut report = [0_u8; RAZER_REPORT_LEN];
-        report.copy_from_slice(&data[..RAZER_REPORT_LEN]);
-
-        let status = Self::map_status(report[STATUS_OFFSET]);
+        let status = Self::map_status(report.status);
         if status == ResponseStatus::Failed {
             return Err(ProtocolError::DeviceError { status });
         }
 
-        let data_size = usize::from(report[DATA_SIZE_OFFSET]);
+        let data_size = usize::from(report.data_size);
         if data_size > ARGS_LEN {
             return Err(ProtocolError::MalformedResponse {
                 detail: format!("data size exceeds arguments field: {data_size}"),
             });
         }
 
-        let payload_end = ARGS_OFFSET + data_size;
-        let payload = report[ARGS_OFFSET..payload_end].to_vec();
+        let payload = report.args[..data_size].to_vec();
 
         Ok(ProtocolResponse {
             status,

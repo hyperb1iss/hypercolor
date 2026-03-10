@@ -1,21 +1,56 @@
 use hypercolor_hal::drivers::razer::{
     LED_ID_BACKLIGHT, LED_ID_LOGO, RAZER_REPORT_LEN, RazerLightingCommandSet, RazerMatrixType,
-    RazerProtocol, RazerProtocolVersion, build_basilisk_v3_protocol, build_blade_14_2021_protocol,
-    build_blade_15_late_2021_advanced_protocol, build_huntsman_v2_protocol,
-    build_mamba_elite_protocol, build_seiren_v3_protocol, build_tartarus_chroma_protocol,
-    razer_crc,
+    RazerProtocol, RazerProtocolVersion, RazerReport, build_basilisk_v3_protocol,
+    build_blade_14_2021_protocol, build_blade_15_late_2021_advanced_protocol,
+    build_huntsman_v2_protocol, build_mamba_elite_protocol, build_seiren_v3_protocol,
+    build_tartarus_chroma_protocol, razer_crc,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolError, ResponseStatus};
 use hypercolor_types::device::DeviceTopologyHint;
+use zerocopy::{FromZeros, IntoBytes};
+
+#[test]
+fn razer_report_struct_matches_wire_format() {
+    assert_eq!(
+        std::mem::size_of::<RazerReport>(),
+        RAZER_REPORT_LEN,
+        "RazerReport must be exactly 90 bytes to match the HID wire format"
+    );
+}
+
+#[test]
+fn razer_report_crc_covers_expected_fields() {
+    let mut report = RazerReport::new_zeroed();
+    report.transaction_id = 0x1F;
+    report.data_size = 3;
+    report.command_class = 0x0F;
+    report.command_id = 0x02;
+    report.args[0] = 0xAA;
+    report.args[1] = 0xBB;
+    report.args[2] = 0xCC;
+
+    let crc = razer_crc(&report);
+
+    // CRC is XOR of bytes [2..88]. transaction_id is at byte 1 (excluded).
+    // Bytes 2-4 are zero (remaining_packets + protocol_type).
+    // data_size=3, command_class=0x0F, command_id=0x02, args=[0xAA, 0xBB, 0xCC, 0, ...]
+    let expected = 3_u8 ^ 0x0F ^ 0x02 ^ 0xAA ^ 0xBB ^ 0xCC;
+    assert_eq!(crc, expected);
+}
 
 #[test]
 fn crc_uses_expected_byte_window() {
-    let mut packet = [0_u8; RAZER_REPORT_LEN];
-    packet[1] = 0x12; // Out of CRC range
-    packet[2] = 0x34;
-    packet[87] = 0x56;
+    let mut report = RazerReport::new_zeroed();
+    report.transaction_id = 0x12; // byte 1, out of CRC range [2..88]
+    report.remaining_packets = zerocopy::byteorder::U16::<zerocopy::byteorder::LittleEndian>::new(0x0034);
 
-    assert_eq!(razer_crc(&packet), 0x34 ^ 0x56);
+    // Byte 87 falls in args[79] (args starts at byte 8, so byte 87 = args[79])
+    report.args[79] = 0x56;
+
+    // CRC window is bytes [2..88]. remaining_packets occupies bytes 2-3.
+    // 0x34 is at byte 2 (LE low byte), 0x00 at byte 3.
+    // args[79]=0x56 is at byte 87.
+    assert_eq!(razer_crc(&report), 0x34 ^ 0x56);
 }
 
 #[test]
@@ -449,19 +484,19 @@ fn parse_response_reads_payload_on_success() {
         LED_ID_BACKLIGHT,
     );
 
-    let mut report = [0_u8; RAZER_REPORT_LEN];
-    report[0] = 0x02; // Ok
-    report[1] = 0x3F;
-    report[5] = 3;
-    report[6] = 0x00;
-    report[7] = 0x81;
-    report[8] = 0xAA;
-    report[9] = 0xBB;
-    report[10] = 0xCC;
-    report[88] = razer_crc(&report);
+    let mut report = RazerReport::new_zeroed();
+    report.status = 0x02; // Ok
+    report.transaction_id = 0x3F;
+    report.data_size = 3;
+    report.command_class = 0x00;
+    report.command_id = 0x81;
+    report.args[0] = 0xAA;
+    report.args[1] = 0xBB;
+    report.args[2] = 0xCC;
+    report.crc = razer_crc(&report);
 
     let parsed = protocol
-        .parse_response(&report)
+        .parse_response(report.as_bytes())
         .expect("response should parse");
 
     assert_eq!(parsed.status, ResponseStatus::Ok);
@@ -478,15 +513,15 @@ fn parse_response_accepts_crc_mismatch() {
         LED_ID_BACKLIGHT,
     );
 
-    let mut report = [0_u8; RAZER_REPORT_LEN];
-    report[0] = 0x02;
-    report[1] = 0x3F;
-    report[5] = 1;
-    report[8] = 0xAA;
-    report[88] = 0x00;
+    let mut report = RazerReport::new_zeroed();
+    report.status = 0x02;
+    report.transaction_id = 0x3F;
+    report.data_size = 1;
+    report.args[0] = 0xAA;
+    report.crc = 0x00; // Intentional mismatch
 
     let parsed = protocol
-        .parse_response(&report)
+        .parse_response(report.as_bytes())
         .expect("CRC mismatch should not reject otherwise valid response");
 
     assert_eq!(parsed.status, ResponseStatus::Ok);
@@ -503,13 +538,13 @@ fn parse_response_propagates_device_failure() {
         LED_ID_BACKLIGHT,
     );
 
-    let mut report = [0_u8; RAZER_REPORT_LEN];
-    report[0] = 0x03; // Fail
-    report[1] = 0x3F;
-    report[88] = razer_crc(&report);
+    let mut report = RazerReport::new_zeroed();
+    report.status = 0x03; // Fail
+    report.transaction_id = 0x3F;
+    report.crc = razer_crc(&report);
 
     let error = protocol
-        .parse_response(&report)
+        .parse_response(report.as_bytes())
         .expect_err("failed status should error");
 
     match error {

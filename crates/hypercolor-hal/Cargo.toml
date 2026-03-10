@@ -19,6 +19,7 @@ tracing = { workspace = true }
 nusb = { workspace = true }
 tokio = { workspace = true }
 tokio-serial = "5"
+zerocopy = { workspace = true }
 hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw", "macos-shared-device"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
