@@ -1657,6 +1657,7 @@ fn preview_attachment_zones(bindings: &[ResolvedAttachmentBinding]) -> Vec<Attac
         }
     }
 
+    disambiguate_attachment_zone_names(&mut zones);
     zones
 }
 
@@ -1689,6 +1690,7 @@ fn suggested_attachment_zones(
         }
     }
 
+    disambiguate_attachment_zone_names(&mut zones);
     zones
 }
 
@@ -1702,6 +1704,62 @@ fn preview_attachment_zone_name(binding: &ResolvedAttachmentBinding, instance: u
             format!("{} {}", binding.template.name, instance + 1)
         }
         None => binding.template.name.clone(),
+    }
+}
+
+trait NamedAttachmentZone {
+    fn slot_id(&self) -> &str;
+    fn name(&self) -> &str;
+    fn name_mut(&mut self) -> &mut String;
+}
+
+impl NamedAttachmentZone for AttachmentPreviewZone {
+    fn slot_id(&self) -> &str {
+        &self.slot_id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn name_mut(&mut self) -> &mut String {
+        &mut self.name
+    }
+}
+
+impl NamedAttachmentZone for AttachmentSuggestedZone {
+    fn slot_id(&self) -> &str {
+        &self.slot_id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn name_mut(&mut self) -> &mut String {
+        &mut self.name
+    }
+}
+
+fn disambiguate_attachment_zone_names<T: NamedAttachmentZone>(zones: &mut [T]) {
+    let mut totals = HashMap::<(String, String), usize>::new();
+    for zone in &*zones {
+        *totals
+            .entry((zone.slot_id().to_owned(), zone.name().to_owned()))
+            .or_insert(0) += 1;
+    }
+
+    let mut seen = HashMap::<(String, String), usize>::new();
+    for zone in zones {
+        let base_name = zone.name().to_owned();
+        let key = (zone.slot_id().to_owned(), base_name.clone());
+        if totals.get(&key).copied().unwrap_or(0) <= 1 {
+            continue;
+        }
+
+        let index = seen.entry(key).or_insert(0);
+        *index += 1;
+        *zone.name_mut() = format!("{base_name} {index}");
     }
 }
 

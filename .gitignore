@@ -32,5 +32,9 @@ effects/community/
 # Trunk dev output
 crates/hypercolor-ui/.dist-dev/
 
+# Next.js marketing site
+site/.next/
+site/out/
+
 # Debug
 *.pdb

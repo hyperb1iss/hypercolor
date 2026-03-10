@@ -509,3 +509,67 @@ async fn device_attachment_profile_flow_persists_and_blocks_in_use_template_dele
         "template should be removed after the profile is cleared"
     );
 }
+
+#[tokio::test]
+async fn multiple_same_slot_bindings_are_named_and_suggested_distinctly() {
+    let _guard = TestDataDirGuard::new().await;
+    let state = Arc::new(AppState::new());
+    let app = test_app_with_state(state.clone());
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let template_id = "stacked-strip";
+
+    create_template(&app, template_id, "Stacked Strip", 12).await;
+
+    let body = json!({
+        "bindings": [
+            {
+                "slot_id": "main",
+                "template_id": template_id,
+                "instances": 1,
+                "led_offset": 0
+            },
+            {
+                "slot_id": "main",
+                "template_id": template_id,
+                "instances": 1,
+                "led_offset": 12
+            }
+        ]
+    });
+
+    let preview_response = send_json(
+        &app,
+        "POST",
+        format!("/api/v1/devices/{device_id}/attachments/preview"),
+        body.clone(),
+    )
+    .await;
+    assert_eq!(preview_response.status(), StatusCode::OK);
+    let preview_json = body_json(preview_response).await;
+    let preview_zones = preview_json["data"]["zones"]
+        .as_array()
+        .expect("zones should be an array");
+    assert_eq!(preview_zones.len(), 2);
+    assert_eq!(preview_zones[0]["led_start"], 0);
+    assert_eq!(preview_zones[1]["led_start"], 12);
+    assert_eq!(preview_zones[0]["name"], "Stacked Strip 1");
+    assert_eq!(preview_zones[1]["name"], "Stacked Strip 2");
+
+    let update_response = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        body,
+    )
+    .await;
+    assert_eq!(update_response.status(), StatusCode::OK);
+    let update_json = body_json(update_response).await;
+    let suggested_zones = update_json["data"]["suggested_zones"]
+        .as_array()
+        .expect("suggested_zones should be an array");
+    assert_eq!(suggested_zones.len(), 2);
+    assert_eq!(suggested_zones[0]["led_start"], 0);
+    assert_eq!(suggested_zones[1]["led_start"], 12);
+    assert_eq!(suggested_zones[0]["name"], "Stacked Strip 1");
+    assert_eq!(suggested_zones[1]["name"], "Stacked Strip 2");
+}

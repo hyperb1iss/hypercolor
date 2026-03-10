@@ -4,6 +4,11 @@
 set dotenv-load := false
 set positional-arguments := true
 
+# Show available recipes (default when running `just` with no arguments)
+[private]
+default:
+    @just --list
+
 # ─── Aliases ──────────────────────────────────────────────
 
 alias b := build
@@ -158,6 +163,20 @@ effects-build:
 # Build a single SDK effect (e.g., just effect-build borealis)
 effect-build name:
     cd sdk && bun scripts/build-effect.ts src/effects/{{ name }}/main.ts
+
+# ─── Site ─────────────────────────────────────────────────
+
+# Start marketing site dev server (:9440)
+site-dev:
+    cd site && pnpm dev
+
+# Build marketing site for production
+site-build:
+    cd site && pnpm build
+
+# Typecheck + lint marketing site
+site-check:
+    cd site && pnpm check
 
 # ─── Setup ───────────────────────────────────────────────
 

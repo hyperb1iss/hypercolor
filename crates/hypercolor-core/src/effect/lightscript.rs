@@ -167,7 +167,7 @@ impl LightscriptRuntime {
             DEFAULT_ZONE_HEIGHT
         ));
 
-        // Sensor API used by community effects.
+        // Sensor API used by HTML effects.
         script.push_str(
             "  if (typeof window.engine.sensors !== 'object' || window.engine.sensors === null) { window.engine.sensors = {}; }\n",
         );
@@ -313,7 +313,7 @@ impl LightscriptRuntime {
         script.push_str("    };\n");
         script.push_str("  }\n");
 
-        // Tap/game integration hooks used by community effects.
+        // Tap/game integration hooks used by HTML effects.
         script.push_str("  if (typeof window.engine.onCanvasTapped !== 'function') {\n");
         script.push_str("    window.engine.onCanvasTapped = function(x, y) {\n");
         script.push_str(

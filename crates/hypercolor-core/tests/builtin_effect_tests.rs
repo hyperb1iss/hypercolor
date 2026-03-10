@@ -13,7 +13,7 @@ use hypercolor_core::effect::builtin::{
 use hypercolor_core::effect::{EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::input::InteractionData;
 use hypercolor_types::audio::AudioData;
-use hypercolor_types::canvas::Rgba;
+use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource,
 };
@@ -76,6 +76,24 @@ fn has_non_black_pixels(canvas: &hypercolor_types::canvas::Canvas) -> bool {
 /// Returns the pixel at (0, 0).
 fn top_left(canvas: &hypercolor_types::canvas::Canvas) -> Rgba {
     canvas.get_pixel(0, 0)
+}
+
+fn tick_color_wave(renderer: &mut ColorWaveRenderer, frames: u64) -> Canvas {
+    let mut canvas = renderer.tick(&frame(0.0, 0)).expect("tick");
+
+    for i in 1..frames {
+        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+        let t = i as f32 / 60.0;
+        canvas = renderer.tick(&frame(t, i)).expect("tick");
+    }
+
+    canvas
+}
+
+fn count_non_black_pixels_in_row(canvas: &Canvas, y: u32) -> usize {
+    (0..canvas.width())
+        .filter(|&x| canvas.get_pixel(x, y) != Rgba::BLACK)
+        .count()
 }
 
 // ── Initialization Tests ────────────────────────────────────────────────────
@@ -186,7 +204,14 @@ fn audio_pulse_produces_non_black_with_audio() {
 fn color_wave_produces_non_black() {
     let mut r = ColorWaveRenderer::new();
     r.init(&make_metadata("color_wave")).expect("init");
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    r.set_control(
+        "background_color",
+        &ControlValue::Color([0.0, 0.0, 0.0, 1.0]),
+    );
+    r.set_control("wave_width", &ControlValue::Float(8.0));
+    r.set_control("speed", &ControlValue::Float(100.0));
+    r.set_control("trail", &ControlValue::Float(0.0));
+    let canvas = tick_color_wave(&mut r, 1);
     assert!(
         has_non_black_pixels(&canvas),
         "color wave should produce non-black pixels"
@@ -662,20 +687,13 @@ fn color_wave_full_lifecycle() {
     let mut r = ColorWaveRenderer::new();
     r.init(&make_metadata("color_wave")).expect("init");
 
-    for i in 0..10 {
-        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
-        r.tick(&frame(t, i)).expect("tick");
-    }
+    tick_color_wave(&mut r, 10);
 
     r.set_control("direction", &ControlValue::Enum("left".into()));
-    r.set_control("wave_count", &ControlValue::Integer(5));
+    r.set_control("wave_width", &ControlValue::Float(24.0));
+    r.set_control("spawn_delay", &ControlValue::Float(80.0));
 
-    for i in 10..20 {
-        #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
-        let t = i as f32 / 60.0;
-        r.tick(&frame(t, i)).expect("tick after control change");
-    }
+    tick_color_wave(&mut r, 10);
 
     r.destroy();
 }
@@ -686,8 +704,15 @@ fn color_wave_full_lifecycle() {
 fn color_wave_has_spatial_variation() {
     let mut r = ColorWaveRenderer::new();
     r.init(&make_metadata("color_wave")).expect("init");
+    r.set_control(
+        "background_color",
+        &ControlValue::Color([0.0, 0.0, 0.0, 1.0]),
+    );
+    r.set_control("wave_width", &ControlValue::Float(8.0));
+    r.set_control("speed", &ControlValue::Float(100.0));
+    r.set_control("trail", &ControlValue::Float(0.0));
 
-    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let canvas = tick_color_wave(&mut r, 1);
 
     // Collect unique brightness values across the top row
     let mut seen_values = std::collections::HashSet::new();
@@ -703,22 +728,52 @@ fn color_wave_has_spatial_variation() {
 }
 
 #[test]
-fn color_wave_wave_count_accepts_float_slider_values() {
+fn color_wave_wave_width_accepts_float_slider_values() {
     let mut r = ColorWaveRenderer::new();
     r.init(&make_metadata("color_wave")).expect("init");
 
-    r.set_control("speed", &ControlValue::Float(0.0));
-    r.set_control("wave_count", &ControlValue::Float(6.0));
-    let dense = r.tick(&frame(0.0, 0)).expect("dense tick");
+    r.set_control(
+        "background_color",
+        &ControlValue::Color([0.0, 0.0, 0.0, 1.0]),
+    );
+    r.set_control("speed", &ControlValue::Float(100.0));
+    r.set_control("trail", &ControlValue::Float(0.0));
+    r.set_control("wave_width", &ControlValue::Float(24.0));
+    let wide = tick_color_wave(&mut r, 1);
 
-    r.set_control("wave_count", &ControlValue::Float(1.0));
-    let sparse = r.tick(&frame(0.0, 1)).expect("sparse tick");
+    r.set_control("wave_width", &ControlValue::Float(8.0));
+    let narrow = tick_color_wave(&mut r, 1);
 
-    let dense_mid = dense.get_pixel(W / 4, 0);
-    let sparse_mid = sparse.get_pixel(W / 4, 0);
-    assert_ne!(
-        dense_mid, sparse_mid,
-        "float-backed slider updates should change wave density"
+    assert!(
+        count_non_black_pixels_in_row(&wide, 0) > count_non_black_pixels_in_row(&narrow, 0),
+        "float-backed slider updates should change wave width"
+    );
+}
+
+#[test]
+fn color_wave_direction_accepts_vertical_pass() {
+    let mut r = ColorWaveRenderer::new();
+    r.init(&make_metadata("color_wave")).expect("init");
+
+    r.set_control(
+        "background_color",
+        &ControlValue::Color([0.0, 0.0, 0.0, 1.0]),
+    );
+    r.set_control("wave_width", &ControlValue::Float(8.0));
+    r.set_control("speed", &ControlValue::Float(100.0));
+    r.set_control("trail", &ControlValue::Float(0.0));
+    r.set_control("direction", &ControlValue::Enum("Vertical Pass".into()));
+
+    let canvas = tick_color_wave(&mut r, 1);
+    let mut seen_values = std::collections::HashSet::new();
+    for y in 0..H {
+        let p = canvas.get_pixel(0, y);
+        seen_values.insert((p.r, p.g, p.b));
+    }
+
+    assert!(
+        seen_values.len() > 1,
+        "vertical pass should vary down the canvas height"
     );
 }
 
