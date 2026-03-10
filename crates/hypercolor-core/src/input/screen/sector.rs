@@ -5,7 +5,7 @@
 //! per-zone LED colors. Works on raw `&[u8]` RGBA buffers — no capture
 //! backend dependency.
 
-use crate::types::canvas::Rgb;
+use crate::types::canvas::{Rgb, linear_to_srgb_u8, srgb_u8_to_linear};
 
 // ── SectorGrid ────────────────────────────────────────────────────────────
 
@@ -81,7 +81,11 @@ impl SectorGrid {
                     accumulate_region(frame, stride, x_start, x_end, y_start, y_end);
 
                 let n = count.max(1);
-                colors.push([(sum_r / n) as u8, (sum_g / n) as u8, (sum_b / n) as u8]);
+                colors.push([
+                    linear_to_srgb_u8((sum_r / n as f32) / 255.0),
+                    linear_to_srgb_u8((sum_g / n as f32) / 255.0),
+                    linear_to_srgb_u8((sum_b / n as f32) / 255.0),
+                ]);
             }
         }
 
@@ -304,10 +308,10 @@ fn accumulate_region(
     x_end: u32,
     y_start: u32,
     y_end: u32,
-) -> (u64, u64, u64, u64) {
-    let mut sum_r: u64 = 0;
-    let mut sum_g: u64 = 0;
-    let mut sum_b: u64 = 0;
+) -> (f32, f32, f32, u64) {
+    let mut sum_r = 0.0_f32;
+    let mut sum_g = 0.0_f32;
+    let mut sum_b = 0.0_f32;
     let mut count: u64 = 0;
 
     for y in y_start..y_end {
@@ -319,9 +323,9 @@ fn accumulate_region(
             if px + 3 > frame.len() {
                 continue;
             }
-            sum_r += u64::from(frame[px]);
-            sum_g += u64::from(frame[px + 1]);
-            sum_b += u64::from(frame[px + 2]);
+            sum_r += srgb_u8_to_linear(frame[px]) * 255.0;
+            sum_g += srgb_u8_to_linear(frame[px + 1]) * 255.0;
+            sum_b += srgb_u8_to_linear(frame[px + 2]) * 255.0;
             count += 1;
         }
     }
@@ -331,7 +335,10 @@ fn accumulate_region(
 
 /// Relative luminance of an RGB pixel (BT.709 coefficients), 0.0 - 1.0.
 fn pixel_luminance(c: [u8; 3]) -> f32 {
-    (0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2])) / 255.0
+    let r = srgb_u8_to_linear(c[0]);
+    let g = srgb_u8_to_linear(c[1]);
+    let b = srgb_u8_to_linear(c[2]);
+    0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
 /// Convert `[u8; 3]` to the types crate `Rgb` for interop.

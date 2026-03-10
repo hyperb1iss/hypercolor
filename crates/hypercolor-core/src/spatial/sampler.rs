@@ -9,7 +9,11 @@
 //! methods. This module wraps them with the zone-level [`SamplingMode`] dispatch
 //! and coordinate transformation pipeline.
 
-use hypercolor_types::canvas::{BYTES_PER_PIXEL, Canvas, Rgba, SamplingMethod};
+use std::sync::LazyLock;
+
+use hypercolor_types::canvas::{
+    BYTES_PER_PIXEL, Canvas, Rgba, SamplingMethod, linear_to_srgb, srgb_to_linear,
+};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, NormalizedPosition, SamplingMode, SpatialLayout,
 };
@@ -17,6 +21,52 @@ use hypercolor_types::spatial::{
 const BILINEAR_ONE: u32 = 256;
 const BILINEAR_SHIFT: u32 = 16;
 const ATTENUATION_ONE: u16 = 256;
+static SRGB_TO_LINEAR_LUT: LazyLock<[u16; 256]> = LazyLock::new(build_srgb_to_linear_lut);
+static LINEAR_TO_SRGB_LUT: LazyLock<Vec<u8>> = LazyLock::new(build_linear_to_srgb_lut);
+
+#[must_use]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "the LUT is built once and clamps each decoded channel into the byte range"
+)]
+fn build_srgb_to_linear_lut() -> [u16; 256] {
+    let mut table = [0_u16; 256];
+    for (index, value) in table.iter_mut().enumerate() {
+        let srgb = index as f32 / 255.0;
+        *value = (srgb_to_linear(srgb) * 65535.0).round().clamp(0.0, 65535.0) as u16;
+    }
+    table
+}
+
+#[must_use]
+fn decode_srgb_byte(channel: u8) -> u16 {
+    SRGB_TO_LINEAR_LUT[usize::from(channel)]
+}
+
+#[must_use]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "the LUT is built once and clamps each encoded channel into the byte range"
+)]
+fn build_linear_to_srgb_lut() -> Vec<u8> {
+    let mut table = Vec::with_capacity(usize::from(u16::MAX) + 1);
+    for index in 0..=u16::MAX {
+        let linear = f32::from(index) / 65535.0;
+        table.push((linear_to_srgb(linear) * 255.0).round().clamp(0.0, 255.0) as u8);
+    }
+    table
+}
+
+#[must_use]
+fn encode_linear_byte(channel: u16) -> u8 {
+    LINEAR_TO_SRGB_LUT[usize::from(channel)]
+}
 
 /// Per-zone sampling plan prepared when the layout changes.
 #[derive(Debug, Clone)]
@@ -393,11 +443,22 @@ fn sample_positions_into_buffer(
 ) {
     colors.clear();
     colors.reserve(positions.len());
+    let bytes = canvas.as_rgba_bytes();
+    #[allow(
+        clippy::as_conversions,
+        reason = "canvas dimensions are already bounded by in-memory image sizes before widening to usize"
+    )]
+    let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
 
     for &pos in positions {
-        let color = canvas.sample(pos.x, pos.y, sampling_method);
-        let color = apply_fade_to_black(color, pos, edge_behavior);
-        colors.push([color.r, color.g, color.b]);
+        colors.push(sample_srgb_rgb(
+            canvas,
+            bytes,
+            row_stride,
+            pos,
+            sampling_method,
+            edge_behavior,
+        ));
     }
 }
 
@@ -494,7 +555,10 @@ fn sample_prepared_nearest_pixels_into(
 ) {
     colors.resize(samples.len(), [0, 0, 0]);
     for (color, sample) in colors.iter_mut().zip(samples) {
-        *color = attenuate_rgb(read_rgb_at(bytes, sample.offset), sample.attenuation);
+        *color = encode_linear_rgb(attenuate_rgb(
+            read_linear_rgb_at(bytes, sample.offset),
+            sample.attenuation,
+        ));
     }
 }
 
@@ -515,7 +579,10 @@ fn sample_prepared_bilinear_pixels_into(
 ) {
     colors.resize(samples.len(), [0, 0, 0]);
     for (color, sample) in colors.iter_mut().zip(samples) {
-        *color = attenuate_rgb(sample_bilinear_rgb(bytes, sample), sample.attenuation);
+        *color = encode_linear_rgb(attenuate_rgb(
+            sample_bilinear_linear_rgb(bytes, sample),
+            sample.attenuation,
+        ));
     }
 }
 
@@ -538,16 +605,20 @@ fn sample_prepared_area_pixels_into(
 ) {
     colors.resize(samples.len(), [0, 0, 0]);
     for (color, sample) in colors.iter_mut().zip(samples) {
-        *color = attenuate_rgb(
-            sample_area_rgb(bytes, row_stride, sample),
+        *color = encode_linear_rgb(attenuate_rgb(
+            sample_area_linear_rgb(bytes, row_stride, sample),
             sample.attenuation,
-        );
+        ));
     }
 }
 
 #[must_use]
-fn read_rgb_at(bytes: &[u8], offset: usize) -> [u8; 3] {
-    [bytes[offset], bytes[offset + 1], bytes[offset + 2]]
+fn read_linear_rgb_at(bytes: &[u8], offset: usize) -> [u16; 3] {
+    [
+        decode_srgb_byte(bytes[offset]),
+        decode_srgb_byte(bytes[offset + 1]),
+        decode_srgb_byte(bytes[offset + 2]),
+    ]
 }
 
 #[must_use]
@@ -556,7 +627,7 @@ fn read_rgb_at(bytes: &[u8], offset: usize) -> [u8; 3] {
     clippy::cast_possible_truncation,
     reason = "bilinear weights are normalized to the 0-255 channel range before narrowing"
 )]
-fn sample_bilinear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> [u8; 3] {
+fn sample_bilinear_linear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> [u16; 3] {
     let [top_left, top_right, bottom_left, bottom_right] = sample.offsets;
     let [
         top_left_weight,
@@ -570,11 +641,14 @@ fn sample_bilinear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> [u8; 3]
     let bottom_right = bottom_right as usize;
 
     let channel = |index: usize| {
-        let blended = u32::from(bytes[top_left + index]) * top_left_weight
-            + u32::from(bytes[top_right + index]) * top_right_weight
-            + u32::from(bytes[bottom_left + index]) * bottom_left_weight
-            + u32::from(bytes[bottom_right + index]) * bottom_right_weight;
-        (blended >> BILINEAR_SHIFT) as u8
+        let blended = u64::from(decode_srgb_byte(bytes[top_left + index]))
+            * u64::from(top_left_weight)
+            + u64::from(decode_srgb_byte(bytes[top_right + index])) * u64::from(top_right_weight)
+            + u64::from(decode_srgb_byte(bytes[bottom_left + index]))
+                * u64::from(bottom_left_weight)
+            + u64::from(decode_srgb_byte(bytes[bottom_right + index]))
+                * u64::from(bottom_right_weight);
+        (blended >> BILINEAR_SHIFT) as u16
     };
 
     [channel(0), channel(1), channel(2)]
@@ -587,11 +661,15 @@ fn sample_bilinear_rgb(bytes: &[u8], sample: &PreparedBilinearSample) -> [u8; 3]
     clippy::cast_sign_loss,
     reason = "area sampling clamps coordinates and averages byte channels before narrowing"
 )]
-fn sample_area_rgb(bytes: &[u8], row_stride: usize, sample: &PreparedAreaSample) -> [u8; 3] {
-    let mut sum_r = 0u32;
-    let mut sum_g = 0u32;
-    let mut sum_b = 0u32;
-    let mut count = 0u32;
+fn sample_area_linear_rgb(
+    bytes: &[u8],
+    row_stride: usize,
+    sample: &PreparedAreaSample,
+) -> [u16; 3] {
+    let mut sum_r = 0u64;
+    let mut sum_g = 0u64;
+    let mut sum_b = 0u64;
+    let mut count = 0u64;
 
     for dy in -sample.radius..=sample.radius {
         let y = (sample.center_y + dy).clamp(0, sample.canvas_height - 1) as usize;
@@ -599,17 +677,17 @@ fn sample_area_rgb(bytes: &[u8], row_stride: usize, sample: &PreparedAreaSample)
         for dx in -sample.radius..=sample.radius {
             let x = (sample.center_x + dx).clamp(0, sample.canvas_width - 1) as usize;
             let offset = row_offset + x * BYTES_PER_PIXEL;
-            sum_r += u32::from(bytes[offset]);
-            sum_g += u32::from(bytes[offset + 1]);
-            sum_b += u32::from(bytes[offset + 2]);
+            sum_r += u64::from(decode_srgb_byte(bytes[offset]));
+            sum_g += u64::from(decode_srgb_byte(bytes[offset + 1]));
+            sum_b += u64::from(decode_srgb_byte(bytes[offset + 2]));
             count += 1;
         }
     }
 
     [
-        (sum_r / count) as u8,
-        (sum_g / count) as u8,
-        (sum_b / count) as u8,
+        (sum_r / count) as u16,
+        (sum_g / count) as u16,
+        (sum_b / count) as u16,
     ]
 }
 
@@ -617,19 +695,77 @@ fn sample_area_rgb(bytes: &[u8], row_stride: usize, sample: &PreparedAreaSample)
 #[allow(
     clippy::as_conversions,
     clippy::cast_possible_truncation,
-    reason = "attenuation math keeps channel values within the 0-255 byte range"
+    reason = "attenuation math keeps channel values within the 0-65535 fixed-point range"
 )]
-fn attenuate_rgb(color: [u8; 3], attenuation: u16) -> [u8; 3] {
+fn attenuate_rgb(color: [u16; 3], attenuation: u16) -> [u16; 3] {
     if attenuation >= ATTENUATION_ONE {
         return color;
     }
 
     let attenuation = u32::from(attenuation);
     [
-        ((u32::from(color[0]) * attenuation + 128) / u32::from(ATTENUATION_ONE)) as u8,
-        ((u32::from(color[1]) * attenuation + 128) / u32::from(ATTENUATION_ONE)) as u8,
-        ((u32::from(color[2]) * attenuation + 128) / u32::from(ATTENUATION_ONE)) as u8,
+        ((u32::from(color[0]) * attenuation + 128) / u32::from(ATTENUATION_ONE)) as u16,
+        ((u32::from(color[1]) * attenuation + 128) / u32::from(ATTENUATION_ONE)) as u16,
+        ((u32::from(color[2]) * attenuation + 128) / u32::from(ATTENUATION_ONE)) as u16,
     ]
+}
+
+#[must_use]
+fn encode_linear_rgb(color: [u16; 3]) -> [u8; 3] {
+    [
+        encode_linear_byte(color[0]),
+        encode_linear_byte(color[1]),
+        encode_linear_byte(color[2]),
+    ]
+}
+
+#[must_use]
+#[allow(
+    clippy::as_conversions,
+    reason = "canvas dimensions are already bounded by in-memory image sizes before widening to usize"
+)]
+fn sample_srgb_rgb(
+    canvas: &Canvas,
+    bytes: &[u8],
+    row_stride: usize,
+    position: NormalizedPosition,
+    sampling_method: SamplingMethod,
+    edge_behavior: EdgeBehavior,
+) -> [u8; 3] {
+    let linear = match sampling_method {
+        SamplingMethod::Nearest => {
+            let sample =
+                prepare_nearest_sample(position, edge_behavior, canvas.width(), canvas.height());
+            attenuate_rgb(read_linear_rgb_at(bytes, sample.offset), sample.attenuation)
+        }
+        SamplingMethod::Bilinear => {
+            let sample = prepare_bilinear_sample_for_position(
+                position,
+                edge_behavior,
+                canvas.width(),
+                canvas.height(),
+            );
+            attenuate_rgb(
+                sample_bilinear_linear_rgb(bytes, &sample),
+                sample.attenuation,
+            )
+        }
+        SamplingMethod::Area { radius } => {
+            let sample = prepare_area_sample_for_position(
+                position,
+                edge_behavior,
+                radius,
+                canvas.width(),
+                canvas.height(),
+            );
+            attenuate_rgb(
+                sample_area_linear_rgb(bytes, row_stride, &sample),
+                sample.attenuation,
+            )
+        }
+    };
+
+    encode_linear_rgb(linear)
 }
 
 /// Sample a single LED position from the canvas.
@@ -655,10 +791,14 @@ pub fn sample_led(
         other => to_sampling_method(other),
     };
 
-    let color = canvas.sample(canvas_pos.x, canvas_pos.y, method);
-
-    // Apply fade-to-black attenuation for out-of-bounds positions.
-    apply_fade_to_black(color, canvas_pos, edge)
+    let bytes = canvas.as_rgba_bytes();
+    #[allow(
+        clippy::as_conversions,
+        reason = "canvas dimensions are already bounded by in-memory image sizes before widening to usize"
+    )]
+    let row_stride = canvas.width() as usize * BYTES_PER_PIXEL;
+    let color = sample_srgb_rgb(canvas, bytes, row_stride, canvas_pos, method, edge);
+    Rgba::new(color[0], color[1], color[2], 255)
 }
 
 /// Sample every LED in a zone, returning `[u8; 3]` RGB triplets.
@@ -669,51 +809,4 @@ pub fn sample_led(
 pub fn sample_zone(canvas: &Canvas, zone: &DeviceZone, layout: &SpatialLayout) -> Vec<[u8; 3]> {
     let prepared = prepare_zone(zone, layout);
     sample_prepared_zone(canvas, &prepared)
-}
-
-/// Apply fade-to-black post-processing for positions outside `[0.0, 1.0]`.
-///
-/// When edge behavior is `FadeToBlack`, pixels outside the canvas bounds
-/// are attenuated toward black based on how far they are from the edge.
-#[must_use]
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn apply_fade_to_black(color: Rgba, canvas_pos: NormalizedPosition, edge: EdgeBehavior) -> Rgba {
-    let EdgeBehavior::FadeToBlack { falloff } = edge else {
-        return color;
-    };
-
-    // Compute distance from the [0, 1] bounds.
-    let dx = if canvas_pos.x < 0.0 {
-        -canvas_pos.x
-    } else if canvas_pos.x > 1.0 {
-        canvas_pos.x - 1.0
-    } else {
-        0.0
-    };
-    let dy = if canvas_pos.y < 0.0 {
-        -canvas_pos.y
-    } else if canvas_pos.y > 1.0 {
-        canvas_pos.y - 1.0
-    } else {
-        0.0
-    };
-
-    let distance = (dx * dx + dy * dy).sqrt();
-    if distance <= 0.0 {
-        return color;
-    }
-
-    // Exponential fade based on distance and falloff rate.
-    let attenuation = (-distance * falloff).exp().clamp(0.0, 1.0);
-
-    Rgba::new(
-        (f32::from(color.r) * attenuation).round() as u8,
-        (f32::from(color.g) * attenuation).round() as u8,
-        (f32::from(color.b) * attenuation).round() as u8,
-        color.a,
-    )
 }

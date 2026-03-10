@@ -8,7 +8,7 @@
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -17,6 +17,7 @@ use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, trace, warn};
 
+use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{SpatialLayout, ZoneAttachment};
@@ -1048,7 +1049,7 @@ impl BackendManager {
         zone_colors: &[ZoneColors],
         layout: &SpatialLayout,
     ) -> FrameWriteStats {
-        self.write_frame_with_brightness(zone_colors, layout, None)
+        self.write_frame_with_brightness(zone_colors, layout, 1.0, None)
             .await
     }
 
@@ -1063,6 +1064,7 @@ impl BackendManager {
         &mut self,
         zone_colors: &[ZoneColors],
         layout: &SpatialLayout,
+        global_brightness: f32,
         device_brightness: Option<&HashMap<DeviceId, f32>>,
     ) -> FrameWriteStats {
         let active_layout_device_ids = layout
@@ -1244,11 +1246,8 @@ impl BackendManager {
                 values.resize(required_len, [0, 0, 0]);
             }
 
-            if let Some(brightness) =
-                device_brightness.and_then(|settings| settings.get(&device_id))
-            {
-                apply_output_brightness(&mut values, *brightness);
-            }
+            // Zone colors are screen-referred sRGB bytes; LED PWM expects linear output.
+            decode_srgb_output_for_leds(&mut values);
 
             if self.is_direct_control_active(backend_id.as_str(), device_id) {
                 trace!(
@@ -1266,7 +1265,12 @@ impl BackendManager {
                 continue;
             }
 
-            let brightness = self.device_output_brightness(device_id);
+            let device_output_brightness = self.device_output_brightness(device_id);
+            let per_frame_brightness = device_brightness
+                .and_then(|settings| settings.get(&device_id).copied())
+                .unwrap_or(1.0);
+            let brightness = (global_brightness * per_frame_brightness * device_output_brightness)
+                .clamp(0.0, 1.0);
             let Some(queue) = self.ensure_output_queue(backend_id.as_str(), device_id) else {
                 stats
                     .errors
@@ -1428,6 +1432,14 @@ impl BackendManager {
     }
 }
 
+fn decode_srgb_output_for_leds(colors: &mut Vec<[u8; 3]>) {
+    for color in colors {
+        color[0] = srgb_to_led_pwm(color[0]);
+        color[1] = srgb_to_led_pwm(color[1]);
+        color[2] = srgb_to_led_pwm(color[2]);
+    }
+}
+
 fn apply_output_brightness(colors: &mut Vec<[u8; 3]>, brightness: f32) {
     let brightness = brightness.clamp(0.0, 1.0);
     if brightness >= 0.999 {
@@ -1457,6 +1469,23 @@ fn brightness_factor(brightness: f32) -> u16 {
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .expect("brightness factor search range should be non-empty")
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions,
+    reason = "the LUT generator clamps the computed transfer value into the valid u8 range"
+)]
+fn srgb_to_led_pwm(channel: u8) -> u8 {
+    static SRGB_TO_LED_PWM_LUT: OnceLock<[u8; 256]> = OnceLock::new();
+
+    SRGB_TO_LED_PWM_LUT.get_or_init(|| {
+        std::array::from_fn(|index| {
+            let srgb = f32::from(u8::try_from(index).expect("LUT index must fit in u8")) / 255.0;
+            (srgb_to_linear(srgb) * 255.0).round().clamp(0.0, 255.0) as u8
+        })
+    })[usize::from(channel)]
 }
 
 fn scale_channel(channel: u8, factor: u16) -> u8 {

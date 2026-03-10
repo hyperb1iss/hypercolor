@@ -16,7 +16,6 @@
 //! ```
 
 use std::any::Any;
-use std::cmp::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -31,7 +30,9 @@ use hypercolor_core::engine::{FrameStats, RenderLoop};
 use hypercolor_core::input::{InputData, InputManager, InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
+use hypercolor_core::types::canvas::{
+    Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
+};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 
 use crate::device_settings::DeviceSettingsStore;
@@ -355,15 +356,8 @@ async fn execute_frame(
     let input_us = micros_u32(input_start.elapsed());
 
     // ── Stage 2: Effect render → Canvas ─────────────────────────
-    let (canvas, render_us) = resolve_frame_canvas(
-        state,
-        skip_decision,
-        inputs,
-        cached_canvas,
-        delta_secs,
-        output_power.effective_brightness(),
-    )
-    .await;
+    let (mut canvas, render_us) =
+        resolve_frame_canvas(state, skip_decision, inputs, cached_canvas, delta_secs).await;
 
     // ── Stage 3: Spatial sampling → ZoneColors ──────────────────
     let sample_start = Instant::now();
@@ -379,7 +373,14 @@ async fn execute_frame(
     let push_start = Instant::now();
     let (write_stats, async_failures) = {
         let mut manager = state.backend_manager.lock().await;
-        let write_stats = manager.write_frame(zone_colors, layout.as_ref()).await;
+        let write_stats = manager
+            .write_frame_with_brightness(
+                zone_colors,
+                layout.as_ref(),
+                output_power.effective_brightness(),
+                None,
+            )
+            .await;
         let async_failures = manager.async_write_failures();
         (write_stats, async_failures)
     };
@@ -388,6 +389,8 @@ async fn execute_frame(
     if let Some(runtime) = &state.discovery_runtime {
         handle_async_write_failures(runtime, async_failures).await;
     }
+
+    apply_preview_brightness(&mut canvas, output_power.effective_brightness());
 
     // ── Stage 5: Publish to bus ─────────────────────────────────
     let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
@@ -467,7 +470,6 @@ async fn resolve_frame_canvas(
     inputs: &FrameInputs,
     cached_canvas: &mut Option<Canvas>,
     delta_secs: f32,
-    brightness: f32,
 ) -> (Canvas, u32) {
     let render_start = Instant::now();
     let canvas = if let (SkipDecision::ReuseCanvas, Some(previous)) =
@@ -482,8 +484,6 @@ async fn resolve_frame_canvas(
         *cached_canvas = Some(rendered.clone());
         rendered
     };
-    let mut canvas = canvas;
-    apply_output_brightness(&mut canvas, brightness);
     (canvas, micros_u32(render_start.elapsed()))
 }
 
@@ -626,7 +626,7 @@ fn should_idle_throttle(effect_running: bool, screen_capture_enabled: bool) -> b
     true
 }
 
-fn apply_output_brightness(canvas: &mut Canvas, brightness: f32) {
+fn apply_preview_brightness(canvas: &mut Canvas, brightness: f32) {
     let brightness = brightness.clamp(0.0, 1.0);
     if brightness >= 0.999 {
         return;
@@ -636,30 +636,11 @@ fn apply_output_brightness(canvas: &mut Canvas, brightness: f32) {
         return;
     }
 
-    let factor = brightness_factor(brightness);
     for chunk in canvas.as_rgba_bytes_mut().chunks_exact_mut(4) {
-        chunk[0] = scale_channel(chunk[0], factor);
-        chunk[1] = scale_channel(chunk[1], factor);
-        chunk[2] = scale_channel(chunk[2], factor);
+        chunk[0] = linear_to_srgb_u8(srgb_u8_to_linear(chunk[0]) * brightness);
+        chunk[1] = linear_to_srgb_u8(srgb_u8_to_linear(chunk[1]) * brightness);
+        chunk[2] = linear_to_srgb_u8(srgb_u8_to_linear(chunk[2]) * brightness);
     }
-}
-
-fn brightness_factor(brightness: f32) -> u16 {
-    let target = f64::from(brightness.clamp(0.0, 1.0)) * f64::from(u8::MAX);
-    (0_u16..=u16::from(u8::MAX))
-        .min_by(|left, right| {
-            let left_delta = (f64::from(*left) - target).abs();
-            let right_delta = (f64::from(*right) - target).abs();
-            left_delta
-                .partial_cmp(&right_delta)
-                .unwrap_or(Ordering::Equal)
-        })
-        .expect("brightness factor search range should be non-empty")
-}
-
-fn scale_channel(channel: u8, factor: u16) -> u8 {
-    let scaled = (u16::from(channel) * factor) / u16::from(u8::MAX);
-    u8::try_from(scaled).expect("scaled brightness channel should remain within byte range")
 }
 
 fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {

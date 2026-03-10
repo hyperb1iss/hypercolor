@@ -337,7 +337,13 @@ fn sample_bilinear_midpoint() {
     c.set_pixel(1, 0, Rgba::new(200, 200, 200, 255));
 
     let mid = c.sample_bilinear(0.5, 0.0);
-    assert_eq!(mid.r, 100, "bilinear midpoint r = {}", mid.r);
+    let expected = linear_to_srgb(srgb_to_linear(200.0 / 255.0) * 0.5) * 255.0;
+    assert_eq!(
+        mid.r,
+        expected.round() as u8,
+        "bilinear midpoint should interpolate in linear light, got {}",
+        mid.r
+    );
 }
 
 #[test]

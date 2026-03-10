@@ -5,7 +5,7 @@
 //! algorithms produce the expected LED colors.
 
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
-use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     Corner, DeviceZone, LedTopology, NormalizedPosition, SamplingMode, StripDirection, Winding,
@@ -124,6 +124,17 @@ fn horizontal_gradient(width: u32, height: u32, left: Rgba, right: Rgba) -> Canv
         }
     }
     canvas
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions
+)]
+fn linear_byte_to_srgb(value: u8) -> u8 {
+    (linear_to_srgb(f32::from(value) / 255.0) * 255.0)
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 // ── Topology Position Generation ────────────────────────────────────────────
@@ -452,11 +463,14 @@ fn bilinear_sampling_interpolates() {
     let engine = SpatialEngine::new(layout);
     let result = engine.sample(&canvas);
 
-    // At center of a 2-pixel canvas, byte-space bilinear interpolation lands near 128.
+    // At center of a 2-pixel canvas, linear-light bilinear interpolation lands at
+    // 50% linear intensity, which re-encodes to ~188 in sRGB.
     let color = &result[0].colors[0];
+    let expected_midpoint = linear_byte_to_srgb(128);
     assert!(
-        (126..=129).contains(&color[0]),
-        "Bilinear center should be ~128, got {}",
+        (expected_midpoint.saturating_sub(1)..=expected_midpoint.saturating_add(1))
+            .contains(&color[0]),
+        "Bilinear center should be ~{expected_midpoint}, got {}",
         color[0]
     );
 }
@@ -490,16 +504,18 @@ fn area_average_samples_region() {
     let result = engine.sample(&canvas);
 
     let color = &result[0].colors[0];
+    let expected_red = linear_byte_to_srgb(153);
+    let expected_blue = linear_byte_to_srgb(102);
     // The 5x5 kernel clamps at the edges, so this samples 60% red and 40% blue
-    // in byte space, landing near (153, 0, 102).
+    // in linear light, then re-encodes to sRGB.
     assert!(
-        (150..=156).contains(&color[0]),
-        "Area avg red should be ~153, got {}",
+        (expected_red.saturating_sub(2)..=expected_red.saturating_add(2)).contains(&color[0]),
+        "Area avg red should be ~{expected_red}, got {}",
         color[0]
     );
     assert!(
-        (100..=104).contains(&color[2]),
-        "Area avg blue should be ~102, got {}",
+        (expected_blue.saturating_sub(2)..=expected_blue.saturating_add(2)).contains(&color[2]),
+        "Area avg blue should be ~{expected_blue}, got {}",
         color[2]
     );
 }

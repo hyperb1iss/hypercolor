@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, SegmentRange};
+use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily,
 };
@@ -617,6 +618,40 @@ fn make_zone(id: &str, device_id: &str, led_count: u32) -> DeviceZone {
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions
+)]
+fn srgb_to_led_pwm(channel: u8) -> u8 {
+    (srgb_to_linear(f32::from(channel) / 255.0) * 255.0)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+fn led_half(channel: u8) -> u8 {
+    scale_device_pwm(srgb_to_led_pwm(channel), 0.5)
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions
+)]
+fn scale_device_pwm(channel: u8, brightness: f32) -> u8 {
+    let target = f64::from(brightness.clamp(0.0, 1.0)) * f64::from(u8::MAX);
+    let factor = (0_u16..=u16::from(u8::MAX))
+        .min_by(|left, right| {
+            let left_delta = (f64::from(*left) - target).abs();
+            let right_delta = (f64::from(*right) - target).abs();
+            left_delta
+                .partial_cmp(&right_delta)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .expect("brightness factor search range should be non-empty");
+    ((u16::from(channel) * factor) / u16::from(u8::MAX)) as u8
+}
+
 // ── Registration Tests ──────────────────────────────────────────────────────
 
 #[test]
@@ -1174,7 +1209,7 @@ async fn direct_control_suppresses_queued_writes_until_released() {
 
     let recorded = writes.lock().await.clone();
     assert_eq!(recorded.len(), 2);
-    assert_eq!(recorded[1], vec![[9, 9, 9]; 4]);
+    assert_eq!(recorded[1], vec![[srgb_to_led_pwm(9); 3]; 4]);
     assert!(
         brightness_writes.lock().await.is_empty(),
         "direct-control suppression should not touch brightness"
@@ -1247,12 +1282,63 @@ async fn write_frame_scales_device_output_brightness() {
     tokio::time::sleep(Duration::from_millis(30)).await;
     assert_eq!(
         *writes.lock().await,
-        vec![vec![[99, 49, 24]; 4]],
-        "software output brightness should scale queued colors"
+        vec![vec![[led_half(200), led_half(100), led_half(50)]; 4]],
+        "software output brightness should decode sRGB inputs, then scale in linear LED space"
     );
     assert!(
         brightness_writes.lock().await.is_empty(),
         "per-device output brightness should not issue hardware brightness writes"
+    );
+}
+
+#[tokio::test]
+async fn write_frame_decodes_screen_referred_srgb_before_hardware_output() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let brightness_writes = Arc::new(Mutex::new(Vec::new()));
+    let mut backend = DirectControlRecordingBackend::new(
+        device_id,
+        Arc::clone(&writes),
+        Arc::clone(&brightness_writes),
+    );
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device("recording:strip", "recording", device_id);
+
+    let layout = make_layout(vec![make_zone("zone_0", "recording:strip", 3)]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[128, 128, 128], [255, 0, 255], [32, 64, 96]],
+    }];
+
+    let stats = manager.write_frame(&zone_colors, &layout).await;
+    assert_eq!(stats.devices_written, 1);
+    assert_eq!(stats.total_leds, 3);
+    assert!(stats.errors.is_empty());
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert_eq!(
+        *writes.lock().await,
+        vec![vec![
+            [
+                srgb_to_led_pwm(128),
+                srgb_to_led_pwm(128),
+                srgb_to_led_pwm(128)
+            ],
+            [255, 0, 255],
+            [
+                srgb_to_led_pwm(32),
+                srgb_to_led_pwm(64),
+                srgb_to_led_pwm(96)
+            ],
+        ]],
+        "device writes should receive linear PWM values, not raw sRGB bytes"
+    );
+    assert!(
+        brightness_writes.lock().await.is_empty(),
+        "frame writes should not emit separate hardware brightness commands"
     );
 }
 
@@ -1755,7 +1841,14 @@ async fn write_frame_applies_zone_led_mapping_before_segment_copy() {
     tokio::time::sleep(Duration::from_millis(80)).await;
     let writes = writes.lock().await;
     let frame = writes.first().expect("one frame should be written");
-    assert_eq!(frame.as_slice(), &[[20, 0, 0], [30, 0, 0], [10, 0, 0]]);
+    assert_eq!(
+        frame.as_slice(),
+        &[
+            [srgb_to_led_pwm(20), 0, 0],
+            [srgb_to_led_pwm(30), 0, 0],
+            [srgb_to_led_pwm(10), 0, 0],
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1848,7 +1941,14 @@ async fn write_frame_uses_sampled_led_count_when_attachment_metadata_is_stale() 
     let writes = writes.lock().await;
     let frame = writes.first().expect("one frame should be written");
     assert_eq!(frame.len(), 24);
-    assert!(frame.iter().all(|color| *color == [12, 34, 56]));
+    assert!(frame.iter().all(|color| {
+        *color
+            == [
+                srgb_to_led_pwm(12),
+                srgb_to_led_pwm(34),
+                srgb_to_led_pwm(56),
+            ]
+    }));
 }
 
 #[tokio::test]

@@ -4,6 +4,8 @@
 //! an exponential moving average per zone. Scene cuts are detected when frame
 //! difference exceeds a threshold, causing an immediate reset to the new colors.
 
+use crate::types::canvas::{linear_to_srgb_u8, srgb_u8_to_linear};
+
 // ── TemporalSmoother ──────────────────────────────────────────────────────
 
 /// Per-zone exponential moving average smoother with scene-cut detection.
@@ -23,6 +25,10 @@ pub struct TemporalSmoother {
     scene_cut_threshold: f32,
 
     /// Previous frame's smoothed colors, one `[R, G, B]` per zone.
+    ///
+    /// Values are stored in linear-light byte units (`0.0..=255.0`) so the
+    /// scene-cut threshold can stay on the same rough scale as before while
+    /// avoiding gamma-space EMA artifacts.
     prev: Vec<[f32; 3]>,
 }
 
@@ -81,7 +87,13 @@ impl TemporalSmoother {
         if self.prev.len() != colors.len() {
             self.prev = colors
                 .iter()
-                .map(|c| [f32::from(c[0]), f32::from(c[1]), f32::from(c[2])])
+                .map(|c| {
+                    [
+                        srgb_u8_to_linear(c[0]) * 255.0,
+                        srgb_u8_to_linear(c[1]) * 255.0,
+                        srgb_u8_to_linear(c[2]) * 255.0,
+                    ]
+                })
                 .collect();
             return;
         }
@@ -93,7 +105,13 @@ impl TemporalSmoother {
         if diff > self.scene_cut_threshold {
             self.prev = colors
                 .iter()
-                .map(|c| [f32::from(c[0]), f32::from(c[1]), f32::from(c[2])])
+                .map(|c| {
+                    [
+                        srgb_u8_to_linear(c[0]) * 255.0,
+                        srgb_u8_to_linear(c[1]) * 255.0,
+                        srgb_u8_to_linear(c[2]) * 255.0,
+                    ]
+                })
                 .collect();
             return;
         }
@@ -102,17 +120,17 @@ impl TemporalSmoother {
         let alpha = self.alpha;
         for (i, color) in colors.iter_mut().enumerate() {
             let prev = &mut self.prev[i];
-            let new_r = f32::from(color[0]);
-            let new_g = f32::from(color[1]);
-            let new_b = f32::from(color[2]);
+            let new_r = srgb_u8_to_linear(color[0]) * 255.0;
+            let new_g = srgb_u8_to_linear(color[1]) * 255.0;
+            let new_b = srgb_u8_to_linear(color[2]) * 255.0;
 
             prev[0] += alpha * (new_r - prev[0]);
             prev[1] += alpha * (new_g - prev[1]);
             prev[2] += alpha * (new_b - prev[2]);
 
-            color[0] = prev[0].round().clamp(0.0, 255.0) as u8;
-            color[1] = prev[1].round().clamp(0.0, 255.0) as u8;
-            color[2] = prev[2].round().clamp(0.0, 255.0) as u8;
+            color[0] = linear_to_srgb_u8((prev[0] / 255.0).clamp(0.0, 1.0));
+            color[1] = linear_to_srgb_u8((prev[1] / 255.0).clamp(0.0, 1.0));
+            color[2] = linear_to_srgb_u8((prev[2] / 255.0).clamp(0.0, 1.0));
         }
     }
 
@@ -127,9 +145,9 @@ impl TemporalSmoother {
             .iter()
             .zip(colors.iter())
             .map(|(prev, new)| {
-                let dr = (prev[0] - f32::from(new[0])).abs();
-                let dg = (prev[1] - f32::from(new[1])).abs();
-                let db = (prev[2] - f32::from(new[2])).abs();
+                let dr = (prev[0] - (srgb_u8_to_linear(new[0]) * 255.0)).abs();
+                let dg = (prev[1] - (srgb_u8_to_linear(new[1]) * 255.0)).abs();
+                let db = (prev[2] - (srgb_u8_to_linear(new[2]) * 255.0)).abs();
                 dr + dg + db
             })
             .sum()
