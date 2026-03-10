@@ -27,11 +27,13 @@ const EDITOR_STRIP_MAX_ASPECT: f32 = 8.0;
 
 const BASILISK_V3_GRID: VisualUnits = VisualUnits::new(7.0, 8.0);
 const BASILISK_V3_PRO_GRID: VisualUnits = VisualUnits::new(6.0, 7.0);
-const PUSH2_FOOTPRINT_GRID: VisualUnits = VisualUnits::new(16.5, 14.0);
+const PUSH2_FOOTPRINT_GRID: VisualUnits = VisualUnits::new(1393.0, 1123.0);
 const PUSH2_FOOTPRINT_MIN_SIZE: NormalizedPosition = NormalizedPosition::new(0.42, 0.36);
 const PUSH2_FOOTPRINT_MAX_SIZE: NormalizedPosition = NormalizedPosition::new(0.72, 0.82);
 const PUSH2_FOOTPRINT_CENTER: NormalizedPosition = NormalizedPosition::new(0.5, 0.5);
 const PUSH2_GROUP_COLOR: &str = "#80ffea";
+const PUSH2_TRANSPORT_RECT: FootprintRect = FootprintRect::new(16.0, 74.0, 130.0, 959.0);
+const PUSH2_WHITE_BUTTONS_RECT: FootprintRect = FootprintRect::new(16.0, 128.0, 1334.0, 903.0);
 
 const BASILISK_V3_POINTS: &[(u32, u32)] = &[
     (3, 5),
@@ -573,12 +575,7 @@ fn push2_zone_topology(zone: &ZoneSummary) -> LedTopology {
             direction: StripDirection::BottomToTop,
         },
         "Transport" => LedTopology::Custom {
-            positions: vec![
-                NormalizedPosition::new(0.5, 0.72),
-                NormalizedPosition::new(0.5, 0.92),
-                NormalizedPosition::new(0.5, 0.12),
-                NormalizedPosition::new(0.5, 0.32),
-            ],
+            positions: push2_transport_positions(),
         },
         "White Buttons" => LedTopology::Custom {
             positions: push2_white_button_positions(),
@@ -624,65 +621,75 @@ fn push2_zone_geometry(
     footprint_size: NormalizedPosition,
 ) -> (NormalizedPosition, NormalizedPosition) {
     let rect = match zone_name {
-        "White Buttons" => FootprintRect::new(0.2, 0.1, 16.1, 13.7),
-        "Transport" => FootprintRect::new(1.8, 8.1, 0.8, 4.1),
-        "Buttons Above" => FootprintRect::new(3.4, 0.45, 8.6, 0.85),
-        "Display" => FootprintRect::new(3.4, 1.55, 8.6, 1.45),
-        "Buttons Below" => FootprintRect::new(3.4, 3.15, 8.6, 0.85),
-        "Pads" => FootprintRect::new(3.4, 4.55, 8.0, 8.0),
-        "Scene Launch" => FootprintRect::new(11.95, 4.55, 0.7, 8.0),
-        "Touch Strip" => FootprintRect::new(13.25, 4.55, 0.6, 8.0),
-        _ => FootprintRect::new(0.0, 0.0, 4.0, 1.0),
+        "White Buttons" => PUSH2_WHITE_BUTTONS_RECT,
+        "Transport" => PUSH2_TRANSPORT_RECT,
+        "Buttons Above" => FootprintRect::new(252.0, 106.0, 836.0, 41.0),
+        "Display" => FootprintRect::new(246.0, 186.0, 852.0, 149.0),
+        "Buttons Below" => FootprintRect::new(252.0, 390.0, 840.0, 36.0),
+        "Pads" => FootprintRect::new(252.0, 458.0, 843.0, 595.0),
+        "Scene Launch" => FootprintRect::new(1140.0, 458.0, 68.0, 595.0),
+        "Touch Strip" => FootprintRect::new(96.0, 458.0, 78.0, 595.0),
+        _ => FootprintRect::new(0.0, 0.0, 320.0, 80.0),
     };
 
     rect.to_canvas(footprint_size)
 }
 
+fn push2_transport_positions() -> Vec<NormalizedPosition> {
+    normalize_points_in_rect(
+        PUSH2_TRANSPORT_RECT,
+        &[
+            (39.0, 1030.0),
+            (39.0, 965.0),
+            (47.0, 128.0),
+            (108.0, 128.0),
+        ],
+    )
+}
+
 fn push2_white_button_positions() -> Vec<NormalizedPosition> {
-    [
-        (0.9, 0.8),
-        (0.9, 1.8),
-        (0.9, 2.8),
-        (0.9, 3.8),
-        (0.9, 4.8),
-        (14.45, 6.0),
-        (15.85, 6.0),
-        (15.15, 5.0),
-        (15.15, 7.0),
-        (15.15, 6.0),
-        (0.9, 6.2),
-        (0.9, 7.2),
-        (0.9, 8.2),
-        (0.9, 9.2),
-        (0.9, 10.2),
-        (0.55, 11.3),
-        (1.25, 11.3),
-        (0.9, 12.3),
-        (14.45, 10.8),
-        (14.45, 2.6),
-        (15.85, 2.6),
-        (14.45, 0.8),
-        (15.85, 0.8),
-        (14.45, 1.7),
-        (15.85, 1.7),
-        (14.45, 8.5),
-        (15.85, 8.5),
-        (14.45, 9.5),
-        (15.85, 9.5),
-        (14.45, 12.0),
-        (15.85, 12.0),
-        (14.45, 13.0),
-        (15.85, 13.0),
-        (0.55, 13.2),
-        (1.05, 13.2),
-        (1.55, 13.2),
-        (15.85, 10.8),
-    ]
-    .into_iter()
-    .map(|(x, y)| {
-        NormalizedPosition::new(x / PUSH2_FOOTPRINT_GRID.width, y / PUSH2_FOOTPRINT_GRID.height)
-    })
-    .collect()
+    normalize_points_in_rect(
+        PUSH2_WHITE_BUTTONS_RECT,
+        &[
+            (1160.0, 389.0),
+            (122.0, 389.0),
+            (1260.0, 128.0),
+            (1333.0, 794.0),
+            (38.0, 463.0),
+            (1249.0, 451.0),
+            (1350.0, 451.0),
+            (1299.0, 392.0),
+            (1299.0, 507.0),
+            (1299.0, 449.0),
+            (1260.0, 1030.0),
+            (1260.0, 852.0),
+            (1333.0, 852.0),
+            (1160.0, 195.0),
+            (1160.0, 254.0),
+            (1299.0, 1001.0),
+            (1299.0, 923.0),
+            (1333.0, 128.0),
+            (82.0, 389.0),
+            (1249.0, 962.0),
+            (1350.0, 962.0),
+            (38.0, 755.0),
+            (38.0, 683.0),
+            (38.0, 890.0),
+            (38.0, 822.0),
+            (1260.0, 194.0),
+            (1260.0, 254.0),
+            (1333.0, 194.0),
+            (1333.0, 254.0),
+            (38.0, 603.0),
+            (38.0, 529.0),
+            (38.0, 196.0),
+            (38.0, 259.0),
+            (1260.0, 726.0),
+            (1333.0, 726.0),
+            (1260.0, 793.0),
+            (39.0, 389.0),
+        ],
+    )
 }
 
 fn sparse_signal_defaults(
@@ -949,6 +956,21 @@ fn grid_points(points: &[(u32, u32)], grid: VisualUnits) -> Vec<NormalizedPositi
                 *y as f32 / (grid.height - 1.0)
             };
             NormalizedPosition::new(norm_x, norm_y)
+        })
+        .collect()
+}
+
+fn normalize_points_in_rect(
+    rect: FootprintRect,
+    points: &[(f32, f32)],
+) -> Vec<NormalizedPosition> {
+    points
+        .iter()
+        .map(|&(x, y)| {
+            NormalizedPosition::new(
+                ((x - rect.x) / rect.width).clamp(0.0, 1.0),
+                ((y - rect.y) / rect.height).clamp(0.0, 1.0),
+            )
         })
         .collect()
 }

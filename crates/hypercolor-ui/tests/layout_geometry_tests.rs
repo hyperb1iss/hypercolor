@@ -147,6 +147,26 @@ fn seeded_push2_layout_creates_grouped_device_footprint() {
             assert_eq!(positions.len(), 37);
             assert!(positions.iter().any(|pos| pos.x < 0.1));
             assert!(positions.iter().any(|pos| pos.x > 0.9));
+
+            let repeat = positions[33];
+            let accent = positions[34];
+            let scale = positions[35];
+            let layout = positions[3];
+            let note = positions[11];
+            let session = positions[12];
+            let octave_down = positions[15];
+            let octave_up = positions[16];
+            let page_left = positions[19];
+            let page_right = positions[20];
+
+            assert!(repeat.y < scale.y && scale.y < note.y);
+            assert!(accent.y < layout.y && layout.y < session.y);
+            assert!(repeat.x < accent.x);
+            assert!(scale.x < layout.x);
+            assert!(note.x < session.x);
+            assert!(octave_up.y < page_left.y);
+            assert!(octave_down.y > page_left.y);
+            assert!(page_left.x < octave_up.x && octave_up.x < page_right.x);
         }
         other => panic!("expected custom white-button topology, got {other:?}"),
     }
@@ -176,6 +196,8 @@ fn seeded_push2_layout_creates_grouped_device_footprint() {
             direction: StripDirection::BottomToTop,
         }
     );
+    assert!(touch_strip.position.x < pads.position.x);
+    assert!(scene_launch.position.x > pads.position.x);
 
     let display = seeded
         .zones
