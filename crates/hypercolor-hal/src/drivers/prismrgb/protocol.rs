@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
 use tracing::warn;
+use zerocopy::{FromZeros, IntoBytes, KnownLayout, Immutable};
 
 use crate::protocol::{
     CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone,
@@ -30,11 +31,54 @@ const PRISM_S_GPU_CHUNK_IDS: [u8; 8] = [6, 7, 8, 9, 10, 11, 12, 13];
 
 const PRISM_MINI_MAX_LEDS: usize = 128;
 const PRISM_MINI_LEDS_PER_PACKET: usize = 20;
-const PRISM_MINI_DATA_MARKER_OFFSET: usize = 4;
-const PRISM_MINI_DATA_OFFSET: usize = 5;
 
 /// Fixed-size `PrismRGB` HID report size.
 pub const HID_REPORT_SIZE: usize = 65;
+
+const _: () = assert!(
+    std::mem::size_of::<Prism8DataPacket>() == HID_REPORT_SIZE,
+    "Prism8DataPacket must match HID_REPORT_SIZE (65 bytes)"
+);
+const _: () = assert!(
+    std::mem::size_of::<PrismMiniDataPacket>() == HID_REPORT_SIZE,
+    "PrismMiniDataPacket must match HID_REPORT_SIZE (65 bytes)"
+);
+
+/// Wire-format Prism 8 / Nollie 8 color data packet (65 bytes).
+///
+/// Each packet carries up to 21 RGB triples (63 bytes of color data)
+/// for a sequential chunk of LEDs. A final commit packet uses `packet_id = 0xFF`.
+#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+struct Prism8DataPacket {
+    /// HID report padding (always 0x00).
+    padding: u8,
+    /// Sequential packet ID (0-based data packets, `0xFF` = commit).
+    packet_id: u8,
+    /// Interleaved color bytes (up to 21 LEDs × 3 = 63 bytes).
+    colors: [u8; 63],
+}
+
+/// Wire-format Prism Mini color data packet (65 bytes).
+///
+/// Each packet carries up to 60 bytes of color data (20 LEDs × 3 in normal
+/// mode, or 40 LEDs in compressed mode).
+#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+struct PrismMiniDataPacket {
+    /// HID report padding (always 0x00).
+    padding: u8,
+    /// 1-based packet index.
+    packet_index: u8,
+    /// Total number of packets in this frame.
+    total_packets: u8,
+    /// Reserved (always 0x00).
+    reserved: u8,
+    /// Data marker (always 0xAA).
+    data_marker: u8,
+    /// Color data payload (up to 60 bytes).
+    data: [u8; 60],
+}
 
 /// Maximum sum of `R + G + B` in Prism Mini low-power mode.
 pub const LOW_POWER_THRESHOLD: u16 = 175;
@@ -250,21 +294,20 @@ impl PrismRgbProtocol {
                 .chunks(PRISM_8_LEDS_PER_PACKET)
                 .enumerate()
             {
-                let mut packet = [0_u8; HID_REPORT_SIZE];
-                packet[1] = u8::try_from(packet_index + channel * 6).unwrap_or(u8::MAX);
+                let mut packet = Prism8DataPacket::new_zeroed();
+                packet.packet_id = u8::try_from(packet_index + channel * 6).unwrap_or(u8::MAX);
 
-                let mut cursor = 2;
-                for color in chunk {
-                    let encoded_color = encode_color(
+                for (index, color) in chunk.iter().enumerate() {
+                    let encoded = encode_color(
                         *color,
                         self.model.brightness_scale(),
                         self.model.color_format(),
                     );
-                    packet[cursor..cursor + 3].copy_from_slice(&encoded_color);
-                    cursor += 3;
+                    let offset = index * 3;
+                    packet.colors[offset..offset + 3].copy_from_slice(&encoded);
                 }
 
-                command_buffer.push_slice(
+                command_buffer.push_struct(
                     &packet,
                     false,
                     Duration::ZERO,
@@ -274,9 +317,9 @@ impl PrismRgbProtocol {
             }
         }
 
-        let mut commit = [0_u8; HID_REPORT_SIZE];
-        commit[1] = 0xFF;
-        command_buffer.push_slice(
+        let mut commit = Prism8DataPacket::new_zeroed();
+        commit.packet_id = 0xFF;
+        command_buffer.push_struct(
             &commit,
             false,
             Duration::ZERO,
@@ -408,13 +451,12 @@ impl PrismRgbProtocol {
 
         let mut command_buffer = CommandBuffer::new(commands);
         for (index, chunk) in encoded_bytes.chunks(60).enumerate() {
-            let mut packet = [0_u8; HID_REPORT_SIZE];
-            packet[1] = u8::try_from(index + 1).unwrap_or(u8::MAX);
-            packet[2] = u8::try_from(total_packets).unwrap_or(u8::MAX);
-            packet[PRISM_MINI_DATA_MARKER_OFFSET] = 0xAA;
-            packet[PRISM_MINI_DATA_OFFSET..PRISM_MINI_DATA_OFFSET + chunk.len()]
-                .copy_from_slice(chunk);
-            command_buffer.push_slice(
+            let mut packet = PrismMiniDataPacket::new_zeroed();
+            packet.packet_index = u8::try_from(index + 1).unwrap_or(u8::MAX);
+            packet.total_packets = u8::try_from(total_packets).unwrap_or(u8::MAX);
+            packet.data_marker = 0xAA;
+            packet.data[..chunk.len()].copy_from_slice(chunk);
+            command_buffer.push_struct(
                 &packet,
                 false,
                 Duration::ZERO,

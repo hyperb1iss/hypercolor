@@ -7,6 +7,7 @@ use std::time::Duration;
 use std::fs;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+use zerocopy::{FromZeros, IntoBytes, KnownLayout, Immutable};
 
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
@@ -26,6 +27,30 @@ const RESPONSE_DELAY: Duration = Duration::from_millis(50);
 const RESPONSE_POST_DELAY: Duration = Duration::from_millis(5);
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const RESPONSE_TIMEOUT: Duration = Duration::from_millis(2_000);
+
+const _: () = assert!(
+    std::mem::size_of::<AuraDirectPacket>() == AURA_REPORT_PAYLOAD_LEN,
+    "AuraDirectPacket must match AURA_REPORT_PAYLOAD_LEN (64 bytes)"
+);
+
+/// Wire-format ASUS Aura direct color packet (64 bytes).
+///
+/// Each packet writes up to 20 RGB triples for a single channel. The last
+/// chunk in a channel sets the apply flag (`0x80`) in the channel byte.
+#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+struct AuraDirectPacket {
+    /// Command byte — always `0x40` (`DirectControl`).
+    command: u8,
+    /// Channel index OR'd with the apply flag (`0x80`) on the final chunk.
+    channel_with_flag: u8,
+    /// First LED offset in this chunk.
+    led_offset: u8,
+    /// Number of LEDs in this chunk.
+    chunk_len: u8,
+    /// Interleaved color bytes (up to 20 LEDs × 3 = 60 bytes).
+    colors: [u8; 60],
+}
 
 #[derive(Debug, Clone, Copy)]
 struct BoardTopologyOverride {
@@ -591,29 +616,28 @@ fn encode_channel_direct_packets(
         .chunks(AURA_DIRECT_LED_CHUNK)
         .enumerate()
         .map(|(chunk_index, chunk)| {
-            let mut payload = zeroed_payload(AuraCommand::DirectControl);
+            let mut packet = AuraDirectPacket::new_zeroed();
+            packet.command = u8::from(AuraCommand::DirectControl);
             let apply_flag = if chunk_index + 1 == colors.len().div_ceil(AURA_DIRECT_LED_CHUNK) {
                 0x80
             } else {
                 0x00
             };
-            let led_offset = chunk_index * AURA_DIRECT_LED_CHUNK;
-            payload[1] = channel_index | apply_flag;
-            payload[2] =
-                u8::try_from(led_offset).expect("ASUS direct packet offsets fit into one byte");
-            payload[3] =
+            packet.channel_with_flag = channel_index | apply_flag;
+            packet.led_offset = u8::try_from(chunk_index * AURA_DIRECT_LED_CHUNK)
+                .expect("ASUS direct packet offsets fit into one byte");
+            packet.chunk_len =
                 u8::try_from(chunk.len()).expect("ASUS direct packet chunk length fits into u8");
 
-            let mut cursor = 4_usize;
-            for [r, g, b] in chunk.iter().copied() {
+            for (index, [r, g, b]) in chunk.iter().copied().enumerate() {
                 let [wire_r, wire_g, wire_b] = color_order.permute(r, g, b);
-                payload[cursor] = wire_r;
-                payload[cursor + 1] = wire_g;
-                payload[cursor + 2] = wire_b;
-                cursor += 3;
+                let offset = index * 3;
+                packet.colors[offset] = wire_r;
+                packet.colors[offset + 1] = wire_g;
+                packet.colors[offset + 2] = wire_b;
             }
 
-            AuraUsbProtocol::build_write_command(payload)
+            AuraUsbProtocol::build_write_command(packet.as_bytes().to_vec())
         })
         .collect()
 }
