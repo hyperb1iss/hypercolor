@@ -190,6 +190,25 @@ impl<'a> CommandBuffer<'a> {
         );
     }
 
+    /// Write a zerocopy-compatible struct directly into the reusable command
+    /// buffer, avoiding intermediate allocations.
+    pub fn push_struct<T: zerocopy::IntoBytes + zerocopy::Immutable>(
+        &mut self,
+        value: &T,
+        expects_response: bool,
+        response_delay: Duration,
+        post_delay: Duration,
+        transfer_type: TransferType,
+    ) {
+        self.push_fill(
+            expects_response,
+            response_delay,
+            post_delay,
+            transfer_type,
+            |buffer| buffer.extend_from_slice(value.as_bytes()),
+        );
+    }
+
     pub fn finish(self) {
         self.commands.truncate(self.used);
     }

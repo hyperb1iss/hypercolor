@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
 use tracing::warn;
+use zerocopy::{FromZeros, IntoBytes, KnownLayout, Immutable};
 
 use crate::drivers::corsair::CORSAIR_KEEPALIVE_INTERVAL;
 use crate::drivers::corsair::framing::LN_WRITE_BUF_SIZE;
@@ -19,6 +20,37 @@ use crate::protocol::{
 const MAX_LEDS_PER_CHANNEL: u32 = 204;
 const DIRECT_CHUNK_SIZE: usize = 50;
 const DEFAULT_TARGET_FPS: u32 = 30;
+
+const _: () = assert!(
+    std::mem::size_of::<LnDirectPacket>() == LN_WRITE_BUF_SIZE,
+    "LnDirectPacket must match LN_WRITE_BUF_SIZE (65 bytes)"
+);
+
+/// Wire-format Lighting Node Direct color packet (65 bytes).
+///
+/// Each packet writes a single color component (R, G, or B) for up to 50 LEDs
+/// on a single channel. Three packets per chunk (one per component), then a
+/// Commit packet finalizes the channel update.
+#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+struct LnDirectPacket {
+    /// HID report padding (always 0x00).
+    padding: u8,
+    /// Packet ID — always `0x32` (Direct).
+    packet_id: u8,
+    /// Target channel (0-based).
+    channel: u8,
+    /// First LED index in this chunk.
+    start_led: u8,
+    /// Number of LEDs in this chunk.
+    led_count: u8,
+    /// Color component selector (0=R, 1=G, 2=B).
+    color_channel: u8,
+    /// Component values for up to 50 LEDs.
+    values: [u8; DIRECT_CHUNK_SIZE],
+    /// Tail padding to reach 65 bytes.
+    tail: [u8; 9],
+}
 
 /// Corsair Lighting Node / Commander Pro direct color protocol.
 pub struct CorsairLightingNodeProtocol {
@@ -189,22 +221,22 @@ impl Protocol for CorsairLightingNodeProtocol {
                     (1_usize, LightingNodeColorChannel::Green),
                     (2_usize, LightingNodeColorChannel::Blue),
                 ] {
-                    encoder.push_fill(
+                    let mut packet = LnDirectPacket::new_zeroed();
+                    packet.packet_id = LightingNodePacketId::Direct.byte();
+                    packet.channel = channel;
+                    packet.start_led = start;
+                    packet.led_count = count;
+                    packet.color_channel = color_channel.byte();
+                    for (index, color) in chunk.iter().enumerate() {
+                        packet.values[index] = color[component];
+                    }
+
+                    encoder.push_struct(
+                        &packet,
                         true,
                         Duration::ZERO,
                         Duration::ZERO,
                         TransferType::Primary,
-                        |buffer| {
-                            buffer.resize(LN_WRITE_BUF_SIZE, 0x00);
-                            buffer[1] = LightingNodePacketId::Direct.byte();
-                            buffer[2] = channel;
-                            buffer[3] = start;
-                            buffer[4] = count;
-                            buffer[5] = color_channel.byte();
-                            for (index, color) in chunk.iter().enumerate() {
-                                buffer[6 + index] = color[component];
-                            }
-                        },
                     );
                 }
             }
