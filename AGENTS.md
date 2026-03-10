@@ -90,6 +90,7 @@ sources) only, then regenerate locally as needed for verification.
 
 - **Edition 2024**, Rust 1.85+
 - **Tests in `tests/` directory** — NOT inline `#[cfg(test)]` blocks
+- **When adding coverage, update or create files under each crate's `tests/` directory** — do not grow inline test modules in source files
 - **`unsafe_code` is forbidden** across the entire workspace
 - **Clippy pedantic** is enforced — `deny` level, see `Cargo.toml` for allowed exceptions
 - **`unwrap()` is forbidden** — use `?`, `.ok()`, `expect("reason")`, or handle errors properly
