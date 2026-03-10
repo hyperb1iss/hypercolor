@@ -520,6 +520,13 @@ input[type="color"]::-webkit-color-swatch {
     transition-duration: 0.08s;
 }
 
+/* Color picker popover — floating wheel container */
+.color-picker-popover {
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5),
+                0 0 1px rgba(225, 53, 255, 0.15),
+                inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
 /* ── Glass (Prism) ───────────────────────────────────────────────────────── */
 
 .glass {

@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, HashMap};
 use hypercolor_types::canvas::{linear_to_srgb, srgb_to_linear};
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
+use super::color_wheel::ColorWheel;
+
 const QUICK_COLOR_SWATCHES: [&str; 10] = [
     "#6000fc", "#e135ff", "#ff6ac1", "#80ffea", "#f1fa8c", "#50fa7b", "#82aaff", "#ffffff",
     "#ff8c42", "#0a0910",
@@ -36,19 +38,15 @@ pub fn ControlPanel(
     // Lifted state: which color picker is currently expanded (survives inner re-renders)
     let (expanded_picker_id, set_expanded_picker_id) = signal(Option::<String>::None);
 
+    // Group by definition structure only — NOT by control_values.
+    // This prevents the entire widget tree from being torn down on every value change.
     let grouped = Memo::new(move |_| {
         let defs = controls.get();
-        let values = control_values.get();
         let rgb = accent_rgb.get();
-        let mut groups: BTreeMap<String, Vec<(ControlDefinition, ControlValue, String)>> =
-            BTreeMap::new();
+        let mut groups: BTreeMap<String, Vec<(ControlDefinition, String)>> = BTreeMap::new();
         for def in defs {
-            let value = effective_value(&def, &values);
             let group = def.group.clone().unwrap_or_else(|| "General".to_string());
-            groups
-                .entry(group)
-                .or_default()
-                .push((def, value, rgb.clone()));
+            groups.entry(group).or_default().push((def, rgb.clone()));
         }
         groups
     });
@@ -64,7 +62,10 @@ pub fn ControlPanel(
                         </div>
                     }.into_any()
                 } else {
+                    // Snapshot current values for initial widget state (untracked — no dependency)
+                    let values = control_values.get_untracked();
                     groups.into_iter().map(|(group, items)| {
+                        let values = values.clone();
                         view! {
                             <div class="space-y-3 animate-fade-in-up">
                                 <div class="flex items-center gap-2">
@@ -75,7 +76,8 @@ pub fn ControlPanel(
                                     <div class="h-px flex-1 bg-border-subtle" />
                                 </div>
                                 <div class="space-y-1">
-                                    {items.into_iter().enumerate().map(|(i, (def, value, rgb))| {
+                                    {items.into_iter().enumerate().map(|(i, (def, rgb))| {
+                                        let value = effective_value(&def, &values);
                                         let delay = format!("animation-delay: {}ms", i * 40);
                                         view! {
                                             <div class="animate-fade-in-up" style=delay>
@@ -207,26 +209,28 @@ fn ControlWidget(
             let (color, set_color) = signal(initial);
             let (hex_input, set_hex_input) = signal(color.get_untracked());
             let picker_id = control_id.clone();
-            let is_expanded = Memo::new({
+            let is_open = Memo::new({
                 let picker_id = picker_id.clone();
                 move |_| expanded_picker_id.get().as_deref() == Some(picker_id.as_str())
             });
-            let (red, set_red) = signal(255u8);
-            let (green, set_green) = signal(255u8);
-            let (blue, set_blue) = signal(255u8);
             let control_name = control_id.clone();
-            apply_hex_color(
-                &color.get_untracked(),
-                set_color,
-                set_hex_input,
-                set_red,
-                set_green,
-                set_blue,
-                None,
-            );
+
+            // Wheel callback — receives hex from ColorWheel, propagates to engine
+            let on_wheel_change = Callback::new({
+                let control_name = control_name.clone();
+                move |hex: String| {
+                    if let Some(normalized) = normalize_hex(&hex) {
+                        set_color.set(normalized.clone());
+                        set_hex_input.set(normalized.clone());
+                        if let Some(rgba) = hex_to_rgba(&normalized) {
+                            on_change.run((control_name.clone(), json!(rgba)));
+                        }
+                    }
+                }
+            });
 
             view! {
-                <div class="rounded-lg px-3 py-2.5 transition-colors duration-150"
+                <div class="relative rounded-lg px-3 py-2.5 transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
                     // Trigger row — swatch + label + hex value
                     <div class="flex items-center gap-3">
@@ -262,93 +266,83 @@ fn ControlWidget(
                         </div>
                     </div>
 
-                    // Inline expanded color picker — accordion style, no overlay
-                    <Show when=move || is_expanded.get()>
-                        <div class="mt-3 space-y-3 rounded-xl bg-surface-sunken border border-edge-subtle
-                                    p-3.5 dropdown-glow animate-slide-down animate-glow-reveal">
-                            // Header — large preview + hex display + close
-                            <div class="flex items-center justify-between">
-                                <div class="flex items-center gap-2.5">
-                                    <div
-                                        class="h-7 w-7 rounded-lg border border-edge-subtle"
-                                        style=move || format!(
-                                            "background: {}; box-shadow: 0 0 10px {}44",
-                                            color.get(), color.get()
-                                        )
-                                    />
-                                    <span class="text-xs font-mono uppercase text-fg-tertiary/70 tracking-wider">
-                                        {move || color.get().to_uppercase()}
-                                    </span>
-                                </div>
-                                <button
-                                    type="button"
-                                    class="px-2.5 py-1 rounded-lg text-[10px] font-medium text-fg-tertiary
-                                           border border-edge-subtle bg-surface-overlay/30
-                                           hover:bg-surface-hover/50 hover:text-fg-primary hover:border-edge-default
-                                           active:scale-95 transition-all duration-150"
-                                    on:click={
-                                        let picker_id = picker_id.clone();
-                                        move |_| {
-                                            set_expanded_picker_id.update(|current| {
-                                                if current.as_deref() == Some(picker_id.as_str()) {
-                                                    *current = None;
-                                                }
-                                            });
+                    // Popover color picker — overlays above the control
+                    <Show when=move || is_open.get()>
+                        // Backdrop scrim — click anywhere outside to close
+                        <div
+                            class="fixed inset-0 z-40 bg-black/20"
+                            on:click={
+                                let picker_id = picker_id.clone();
+                                move |_| {
+                                    set_expanded_picker_id.update(|current| {
+                                        if current.as_deref() == Some(picker_id.as_str()) {
+                                            *current = None;
                                         }
-                                    }
-                                >
-                                    "Done"
-                                </button>
+                                    });
+                                }
+                            }
+                        />
+                        // Popover panel
+                        <div class="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-50
+                                    w-[260px] rounded-2xl
+                                    bg-surface-sunken/95 backdrop-blur-xl
+                                    border border-edge-subtle
+                                    p-4 space-y-3
+                                    color-picker-popover animate-scale-in">
+
+                            // Color wheel canvas
+                            <div class="flex justify-center">
+                                <ColorWheel
+                                    color=Signal::derive(move || color.get())
+                                    on_change=on_wheel_change
+                                />
                             </div>
-                            // Hex input
-                            <input
-                                type="text"
-                                class="w-full rounded-lg border border-edge-subtle bg-surface-overlay/40
-                                       px-3 py-2 text-sm font-mono uppercase text-fg-primary
-                                       placeholder-fg-tertiary/30 focus:outline-none
-                                       focus:border-accent-muted transition-all duration-150"
-                                maxlength="7"
-                                placeholder="#E135FF"
-                                prop:value=move || hex_input.get()
-                                on:input={
-                                    let control_name = control_name.clone();
-                                    move |ev| {
-                                        use wasm_bindgen::JsCast;
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target {
-                                            let next = el.value();
-                                            set_hex_input.set(next.clone());
-                                            if normalize_hex(&next).is_some() {
-                                                apply_hex_color(
-                                                    &next,
-                                                    set_color,
-                                                    set_hex_input,
-                                                    set_red,
-                                                    set_green,
-                                                    set_blue,
-                                                    Some((&on_change, &control_name)),
-                                                );
+
+                            // Hex input + preview swatch
+                            <div class="flex items-center gap-2">
+                                <div
+                                    class="h-8 w-8 shrink-0 rounded-lg border border-edge-subtle"
+                                    style=move || format!(
+                                        "background: {}; box-shadow: 0 0 14px {}44",
+                                        color.get(), color.get()
+                                    )
+                                />
+                                <input
+                                    type="text"
+                                    class="flex-1 rounded-lg border border-edge-subtle bg-surface-overlay/40
+                                           px-2.5 py-1.5 text-xs font-mono uppercase text-fg-primary
+                                           placeholder-fg-tertiary/30 focus:outline-none
+                                           focus:border-accent-muted transition-all duration-150"
+                                    maxlength="7"
+                                    placeholder="#E135FF"
+                                    prop:value=move || hex_input.get()
+                                    on:input={
+                                        let control_name = control_name.clone();
+                                        move |ev| {
+                                            use wasm_bindgen::JsCast;
+                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                            if let Some(el) = target {
+                                                let next = el.value();
+                                                set_hex_input.set(next.clone());
+                                                if let Some(normalized) = normalize_hex(&next) {
+                                                    set_color.set(normalized.clone());
+                                                    if let Some(rgba) = hex_to_rgba(&normalized) {
+                                                        on_change.run((control_name.clone(), json!(rgba)));
+                                                    }
+                                                }
                                             }
                                         }
                                     }
-                                }
-                                on:blur=move |_| {
-                                    let next = hex_input.get();
-                                    if normalize_hex(&next).is_some() {
-                                        apply_hex_color(
-                                            &next,
-                                            set_color,
-                                            set_hex_input,
-                                            set_red,
-                                            set_green,
-                                            set_blue,
-                                            None,
-                                        );
-                                    } else {
-                                        set_hex_input.set(color.get());
+                                    on:blur=move |_| {
+                                        let next = hex_input.get();
+                                        if normalize_hex(&next).is_some() {
+                                            set_hex_input.set(normalize_hex(&next).expect("validated"));
+                                        } else {
+                                            set_hex_input.set(color.get());
+                                        }
                                     }
-                                }
-                            />
+                                />
+                            </div>
 
                             // Quick pick swatches
                             <div class="grid grid-cols-10 gap-1.5">
@@ -373,147 +367,17 @@ fn ControlWidget(
                                                 let control_name = control_name.clone();
                                                 let swatch_hex = swatch_hex.clone();
                                                 move |_| {
-                                                    apply_hex_color(
-                                                        &swatch_hex,
-                                                        set_color,
-                                                        set_hex_input,
-                                                        set_red,
-                                                        set_green,
-                                                        set_blue,
-                                                        Some((&on_change, &control_name)),
-                                                    );
+                                                    let normalized = normalize_hex(&swatch_hex).expect("hardcoded swatches are valid");
+                                                    set_color.set(normalized.clone());
+                                                    set_hex_input.set(normalized.clone());
+                                                    if let Some(rgba) = hex_to_rgba(&normalized) {
+                                                        on_change.run((control_name.clone(), json!(rgba)));
+                                                    }
                                                 }
                                             }
                                         />
                                     }
                                 }).collect_view()}
-                            </div>
-
-                            // RGB channel sliders
-                            <div class="space-y-2">
-                                <div class="flex items-center gap-2.5">
-                                    <span class="text-[10px] font-mono font-medium text-error-red/70 w-2.5">"R"</span>
-                                    <input
-                                        type="range"
-                                        class="flex-1 cursor-pointer color-channel"
-                                        min="0"
-                                        max="255"
-                                        step="1"
-                                        prop:value=move || red.get()
-                                        style=move || format!(
-                                            "background: linear-gradient(90deg, rgb(0,{0},{1}), rgb(255,{0},{1}))",
-                                            green.get(),
-                                            blue.get()
-                                        )
-                                        on:input={
-                                            let control_name = control_name.clone();
-                                            move |ev| {
-                                                use wasm_bindgen::JsCast;
-                                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                if let Some(el) = target
-                                                    && let Ok(v) = el.value().parse::<u8>()
-                                                {
-                                                    apply_rgb_color(
-                                                        v,
-                                                        green.get(),
-                                                        blue.get(),
-                                                        set_color,
-                                                        set_hex_input,
-                                                        set_red,
-                                                        set_green,
-                                                        set_blue,
-                                                        Some((&on_change, &control_name)),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    />
-                                    <span class="text-[10px] font-mono text-fg-tertiary/60 w-7 text-right tabular-nums">
-                                        {move || red.get()}
-                                    </span>
-                                </div>
-                                <div class="flex items-center gap-2.5">
-                                    <span class="text-[10px] font-mono font-medium text-success-green/70 w-2.5">"G"</span>
-                                    <input
-                                        type="range"
-                                        class="flex-1 cursor-pointer color-channel"
-                                        min="0"
-                                        max="255"
-                                        step="1"
-                                        prop:value=move || green.get()
-                                        style=move || format!(
-                                            "background: linear-gradient(90deg, rgb({0},0,{1}), rgb({0},255,{1}))",
-                                            red.get(),
-                                            blue.get()
-                                        )
-                                        on:input={
-                                            let control_name = control_name.clone();
-                                            move |ev| {
-                                                use wasm_bindgen::JsCast;
-                                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                if let Some(el) = target
-                                                    && let Ok(v) = el.value().parse::<u8>()
-                                                {
-                                                    apply_rgb_color(
-                                                        red.get(),
-                                                        v,
-                                                        blue.get(),
-                                                        set_color,
-                                                        set_hex_input,
-                                                        set_red,
-                                                        set_green,
-                                                        set_blue,
-                                                        Some((&on_change, &control_name)),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    />
-                                    <span class="text-[10px] font-mono text-fg-tertiary/60 w-7 text-right tabular-nums">
-                                        {move || green.get()}
-                                    </span>
-                                </div>
-                                <div class="flex items-center gap-2.5">
-                                    <span class="text-[10px] font-mono font-medium text-info-blue/70 w-2.5">"B"</span>
-                                    <input
-                                        type="range"
-                                        class="flex-1 cursor-pointer color-channel"
-                                        min="0"
-                                        max="255"
-                                        step="1"
-                                        prop:value=move || blue.get()
-                                        style=move || format!(
-                                            "background: linear-gradient(90deg, rgb({0},{1},0), rgb({0},{1},255))",
-                                            red.get(),
-                                            green.get()
-                                        )
-                                        on:input={
-                                            let control_name = control_name.clone();
-                                            move |ev| {
-                                                use wasm_bindgen::JsCast;
-                                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                if let Some(el) = target
-                                                    && let Ok(v) = el.value().parse::<u8>()
-                                                {
-                                                    apply_rgb_color(
-                                                        red.get(),
-                                                        green.get(),
-                                                        v,
-                                                        set_color,
-                                                        set_hex_input,
-                                                        set_red,
-                                                        set_green,
-                                                        set_blue,
-                                                        Some((&on_change, &control_name)),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    />
-                                    <span class="text-[10px] font-mono text-fg-tertiary/60 w-7 text-right tabular-nums">
-                                        {move || blue.get()}
-                                    </span>
-                                </div>
                             </div>
                         </div>
                     </Show>
@@ -611,57 +475,6 @@ fn control_value_to_hex(value: &ControlValue) -> String {
         ControlValue::Text(hex) if hex.starts_with('#') && hex.len() >= 7 => hex[..7].to_string(),
         _ => "#ffffff".to_string(),
     }
-}
-
-fn apply_hex_color(
-    raw_hex: &str,
-    set_color: WriteSignal<String>,
-    set_hex_input: WriteSignal<String>,
-    set_red: WriteSignal<u8>,
-    set_green: WriteSignal<u8>,
-    set_blue: WriteSignal<u8>,
-    on_change: Option<(&Callback<(String, serde_json::Value)>, &str)>,
-) {
-    let Some(normalized) = normalize_hex(raw_hex) else {
-        return;
-    };
-    let Some(rgba) = hex_to_rgba(&normalized) else {
-        return;
-    };
-
-    set_color.set(normalized.clone());
-    set_hex_input.set(normalized.clone());
-    set_red.set(to_byte(rgba[0]));
-    set_green.set(to_byte(rgba[1]));
-    set_blue.set(to_byte(rgba[2]));
-
-    if let Some((callback, control_name)) = on_change {
-        callback.run((control_name.to_owned(), json!(rgba)));
-    }
-}
-
-#[expect(clippy::too_many_arguments)]
-fn apply_rgb_color(
-    red: u8,
-    green: u8,
-    blue: u8,
-    set_color: WriteSignal<String>,
-    set_hex_input: WriteSignal<String>,
-    set_red: WriteSignal<u8>,
-    set_green: WriteSignal<u8>,
-    set_blue: WriteSignal<u8>,
-    on_change: Option<(&Callback<(String, serde_json::Value)>, &str)>,
-) {
-    let hex = format!("#{red:02x}{green:02x}{blue:02x}");
-    apply_hex_color(
-        &hex,
-        set_color,
-        set_hex_input,
-        set_red,
-        set_green,
-        set_blue,
-        on_change,
-    );
 }
 
 fn normalize_hex(raw_hex: &str) -> Option<String> {

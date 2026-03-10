@@ -1,4 +1,4 @@
-//! Devices page — device management grid with detail sidebar.
+//! Devices page — hardware gallery grid with detail sidebar.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -48,7 +48,6 @@ pub fn DevicesPage() -> impl IntoView {
     let (backend_filter, set_backend_filter) = signal("all".to_string());
     let (selected_device, set_selected_device) = signal(None::<String>);
 
-    // Filter devices (case-insensitive matching)
     let filtered_devices = Memo::new(move |_| {
         let Some(Ok(devices)) = ctx.devices_resource.get() else {
             return Vec::new();
@@ -90,43 +89,43 @@ pub fn DevicesPage() -> impl IntoView {
 
     view! {
         <div class="flex flex-col h-full -m-6 animate-fade-in">
-            // Devices header
-            <div class="shrink-0 px-6 pt-6 pb-4 space-y-3 bg-surface-base z-10">
-                // Title row with scan button
+            // Header
+            <div class="shrink-0 px-6 pt-6 pb-3 space-y-2.5 bg-surface-base z-10">
+                // Title + scan
                 <div class="flex items-center justify-between">
-                    <div class="flex items-baseline gap-3">
+                    <div class="flex items-baseline gap-2.5">
                         <h1 class="text-lg font-medium text-fg-primary">"Devices"</h1>
-                        <span class="text-[11px] font-mono text-fg-tertiary tabular-nums">
-                            {move || device_count.get()} " devices"
+                        <span class="text-[10px] font-mono text-fg-tertiary/50 tabular-nums">
+                            {move || device_count.get()}
                         </span>
                     </div>
                     <button
-                        class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all btn-press"
-                        style="background: rgba(128, 255, 234, 0.08); border: 1px solid rgba(128, 255, 234, 0.15); color: rgb(128, 255, 234)"
+                        class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all btn-press"
+                        style="background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.1); color: rgba(128, 255, 234, 0.8)"
                         on:click=move |_| {
                             let devices_resource = ctx.devices_resource;
                             leptos::task::spawn_local(async move {
                                 let _ = crate::api::discover_devices().await;
-                                toasts::toast_info("Scanning for devices…");
+                                toasts::toast_info("Scanning...");
                                 devices_resource.refetch();
                             });
                         }
                     >
-                        <Icon icon=LuRefreshCw width="14px" height="14px" />
+                        <Icon icon=LuRefreshCw width="12px" height="12px" />
                         "Scan"
                     </button>
                 </div>
 
-                // Search bar
+                // Search
                 <div class="relative">
-                    <span class="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
-                        <Icon icon=LuSearch width="14px" height="14px" />
+                    <span class="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary/40">
+                        <Icon icon=LuSearch width="13px" height="13px" />
                     </span>
                     <input
                         type="text"
                         placeholder="Search devices..."
-                        class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg pl-9 pr-10 py-2 text-sm text-fg-primary
-                               placeholder-fg-tertiary focus:outline-none focus:border-accent-muted
+                        class="w-full bg-surface-overlay/50 border border-edge-subtle rounded-lg pl-8 pr-8 py-1.5 text-[12px] text-fg-primary
+                               placeholder-fg-tertiary/40 focus:outline-none focus:border-accent-muted
                                search-glow glow-ring transition-all duration-300"
                         prop:value=move || search.get()
                         on:input=move |ev| {
@@ -134,11 +133,11 @@ pub fn DevicesPage() -> impl IntoView {
                             if let Some(el) = target { set_search.set(el.value()); }
                         }
                     />
-                    <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-edge-subtle">"/"</kbd>
+                    <kbd class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[8px] font-mono text-fg-tertiary/30 bg-surface-overlay/20 px-1 py-0.5 rounded border border-edge-subtle/50">"/"</kbd>
                 </div>
 
-                // Combined filter row — status + separator + backends
-                <div class="flex items-center gap-1.5 flex-wrap">
+                // Filters: status + backends
+                <div class="flex items-center gap-1 flex-wrap">
                     {STATUSES.iter().map(|s| {
                         let s = s.to_string();
                         let s_clone = s.clone();
@@ -148,14 +147,14 @@ pub fn DevicesPage() -> impl IntoView {
                             Memo::new(move |_| status_filter.get() == s)
                         };
                         let active_style = format!(
-                            "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 12px rgba({rgb}, 0.15)"
+                            "background: rgba({rgb}, 0.12); color: rgb({rgb}); border-color: rgba({rgb}, 0.25)"
                         );
                         let inactive_style = format!(
-                            "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: rgba({rgb}, 0.02)"
+                            "color: rgba({rgb}, 0.35); border-color: transparent; background: transparent"
                         );
                         view! {
                             <button
-                                class="px-2.5 py-1 rounded-full text-[11px] font-medium capitalize border transition-all"
+                                class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
                                 style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
                                 on:click=move |_| set_status_filter.set(s_clone.clone())
                             >
@@ -164,8 +163,7 @@ pub fn DevicesPage() -> impl IntoView {
                         }
                     }).collect_view()}
 
-                    // Subtle separator
-                    <div class="w-px h-4 bg-border-subtle mx-1" />
+                    <div class="w-px h-3 bg-border-subtle/30 mx-0.5" />
 
                     {BACKENDS.iter().skip(1).map(|b| {
                         let b = b.to_string();
@@ -176,14 +174,14 @@ pub fn DevicesPage() -> impl IntoView {
                             Memo::new(move |_| backend_filter.get() == b)
                         };
                         let active_style = format!(
-                            "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 12px rgba({rgb}, 0.15)"
+                            "background: rgba({rgb}, 0.12); color: rgb({rgb}); border-color: rgba({rgb}, 0.25)"
                         );
                         let inactive_style = format!(
-                            "color: rgba({rgb}, 0.4); border-color: rgba({rgb}, 0.06); background: transparent"
+                            "color: rgba({rgb}, 0.3); border-color: transparent; background: transparent"
                         );
                         view! {
                             <button
-                                class="px-2.5 py-1 rounded-full text-[11px] font-medium capitalize border transition-all"
+                                class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
                                 style=move || {
                                     if is_active.get() {
                                         active_style.clone()
@@ -207,9 +205,9 @@ pub fn DevicesPage() -> impl IntoView {
                 </div>
             </div>
 
-            // Scrollable grid + detail sidebar
+            // Grid + sidebar
             <div class="flex-1 overflow-y-auto px-6 pb-6">
-                <div class="flex gap-5 items-start">
+                <div class="flex gap-4 items-start">
                     // Device grid
                     <div class="flex-1 min-w-0">
                         <Suspense fallback=move || view! { <DevicesLoadingSkeleton /> }>
@@ -217,18 +215,17 @@ pub fn DevicesPage() -> impl IntoView {
                                 let devices = filtered_devices.get();
                                 if devices.is_empty() {
                                     view! {
-                                        <div class="flex flex-col items-center justify-center py-24 space-y-3">
-                                            <Icon icon=LuCpu width="48px" height="48px" style="color: rgba(139, 133, 160, 0.2)" />
-                                            <div class="text-fg-tertiary text-sm">"No devices found"</div>
-                                            <div class="text-fg-tertiary/40 text-xs">"Try a different search or filter"</div>
+                                        <div class="flex flex-col items-center justify-center py-20 space-y-2">
+                                            <Icon icon=LuCpu width="36px" height="36px" style="color: rgba(139, 133, 160, 0.15)" />
+                                            <div class="text-fg-tertiary/40 text-xs">"No devices found"</div>
                                         </div>
                                     }.into_any()
                                 } else {
                                     let has_selected = selected_device.get().is_some();
                                     let grid_class = if has_selected {
-                                        "grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3"
+                                        "grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2.5"
                                     } else {
-                                        "grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4"
+                                        "grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3"
                                     };
                                     view! {
                                         <div class=grid_class>
@@ -266,29 +263,27 @@ pub fn DevicesPage() -> impl IntoView {
     }
 }
 
-/// Loading skeleton for the devices grid.
+/// Loading skeleton.
 #[component]
 fn DevicesLoadingSkeleton() -> impl IntoView {
     view! {
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-4">
+        <div class="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
             {(0..6).map(|i| {
-                let stagger = format!("animation-delay: {}ms", i * 80);
+                let stagger = format!("animation-delay: {}ms", i * 60);
                 view! {
-                    <div class="rounded-2xl border border-edge-subtle bg-surface-overlay/40 px-4 py-4 animate-pulse space-y-3" style=stagger>
-                        <div class="flex justify-between items-start">
+                    <div class="rounded-xl border border-edge-subtle/50 bg-surface-overlay/30 h-[108px] animate-pulse" style=stagger>
+                        <div class="px-3.5 py-3 space-y-3">
                             <div class="flex items-center gap-2.5">
-                                <div class="w-5 h-5 bg-surface-overlay/40 rounded" />
-                                <div class="h-4 w-32 bg-surface-overlay/40 rounded" />
+                                <div class="w-8 h-8 bg-surface-overlay/30 rounded-lg" />
+                                <div class="space-y-1.5 flex-1">
+                                    <div class="h-3.5 w-28 bg-surface-overlay/30 rounded" />
+                                    <div class="h-2.5 w-16 bg-surface-overlay/20 rounded" />
+                                </div>
                             </div>
-                            <div class="h-4 w-14 bg-surface-overlay/40 rounded-full" />
-                        </div>
-                        <div class="flex gap-4">
-                            <div class="h-3 w-16 bg-surface-overlay/20 rounded" />
-                            <div class="h-3 w-16 bg-surface-overlay/20 rounded" />
-                        </div>
-                        <div class="flex items-center gap-2 pt-2 border-t border-edge-subtle">
-                            <div class="w-1.5 h-1.5 bg-surface-overlay/40 rounded-full" />
-                            <div class="h-2.5 w-16 bg-surface-overlay/20 rounded" />
+                            <div class="flex gap-1.5">
+                                <div class="w-4 h-4 bg-surface-overlay/15 rounded" />
+                                <div class="w-4 h-4 bg-surface-overlay/15 rounded" />
+                            </div>
                         </div>
                     </div>
                 }

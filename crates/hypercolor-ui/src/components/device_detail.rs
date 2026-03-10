@@ -1,4 +1,4 @@
-//! Device detail sidebar — cinematic device info, actions, and logical device management.
+//! Device detail sidebar — hardware spec sheet with visual zones and attachment shapes.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -8,7 +8,7 @@ use wasm_bindgen::JsCast;
 use crate::api;
 use crate::app::DevicesContext;
 use crate::components::attachment_panel::AttachmentPanel;
-use crate::components::device_card::backend_accent_rgb;
+use crate::components::device_card::{backend_accent_rgb, topology_shape_svg};
 use crate::icons::*;
 use crate::toasts;
 
@@ -17,7 +17,6 @@ use crate::toasts;
 pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
 
-    // Derive selected device from context
     let device = Memo::new(move |_| {
         let id = device_id.get();
         ctx.devices_resource
@@ -26,7 +25,6 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
             .and_then(|devices| devices.into_iter().find(|d| d.id == id))
     });
 
-    // Logical devices resource — re-fetches when device changes
     let logical_devices = LocalResource::new(move || {
         let id = device_id.get();
         async move {
@@ -37,7 +35,6 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
         }
     });
 
-    // Editing state
     let (editing_name, set_editing_name) = signal(false);
     let (name_input, set_name_input) = signal(String::new());
     let (show_add_segment, set_show_add_segment) = signal(false);
@@ -54,7 +51,6 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
         }
     });
 
-    // Save name handler
     let save_name = move || {
         let id = device_id.get();
         let new_name = name_input.get();
@@ -75,7 +71,6 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
         });
     };
 
-    // Toggle enabled
     let toggle_enabled = move || {
         let Some(dev) = device.get() else { return };
         let id = dev.id.clone();
@@ -97,7 +92,6 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
         });
     };
 
-    // Device brightness
     let push_brightness = use_throttle_fn_with_arg(
         move |brightness: u8| {
             let Some(dev) = device.get_untracked() else {
@@ -112,7 +106,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                     brightness: Some(brightness),
                 };
                 if let Err(error) = api::update_device(&id, &req).await {
-                    toasts::toast_error(&format!("Brightness update failed: {error}"));
+                    toasts::toast_error(&format!("Brightness failed: {error}"));
                     devices_resource.refetch();
                 }
             });
@@ -120,21 +114,16 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
         50.0,
     );
 
-    // Identify handler
     let identify = move || {
         let id = device_id.get();
         set_identify_active.set(true);
-        toasts::toast_info("Identifying device...");
         leptos::task::spawn_local(async move {
             if let Err(error) = api::identify_device(&id).await {
                 set_identify_active.set(false);
                 toasts::toast_error(&format!("Identify failed: {error}"));
                 return;
             }
-
-            toasts::toast_success("Device identify flash started");
-
-            // Flash indicator for 3s then reset
+            toasts::toast_success("Flashing device");
             let promise = js_sys::Promise::new(&mut |resolve, _| {
                 let _ = web_sys::window()
                     .expect("window")
@@ -145,22 +134,18 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
         });
     };
 
-    // Add segment handler
     let add_segment = move || {
         let id = device_id.get();
         let name = seg_name.get();
         let start: u32 = seg_start.get().parse().unwrap_or(0);
         let count: u32 = seg_count.get().parse().unwrap_or(1);
-
         if name.trim().is_empty() {
             return;
         }
-
         set_show_add_segment.set(false);
         set_seg_name.set(String::new());
         set_seg_start.set(String::new());
         set_seg_count.set(String::new());
-
         leptos::task::spawn_local(async move {
             let req = api::CreateLogicalDeviceRequest {
                 name,
@@ -172,7 +157,6 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
         });
     };
 
-    // Delete logical device
     let delete_logical = move |logical_id: String| {
         leptos::task::spawn_local(async move {
             let _ = api::delete_logical_device(&logical_id).await;
@@ -180,99 +164,92 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
     };
 
     view! {
-        <aside class="w-[420px] shrink-0 sticky top-0 self-start space-y-3 animate-slide-in-right scrollbar-none will-change-transform"
+        <aside class="w-[400px] shrink-0 sticky top-0 self-start space-y-2.5 animate-slide-in-right scrollbar-none will-change-transform"
                style="max-height: calc(100vh - 10rem); overflow-y: auto">
             {move || device.get().map(|dev| {
                 let rgb = backend_accent_rgb(&dev.backend).to_string();
-                let status_rgb = crate::components::device_card::backend_accent_rgb(&dev.backend);
-                let dot_style = format!("background: rgb({}); box-shadow: 0 0 8px rgba({}, 0.6)", status_rgb, status_rgb);
-                let accent_border = format!("border-top: 2px solid rgba({rgb}, 0.15)");
+                let rgb_for_border = rgb.clone();
+                let rgb_for_slider = rgb.clone();
+                let rgb_for_identify = rgb.clone();
+                let dot_rgb = match dev.status.as_str() {
+                    "active" => "80, 250, 123",
+                    "connected" => "130, 170, 255",
+                    "disabled" => "255, 99, 99",
+                    _ => "139, 133, 160",
+                };
                 let enabled = dev.status != "disabled";
                 let dev_name_for_edit = dev.name.clone();
                 let push_brightness = push_brightness.clone();
 
                 view! {
-                    // ── Device Header ──────────────────────────────────────
-                    <div class="flex items-center gap-2.5 px-1">
-                        <div class="w-2.5 h-2.5 rounded-full dot-alive shrink-0" style=dot_style />
-                        {move || if editing_name.get() {
-                            view! {
-                                <input
-                                    type="text"
-                                    class="flex-1 bg-surface-overlay border border-edge-subtle rounded px-2 py-1 text-sm text-fg-primary
-                                           focus:outline-none focus:border-accent-muted"
-                                    prop:value=move || name_input.get()
-                                    on:input=move |ev| {
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target { set_name_input.set(el.value()); }
-                                    }
-                                    on:keydown=move |ev| {
-                                        if ev.key() == "Enter" { save_name(); }
-                                        if ev.key() == "Escape" { set_editing_name.set(false); }
-                                    }
-                                    on:blur=move |_| save_name()
-                                />
-                            }.into_any()
-                        } else {
-                            let name = dev_name_for_edit.clone();
-                            view! {
-                                <span
-                                    class="text-base font-medium text-fg-primary cursor-pointer hover:text-accent transition-colors group flex items-center gap-1.5"
-                                    on:click=move |_| {
-                                        set_name_input.set(name.clone());
-                                        set_editing_name.set(true);
-                                    }
-                                >
-                                    {dev.name.clone()}
-                                    <span class="w-3 h-3 text-fg-tertiary opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <Icon icon=LuPencil width="12px" height="12px" />
-                                    </span>
-                                </span>
-                            }.into_any()
-                        }}
-                    </div>
-
-                    // ── Info Panel ─────────────────────────────────────────
+                    // ── Header: Name + status + actions ──────────────────────
                     <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow"
-                         style=accent_border>
-                        <div class="p-4 space-y-3">
-                            // Device metadata grid
-                            <div class="grid grid-cols-2 gap-x-4 gap-y-2">
-                                {detail_field("Backend", &dev.backend)}
-                                {detail_field("Status", &capitalize(&dev.status))}
-                                {detail_field("LEDs", &dev.total_leds.to_string())}
-                                {detail_field("Firmware", &dev.firmware_version.clone().unwrap_or_else(|| "\u{2014}".to_string()))}
-                                {detail_field(
-                                    "Hostname",
-                                    &dev.network_hostname.clone().unwrap_or_else(|| "\u{2014}".to_string()),
-                                )}
-                                {detail_field(
-                                    "IP",
-                                    &dev.network_ip.clone().unwrap_or_else(|| "\u{2014}".to_string()),
-                                )}
+                         style=format!("border-top: 2px solid rgba({rgb_for_border}, 0.2)")>
+                        <div class="px-4 py-3">
+                            // Name row
+                            <div class="flex items-center gap-2.5 mb-2">
+                                <div class="w-2 h-2 rounded-full shrink-0 dot-alive"
+                                     style=format!("background: rgb({dot_rgb}); box-shadow: 0 0 8px rgba({dot_rgb}, 0.5)") />
+                                {move || if editing_name.get() {
+                                    view! {
+                                        <input
+                                            type="text"
+                                            class="flex-1 bg-surface-overlay border border-edge-subtle rounded px-2 py-0.5 text-sm text-fg-primary
+                                                   focus:outline-none focus:border-accent-muted"
+                                            prop:value=move || name_input.get()
+                                            on:input=move |ev| {
+                                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                if let Some(el) = target { set_name_input.set(el.value()); }
+                                            }
+                                            on:keydown=move |ev| {
+                                                if ev.key() == "Enter" { save_name(); }
+                                                if ev.key() == "Escape" { set_editing_name.set(false); }
+                                            }
+                                            on:blur=move |_| save_name()
+                                        />
+                                    }.into_any()
+                                } else {
+                                    let name = dev_name_for_edit.clone();
+                                    view! {
+                                        <span
+                                            class="text-sm font-medium text-fg-primary cursor-pointer hover:text-accent transition-colors group flex items-center gap-1.5 truncate"
+                                            on:click=move |_| {
+                                                set_name_input.set(name.clone());
+                                                set_editing_name.set(true);
+                                            }
+                                        >
+                                            {dev.name.clone()}
+                                            <span class="w-3 h-3 text-fg-tertiary opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                                                <Icon icon=LuPencil width="12px" height="12px" />
+                                            </span>
+                                        </span>
+                                    }.into_any()
+                                }}
                             </div>
 
-                            <div class="pt-3 border-t border-edge-subtle space-y-2">
-                                <div class="flex items-center justify-between gap-3">
-                                    <div>
-                                        <h4 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">
-                                            "Device Brightness"
-                                        </h4>
-                                        <p class="text-[11px] text-fg-tertiary mt-1">
-                                            "Scales this device after global output brightness."
-                                        </p>
-                                    </div>
-                                    <span class="text-sm font-mono tabular-nums text-fg-primary">
-                                        {move || format!("{}%", device_brightness.get())}
-                                    </span>
-                                </div>
+                            // Compact metadata
+                            <div class="flex items-center gap-3 text-[10px] font-mono text-fg-tertiary mb-3">
+                                <span class="capitalize">{dev.backend.clone()}</span>
+                                <span class="w-px h-3 bg-border-subtle" />
+                                <span>{dev.total_leds} " LEDs"</span>
+                                <span class="w-px h-3 bg-border-subtle" />
+                                <span class="capitalize">{dev.status.clone()}</span>
+                                {dev.firmware_version.clone().map(|fw| view! {
+                                    <span class="w-px h-3 bg-border-subtle" />
+                                    <span>"v" {fw}</span>
+                                })}
+                            </div>
+
+                            // Brightness — single compact row
+                            <div class="flex items-center gap-3">
+                                <Icon icon=LuSun width="12px" height="12px" style="color: rgba(139, 133, 160, 0.5)" />
                                 <input
                                     type="range"
                                     min="0"
                                     max="100"
                                     step="1"
-                                    class="w-full h-1 rounded-full appearance-none cursor-pointer"
-                                    style="accent-color: rgb(225, 53, 255); background: rgba(139, 133, 160, 0.15)"
+                                    class="flex-1 h-1 rounded-full appearance-none cursor-pointer"
+                                    style=format!("accent-color: rgb({rgb_for_slider})")
                                     prop:value=move || device_brightness.get().to_string()
                                     on:input=move |ev| {
                                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -284,107 +261,111 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                         }
                                     }
                                 />
+                                <span class="text-[10px] font-mono tabular-nums text-fg-tertiary w-8 text-right">
+                                    {move || format!("{}%", device_brightness.get())}
+                                </span>
                             </div>
-
-                            // Zone list
-                            {(!dev.zones.is_empty()).then(|| {
-                                let zones = dev.zones.clone();
-                                let rgb = rgb.clone();
-                                view! {
-                                    <div class="pt-3 border-t border-edge-subtle">
-                                        <h4 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary mb-2">"Zones"</h4>
-                                        <div class="space-y-1">
-                                            {zones.into_iter().map(|zone| {
-                                                let zone_rgb = rgb.clone();
-                                                view! {
-                                                    <div class="flex items-center justify-between text-xs px-2 py-1 rounded-md
-                                                                bg-surface-overlay/20 hover:bg-surface-hover/40 transition-colors">
-                                                        <div class="flex items-center gap-2">
-                                                            <div class="w-1 h-3 rounded-full"
-                                                                 style=format!("background: rgba({zone_rgb}, 0.4)") />
-                                                            <span class="text-fg-primary truncate">{zone.name}</span>
-                                                        </div>
-                                                        <span class="text-fg-tertiary font-mono tabular-nums">{zone.led_count}</span>
-                                                    </div>
-                                                }
-                                            }).collect_view()}
-                                        </div>
-                                    </div>
-                                }
-                            })}
                         </div>
 
-                        // ── Actions ───────────────────────────────────────
-                        <div class="px-4 py-3 bg-surface-overlay/15 border-t border-edge-subtle">
-                            <div class="flex items-center gap-2">
-                                // Enable/Disable toggle
-                                <button
-                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all btn-press"
-                                    style=move || {
-                                        if enabled {
-                                            "background: rgba(255, 99, 99, 0.08); border: 1px solid rgba(255, 99, 99, 0.15); color: rgb(255, 99, 99)".to_string()
-                                        } else {
-                                            "background: rgba(80, 250, 123, 0.08); border: 1px solid rgba(80, 250, 123, 0.15); color: rgb(80, 250, 123)".to_string()
-                                        }
-                                    }
-                                    on:click=move |_| toggle_enabled()
-                                >
-                                    {if enabled {
-                                        view! { <Icon icon=LuBan width="14px" height="14px" /> }.into_any()
+                        // Actions — minimal row at bottom
+                        <div class="px-4 py-2 bg-surface-overlay/10 border-t border-edge-subtle flex items-center gap-2">
+                            <button
+                                class="text-[10px] font-medium px-2 py-1 rounded-md transition-all btn-press flex items-center gap-1"
+                                style=move || {
+                                    if enabled {
+                                        "color: rgba(255, 99, 99, 0.7); background: rgba(255, 99, 99, 0.06)".to_string()
                                     } else {
-                                        view! { <Icon icon=LuPower width="14px" height="14px" /> }.into_any()
-                                    }}
-                                    {if enabled { "Disable" } else { "Enable" }}
-                                </button>
-
-                                // Identify button
-                                <button
-                                    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all btn-press"
-                                    style=move || {
-                                        let rgb_val = rgb.clone();
-                                        if identify_active.get() {
-                                            format!("background: rgba({rgb_val}, 0.2); border: 1px solid rgba({rgb_val}, 0.4); color: rgb({rgb_val}); box-shadow: 0 0 16px rgba({rgb_val}, 0.3)")
-                                        } else {
-                                            format!("background: rgba({rgb_val}, 0.08); border: 1px solid rgba({rgb_val}, 0.15); color: rgb({rgb_val})")
-                                        }
+                                        "color: rgba(80, 250, 123, 0.7); background: rgba(80, 250, 123, 0.06)".to_string()
                                     }
-                                    on:click=move |_| identify()
-                                >
-                                    <span class=move || if identify_active.get() { "animate-pulse" } else { "" }>
-                                        <Icon icon=LuZap width="14px" height="14px" />
-                                    </span>
-                                    {move || if identify_active.get() { "Flashing..." } else { "Identify" }}
-                                </button>
-
-                            </div>
+                                }
+                                on:click=move |_| toggle_enabled()
+                            >
+                                {if enabled {
+                                    view! { <Icon icon=LuBan width="10px" height="10px" /> }.into_any()
+                                } else {
+                                    view! { <Icon icon=LuPower width="10px" height="10px" /> }.into_any()
+                                }}
+                                {if enabled { "Disable" } else { "Enable" }}
+                            </button>
+                            <button
+                                class="text-[10px] font-medium px-2 py-1 rounded-md transition-all btn-press flex items-center gap-1"
+                                style=move || {
+                                    let r = rgb_for_identify.clone();
+                                    if identify_active.get() {
+                                        format!("color: rgb({r}); background: rgba({r}, 0.15)")
+                                    } else {
+                                        format!("color: rgba({r}, 0.6); background: rgba({r}, 0.06)")
+                                    }
+                                }
+                                on:click=move |_| identify()
+                            >
+                                <span class=move || if identify_active.get() { "animate-pulse" } else { "" }>
+                                    <Icon icon=LuZap width="10px" height="10px" />
+                                </span>
+                                {move || if identify_active.get() { "Flashing..." } else { "Identify" }}
+                            </button>
                         </div>
                     </div>
 
+                    // ── Zones — visual topology shapes ───────────────────────
+                    {(!dev.zones.is_empty()).then(|| {
+                        let zones = dev.zones.clone();
+                        let zone_rgb = rgb.clone();
+                        view! {
+                            <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">
+                                <div class="px-4 py-2.5 flex items-center gap-2">
+                                    <Icon icon=LuGrid2x2 width="12px" height="12px" style="color: rgba(139, 133, 160, 0.6)" />
+                                    <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Zones"</h3>
+                                    <span class="text-[9px] font-mono text-fg-tertiary/40 ml-auto">{zones.len()}</span>
+                                </div>
+                                <div class="px-3 pb-3">
+                                    <div class="grid grid-cols-2 gap-1.5">
+                                        {zones.into_iter().map(|zone| {
+                                            let zr = zone_rgb.clone();
+                                            let svg = topology_shape_svg(&zone.topology);
+                                            view! {
+                                                <div class="flex items-center gap-2 px-2 py-1.5 rounded-md
+                                                            bg-surface-overlay/15 hover:bg-surface-hover/30 transition-colors group/zone">
+                                                    <div class="w-4 h-4 shrink-0" style=format!("color: rgba({zr}, 0.5)")
+                                                         inner_html=format!(r#"<svg viewBox="0 0 16 16" width="16" height="16">{svg}</svg>"#) />
+                                                    <div class="min-w-0 flex-1">
+                                                        <div class="text-[11px] text-fg-primary truncate leading-tight">{zone.name}</div>
+                                                        <div class="text-[9px] font-mono text-fg-tertiary/50">{zone.led_count}</div>
+                                                    </div>
+                                                </div>
+                                            }
+                                        }).collect_view()}
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    })}
+
+                    // ── Attachments ──────────────────────────────────────────
                     <AttachmentPanel device_id=device_id device=device_signal />
 
-                    // ── Segments ───────────────────────────────────────────
+                    // ── Segments ─────────────────────────────────────────────
                     <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">
-                        <div class="flex items-center justify-between px-4 py-3">
+                        <div class="flex items-center justify-between px-4 py-2.5">
                             <div class="flex items-center gap-2">
-                                <Icon icon=LuCable width="14px" height="14px" style="color: rgba(139, 133, 160, 1)" />
-                                <h3 class="text-xs font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Segments"</h3>
+                                <Icon icon=LuCable width="12px" height="12px" style="color: rgba(139, 133, 160, 0.6)" />
+                                <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Segments"</h3>
                             </div>
                             <button
-                                class="px-2 py-0.5 rounded text-[10px] font-medium transition-all"
-                                style="background: rgba(225, 53, 255, 0.08); border: 1px solid rgba(225, 53, 255, 0.15); color: rgb(225, 53, 255)"
+                                class="px-1.5 py-0.5 rounded text-[9px] font-medium transition-all"
+                                style="background: rgba(225, 53, 255, 0.06); color: rgba(225, 53, 255, 0.7)"
                                 on:click=move |_| set_show_add_segment.update(|v| *v = !*v)
                             >
                                 {move || if show_add_segment.get() { "Cancel" } else { "+ Add" }}
                             </button>
                         </div>
 
-                        // Add segment form
                         {move || show_add_segment.get().then(|| view! {
-                            <div class="mx-4 mb-3 space-y-2 p-3 rounded-lg bg-surface-overlay/60 border border-edge-subtle animate-fade-in">
+                            <div class="mx-3 mb-2.5 space-y-1.5 p-2.5 rounded-lg bg-surface-overlay/60 border border-edge-subtle animate-fade-in">
                                 <input
                                     type="text"
                                     placeholder="Segment name"
-                                    class="w-full bg-surface-base/60 border border-edge-subtle rounded px-2.5 py-1.5 text-xs text-fg-primary
+                                    class="w-full bg-surface-base/60 border border-edge-subtle rounded px-2 py-1 text-[11px] text-fg-primary
                                            placeholder-fg-tertiary focus:outline-none focus:border-accent-muted"
                                     prop:value=move || seg_name.get()
                                     on:input=move |ev| {
@@ -392,11 +373,11 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                         if let Some(el) = target { set_seg_name.set(el.value()); }
                                     }
                                 />
-                                <div class="flex gap-2">
+                                <div class="flex gap-1.5">
                                     <input
                                         type="number"
                                         placeholder="Start"
-                                        class="flex-1 bg-surface-base/60 border border-edge-subtle rounded px-2.5 py-1.5 text-xs text-fg-primary font-mono
+                                        class="flex-1 bg-surface-base/60 border border-edge-subtle rounded px-2 py-1 text-[11px] text-fg-primary font-mono
                                                placeholder-fg-tertiary focus:outline-none focus:border-accent-muted"
                                         prop:value=move || seg_start.get()
                                         on:input=move |ev| {
@@ -407,7 +388,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                     <input
                                         type="number"
                                         placeholder="Count"
-                                        class="flex-1 bg-surface-base/60 border border-edge-subtle rounded px-2.5 py-1.5 text-xs text-fg-primary font-mono
+                                        class="flex-1 bg-surface-base/60 border border-edge-subtle rounded px-2 py-1 text-[11px] text-fg-primary font-mono
                                                placeholder-fg-tertiary focus:outline-none focus:border-accent-muted"
                                         prop:value=move || seg_count.get()
                                         on:input=move |ev| {
@@ -417,19 +398,18 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                     />
                                 </div>
                                 <button
-                                    class="w-full px-3 py-1.5 rounded-lg text-xs font-medium transition-all btn-press"
-                                    style="background: rgba(80, 250, 123, 0.1); border: 1px solid rgba(80, 250, 123, 0.15); color: rgb(80, 250, 123)"
+                                    class="w-full px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press"
+                                    style="background: rgba(80, 250, 123, 0.08); color: rgba(80, 250, 123, 0.8)"
                                     on:click=move |_| add_segment()
                                 >
-                                    "Create Segment"
+                                    "Create"
                                 </button>
                             </div>
                         })}
 
-                        // Logical device list
-                        <div class="px-4 pb-4">
+                        <div class="px-3 pb-3">
                             <Suspense fallback=|| view! {
-                                <div class="text-xs text-fg-tertiary animate-pulse py-2">"Loading segments..."</div>
+                                <div class="text-[10px] text-fg-tertiary animate-pulse py-2">"Loading..."</div>
                             }>
                                 {move || {
                                     logical_devices.get().map(|result| {
@@ -439,53 +419,48 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                                 let total = dev.map(|d| d.total_leds).unwrap_or(0);
                                                 if segments.is_empty() {
                                                     return view! {
-                                                        <div class="text-xs text-fg-tertiary py-3 text-center">"No segments configured"</div>
+                                                        <div class="text-[10px] text-fg-tertiary/50 py-2 text-center">"No segments"</div>
                                                     }.into_any();
                                                 }
                                                 view! {
-                                                    <div class="space-y-1.5">
+                                                    <div class="space-y-1">
                                                         {segments.into_iter().map(|seg| {
                                                             let seg_id = seg.id.clone();
                                                             let is_default = seg.kind == "default";
-                                                            let bar_pct_start = if total > 0 { f64::from(seg.led_start) / total as f64 * 100.0 } else { 0.0 };
-                                                            let bar_pct_width = if total > 0 { f64::from(seg.led_count) / total as f64 * 100.0 } else { 100.0 };
+                                                            let bar_start = if total > 0 { f64::from(seg.led_start) / total as f64 * 100.0 } else { 0.0 };
+                                                            let bar_width = if total > 0 { f64::from(seg.led_count) / total as f64 * 100.0 } else { 100.0 };
                                                             view! {
-                                                                <div class="p-2.5 rounded-lg bg-surface-overlay/20 border border-edge-subtle
-                                                                            hover:bg-surface-hover/40 transition-colors">
-                                                                    <div class="flex items-center justify-between mb-2">
+                                                                <div class="px-2 py-1.5 rounded-md bg-surface-overlay/15 hover:bg-surface-hover/30 transition-colors">
+                                                                    <div class="flex items-center justify-between mb-1">
                                                                         <div class="flex items-center gap-1.5">
-                                                                            <span class="text-xs text-fg-primary font-medium">{seg.name}</span>
+                                                                            <span class="text-[11px] text-fg-primary font-medium">{seg.name}</span>
                                                                             {is_default.then(|| view! {
-                                                                                <span class="px-1.5 py-0.5 rounded text-[8px] font-mono uppercase tracking-wider text-fg-tertiary bg-surface-overlay/40">
-                                                                                    "default"
-                                                                                </span>
+                                                                                <span class="px-1 py-0.5 rounded text-[7px] font-mono uppercase text-fg-tertiary/50 bg-surface-overlay/30">"default"</span>
                                                                             })}
                                                                         </div>
-                                                                        <div class="flex items-center gap-2">
-                                                                            <span class="text-[11px] font-mono text-fg-tertiary tabular-nums">
-                                                                                {seg.led_start} "\u{2013}" {seg.led_end} " (" {seg.led_count} ")"
+                                                                        <div class="flex items-center gap-1.5">
+                                                                            <span class="text-[9px] font-mono text-fg-tertiary/60 tabular-nums">
+                                                                                {seg.led_start} "\u{2013}" {seg.led_end}
                                                                             </span>
                                                                             {(!is_default).then(|| {
                                                                                 let sid = seg_id.clone();
                                                                                 view! {
                                                                                     <button
-                                                                                        class="p-0.5 rounded text-fg-tertiary hover:text-error-red transition-colors"
-                                                                                        title="Delete segment"
+                                                                                        class="p-0.5 rounded text-fg-tertiary/40 hover:text-error-red transition-colors"
                                                                                         on:click=move |_| delete_logical(sid.clone())
                                                                                     >
-                                                                                        <Icon icon=LuX width="12px" height="12px" />
+                                                                                        <Icon icon=LuX width="10px" height="10px" />
                                                                                     </button>
                                                                                 }
                                                                             })}
                                                                         </div>
                                                                     </div>
-                                                                    // LED range bar
-                                                                    <div class="h-1.5 rounded-full bg-surface-overlay/40 overflow-hidden">
+                                                                    <div class="h-1 rounded-full bg-surface-overlay/30 overflow-hidden">
                                                                         <div
-                                                                            class="h-full rounded-full transition-all duration-300"
+                                                                            class="h-full rounded-full"
                                                                             style=format!(
-                                                                                "margin-left: {bar_pct_start:.1}%; width: {bar_pct_width:.1}%; \
-                                                                                 background: linear-gradient(90deg, rgba(225, 53, 255, 0.5), rgba(128, 255, 234, 0.4))"
+                                                                                "margin-left: {bar_start:.1}%; width: {bar_width:.1}%; \
+                                                                                 background: linear-gradient(90deg, rgba(225, 53, 255, 0.4), rgba(128, 255, 234, 0.3))"
                                                                             )
                                                                         />
                                                                     </div>
@@ -496,7 +471,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                                 }.into_any()
                                             }
                                             Err(e) => view! {
-                                                <div class="text-xs text-error-red py-2">{e}</div>
+                                                <div class="text-[10px] text-error-red py-2">{e}</div>
                                             }.into_any(),
                                         }
                                     })
@@ -507,25 +482,5 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                 }
             })}
         </aside>
-    }
-}
-
-/// Inline metadata field for the info grid.
-fn detail_field(label: &'static str, value: &str) -> impl IntoView + use<> {
-    let value = value.to_string();
-    view! {
-        <div>
-            <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary mb-0.5">{label}</div>
-            <div class="text-xs text-fg-primary font-mono capitalize">{value}</div>
-        </div>
-    }
-}
-
-/// Capitalize first letter.
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
     }
 }

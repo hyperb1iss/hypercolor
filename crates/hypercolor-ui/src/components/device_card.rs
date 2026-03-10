@@ -1,4 +1,4 @@
-//! Device card — cinematic card with backend accent, hover glow, and selected state.
+//! Device card — hardware showcase card with device-type identity and attachment silhouettes.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -28,42 +28,100 @@ fn status_dot_rgb(status: &str) -> &'static str {
     }
 }
 
-/// Status → human label.
-fn status_label(status: &str) -> &'static str {
-    match status.to_lowercase().as_str() {
-        "active" => "Active",
-        "connected" => "Connected",
-        "known" => "Known",
-        "disabled" => "Disabled",
-        _ => "Unknown",
+/// Device-type classification for visual identity.
+enum DeviceClass {
+    Keyboard,
+    Mouse,
+    FanController,
+    LedController,
+    WledController,
+    Headset,
+    Display,
+    Other,
+}
+
+/// Classify a device by name/zone heuristics.
+fn classify_device(device: &DeviceSummary) -> DeviceClass {
+    let name = device.name.to_lowercase();
+    let backend = device.backend.to_lowercase();
+
+    if backend == "wled" {
+        return DeviceClass::WledController;
+    }
+
+    if name.contains("push") || name.contains("huntsman") || name.contains("defy") {
+        return DeviceClass::Keyboard;
+    }
+    if name.contains("basilisk") || name.contains("deathadder") || name.contains("viper") {
+        return DeviceClass::Mouse;
+    }
+    if name.contains("prism") || name.contains("link") || name.contains("commander") {
+        return DeviceClass::FanController;
+    }
+    if name.contains("seiren") || name.contains("kraken") || name.contains("nari") {
+        return DeviceClass::Headset;
+    }
+    if name.contains("lcd") || name.contains("display") || name.contains("screen") {
+        return DeviceClass::Display;
+    }
+    if name.contains("dram") || name.contains("aura") || name.contains("motherbo") {
+        return DeviceClass::LedController;
+    }
+
+    DeviceClass::Other
+}
+
+/// Device class → icon.
+fn device_class_icon(class: &DeviceClass) -> icondata_core::Icon {
+    match class {
+        DeviceClass::Keyboard => LuCode,
+        DeviceClass::Mouse => LuMousePointerClick,
+        DeviceClass::FanController => LuCpu,
+        DeviceClass::LedController => LuLayers,
+        DeviceClass::WledController => LuWifi,
+        DeviceClass::Headset => LuAudioLines,
+        DeviceClass::Display => LuMonitor,
+        DeviceClass::Other => LuCircleDot,
     }
 }
 
-/// Backend → Lucide icon for the device type.
-fn backend_icon(backend: &str) -> icondata_core::Icon {
-    match backend.to_lowercase().as_str() {
-        "razer" => LuDiamond,
-        "wled" => LuWifi,
-        "corsair" | "corsair-bridge" => LuFlag,
-        "hue" => LuSun,
-        _ => LuCpu,
+/// Device class → subtle accent tint for card identity (overlays on backend color).
+fn device_class_pattern(class: &DeviceClass) -> &'static str {
+    match class {
+        DeviceClass::Keyboard => "repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0px, rgba(255,255,255,0.02) 2px, transparent 2px, transparent 6px)",
+        DeviceClass::Mouse => "radial-gradient(ellipse at 60% 30%, rgba(255,255,255,0.03), transparent 70%)",
+        DeviceClass::FanController => "conic-gradient(from 0deg, rgba(255,255,255,0.02), transparent 30%, rgba(255,255,255,0.02) 50%, transparent 80%)",
+        DeviceClass::LedController | DeviceClass::WledController => "repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 4px)",
+        DeviceClass::Headset => "radial-gradient(circle at 30% 50%, rgba(255,255,255,0.03), transparent 60%)",
+        DeviceClass::Display => "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, transparent 40%)",
+        DeviceClass::Other => "none",
     }
 }
 
-fn endpoint_label(device: &DeviceSummary) -> Option<String> {
+/// Compact connection label.
+fn compact_label(device: &DeviceSummary) -> Option<String> {
     if let Some(label) = &device.connection_label {
         return Some(label.clone());
     }
-
     match (&device.network_hostname, &device.network_ip) {
-        (Some(hostname), Some(ip)) => Some(format!("{hostname} ({ip})")),
-        (Some(hostname), None) => Some(hostname.clone()),
+        (Some(hostname), _) => Some(hostname.clone()),
         (None, Some(ip)) => Some(ip.clone()),
-        (None, None) => None,
+        _ => None,
     }
 }
 
-/// Cinematic device card for the devices grid.
+/// Zone topology → inline SVG shape hint for zone display.
+pub fn topology_shape_svg(topology: &str) -> &'static str {
+    match topology {
+        "strip" => r#"<rect x="1" y="5" width="14" height="6" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>"#,
+        "ring" | "concentric_rings" => r#"<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>"#,
+        "matrix" | "perimeter_loop" => r#"<rect x="2" y="2" width="12" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>"#,
+        "point" => r#"<circle cx="8" cy="8" r="3" fill="currentColor" opacity="0.4"/>"#,
+        _ => r#"<rect x="3" y="3" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1" opacity="0.4"/>"#,
+    }
+}
+
+/// Hardware showcase device card.
 #[component]
 pub fn DeviceCard(
     device: DeviceSummary,
@@ -74,33 +132,37 @@ pub fn DeviceCard(
     let device_id = device.id.clone();
     let rgb = backend_accent_rgb(&device.backend).to_string();
     let status_rgb = status_dot_rgb(&device.status).to_string();
-    let total_leds = device.total_leds;
-    let zone_count = device.zones.len();
-    let backend_label = device.backend.clone();
+    let device_class = classify_device(&device);
+    let icon = device_class_icon(&device_class);
+    let pattern = device_class_pattern(&device_class);
     let device_name = device.name.clone();
-    let status = status_label(&device.status);
-    let icon = backend_icon(&device.backend);
-    let endpoint = endpoint_label(&device);
+    let zone_count = device.zones.len();
+    let total_leds = device.total_leds;
+    let endpoint = compact_label(&device);
+    let is_active = device.status.to_lowercase() == "active";
+    let is_disabled = device.status.to_lowercase() == "disabled";
 
-    // Backend-colored top accent gradient
-    let accent_gradient =
-        format!("background: linear-gradient(180deg, rgba({rgb}, 0.07) 0%, transparent 50%)");
-
-    let badge_style =
-        format!("background: rgba({rgb}, 0.1); color: rgb({rgb}); border-color: rgba({rgb}, 0.2)");
-    let dot_style =
-        format!("background: rgb({status_rgb}); box-shadow: 0 0 6px rgba({status_rgb}, 0.5)");
-    let icon_style = format!("color: rgba({rgb}, 0.5)");
+    let accent_gradient = format!(
+        "background: linear-gradient(170deg, rgba({rgb}, 0.1) 0%, rgba({rgb}, 0.02) 40%, transparent 70%)"
+    );
+    let icon_bg = format!(
+        "background: rgba({rgb}, 0.08); border: 1px solid rgba({rgb}, 0.12); color: rgba({rgb}, 0.7)"
+    );
+    let dot_style = format!(
+        "background: rgb({status_rgb}); box-shadow: 0 0 6px rgba({status_rgb}, 0.5)"
+    );
 
     let stagger = (index.min(12) + 1).to_string();
 
     view! {
         <button
             class=move || {
-                let base = "relative rounded-2xl border text-left w-full group overflow-hidden \
-                            card-hover animate-fade-in-up cursor-pointer";
+                let base = "relative rounded-xl border text-left w-full group overflow-hidden \
+                            card-hover animate-fade-in-up cursor-pointer h-[108px]";
                 let state = if is_selected.get() {
-                    "border-accent-muted bg-surface-overlay animate-breathe"
+                    "border-accent-muted bg-surface-overlay ring-1 ring-accent-muted/20"
+                } else if is_disabled {
+                    "border-edge-subtle/50 bg-surface-overlay/40 opacity-60 hover:opacity-80"
                 } else {
                     "border-edge-subtle bg-surface-overlay/80 hover:border-edge-default"
                 };
@@ -109,65 +171,64 @@ pub fn DeviceCard(
             style:--glow-rgb=rgb.clone()
             on:click=move |_| on_select.run(device_id.clone())
         >
-            // Backend accent gradient overlay
-            <div class="absolute inset-0 pointer-events-none rounded-2xl" style=accent_gradient />
+            // Device-class texture pattern
+            <div class="absolute inset-0 pointer-events-none rounded-xl opacity-60" style=format!("background-image: {pattern}") />
 
-            // Selected electric glow
-            {move || is_selected.get().then(|| view! {
-                <div
-                    class="absolute inset-0 rounded-2xl pointer-events-none"
-                    style="background: radial-gradient(ellipse at 50% -20%, rgba(225, 53, 255, 0.15) 0%, transparent 65%); \
-                           box-shadow: inset 0 1px 0 rgba(225, 53, 255, 0.2)"
-                />
-                <div class="absolute top-0 left-1/2 -translate-x-1/2 w-16 h-[2px] rounded-full bg-electric-purple/60 blur-[2px]" />
-            })}
+            // Backend accent wash
+            <div class="absolute inset-0 pointer-events-none rounded-xl" style=accent_gradient.clone() />
 
-            <div class="relative px-4 py-4 space-y-3">
-                // Header: icon + name + backend badge
-                <div class="flex items-start justify-between gap-2">
-                    <div class="flex items-center gap-2.5 min-w-0 flex-1">
-                        <div class="w-5 h-5 shrink-0" style=icon_style>
-                            <Icon icon=icon width="20px" height="20px" />
-                        </div>
-                        <h3 class="text-sm font-medium text-fg-primary group-hover:text-fg-primary truncate transition-colors duration-200">
-                            {device_name}
-                        </h3>
-                    </div>
-                    <span
-                        class="shrink-0 px-2 py-0.5 rounded-full text-[9px] font-mono tracking-wide border capitalize"
-                        style=badge_style
-                    >
-                        {backend_label}
-                    </span>
-                </div>
-
-                // Metrics row
-                <div class="flex items-center gap-4 text-[10px] font-mono tabular-nums text-fg-tertiary">
-                    <div class="flex items-center gap-1.5">
-                        <Icon icon=LuCircleDot width="12px" height="12px" style="opacity: 0.4" />
-                        <span>{total_leds} " LEDs"</span>
-                    </div>
-                    {(zone_count > 0).then(|| view! {
-                        <div class="flex items-center gap-1.5">
-                            <Icon icon=LuGrid2x2 width="12px" height="12px" style="opacity: 0.4" />
-                            <span>{zone_count} " zones"</span>
-                        </div>
-                    })}
-                </div>
-
-                {endpoint.map(|endpoint| {
+            // Selected glow
+            {
+                let glow_rgb = rgb.clone();
+                move || is_selected.get().then(|| {
+                    let r = glow_rgb.clone();
                     view! {
-                        <div class="flex items-center gap-1.5 text-[10px] font-mono text-fg-tertiary min-w-0">
-                            <Icon icon=LuGlobe width="12px" height="12px" style="opacity: 0.4" />
-                            <span class="truncate">{endpoint}</span>
-                        </div>
+                        <div
+                            class="absolute inset-0 rounded-xl pointer-events-none animate-breathe"
+                            style=format!(
+                                "box-shadow: inset 0 0 24px rgba({r}, 0.06), 0 0 20px rgba({r}, 0.08)"
+                            )
+                        />
                     }
-                })}
+                })
+            }
 
-                // Footer: status with animated dot
-                <div class="flex items-center gap-2 pt-2 border-t border-edge-subtle">
-                    <div class="w-1.5 h-1.5 rounded-full shrink-0 dot-alive" style=dot_style />
-                    <span class="text-[10px] text-fg-tertiary">{status}</span>
+            <div class="relative flex flex-col justify-between h-full px-3.5 py-3">
+                // Top: icon + name + status dot
+                <div class="flex items-start gap-2.5">
+                    <div class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style=icon_bg>
+                        <Icon icon=icon width="16px" height="16px" />
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <div class="flex items-center gap-2">
+                            <h3 class="text-[13px] font-medium text-fg-primary truncate leading-tight">
+                                {device_name}
+                            </h3>
+                            <div class={if is_active { "w-1.5 h-1.5 rounded-full shrink-0 dot-alive" } else { "w-1.5 h-1.5 rounded-full shrink-0" }}
+                                 style=dot_style.clone()
+                            />
+                        </div>
+                        // Subtle secondary info
+                        {endpoint.map(|ep| view! {
+                            <div class="text-[10px] font-mono text-fg-tertiary/60 truncate mt-0.5">{ep}</div>
+                        })}
+                    </div>
+                </div>
+
+                // Bottom: zone count + LED count on hover
+                <div class="flex items-center justify-between">
+                    {(zone_count > 0).then(|| {
+                        let zone_rgb = rgb.clone();
+                        view! {
+                            <span class="text-[9px] font-mono tabular-nums" style=format!("color: rgba({zone_rgb}, 0.4)")>
+                                {zone_count} " zones"
+                            </span>
+                        }
+                    })}
+                    <span class="text-[9px] font-mono text-fg-tertiary/40 tabular-nums
+                                 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                        {total_leds} " LEDs"
+                    </span>
                 </div>
             </div>
         </button>

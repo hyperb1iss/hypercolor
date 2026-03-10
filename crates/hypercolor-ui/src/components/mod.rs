@@ -1,6 +1,7 @@
 pub mod attachment_editor;
 pub mod attachment_panel;
 pub mod canvas_preview;
+pub mod color_wheel;
 pub mod control_panel;
 pub mod device_card;
 pub mod device_detail;
