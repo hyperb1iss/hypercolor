@@ -155,6 +155,24 @@ fn push2_shutdown_restores_cached_factory_palette() {
 }
 
 #[test]
+fn push2_white_buttons_quantize_nonzero_brightness_to_lit_slots() {
+    let protocol = Push2Protocol::new();
+    let mut colors = vec![[0_u8, 0_u8, 0_u8]; 160];
+    colors[92] = [1, 1, 1];
+
+    let commands = protocol.encode_frame(&colors);
+    let white_button_write = commands
+        .iter()
+        .find(|command| command.data.first() == Some(&0xB0) && command.data.get(1) == Some(&28))
+        .expect("white button CC write should be emitted");
+
+    assert!(
+        white_button_write.data[2] > 0,
+        "non-black white button colors should not quantize to off"
+    );
+}
+
+#[test]
 fn push2_brightness_and_diagnostics_use_primary_sysex() {
     let protocol = Push2Protocol::new();
 

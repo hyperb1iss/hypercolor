@@ -720,7 +720,8 @@ fn white_button_palette_slot(rgb: [u8; 3]) -> (u8, [u8; 4]) {
 
     let level = 1_u8.saturating_add(
         u8::try_from(
-            (u16::from(white.saturating_sub(1)) * u16::from(PUSH2_WHITE_SLOT_COUNT.saturating_sub(1)))
+            (u16::from(white.saturating_sub(1))
+                * u16::from(PUSH2_WHITE_SLOT_COUNT.saturating_sub(1)))
                 / 254,
         )
         .unwrap_or(PUSH2_WHITE_SLOT_COUNT.saturating_sub(1)),
