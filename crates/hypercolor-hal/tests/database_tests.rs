@@ -20,32 +20,24 @@ use hypercolor_hal::drivers::razer::{
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};
 
+const PID_BLACKWIDOW_V3: u16 = 0x024E;
+const PID_BLADE_14_2022: u16 = 0x028C;
+const PID_FIREFLY: u16 = 0x0C00;
+const PID_LAPTOP_STAND_CHROMA: u16 = 0x0F0D;
+const PID_THUNDERBOLT_4_DOCK_CHROMA: u16 = 0x0F21;
+
 fn expected_razer_shared_hid_transport(
     interface: u8,
     report_id: u8,
     usage_page: Option<u16>,
     usage: Option<u16>,
 ) -> TransportType {
-    #[cfg(target_os = "linux")]
-    {
-        TransportType::UsbHidRaw {
-            interface,
-            report_id,
-            report_mode: HidRawReportMode::FeatureReport,
-            usage_page,
-            usage,
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        TransportType::UsbHidApi {
-            interface: Some(interface),
-            report_id,
-            report_mode: HidRawReportMode::FeatureReport,
-            usage_page,
-            usage,
-        }
+    TransportType::UsbHidApi {
+        interface: Some(interface),
+        report_id,
+        report_mode: HidRawReportMode::FeatureReport,
+        usage_page,
+        usage,
     }
 }
 
@@ -412,6 +404,106 @@ fn lookup_returns_blade_14_2023_descriptor() {
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Razer 0x1F Standard");
     assert_eq!(protocol.total_leds(), 96);
+}
+
+#[test]
+fn lookup_returns_blade_14_2022_descriptor_with_keepalive() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BLADE_14_2022)
+        .expect("Blade 14 (2022) descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Blade 14 (2022)");
+    assert_eq!(
+        descriptor.protocol.id,
+        "razer/matrix-standard-1f-laptop-6x16"
+    );
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbControl {
+            interface: 2,
+            report_id: 0x00
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Razer 0x1F Standard");
+    assert_eq!(protocol.total_leds(), 96);
+    assert!(protocol.keepalive().is_some());
+}
+
+#[test]
+fn lookup_returns_blackwidow_v3_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BLACKWIDOW_V3)
+        .expect("BlackWidow V3 descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Blackwidow V3");
+    assert_eq!(
+        descriptor.protocol.id,
+        "razer/matrix-extended-3f-6x22-backlight"
+    );
+    assert_eq!(
+        descriptor.transport,
+        expected_razer_shared_hid_transport(3, 0x00, Some(0x000C), Some(0x0001))
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.total_leds(), 132);
+}
+
+#[test]
+fn lookup_returns_firefly_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_FIREFLY)
+        .expect("Firefly descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Firefly");
+    assert_eq!(descriptor.protocol.id, "razer/matrix-linear-3f-1x15");
+    assert_eq!(
+        descriptor.transport,
+        expected_razer_shared_hid_transport(0, 0x00, Some(0x0001), Some(0x0002))
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.total_leds(), 15);
+}
+
+#[test]
+fn lookup_returns_laptop_stand_chroma_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_LAPTOP_STAND_CHROMA)
+        .expect("Laptop Stand Chroma descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Laptop Stand Chroma");
+    assert_eq!(descriptor.protocol.id, "razer/matrix-extended-1f-1x15-zero");
+    assert_eq!(
+        descriptor.transport,
+        expected_razer_shared_hid_transport(0, 0x00, Some(0x0001), Some(0x0002))
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.total_leds(), 15);
+}
+
+#[test]
+fn lookup_returns_thunderbolt_4_dock_descriptor_with_interface_wildcard() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_THUNDERBOLT_4_DOCK_CHROMA)
+        .expect("Thunderbolt 4 Dock Chroma descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Thunderbolt 4 Dock Chroma");
+    assert_eq!(
+        descriptor.protocol.id,
+        "razer/matrix-extended-3f-1x12-backlight"
+    );
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbHidApi {
+            interface: None,
+            report_id: 0x00,
+            report_mode: HidRawReportMode::FeatureReport,
+            usage_page: Some(0x000C),
+            usage: Some(0x0001),
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.total_leds(), 12);
 }
 
 #[test]
