@@ -22,6 +22,7 @@ tokio-serial = "5"
 zerocopy = { workspace = true }
 hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw", "macos-shared-device"] }
 midir = "0.10.3"
+image = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 async-hid = { version = "0.5.0", default-features = false, features = ["tokio"] }

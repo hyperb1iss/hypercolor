@@ -12,6 +12,10 @@ use hypercolor_hal::drivers::prismrgb::{
     NOLLIE_VENDOR_ID, PID_NOLLIE_8_V2, PID_PRISM_8, PID_PRISM_MINI, PID_PRISM_S,
     PRISM_GCS_VENDOR_ID, PRISM_VENDOR_ID,
 };
+use hypercolor_hal::drivers::push2::{
+    ABLETON_VENDOR_ID, PID_PUSH_2, PUSH2_DISPLAY_ENDPOINT, PUSH2_DISPLAY_INTERFACE,
+    PUSH2_MIDI_INTERFACE,
+};
 use hypercolor_hal::drivers::razer::{
     PID_BASILISK_V3, PID_BLADE_14_2021, PID_BLADE_14_2023, PID_BLADE_15_2022,
     PID_BLADE_15_LATE_2021_ADVANCED, PID_BLADE_PRO_2016, PID_HUNTSMAN_V2, PID_MAMBA_ELITE,
@@ -126,6 +130,33 @@ fn lookup_returns_defy_wireless_descriptor() {
         descriptor.transport,
         TransportType::UsbSerial { baud_rate: 115_200 }
     );
+}
+
+#[test]
+fn lookup_returns_push2_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(ABLETON_VENDOR_ID, PID_PUSH_2)
+        .expect("Ableton Push 2 descriptor should exist");
+
+    assert_eq!(descriptor.name, "Ableton Push 2");
+    assert_eq!(
+        descriptor.family,
+        DeviceFamily::Custom("Ableton".to_owned())
+    );
+    assert_eq!(descriptor.protocol.id, "push2/push-2");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbMidi {
+            midi_interface: PUSH2_MIDI_INTERFACE,
+            display_interface: PUSH2_DISPLAY_INTERFACE,
+            display_endpoint: PUSH2_DISPLAY_ENDPOINT,
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Ableton Push 2");
+    assert_eq!(protocol.total_leds(), 123);
+    assert_eq!(protocol.zones().len(), 7);
+    assert_eq!(protocol.capabilities().display_resolution, Some((960, 160)));
 }
 
 #[test]
@@ -588,6 +619,7 @@ fn lookup_returns_seiren_emote_with_8x8_zone_topology() {
 #[test]
 fn known_vid_pid_contains_razer_entries() {
     let pairs = ProtocolDatabase::known_vid_pids();
+    assert!(pairs.contains(&(ABLETON_VENDOR_ID, PID_PUSH_2)));
     assert!(pairs.contains(&(CORSAIR_VID, PID_ELITE_CAPELLIX_LCD)));
     assert!(pairs.contains(&(CORSAIR_VID, PID_ELITE_CAPELLIX_LCD_ALT)));
     assert!(pairs.contains(&(CORSAIR_VID, PID_ICUE_LINK_LCD)));
@@ -624,5 +656,5 @@ fn by_vendor_returns_only_razer_entries() {
 #[test]
 fn count_matches_static_descriptor_count() {
     assert_eq!(ProtocolDatabase::count(), ProtocolDatabase::all().len());
-    assert!(ProtocolDatabase::count() >= 27);
+    assert!(ProtocolDatabase::count() >= 28);
 }
