@@ -143,7 +143,7 @@ and interactive categories:
 | Borealis | Neon City | Digital Rain | Meteor Storm |
 | Bass Shockwave | Voronoi Glass | Bubble Garden | Spectral Fire |
 | Plasma Engine | Synth Horizon | Deep Current | Lava Lamp |
-| Poisonous | Flow Field | Ember Glow | Frost Crystal |
+| Poisonous | Fiberflies | Ember Glow | Frost Crystal |
 | Nebula Drift | Nyan Dash | Retro Rink | Frequency Cascade |
 
 Every effect is open source, well-documented, and serves as a reference for writing your own.
