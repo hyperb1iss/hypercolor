@@ -1,7 +1,7 @@
 //! Razer HID report CRC helpers.
 
-use zerocopy::{FromBytes, IntoBytes, KnownLayout, Immutable};
-use zerocopy::byteorder::{U16, LittleEndian};
+use zerocopy::byteorder::{LittleEndian, U16};
+use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 /// Razer HID packet size in bytes.
 pub const RAZER_REPORT_LEN: usize = 90;
@@ -37,9 +37,37 @@ pub struct RazerReport {
 
 /// Compute the Razer XOR checksum over a typed [`RazerReport`].
 ///
-/// The checksum is XOR of bytes `2..=87` and is stored at offset `88`.
+/// The checksum is XOR of bytes `2..=87` (86 bytes) and is stored at
+/// offset `88`. This runs on every USB report during animation — hot path.
+///
+/// Uses u64-wide XOR accumulation (ported from uchroma) to process 8 bytes
+/// at a time, then folds the accumulator down to a single byte.
 #[must_use]
 pub fn razer_crc(report: &RazerReport) -> u8 {
-    let bytes = report.as_bytes();
-    bytes[2..88].iter().fold(0_u8, |acc, byte| acc ^ byte)
+    let slice = &report.as_bytes()[2..88]; // 86 bytes
+
+    let chunks = slice.chunks_exact(8);
+    let remainder = chunks.remainder();
+
+    let mut acc: u64 = 0;
+    for chunk in chunks {
+        // chunks_exact guarantees 8 bytes — infallible conversion
+        let val = u64::from_ne_bytes(
+            chunk
+                .try_into()
+                .expect("chunks_exact(8) guarantees 8-byte slices"),
+        );
+        acc ^= val;
+    }
+
+    // Horizontal XOR: fold all 8 bytes of the accumulator into one
+    let bytes = acc.to_ne_bytes();
+    let mut result = bytes[0] ^ bytes[1] ^ bytes[2] ^ bytes[3]
+        ^ bytes[4] ^ bytes[5] ^ bytes[6] ^ bytes[7];
+
+    for &byte in remainder {
+        result ^= byte;
+    }
+
+    result
 }
