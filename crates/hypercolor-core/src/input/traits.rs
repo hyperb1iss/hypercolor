@@ -108,6 +108,15 @@ pub trait InputSource: Send {
     /// Returns an error if the capture stream has died or data is corrupted.
     fn sample(&mut self) -> anyhow::Result<InputData>;
 
+    /// Pull the latest data snapshot for this frame using the current frame delta.
+    ///
+    /// The default implementation falls back to [`sample`](Self::sample) so
+    /// sources that do not care about frame timing do not need custom logic.
+    fn sample_with_delta_secs(&mut self, delta_secs: f32) -> anyhow::Result<InputData> {
+        let _ = delta_secs;
+        self.sample()
+    }
+
     /// Whether the source is actively capturing.
     fn is_running(&self) -> bool;
 }

@@ -77,13 +77,24 @@ impl InputManager {
     /// Sources that fail to sample emit a warning and produce [`InputData::None`]
     /// for that frame — a single broken source never crashes the render loop.
     pub fn sample_all(&mut self) -> Vec<InputData> {
+        self.sample_all_with_delta_secs(0.0)
+    }
+
+    /// Sample every registered source using the current frame delta.
+    ///
+    /// Sources that ignore cadence can rely on the default trait behavior; the
+    /// audio pipeline uses this to keep analysis state aligned with real frame
+    /// timing when the render loop shifts tiers or misses budget.
+    pub fn sample_all_with_delta_secs(&mut self, delta_secs: f32) -> Vec<InputData> {
         self.sources
             .iter_mut()
             .map(|source| {
-                source.sample().unwrap_or_else(|err| {
-                    error!(source = source.name(), %err, "Input sample failed");
-                    InputData::None
-                })
+                source
+                    .sample_with_delta_secs(delta_secs)
+                    .unwrap_or_else(|err| {
+                        error!(source = source.name(), %err, "Input sample failed");
+                        InputData::None
+                    })
             })
             .collect()
     }

@@ -124,6 +124,45 @@ impl FaultySampleSource {
     }
 }
 
+struct DeltaAwareSource {
+    running: bool,
+}
+
+impl DeltaAwareSource {
+    fn new() -> Self {
+        Self { running: false }
+    }
+}
+
+impl InputSource for DeltaAwareSource {
+    fn name(&self) -> &'static str {
+        "DeltaAware"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn sample_with_delta_secs(&mut self, delta_secs: f32) -> anyhow::Result<InputData> {
+        let mut data = AudioData::silence();
+        data.rms_level = delta_secs;
+        Ok(InputData::Audio(data))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
 impl InputSource for FaultySampleSource {
     fn name(&self) -> &'static str {
         "FaultySample"
@@ -303,6 +342,22 @@ fn manager_sample_preserves_source_order() {
     assert!(matches!(&samples[0], InputData::Screen(_)));
     assert!(matches!(&samples[1], InputData::Audio(_)));
     assert!(matches!(&samples[2], InputData::Screen(_)));
+}
+
+#[test]
+fn manager_sample_all_with_delta_secs_uses_timing_aware_sources() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(DeltaAwareSource::new()));
+
+    let samples = mgr.sample_all_with_delta_secs(0.25);
+    assert_eq!(samples.len(), 1);
+
+    match &samples[0] {
+        InputData::Audio(audio) => {
+            assert!((audio.rms_level - 0.25).abs() < f32::EPSILON);
+        }
+        _ => panic!("expected audio data"),
+    }
 }
 
 #[test]

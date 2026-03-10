@@ -30,6 +30,7 @@ use crate::logical_devices::{self, LogicalDevice};
 
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const DISPLAY_OUTPUT_MAX_FPS: u32 = 15;
+const DISPLAY_RUNTIME_WORKERS: usize = 2;
 const JPEG_QUALITY: u8 = 85;
 const JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
 const BILINEAR_WEIGHT_SCALE: u32 = 256;
@@ -256,7 +257,9 @@ impl DisplayOutputThread {
         let join_handle = std::thread::Builder::new()
             .name("hypercolor-display".to_owned())
             .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(DISPLAY_RUNTIME_WORKERS)
+                    .thread_name("hypercolor-display-rt")
                     .enable_all()
                     .build()
                     .expect("display output runtime should initialize");

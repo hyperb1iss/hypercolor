@@ -38,6 +38,8 @@ use fft::{FftPipeline, RingBuffer};
 
 use crate::types::audio::{CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 
+const DEFAULT_AUDIO_FRAME_DT: f32 = 1.0 / 60.0;
+
 // ── AudioAnalyzer ────────────────────────────────────────────────────────
 
 /// Pure audio analysis pipeline — no hardware, no threads, no OS calls.
@@ -275,6 +277,31 @@ impl AudioInput {
             .lock()
             .expect("audio analyzer mutex should not be poisoned")
     }
+
+    fn sample_with_dt(&mut self, dt: f32) -> anyhow::Result<InputData> {
+        if !self.running {
+            return Ok(InputData::None);
+        }
+
+        let dt = if dt.is_finite() && dt > 0.0 {
+            dt
+        } else {
+            DEFAULT_AUDIO_FRAME_DT
+        };
+        let mut analyzer = self
+            .analyzer
+            .lock()
+            .map_err(|_| anyhow!("audio analyzer mutex poisoned"))?;
+        match analyzer.analyze(dt)? {
+            Some(data) => Ok(InputData::Audio(data)),
+            None if self.degraded_to_silence
+                || matches!(self.config.source, AudioSourceType::None) =>
+            {
+                Ok(InputData::Audio(AudioData::silence()))
+            }
+            None => Ok(InputData::None),
+        }
+    }
 }
 
 impl InputSource for AudioInput {
@@ -334,26 +361,11 @@ impl InputSource for AudioInput {
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
-        if !self.running {
-            return Ok(InputData::None);
-        }
+        self.sample_with_dt(DEFAULT_AUDIO_FRAME_DT)
+    }
 
-        // Use a fixed dt of ~16ms (60fps). In production this would
-        // come from the actual frame timer.
-        let dt = 1.0 / 60.0;
-        let mut analyzer = self
-            .analyzer
-            .lock()
-            .map_err(|_| anyhow!("audio analyzer mutex poisoned"))?;
-        match analyzer.analyze(dt)? {
-            Some(data) => Ok(InputData::Audio(data)),
-            None if self.degraded_to_silence
-                || matches!(self.config.source, AudioSourceType::None) =>
-            {
-                Ok(InputData::Audio(AudioData::silence()))
-            }
-            None => Ok(InputData::None),
-        }
+    fn sample_with_delta_secs(&mut self, delta_secs: f32) -> anyhow::Result<InputData> {
+        self.sample_with_dt(delta_secs)
     }
 
     fn is_running(&self) -> bool {

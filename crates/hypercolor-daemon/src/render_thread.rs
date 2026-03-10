@@ -39,6 +39,8 @@ use crate::discovery::{DiscoveryRuntime, handle_async_write_failures};
 use crate::performance::{LatestFrameMetrics, PerformanceTracker};
 use crate::session::OutputPowerState;
 
+const RENDER_RUNTIME_WORKERS: usize = 2;
+
 // ── RenderThread ────────────────────────────────────────────────────────────
 
 /// Handle to a running render thread.
@@ -106,7 +108,9 @@ impl RenderThread {
         let join_handle = std::thread::Builder::new()
             .name("hypercolor-render".to_owned())
             .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(RENDER_RUNTIME_WORKERS)
+                    .thread_name("hypercolor-render-rt")
                     .enable_all()
                     .build()
                     .expect("render thread runtime should initialize");
@@ -343,7 +347,7 @@ async fn execute_frame(
     let input_start = Instant::now();
     let inputs = match skip_decision {
         SkipDecision::None => {
-            *cached_inputs = sample_inputs(state).await;
+            *cached_inputs = sample_inputs(state, delta_secs).await;
             &*cached_inputs
         }
         SkipDecision::ReuseInputs | SkipDecision::ReuseCanvas => &*cached_inputs,
@@ -669,10 +673,10 @@ fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
 }
 
 /// Sample current input values for the frame.
-async fn sample_inputs(state: &RenderThreadState) -> FrameInputs {
+async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) -> FrameInputs {
     let samples = {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.sample_all()
+        input_manager.sample_all_with_delta_secs(delta_secs)
     };
 
     let mut audio = AudioData::silence();
