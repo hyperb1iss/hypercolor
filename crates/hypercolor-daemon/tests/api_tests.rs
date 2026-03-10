@@ -4,8 +4,8 @@
 //! `Request::builder()` — no TCP server needed.
 
 use std::fs;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::SystemTime;
 
 use anyhow::{Result, bail};
@@ -32,9 +32,24 @@ use hypercolor_types::effect::{
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
 
+static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+fn isolated_state() -> AppState {
+    let _lock = DATA_DIR_LOCK
+        .lock()
+        .expect("data dir lock should not be poisoned");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let data_dir = tempdir.path().join("data");
+    std::fs::create_dir_all(&data_dir).expect("temp data dir should be created");
+    ConfigManager::set_data_dir_override(Some(data_dir));
+    let state = AppState::new();
+    ConfigManager::set_data_dir_override(None);
+    state
+}
+
 /// Build a test router with fresh state.
 fn test_app() -> axum::Router {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     api::build_router(state, None)
 }
 
@@ -189,7 +204,7 @@ async fn spa_fallback_serves_index_html_for_client_routes() {
     fs::write(&index_path, "<!doctype html><title>hypercolor</title>")
         .expect("index.html should be written");
 
-    let app = api::build_router(Arc::new(AppState::new()), Some(tempdir.path()));
+    let app = api::build_router(Arc::new(isolated_state()), Some(tempdir.path()));
     let response = app
         .oneshot(
             Request::builder()
@@ -270,7 +285,7 @@ async fn status_prefers_live_config_manager_path() {
     let config_manager = Arc::new(
         ConfigManager::new(custom_config_path.clone()).expect("config manager should build"),
     );
-    let mut state = AppState::new();
+    let mut state = isolated_state();
     state.config_manager = Some(config_manager);
 
     let app = test_app_with_state(Arc::new(state));
@@ -401,7 +416,7 @@ async fn audio_devices_normalize_legacy_aliases() {
     config.audio.device = "mic".to_owned();
     config_manager.update(config);
 
-    let mut state = AppState::new();
+    let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let app = test_app_with_state(Arc::new(state));
 
@@ -428,7 +443,7 @@ async fn config_set_audio_device_rebuilds_live_input_manager() {
     let config_manager =
         Arc::new(ConfigManager::new(config_path.clone()).expect("config manager should build"));
 
-    let mut state = AppState::new();
+    let mut state = isolated_state();
     state.config_manager = Some(config_manager);
     let state = Arc::new(state);
     let app = test_app_with_state(Arc::clone(&state));
@@ -643,7 +658,7 @@ async fn list_devices_returns_empty_list() {
 
 #[tokio::test]
 async fn list_devices_includes_structured_zone_topology_hints() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     let id = DeviceId::new();
     let info = DeviceInfo {
         id,
@@ -895,7 +910,7 @@ async fn list_effects_returns_empty_list() {
 
 #[tokio::test]
 async fn list_effects_returns_items_sorted_by_name() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "zeta").await;
     insert_test_effect(&state, "Alpha").await;
     insert_test_effect(&state, "beta").await;
@@ -925,7 +940,7 @@ async fn list_effects_returns_items_sorted_by_name() {
 
 #[tokio::test]
 async fn get_effect_returns_controls() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -1005,7 +1020,7 @@ async fn update_current_controls_requires_active_effect() {
 
 #[tokio::test]
 async fn update_current_controls_updates_active_effect() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -1056,7 +1071,7 @@ async fn update_current_controls_updates_active_effect() {
 
 #[tokio::test]
 async fn library_favorites_crud_lifecycle() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -1119,7 +1134,7 @@ async fn library_favorites_crud_lifecycle() {
 
 #[tokio::test]
 async fn library_presets_create_and_get() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -1169,7 +1184,7 @@ async fn library_presets_create_and_get() {
 
 #[tokio::test]
 async fn library_preset_apply_activates_effect_with_controls() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -1235,7 +1250,7 @@ async fn library_preset_apply_activates_effect_with_controls() {
 
 #[tokio::test]
 async fn library_preset_apply_resolves_by_name() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -1274,7 +1289,7 @@ async fn library_preset_apply_resolves_by_name() {
 
 #[tokio::test]
 async fn library_playlists_create_with_effect_and_preset_targets() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -1359,7 +1374,7 @@ async fn library_playlists_create_with_effect_and_preset_targets() {
 
 #[tokio::test]
 async fn library_playlist_activate_and_stop_lifecycle() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -1463,7 +1478,7 @@ async fn library_playlist_activate_and_stop_lifecycle() {
 
 #[tokio::test]
 async fn library_playlist_activate_resolves_by_name() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -1523,7 +1538,7 @@ async fn library_playlist_activate_resolves_by_name() {
     reason = "test validates full playlist replacement lifecycle"
 )]
 async fn library_playlist_activate_replaces_previous_runtime() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -1640,7 +1655,7 @@ async fn library_playlist_activate_replaces_previous_runtime() {
 
 #[tokio::test]
 async fn library_delete_active_playlist_stops_runtime() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -1719,7 +1734,7 @@ async fn library_delete_active_playlist_stops_runtime() {
     reason = "CRUD lifecycle test covers full create-read-update-delete flow"
 )]
 async fn scene_crud_lifecycle() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
 
     // Create scene
     let app = test_app_with_state(Arc::clone(&state));
@@ -1850,7 +1865,7 @@ async fn scene_crud_lifecycle() {
 
 #[tokio::test]
 async fn profile_crud_lifecycle() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
 
     // Create profile
     let app = test_app_with_state(Arc::clone(&state));
@@ -1977,7 +1992,7 @@ async fn profile_crud_lifecycle() {
 
 #[tokio::test]
 async fn layout_crud_lifecycle() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
 
     // Create layout
     let app = test_app_with_state(Arc::clone(&state));
@@ -2153,7 +2168,7 @@ async fn layout_apply_updates_active_layout() {
 
 #[tokio::test]
 async fn layout_delete_active_falls_back_to_default_layout() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     let app = test_app_with_state(Arc::clone(&state));
 
     let create_response = app
@@ -2444,21 +2459,21 @@ async fn layout_update_cleans_orphaned_group_ids() {
 // ── Effect Layout Associations ──────────────────────────────────────────
 
 fn test_state_with_temp_effect_layout_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = AppState::new();
+    let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");
     state.effect_layout_links_path = dir.path().join("effect-layouts.json");
     (Arc::new(state), dir)
 }
 
 fn test_state_with_temp_layout_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = AppState::new();
+    let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");
     state.layouts_path = dir.path().join("layouts.json");
     (Arc::new(state), dir)
 }
 
 fn test_state_with_temp_layout_and_runtime_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = AppState::new();
+    let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");
     state.layouts_path = dir.path().join("layouts.json");
     state.runtime_state_path = dir.path().join("runtime-state.json");
@@ -2466,7 +2481,7 @@ fn test_state_with_temp_layout_and_runtime_store() -> (Arc<AppState>, tempfile::
 }
 
 fn test_state_with_temp_output_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = AppState::new();
+    let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");
     state.device_settings = Arc::new(tokio::sync::RwLock::new(DeviceSettingsStore::new(
         dir.path().join("device-settings.json"),
@@ -2651,7 +2666,7 @@ async fn effect_layout_association_crud_persists_to_disk() {
 
 #[tokio::test]
 async fn applying_effect_auto_applies_associated_layout() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -2870,7 +2885,7 @@ async fn discover_devices_rejects_unknown_backend() {
 
 #[tokio::test]
 async fn discover_devices_returns_conflict_when_scan_active() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     state.discovery_in_progress.store(true, Ordering::Release);
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -2980,7 +2995,7 @@ async fn update_device_persists_name_enabled_and_brightness_state() {
 
 #[tokio::test]
 async fn update_device_disable_runs_lifecycle_disconnect_cleanup() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Desk Strip").await;
     let disconnects = Arc::new(AtomicUsize::new(0));
 
@@ -3047,7 +3062,7 @@ async fn update_device_disable_runs_lifecycle_disconnect_cleanup() {
 
 #[tokio::test]
 async fn list_devices_supports_filters() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     let _first_id = insert_test_device(&state, "Desk Strip").await;
     let second_id = insert_test_device(&state, "Ceiling Panel").await;
     let _ = state
@@ -3088,7 +3103,7 @@ async fn list_devices_supports_filters() {
 
 #[tokio::test]
 async fn list_devices_includes_network_metadata_when_available() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     let info = DeviceInfo {
         id: DeviceId::new(),
         name: "Desk Strip".to_owned(),
@@ -3175,7 +3190,7 @@ async fn list_devices_rejects_invalid_limit() {
 
 #[tokio::test]
 async fn identify_device_validates_and_returns_canonical_id() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     register_noop_backend(&state, "wled", "WLED Test Backend").await;
     let device_id = insert_test_device(&state, "Keyboard").await;
     let _ = state
@@ -3237,7 +3252,7 @@ async fn identify_device_validates_and_returns_canonical_id() {
 
 #[tokio::test]
 async fn identify_device_requires_connected_state() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     let _device_id = insert_test_device(&state, "Known Strip").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -3259,7 +3274,7 @@ async fn identify_device_requires_connected_state() {
 
 #[tokio::test]
 async fn identify_device_uses_discovered_smbus_backend_for_asus_devices() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     register_noop_backend(&state, "smbus", "SMBus Test Backend").await;
     let device_id = insert_test_asus_smbus_device(&state, "Aura GPU").await;
     let _ = state
@@ -3287,7 +3302,7 @@ async fn identify_device_uses_discovered_smbus_backend_for_asus_devices() {
 
 #[tokio::test]
 async fn get_device_by_ambiguous_name_returns_conflict() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     let _ = insert_test_device(&state, "Same Name").await;
     let _ = insert_test_device(&state, "Same Name").await;
     let app = test_app_with_state(Arc::clone(&state));
@@ -3308,7 +3323,7 @@ async fn get_device_by_ambiguous_name_returns_conflict() {
 
 #[tokio::test]
 async fn delete_device_by_name_returns_canonical_id() {
-    let state = Arc::new(AppState::new());
+    let state = Arc::new(isolated_state());
     let device_id = insert_test_device(&state, "Panel").await;
     let app = test_app_with_state(Arc::clone(&state));
 
@@ -3328,7 +3343,7 @@ async fn delete_device_by_name_returns_canonical_id() {
 }
 
 fn test_state_with_temp_logical_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = AppState::new();
+    let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");
     state.logical_devices_path = dir.path().join("logical-devices.json");
     (Arc::new(state), dir)

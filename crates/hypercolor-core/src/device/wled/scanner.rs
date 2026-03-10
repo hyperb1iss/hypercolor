@@ -3,12 +3,13 @@
 //! Implements [`TransportScanner`] to discover WLED controllers on the
 //! local network via `_wled._tcp.local.` service browsing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use mdns_sd::{ServiceDaemon, ServiceEvent};
+use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
@@ -26,6 +27,76 @@ const DEFAULT_SCAN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Best-effort wait for the mDNS daemon to acknowledge shutdown.
 const MDNS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Persistable scanner hint for known WLED devices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WledKnownTarget {
+    /// Target IP address to probe.
+    pub ip: IpAddr,
+    /// Last-known mDNS hostname, if available.
+    #[serde(default)]
+    pub hostname: Option<String>,
+    /// Stable device fingerprint from a previous successful discovery.
+    #[serde(default)]
+    pub fingerprint: Option<DeviceFingerprint>,
+    /// Last-known friendly WLED display name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Last-known LED count.
+    #[serde(default)]
+    pub led_count: Option<u32>,
+    /// Last-known firmware version.
+    #[serde(default)]
+    pub firmware_version: Option<String>,
+    /// Last-known max FPS capability.
+    #[serde(default)]
+    pub max_fps: Option<u32>,
+    /// Whether the device reported RGBW support.
+    #[serde(default)]
+    pub rgbw: Option<bool>,
+}
+
+impl WledKnownTarget {
+    /// Create a bare probe target from an IP address.
+    #[must_use]
+    pub fn from_ip(ip: IpAddr) -> Self {
+        Self {
+            ip,
+            hostname: None,
+            fingerprint: None,
+            name: None,
+            led_count: None,
+            firmware_version: None,
+            max_fps: None,
+            rgbw: None,
+        }
+    }
+
+    /// Merge richer cached identity fields from another target.
+    pub fn merge_from(&mut self, other: &Self) {
+        if self.hostname.is_none() {
+            self.hostname = other.hostname.clone();
+        }
+        if self.fingerprint.is_none() {
+            self.fingerprint = other.fingerprint.clone();
+        }
+        if self.name.is_none() {
+            self.name = other.name.clone();
+        }
+        if self.led_count.is_none() {
+            self.led_count = other.led_count;
+        }
+        if self.firmware_version.is_none() {
+            self.firmware_version = other.firmware_version.clone();
+        }
+        if self.max_fps.is_none() {
+            self.max_fps = other.max_fps;
+        }
+        if self.rgbw.is_none() {
+            self.rgbw = other.rgbw;
+        }
+    }
+}
+
 // ── WledScanner ─────────────────────────────────────────────────────────
 
 /// mDNS-based transport scanner for WLED devices.
@@ -36,7 +107,7 @@ pub struct WledScanner {
     /// How long to browse before returning results.
     scan_timeout: Duration,
     /// Explicit IPs to probe over HTTP before or alongside mDNS.
-    known_ips: Vec<IpAddr>,
+    known_targets: Vec<WledKnownTarget>,
     /// Whether to browse mDNS in addition to known-IP probing.
     mdns_enabled: bool,
 }
@@ -47,7 +118,7 @@ impl WledScanner {
     pub fn new() -> Self {
         Self {
             scan_timeout: DEFAULT_SCAN_TIMEOUT,
-            known_ips: Vec::new(),
+            known_targets: Vec::new(),
             mdns_enabled: true,
         }
     }
@@ -57,19 +128,36 @@ impl WledScanner {
     pub fn with_timeout(timeout: Duration) -> Self {
         Self {
             scan_timeout: timeout,
-            known_ips: Vec::new(),
+            known_targets: Vec::new(),
             mdns_enabled: true,
+        }
+    }
+
+    /// Create a scanner with persisted known-device hints.
+    #[must_use]
+    pub fn with_known_targets(
+        known_targets: Vec<WledKnownTarget>,
+        mdns_enabled: bool,
+        timeout: Duration,
+    ) -> Self {
+        Self {
+            scan_timeout: timeout,
+            known_targets,
+            mdns_enabled,
         }
     }
 
     /// Create a scanner that probes known IPs and optionally browses mDNS.
     #[must_use]
     pub fn with_known_ips(known_ips: Vec<IpAddr>, mdns_enabled: bool, timeout: Duration) -> Self {
-        Self {
-            scan_timeout: timeout,
-            known_ips,
+        Self::with_known_targets(
+            known_ips
+                .into_iter()
+                .map(WledKnownTarget::from_ip)
+                .collect(),
             mdns_enabled,
-        }
+            timeout,
+        )
     }
 
     /// Build a `DiscoveredDevice` from mDNS service info.
@@ -145,6 +233,72 @@ impl WledScanner {
             info: device_info,
             metadata,
         }
+    }
+
+    fn build_discovered_from_known_target(target: &WledKnownTarget) -> Option<DiscoveredDevice> {
+        let has_cached_identity = target.fingerprint.is_some()
+            || target.name.is_some()
+            || target.led_count.is_some()
+            || target.firmware_version.is_some()
+            || target.max_fps.is_some()
+            || target.rgbw.is_some();
+        if !has_cached_identity {
+            return None;
+        }
+
+        let name = target.name.clone().or_else(|| target.hostname.clone())?;
+        let fingerprint = target.fingerprint.clone().or_else(|| {
+            target
+                .hostname
+                .as_ref()
+                .map(|hostname| DeviceFingerprint(format!("net:wled:{hostname}")))
+        })?;
+        let color_format = if target.rgbw.unwrap_or(false) {
+            DeviceColorFormat::Rgbw
+        } else {
+            DeviceColorFormat::Rgb
+        };
+        let led_count = target.led_count.unwrap_or(0);
+        let device_id = fingerprint.stable_device_id();
+
+        let device_info = DeviceInfo {
+            id: device_id,
+            name: name.clone(),
+            vendor: "WLED".to_owned(),
+            family: DeviceFamily::Wled,
+            model: None,
+            connection_type: ConnectionType::Network,
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count,
+                topology: DeviceTopologyHint::Strip,
+                color_format,
+            }],
+            firmware_version: target.firmware_version.clone(),
+            capabilities: DeviceCapabilities {
+                led_count,
+                supports_direct: true,
+                supports_brightness: true,
+                has_display: false,
+                display_resolution: None,
+                max_fps: target.max_fps.unwrap_or(60),
+            },
+        };
+
+        let mut metadata = HashMap::new();
+        metadata.insert("ip".to_owned(), target.ip.to_string());
+        if let Some(hostname) = &target.hostname {
+            metadata.insert("hostname".to_owned(), hostname.clone());
+        }
+
+        Some(DiscoveredDevice {
+            connection_type: ConnectionType::Network,
+            name,
+            family: DeviceFamily::Wled,
+            fingerprint,
+            info: device_info,
+            metadata,
+        })
     }
 
     async fn collect_mdns_candidates(&self) -> Result<HashMap<IpAddr, Option<String>>> {
@@ -234,12 +388,13 @@ impl TransportScanner for WledScanner {
     }
 
     async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
-        let mut candidates: HashMap<IpAddr, Option<String>> = self
-            .known_ips
+        let mut candidates: HashMap<IpAddr, WledKnownTarget> = self
+            .known_targets
             .iter()
-            .copied()
-            .map(|ip| (ip, None))
+            .cloned()
+            .map(|target| (target.ip, target))
             .collect();
+        let mut mdns_seen_ips = HashSet::new();
         let known_ip_set = candidates
             .keys()
             .copied()
@@ -251,7 +406,13 @@ impl TransportScanner for WledScanner {
         }
 
         for (ip, hostname) in self.collect_mdns_candidates().await? {
-            candidates.entry(ip).or_insert(hostname);
+            mdns_seen_ips.insert(ip);
+            let entry = candidates
+                .entry(ip)
+                .or_insert_with(|| WledKnownTarget::from_ip(ip));
+            if entry.hostname.is_none() {
+                entry.hostname = hostname;
+            }
             if !known_ip_set.contains(&ip) {
                 enrichment_tasks.spawn(async move { (ip, enrich_via_http(ip).await) });
             }
@@ -270,11 +431,11 @@ impl TransportScanner for WledScanner {
         }
 
         let mut discovered: Vec<DiscoveredDevice> = Vec::with_capacity(candidates.len());
-        for (ip, hostname) in candidates {
+        for (ip, target) in candidates {
             let wled_info = match enriched.remove(&ip) {
                 Some(Ok(info)) => Some(info),
                 Some(Err(error)) => {
-                    let host_label = hostname.as_deref().unwrap_or("<unknown>");
+                    let host_label = target.hostname.as_deref().unwrap_or("<unknown>");
                     warn!(
                         ip = %ip,
                         hostname = %host_label,
@@ -286,17 +447,23 @@ impl TransportScanner for WledScanner {
                 None => None,
             };
 
-            if wled_info.is_none() && hostname.is_none() {
-                debug!(
-                    ip = %ip,
-                    "Skipping stale WLED probe candidate without mDNS hostname or HTTP enrichment"
-                );
+            if let Some(info) = wled_info.as_ref() {
+                let host_label = target.hostname.clone().unwrap_or_else(|| ip.to_string());
+                discovered.push(Self::build_discovered(&host_label, ip, Some(info)));
                 continue;
             }
 
-            let host_label = hostname.unwrap_or_else(|| ip.to_string());
+            if mdns_seen_ips.contains(&ip)
+                && let Some(cached) = Self::build_discovered_from_known_target(&target)
+            {
+                discovered.push(cached);
+                continue;
+            }
 
-            discovered.push(Self::build_discovered(&host_label, ip, wled_info.as_ref()));
+            debug!(
+                ip = %ip,
+                "Skipping stale WLED probe candidate without cached identity or HTTP enrichment"
+            );
         }
 
         info!(count = discovered.len(), "WLED mDNS scan complete");

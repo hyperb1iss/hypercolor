@@ -12,8 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use hypercolor_core::device::DeviceRegistry;
+use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_core::effect::EffectEngine;
-use hypercolor_types::device::DeviceFamily;
+use hypercolor_types::device::{DeviceColorFormat, DeviceFamily};
 use hypercolor_types::effect::ControlValue;
 
 /// Process-local counter to guarantee per-save temp file uniqueness.
@@ -40,6 +41,9 @@ pub struct RuntimeSessionSnapshot {
 
     /// Last-known WLED IPs discovered in previous sessions.
     pub wled_probe_ips: Vec<IpAddr>,
+
+    /// Last-known WLED device identity hints used when probe enrichment fails.
+    pub wled_probe_targets: Vec<WledKnownTarget>,
 }
 
 /// Errors produced while loading/saving runtime snapshots.
@@ -94,6 +98,7 @@ pub fn snapshot_from_engine(engine: &EffectEngine) -> RuntimeSessionSnapshot {
         active_layout_id: None, // Populated by the caller with spatial engine state.
         global_brightness: 1.0,
         wled_probe_ips: Vec::new(),
+        wled_probe_targets: Vec::new(),
     }
 }
 
@@ -119,7 +124,25 @@ pub fn load(path: &Path) -> Result<Option<RuntimeSessionSnapshot>, RuntimeSessio
 
 /// Load the cached WLED probe IPs from `path`.
 pub fn load_wled_probe_ips(path: &Path) -> Result<Vec<IpAddr>, RuntimeSessionError> {
-    Ok(load(path)?.map_or_else(Vec::new, |snapshot| snapshot.wled_probe_ips))
+    let Some(snapshot) = load(path)? else {
+        return Ok(Vec::new());
+    };
+
+    let mut probe_ips = snapshot.wled_probe_ips;
+    probe_ips.extend(
+        snapshot
+            .wled_probe_targets
+            .into_iter()
+            .map(|target| target.ip),
+    );
+    probe_ips.sort_unstable();
+    probe_ips.dedup();
+    Ok(probe_ips)
+}
+
+/// Load the cached WLED identity hints from `path`.
+pub fn load_wled_probe_targets(path: &Path) -> Result<Vec<WledKnownTarget>, RuntimeSessionError> {
+    Ok(load(path)?.map_or_else(Vec::new, |snapshot| snapshot.wled_probe_targets))
 }
 
 /// Collect the last-known WLED probe IPs from registry metadata.
@@ -147,6 +170,50 @@ pub async fn collect_wled_probe_ips(device_registry: &DeviceRegistry) -> Vec<IpA
     let mut resolved: Vec<IpAddr> = probe_ips.into_iter().collect();
     resolved.sort_unstable();
     resolved
+}
+
+/// Collect the last-known WLED identity hints from the registry.
+pub async fn collect_wled_probe_targets(device_registry: &DeviceRegistry) -> Vec<WledKnownTarget> {
+    let tracked_devices = device_registry.list().await;
+    let mut targets = Vec::new();
+
+    for tracked in tracked_devices {
+        if tracked.info.family != DeviceFamily::Wled {
+            continue;
+        }
+
+        let Some(metadata) = device_registry.metadata_for_id(&tracked.info.id).await else {
+            continue;
+        };
+        let Some(ip_raw) = metadata.get("ip") else {
+            continue;
+        };
+        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
+            continue;
+        };
+
+        let rgbw = tracked
+            .info
+            .zones
+            .first()
+            .map(|zone| matches!(zone.color_format, DeviceColorFormat::Rgbw));
+        let fingerprint = device_registry.fingerprint_for_id(&tracked.info.id).await;
+
+        targets.push(WledKnownTarget {
+            ip,
+            hostname: metadata.get("hostname").cloned(),
+            fingerprint,
+            name: Some(tracked.info.name.clone()),
+            led_count: Some(tracked.info.total_led_count()),
+            firmware_version: tracked.info.firmware_version.clone(),
+            max_fps: Some(tracked.info.capabilities.max_fps),
+            rgbw,
+        });
+    }
+
+    targets.sort_by_key(|target| target.ip);
+    targets.dedup_by_key(|target| target.ip);
+    targets
 }
 
 /// Persist a runtime snapshot to `path` using atomic replace semantics.
@@ -214,6 +281,7 @@ mod tests {
                 "10.0.0.8".parse().expect("valid IP"),
                 "10.0.0.9".parse().expect("valid IP"),
             ],
+            wled_probe_targets: Vec::new(),
         };
 
         save(&path, &expected).expect("save snapshot");
@@ -246,6 +314,7 @@ mod tests {
             active_layout_id: None,
             global_brightness: 1.0,
             wled_probe_ips: vec!["10.0.0.42".parse().expect("valid IP")],
+            wled_probe_targets: Vec::new(),
         });
 
         let worker_count = 8;

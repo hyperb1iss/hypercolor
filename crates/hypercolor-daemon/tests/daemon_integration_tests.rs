@@ -248,6 +248,7 @@ async fn daemon_start_restores_last_runtime_session() {
         active_layout_id: None,
         global_brightness: 1.0,
         wled_probe_ips: Vec::new(),
+        wled_probe_targets: Vec::new(),
     };
     runtime_state::save(&state.runtime_state_path, &snapshot).expect("persist runtime snapshot");
 

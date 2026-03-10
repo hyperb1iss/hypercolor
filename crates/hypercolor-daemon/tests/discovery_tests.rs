@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
@@ -17,7 +18,7 @@ use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::discovery::{
     DiscoveryBackend, DiscoveryRuntime, execute_discovery_scan, resolve_wled_probe_ips,
-    sync_active_layout_for_renderable_devices,
+    resolve_wled_probe_targets, sync_active_layout_for_renderable_devices,
 };
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::runtime_state;
@@ -264,6 +265,71 @@ async fn resolve_wled_probe_ips_merges_config_runtime_state_and_registry_metadat
             configured_ip,
             cached_ip,
         ]
+    );
+}
+
+#[tokio::test]
+async fn resolve_wled_probe_targets_preserves_cached_identity_hints() {
+    let registry = DeviceRegistry::new();
+
+    let configured_ip: IpAddr = "10.4.22.69".parse().expect("configured IP should parse");
+    let cached_ip: IpAddr = "10.4.22.169".parse().expect("cached IP should parse");
+
+    let mut config = HypercolorConfig::default();
+    config.wled.known_ips = vec![configured_ip];
+
+    let studio = wled_device_info("WLED Studio");
+    let mut studio_metadata = HashMap::new();
+    studio_metadata.insert("ip".to_owned(), configured_ip.to_string());
+    studio_metadata.insert("hostname".to_owned(), "wled-studio".to_owned());
+    registry
+        .add_with_fingerprint_and_metadata(
+            studio,
+            DeviceFingerprint("net:11:22:33:44:55:66".to_owned()),
+            studio_metadata,
+        )
+        .await;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime_state_path = temp_dir.path().join("runtime-state.json");
+    runtime_state::save(
+        &runtime_state_path,
+        &runtime_state::RuntimeSessionSnapshot {
+            wled_probe_targets: vec![WledKnownTarget {
+                ip: cached_ip,
+                hostname: Some("wled-desk".to_owned()),
+                fingerprint: Some(DeviceFingerprint("net:wled:wled-desk".to_owned())),
+                name: Some("Desk Strip".to_owned()),
+                led_count: Some(120),
+                firmware_version: Some("0.15.3".to_owned()),
+                max_fps: Some(60),
+                rgbw: Some(false),
+            }],
+            ..runtime_state::RuntimeSessionSnapshot::default()
+        },
+    )
+    .expect("runtime state should save");
+
+    let resolved = resolve_wled_probe_targets(&registry, &config, &runtime_state_path).await;
+    assert_eq!(resolved.len(), 2);
+
+    let cached = resolved
+        .iter()
+        .find(|target| target.ip == cached_ip)
+        .expect("cached target should be preserved");
+    assert_eq!(cached.hostname.as_deref(), Some("wled-desk"));
+    assert_eq!(cached.name.as_deref(), Some("Desk Strip"));
+    assert_eq!(cached.led_count, Some(120));
+
+    let configured = resolved
+        .iter()
+        .find(|target| target.ip == configured_ip)
+        .expect("registry-backed target should be included");
+    assert_eq!(configured.hostname.as_deref(), Some("wled-studio"));
+    assert_eq!(configured.name.as_deref(), Some("WLED Studio"));
+    assert_eq!(
+        configured.fingerprint,
+        Some(DeviceFingerprint("net:11:22:33:44:55:66".to_owned()))
     );
 }
 

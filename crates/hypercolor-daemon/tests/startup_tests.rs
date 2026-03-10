@@ -529,6 +529,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
             active_layout_id: Some(restored_layout.id.clone()),
             global_brightness: 1.0,
             wled_probe_ips: Vec::new(),
+            wled_probe_targets: Vec::new(),
         },
     )
     .expect("runtime state should save");
@@ -552,6 +553,45 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
     assert_eq!(active_layout.name, restored_layout.name);
 
     state.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn daemon_initialize_inserts_missing_default_layout_into_store() {
+    let guard = TestDataDirGuard::new().await;
+    let mut layouts = std::collections::HashMap::new();
+    let custom_layout = SpatialLayout {
+        id: "layout_custom".into(),
+        name: "Custom Layout".into(),
+        description: Some("Persisted custom layout".into()),
+        canvas_width: 640,
+        canvas_height: 360,
+        zones: vec![],
+        groups: vec![],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    layouts.insert(custom_layout.id.clone(), custom_layout);
+    layout_store::save(&guard.layouts_path(), &layouts).expect("layout store should save");
+
+    let config = default_config();
+    let temp = temp_config_file();
+    let state = DaemonState::initialize(&config, temp.path().to_path_buf())
+        .expect("initialization should succeed");
+
+    let persisted = layout_store::load(&guard.layouts_path()).expect("layout store should load");
+    assert!(persisted.contains_key("default"));
+    assert!(persisted.contains_key("layout_custom"));
+    assert_eq!(state.layouts_path, guard.layouts_path());
+
+    let in_memory = state.layouts.read().await;
+    let default_layout = in_memory
+        .get("default")
+        .expect("default layout should be present in memory");
+    assert_eq!(default_layout.name, "Default Layout");
+    assert_eq!(default_layout.canvas_width, config.daemon.canvas_width);
+    assert_eq!(default_layout.canvas_height, config.daemon.canvas_height);
 }
 
 #[tokio::test]

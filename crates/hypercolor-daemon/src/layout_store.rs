@@ -30,6 +30,22 @@ pub fn load(path: &Path) -> anyhow::Result<HashMap<String, SpatialLayout>> {
     Ok(out)
 }
 
+/// Ensure the canonical default layout is present in a layout store.
+///
+/// Returns `true` when the helper inserted the provided default layout.
+#[must_use]
+pub fn ensure_default_layout(
+    store: &mut HashMap<String, SpatialLayout>,
+    default_layout: &SpatialLayout,
+) -> bool {
+    if store.contains_key(&default_layout.id) {
+        return false;
+    }
+
+    store.insert(default_layout.id.clone(), default_layout.clone());
+    true
+}
+
 /// Persist spatial layouts to disk using atomic-replace semantics.
 pub fn save(path: &Path, store: &HashMap<String, SpatialLayout>) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {

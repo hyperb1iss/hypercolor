@@ -23,7 +23,7 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::manager::BackendRoutingDebugSnapshot;
 use hypercolor_core::device::mock::MockDeviceBackend;
-use hypercolor_core::device::wled::{WledBackend, WledProtocol};
+use hypercolor_core::device::wled::{WledBackend, WledDeviceInfo, WledKnownTarget, WledProtocol};
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, SmBusBackend, UsbBackend,
     UsbHotplugEvent, UsbHotplugMonitor, UsbProtocolConfigStore,
@@ -275,7 +275,7 @@ impl DaemonState {
             spaces: None,
             version: 1,
         };
-        let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(default_layout)));
+        let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(default_layout.clone())));
         info!("Spatial engine created (empty default layout)");
 
         let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
@@ -399,7 +399,7 @@ impl DaemonState {
 
         // ── Layout Store ─────────────────────────────────────────────
         let layouts_path = ConfigManager::data_dir().join("layouts.json");
-        let persisted_layouts = match crate::layout_store::load(&layouts_path) {
+        let mut persisted_layouts = match crate::layout_store::load(&layouts_path) {
             Ok(entries) => entries,
             Err(error) => {
                 warn!(
@@ -410,6 +410,20 @@ impl DaemonState {
                 HashMap::new()
             }
         };
+        if crate::layout_store::ensure_default_layout(&mut persisted_layouts, &default_layout) {
+            if let Err(error) = crate::layout_store::save(&layouts_path, &persisted_layouts) {
+                warn!(
+                    path = %layouts_path.display(),
+                    %error,
+                    "Failed to persist inserted default layout"
+                );
+            } else {
+                info!(
+                    path = %layouts_path.display(),
+                    "Inserted missing default layout into persisted layout store"
+                );
+            }
+        }
         let layout_count = persisted_layouts.len();
         let layouts = Arc::new(RwLock::new(persisted_layouts));
         info!(
@@ -724,6 +738,8 @@ impl DaemonState {
         snapshot.global_brightness = current_global_brightness(&self.power_state);
         snapshot.wled_probe_ips =
             runtime_state::collect_wled_probe_ips(&self.device_registry).await;
+        snapshot.wled_probe_targets =
+            runtime_state::collect_wled_probe_targets(&self.device_registry).await;
 
         if let Err(error) = runtime_state::save(&self.runtime_state_path, &snapshot) {
             warn!(
@@ -1256,6 +1272,23 @@ fn build_wled_backend(config: &HypercolorConfig, runtime_state_path: &Path) -> W
 
     let mut backend =
         WledBackend::with_mdns_fallback(resolved_known_ips, config.discovery.mdns_enabled);
+    match runtime_state::load_wled_probe_targets(runtime_state_path) {
+        Ok(cached_targets) => {
+            for target in cached_targets {
+                let Some((device_id, ip, info)) = cached_wled_backend_seed(&target) else {
+                    continue;
+                };
+                backend.remember_device(device_id, ip, info);
+            }
+        }
+        Err(error) => {
+            warn!(
+                path = %runtime_state_path.display(),
+                %error,
+                "Failed to load cached WLED identity hints; backend will rely on fresh probing"
+            );
+        }
+    }
     let protocol = match config.wled.default_protocol {
         WledProtocolConfig::Ddp => WledProtocol::Ddp,
         WledProtocolConfig::E131 => WledProtocol::E131,
@@ -1264,6 +1297,49 @@ fn build_wled_backend(config: &HypercolorConfig, runtime_state_path: &Path) -> W
     backend.set_realtime_http_enabled(config.wled.realtime_http_enabled);
     backend.set_dedup_threshold(config.wled.dedup_threshold);
     backend
+}
+
+fn cached_wled_backend_seed(
+    target: &WledKnownTarget,
+) -> Option<(DeviceId, std::net::IpAddr, WledDeviceInfo)> {
+    let fingerprint = target.fingerprint.clone()?;
+    let name = target.name.clone()?;
+    let led_count = target.led_count?;
+    let fps = target
+        .max_fps
+        .map(|value| u8::try_from(value).unwrap_or(u8::MAX))
+        .unwrap_or(60);
+
+    Some((
+        fingerprint.stable_device_id(),
+        target.ip,
+        WledDeviceInfo {
+            firmware_version: target
+                .firmware_version
+                .clone()
+                .unwrap_or_else(|| "unknown".to_owned()),
+            build_id: 0,
+            mac: fingerprint
+                .0
+                .strip_prefix("net:")
+                .filter(|value| !value.starts_with("wled:"))
+                .unwrap_or_default()
+                .to_owned(),
+            name,
+            led_count: u16::try_from(led_count).unwrap_or(u16::MAX),
+            rgbw: target.rgbw.unwrap_or(false),
+            max_segments: 1,
+            fps,
+            power_draw_ma: 0,
+            max_power_ma: 0,
+            free_heap: 0,
+            uptime_secs: 0,
+            arch: "unknown".to_owned(),
+            is_wifi: true,
+            effect_count: 0,
+            palette_count: 0,
+        },
+    ))
 }
 
 fn audio_source_from_device(device: &str) -> AudioSourceType {

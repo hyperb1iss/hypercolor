@@ -11,7 +11,7 @@ use std::time::Duration;
 use anyhow::Context;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::device::wled::WledScanner;
+use hypercolor_core::device::wled::{WledKnownTarget, WledScanner};
 use hypercolor_core::device::{
     AsyncWriteFailure, BackendIo, BackendManager, DeviceLifecycleManager, DeviceRegistry,
     DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction, ScannerScanReport, SmBusScanner,
@@ -219,6 +219,69 @@ pub async fn resolve_wled_probe_ips(
     resolved
 }
 
+/// Resolve the WLED targets that discovery should probe, including cached
+/// identity hints for friendly fallback labels when HTTP enrichment fails.
+pub async fn resolve_wled_probe_targets(
+    device_registry: &DeviceRegistry,
+    config: &HypercolorConfig,
+    runtime_state_path: &std::path::Path,
+) -> Vec<WledKnownTarget> {
+    let mut known_targets: HashMap<IpAddr, WledKnownTarget> = config
+        .wled
+        .known_ips
+        .iter()
+        .copied()
+        .map(WledKnownTarget::from_ip)
+        .map(|target| (target.ip, target))
+        .collect();
+
+    match runtime_state::load_wled_probe_ips(runtime_state_path) {
+        Ok(cached_ips) => {
+            for ip in cached_ips {
+                known_targets
+                    .entry(ip)
+                    .or_insert_with(|| WledKnownTarget::from_ip(ip));
+            }
+        }
+        Err(error) => {
+            warn!(
+                path = %runtime_state_path.display(),
+                %error,
+                "failed to load cached WLED probe IPs; ignoring persisted runtime cache"
+            );
+        }
+    }
+
+    match runtime_state::load_wled_probe_targets(runtime_state_path) {
+        Ok(cached_targets) => {
+            for target in cached_targets {
+                known_targets
+                    .entry(target.ip)
+                    .and_modify(|existing| existing.merge_from(&target))
+                    .or_insert(target);
+            }
+        }
+        Err(error) => {
+            warn!(
+                path = %runtime_state_path.display(),
+                %error,
+                "failed to load cached WLED probe targets; ignoring persisted runtime cache"
+            );
+        }
+    }
+
+    for target in runtime_state::collect_wled_probe_targets(device_registry).await {
+        known_targets
+            .entry(target.ip)
+            .and_modify(|existing| existing.merge_from(&target))
+            .or_insert(target);
+    }
+
+    let mut resolved: Vec<WledKnownTarget> = known_targets.into_values().collect();
+    resolved.sort_by_key(|target| target.ip);
+    resolved
+}
+
 /// Resolve and validate requested discovery backends against configuration.
 ///
 /// Returns backend identifiers in a deterministic order with duplicates removed.
@@ -343,14 +406,14 @@ pub async fn execute_discovery_scan(
     for backend in backends {
         match backend {
             DiscoveryBackend::Wled => {
-                let known_ips = resolve_wled_probe_ips(
+                let known_targets = resolve_wled_probe_targets(
                     &runtime.device_registry,
                     config.as_ref(),
                     &runtime.runtime_state_path,
                 )
                 .await;
-                orchestrator.add_scanner(Box::new(WledScanner::with_known_ips(
-                    known_ips,
+                orchestrator.add_scanner(Box::new(WledScanner::with_known_targets(
+                    known_targets,
                     config.discovery.mdns_enabled,
                     timeout,
                 )));

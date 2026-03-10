@@ -22,7 +22,7 @@ pub use e131::{
     E131_PIXELS_PER_UNIVERSE_RGB, E131_PIXELS_PER_UNIVERSE_RGBW, E131Packet, E131SequenceTracker,
     universes_needed,
 };
-pub use scanner::WledScanner;
+pub use scanner::{WledKnownTarget, WledScanner};
 
 use std::net::IpAddr;
 use std::time::Duration;

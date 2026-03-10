@@ -79,3 +79,34 @@ fn save_and_load_roundtrip_preserves_layouts() {
     assert_eq!(restored.canvas_width, layout.canvas_width);
     assert_eq!(restored.canvas_height, layout.canvas_height);
 }
+
+#[test]
+fn ensure_default_layout_inserts_missing_default_entry_once() {
+    let layout = sample_layout();
+    let default_layout = SpatialLayout {
+        id: "default".into(),
+        name: "Default Layout".into(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![],
+        groups: vec![],
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    let mut store = HashMap::new();
+    store.insert(layout.id.clone(), layout);
+
+    assert!(layout_store::ensure_default_layout(
+        &mut store,
+        &default_layout
+    ));
+    assert!(store.contains_key("default"));
+    assert!(!layout_store::ensure_default_layout(
+        &mut store,
+        &default_layout
+    ));
+    assert_eq!(store.len(), 2);
+}

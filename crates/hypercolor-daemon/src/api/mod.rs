@@ -379,6 +379,8 @@ pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
     }
     snapshot.global_brightness = current_global_brightness(&state.power_state);
     snapshot.wled_probe_ips = runtime_state::collect_wled_probe_ips(&state.device_registry).await;
+    snapshot.wled_probe_targets =
+        runtime_state::collect_wled_probe_targets(&state.device_registry).await;
 
     if let Err(error) = runtime_state::save(&state.runtime_state_path, &snapshot) {
         warn!(
