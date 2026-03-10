@@ -572,6 +572,94 @@ async fn automatic_display_output_drops_stale_frames_for_slow_displays() {
 }
 
 #[tokio::test]
+async fn automatic_display_output_uses_latest_pending_frame_for_paced_writes() {
+    let event_bus = Arc::new(HypercolorBus::new());
+    let device_registry = DeviceRegistry::new();
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(layout_with_zones(vec![]))));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let display_writes = Arc::new(Mutex::new(Vec::new()));
+    let device_id = DeviceId::new();
+
+    {
+        let mut spatial = spatial_engine.write().await;
+        spatial.update_layout(layout_with_zones(vec![display_zone(
+            &format!("device:{device_id}"),
+            NormalizedPosition::new(0.5, 0.5),
+            NormalizedPosition::new(1.0, 1.0),
+        )]));
+    }
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(RecordingDisplayBackend::new(
+        device_id,
+        Arc::clone(&display_writes),
+    )));
+    backend_manager
+        .connect_device("usb", device_id, "corsair:test-display")
+        .await
+        .expect("backend should connect");
+
+    let tracked_id = device_registry
+        .add(display_device_info(device_id, true, 320, 200, false))
+        .await;
+    assert_eq!(tracked_id, device_id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Active)
+            .await
+    );
+
+    let mut thread = DisplayOutputThread::spawn(DisplayOutputState {
+        backend_manager: Arc::new(Mutex::new(backend_manager)),
+        device_registry: device_registry.clone(),
+        spatial_engine: Arc::clone(&spatial_engine),
+        logical_devices: Arc::clone(&logical_devices),
+        event_bus: Arc::clone(&event_bus),
+    });
+
+    let red = solid_canvas(Rgba::new(255, 0, 0, 255));
+    let green = solid_canvas(Rgba::new(0, 255, 0, 255));
+    let blue = solid_canvas(Rgba::new(0, 0, 255, 255));
+
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&red, 1, 16));
+    let writes = wait_for_display_write_count(&display_writes, 1).await;
+    let first_image = decode_jpeg(
+        writes
+            .first()
+            .expect("expected initial paced display frame"),
+    );
+    let first_pixel = first_image.get_pixel(first_image.width() / 2, first_image.height() / 2);
+    assert!(
+        first_pixel[0] > 200,
+        "expected first paced frame to be red, got {first_pixel:?}"
+    );
+
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&green, 2, 32));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let _ = event_bus
+        .canvas_sender()
+        .send(CanvasFrame::from_canvas(&blue, 3, 48));
+
+    let writes = wait_for_display_write_count(&display_writes, 2).await;
+    let second_image = decode_jpeg(writes.last().expect("expected second paced display frame"));
+    let second_pixel = second_image.get_pixel(second_image.width() / 2, second_image.height() / 2);
+    assert!(
+        second_pixel[2] > 200,
+        "expected paced display update to use the latest pending blue frame, got {second_pixel:?}"
+    );
+    assert!(
+        second_pixel[1] < 80,
+        "expected stale green frame to be superseded before the paced write, got {second_pixel:?}"
+    );
+
+    thread.shutdown().await.expect("display thread should stop");
+}
+
+#[tokio::test]
 async fn automatic_display_output_skips_unchanged_frames() {
     let event_bus = Arc::new(HypercolorBus::new());
     let device_registry = DeviceRegistry::new();

@@ -15,7 +15,6 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
-use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{debug, trace, warn};
 
 use hypercolor_types::device::{DeviceId, DeviceInfo, ZoneInfo};
@@ -376,23 +375,37 @@ impl OutputQueue {
         let metrics_for_task = Arc::clone(&metrics);
 
         let io_task = tokio::spawn(async move {
-            let mut interval = interval_for_target_fps(target_fps);
-
+            let send_interval = target_interval_for_fps(target_fps);
+            let mut next_send_at = Instant::now();
             let mut last_sent_sequence = 0_u64;
+            let mut pending = None::<Arc<FramePayload>>;
 
             loop {
-                // Sender dropped => manager shutdown or queue removed.
-                if rx.changed().await.is_err() {
-                    break;
+                if pending.is_none() {
+                    // Sender dropped => manager shutdown or queue removed.
+                    if rx.changed().await.is_err() {
+                        break;
+                    }
+                    pending = rx.borrow_and_update().clone();
+                    continue;
                 }
 
-                let Some(frame) = rx.borrow_and_update().clone() else {
+                if send_interval.is_some() {
+                    tokio::select! {
+                        changed = rx.changed() => {
+                            if changed.is_err() {
+                                break;
+                            }
+                            pending = rx.borrow_and_update().clone();
+                            continue;
+                        }
+                        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(next_send_at)) => {}
+                    }
+                }
+
+                let Some(frame) = pending.take() else {
                     continue;
                 };
-
-                if let Some(ref mut limiter) = interval {
-                    limiter.tick().await;
-                }
 
                 if frame.sequence > last_sent_sequence + 1 {
                     let dropped = frame.sequence - last_sent_sequence - 1;
@@ -440,6 +453,10 @@ impl OutputQueue {
                 }
 
                 last_sent_sequence = frame.sequence;
+
+                if let Some(interval) = send_interval {
+                    next_send_at = advance_deadline(next_send_at, interval, Instant::now());
+                }
             }
         });
 
@@ -1447,14 +1464,19 @@ fn scale_channel(channel: u8, factor: u16) -> u8 {
     u8::try_from(scaled).expect("scaled brightness channel should remain within byte range")
 }
 
-fn interval_for_target_fps(target_fps: u32) -> Option<Interval> {
+fn target_interval_for_fps(target_fps: u32) -> Option<Duration> {
     if target_fps == 0 {
         return None;
     }
 
-    let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(target_fps)));
-    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    Some(interval)
+    Some(Duration::from_secs_f64(1.0 / f64::from(target_fps)))
+}
+
+fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant) -> Instant {
+    previous_deadline
+        .checked_add(interval)
+        .unwrap_or(now)
+        .max(now)
 }
 
 fn remap_zone_colors<'a>(

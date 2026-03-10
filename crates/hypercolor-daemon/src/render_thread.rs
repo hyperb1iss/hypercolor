@@ -11,7 +11,7 @@
 //!     BackendManager::write_frame()   // push to hardware
 //!     HypercolorBus::publish()        // notify subscribers
 //!     RenderLoop::frame_complete()    // measure + adapt FPS tier
-//!     sleep(headroom)                 // pace to target FPS
+//!     sleep_until(next_deadline)      // pace to target FPS
 //! }
 //! ```
 
@@ -188,8 +188,16 @@ impl SkipDecision {
 
 /// Result of executing one frame through the pipeline stages.
 struct FrameExecution {
-    headroom: Duration,
+    next_wake: NextWake,
     next_skip_decision: SkipDecision,
+}
+
+/// Scheduler decision for when the next render iteration should begin.
+enum NextWake {
+    /// Continue on the regular render cadence using the current FPS interval.
+    Interval(Duration),
+    /// Hold the loop for a fixed delay before checking again.
+    Delay(Duration),
 }
 
 /// Sleep duration when the pipeline is fully idle.
@@ -232,8 +240,15 @@ async fn run_pipeline(state: RenderThreadState) {
     let mut last_tick = Instant::now();
     let mut idle_black_pushed = false;
     let mut sleep_black_pushed = false;
+    let mut next_frame_at = Instant::now();
 
     loop {
+        let now = Instant::now();
+        let scheduled_start = next_frame_at.max(now);
+        if next_frame_at > now {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(next_frame_at)).await;
+        }
+
         // ── Timing gate ─────────────────────────────────────────────
         let should_render = {
             let mut rl = state.render_loop.write().await;
@@ -249,6 +264,7 @@ async fn run_pipeline(state: RenderThreadState) {
 
             if loop_state == hypercolor_core::engine::RenderLoopState::Paused {
                 // Paused — yield and retry.
+                next_frame_at = Instant::now();
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 continue;
             }
@@ -269,13 +285,24 @@ async fn run_pipeline(state: RenderThreadState) {
         )
         .await;
         skip_decision = frame.next_skip_decision;
-
-        if !frame.headroom.is_zero() {
-            tokio::time::sleep(frame.headroom).await;
-        }
+        next_frame_at = match frame.next_wake {
+            NextWake::Interval(interval) => {
+                advance_deadline(scheduled_start, interval, Instant::now())
+            }
+            NextWake::Delay(delay) => Instant::now()
+                .checked_add(delay)
+                .unwrap_or_else(Instant::now),
+        };
     }
 
     info!("render pipeline exited");
+}
+
+fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant) -> Instant {
+    previous_deadline
+        .checked_add(interval)
+        .unwrap_or(now)
+        .max(now)
 }
 
 #[expect(
@@ -409,14 +436,14 @@ async fn execute_frame(
         "frame complete"
     );
 
-    let (headroom, next_skip_decision) = {
+    let (next_wake, next_skip_decision) = {
         let mut rl = state.render_loop.write().await;
         match rl.frame_complete() {
             Some(frame_stats) => (
-                frame_stats.headroom,
+                NextWake::Interval(rl.target_interval()),
                 SkipDecision::from_frame_stats(&frame_stats),
             ),
-            None => (Duration::ZERO, SkipDecision::None),
+            None => (NextWake::Delay(Duration::ZERO), SkipDecision::None),
         }
     };
 
@@ -425,7 +452,7 @@ async fn execute_frame(
     }
 
     FrameExecution {
-        headroom,
+        next_wake,
         next_skip_decision,
     }
 }
@@ -486,7 +513,7 @@ async fn maybe_idle_throttle(
         }
 
         return Some(FrameExecution {
-            headroom: IDLE_THROTTLE_SLEEP,
+            next_wake: NextWake::Delay(IDLE_THROTTLE_SLEEP),
             next_skip_decision: SkipDecision::None,
         });
     }
@@ -512,7 +539,7 @@ async fn maybe_sleep_throttle(
         }
 
         return Some(FrameExecution {
-            headroom: SESSION_SLEEP_THROTTLE_SLEEP,
+            next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
             next_skip_decision: SkipDecision::None,
         });
     }
@@ -579,7 +606,7 @@ async fn maybe_sleep_throttle(
 
     *sleep_black_pushed = true;
     Some(FrameExecution {
-        headroom: SESSION_SLEEP_THROTTLE_SLEEP,
+        next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
         next_skip_decision: SkipDecision::None,
     })
 }
@@ -909,6 +936,26 @@ mod tests {
     fn micros_u32_saturates_large_duration() {
         let very_large = Duration::from_secs(u64::MAX);
         assert_eq!(micros_u32(very_large), u32::MAX);
+    }
+
+    #[test]
+    fn advance_deadline_preserves_phase_when_scheduler_wakes_late() {
+        let start = Instant::now();
+        let late_now = start + Duration::from_millis(18);
+
+        let next = advance_deadline(start, Duration::from_millis(16), late_now);
+
+        assert_eq!(next, late_now);
+    }
+
+    #[test]
+    fn advance_deadline_keeps_regular_cadence_when_on_time() {
+        let start = Instant::now();
+        let now = start + Duration::from_millis(8);
+
+        let next = advance_deadline(start, Duration::from_millis(16), now);
+
+        assert_eq!(next, start + Duration::from_millis(16));
     }
 
     #[test]

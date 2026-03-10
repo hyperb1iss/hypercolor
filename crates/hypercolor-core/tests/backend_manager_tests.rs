@@ -2076,3 +2076,70 @@ async fn write_frame_uses_interval_pacing_for_cached_target_fps() {
     assert_eq!(queue.target_fps, 10);
     assert_eq!(queue.frames_sent, 2);
 }
+
+#[tokio::test]
+async fn write_frame_sends_latest_pending_payload_at_paced_deadline() {
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::ZERO,
+        Arc::clone(&writes),
+        Arc::clone(&write_count),
+    )
+    .with_target_fps(10);
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager
+        .connect_device("slow", device_id, "slow:latest")
+        .await
+        .expect("connect should succeed");
+
+    let layout = make_layout(vec![make_zone("zone_0", "slow:latest", 4)]);
+    let red = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[255, 0, 0]; 4],
+    }];
+    let green = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[0, 255, 0]; 4],
+    }];
+    let blue = vec![ZoneColors {
+        zone_id: "zone_0".into(),
+        colors: vec![[0, 0, 255]; 4],
+    }];
+
+    manager.write_frame(&red, &layout).await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while write_count.load(Ordering::Relaxed) < 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("first paced write should complete");
+
+    manager.write_frame(&green, &layout).await;
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    manager.write_frame(&blue, &layout).await;
+
+    tokio::time::sleep(Duration::from_millis(160)).await;
+
+    let writes = writes.lock().await.clone();
+    assert!(
+        writes.len() >= 2,
+        "expected paced queue to deliver the initial frame and one follow-up write"
+    );
+    assert_eq!(writes[0][0], [255, 0, 0]);
+    assert_eq!(
+        writes[1][0],
+        [0, 0, 255],
+        "paced send should use the freshest pending payload at the send deadline"
+    );
+    assert!(
+        !writes[1..].iter().any(|frame| frame[0] == [0, 255, 0]),
+        "older pending payloads should be superseded before the paced write fires"
+    );
+}

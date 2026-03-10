@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Mutex, RwLock, oneshot, watch};
 use tokio::task::JoinHandle;
-use tokio::time::{Interval, MissedTickBehavior};
 use tracing::{debug, info, trace, warn};
 use turbojpeg::{
     Compressor as TurboJpegCompressor, Image as TurboJpegImage,
@@ -428,7 +427,8 @@ async fn run_display_worker(
     target_fps: u32,
     mut rx: watch::Receiver<Option<Arc<DisplayWorkItem>>>,
 ) {
-    let mut interval = interval_for_target_fps(target_fps);
+    let send_interval = target_interval_for_fps(target_fps);
+    let mut next_send_at = Instant::now();
     let mut last_warned_at = None::<Instant>;
     let mut last_delivered_input = None::<DisplayFrameInputState>;
     let mut encode_state = match DisplayEncodeState::new() {
@@ -443,19 +443,33 @@ async fn run_display_worker(
             return;
         }
     };
+    let mut pending = None::<Arc<DisplayWorkItem>>;
 
     loop {
-        if rx.changed().await.is_err() {
-            break;
+        if pending.is_none() {
+            if rx.changed().await.is_err() {
+                break;
+            }
+            pending = rx.borrow_and_update().clone();
+            continue;
         }
 
-        let Some(work) = rx.borrow_and_update().clone() else {
+        if send_interval.is_some() {
+            tokio::select! {
+                changed = rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    pending = rx.borrow_and_update().clone();
+                    continue;
+                }
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(next_send_at)) => {}
+            }
+        }
+
+        let Some(work) = pending.take() else {
             continue;
         };
-
-        if let Some(ref mut limiter) = interval {
-            limiter.tick().await;
-        }
 
         let source = work.source.clone();
         let viewport = work.target.viewport.clone();
@@ -548,6 +562,10 @@ async fn run_display_worker(
             target_fps,
             "display frame delivered"
         );
+
+        if let Some(interval) = send_interval {
+            next_send_at = advance_deadline(next_send_at, interval, Instant::now());
+        }
     }
 }
 
@@ -555,14 +573,19 @@ fn display_worker_key(target: &DisplayTarget) -> DisplayWorkerKey {
     (target.backend_id.clone(), target.device_id)
 }
 
-fn interval_for_target_fps(target_fps: u32) -> Option<Interval> {
+fn target_interval_for_fps(target_fps: u32) -> Option<Duration> {
     if target_fps == 0 {
         return None;
     }
 
-    let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(target_fps)));
-    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    Some(interval)
+    Some(Duration::from_secs_f64(1.0 / f64::from(target_fps)))
+}
+
+fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant) -> Instant {
+    previous_deadline
+        .checked_add(interval)
+        .unwrap_or(now)
+        .max(now)
 }
 
 async fn display_targets(
