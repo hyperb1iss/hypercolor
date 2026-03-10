@@ -158,12 +158,16 @@ fn seeded_push2_layout_creates_grouped_device_footprint() {
             let octave_up = positions[16];
             let page_left = positions[19];
             let page_right = positions[20];
+            let select = positions[9];
+            let shift = positions[10];
 
             assert!(repeat.y < scale.y && scale.y < note.y);
             assert!(accent.y < layout.y && layout.y < session.y);
             assert!(repeat.x < accent.x);
             assert!(scale.x < layout.x);
             assert!(note.x < session.x);
+            assert!((select.y - shift.y).abs() < 0.05);
+            assert!(shift.x < select.x);
             assert!(octave_up.y < page_left.y);
             assert!(octave_down.y > page_left.y);
             assert!(page_left.x < octave_up.x && octave_up.x < page_right.x);
