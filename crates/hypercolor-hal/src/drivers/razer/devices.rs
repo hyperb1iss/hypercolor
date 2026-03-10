@@ -54,6 +54,9 @@ pub const PID_SEIREN_V3_CHROMA: u16 = 0x056F;
 /// Razer Blade 14 (2021).
 pub const PID_BLADE_14_2021: u16 = 0x0270;
 
+/// Razer Blade Pro (2016).
+pub const PID_BLADE_PRO_2016: u16 = 0x0210;
+
 /// Razer Blade 15 (Late 2021 Advanced).
 pub const PID_BLADE_15_LATE_2021_ADVANCED: u16 = 0x0276;
 
@@ -186,6 +189,23 @@ pub fn build_blade_14_2021_protocol() -> Box<dyn Protocol> {
         .with_frame_transaction_id(0xFF)
         .with_write_only_frame_uploads()
         .with_device_mode_keepalive(Duration::from_millis(2_500)),
+    )
+}
+
+/// Build a Blade Pro (2016) protocol instance.
+pub fn build_blade_pro_2016_protocol() -> Box<dyn Protocol> {
+    Box::new(
+        RazerProtocol::new(
+            RazerProtocolVersion::Legacy,
+            RazerLightingCommandSet::Standard,
+            RazerMatrixType::Standard,
+            (6, 25),
+            LED_ID_BACKLIGHT,
+        )
+        .without_device_mode_commands()
+        .with_standard_storage(VARSTORE)
+        .with_frame_transaction_id(0x80)
+        .with_write_only_frame_uploads(),
     )
 }
 
@@ -941,6 +961,12 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         build_blade_14_2021_protocol,
     ));
     descriptors.push(control_descriptor(
+        PID_BLADE_PRO_2016,
+        "Razer Blade Pro (2016)",
+        "razer/blade-pro-2016",
+        build_blade_pro_2016_protocol,
+    ));
+    descriptors.push(control_descriptor(
         PID_BLADE_15_LATE_2021_ADVANCED,
         "Razer Blade 15 (Late 2021 Advanced)",
         "razer/blade-15-late-2021-advanced",
@@ -992,7 +1018,6 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         "razer/matrix-standard-3f-laptop-6x25",
         build_matrix_standard_extended_6x25_laptop_protocol,
         &[
-            (0x0210, "Razer Blade Pro (2016)"),
             (0x0225, "Razer Blade Pro (2017)"),
             (0x022F, "Razer Blade Pro (2017 FullHD)"),
         ],

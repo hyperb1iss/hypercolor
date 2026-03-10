@@ -2,8 +2,8 @@ use hypercolor_hal::drivers::razer::{
     LED_ID_BACKLIGHT, LED_ID_LOGO, RAZER_REPORT_LEN, RazerLightingCommandSet, RazerMatrixType,
     RazerProtocol, RazerProtocolVersion, RazerReport, build_basilisk_v3_protocol,
     build_blade_14_2021_protocol, build_blade_15_late_2021_advanced_protocol,
-    build_huntsman_v2_protocol, build_mamba_elite_protocol, build_seiren_v3_protocol,
-    build_tartarus_chroma_protocol, razer_crc,
+    build_blade_pro_2016_protocol, build_huntsman_v2_protocol, build_mamba_elite_protocol,
+    build_seiren_v3_protocol, build_tartarus_chroma_protocol, razer_crc,
 };
 use hypercolor_hal::protocol::{Protocol, ProtocolError, ResponseStatus};
 use hypercolor_types::device::DeviceTopologyHint;
@@ -434,6 +434,49 @@ fn blade_protocol_matches_uchroma_laptop_path() {
     assert_eq!(brightness[0].data[8], 0x01);
     assert_eq!(brightness[0].data[9], 0x05);
     assert_eq!(brightness[0].data[10], 0x7F);
+}
+
+#[test]
+fn blade_pro_2016_protocol_uses_0x80_frame_uploads() {
+    let protocol = build_blade_pro_2016_protocol();
+
+    assert_eq!(protocol.name(), "Razer Legacy");
+    assert!(protocol.init_sequence().is_empty());
+    assert!(protocol.shutdown_sequence().is_empty());
+
+    let colors = vec![[0x12, 0x34, 0x56]; 6 * 25];
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 13, "12 row chunks + custom-mode activation");
+    assert!(
+        commands[..12]
+            .iter()
+            .all(|command| !command.expects_response)
+    );
+    assert!(commands[12].expects_response);
+
+    let first_chunk = &commands[0].data;
+    assert_eq!(first_chunk[1], 0x80);
+    assert_eq!(first_chunk[6], 0x03);
+    assert_eq!(first_chunk[7], 0x0B);
+    assert_eq!(first_chunk[8], 0xFF);
+    assert_eq!(first_chunk[9], 0x00);
+    assert_eq!(first_chunk[10], 0x00);
+    assert_eq!(first_chunk[11], 0x15);
+
+    let second_chunk = &commands[1].data;
+    assert_eq!(second_chunk[1], 0x80);
+    assert_eq!(second_chunk[6], 0x03);
+    assert_eq!(second_chunk[7], 0x0B);
+    assert_eq!(second_chunk[9], 0x00);
+    assert_eq!(second_chunk[10], 0x16);
+    assert_eq!(second_chunk[11], 0x18);
+
+    let activation = &commands[12].data;
+    assert_eq!(activation[1], 0xFF);
+    assert_eq!(activation[6], 0x03);
+    assert_eq!(activation[7], 0x0A);
+    assert_eq!(activation[8], 0x05);
+    assert_eq!(activation[9], 0x01);
 }
 
 #[test]

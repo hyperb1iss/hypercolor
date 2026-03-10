@@ -14,8 +14,8 @@ use hypercolor_hal::drivers::prismrgb::{
 };
 use hypercolor_hal::drivers::razer::{
     PID_BASILISK_V3, PID_BLADE_14_2021, PID_BLADE_14_2023, PID_BLADE_15_2022,
-    PID_BLADE_15_LATE_2021_ADVANCED, PID_HUNTSMAN_V2, PID_MAMBA_ELITE, PID_SEIREN_EMOTE,
-    PID_SEIREN_V3_CHROMA, PID_TARTARUS_CHROMA, RAZER_VENDOR_ID,
+    PID_BLADE_15_LATE_2021_ADVANCED, PID_BLADE_PRO_2016, PID_HUNTSMAN_V2, PID_MAMBA_ELITE,
+    PID_SEIREN_EMOTE, PID_SEIREN_V3_CHROMA, PID_TARTARUS_CHROMA, RAZER_VENDOR_ID,
 };
 use hypercolor_hal::registry::{HidRawReportMode, TransportType};
 use hypercolor_types::device::{DeviceFamily, DeviceTopologyHint};
@@ -401,6 +401,28 @@ fn lookup_returns_blade_14_2021_descriptor_with_keepalive() {
     let protocol = (descriptor.protocol.build)();
     assert_eq!(protocol.name(), "Razer 0x3F Standard");
     assert!(protocol.keepalive().is_some());
+}
+
+#[test]
+fn lookup_returns_blade_pro_2016_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(RAZER_VENDOR_ID, PID_BLADE_PRO_2016)
+        .expect("Blade Pro (2016) descriptor should exist");
+
+    assert_eq!(descriptor.name, "Razer Blade Pro (2016)");
+    assert_eq!(descriptor.protocol.id, "razer/blade-pro-2016");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbControl {
+            interface: 2,
+            report_id: 0x00
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Razer Legacy");
+    assert_eq!(protocol.total_leds(), 150);
+    assert!(protocol.init_sequence().is_empty());
+    assert!(protocol.shutdown_sequence().is_empty());
 }
 
 #[test]
