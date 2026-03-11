@@ -29,6 +29,7 @@ uniform float iAudioLevelSmooth;
 uniform float iAudioBassSmooth;
 uniform float iAudioMidSmooth;
 uniform float iAudioTrebleSmooth;
+uniform float iMotionEnergy;
 uniform float iMotionPulse;
 uniform vec2 iMotionPan;
 uniform float iMotionZoom;
@@ -52,6 +53,7 @@ float levelEnv()  { return clamp(iAudioLevelSmooth, 0.0, 1.0); }
 float bassEnv()   { return clamp(iAudioBassSmooth, 0.0, 1.0); }
 float midEnv()    { return clamp(iAudioMidSmooth, 0.0, 1.0); }
 float trebleEnv() { return clamp(iAudioTrebleSmooth, 0.0, 1.0); }
+float motionEnergy() { return clamp(iMotionEnergy, 0.0, 1.0); }
 float motionPulse() { return clamp(iMotionPulse, 0.0, 1.0); }
 
 // Interpolate bass/mid/treble into a pseudo-spectrum
@@ -116,6 +118,7 @@ vec3 scheme(vec3 id, float t) {
 
 vec3 pulseFieldStyle(vec2 uv, float time) {
     float v = vol();
+    float energy = motionEnergy();
     float pulse = motionPulse();
     float swell = clamp(iAudioSwell * 0.65 + pulse * 0.25, 0.0, 1.0);
     float momentum = clamp(iAudioMomentum * 0.8, -1.0, 1.0);
@@ -127,20 +130,20 @@ vec3 pulseFieldStyle(vec2 uv, float time) {
     float zoom = max(iMotionZoom, 0.82);
 
     // Flow direction with audio momentum
-    float totalFlow = clamp(fl + momentum * 0.32, -1.5, 1.5);
+    float totalFlow = clamp(fl + momentum * 0.42 + pulse * 0.12 * sign(fl + momentum + 0.001), -1.8, 1.8);
     float travelDir = totalFlow >= 0.0 ? -1.0 : 1.0;
 
     // Camera — audio drives position and speed
-    float drift = time * totalFlow * (1.0 + swell * 0.75 + v * 0.25) + iFlowDrift * 2.8;
+    float drift = time * totalFlow * (1.2 + swell * 0.95 + v * 0.35 + energy * 0.55 + pulse * 0.3) + iFlowDrift * 3.4;
     vec3 ro = vec3(
-        sin(time * 0.20 + iWarpPhase * 0.22) * (0.7 + swell * 0.22 + v * 0.14) + iMotionPan.x * 2.2,
-        cos(time * 0.17 - iWarpPhase * 0.18) * (0.58 + mid * 0.12) + iMotionPan.y * 1.9,
-        drift + travelDir * (0.45 + bass * 0.65 + pulse * 0.18)
+        sin(time * 0.20 + iWarpPhase * 0.22) * (0.82 + swell * 0.32 + v * 0.18 + energy * 0.26 + pulse * 0.18) + iMotionPan.x * 3.1,
+        cos(time * 0.17 - iWarpPhase * 0.18) * (0.64 + mid * 0.18 + energy * 0.18) + iMotionPan.y * 2.6,
+        drift + travelDir * (0.58 + bass * 0.92 + pulse * 0.42 + energy * 0.28)
     );
 
-    vec2 view = (uv + iMotionPan * 0.16) * (0.82 / zoom);
-    vec3 rd = normalize(vec3(view, 0.94 + bass * 0.12 + v * 0.06));
-    rd.xy = rot2(time * 0.05 + iMotionTwist * 0.55 + momentum * 0.12) * rd.xy;
+    vec2 view = (uv + iMotionPan * 0.22) * ((0.78 - energy * 0.06) / zoom);
+    vec3 rd = normalize(vec3(view, 0.9 + bass * 0.18 + v * 0.1 + pulse * 0.08));
+    rd.xy = rot2(time * 0.06 + iMotionTwist * 0.72 + momentum * 0.16 + energy * 0.08) * rd.xy;
 
     vec3 col = vec3(0.0);
     float travel = 0.0;
@@ -150,8 +153,8 @@ vec3 pulseFieldStyle(vec2 uv, float time) {
 
         // Subtle flow field distortion
         float sw = time * 0.15 + iWarpPhase * 0.5 + dot(p, vec3(0.05, 0.07, 0.09));
-        p += vec3(sin(sw), cos(sw + iWarpPhase * 0.35), 0.0) * (0.08 + abs(totalFlow) * 0.09 + pulse * 0.04);
-        p.z += bass * 0.1 + sin(iWarpPhase + p.x * 0.4) * 0.05;
+        p += vec3(sin(sw), cos(sw + iWarpPhase * 0.35), 0.0) * (0.1 + abs(totalFlow) * 0.12 + energy * 0.06 + pulse * 0.08);
+        p.z += bass * 0.14 + sin(iWarpPhase + p.x * 0.4) * (0.05 + energy * 0.03 + pulse * 0.02);
 
         vec3 cell = floor(p);
         vec3 local = fract(p) - 0.5;
@@ -159,7 +162,7 @@ vec3 pulseFieldStyle(vec2 uv, float time) {
         // Per-cell audio: drives SIZE
         float freqIdx = fract(dot(cell, vec3(0.31, 0.21, 0.13)) * 0.25);
         float amp = pitch(freqIdx, 1.0 + v * 0.3);
-        float size = 0.19 + amp * 0.18 + mid * 0.05 + pulse * 0.025;
+        float size = 0.18 + amp * 0.22 + mid * 0.08 + pulse * 0.04 + energy * 0.03;
 
         float d = sdBox(local, vec3(size));
         float dist = max(d, 0.0);
@@ -167,9 +170,9 @@ vec3 pulseFieldStyle(vec2 uv, float time) {
         // Glow from SDF distance — brightness is geometric, not audio-driven
         float sparkle = exp(-dist * 18.0) / (0.7 + dist * 30.0);
         vec3 sc = scheme(cell + vec3(0.0, 0.0, drift * 0.25), time * cs * 0.5 + freqIdx * 2.0);
-        col += sc * sparkle * 0.1 * g * 0.46;
+        col += sc * sparkle * 0.1 * g * (0.46 + energy * 0.08);
 
-        travel += max(abs(d), 0.04);
+        travel += max(abs(d), 0.038) / (1.0 + energy * 0.12 + pulse * 0.08);
         if (travel > 34.0) break;
     }
 
@@ -182,6 +185,7 @@ vec3 pulseFieldStyle(vec2 uv, float time) {
 
 vec3 gridStyle(vec2 uv, float time) {
     float v = vol();
+    float energy = motionEnergy();
     float pulse = motionPulse();
     float swell = clamp(iAudioSwell * 0.65 + pulse * 0.22, 0.0, 1.0);
     float momentum = clamp(iAudioMomentum * 0.8, -1.0, 1.0);
@@ -190,24 +194,24 @@ vec3 gridStyle(vec2 uv, float time) {
     float g = glowN();
     float zoom = max(iMotionZoom, 0.82);
 
-    float flow = clamp(fl + momentum * 0.35, -1.6, 1.6);
+    float flow = clamp(fl + momentum * 0.42 + pulse * 0.18 * sign(fl + 0.001), -1.8, 1.8);
     float flowDir = flow >= 0.0 ? -1.0 : 1.0;
-    float speed = 1.2 + abs(flow) * 1.3 + swell * 0.65 + v * 0.35;
-    float drive = 0.96 + pulse * 0.12 + bassEnv() * 0.08;
+    float speed = 1.35 + abs(flow) * 1.6 + swell * 0.82 + v * 0.5 + energy * 0.8 + pulse * 0.45;
+    float drive = 0.95 + pulse * 0.24 + bassEnv() * 0.14 + energy * 0.18;
 
-    vec2 view = (uv + iMotionPan * 0.2) * ((0.74 + v * 0.08) / zoom);
+    vec2 view = (uv + iMotionPan * 0.28) * ((0.7 + v * 0.1 + energy * 0.06) / zoom);
     vec3 rd = normalize(vec3(view, flowDir * (1.02 + swell * 0.18)));
-    rd.xy = rot2(time * 0.06 + iMotionTwist * 0.42 + momentum * 0.1) * rd.xy;
+    rd.xy = rot2(time * 0.08 + iMotionTwist * 0.56 + momentum * 0.14 + pulse * 0.08) * rd.xy;
 
-    vec3 ro = vec3(iMotionPan.x * 1.8, iMotionPan.y * 1.5, time * speed * flowDir + iFlowDrift * 2.2);
-    ro.xy += vec2(sin(time * 0.21 + iWarpPhase * 0.25), cos(time * 0.16 - iWarpPhase * 0.2)) * (0.22 + v * 0.14);
-    ro.xy += rot2(time * 0.04) * vec2(momentum * 0.35, swell * 0.22);
+    vec3 ro = vec3(iMotionPan.x * 2.6, iMotionPan.y * 2.2, time * speed * flowDir + iFlowDrift * 2.8);
+    ro.xy += vec2(sin(time * 0.21 + iWarpPhase * 0.25), cos(time * 0.16 - iWarpPhase * 0.2)) * (0.28 + v * 0.18 + energy * 0.12);
+    ro.xy += rot2(time * 0.06 + pulse * 0.25) * vec2(momentum * 0.52 + pulse * 0.18, swell * 0.34 + energy * 0.12);
 
     vec3 col = vec3(0.0);
 
     for (float i = 0.0, t = 0.0; i < 60.0; i++) {
         vec3 p = ro + t * rd;
-        p.xy = rot2(sin(time * 0.04 + p.z * 0.3) * 0.2) * p.xy;
+        p.xy = rot2(sin(time * 0.05 + p.z * 0.32 + pulse * 0.6) * (0.24 + energy * 0.06)) * p.xy;
 
         vec3 id = floor(p);
         vec3 q = fract(p) - 0.5;
@@ -216,19 +220,19 @@ vec3 gridStyle(vec2 uv, float time) {
         float amp = pitch(freqIdx, 1.0 + v * 0.3);
 
         // Audio drives box SIZE
-        float boxSize = 0.22 + amp * 0.18 + pulse * 0.02;
+        float boxSize = 0.2 + amp * 0.22 + pulse * 0.05 + energy * 0.03;
         float d = sdBox(q, vec3(boxSize));
         float fade = exp(-t * 0.05);
 
         // Geometric glow — brightness from SDF distance, not audio amplitude
         float crisp = exp(-max(d, 0.0) * 20.0);
         float edge = smoothstep(0.15, 0.0, abs(d)) * 0.35;
-        float glow = (crisp * 0.75 + edge * 0.35) * 0.45;
+        float glow = (crisp * 0.75 + edge * 0.35) * (0.45 + energy * 0.08);
 
         vec3 sc = scheme(id, time * cs * 0.5 + freqIdx * 3.0);
         col += sc * glow * fade * g * 0.45;
 
-        t += max(abs(d), 0.045) / (drive * (1.0 + abs(flow) * 0.22));
+        t += max(abs(d), 0.042) / (drive * (1.0 + abs(flow) * 0.28 + energy * 0.12 + pulse * 0.08));
         if (t > 35.0) break;
     }
 
@@ -240,6 +244,7 @@ vec3 gridStyle(vec2 uv, float time) {
 // Audio drives wave height and phase — not band brightness.
 
 vec3 waveformStyle(vec2 uv, float time) {
+    float energy = motionEnergy();
     float pulse = motionPulse();
     float swell = clamp(iAudioSwell * 0.7 + pulse * 0.18, 0.0, 1.0);
     float momentum = clamp(iAudioMomentum * 0.85, -1.0, 1.0);
@@ -248,30 +253,30 @@ vec3 waveformStyle(vec2 uv, float time) {
     float g = glowN();
     float zoom = max(iMotionZoom, 0.82);
 
-    vec2 w = uv;
-    w += iMotionPan * vec2(0.42, 0.28);
-    w /= zoom;
-    w.x += time * (fl * 0.4 + momentum * 0.24) + iFlowDrift * 0.32;
-    w.y += sin(iWarpPhase * 0.35) * 0.05;
+    vec2 w = rot2(iMotionTwist * 0.18 + momentum * 0.08) * uv;
+    w += iMotionPan * vec2(0.6, 0.42);
+    w /= max(zoom * (1.0 - energy * 0.08), 0.7);
+    w.x += time * (fl * 0.55 + momentum * 0.32) * (1.0 + energy * 0.35 + pulse * 0.25) + iFlowDrift * 0.42;
+    w.y += sin(iWarpPhase * 0.35 + time * (0.25 + energy * 0.18)) * (0.06 + energy * 0.03);
 
     vec3 col = vec3(0.0);
 
     for (int layer = 0; layer < 4; layer++) {
         float fi = float(layer);
         float layerDepth = 1.0 - fi * 0.22;
-        float layerTime = time * (0.7 + fi * 0.12);
+        float layerTime = time * (0.78 + fi * 0.14) * (1.0 + energy * 0.18 + pulse * 0.12);
         float freqIdx = fract((w.x * 0.35 + layerTime * 0.2) + fi * 0.17);
         float amp = pitch(freqIdx, 1.0 + swell * 0.5 + fi * 0.2);
 
         // Audio drives wave DISPLACEMENT
-        float crest = sin(w.x * (3.1 + fi * 0.65) + layerTime * (1.7 + momentum * 0.12) + iWarpPhase * (0.9 + fi * 0.22));
-        float height = 0.2 + swell * 0.18 + fi * 0.09 + amp * 0.34 + pulse * 0.04;
+        float crest = sin(w.x * (3.1 + fi * 0.7) + layerTime * (1.8 + momentum * 0.16 + energy * 0.2) + iWarpPhase * (0.9 + fi * 0.22));
+        float height = 0.2 + swell * 0.22 + fi * 0.1 + amp * 0.4 + pulse * 0.08 + energy * 0.06;
         float y = crest * height - fi * 0.32;
-        y += sin(w.x * 1.3 + iWarpPhase * 0.7 + fi) * momentum * 0.12;
+        y += sin(w.x * 1.3 + iWarpPhase * 0.7 + fi) * (momentum * 0.16 + energy * 0.04);
 
         // Band glow — stable brightness, audio drives position
-        float band = exp(-abs(w.y - y) * 170.0) * 0.42;
-        float sharp = exp(-abs(w.y - y) * 320.0) * 0.18;
+        float band = exp(-abs(w.y - y) * (150.0 - energy * 20.0 - pulse * 15.0)) * 0.42;
+        float sharp = exp(-abs(w.y - y) * (300.0 - energy * 50.0 - pulse * 30.0)) * 0.18;
 
         vec3 sc = scheme(vec3(fi * 1.5, freqIdx * 10.0, layerTime), time * cs * 0.5 + fi * 0.2);
         col += sc * (band + sharp) * layerDepth * g * 0.7;
@@ -291,6 +296,7 @@ vec3 waveformStyle(vec2 uv, float time) {
 
 vec3 vortexStyle(vec2 uv, float time) {
     float v = vol();
+    float energy = motionEnergy();
     float pulse = motionPulse();
     float swell = clamp(iAudioSwell * 0.7 + pulse * 0.22, 0.0, 1.0);
     float momentum = clamp(iAudioMomentum * 0.82, -1.0, 1.0);
@@ -300,12 +306,12 @@ vec3 vortexStyle(vec2 uv, float time) {
     float g = glowN();
     float zoom = max(iMotionZoom, 0.82);
 
-    float flow = clamp(fl + momentum * 0.5, -1.5, 1.5);
+    float flow = clamp(fl + momentum * 0.56 + pulse * 0.18 * sign(fl + momentum + 0.001), -1.7, 1.7);
     float swirlDir = flow >= 0.0 ? 1.0 : -1.0;
-    float swirlSpeed = 0.35 + abs(flow) * 0.55 + swell * 0.3;
+    float swirlSpeed = 0.42 + abs(flow) * 0.7 + swell * 0.42 + energy * 0.25 + pulse * 0.35;
 
-    vec2 su = rot2(time * swirlSpeed * swirlDir + iMotionTwist * 0.7 + iWarpPhase * 0.18 + v * 0.08)
-            * ((uv + iMotionPan * 0.18) / zoom);
+    vec2 su = rot2(time * swirlSpeed * swirlDir + iMotionTwist * 0.88 + iWarpPhase * 0.24 + v * 0.1 + energy * 0.12)
+            * ((uv + iMotionPan * 0.24) / (zoom * (1.0 + pulse * 0.05)));
     float r = length(su);
     float a = atan(su.y, su.x);
 
@@ -318,15 +324,15 @@ vec3 vortexStyle(vec2 uv, float time) {
         float amp = max(0.05, pitch(freqIdx, 1.0 + trebleEnv() * 0.4 + swell * 0.35));
 
         // Audio drives ring POSITION
-        float ringR = 0.14 + fi * 0.11 + amp * 0.14 + v * 0.06 + bass * 0.05;
-        ringR += sin(time * 0.35 + fi * 0.55 + iWarpPhase * (0.85 + freqIdx * 0.3)) * (0.025 + swell * 0.035);
+        float ringR = 0.12 + fi * 0.11 + amp * 0.18 + v * 0.08 + bass * 0.08 + energy * 0.05;
+        ringR += sin(time * 0.35 + fi * 0.55 + iWarpPhase * (0.85 + freqIdx * 0.3)) * (0.03 + swell * 0.05 + energy * 0.03 + pulse * 0.03);
 
         float spiral = sin(fract(a / TAU + fi * 0.11 - time * swirlSpeed * swirlDir * 0.5) * TAU + flow * 2.0)
-                      * (0.04 + amp * 0.055);
+                      * (0.05 + amp * 0.07 + energy * 0.02);
         float d = abs(r - ringR - spiral);
 
         // Ring glow — stable brightness
-        float ringGlow = exp(-d * d * 140.0) * 0.48;
+        float ringGlow = exp(-d * d * (130.0 - energy * 20.0)) * 0.48;
         ringGlow *= 0.55 + pitch(fract(a / TAU * 10.0 + fi * 0.25 + iFlowDrift * 0.08), 0.78);
 
         vec3 sc = scheme(vec3(fi * 1.2, ringR * 7.0, 0.0), time * cs * 0.5 + freqIdx * 1.8);
@@ -334,16 +340,16 @@ vec3 vortexStyle(vec2 uv, float time) {
     }
 
     // Spiral arms
-    float armPattern = sin(a * 8.0 - time * (1.0 + trebleEnv() * 0.4) + iWarpPhase * 1.2 + flow * 1.4) * 0.5 + 0.5;
+    float armPattern = sin(a * 8.4 - time * (1.1 + trebleEnv() * 0.5 + energy * 0.2) + iWarpPhase * 1.2 + flow * 1.4) * 0.5 + 0.5;
     float armGlow = exp(-abs(armPattern - r * 0.8) * 5.5) * exp(-r * 1.4);
     col += scheme(vec3(8.0, 0.5, 0.0), time * 0.45) * armGlow * 0.4;
 
     // Center glow
-    float center = exp(-r * (3.8 - pulse * 0.2)) * 0.52;
+    float center = exp(-r * (3.6 - pulse * 0.45 - energy * 0.18)) * 0.56;
     col += scheme(vec3(0.0, 3.0, 0.0), time * 0.9) * center * g * 0.6;
 
     // Rim falloff
-    col *= 1.0 - smoothstep(0.6, 1.6, r) * 0.3;
+    col *= 1.0 - smoothstep(0.65, 1.65, r) * 0.25;
 
     return col;
 }

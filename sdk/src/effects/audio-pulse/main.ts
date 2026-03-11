@@ -22,6 +22,28 @@ function smoothAsymmetric(
     return smoothApproach(current, target, lambda, dt)
 }
 
+function springStep(
+    position: number,
+    velocity: number,
+    target: number,
+    stiffness: number,
+    damping: number,
+    dt: number,
+    impulse = 0,
+): [number, number] {
+    const step = Math.max(dt, 0)
+    const nextVelocity =
+        (velocity + ((target - position) * stiffness + impulse) * step) * Math.exp(-Math.max(damping, 0) * step)
+    const nextPosition = position + nextVelocity * step
+    return [nextPosition, nextVelocity]
+}
+
+function clampMotion(position: number, velocity: number, min: number, max: number): [number, number] {
+    if (position < min) return [min, Math.max(0, velocity)]
+    if (position > max) return [max, Math.min(0, velocity)]
+    return [position, velocity]
+}
+
 function hashNoise(x: number, seed: number): number {
     const n = Math.sin(x * 127.1 + seed * 311.7) * 43758.5453
     return (n - Math.floor(n)) * 2.0 - 1.0
@@ -39,8 +61,14 @@ function readNumber(value: unknown, fallback: number): number {
 }
 
 const state = {
+    anticipation: 0,
+    cameraEnergy: 0,
     drift: 0,
+    driftVelocity: 0,
+    impact: 0,
     motionPulse: 0,
+    panVelocityX: 0,
+    panVelocityY: 0,
     panX: 0,
     panY: 0,
     smoothBass: 0,
@@ -51,8 +79,11 @@ const state = {
     smoothSwell: 0,
     smoothTreble: 0,
     twist: 0,
+    twistVelocity: 0,
     warpPhase: 0,
+    warpVelocity: 0,
     zoom: 1,
+    zoomVelocity: 0,
 }
 
 let lastTime = 0
@@ -96,6 +127,8 @@ export default effect(
 
             const audio = ctx.audio
             const flow = clamp(readNumber(ctx.controls.flow, 30) / 100, -1, 1)
+            const fluxBass = audio?.spectralFluxBands[0] ?? 0
+            const fluxMid = audio?.spectralFluxBands[1] ?? 0
 
             const fallbackLevel = 0.06 + (0.5 + 0.5 * Math.sin(time * 0.33)) * 0.05
             const fallbackPulse = Math.max(0, Math.sin(time * 1.15)) ** 6 * 0.16
@@ -109,6 +142,14 @@ export default effect(
                 : fallbackPulse
             const momentumTarget = audio?.momentum ?? Math.sin(time * 0.18) * 0.12
             const swellTarget = audio?.swell ?? fallbackLevel * 0.75
+            const fluxTarget = audio
+                ? Math.max((audio.spectralFlux ?? 0) * 0.62, fluxBass * 0.48, fluxMid * 0.4)
+                : fallbackPulse * 0.75
+            const anticipationTarget = audio
+                ? audio.beatPhase > 0.62
+                    ? ((audio.beatPhase - 0.62) / 0.38) * (0.15 + (audio.beatConfidence ?? 0) * 0.85)
+                    : 0
+                : (0.5 + 0.5 * Math.sin(time * 0.82)) * 0.12
 
             state.smoothLevel = smoothAsymmetric(state.smoothLevel, levelTarget, 5, 1.7, dt)
             state.smoothBass = smoothAsymmetric(state.smoothBass, bassTarget, 6, 1.9, dt)
@@ -117,58 +158,127 @@ export default effect(
             state.smoothOnset = smoothAsymmetric(state.smoothOnset, onsetTarget, 8, 2.1, dt)
             state.smoothMomentum = smoothApproach(state.smoothMomentum, momentumTarget, 1.6, dt)
             state.smoothSwell = smoothApproach(state.smoothSwell, swellTarget, 2.2, dt)
+            state.anticipation = smoothApproach(state.anticipation, anticipationTarget, 3.4, dt)
 
-            const motionPulseTarget = clamp(
-                state.smoothOnset * 0.8 + state.smoothSwell * 0.25 + state.smoothLevel * 0.1,
+            const cameraEnergyTarget = clamp(
+                state.smoothBass * 0.55 +
+                    state.smoothSwell * 0.38 +
+                    state.smoothLevel * 0.22 +
+                    Math.abs(state.smoothMomentum) * 0.18 +
+                    fluxTarget * 0.12,
                 0,
                 1,
             )
-            state.motionPulse = smoothAsymmetric(state.motionPulse, motionPulseTarget, 6, 1.5, dt)
+            state.cameraEnergy = smoothAsymmetric(state.cameraEnergy, cameraEnergyTarget, 4.6, 1.1, dt)
 
-            const wanderRate = 0.12 + Math.abs(flow) * 0.18 + state.smoothLevel * 0.09
-            const wanderTime = time * wanderRate
+            const impactTarget = clamp(
+                state.smoothOnset * 0.95 + fluxTarget * 0.55 + state.smoothBass * 0.22 + state.anticipation * 0.18,
+                0,
+                1,
+            )
+            state.impact = smoothAsymmetric(state.impact, impactTarget, 10, 2.6, dt)
+
+            const motionPulseTarget = clamp(
+                state.impact * (0.72 + state.cameraEnergy * 0.28) + state.smoothSwell * 0.12,
+                0,
+                1,
+            )
+            state.motionPulse = smoothAsymmetric(state.motionPulse, motionPulseTarget, 11, 2.8, dt)
+
+            const wanderRate = 0.16 + Math.abs(flow) * 0.24 + state.cameraEnergy * 0.14 + state.motionPulse * 0.08
+            const wanderAmplitude = 0.12 + state.cameraEnergy * 0.2 + state.motionPulse * 0.12
+            const wanderTime = time * wanderRate + state.drift * 0.08
             const driftX = smoothNoise(wanderTime * 0.82, 1.3)
             const driftY = smoothNoise(wanderTime * 0.67, 8.7)
 
-            const bassPull = (state.smoothBass - 0.2) * 0.22 + state.smoothMomentum * 0.09
-            const treblePull = (state.smoothTreble - 0.16) * 0.16 - state.smoothMomentum * 0.05
-            const panAmplitude = 0.08 + state.smoothLevel * 0.08 + state.smoothSwell * 0.04
+            const bassPull =
+                (state.smoothBass - 0.18) * (0.32 + state.cameraEnergy * 0.18) + state.smoothMomentum * 0.18
+            const treblePull =
+                (state.smoothTreble - 0.15) * (0.24 + state.cameraEnergy * 0.14) - state.smoothMomentum * 0.08
+            const lateralLead = flow * (0.04 + state.motionPulse * 0.12 + state.cameraEnergy * 0.08)
+            const verticalLift = state.anticipation * (0.04 + state.cameraEnergy * 0.03) - state.smoothSwell * 0.08
 
-            const targetPanX = clamp(driftX * panAmplitude + bassPull + flow * state.motionPulse * 0.04, -0.32, 0.32)
-            const targetPanY = clamp(
-                driftY * (panAmplitude * 0.85) + treblePull - state.smoothSwell * 0.05,
-                -0.26,
-                0.26,
+            const targetPanX = clamp(driftX * wanderAmplitude + bassPull + lateralLead, -0.56, 0.56)
+            const targetPanY = clamp(driftY * (wanderAmplitude * 0.92) + treblePull - verticalLift, -0.42, 0.42)
+
+            const panStiffness = 20 + state.cameraEnergy * 16 + state.motionPulse * 12
+            const panDamping = 6.4 - state.cameraEnergy * 0.9
+            const panKickX = flow * state.motionPulse * 2.8 + state.smoothMomentum * (0.8 + state.cameraEnergy * 0.5)
+            const panKickY =
+                (state.smoothTreble - state.smoothBass) * (1.1 + state.motionPulse * 0.8) - state.anticipation * 1.6
+
+            ;[state.panX, state.panVelocityX] = springStep(
+                state.panX,
+                state.panVelocityX,
+                targetPanX,
+                panStiffness,
+                panDamping,
+                dt,
+                panKickX,
             )
-
-            state.panX = smoothApproach(state.panX, targetPanX, 2.4, dt)
-            state.panY = smoothApproach(state.panY, targetPanY, 2.1, dt)
+            ;[state.panY, state.panVelocityY] = springStep(
+                state.panY,
+                state.panVelocityY,
+                targetPanY,
+                panStiffness * 0.9,
+                panDamping + 0.2,
+                dt,
+                panKickY,
+            )
+            ;[state.panX, state.panVelocityX] = clampMotion(state.panX, state.panVelocityX, -0.58, 0.58)
+            ;[state.panY, state.panVelocityY] = clampMotion(state.panY, state.panVelocityY, -0.44, 0.44)
 
             const targetZoom = clamp(
-                1.0 + state.smoothBass * 0.08 + state.smoothSwell * 0.06 + state.motionPulse * 0.04,
-                0.94,
-                1.18,
+                0.96 -
+                    state.anticipation * 0.07 +
+                    state.cameraEnergy * 0.18 +
+                    state.motionPulse * 0.28 +
+                    state.smoothBass * 0.08,
+                0.86,
+                1.42,
             )
-            state.zoom = smoothAsymmetric(state.zoom, targetZoom, 4.8, 2.2, dt)
+            ;[state.zoom, state.zoomVelocity] = springStep(
+                state.zoom,
+                state.zoomVelocity,
+                targetZoom,
+                18 + state.cameraEnergy * 10 + state.motionPulse * 12,
+                5.8,
+                dt,
+                state.motionPulse * 3.2 - state.anticipation * 1.4,
+            )
+            ;[state.zoom, state.zoomVelocity] = clampMotion(state.zoom, state.zoomVelocity, 0.84, 1.46)
 
-            const twistVelocity =
-                flow * (0.14 + state.smoothLevel * 0.08) +
-                state.smoothMomentum * 0.18 +
-                (state.smoothTreble - state.smoothBass) * 0.05 +
-                state.motionPulse * 0.08
-            state.twist += twistVelocity * dt
+            const twistVelocityTarget =
+                flow * (0.22 + state.cameraEnergy * 0.18) +
+                state.smoothMomentum * 0.46 +
+                (state.smoothTreble - state.smoothBass) * 0.12 +
+                state.motionPulse * 0.42
+            state.twistVelocity = smoothAsymmetric(state.twistVelocity, twistVelocityTarget, 6.5, 2.2, dt)
+            state.twist += state.twistVelocity * dt
 
-            const driftVelocity =
-                flow * (0.42 + state.smoothLevel * 0.36 + state.smoothSwell * 0.22) + state.smoothMomentum * 0.18
-            state.drift += driftVelocity * dt
+            const travelDirection = Math.abs(flow) > 0.01 ? Math.sign(flow) : Math.sign(state.smoothMomentum) || 1
+            const driftVelocityTarget =
+                travelDirection * (0.54 + state.cameraEnergy * 0.78 + state.smoothSwell * 0.32) +
+                flow * 0.38 +
+                state.smoothMomentum * 0.46 +
+                state.motionPulse * 0.58 * travelDirection
+            state.driftVelocity = smoothAsymmetric(state.driftVelocity, driftVelocityTarget, 5.8, 1.7, dt)
+            state.drift += state.driftVelocity * dt
 
-            const warpVelocity = 0.24 + state.smoothMid * 0.36 + state.smoothTreble * 0.14 + state.motionPulse * 0.18
-            state.warpPhase += warpVelocity * dt
+            const warpVelocityTarget =
+                0.28 +
+                state.smoothMid * 0.54 +
+                state.smoothTreble * 0.24 +
+                state.cameraEnergy * 0.32 +
+                state.motionPulse * 0.44
+            state.warpVelocity = smoothAsymmetric(state.warpVelocity, warpVelocityTarget, 6.4, 2.2, dt)
+            state.warpPhase += state.warpVelocity * dt
 
             ctx.setUniform('iAudioLevelSmooth', state.smoothLevel)
             ctx.setUniform('iAudioBassSmooth', state.smoothBass)
             ctx.setUniform('iAudioMidSmooth', state.smoothMid)
             ctx.setUniform('iAudioTrebleSmooth', state.smoothTreble)
+            ctx.setUniform('iMotionEnergy', state.cameraEnergy)
             ctx.setUniform('iMotionPulse', state.motionPulse)
             ctx.setUniform('iMotionPan', [state.panX, state.panY])
             ctx.setUniform('iMotionZoom', state.zoom)
@@ -182,6 +292,7 @@ export default effect(
             ctx.registerUniform('iAudioBassSmooth', 0)
             ctx.registerUniform('iAudioMidSmooth', 0)
             ctx.registerUniform('iAudioTrebleSmooth', 0)
+            ctx.registerUniform('iMotionEnergy', 0)
             ctx.registerUniform('iMotionPulse', 0)
             ctx.registerUniform('iMotionPan', [0, 0])
             ctx.registerUniform('iMotionZoom', 1)
