@@ -12,6 +12,15 @@ uniform float iIntensity;
 uniform float iBranches;
 uniform float iFlicker;
 
+struct ArcPalette {
+    vec3 deep;
+    vec3 secondary;
+    vec3 primary;
+    vec3 contrast;
+    vec3 accent;
+    vec3 core;
+};
+
 // ── Hash functions ────────────────────────────────────────────────
 
 float hash21(vec2 p) {
@@ -85,34 +94,135 @@ float ridgedFBM(vec2 p, int octaves) {
 }
 
 // ── Palette definitions ──────────────────────────────────────────
-// 2-color primary + white-hot core blending
+// Multi-stop discharge ramps with tinted cores per theme.
 
-vec3 palettePrimary(int pal) {
-    if (pal == 0) return vec3(0.10, 0.92, 1.00);  // Electric — cyan
-    if (pal == 1) return vec3(0.69, 0.13, 1.00);  // Violet Storm — purple
-    if (pal == 2) return vec3(1.00, 0.13, 0.13);  // Crimson Arc — red
-    if (pal == 3) return vec3(0.13, 1.00, 0.38);  // Toxic — green
-    if (pal == 4) return vec3(0.38, 0.80, 1.00);  // Frozen — ice blue
-    return vec3(0.67, 0.53, 1.00);                // Phantom — pale purple
+float saturate(float value) {
+    return clamp(value, 0.0, 1.0);
 }
 
-vec3 paletteSecondary(int pal) {
-    if (pal == 0) return vec3(0.13, 0.27, 1.00);  // Electric — blue
-    if (pal == 1) return vec3(1.00, 0.13, 0.67);  // Violet Storm — magenta
-    if (pal == 2) return vec3(1.00, 0.40, 0.00);  // Crimson Arc — orange
-    if (pal == 3) return vec3(0.50, 1.00, 0.13);  // Toxic — yellow-green
-    if (pal == 4) return vec3(0.69, 0.91, 1.00);  // Frozen — white-blue
-    return vec3(0.27, 0.13, 0.67);                // Phantom — deep indigo
+ArcPalette getPalette(int pal) {
+    ArcPalette palette;
+
+    if (pal == 0) {
+        palette.deep = vec3(0.03, 0.08, 0.28);       // Electric — midnight blue
+        palette.secondary = vec3(0.08, 0.32, 0.96);  // Electric — blue
+        palette.primary = vec3(0.10, 0.92, 1.00);    // Electric — cyan
+        palette.contrast = vec3(0.72, 0.20, 1.00);   // Electric — violet split
+        palette.accent = vec3(0.46, 0.70, 1.00);     // Electric — azure
+        palette.core = vec3(0.78, 0.90, 1.00);       // Electric — icy blue
+        return palette;
+    }
+
+    if (pal == 1) {
+        palette.deep = vec3(0.10, 0.02, 0.22);       // SilkCircuit Storm — deep violet
+        palette.secondary = vec3(0.48, 0.06, 0.96);  // SilkCircuit Storm — electric purple
+        palette.primary = vec3(0.88, 0.14, 1.00);    // SilkCircuit Storm — neon magenta
+        palette.contrast = vec3(0.12, 0.82, 1.00);   // SilkCircuit Storm — neon cyan
+        palette.accent = vec3(1.00, 0.22, 0.58);     // SilkCircuit Storm — coral
+        palette.core = vec3(0.35, 0.96, 1.00);       // SilkCircuit Storm — neon cyan
+        return palette;
+    }
+
+    if (pal == 2) {
+        palette.deep = vec3(0.22, 0.02, 0.04);       // Crimson Arc — ember wine
+        palette.secondary = vec3(0.72, 0.05, 0.16);  // Crimson Arc — crimson
+        palette.primary = vec3(1.00, 0.15, 0.10);    // Crimson Arc — hot red
+        palette.contrast = vec3(0.22, 0.44, 1.00);   // Crimson Arc — cobalt split
+        palette.accent = vec3(1.00, 0.44, 0.05);     // Crimson Arc — electric orange
+        palette.core = vec3(1.00, 0.74, 0.18);       // Crimson Arc — gold
+        return palette;
+    }
+
+    if (pal == 3) {
+        palette.deep = vec3(0.03, 0.12, 0.06);       // Toxic — swamp teal
+        palette.secondary = vec3(0.09, 0.52, 0.18);  // Toxic — venom green
+        palette.primary = vec3(0.13, 1.00, 0.38);    // Toxic — neon green
+        palette.contrast = vec3(0.66, 0.20, 1.00);   // Toxic — ultraviolet
+        palette.accent = vec3(0.00, 0.96, 0.82);     // Toxic — acid cyan
+        palette.core = vec3(0.60, 1.00, 0.24);       // Toxic — lime spark
+        return palette;
+    }
+
+    if (pal == 4) {
+        palette.deep = vec3(0.03, 0.11, 0.23);       // Frozen — midnight ice
+        palette.secondary = vec3(0.12, 0.46, 0.88);  // Frozen — glacier blue
+        palette.primary = vec3(0.38, 0.80, 1.00);    // Frozen — ice blue
+        palette.contrast = vec3(0.62, 0.52, 1.00);   // Frozen — frost violet
+        palette.accent = vec3(0.58, 1.00, 0.92);     // Frozen — mint frost
+        palette.core = vec3(0.80, 0.96, 1.00);       // Frozen — pale cyan
+        return palette;
+    }
+
+    if (pal == 5) {
+        palette.deep = vec3(0.04, 0.02, 0.13);       // Phantom — void indigo
+        palette.secondary = vec3(0.18, 0.11, 0.46);  // Phantom — indigo
+        palette.primary = vec3(0.67, 0.53, 1.00);    // Phantom — spectral lavender
+        palette.contrast = vec3(0.12, 0.95, 1.00);   // Phantom — spectral cyan
+        palette.accent = vec3(0.95, 0.30, 0.80);     // Phantom — rose flare
+        palette.core = vec3(0.42, 0.66, 1.00);       // Phantom — ghost blue
+        return palette;
+    }
+
+    if (pal == 6) {
+        palette.deep = vec3(0.14, 0.02, 0.09);       // Solar Surge — dusk maroon
+        palette.secondary = vec3(0.62, 0.07, 0.38);  // Solar Surge — hot rose
+        palette.primary = vec3(1.00, 0.24, 0.32);    // Solar Surge — solar red
+        palette.contrast = vec3(0.26, 0.30, 1.00);   // Solar Surge — electric blue
+        palette.accent = vec3(1.00, 0.55, 0.08);     // Solar Surge — arc amber
+        palette.core = vec3(1.00, 0.80, 0.30);       // Solar Surge — bright gold
+        return palette;
+    }
+
+    palette.deep = vec3(0.07, 0.02, 0.19);           // Rosewire — deep plum
+    palette.secondary = vec3(0.24, 0.14, 0.70);      // Rosewire — indigo violet
+    palette.primary = vec3(0.96, 0.18, 0.62);        // Rosewire — electric rose
+    palette.contrast = vec3(0.12, 1.00, 0.90);       // Rosewire — seafoam neon
+    palette.accent = vec3(1.00, 0.42, 0.48);         // Rosewire — coral pink
+    palette.core = vec3(1.00, 0.63, 0.84);           // Rosewire — hot blush
+    return palette;
 }
 
-// Mix primary/secondary with white-hot core based on energy level
-vec3 arcColor(float energy, int pal) {
-    vec3 primary = palettePrimary(pal);
-    vec3 secondary = paletteSecondary(pal);
-    vec3 base = mix(secondary, primary, smoothstep(0.0, 0.6, energy));
-    // White-hot core where energy peaks
-    vec3 hot = mix(base, vec3(1.0, 0.97, 0.94), smoothstep(0.7, 1.0, energy));
-    return hot;
+vec3 sampleArcGradient(ArcPalette palette, float t) {
+    float gradientT = saturate(t);
+
+    if (gradientT < 0.26) {
+        return mix(palette.deep, palette.secondary, smoothstep(0.0, 1.0, gradientT / 0.26));
+    }
+    if (gradientT < 0.56) {
+        return mix(palette.secondary, palette.primary, smoothstep(0.0, 1.0, (gradientT - 0.26) / 0.30));
+    }
+    if (gradientT < 0.82) {
+        return mix(palette.primary, palette.accent, smoothstep(0.0, 1.0, (gradientT - 0.56) / 0.26));
+    }
+    return mix(palette.accent, palette.core, smoothstep(0.0, 1.0, (gradientT - 0.82) / 0.18));
+}
+
+float contrastWeave(float field, float discharge, float time, float channelShift) {
+    float braidA = 0.5 + 0.5 * sin(field * (17.0 + channelShift * 9.0) + time * (2.4 + channelShift * 0.8));
+    float braidB = 0.5 + 0.5 * sin(field * (29.0 + channelShift * 11.0) - time * (3.6 + channelShift * 1.1) + channelShift * 18.0);
+    float weave = mix(braidA, braidB, 0.42);
+    weave = smoothstep(0.70, 0.96, weave);
+
+    // Keep contrast in the branch edges and secondary energy bands, not the hottest core.
+    float fringe = smoothstep(0.14, 0.62, discharge) * (1.0 - smoothstep(0.68, 0.94, discharge));
+    return weave * fringe;
+}
+
+vec3 arcColor(float energy, float field, float channelShift, float time, ArcPalette palette) {
+    float discharge = saturate(energy);
+    float baseT = saturate(discharge * 0.70 + channelShift);
+    float accentT = saturate(0.18 + discharge * 0.62 + channelShift * 0.55);
+
+    vec3 base = sampleArcGradient(palette, baseT);
+    vec3 accent = sampleArcGradient(palette, accentT);
+    vec3 energized = mix(base, accent, smoothstep(0.36, 0.92, discharge));
+    float weave = contrastWeave(field, discharge, time, channelShift);
+    float contrastDrift = 0.5 + 0.5 * sin(time * 0.52 + field * 4.4 + channelShift * 9.0);
+    vec3 contrastColor = mix(palette.contrast, palette.accent, 0.24 + contrastDrift * 0.28);
+    vec3 contrasted = mix(energized, contrastColor, weave * (0.34 + 0.18 * (1.0 - discharge)));
+
+    // Peak energy resolves to the theme's hot tint, while contrast lives in the branch weave.
+    return mix(contrasted, palette.core, smoothstep(0.74, 1.0, discharge));
 }
 
 // ── Electric field channel ────────────────────────────────────────
@@ -144,6 +254,7 @@ void main() {
     float intensity = clamp(iIntensity * 0.01, 0.0, 1.0);
     float branches = clamp(iBranches * 0.01, 0.0, 1.0);
     float flicker = clamp(iFlicker * 0.01, 0.0, 1.0);
+    ArcPalette palette = getPalette(iPalette);
 
     // Octave count from branches control (3-5 octaves)
     int octaves = 3 + int(branches * 2.0);
@@ -206,18 +317,21 @@ void main() {
 
     // ── Color composition ────────────────────────────────────────
     // Each channel gets its own color mapping, then additive blend
-    vec3 col1 = arcColor(clamp(glow1 * 1.2, 0.0, 1.0), iPalette) * glow1;
-    vec3 col2 = arcColor(clamp(glow2 * 1.5, 0.0, 1.0), iPalette) * glow2;
-    vec3 col3 = arcColor(clamp(glow3 * 2.0, 0.0, 1.0), iPalette) * glow3;
+    vec3 col1 = arcColor(clamp(glow1 * 1.2, 0.0, 1.0), field1, 0.02, time, palette) * glow1;
+    vec3 col2 = arcColor(clamp(glow2 * 1.5, 0.0, 1.0), field2, 0.20, time, palette) * glow2;
+    vec3 col3 = arcColor(clamp(glow3 * 2.0, 0.0, 1.0), field3, 0.38, time, palette) * glow3;
 
-    // Additive layering — hot-white convergence where channels cross
+    // Additive layering — channel crossings intensify into the palette's hot tint
     vec3 col = col1 + col2 + col3;
 
     // Flash event — brief global intensity spike
     col *= 1.0 + flash;
+    col += palette.core * flash * (0.05 + intensity * 0.05);
 
     // ── Very faint ambient so the background isn't pure black ────
-    vec3 ambient = palettePrimary(iPalette) * 0.006;
+    float ambientDrift = 0.5 + 0.5 * sin(time * 0.34 + p.x * 1.6 - p.y * 1.3);
+    vec3 ambientBase = mix(palette.deep, palette.secondary, 0.35);
+    vec3 ambient = mix(ambientBase, palette.contrast, ambientDrift * 0.18) * 0.010;
     col += ambient;
 
     // ── Soft-clip tone mapping ───────────────────────────────────
