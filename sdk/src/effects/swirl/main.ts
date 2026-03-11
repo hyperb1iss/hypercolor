@@ -43,7 +43,7 @@ export default canvas(
         color1: color('Color 1', '#f100ff'),
         color2: color('Color 2', '#00ffd2'),
         color3: color('Color 3', '#0000ff'),
-        colorMode: combo('Color Mode', ['Custom', 'Color Cycle', 'Rainbow'], {
+        colorMode: combo('Color Mode', ['Color Cycle', 'Custom', 'Rainbow'], {
             default: 'Custom',
         }),
         cycleSpeed: num('Color Cycle Speed', [0, 100], 50),
@@ -52,7 +52,7 @@ export default canvas(
         particleSize: num('Particle Size', [0, 100], 10),
         particleSpawn: num('Particle Amount', [0, 100], 50),
         particleSpeed: num('Particle Speed', [0, 100], 50),
-        rotationMode: combo('Rotation Mode', ['Regular', 'Reverse', 'Pulse'], {
+        rotationMode: combo('Rotation Mode', ['Pulse', 'Regular', 'Reverse'], {
             default: 'Regular',
         }),
         spiralAmount: num('Spiral Amount', [1, 3], 3),

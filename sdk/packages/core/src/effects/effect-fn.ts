@@ -227,12 +227,15 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
     }
 
     private createShaderContext(): ShaderContext {
+        const gl = this.gl
+        const program = this.program
+        if (!gl || !program) throw new Error('GL context not initialized')
         const self = this
         return {
             get controls() { return self.getControlValues() },
             get audio() { return getAudioData() },
-            gl: self.gl!,
-            program: self.program!,
+            gl,
+            program,
             get width() { return self.canvas?.width ?? 320 },
             get height() { return self.canvas?.height ?? 200 },
             registerUniform: (name, value) => self.registerUniform(name, value),

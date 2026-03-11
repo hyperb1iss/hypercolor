@@ -26,7 +26,7 @@ interface GridPoint {
 // Constants
 // ---------------------------------------------------------------------------
 
-const THEMES = ['Custom', 'Bubblegum', 'Lagoon', 'Toxic', 'Aurora', 'Molten', 'Synthwave', 'Citrus']
+const THEMES = ['Aurora', 'Bubblegum', 'Citrus', 'Custom', 'Lagoon', 'Molten', 'Synthwave', 'Toxic']
 
 const THEME_PALETTES: Record<string, ThemePalette> = {
     Aurora:    { color1: '#33f587', color2: '#3fdcff', color3: '#8c4bff' },
@@ -61,9 +61,13 @@ function hexToRgb(hex: string): Rgb {
 }
 
 function rgbToHsl(c: Rgb): [number, number, number] {
-    const r = c.r / 255, g = c.g / 255, b = c.b / 255
-    const max = Math.max(r, g, b), min = Math.min(r, g, b)
-    const d = max - min, l = (max + min) * 0.5
+    const r = c.r / 255
+    const g = c.g / 255
+    const b = c.b / 255
+    const max = Math.max(r, g, b)
+    const min = Math.min(r, g, b)
+    const d = max - min
+    const l = (max + min) * 0.5
     if (d === 0) return [0, 0, l]
     const s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
     let h = 0

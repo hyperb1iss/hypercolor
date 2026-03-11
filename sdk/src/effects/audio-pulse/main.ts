@@ -2,11 +2,11 @@ import { combo, effect, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Audio Pulse', shader, {
-    visualStyle: combo('Style', ['Pulse Field', 'Grid', 'Waveform', 'Vortex'], {
+    visualStyle: combo('Style', ['Grid', 'Pulse Field', 'Vortex', 'Waveform'], {
         default: 'Pulse Field',
         tooltip: 'Visualization style',
     }),
-    colorScheme: combo('Colors', ['Cyberpunk', 'Lava', 'Aurora', 'Vaporwave', 'Toxic', 'Prism'], {
+    colorScheme: combo('Colors', ['Aurora', 'Cyberpunk', 'Lava', 'Prism', 'Toxic', 'Vaporwave'], {
         default: 'Cyberpunk',
         tooltip: 'Color scheme preset',
     }),

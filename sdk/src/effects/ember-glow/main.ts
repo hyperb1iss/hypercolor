@@ -7,8 +7,8 @@ export default effect('Ember Glow', shader, {
     emberDensity: [0, 100, 58],
     flowSpread:  [0, 100, 62],
     glow:        [0, 100, 68],
-    palette:     ['Forge', 'Poison', 'SilkCircuit', 'Ash Bloom', 'Toxic Rust'],
-    scene:       ['Updraft', 'Crosswind', 'Vortex'],
+    palette:     ['Ash Bloom', 'Forge', 'Poison', 'SilkCircuit', 'Toxic Rust'],
+    scene:       ['Crosswind', 'Updraft', 'Vortex'],
 }, {
     description: 'Crisp ember flecks in directional poison-forge flow with selectable scene behavior',
 })

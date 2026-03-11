@@ -42,8 +42,8 @@ interface PaletteSet {
     grid: string
 }
 
-const COLOR_MODES = ['SilkCircuit', 'Dark Matter', 'Ion Storm', 'Supernova', 'Aurora'] as const
-const SCENES = ['Skyline', 'Arcology', 'Rain Grid'] as const
+const COLOR_MODES = ['Aurora', 'Dark Matter', 'Ion Storm', 'SilkCircuit', 'Supernova'] as const
+const SCENES = ['Arcology', 'Rain Grid', 'Skyline'] as const
 
 function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value))

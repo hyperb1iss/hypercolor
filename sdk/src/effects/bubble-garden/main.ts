@@ -1,7 +1,4 @@
-import { canvas } from '@hypercolor/sdk'
-
-const COLOR_MODES = ['Triad', 'Single Color', 'Palette Blend', 'Color Cycle']
-const THEMES = ['Custom', 'Bubblegum', 'Cyber Pop', 'Lagoon', 'Neon Soda', 'Jellyfish', 'Citrus Pop', 'Lavender Fizz']
+import { canvas, combo } from '@hypercolor/sdk'
 
 interface Bubble {
     x: number
@@ -305,8 +302,8 @@ function drawBackdrop(
 }
 
 export default canvas.stateful('Bubble Garden', {
-    colorMode: COLOR_MODES,
-    theme:     THEMES,
+    colorMode: combo('Color Mode', ['Color Cycle', 'Palette Blend', 'Single Color', 'Triad'], { default: 'Palette Blend' }),
+    theme:     combo('Theme', ['Bubblegum', 'Citrus Pop', 'Custom', 'Cyber Pop', 'Jellyfish', 'Lagoon', 'Lavender Fizz', 'Neon Soda'], { default: 'Cyber Pop' }),
     bgColor:   '#05040a',
     color:     '#ff4f9a',
     color2:    '#80ffea',

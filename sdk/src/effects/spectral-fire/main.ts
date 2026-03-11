@@ -6,7 +6,7 @@ export default effect('Spectral Fire', shader, {
     flameHeight: [20, 100, 78],
     turbulence:  [0, 100, 62],
     intensity:   [20, 100, 84],
-    palette:     ['Bonfire', 'Forge', 'Spellfire', 'Sulfur', 'Ashfall'],
+    palette:     ['Ashfall', 'Bonfire', 'Forge', 'Spellfire', 'Sulfur'],
     emberAmount: [0, 100, 60],
     scene:       ['Classic', 'Inferno', 'Torch', 'Wildfire'],
 }, {

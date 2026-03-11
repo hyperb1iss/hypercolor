@@ -10,18 +10,9 @@
 import { combo, effect, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
-const CITY_STYLES = ['Standard', 'Fast Descent', 'Neon'] as const
+const CITY_STYLES = ['Fast Descent', 'Neon', 'Standard'] as const
 
-const COLOR_PALETTES = [
-    'Classic Cyber',
-    'Blade Runner',
-    'Synthwave',
-    'Matrix',
-    'Akira Red',
-    'Ice',
-    'Toxic',
-    'Noir',
-] as const
+const COLOR_PALETTES = ['Akira Red', 'Blade Runner', 'Classic Cyber', 'Ice', 'Matrix', 'Noir', 'Synthwave', 'Toxic'] as const
 
 export default effect('Cyber Descent', shader, {
     // Style

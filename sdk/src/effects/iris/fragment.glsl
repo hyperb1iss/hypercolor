@@ -298,21 +298,21 @@ vec3 getHarmonic(float g, float l, float t) {
 
 vec3 getSchemeColor(float g, float l, float t) {
     // Harmonic mode: blend between base palette and chromagram-derived colors
-    if (iColorScheme == 0) {
+    if (iColorScheme == 3) {
         vec3 base = getGoldBlue(g, l, t);
         vec3 harmonic = getHarmonic(g, l, t);
         return mix(base, harmonic, iHarmonicColor);
     }
-    if (iColorScheme == 1) return getGoldBlue(g, l, t);
-    if (iColorScheme == 2) return getCyberpunk(g, l, t);
-    if (iColorScheme == 3) return getAurora(g, l, t);
-    if (iColorScheme == 4) return getLava(g, l, t);
-    if (iColorScheme == 5) return getIce(g, l, t);
-    if (iColorScheme == 6) return getSynesthesia(g, l, t);
-    if (iColorScheme == 7) return getPhosphor(g, l, t);
-    if (iColorScheme == 8) return getVaporwave(g, l, t);
-    if (iColorScheme == 9) return getNeonFlux(g, l, t);
-    if (iColorScheme == 10) return getMidnightFlux(g, l, t);
+    if (iColorScheme == 2) return getGoldBlue(g, l, t);
+    if (iColorScheme == 1) return getCyberpunk(g, l, t);
+    if (iColorScheme == 0) return getAurora(g, l, t);
+    if (iColorScheme == 5) return getLava(g, l, t);
+    if (iColorScheme == 4) return getIce(g, l, t);
+    if (iColorScheme == 10) return getSynesthesia(g, l, t);
+    if (iColorScheme == 8) return getPhosphor(g, l, t);
+    if (iColorScheme == 11) return getVaporwave(g, l, t);
+    if (iColorScheme == 7) return getNeonFlux(g, l, t);
+    if (iColorScheme == 6) return getMidnightFlux(g, l, t);
     return getSolarStorm(g, l, t);
 }
 

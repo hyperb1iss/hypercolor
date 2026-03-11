@@ -2,7 +2,7 @@ import { combo, effect, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Prism', shader, {
-    palette: combo('Theme', ['Crystal', 'SilkCircuit', 'Midnight', 'Ember', 'Frozen', 'Neon'], {
+    palette: combo('Theme', ['Crystal', 'Ember', 'Frozen', 'Midnight', 'Neon', 'SilkCircuit'], {
         default: 'SilkCircuit',
         tooltip: 'Select the prism color family.',
     }),

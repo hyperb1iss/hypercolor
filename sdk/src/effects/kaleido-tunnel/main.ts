@@ -1,18 +1,8 @@
 import { combo, effect, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
-const PALETTE_MODES = [
-    'Rainbow',
-    'Neon',
-    'Monochrome',
-    'Electric',
-    'Amethyst',
-    'Sunset',
-    'Toxic',
-    'Vaporwave',
-    'Deep Sea',
-] as const
-const STYLE_MODES = ['Standard', 'Glitch', 'Holo', 'Grain'] as const
+const PALETTE_MODES = ['Amethyst', 'Deep Sea', 'Electric', 'Monochrome', 'Neon', 'Rainbow', 'Sunset', 'Toxic', 'Vaporwave'] as const
+const STYLE_MODES = ['Glitch', 'Grain', 'Holo', 'Standard'] as const
 
 export default effect(
     'Kaleido Tunnel',

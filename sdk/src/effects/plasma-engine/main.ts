@@ -2,7 +2,7 @@ import { color, effect } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Plasma Engine', shader, {
-    theme:   ['Custom', 'Poison', 'Cyberpunk', 'Inferno', 'Aurora', 'Arcade', 'Tropical', 'Oceanic'],
+    theme:   ['Arcade', 'Aurora', 'Custom', 'Cyberpunk', 'Inferno', 'Oceanic', 'Poison', 'Tropical'],
     bgColor: color('Background Color', '#03020c', { uniform: 'iBackgroundColor' }),
     color1:  '#16d1d9',
     color2:  '#ff4fb4',

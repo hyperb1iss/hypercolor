@@ -206,16 +206,16 @@ vec3 getSchemeColor(vec3 id, float t) {
     vec3 a;
     vec3 b;
 
-    if (iColorScheme == 0) {
+    if (iColorScheme == 1) {
         a = vec3(0.98, 0.05, 0.78);
         b = vec3(0.05, 0.75, 1.2);
-    } else if (iColorScheme == 1) {
+    } else if (iColorScheme == 2) {
         a = vec3(1.2, 0.25, 0.05);
         b = vec3(0.9, 0.55, 0.05);
-    } else if (iColorScheme == 2) {
+    } else if (iColorScheme == 0) {
         a = vec3(0.1, 0.8, 0.7);
         b = vec3(0.2, 0.4, 1.2);
-    } else if (iColorScheme == 3) {
+    } else if (iColorScheme == 5) {
         a = vec3(1.1, 0.45, 0.8);
         b = vec3(0.35, 0.9, 1.2);
     } else if (iColorScheme == 4) {
@@ -560,11 +560,11 @@ void mainImage(out vec4 fragOut, vec2 fragCoord) {
     vec3 color = vec3(0.0);
 
     // Select visualization style
-    if (iVisualStyle == 0) {
+    if (iVisualStyle == 1) {
         color = pulseFieldStyle(uv, t);
-    } else if (iVisualStyle == 1) {
+    } else if (iVisualStyle == 0) {
         color = gridStyle(uv, t);
-    } else if (iVisualStyle == 2) {
+    } else if (iVisualStyle == 3) {
         color = waveformStyle(uv, t);
     } else {
         color = vortexStyle(uv, t);

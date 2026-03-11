@@ -19,7 +19,7 @@ export default effect(
         }),
         palette: combo(
             'Theme',
-            ['Electric', 'SilkCircuit Storm', 'Crimson Arc', 'Toxic', 'Frozen', 'Phantom', 'Solar Surge', 'Rosewire'],
+            ['Crimson Arc', 'Electric', 'Frozen', 'Phantom', 'Rosewire', 'SilkCircuit Storm', 'Solar Surge', 'Toxic'],
             {
                 default: 'SilkCircuit Storm',
                 tooltip:

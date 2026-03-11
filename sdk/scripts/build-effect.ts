@@ -10,7 +10,7 @@
 
 import * as esbuild from 'esbuild'
 import { basename, dirname, join, resolve } from 'node:path'
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 
 const SDK_ROOT = resolve(import.meta.dirname, '..')
 const DEFAULT_OUT = resolve(SDK_ROOT, '..', 'effects', 'hypercolor')
@@ -152,7 +152,7 @@ async function extractMetadata(entryPath: string) {
         delete (globalThis as any).__hypercolorEffectDefs__
         delete (globalThis as any).__hypercolorEffectInstance__
 
-        const mod = await import(entryPath)
+        await import(entryPath)
 
         // ── New API path: check __hypercolorEffectDefs__ first ────────
         const defs = (globalThis as any).__hypercolorEffectDefs__ as NewApiDef[] | undefined
@@ -313,7 +313,7 @@ async function buildEffect(entryPath: string, outDir: string) {
 async function main() {
     const { outDir, entries } = parseArgs()
 
-    console.log(`\x1b[38;2;225;53;255m  Hypercolor Effect Builder\x1b[0m`)
+    console.log('\x1b[38;2;225;53;255m  Hypercolor Effect Builder\x1b[0m')
     console.log(`  Output: ${outDir}\n`)
 
     for (const entry of entries) {
@@ -324,6 +324,6 @@ async function main() {
 }
 
 main().catch((err) => {
-    console.error(`\x1b[38;2;255;99;99m  ✗ Build failed:\x1b[0m`, err)
+    console.error('\x1b[38;2;255;99;99m  ✗ Build failed:\x1b[0m', err)
     process.exit(1)
 })

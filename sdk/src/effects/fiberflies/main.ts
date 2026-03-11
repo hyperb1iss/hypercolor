@@ -1,4 +1,4 @@
-import { canvas } from '@hypercolor/sdk'
+import { canvas, combo } from '@hypercolor/sdk'
 
 interface Firefly {
     x: number
@@ -33,8 +33,7 @@ interface SceneTuning {
     twinkle: number
 }
 
-const SCENES = ['Calm', 'Swarm', 'Pulse']
-const COLOR_MODES = ['Single', 'Mint Orchid', 'Twilight', 'SilkCircuit', 'Ember', 'Random', 'Rainbow']
+const COLOR_MODES = ['Ember', 'Mint Orchid', 'Rainbow', 'Random', 'SilkCircuit', 'Single', 'Twilight']
 
 const TAU = Math.PI * 2
 
@@ -203,7 +202,7 @@ export default canvas.stateful(
         colorMode: COLOR_MODES,
         count: [8, 80, 30],
         glow: [0, 100, 56],
-        scene: SCENES,
+        scene: combo('Scene', ['Calm', 'Pulse', 'Swarm'], { default: 'Swarm' }),
         size: [1, 8, 2],
         speed: [1, 10, 5],
         wander: [0, 100, 42],

@@ -8,7 +8,7 @@ export default effect('Deep Current', shader, {
     rippleIntensity: [0, 100, 68],
     particleAmount:  [0, 100, 56],
     blend:           [0, 100, 26],
-    splitMode:       ['Vertical', 'Horizontal', 'Diagonal'],
+    splitMode:       ['Diagonal', 'Horizontal', 'Vertical'],
 }, {
     description: 'Magenta-amber split-field with crisp ripples and floating particles',
 })

@@ -138,11 +138,13 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
     // ── Internal ────────────────────────────────────────────────────────
 
     private createProgram(vertSrc: string, fragSrc: string): WebGLProgram {
-        const gl = this.gl!
+        const gl = this.gl
+        if (!gl) throw new Error('GL context not initialized')
         const vert = this.compileShader(gl.VERTEX_SHADER, vertSrc)
         const frag = this.compileShader(gl.FRAGMENT_SHADER, fragSrc)
 
-        const program = gl.createProgram()!
+        const program = gl.createProgram()
+        if (!program) throw new Error('Failed to create WebGL program')
         gl.attachShader(program, vert)
         gl.attachShader(program, frag)
         gl.linkProgram(program)
@@ -159,8 +161,10 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
     }
 
     private compileShader(type: number, source: string): WebGLShader {
-        const gl = this.gl!
-        const shader = gl.createShader(type)!
+        const gl = this.gl
+        if (!gl) throw new Error('GL context not initialized')
+        const shader = gl.createShader(type)
+        if (!shader) throw new Error('Failed to create WebGL shader')
         gl.shaderSource(shader, source)
         gl.compileShader(shader)
 
@@ -174,13 +178,15 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
     }
 
     private createQuad(): void {
-        const gl = this.gl!
+        const gl = this.gl
+        const program = this.program
+        if (!gl || !program) throw new Error('GL context not initialized')
         const vertices = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1])
         const buffer = gl.createBuffer()
         gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
         gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW)
 
-        const posLoc = gl.getAttribLocation(this.program!, 'aPosition')
+        const posLoc = gl.getAttribLocation(program, 'aPosition')
         gl.enableVertexAttribArray(posLoc)
         gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0)
     }
@@ -192,8 +198,9 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
     }
 
     protected resolveLocations(): void {
-        const gl = this.gl!
-        const program = this.program!
+        const gl = this.gl
+        const program = this.program
+        if (!gl || !program) throw new Error('GL context not initialized')
 
         // Build a set of integer-like uniform names by querying active uniforms.
         // This includes bool vectors, uint vectors, and sampler types since those

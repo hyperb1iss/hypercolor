@@ -2,7 +2,7 @@ import { combo, effect, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Ink Tide', shader, {
-    palette: combo('Theme', ['Abyss', 'Sakura', 'Poison', 'Molten', 'Arctic', 'Phantom'], {
+    palette: combo('Theme', ['Abyss', 'Arctic', 'Molten', 'Phantom', 'Poison', 'Sakura'], {
         default: 'Sakura',
         tooltip: 'Choose the ink palette. Sakura lifts the default into a brighter bloom.',
     }),

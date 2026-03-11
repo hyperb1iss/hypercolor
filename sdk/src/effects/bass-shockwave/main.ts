@@ -64,8 +64,8 @@ interface CascadeBand {
 
 type Accent = SpokeBurst | BridgeBand | CascadeBand
 
-const SCENES = ['Core Burst', 'Twin Burst', 'Cascade'] as const
-const PALETTE_NAMES = ['SilkCircuit', 'Cyberpunk', 'Fire', 'Aurora', 'Ice'] as const
+const SCENES = ['Cascade', 'Core Burst', 'Twin Burst'] as const
+const PALETTE_NAMES = ['Aurora', 'Cyberpunk', 'Fire', 'Ice', 'SilkCircuit'] as const
 const TAU = Math.PI * 2
 
 const LED_PALETTES: Record<PaletteName, readonly Rgb[]> = {
@@ -114,7 +114,7 @@ function randomBetween(lo: number, hi: number): number {
 }
 
 function rgbString(color: Rgb, brightness = 1): string {
-    const level = Math.pow(clamp(brightness, 0, 1), 0.92)
+    const level = clamp(brightness, 0, 1) ** 0.92
     const r = Math.round(color.r * level)
     const g = Math.round(color.g * level)
     const b = Math.round(color.b * level)
@@ -175,7 +175,7 @@ function resolveAudio(a: AudioData, fallbackPhase: number): {
         }
     }
 
-    const syntheticBeat = Math.pow(Math.max(0, Math.sin(fallbackPhase * 1.6)), 8)
+    const syntheticBeat = Math.max(0, Math.sin(fallbackPhase * 1.6)) ** 8
     const motion = 0.3 + (0.5 + 0.5 * Math.sin(fallbackPhase * 0.9)) * 0.35
     return {
         shouldSpawn: syntheticBeat > 0.7,
@@ -472,7 +472,7 @@ export default canvas.stateful('Bass Shockwave', {
     intensity: [0, 100, 78],
     ringCount: [2, 12, 6],
     decay:     [0, 100, 52],
-    palette:   ['SilkCircuit', 'Cyberpunk', 'Fire', 'Aurora', 'Ice'],
+    palette:   ['Aurora', 'Cyberpunk', 'Fire', 'Ice', 'SilkCircuit'],
     scene:     SCENES,
 }, () => {
     let waves: Wavefront[] = []

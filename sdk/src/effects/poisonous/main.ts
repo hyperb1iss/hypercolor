@@ -24,7 +24,7 @@ interface RingParticle {
 
 const FULL_CIRCLE = Math.PI * 2
 
-const THEMES = ['Poison', 'Blacklight', 'Radioactive', 'Nightshade', 'Cotton Candy', 'Custom'] as const
+const THEMES = ['Blacklight', 'Cotton Candy', 'Custom', 'Nightshade', 'Poison', 'Radioactive'] as const
 
 const THEME_PALETTES: Record<(typeof THEMES)[number], ThemePalette> = {
     Poison: {

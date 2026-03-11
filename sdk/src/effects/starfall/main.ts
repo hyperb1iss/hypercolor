@@ -2,7 +2,7 @@ import { effect } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Starfall', shader, {
-    palette:  ['Celestial', 'Aurora Rain', 'Ember Fall', 'Frozen Tears', 'Neon Rain', 'Cosmic'],
+    palette:  ['Aurora Rain', 'Celestial', 'Cosmic', 'Ember Fall', 'Frozen Tears', 'Neon Rain'],
     speed:    [1, 10, 5],
     density:  [0, 100, 50],
     trails:   [0, 100, 60],

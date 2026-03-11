@@ -31,55 +31,9 @@ interface ColumnState {
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-const COLOR_MODES = ['Matrix', 'Phosphor', 'SilkCircuit', 'Cyberpunk', 'Ice', 'Custom'] as const
+const COLOR_MODES = ['Custom', 'Cyberpunk', 'Ice', 'Matrix', 'Phosphor', 'SilkCircuit'] as const
 
-const GLYPHS = [
-    '0',
-    '1',
-    '2',
-    '4',
-    '7',
-    '9',
-    'A',
-    'C',
-    'E',
-    'K',
-    'N',
-    'R',
-    'X',
-    'Z',
-    '+',
-    '=',
-    ':',
-    '.',
-    '/',
-    '\\',
-    '|',
-    'ｱ',
-    'ｳ',
-    'ｴ',
-    'ｵ',
-    'ｶ',
-    'ｷ',
-    'ｹ',
-    'ｺ',
-    'ｻ',
-    'ｼ',
-    'ｽ',
-    'ﾀ',
-    'ﾂ',
-    'ﾅ',
-    'ﾊ',
-    'ﾏ',
-    'ﾐ',
-    'ﾑ',
-    'ﾒ',
-    'ﾓ',
-    'ﾔ',
-    'ﾕ',
-    'ﾗ',
-    'ﾜ',
-]
+const GLYPHS = [':', '.', '/', '\\', '+', '=', '|', '0', '1', '2', '4', '7', '9', 'A', 'C', 'E', 'K', 'N', 'R', 'X', 'Z', 'ｱ', 'ｳ', 'ｴ', 'ｵ', 'ｶ', 'ｷ', 'ｹ', 'ｺ', 'ｻ', 'ｼ', 'ｽ', 'ﾀ', 'ﾂ', 'ﾅ', 'ﾊ', 'ﾏ', 'ﾐ', 'ﾑ', 'ﾒ', 'ﾓ', 'ﾔ', 'ﾕ', 'ﾗ', 'ﾜ']
 
 const PALETTES: Record<string, RainPalette> = {
     Cyberpunk: {
@@ -273,7 +227,6 @@ function mutateColumnGlyphs(column: ColumnState, rows: number, trailLength: numb
 
 export default canvas.stateful(
     'Digital Rain',
-    // biome-ignore assist/source/useSortedKeys: control order defines the UI layout
     {
         colorMode: combo('Color Mode', [...COLOR_MODES], { default: 'Matrix' }),
         bgColor: color('Custom Background', '#010401'),

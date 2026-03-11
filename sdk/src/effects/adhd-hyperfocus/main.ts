@@ -32,7 +32,7 @@ export default effect(
         noise: num('Noise', [0, 200], 40, {
             tooltip: 'Film/noise amount, stronger in periphery',
         }),
-        colorMode: combo('Color Mode', ['Dopamine', 'Neon', 'Mono'], {
+        colorMode: combo('Color Mode', ['Dopamine', 'Mono', 'Neon'], {
             default: 'Dopamine',
             tooltip: 'Color palette',
         }),

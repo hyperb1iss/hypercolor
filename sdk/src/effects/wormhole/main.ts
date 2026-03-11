@@ -36,8 +36,8 @@ interface Slice {
     lineWidth: number
 }
 
-const THEME_NAMES = ['Event Horizon', 'Void Gate', 'Quantum', 'Abyssal', 'Solar Flare', 'Spectral', 'Custom'] as const
-const GEOMETRY_NAMES = ['Hex Gate', 'Pulse Ring', 'Prism Rift', 'Organic Fold'] as const
+const THEME_NAMES = ['Abyssal', 'Custom', 'Event Horizon', 'Quantum', 'Solar Flare', 'Spectral', 'Void Gate'] as const
+const GEOMETRY_NAMES = ['Hex Gate', 'Organic Fold', 'Prism Rift', 'Pulse Ring'] as const
 
 type ThemeName = typeof THEME_NAMES[number]
 type GeometryName = typeof GEOMETRY_NAMES[number]

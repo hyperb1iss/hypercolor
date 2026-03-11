@@ -46,26 +46,26 @@ void streakColors(int id, float laneHash, out vec3 core, out vec3 tint) {
         return;
     }
     if (id == 2) {
-        // Warp Core — white core, blue-to-purple gradient
+        // Phantom Gate — white core, pale green to teal
         core = vec3(1.0, 1.0, 1.0);
-        tint = mix(vec3(0.13, 0.40, 1.0), vec3(0.53, 0.27, 1.0), laneHash);
+        tint = mix(vec3(0.53, 1.0, 0.67), vec3(0.0, 0.80, 0.67), laneHash);
         return;
     }
     if (id == 3) {
-        // Void — dim white core, deep red streaks
-        core = vec3(0.75, 0.72, 0.70);
-        tint = vec3(1.0, 0.13, 0.0);
-        return;
-    }
-    if (id == 4) {
         // Solar Wind — yellow-white core, gold to amber
         core = vec3(1.0, 0.97, 0.85);
         tint = mix(vec3(1.0, 0.67, 0.0), vec3(1.0, 0.40, 0.0), laneHash);
         return;
     }
-    // 5: Phantom Gate — white core, pale green to teal
+    if (id == 4) {
+        // Void — dim white core, deep red streaks
+        core = vec3(0.75, 0.72, 0.70);
+        tint = vec3(1.0, 0.13, 0.0);
+        return;
+    }
+    // 5: Warp Core — white core, blue-to-purple gradient
     core = vec3(1.0, 1.0, 1.0);
-    tint = mix(vec3(0.53, 1.0, 0.67), vec3(0.0, 0.80, 0.67), laneHash);
+    tint = mix(vec3(0.13, 0.40, 1.0), vec3(0.53, 0.27, 1.0), laneHash);
 }
 
 // ─── Star Layer ─────────────────────────────────────────────────────
@@ -87,7 +87,8 @@ vec3 starLayer(
     vec3 accum = vec3(0.0);
     float cellWidth = 6.2831853 / numLanes;
 
-    for (float i = 0.0; i < 64.0; i += 1.0) {
+    // Keep the loop bound constant for GLSL ES while leaving headroom for density overdrive.
+    for (float i = 0.0; i < 96.0; i += 1.0) {
         if (i >= numLanes) break;
 
         float cellAngle = i * cellWidth;
@@ -159,8 +160,11 @@ void main() {
     vec2 p = (uv - 0.5) * vec2(iResolution.x / iResolution.y, 1.0);
 
     float speed = max(iSpeed, 0.5);
+    // Preserve the original 0-100 response, then use the 100-160 band as overdrive.
     float density = clamp(iDensity * 0.01, 0.0, 1.0);
+    float densityOverdrive = smoothstep(0.0, 1.0, clamp((iDensity - 100.0) / 60.0, 0.0, 1.0));
     float streak = clamp(iStreak * 0.01, 0.0, 1.0);
+    float streakOverdrive = smoothstep(0.0, 1.0, clamp((iStreak - 100.0) / 60.0, 0.0, 1.0));
     float warp = clamp(iWarp * 0.01, 0.0, 1.0);
 
     float time = iTime * (0.08 + speed * 0.08);
@@ -173,37 +177,42 @@ void main() {
     float bgGlow = exp(-radius * 4.0) * 0.03;
     vec3 color = vec3(bgGlow * 0.4, bgGlow * 0.3, bgGlow * 0.6);
 
+    float layer0Lanes = mix(30.0, 60.0, density) + densityOverdrive * 24.0;
+    float layer1Lanes = mix(15.0, 30.0, density) + densityOverdrive * 12.0;
+    float layer2Lanes = mix(8.0, 18.0, density) + densityOverdrive * 8.0;
+
+    float layer0Streak = mix(0.02, 0.08, streak) + streakOverdrive * 0.04;
+    float layer1Streak = mix(0.05, 0.18, streak) + streakOverdrive * 0.10;
+    float layer2Streak = mix(0.10, 0.35, streak) + streakOverdrive * 0.30;
+
     // ── Layer 0: Background stars — many, dim, slow ──
-    float lanes0 = mix(30.0, 60.0, density);
     vec3 layer0 = starLayer(
         p, radius, angle, time,
-        lanes0,
+        layer0Lanes,
         0.35,                          // slow speed
-        mix(0.02, 0.08, streak),       // short streaks
+        layer0Streak,                  // short streaks with overdrive headroom
         0.0006,                        // dim
         warp,
         iPalette
     );
 
     // ── Layer 1: Midground stars — medium count, medium speed ──
-    float lanes1 = mix(15.0, 30.0, density);
     vec3 layer1 = starLayer(
         p, radius, angle, time * 1.1 + 17.3,
-        lanes1,
+        layer1Lanes,
         0.6,                           // medium speed
-        mix(0.05, 0.18, streak),       // medium streaks
+        layer1Streak,                  // medium streaks with overdrive headroom
         0.0015,                        // medium brightness
         warp,
         iPalette
     );
 
     // ── Layer 2: Foreground stars — few, bright, fast, long streaks ──
-    float lanes2 = mix(8.0, 18.0, density);
     vec3 layer2 = starLayer(
         p, radius, angle, time * 1.3 + 41.7,
-        lanes2,
+        layer2Lanes,
         1.0,                           // full speed
-        mix(0.10, 0.35, streak),       // long streaks
+        layer2Streak,                  // long streaks with overdrive headroom
         0.004,                         // bright
         warp,
         iPalette

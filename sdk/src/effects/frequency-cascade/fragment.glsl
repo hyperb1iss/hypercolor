@@ -118,9 +118,9 @@ void main() {
 
     float freq = barId / max(barCount - 1.0, 1.0);
     float warpedFreq = freq;
-    if (iScene == 1) warpedFreq = pow(freq, 0.84);
-    if (iScene == 2) warpedFreq = abs(freq * 2.0 - 1.0);
-    if (iScene == 3) warpedFreq = fract(freq + 0.12 * sin(time * 0.38));
+    if (iScene == 2) warpedFreq = pow(freq, 0.84);
+    if (iScene == 3) warpedFreq = abs(freq * 2.0 - 1.0);
+    if (iScene == 1) warpedFreq = fract(freq + 0.12 * sin(time * 0.38));
 
     float audioActive = audioPresence();
     float reactiveEnergy = audioEnergy(warpedFreq, barId, time);
@@ -129,12 +129,12 @@ void main() {
     float energy = mix(proceduralEnergy, reactiveEnergy, audioActive);
     energy += iAudioBeatPulse * 0.25 * audioActive;
 
-    if (iScene == 1) {
+    if (iScene == 2) {
         energy *= 0.82 + 0.18 * sin(time * 5.6 + uv.y * 24.0 + barId * 0.14);
-    } else if (iScene == 2) {
+    } else if (iScene == 3) {
         float center = exp(-abs(uv.x - 0.5) * 7.0);
         energy *= 0.74 + center * 0.56;
-    } else if (iScene == 3) {
+    } else if (iScene == 1) {
         float chop = 0.65 + 0.35 * step(0.56, fract(time * 1.05 + barId * 0.039));
         energy *= chop;
     }
@@ -178,14 +178,14 @@ void main() {
     color += mix(baseColor, accentColor, 0.62) * waterfall * (0.12 + intensity * 0.86);
     color += accentColor * bloom;
 
-    if (iScene == 1) {
+    if (iScene == 2) {
         float gridWave = abs(fract(uv.y * 12.0 - time * 1.3) - 0.5) - 0.44;
         float grid = 1.0 - smoothstep(0.0, 0.02, gridWave);
         color += accentColor * grid * 0.07 * (0.30 + energy * 0.82);
-    } else if (iScene == 2) {
+    } else if (iScene == 3) {
         float tunnel = exp(-abs(uv.x - 0.5) * 8.0) * (0.5 + 0.5 * sin(uv.y * 30.0 - time * 3.0));
         color += mix(baseColor, accentColor, 0.5) * tunnel * 0.14;
-    } else if (iScene == 3) {
+    } else if (iScene == 1) {
         float prism = pow(abs(sin((uv.x - 0.5) * aspect * 12.0 + uv.y * 5.0 + time * 2.9)), 18.0);
         color += accentColor * prism * 0.12;
     }

@@ -194,9 +194,9 @@ void main() {
     float cycleShift = iTime * (iCycleSpeed * 0.01);
 
     vec4 scene;
-    if (iScene == 1) {
+    if (iScene == 0) {
         scene = sceneArcadeCarpet(p, t, density);
-    } else if (iScene == 2) {
+    } else if (iScene == 1) {
         scene = sceneLaserLanes(p, t, density);
     } else {
         scene = sceneRollerGrid(p, t, density);

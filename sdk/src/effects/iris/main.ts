@@ -100,20 +100,7 @@ let lastTime = 0
 
 // ── Controls ────────────────────────────────────────────────────
 
-const COLOR_SCHEMES = [
-    'Harmonic',
-    'Gold & Blue',
-    'Cyberpunk',
-    'Aurora',
-    'Lava',
-    'Ice',
-    'Synesthesia',
-    'Phosphor',
-    'Vaporwave',
-    'Neon Flux',
-    'Midnight Flux',
-    'Solar Storm',
-] as const
+const COLOR_SCHEMES = ['Aurora', 'Cyberpunk', 'Gold & Blue', 'Harmonic', 'Ice', 'Lava', 'Midnight Flux', 'Neon Flux', 'Phosphor', 'Solar Storm', 'Synesthesia', 'Vaporwave'] as const
 
 const controls = {
     // Style

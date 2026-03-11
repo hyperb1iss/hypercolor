@@ -129,13 +129,13 @@ void main() {
     float vignette = smoothstep(1.3, 0.2, radius);
     color *= vignette;
 
-    if (iStyle == 1) {
+    if (iStyle == 0) {
         float line = step(0.98, fract(gl_FragCoord.y * 0.03 + sin(time) * 0.1));
         color.rb += line * 0.2;
     } else if (iStyle == 2) {
         float scan = 0.7 + 0.3 * sin(gl_FragCoord.y * 0.6 + time * 10.0);
         color *= vec3(0.8, 1.0, 1.1) * scan;
-    } else if (iStyle == 3) {
+    } else if (iStyle == 1) {
         float grain = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
         color += (grain - 0.5) * 0.06;
     }

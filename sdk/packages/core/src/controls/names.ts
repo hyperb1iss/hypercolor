@@ -27,7 +27,7 @@ export function deriveLabel(key: string): string {
  *   palette      → iPalette
  */
 export function deriveUniformName(key: string): string {
-    return 'i' + key.charAt(0).toUpperCase() + key.slice(1)
+    return `i${key.charAt(0).toUpperCase()}${key.slice(1)}`
 }
 
 /** Magic control names that trigger automatic normalization. */

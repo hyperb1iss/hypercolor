@@ -1,4 +1,4 @@
-import { canvas, combo } from '@hypercolor/sdk'
+import { canvas, combo, num } from '@hypercolor/sdk'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -13,7 +13,7 @@ interface Rgb { r: number; g: number; b: number }
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-const SCENES = ['Lattice', 'Shardfield', 'Prism', 'Signal']
+const SCENES = ['Lattice', 'Prism', 'Shardfield', 'Signal']
 const TAU = Math.PI * 2
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -39,7 +39,9 @@ function hsvToRgb(h: number, s: number, v: number): Rgb {
     const x = c * (1 - Math.abs(((hue / 60) % 2) - 1))
     const m = val - c
 
-    let r = 0, g = 0, b = 0
+    let r = 0
+    let g = 0
+    let b = 0
     if (hue < 60) { r = c; g = x }
     else if (hue < 120) { r = x; g = c }
     else if (hue < 180) { g = c; b = x }
@@ -65,6 +67,11 @@ function mixRgb(a: Rgb, b: Rgb, t: number): Rgb {
         g: Math.round(a.g + (b.g - a.g) * r),
         b: Math.round(a.b + (b.b - a.b) * r),
     }
+}
+
+function easeSigned(value: number, exponent: number): number {
+    const sign = Math.sign(value)
+    return sign * Math.abs(value) ** exponent
 }
 
 // ── LED-Safe Palettes ────────────────────────────────────────────────────
@@ -122,38 +129,6 @@ function hexCenter(col: number, row: number, size: number): [number, number] {
     return [x, y]
 }
 
-function nearestHex(
-    px: number, py: number, size: number,
-): { col: number; row: number; cx: number; cy: number; dist: number } {
-    // Approximate column/row, then check neighbors
-    const approxCol = Math.round(px / (size * 1.5))
-    const approxRow = Math.round(py / (size * Math.sqrt(3)) - (approxCol % 2) * 0.5)
-
-    let bestDist = Infinity
-    let bestCol = approxCol
-    let bestRow = approxRow
-    let bestCx = 0
-    let bestCy = 0
-
-    for (let dc = -1; dc <= 1; dc++) {
-        for (let dr = -1; dr <= 1; dr++) {
-            const c = approxCol + dc
-            const r = approxRow + dr
-            const [hx, hy] = hexCenter(c, r, size)
-            const d = Math.hypot(px - hx, py - hy)
-            if (d < bestDist) {
-                bestDist = d
-                bestCol = c
-                bestRow = r
-                bestCx = hx
-                bestCy = hy
-            }
-        }
-    }
-
-    return { col: bestCol, row: bestRow, cx: bestCx, cy: bestCy, dist: bestDist }
-}
-
 // ── Effect ───────────────────────────────────────────────────────────────
 
 export default canvas.stateful('Frost Crystal', {
@@ -161,7 +136,10 @@ export default canvas.stateful('Frost Crystal', {
     scale:    [10, 100, 46],
     edgeGlow: [0, 100, 68],
     growth:   [0, 100, 68],
-    palette:  combo('Palette', ['SilkCircuit', 'Ice', 'Frost', 'Aurora', 'Cyberpunk'], { default: 'Ice' }),
+    rotation: num('Rotation', [-100, 100], 0, {
+        tooltip: 'Spin the crystal field. Negative values reverse the direction.',
+    }),
+    palette:  combo('Palette', ['Aurora', 'Cyberpunk', 'Frost', 'Ice', 'SilkCircuit'], { default: 'Ice' }),
     scene:    SCENES,
 }, () => {
     let cells: Cell[] = []
@@ -173,14 +151,22 @@ export default canvas.stateful('Frost Crystal', {
         lastCellKey = key
 
         cells = []
-        const cols = Math.ceil(w / (hexSize * 1.5)) + 2
-        const rows = Math.ceil(h / (hexSize * Math.sqrt(3))) + 2
+        const span = Math.hypot(w, h)
+        const cols = Math.ceil(span / (hexSize * 1.5)) + 4
+        const rows = Math.ceil(span / (hexSize * Math.sqrt(3))) + 4
+        const xOffset = w * 0.5 - span * 0.5
+        const yOffset = h * 0.5 - span * 0.5
 
-        for (let c = -1; c < cols; c++) {
-            for (let r = -1; r < rows; r++) {
-                const [cx, cy] = hexCenter(c, r, hexSize)
+        for (let c = -2; c < cols; c++) {
+            for (let r = -2; r < rows; r++) {
+                const [baseX, baseY] = hexCenter(c, r, hexSize)
                 const seed = hash2(c + 100, r + 100)
-                cells.push({ cx, cy, seed, phase: seed * TAU })
+                cells.push({
+                    cx: xOffset + baseX,
+                    cy: yOffset + baseY,
+                    seed,
+                    phase: seed * TAU,
+                })
             }
         }
     }
@@ -190,6 +176,7 @@ export default canvas.stateful('Frost Crystal', {
         const scaleMix = clamp((c.scale as number) / 100, 0, 1)
         const growthMix = clamp((c.growth as number) / 100, 0, 1)
         const glowMix = clamp((c.edgeGlow as number) / 100, 0, 1)
+        const rotationMix = clamp((c.rotation as number) / 100, -1, 1)
         const paletteName = c.palette as string
         const scene = c.scene as string
 
@@ -197,6 +184,7 @@ export default canvas.stateful('Frost Crystal', {
         const w = ctx.canvas.width
         const h = ctx.canvas.height
         const t = time * (0.3 + speed * 0.2)
+        const rotationAngle = easeSigned(rotationMix, 1.25) * time * 0.85
 
         // Hex cell size: 18-55px — large enough for LED visibility
         const hexSize = 18 + (1 - scaleMix) * 37
@@ -208,6 +196,9 @@ export default canvas.stateful('Frost Crystal', {
         ctx.fillRect(0, 0, w, h)
 
         ctx.save()
+        ctx.translate(w * 0.5, h * 0.5)
+        ctx.rotate(rotationAngle)
+        ctx.translate(-w * 0.5, -h * 0.5)
         ctx.globalCompositeOperation = 'lighter'
 
         // Growth wave — radial sweep from center
@@ -269,10 +260,10 @@ export default canvas.stateful('Frost Crystal', {
 
             if (activation < 0.2) continue
 
-            const sparkle = Math.pow(
-                Math.max(0, Math.sin(t * (3 + cell.seed * 2) + cell.phase * 3)),
-                4,
-            )
+            const sparkle = 
+                Math.max(0, Math.sin(t * (3 + cell.seed * 2) + cell.phase * 3)) ** 
+                4
+            
             const nodeAlpha = activation * sparkle * (0.3 + glowMix * 0.5)
 
             if (nodeAlpha < 0.04) continue
@@ -418,5 +409,5 @@ export default canvas.stateful('Frost Crystal', {
         ctx.closePath()
     }
 }, {
-    description: 'Bold crystalline hex lattice with frost-growth waves and breathing nodes',
+    description: 'Bold crystalline hex lattice with frost-growth waves, breathing nodes, and field rotation',
 })

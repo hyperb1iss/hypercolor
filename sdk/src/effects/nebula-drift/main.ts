@@ -8,7 +8,7 @@ export default effect('Nebula Drift', shader, {
     starField:    [0, 100, 28],
     saturation:   [60, 160, 120],
     contrast:     [70, 150, 106],
-    palette:      ['SilkCircuit', 'Cyberpunk', 'Aurora', 'Fire', 'Vaporwave'],
+    palette:      ['Aurora', 'Cyberpunk', 'Fire', 'SilkCircuit', 'Vaporwave'],
 }, {
     description: 'Layered nebula ribbons with richer palette grading, visible parallax drift, and twinkling stars',
 })

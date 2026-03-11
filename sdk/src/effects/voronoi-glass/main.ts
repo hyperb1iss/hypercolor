@@ -241,7 +241,7 @@ export default canvas.stateful('Voronoi Glass', {
     color3:     color('Color 3', DEFAULT_COLOR_3),
     background: color('Backdrop', DEFAULT_BACKGROUND),
 }, () => {
-    let seeds: GlassSeed[] = []
+    const seeds: GlassSeed[] = []
     let seedCount = 0
     let frame: ImageData | null = null
     let frameKey = ''

@@ -23,13 +23,13 @@ vec3 plasmaPalette(float t, vec3 c1, vec3 c2, vec3 c3) {
 }
 
 vec3 themedPalette(float t) {
-    if (iTheme == 1) return plasmaPalette(t, vec3(0.14, 0.92, 0.64), vec3(0.10, 0.86, 0.86), vec3(0.42, 0.20, 0.98));
-    if (iTheme == 2) return plasmaPalette(t, vec3(0.10, 0.88, 0.84), vec3(0.98, 0.22, 0.76), vec3(0.40, 0.18, 0.96));
-    if (iTheme == 3) return plasmaPalette(t, vec3(0.94, 0.22, 0.08), vec3(1.00, 0.52, 0.08), vec3(0.92, 0.32, 0.62));
-    if (iTheme == 4) return plasmaPalette(t, vec3(0.14, 0.94, 0.54), vec3(0.20, 0.78, 1.00), vec3(0.56, 0.26, 0.98));
-    if (iTheme == 5) return plasmaPalette(t, vec3(1.00, 0.28, 0.70), vec3(0.18, 0.74, 1.00), vec3(1.00, 0.56, 0.12));
-    if (iTheme == 6) return plasmaPalette(t, vec3(0.18, 0.94, 0.74), vec3(0.10, 0.92, 0.84), vec3(1.00, 0.40, 0.32));
-    if (iTheme == 7) return plasmaPalette(t, vec3(0.14, 0.90, 0.92), vec3(0.16, 0.48, 1.00), vec3(0.06, 0.14, 0.54));
+    if (iTheme == 6) return plasmaPalette(t, vec3(0.14, 0.92, 0.64), vec3(0.10, 0.86, 0.86), vec3(0.42, 0.20, 0.98));
+    if (iTheme == 3) return plasmaPalette(t, vec3(0.10, 0.88, 0.84), vec3(0.98, 0.22, 0.76), vec3(0.40, 0.18, 0.96));
+    if (iTheme == 4) return plasmaPalette(t, vec3(0.94, 0.22, 0.08), vec3(1.00, 0.52, 0.08), vec3(0.92, 0.32, 0.62));
+    if (iTheme == 1) return plasmaPalette(t, vec3(0.14, 0.94, 0.54), vec3(0.20, 0.78, 1.00), vec3(0.56, 0.26, 0.98));
+    if (iTheme == 0) return plasmaPalette(t, vec3(1.00, 0.28, 0.70), vec3(0.18, 0.74, 1.00), vec3(1.00, 0.56, 0.12));
+    if (iTheme == 7) return plasmaPalette(t, vec3(0.18, 0.94, 0.74), vec3(0.10, 0.92, 0.84), vec3(1.00, 0.40, 0.32));
+    if (iTheme == 5) return plasmaPalette(t, vec3(0.14, 0.90, 0.92), vec3(0.16, 0.48, 1.00), vec3(0.06, 0.14, 0.54));
     return plasmaPalette(t, iColor1, iColor2, iColor3);
 }
 

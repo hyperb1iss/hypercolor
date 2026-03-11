@@ -6,9 +6,9 @@ export default effect('Frequency Cascade', shader, {
     intensity: [0, 100, 75],
     smoothing: [0, 100, 50],
     barWidth:  [0, 100, 58],
-    palette:   ['SilkCircuit', 'Aurora', 'Cyberpunk', 'Fire', 'Sunset', 'Ice'],
+    palette:   ['Aurora', 'Cyberpunk', 'Fire', 'Ice', 'SilkCircuit', 'Sunset'],
     glow:      [0, 100, 28],
-    scene:     ['Cascade', 'Pulse Grid', 'Spectrum Tunnel', 'Prism Skyline'],
+    scene:     ['Cascade', 'Prism Skyline', 'Pulse Grid', 'Spectrum Tunnel'],
 }, {
     description: 'Spectrum cascade with scene modes and no-audio fallback motion',
     audio: true,

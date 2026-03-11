@@ -33,7 +33,7 @@ interface SceneTone {
 // ── Constants ────────────────────────────────────────────────────────────
 
 const PATHS = ['Diagonal', 'Vertical']
-const SCENES = ['Night', 'Aurora']
+const SCENES = ['Aurora', 'Night']
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -64,7 +64,7 @@ function rgbToRgba(color: Rgb, alpha: number): string {
     return `rgba(${color.r}, ${color.g}, ${color.b}, ${Math.max(0, Math.min(1, alpha))})`
 }
 
-function getSceneTone(path: string, skyTop: string, skyBottom: string, starColor: string, scene: string): SceneTone {
+function getSceneTone(_path: string, skyTop: string, skyBottom: string, starColor: string, scene: string): SceneTone {
     const top = hexToRgb(skyTop)
     const bottom = hexToRgb(skyBottom)
     const star = hexToRgb(starColor)

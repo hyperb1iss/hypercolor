@@ -1,8 +1,7 @@
+#version 300 es
 // Cyber Descent — Cyberpunk city flythrough
 // Adapted from Shadertoy: https://www.shadertoy.com/view/wdfGW4
 // Ported to Hypercolor SDK with horizontal panning
-
-#version 300 es
 precision highp float;
 
 out vec4 fragColor;
@@ -87,10 +86,10 @@ void initializeColorPalette() {
     float satBoost = 1.0;
     float darkBoost = 1.0;
 
-    if (iCyberpunkMode == 1) {
+    if (iCyberpunkMode == 0) {
         darkBoost = 0.7;
         satBoost = 1.2;
-    } else if (iCyberpunkMode == 2) {
+    } else if (iCyberpunkMode == 1) {
         neonBoost = 1.4;
         satBoost = 1.3;
     }
@@ -104,7 +103,7 @@ void initializeColorPalette() {
         lightColorB  = vec3(0.3, 0.8, 1.0) * cLightInt;
         signColorA   = vec3(2.0, 0.3, 0.8);
         signColorB   = vec3(1.5, 1.8, 0.2);
-    } else if (iColorPalette == 2) {
+    } else if (iColorPalette == 6) {
         // Synthwave
         windowColorA = vec3(0.2, 1.8, 2.0);
         windowColorB = vec3(2.0, 0.2, 1.2);
@@ -113,7 +112,7 @@ void initializeColorPalette() {
         lightColorB  = vec3(0.2, 1.2, 1.5) * cLightInt;
         signColorA   = vec3(2.5, 1.5, 0.0);
         signColorB   = vec3(0.0, 2.5, 2.0);
-    } else if (iColorPalette == 3) {
+    } else if (iColorPalette == 4) {
         // Matrix
         windowColorA = vec3(0.0, 2.0, 0.4);
         windowColorB = vec3(0.2, 1.2, 0.3);
@@ -122,7 +121,7 @@ void initializeColorPalette() {
         lightColorB  = vec3(1.5, 1.5, 1.5) * cLightInt;
         signColorA   = vec3(0.0, 2.5, 0.6);
         signColorB   = vec3(2.0, 2.0, 2.0);
-    } else if (iColorPalette == 4) {
+    } else if (iColorPalette == 0) {
         // Akira Red
         windowColorA = vec3(2.0, 0.3, 0.1);
         windowColorB = vec3(1.5, 0.8, 0.2);
@@ -131,7 +130,7 @@ void initializeColorPalette() {
         lightColorB  = vec3(0.2, 0.8, 1.2) * cLightInt;
         signColorA   = vec3(0.0, 1.8, 2.0);
         signColorB   = vec3(2.5, 2.0, 0.0);
-    } else if (iColorPalette == 5) {
+    } else if (iColorPalette == 3) {
         // Ice
         windowColorA = vec3(0.8, 1.8, 2.2);
         windowColorB = vec3(1.8, 1.9, 2.0);
@@ -140,7 +139,7 @@ void initializeColorPalette() {
         lightColorB  = vec3(1.2, 0.6, 0.8) * cLightInt;
         signColorA   = vec3(2.0, 0.5, 1.0);
         signColorB   = vec3(0.5, 2.0, 2.5);
-    } else if (iColorPalette == 6) {
+    } else if (iColorPalette == 7) {
         // Toxic
         windowColorA = vec3(0.6, 2.0, 0.2);
         windowColorB = vec3(1.8, 1.8, 0.0);
@@ -149,7 +148,7 @@ void initializeColorPalette() {
         lightColorB  = vec3(1.5, 0.8, 0.2) * cLightInt;
         signColorA   = vec3(2.0, 0.5, 0.0);
         signColorB   = vec3(0.2, 2.5, 0.4);
-    } else if (iColorPalette == 7) {
+    } else if (iColorPalette == 5) {
         // Noir
         windowColorA = vec3(0.3, 0.4, 0.8);
         windowColorB = vec3(0.5, 0.6, 0.7);
@@ -179,9 +178,9 @@ void initializeColorPalette() {
     fogColor     *= darkBoost;
 
     // Mode-specific fog tints
-    if (iCyberpunkMode == 1) {
+    if (iCyberpunkMode == 0) {
         fogColor = mix(fogColor, vec3(0.05, 0.08, 0.15), 0.3);
-    } else if (iCyberpunkMode == 2) {
+    } else if (iCyberpunkMode == 1) {
         fogColor = mix(fogColor, vec3(0.18, 0.0, 0.25), 0.5);
     }
 }
@@ -215,7 +214,7 @@ vec3 applyCameraControls(vec3 baseDir) {
 void initializeSettings() {
     vec3 baseDir;
 
-    if (iCyberpunkMode == 1) {
+    if (iCyberpunkMode == 0) {
         // Fast Descent — steeper, faster dive
         baseDir    = vec3(-2.0, -1.0, -4.0);
         cameraDist = 5.0;
@@ -225,7 +224,7 @@ void initializeSettings() {
         fogDensity = 0.6 * cFogDens;
         lightHeight = 0.5;
         lightSpeed = 0.2 * cSpeed;
-    } else if (iCyberpunkMode == 2) {
+    } else if (iCyberpunkMode == 1) {
         // Neon — medium angle, glowy atmosphere
         baseDir    = vec3(-1.5, -1.0, -3.0);
         cameraDist = 7.0;

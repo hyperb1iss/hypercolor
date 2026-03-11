@@ -10,7 +10,7 @@ export default effect('Borealis', shader, {
     saturation:     [60, 150, 118],
     contrast:       [70, 140, 104],
     banding:        [0, 100, 34],
-    palette:        ['Northern Lights', 'SilkCircuit', 'Cyberpunk', 'Sunset', 'Ice', 'Fire', 'Vaporwave', 'Phosphor'],
+    palette:        ['Cyberpunk', 'Fire', 'Ice', 'Northern Lights', 'Phosphor', 'SilkCircuit', 'Sunset', 'Vaporwave'],
 }, {
     description: 'Aurora borealis — layered curtains of light with richer palette grading and tonal control',
 })
