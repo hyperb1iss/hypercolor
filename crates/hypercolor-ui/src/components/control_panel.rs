@@ -58,40 +58,42 @@ pub fn ControlPanel(
     });
 
     view! {
-        <div class="space-y-5">
+        <div class="space-y-0.5">
             {move || {
                 let groups = grouped.get();
                 if groups.is_empty() {
                     view! {
-                        <div class="text-center py-6">
-                            <div class="text-fg-tertiary/50 text-xs">"No controls available"</div>
+                        <div class="text-center py-4">
+                            <div class="text-fg-tertiary/50 text-[11px]">"No controls available"</div>
                         </div>
                     }.into_any()
                 } else {
-                    // Snapshot current values for initial widget state (untracked — no dependency)
                     let values = control_values.get_untracked();
+                    let total_groups = groups.len();
                     groups.into_iter().map(|(group, items)| {
                         let values = values.clone();
+                        // Only show group header for non-General groups when there are multiple groups
+                        let show_header = total_groups > 1 && group != "General";
                         view! {
-                            <div class="space-y-3 animate-fade-in-up">
-                                <div class="flex items-center gap-2">
-                                    <div class="h-px flex-1 bg-border-subtle" />
-                                    <h4 class="text-[9px] font-mono uppercase tracking-[0.2em] text-fg-tertiary/60 shrink-0">
-                                        {group}
-                                    </h4>
-                                    <div class="h-px flex-1 bg-border-subtle" />
-                                </div>
-                                <div class="space-y-1">
-                                    {items.into_iter().enumerate().map(|(i, (def, rgb))| {
-                                        let value = effective_value(&def, &values);
-                                        let delay = format!("animation-delay: {}ms", i * 40);
-                                        view! {
-                                            <div class="animate-fade-in-up" style=delay>
-                                                <ControlWidget def=def initial_value=value accent_rgb=rgb on_change=on_change expanded_picker_id=expanded_picker_id set_expanded_picker_id=set_expanded_picker_id />
-                                            </div>
-                                        }
-                                    }).collect_view()}
-                                </div>
+                            <div class="animate-fade-in-up">
+                                {show_header.then(|| view! {
+                                    <div class="flex items-center gap-2 mt-2 mb-1">
+                                        <div class="h-px flex-1 bg-border-subtle" />
+                                        <h4 class="text-[8px] font-mono uppercase tracking-[0.2em] text-fg-tertiary/50 shrink-0">
+                                            {group.clone()}
+                                        </h4>
+                                        <div class="h-px flex-1 bg-border-subtle" />
+                                    </div>
+                                })}
+                                {items.into_iter().enumerate().map(|(i, (def, rgb))| {
+                                    let value = effective_value(&def, &values);
+                                    let delay = format!("animation-delay: {}ms", i * 30);
+                                    view! {
+                                        <div class="animate-fade-in-up" style=delay>
+                                            <ControlWidget def=def initial_value=value accent_rgb=rgb on_change=on_change expanded_picker_id=expanded_picker_id set_expanded_picker_id=set_expanded_picker_id />
+                                        </div>
+                                    }
+                                }).collect_view()}
                             </div>
                         }
                     }).collect_view().into_any()
@@ -153,13 +155,11 @@ fn ControlWidget(
             let (value, set_value) = signal(initial);
             let control_name = control_id.clone();
 
-            // Accent-colored value badge
             let badge_style = format!(
                 "color: rgba({}, 0.9); background: rgba({}, 0.08)",
                 accent_rgb, accent_rgb
             );
 
-            // Smart value formatting
             let fmt_value = move || {
                 let v = value.get();
                 if (v - v.round()).abs() < 0.001 {
@@ -170,35 +170,31 @@ fn ControlWidget(
             };
 
             view! {
-                <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-surface-hover/20 transition-colors duration-150"
+                <div class="flex items-center gap-2 rounded px-2.5 py-1.5 hover:bg-surface-hover/20 transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
-                    <div class="flex items-center justify-between mb-2">
-                        <label class="text-xs text-fg-secondary font-medium">{name.clone()}</label>
-                        <span class="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded"
-                              style=badge_style>
-                            {fmt_value}
-                        </span>
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <input
-                            type="range"
-                            class="flex-1 cursor-pointer"
-                            min=min
-                            max=max
-                            step=step
-                            prop:value=move || value.get()
-                            on:input=move |ev| {
-                                use wasm_bindgen::JsCast;
-                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                if let Some(el) = target {
-                                    if let Ok(v) = el.value().parse::<f32>() {
-                                        set_value.set(v);
-                                        on_change.run((control_name.clone(), json!(v)));
-                                    }
+                    <label class="text-[11px] text-fg-secondary font-medium shrink-0 w-[100px] truncate">{name.clone()}</label>
+                    <input
+                        type="range"
+                        class="flex-1 min-w-0 cursor-pointer"
+                        min=min
+                        max=max
+                        step=step
+                        prop:value=move || value.get()
+                        on:input=move |ev| {
+                            use wasm_bindgen::JsCast;
+                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                            if let Some(el) = target {
+                                if let Ok(v) = el.value().parse::<f32>() {
+                                    set_value.set(v);
+                                    on_change.run((control_name.clone(), json!(v)));
                                 }
                             }
-                        />
-                    </div>
+                        }
+                    />
+                    <span class="text-[10px] font-mono tabular-nums w-[32px] text-right shrink-0 px-1 rounded"
+                          style=badge_style>
+                        {fmt_value}
+                    </span>
                 </div>
             }.into_any()
         }
@@ -212,12 +208,12 @@ fn ControlWidget(
             );
 
             view! {
-                <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-surface-hover/20 transition-colors duration-150
-                            flex items-center justify-between"
+                <div class="flex items-center gap-2 rounded px-2.5 py-1.5 hover:bg-surface-hover/20 transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-fg-secondary font-medium">{name.clone()}</label>
+                    <label class="text-[11px] text-fg-secondary font-medium shrink-0 w-[100px] truncate">{name.clone()}</label>
+                    <div class="flex-1" />
                     <button
-                        class="relative w-10 h-[22px] rounded-full toggle-track"
+                        class="relative w-9 h-[18px] rounded-full toggle-track shrink-0"
                         class=("toggle-track-on", move || checked.get())
                         style=move || if checked.get() { on_style.clone() } else { "background: rgba(255,255,255,0.08)".to_string() }
                         on:click=move |_| {
@@ -229,9 +225,9 @@ fn ControlWidget(
                         <div
                             class=move || {
                                 if checked.get() {
-                                    "absolute top-[3px] w-4 h-4 rounded-full toggle-thumb translate-x-[22px] bg-white toggle-thumb-on"
+                                    "absolute top-[2px] w-3.5 h-3.5 rounded-full toggle-thumb translate-x-[19px] bg-white toggle-thumb-on"
                                 } else {
-                                    "absolute top-[3px] w-4 h-4 rounded-full toggle-thumb translate-x-[3px] bg-fg-tertiary"
+                                    "absolute top-[2px] w-3.5 h-3.5 rounded-full toggle-thumb translate-x-[2px] bg-fg-tertiary"
                                 }
                             }
                         />
@@ -265,13 +261,13 @@ fn ControlWidget(
             });
 
             view! {
-                <div class="relative rounded-lg px-3 py-2.5 transition-colors duration-150"
+                <div class="relative rounded px-2 py-1 transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
                     // Trigger row — swatch + label + hex value
-                    <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-2">
                         <button
                             type="button"
-                            class="h-9 w-9 shrink-0 rounded-xl border border-edge-default swatch-glow
+                            class="h-6 w-6 shrink-0 rounded-lg border border-edge-default swatch-glow
                                    transition-all duration-200 hover:border-edge-strong"
                             style=move || format!(
                                 "background: linear-gradient(145deg, {0}, color-mix(in srgb, {0} 65%, black)); \
@@ -291,14 +287,10 @@ fn ControlWidget(
                                 }
                             }
                         />
-                        <div class="min-w-0 flex-1">
-                            <div class="flex items-center justify-between">
-                                <label class="text-xs text-fg-secondary font-medium">{name.clone()}</label>
-                                <span class="text-[10px] font-mono text-fg-tertiary/60 uppercase tracking-wider">
-                                    {move || color.get().to_uppercase()}
-                                </span>
-                            </div>
-                        </div>
+                        <label class="text-[11px] text-fg-secondary font-medium truncate flex-1 min-w-0">{name.clone()}</label>
+                        <span class="text-[9px] font-mono text-fg-tertiary/60 uppercase shrink-0">
+                            {move || color.get().to_uppercase()}
+                        </span>
                     </div>
 
                     // Popover color picker — floats above the control
@@ -416,13 +408,12 @@ fn ControlWidget(
             let control_name = control_id.clone();
 
             view! {
-                <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-surface-hover/20 transition-colors duration-150"
+                <div class="flex items-center gap-2 rounded px-2.5 py-1.5 hover:bg-surface-hover/20 transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-fg-primary-muted font-medium mb-1.5 block">{name.clone()}</label>
+                    <label class="text-[11px] text-fg-secondary font-medium shrink-0 w-[100px] truncate">{name.clone()}</label>
                     <select
-                        class="w-full bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-xs text-fg-primary
-                               focus:outline-none focus:border-accent-muted
-                               focus:border-accent-muted glow-ring
+                        class="flex-1 min-w-0 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-xs text-fg-primary
+                               focus:outline-none focus:border-accent-muted glow-ring
                                cursor-pointer transition-all duration-150"
                         prop:value=move || selected.get()
                         on:change=move |ev| {
@@ -454,14 +445,13 @@ fn ControlWidget(
             let control_name = control_id.clone();
 
             view! {
-                <div class="group/ctrl rounded-lg px-3 py-2.5 hover:bg-surface-hover/20 transition-colors duration-150"
+                <div class="flex items-center gap-2 rounded px-2.5 py-1.5 hover:bg-surface-hover/20 transition-colors duration-150"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-xs text-fg-primary-muted font-medium mb-1.5 block">{name.clone()}</label>
+                    <label class="text-[11px] text-fg-secondary font-medium shrink-0 w-[100px] truncate">{name.clone()}</label>
                     <input
                         type="text"
-                        class="w-full bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-xs text-fg-primary
-                               focus:outline-none focus:border-accent-muted
-                               focus:border-accent-muted glow-ring
+                        class="flex-1 min-w-0 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-xs text-fg-primary
+                               focus:outline-none focus:border-accent-muted glow-ring
                                placeholder-fg-tertiary/40 transition-all duration-150"
                         prop:value=move || text.get()
                         on:change=move |ev| {
@@ -479,10 +469,9 @@ fn ControlWidget(
         }
         ControlType::GradientEditor => {
             view! {
-                <div class="rounded-lg px-3 py-2.5 opacity-40">
-                    <label class="text-xs text-fg-primary-muted font-medium mb-1 block">{name.clone()}</label>
-                    <div class="h-6 rounded-md bg-gradient-to-r from-electric-purple via-neon-cyan to-coral opacity-30" />
-                    <span class="text-[9px] text-fg-primary-dim/40 mt-1 block">"Gradient editor coming soon"</span>
+                <div class="flex items-center gap-2 rounded px-2 py-1 opacity-40">
+                    <label class="text-[11px] text-fg-secondary font-medium shrink-0 w-[100px] truncate">{name.clone()}</label>
+                    <div class="flex-1 h-4 rounded bg-gradient-to-r from-electric-purple via-neon-cyan to-coral opacity-30" />
                 </div>
             }.into_any()
         }

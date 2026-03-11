@@ -136,6 +136,17 @@ pub fn EffectsPage() -> impl IntoView {
 
     let has_active = Memo::new(move |_| fx.active_effect_id.get().is_some());
 
+    // Derive the full active effect metadata from the index
+    let active_effect_meta = Memo::new(move |_| {
+        let id = fx.active_effect_id.get()?;
+        fx.effects_index.with(|effects| {
+            effects
+                .iter()
+                .find(|e| e.effect.id == id)
+                .map(|e| e.effect.clone())
+        })
+    });
+
     // Filter effects
     let filtered_effects = Memo::new(move |_| {
         let search_term = search.get().trim().to_lowercase();
@@ -496,57 +507,90 @@ pub fn EffectsPage() -> impl IntoView {
                     fx.active_effect_id.get().map(|_| {
                         view! {
                             <aside
-                                class="w-[380px] shrink-0 overflow-y-auto space-y-2 pb-4 animate-slide-in-right"
-                                style="overscroll-behavior: contain"
+                                class="w-[380px] shrink-0 flex flex-col min-h-0 animate-slide-in-right"
                             >
-                                // Active effect name with category-colored dot + preset toolbar inline
-                                <div class="flex items-center gap-2.5 px-1">
+                                // Sticky top: unified info card + preview
+                                <div class="shrink-0 space-y-2 pb-2">
+                                    // Unified effect info + preset card
                                     <div
-                                        class="w-2 h-2 rounded-full dot-alive shrink-0"
-                                        style:background=move || format!("rgb({})", accent_rgb.get())
-                                        style:box-shadow=move || format!("0 0 8px rgba({}, 0.6)", accent_rgb.get())
-                                    />
-                                    <span class="text-sm font-medium text-fg-primary truncate">
-                                        {move || fx.active_effect_name.get().unwrap_or_default()}
-                                    </span>
-                                </div>
-
-                                // Preset toolbar — compact, no extra border wrapper
-                                <PresetToolbar
-                                    effect_id=Signal::derive(move || fx.active_effect_id.get())
-                                    control_values=control_values
-                                    accent_rgb=accent_rgb
-                                    on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
-                                    active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
-                                />
-
-                                // Live preview
-                                <div class="rounded-lg bg-black overflow-hidden edge-glow">
-                                    <CanvasPreview
-                                        frame=ws.canvas_frame
-                                        fps=ws.preview_fps
-                                        show_fps=true
-                                        fps_target=ws.preview_target_fps
-                                    />
-                                </div>
-
-                                // Controls panel — tighter padding
-                                <div
-                                    class="rounded-lg bg-surface-raised border border-edge-subtle p-3 edge-glow"
-                                    style:border-top=move || format!("2px solid rgba({}, 0.15)", accent_rgb.get())
-                                >
-                                    <div class="flex items-center gap-2 mb-3">
-                                        <Icon icon=LuSettings width="14px" height="14px" style="color: rgba(139, 133, 160, 1)" />
-                                        <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">
-                                            "Controls"
-                                        </h3>
+                                        class="rounded-lg bg-surface-overlay/40 border border-edge-subtle px-3 py-2.5 space-y-2"
+                                        style:border-top=move || format!("2px solid rgba({}, 0.2)", accent_rgb.get())
+                                    >
+                                        // Line 1: Name + Author
+                                        <div class="flex items-center gap-2 min-w-0">
+                                            <div
+                                                class="w-2 h-2 rounded-full dot-alive shrink-0"
+                                                style:background=move || format!("rgb({})", accent_rgb.get())
+                                                style:box-shadow=move || format!("0 0 8px rgba({}, 0.6)", accent_rgb.get())
+                                            />
+                                            <span class="text-[13px] font-medium text-fg-primary truncate">
+                                                {move || fx.active_effect_name.get().unwrap_or_default()}
+                                            </span>
+                                            {move || {
+                                                active_effect_meta.get().map(|meta| {
+                                                    view! {
+                                                        <span class="ml-auto text-[10px] text-fg-tertiary/50 shrink-0 truncate max-w-[120px]">
+                                                            {meta.author.clone()}
+                                                        </span>
+                                                    }
+                                                })
+                                            }}
+                                        </div>
+                                        // Line 2: Description
+                                        {move || {
+                                            active_effect_meta.get().and_then(|meta| {
+                                                (!meta.description.is_empty()).then(|| view! {
+                                                    <p class="text-[10px] text-fg-tertiary/40 truncate pl-4 -mt-1">
+                                                        {meta.description.clone()}
+                                                    </p>
+                                                })
+                                            })
+                                        }}
+                                        // Divider
+                                        <div class="h-px bg-edge-subtle/50" />
+                                        // Preset toolbar
+                                        <PresetToolbar
+                                            effect_id=Signal::derive(move || fx.active_effect_id.get())
+                                            control_values=control_values
+                                            accent_rgb=accent_rgb
+                                            on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
+                                            active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
+                                        />
                                     </div>
-                                    <ControlPanel
-                                        controls=controls
-                                        control_values=control_values
-                                        accent_rgb=accent_rgb
-                                        on_change=on_control_change
-                                    />
+
+                                    // Live preview
+                                    <div class="rounded-lg bg-black overflow-hidden edge-glow">
+                                        <CanvasPreview
+                                            frame=ws.canvas_frame
+                                            fps=ws.preview_fps
+                                            show_fps=true
+                                            fps_target=ws.preview_target_fps
+                                        />
+                                    </div>
+                                </div>
+
+                                // Scrollable controls
+                                <div
+                                    class="flex-1 min-h-0 overflow-y-auto"
+                                    style="overscroll-behavior: contain"
+                                >
+                                    <div
+                                        class="rounded-lg bg-surface-raised border border-edge-subtle p-2.5 edge-glow"
+                                        style:border-top=move || format!("2px solid rgba({}, 0.15)", accent_rgb.get())
+                                    >
+                                        <div class="flex items-center gap-1.5 mb-2">
+                                            <Icon icon=LuSettings width="12px" height="12px" style="color: rgba(139, 133, 160, 1)" />
+                                            <h3 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">
+                                                "Controls"
+                                            </h3>
+                                        </div>
+                                        <ControlPanel
+                                            controls=controls
+                                            control_values=control_values
+                                            accent_rgb=accent_rgb
+                                            on_change=on_control_change
+                                        />
+                                    </div>
                                 </div>
 
                             </aside>

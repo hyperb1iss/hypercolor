@@ -24,6 +24,7 @@ pub fn PresetToolbar(
     control_values: Signal<HashMap<String, ControlValue>>,
     /// Category accent color as "r, g, b" string.
     #[prop(into)]
+    #[allow(unused)]
     accent_rgb: Signal<String>,
     /// Callback fired after a preset is applied (so parent can refresh controls).
     #[prop(into)]
@@ -207,16 +208,8 @@ pub fn PresetToolbar(
         });
     };
 
-    let accent_border = Signal::derive(move || {
-        let rgb = accent_rgb.get();
-        format!("border-color: rgba({rgb}, 0.12)")
-    });
-
     view! {
-        <div
-            class="rounded-lg bg-surface-overlay/40 border border-edge-subtle px-2.5 py-2"
-            style=move || accent_border.get()
-        >
+        <div>
             {move || {
                 match mode.get() {
                     ToolbarMode::Idle => {
