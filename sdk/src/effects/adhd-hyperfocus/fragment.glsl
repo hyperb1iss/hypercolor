@@ -133,14 +133,29 @@ void mainImage(out vec4 color, vec2 fragCoord) {
 
     float t = iTime * (0.2 + 0.8 * tunSpd) * (1.0 - 0.6 * para);
     float r = length(p);
+    float a = atan(p.y, p.x);
 
-    // Tunnel rings — animate inward to enhance hyperfocus pull
-    float rings = sin(12.0 * r - 3.5 * t);
+    // Flowing perturbations — noise warps radius for organic, breathing rings
+    float warpSlow = vnoise(p * 4.0 + vec2(t * 0.3, t * 0.2)) - 0.5;
+    float warpFast = vnoise(p * 9.0 - vec2(t * 0.45, t * 0.15)) - 0.5;
+    float warpedR = r + warpSlow * 0.06 + warpFast * 0.025;
+
+    // Angular wobble — rings aren't perfect circles
+    float wobble = sin(a * 3.0 + t * 0.7) * 0.035
+                 + sin(a * 5.0 - t * 1.1) * 0.018
+                 + sin(a * 2.0 + t * 0.4 + r * 4.0) * 0.025;
+    warpedR += wobble * (1.0 - 0.5 * para);
+
+    // Layered ring frequencies that interfere — creates complex flowing structure
+    float rings1 = sin(12.0 * warpedR - 3.5 * t);
+    float rings2 = sin(7.3 * warpedR + 2.1 * t + a * 0.4) * 0.5;
+    float rings3 = sin(19.0 * warpedR - 5.2 * t - a * 0.25) * 0.25;
+    float rings = rings1 + rings2 + rings3;
 
     // Base color via palette
-    float hueT = fract(0.62 + 0.12 * t + 0.25 * rings);
+    float hueT = fract(0.62 + 0.12 * t + 0.15 * rings);
     vec3 base = palette(hueT, iColorMode);
-    base *= energy * 0.7; // Softer base energy to prevent whitewash
+    base *= energy * 0.7;
 
     // Focus factor — peaks at center, falls off with radius
     float focus = smoothstep(focusR, 0.0, r);
@@ -148,6 +163,12 @@ void mainImage(out vec4 color, vec2 fragCoord) {
     // Center boost: center (focus=1) gets boosted, periphery (focus=0) stays at 1.0
     float centerBoost = 1.0 + focusStr * focus;
     base *= centerBoost;
+
+    // Ring structure glow — visible ripples pulling inward
+    float ringBright = pow(max(0.0, rings1), 2.0) * 0.12;
+    ringBright += pow(max(0.0, rings2 * 2.0), 3.0) * 0.06;
+    float ringZone = smoothstep(0.0, focusR * 1.3, r) * smoothstep(0.95, focusR * 0.5, r);
+    base += palette(hueT + 0.15, iColorMode) * ringBright * ringZone * energy * 0.6;
 
     // Peripheral desaturation + darkening
     float periph = smoothstep(focusR * 0.8, 0.75, r);

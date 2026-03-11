@@ -56,7 +56,7 @@ interface ResolvedCanvasControl {
     spec: import('../controls/specs').ControlSpec
     normalize: 'speed' | 'percentage' | 'none'
     isMagicTransform: boolean
-    isPalette: boolean
+    isPaletteFunction: boolean
     values?: string[]
 }
 
@@ -66,7 +66,8 @@ function resolveCanvasControls(controls: ControlMap): ResolvedCanvasControl[] {
     const resolved: ResolvedCanvasControl[] = []
 
     for (const [key, value] of Object.entries(controls)) {
-        const spec = isControlSpec(value)
+        const isExplicitSpec = isControlSpec(value)
+        const spec = isExplicitSpec
             ? value
             : inferControl(key, value, deriveLabel(key))
 
@@ -78,8 +79,10 @@ function resolveCanvasControls(controls: ControlMap): ResolvedCanvasControl[] {
             key,
             spec,
             normalize: names.normalize,
-            isMagicTransform: hasMagicTransform(key) && isCombo,
-            isPalette: key === 'palette' && isCombo,
+            isMagicTransform: hasMagicTransform(key) && isCombo && !isExplicitSpec,
+            // Preserve the legacy shorthand `palette: ['A', 'B']` -> palette function
+            // while letting explicit `combo('Palette', ...)` controls stay string-valued.
+            isPaletteFunction: key === 'palette' && isCombo && !isExplicitSpec,
             values,
         })
     }
@@ -106,7 +109,7 @@ function resolveValues(
         }
 
         // Palette → function (canvas-specific behavior)
-        if (ctrl.isPalette && ctrl.values) {
+        if (ctrl.isPaletteFunction && ctrl.values) {
             const paletteName = typeof val === 'string'
                 ? val
                 : (ctrl.values[0] ?? 'SilkCircuit')
@@ -120,7 +123,7 @@ function resolveValues(
         }
 
         // Other combobox → keep as string (no index conversion for canvas)
-        if (ctrl.isMagicTransform && !ctrl.isPalette && ctrl.values) {
+        if (ctrl.isMagicTransform && !ctrl.isPaletteFunction && ctrl.values) {
             val = comboboxValueToIndex(val as string | number, ctrl.values, 0)
         }
 
@@ -128,6 +131,11 @@ function resolveValues(
     }
 
     return result
+}
+
+export const __testing = {
+    resolveCanvasControls,
+    resolveValues,
 }
 
 // ── Generated Canvas Effect ──────────────────────────────────────────────

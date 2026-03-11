@@ -107,16 +107,16 @@ vec3 getGoldBlue(float g, float l, float t) {
 }
 
 vec3 getCyberpunk(float g, float l, float t) {
-    vec3 magenta = vec3(0.85, 0.08, 0.65);
-    vec3 cyan = vec3(0.05, 0.65, 0.9);
-    vec3 violet = vec3(0.35, 0.1, 0.6);
+    vec3 magenta = vec3(0.9, 0.15, 0.7);
+    vec3 cyan = vec3(0.1, 0.7, 0.95);
+    vec3 violet = vec3(0.5, 0.2, 0.75);
 
     float sweep = smoothstep(0.1, 0.9, g);
     vec3 col = mix(magenta, cyan, sweep);
-    col = mix(violet, col, 0.5 + l * 0.3);
+    col = mix(violet, col, 0.55 + l * 0.25);
 
-    float glitch = sin(t * 0.6 + g * 7.0);
-    col += vec3(0.06, 0.0, 0.12) * glitch;
+    float glitch = sin(t * 0.6 + g * 7.0) * 0.5 + 0.5;
+    col += vec3(0.05, 0.0, 0.1) * glitch;
 
     float greenPulse = clamp(iAudioBass * 0.25 + iAudioBeatPulse * 0.2, 0.0, 0.35);
     col += vec3(0.1, 0.75, 0.15) * greenPulse;
@@ -124,7 +124,7 @@ vec3 getCyberpunk(float g, float l, float t) {
     float yellowPulse = clamp(iAudioTreble * 0.3 + iAudioMomentum * 0.2, 0.0, 0.4);
     col += vec3(0.95, 0.8, 0.1) * yellowPulse;
 
-    return col * (0.4 + l * 0.35);
+    return col * (0.55 + l * 0.3);
 }
 
 vec3 getAurora(float g, float l, float t) {
@@ -530,8 +530,8 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
     c = mix(c, aberrated, 0.25 + iAudioFluxBands.z * 0.3);
 
     float contrast = clamp(iColorContrast, 0.6, 2.3);
-    vec3 centered = c - vec3(0.5);
-    c = centered * contrast + vec3(0.5);
+    float pivot = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    c = max((c - vec3(pivot)) * contrast + vec3(pivot), 0.0);
     float accent = clamp(iColorAccent, 0.5, 1.8);
     c = mix(c, normalize(c + 1e-4) * accent * 0.7 + c * 0.3, 0.4);
 

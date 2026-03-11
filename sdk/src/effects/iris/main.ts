@@ -74,11 +74,26 @@ const state = {
     harmonicHueSmooth: 0,
     radialFlow: 0,
     flowVelocity: 0,
-    glowEnergy: 0,
-    coreEnergy: 0,
-    irisEnergy: 0,
+    glowEnergy: 0.7,
+    coreEnergy: 0.8,
+    irisEnergy: 0.85,
     subBassEnergy: 0,
     displacementAngle: 0,
+    // Smoothed audio feature envelopes (prevent spasm)
+    smoothOnset: 0,
+    smoothLevel: 0,
+    smoothBass: 0,
+    smoothMid: 0,
+    smoothTreble: 0,
+    smoothMomentum: 0,
+    smoothSwell: 0,
+    smoothBrightness: 0,
+    // Smoothed per-uniform audio boosts
+    boostIris: 1,
+    boostCore: 1,
+    boostFlow: 1,
+    boostBand: 1,
+    timeWarpSmooth: 1,
 }
 
 let lastTime = 0
@@ -244,103 +259,131 @@ export default effect('Iris', shader, controls, {
             harmonicColor: harmonicFactor,
         }
 
-        // ── Onset & anticipation ────────────────────────────────────
-        const onsetStrength = Math.max(audio.onsetPulse, audio.beatPulse * 0.7)
+        // ── Smooth audio features first (prevent spasm) ─────────────
+        // Everything flows through smoothed envelopes — no raw impulses
+        const rawOnset = Math.max(audio.onsetPulse, audio.beatPulse * 0.6)
+        state.smoothOnset = smoothAsymmetric(state.smoothOnset, rawOnset, 8, 2.5, dt)
+        state.smoothLevel = smoothAsymmetric(state.smoothLevel, audio.levelShort, 5, 1.8, dt)
+        state.smoothBass = smoothAsymmetric(state.smoothBass, audio.bassEnv, 6, 1.5, dt)
+        state.smoothMid = smoothAsymmetric(state.smoothMid, audio.midEnv, 7, 2, dt)
+        state.smoothTreble = smoothAsymmetric(state.smoothTreble, audio.trebleEnv, 8, 2.5, dt)
+        state.smoothMomentum = smoothApproach(state.smoothMomentum, audio.momentum, 1.5, dt)
+        state.smoothSwell = smoothApproach(state.smoothSwell, audio.swell, 2, dt)
+        state.smoothBrightness = smoothApproach(state.smoothBrightness, audio.brightness, 2, dt)
 
-        // Approximate beat anticipation: ramp up before beat hits
+        const onset = state.smoothOnset
+        const lvl = state.smoothLevel
+        const bass = state.smoothBass
+        const mid = state.smoothMid
+        const treb = state.smoothTreble
+        const mom = state.smoothMomentum
+        const swell = state.smoothSwell
+
+        // ── Anticipation ─────────────────────────────────────────────
         const anticipation = audio.beatPhase > 0.7
             ? ((audio.beatPhase - 0.7) / 0.3) * audio.beatConfidence
             : 0
-        state.anticipation = lerp(state.anticipation, Math.max(0, anticipation), 0.3)
+        state.anticipation = smoothApproach(state.anticipation, Math.max(0, anticipation), 3, dt)
 
         // ── Harmonic hue smoothing (with wraparound) ────────────────
         let hueDiff = audio.harmonicHue - state.harmonicHueSmooth
         if (hueDiff > 180) hueDiff -= 360
         if (hueDiff < -180) hueDiff += 360
-        state.harmonicHueSmooth += hueDiff * 0.08
+        state.harmonicHueSmooth += hueDiff * 0.06
 
-        // ── Spectral flux bands ─────────────────────────────────────
+        // ── Spectral flux bands (smoothed) ──────────────────────────
         const fluxBass = audio.spectralFluxBands[0]
         const fluxMid = audio.spectralFluxBands[1]
         const fluxTreble = audio.spectralFluxBands[2]
 
-        // ── Audio-driven control boosts ─────────────────────────────
-        const irisAudioBoost = 0.9 + audio.midEnv * 0.5 + onsetStrength * 0.5 + fluxMid * 0.3
-        const coreAudioBoost = 0.85 + audio.bassEnv * 0.5 + onsetStrength * 0.5 + fluxBass * 0.4
-        const flowAudioBoost = 0.7 + audio.momentum * 0.4 + audio.levelShort * 0.3 + state.anticipation * 0.3
-        const flowBeatMod = flowAudioBoost * (0.8 + onsetStrength * 0.7)
-        const colorAudioAccent = 0.9 + audio.levelShort * 0.3 + Math.abs(audio.chordMood) * 0.2
-        const colorAudioContrast = 0.9 + audio.momentum * 0.2 + audio.brightness * 0.15
-        const bandAudioBoost = 0.8 + onsetStrength * 0.5 + audio.roughness * 0.2
-        const particleAudioDensity = 0.8 + audio.onset * 0.4 + fluxTreble * 0.3
-        const particleAudioSize = 0.9 + audio.level * 0.2 + audio.spread * 0.15
-        const particleAudioColor = 0.8 + audio.treble * 0.3 + audio.brightness * 0.2
+        // ── Audio boosts — smoothed separately so elements breathe ──
+        // Each visual element responds to different bands at different rates
+        const targetBoostIris = 0.92 + mid * 0.4 + onset * 0.25 + fluxMid * 0.2
+        const targetBoostCore = 0.88 + bass * 0.45 + onset * 0.2 + swell * 0.2
+        const targetBoostFlow = 0.75 + mom * 0.35 + lvl * 0.25 + swell * 0.25
+        const targetBoostBand = 0.85 + onset * 0.3 + audio.roughness * 0.15
 
-        // ── Time warp ───────────────────────────────────────────────
-        const levelBoost = 0.45 + audio.levelShort * 0.8 + onsetStrength * 0.7 + state.anticipation * 0.4
+        state.boostIris = smoothAsymmetric(state.boostIris, targetBoostIris, 5, 2, dt)
+        state.boostCore = smoothAsymmetric(state.boostCore, targetBoostCore, 4, 1.5, dt)
+        state.boostFlow = smoothAsymmetric(state.boostFlow, targetBoostFlow, 3, 1.2, dt)
+        state.boostBand = smoothAsymmetric(state.boostBand, targetBoostBand, 6, 2, dt)
+
+        const flowBeatMod = state.boostFlow * (0.85 + onset * 0.35)
+        const colorAudioAccent = 0.92 + lvl * 0.2 + Math.abs(audio.chordMood) * 0.15
+        const colorAudioContrast = 0.92 + mom * 0.15 + state.smoothBrightness * 0.1
+        const particleAudioDensity = 0.85 + onset * 0.25 + fluxTreble * 0.2
+        const particleAudioSize = 0.92 + lvl * 0.15 + audio.spread * 0.1
+        const particleAudioColor = 0.85 + treb * 0.2 + state.smoothBrightness * 0.15
+
+        // ── Time warp — smooth, momentum-driven with gentle beat swell ─
+        const targetTimeWarp = 0.6 + lvl * 0.5 + mom * 0.3 + onset * 0.25 + swell * 0.2
+        state.timeWarpSmooth = smoothAsymmetric(state.timeWarpSmooth, targetTimeWarp, 4, 1.5, dt)
         const timeWarp = (0.8 + c.timeSensitivity) * c.timeSpeed
-        state.audioTime += dt * timeWarp * levelBoost
+        state.audioTime += dt * timeWarp * state.timeWarpSmooth
 
         // ── Radial flow ("flying through") ──────────────────────────
-        const baseFlowSpeed = c.flowDrive * 0.4
-        const audioFlowBoost = audio.bassEnv * 0.6 + onsetStrength * 0.8 + audio.momentum * 0.3
-        const targetVelocity = baseFlowSpeed * (1.0 + audioFlowBoost)
+        // Momentum and swell drive sustained flow, bass gives surge
+        const baseFlowSpeed = c.flowDrive * 0.5
+        const flowTarget = baseFlowSpeed * (1.0 + bass * 0.4 + mom * 0.5 + swell * 0.4 + onset * 0.3)
 
         state.flowVelocity = smoothAsymmetric(
-            state.flowVelocity, targetVelocity,
-            18, 3, dt,
+            state.flowVelocity, flowTarget,
+            6, 1.8, dt,
         )
         state.radialFlow += state.flowVelocity * dt
 
         // ── Beat accumulation for rotation ──────────────────────────
-        state.beatAccum += onsetStrength * (0.4 + c.timeSensitivity * 0.06)
-        state.beatAccum = Math.max(0, decay(state.beatAccum, 2.8, dt))
+        state.beatAccum += onset * (0.3 + c.timeSensitivity * 0.04)
+        state.beatAccum = Math.max(0, decay(state.beatAccum, 1.8, dt))
 
-        // ── Continuous rotation ─────────────────────────────────────
-        const spinAudio = audio.momentum * 0.3 + audio.level * 0.15
+        // ── Continuous rotation — momentum-driven, not beat-jerked ──
+        const spinAudio = mom * 0.35 + lvl * 0.1
         const rotationSpeed = c.rotationSpeed * (0.4 + spinAudio)
         state.smoothRotation += rotationSpeed * dt
 
-        // ── Zoom (asymmetric: snap out on beats, settle slowly) ─────
-        const anticipationZoom = 1.0 - state.anticipation * 0.15
-        const beatExplosion = onsetStrength * 0.3 + audio.swell * 0.12
-        const targetZoom = anticipationZoom + beatExplosion + audio.levelShort * 0.1
+        // ── Zoom — gentle swell, not beat explosion ─────────────────
+        const anticipationZoom = 1.0 - state.anticipation * 0.1
+        const zoomSwell = onset * 0.15 + swell * 0.12 + lvl * 0.08
+        const targetZoom = anticipationZoom + zoomSwell
 
         state.smoothZoom = smoothAsymmetric(
             state.smoothZoom, targetZoom,
-            20, 4, dt,
+            6, 2.5, dt,
         )
 
-        // ── Asymmetric energy smoothing ─────────────────────────────
-        const targetGlow = 0.7 + audio.levelShort * 0.5 + onsetStrength * 0.6 + audio.brightness * 0.3
-        const targetCore = 0.8 + audio.bassEnv * 0.6 + onsetStrength * 0.5 + fluxBass * 0.4
-        const targetIris = 0.85 + audio.midEnv * 0.5 + fluxMid * 0.4
+        // ── Energy envelopes — different rates per band ─────────────
+        // Glow: brightness-driven, slow and warm
+        const targetGlow = 0.7 + lvl * 0.35 + onset * 0.25 + state.smoothBrightness * 0.25
+        // Core: bass-driven, slow heave
+        const targetCore = 0.8 + bass * 0.45 + swell * 0.2 + fluxBass * 0.2
+        // Iris: mid-driven, medium pace
+        const targetIris = 0.85 + mid * 0.35 + fluxMid * 0.25
 
-        state.glowEnergy = smoothAsymmetric(state.glowEnergy, targetGlow, 25, 3, dt)
-        state.coreEnergy = smoothAsymmetric(state.coreEnergy, targetCore, 20, 2.5, dt)
-        state.irisEnergy = smoothAsymmetric(state.irisEnergy, targetIris, 15, 3, dt)
+        state.glowEnergy = smoothAsymmetric(state.glowEnergy, targetGlow, 5, 1.8, dt)
+        state.coreEnergy = smoothAsymmetric(state.coreEnergy, targetCore, 4, 1.5, dt)
+        state.irisEnergy = smoothAsymmetric(state.irisEnergy, targetIris, 5, 2, dt)
 
-        // ── Sub-bass displacement ───────────────────────────────────
-        const subBassTarget = audio.bassEnv * 0.6 + fluxBass * 0.8 + onsetStrength * 0.4
+        // ── Sub-bass displacement — slow, tidal ─────────────────────
+        const subBassTarget = bass * 0.5 + fluxBass * 0.5 + onset * 0.2
         state.subBassEnergy = smoothAsymmetric(
             state.subBassEnergy, subBassTarget,
-            30, 2, dt,
+            5, 1.2, dt,
         )
-        state.displacementAngle += dt * 2.5 + audio.momentum * dt * 3.0
+        state.displacementAngle += dt * 1.8 + mom * dt * 2.0
 
-        // ── Wander system ───────────────────────────────────────────
-        const wanderRate = 0.22 + c.wanderSpeed * 0.35 + spinAudio * 0.05
+        // ── Wander system — lazy drift, not twitchy ─────────────────
+        const wanderRate = 0.18 + c.wanderSpeed * 0.25 + mom * 0.03
         const wanderAmplitude = 0.2 + c.wanderSpeed * 0.45
         const wanderTime = state.audioTime * wanderRate
         const pathX = smoothNoise(wanderTime, 0) * wanderAmplitude
         const pathY = smoothNoise(wanderTime, 123.45) * wanderAmplitude
 
-        // Audio pulls using spectral flux for sharper response
-        const bassBlend = audio.bass * 0.4 + audio.bassEnv * 0.3 + fluxBass * 0.3
-        const trebleBlend = audio.treble * 0.4 + audio.trebleEnv * 0.3 + fluxTreble * 0.3
+        // Audio pulls — smoothed band energies, not raw impulses
+        const bassBlend = bass * 0.5 + fluxBass * 0.2
+        const trebleBlend = treb * 0.5 + fluxTreble * 0.2
 
         const wanderNormalized = Math.min(1, c.wanderSpeed / 2.2)
-        const audioWanderScale = 0.35 + wanderNormalized * 0.65
+        const audioWanderScale = 0.3 + wanderNormalized * 0.7
 
         let targetX = pathX + bassBlend * c.bassPull * audioWanderScale
         let targetY = pathY + trebleBlend * c.treblePull * audioWanderScale
@@ -355,22 +398,22 @@ export default effect('Iris', shader, controls, {
         const clampedX = Math.max(-clampRange, Math.min(clampRange, targetX))
         const clampedY = Math.max(-clampRange, Math.min(clampRange, targetY))
 
-        // Responsive smoothing - faster on onsets
-        const wanderResponse = 2.5 + onsetStrength * 3.0 + c.wanderSpeed * 1.4
+        // Smooth wander — no onset acceleration, just steady drift
+        const wanderResponse = 2.0 + c.wanderSpeed * 0.8
         state.smoothMouseX = smoothApproach(state.smoothMouseX, clampedX, wanderResponse, dt)
         state.smoothMouseY = smoothApproach(state.smoothMouseY, clampedY, wanderResponse, dt)
 
         // ── Push uniforms ───────────────────────────────────────────
 
-        // Control uniforms (with audio boosts applied)
+        // Control uniforms (with smoothed audio boosts)
         ctx.setUniform('iScale', c.scale)
         ctx.setUniform('iGlowIntensity', c.glowIntensity)
-        ctx.setUniform('iIrisStrength', c.irisStrength * irisAudioBoost)
-        ctx.setUniform('iCorePulse', c.corePulse * coreAudioBoost)
+        ctx.setUniform('iIrisStrength', c.irisStrength * state.boostIris)
+        ctx.setUniform('iCorePulse', c.corePulse * state.boostCore)
         ctx.setUniform('iFlowDrive', c.flowDrive * flowBeatMod)
         ctx.setUniform('iColorAccent', c.colorAccent * colorAudioAccent)
         ctx.setUniform('iColorContrast', c.colorContrast * colorAudioContrast)
-        ctx.setUniform('iBandSharpness', c.bandSharpness * bandAudioBoost)
+        ctx.setUniform('iBandSharpness', c.bandSharpness * state.boostBand)
         ctx.setUniform('iParticleDensity', c.particleDensity * particleAudioDensity)
         ctx.setUniform('iParticleSize', c.particleSize * particleAudioSize)
         ctx.setUniform('iParticleColorMix', c.particleColorMix * particleAudioColor)
