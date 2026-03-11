@@ -80,12 +80,12 @@ impl InputSource for ReconfigurableAudioSource {
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
         let mut data = AudioData::silence();
-        data.rms_level = if matches!(self.config.source, AudioSourceType::None) || !self.capture_active
-        {
-            0.0
-        } else {
-            0.5
-        };
+        data.rms_level =
+            if matches!(self.config.source, AudioSourceType::None) || !self.capture_active {
+                0.0
+            } else {
+                0.5
+            };
         Ok(InputData::Audio(data))
     }
 

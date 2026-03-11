@@ -521,8 +521,10 @@ async fn resolve_frame_canvas(
 async fn current_effect_demand(state: &RenderThreadState) -> EffectDemand {
     let engine = state.effect_engine.lock().await;
     let effect_running = engine.is_running();
-    let audio_capture_active =
-        effect_running && engine.active_metadata().is_some_and(|meta| meta.audio_reactive);
+    let audio_capture_active = effect_running
+        && engine
+            .active_metadata()
+            .is_some_and(|meta| meta.audio_reactive);
     EffectDemand {
         effect_running,
         audio_capture_active,

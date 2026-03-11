@@ -254,10 +254,7 @@ impl InputSource for DemandGatedMockAudioSource {
     }
 }
 
-async fn wait_for_audio_capture_transition(
-    transitions: &Arc<StdMutex<Vec<bool>>>,
-    expected: bool,
-) {
+async fn wait_for_audio_capture_transition(transitions: &Arc<StdMutex<Vec<bool>>>, expected: bool) {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             let seen = transitions

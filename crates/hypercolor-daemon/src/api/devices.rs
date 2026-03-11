@@ -1,6 +1,6 @@
 //! Device endpoints — `/api/v1/devices/*`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -1044,6 +1044,9 @@ pub async fn create_logical_device(
         return ApiError::internal(format!("Failed to persist logical devices: {error}"));
     }
 
+    let runtime = discovery_runtime(&state);
+    let connected_only = HashSet::from([physical_id]);
+    discovery::sync_active_layout_connectivity(&runtime, Some(&connected_only)).await;
     sync_live_logical_mappings_for_device(&state, physical_id).await;
 
     let physical_index = build_physical_index(std::iter::once((
@@ -1167,6 +1170,9 @@ pub async fn update_logical_device(
         return ApiError::internal(format!("Failed to persist logical devices: {error}"));
     }
 
+    let runtime = discovery_runtime(&state);
+    let connected_only = HashSet::from([existing.physical_device_id]);
+    discovery::sync_active_layout_connectivity(&runtime, Some(&connected_only)).await;
     sync_live_logical_mappings_for_device(&state, existing.physical_device_id).await;
 
     let physical_index = build_physical_index(std::iter::once((
@@ -1210,6 +1216,9 @@ pub async fn delete_logical_device(
         return ApiError::internal(format!("Failed to persist logical devices: {error}"));
     }
 
+    let runtime = discovery_runtime(&state);
+    let connected_only = HashSet::from([existing.physical_device_id]);
+    discovery::sync_active_layout_connectivity(&runtime, Some(&connected_only)).await;
     sync_live_logical_mappings_for_device(&state, existing.physical_device_id).await;
 
     ApiResponse::ok(serde_json::json!({

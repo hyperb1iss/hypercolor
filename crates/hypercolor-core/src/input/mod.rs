@@ -162,9 +162,7 @@ impl InputManager {
                 source.reconfigure_audio(&effective_config, display_name, capture_active)?;
                 info!(
                     source = display_name,
-                    enabled,
-                    capture_active,
-                    "Reconfigured live audio input source"
+                    enabled, capture_active, "Reconfigured live audio input source"
                 );
                 return Ok(());
             }
@@ -180,8 +178,7 @@ impl InputManager {
         self.add_source(Box::new(audio_input));
         info!(
             source = display_name,
-            capture_active,
-            "Added live audio input source"
+            capture_active, "Added live audio input source"
         );
         Ok(())
     }
@@ -198,7 +195,10 @@ impl InputManager {
         for source in &mut self.sources {
             if source.is_audio_source() {
                 source.set_audio_capture_active(active)?;
-                info!(source = source.name(), active, "Updated audio capture demand");
+                info!(
+                    source = source.name(),
+                    active, "Updated audio capture demand"
+                );
             }
         }
 

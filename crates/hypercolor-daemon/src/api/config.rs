@@ -286,7 +286,10 @@ async fn current_live_audio_capture_demand(state: &Arc<AppState>) -> bool {
     }
 
     let engine = state.effect_engine.lock().await;
-    engine.is_running() && engine.active_metadata().is_some_and(|metadata| metadata.audio_reactive)
+    engine.is_running()
+        && engine
+            .active_metadata()
+            .is_some_and(|metadata| metadata.audio_reactive)
 }
 
 fn audio_pipeline_config(config: &HypercolorConfig) -> AudioPipelineConfig {
