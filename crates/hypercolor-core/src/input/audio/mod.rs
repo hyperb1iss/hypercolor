@@ -222,6 +222,18 @@ impl AudioAnalyzer {
         let sample_rate = self.fft.sample_rate();
         *self = Self::with_sample_rate(&config, sample_rate);
     }
+
+    /// Current hardware sample rate used by the analyzer.
+    #[must_use]
+    pub fn sample_rate_hz(&self) -> u32 {
+        self.fft.sample_rate()
+    }
+
+    /// Replace the pipeline config while preserving the current hardware sample rate.
+    pub fn reconfigure(&mut self, config: &AudioPipelineConfig) {
+        let sample_rate = self.fft.sample_rate();
+        *self = Self::with_sample_rate(config, sample_rate);
+    }
 }
 
 // ── AudioInput (InputSource implementation) ──────────────────────────────
@@ -233,8 +245,10 @@ impl AudioAnalyzer {
 /// from a callback thread. For testing, call [`push_samples`](AudioInput::push_samples)
 /// directly with synthetic data.
 pub struct AudioInput {
+    host: cpal::Host,
     name: String,
     running: bool,
+    capture_active: bool,
     config: AudioPipelineConfig,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
     stream: Option<Stream>,
@@ -246,8 +260,10 @@ impl AudioInput {
     #[must_use]
     pub fn new(config: &AudioPipelineConfig) -> Self {
         Self {
+            host: cpal::default_host(),
             name: "AudioInput".to_owned(),
             running: false,
+            capture_active: false,
             config: config.clone(),
             analyzer: Arc::new(Mutex::new(AudioAnalyzer::new(config))),
             stream: None,
@@ -278,9 +294,24 @@ impl AudioInput {
             .expect("audio analyzer mutex should not be poisoned")
     }
 
+    /// Set whether the capture stream should actively pull from hardware.
+    ///
+    /// This keeps the input source registered while allowing the render loop to
+    /// demand-gate live audio capture based on the active effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stream cannot be resumed after activation.
+    pub fn set_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.set_capture_active_state(active)
+    }
+
     fn sample_with_dt(&mut self, dt: f32) -> anyhow::Result<InputData> {
         if !self.running {
             return Ok(InputData::None);
+        }
+        if !self.capture_active {
+            return Ok(InputData::Audio(AudioData::silence()));
         }
 
         let dt = if dt.is_finite() && dt > 0.0 {
@@ -302,6 +333,206 @@ impl AudioInput {
             None => Ok(InputData::None),
         }
     }
+
+    fn apply_analyzer_config(&mut self, config: &AudioPipelineConfig) {
+        if let Ok(mut analyzer) = self.analyzer.lock() {
+            analyzer.reconfigure(config);
+        } else {
+            self.analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(config)));
+        }
+    }
+
+    fn start_stream_for_config(
+        &self,
+        config: &AudioPipelineConfig,
+    ) -> anyhow::Result<(Arc<Mutex<AudioAnalyzer>>, Option<Stream>)> {
+        let analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(config)));
+        if matches!(config.source, AudioSourceType::None) {
+            return Ok((analyzer, None));
+        }
+
+        let stream = build_capture_stream(&self.host, config, Arc::clone(&analyzer))?;
+        stream
+            .play()
+            .context("failed to start audio capture stream")?;
+
+        Ok((analyzer, Some(stream)))
+    }
+
+    fn reset_analyzer(&mut self) {
+        if let Ok(mut analyzer) = self.analyzer.lock() {
+            analyzer.reset();
+        } else {
+            self.analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(&self.config)));
+        }
+    }
+
+    fn pause_capture_stream(&mut self) {
+        if let Some(stream) = &self.stream {
+            if let Err(error) = stream.pause() {
+                tracing::warn!(
+                    input = %self.name,
+                    source = ?self.config.source,
+                    %error,
+                    "Failed to pause audio capture stream"
+                );
+            } else {
+                tracing::info!(
+                    input = %self.name,
+                    source = ?self.config.source,
+                    "Audio capture stream paused"
+                );
+            }
+        }
+
+        self.degraded_to_silence = false;
+        self.reset_analyzer();
+    }
+
+    fn start_capture_stream(&mut self) -> anyhow::Result<()> {
+        if matches!(self.config.source, AudioSourceType::None) {
+            self.stream = None;
+            self.degraded_to_silence = false;
+            return Ok(());
+        }
+
+        if let Some(stream) = &self.stream {
+            stream
+                .play()
+                .context("failed to resume audio capture stream")?;
+            self.degraded_to_silence = false;
+            tracing::info!(
+                input = %self.name,
+                source = ?self.config.source,
+                "Audio capture stream resumed"
+            );
+            return Ok(());
+        }
+
+        match build_capture_stream(&self.host, &self.config, Arc::clone(&self.analyzer)) {
+            Ok(stream) => {
+                if let Err(error) = stream
+                    .play()
+                    .context("failed to start audio capture stream")
+                {
+                    self.degraded_to_silence = true;
+                    tracing::warn!(
+                        input = %self.name,
+                        source = ?self.config.source,
+                        %error,
+                        "Audio capture could not start; LightScript audio input will fall back to silence"
+                    );
+                } else {
+                    tracing::info!(
+                        input = %self.name,
+                        source = ?self.config.source,
+                        "Audio capture stream started"
+                    );
+                    self.degraded_to_silence = false;
+                    self.stream = Some(stream);
+                }
+            }
+            Err(error) => {
+                self.degraded_to_silence = true;
+                tracing::warn!(
+                    input = %self.name,
+                    source = ?self.config.source,
+                    %error,
+                    "Audio capture unavailable; LightScript audio input will fall back to silence"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn set_capture_active_state(&mut self, active: bool) -> anyhow::Result<()> {
+        if self.capture_active == active {
+            if active && self.running && self.stream.is_none() {
+                self.start_capture_stream()?;
+            }
+            return Ok(());
+        }
+
+        self.capture_active = active;
+
+        if !self.running {
+            return Ok(());
+        }
+
+        if active {
+            self.start_capture_stream()
+        } else {
+            self.pause_capture_stream();
+            Ok(())
+        }
+    }
+
+    /// Apply a runtime audio config change without rebuilding the whole input manager.
+    ///
+    /// For source changes, a replacement stream is opened against the existing
+    /// host before the previous stream is paused and dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the new stream cannot be created or started.
+    pub fn reconfigure_live(
+        &mut self,
+        config: &AudioPipelineConfig,
+        name: impl Into<String>,
+        capture_active: bool,
+    ) -> anyhow::Result<()> {
+        let next_name = name.into();
+        let source_changed = self.config.source != config.source;
+
+        self.name = next_name;
+        self.config = config.clone();
+        self.running = true;
+
+        if !source_changed {
+            self.degraded_to_silence = false;
+            self.apply_analyzer_config(config);
+            self.set_capture_active_state(capture_active)?;
+            tracing::info!(
+                input = %self.name,
+                source = ?self.config.source,
+                capture_active,
+                "Live audio config updated without reopening capture stream"
+            );
+            return Ok(());
+        }
+
+        if capture_active && !matches!(config.source, AudioSourceType::None) {
+            let (next_analyzer, next_stream) = self.start_stream_for_config(config)?;
+            if let Some(previous_stream) = &self.stream {
+                let _ = previous_stream.pause();
+            }
+            let previous_stream = self.stream.take();
+            self.analyzer = next_analyzer;
+            self.stream = next_stream;
+            self.degraded_to_silence = false;
+            drop(previous_stream);
+        } else {
+            if let Some(previous_stream) = &self.stream {
+                let _ = previous_stream.pause();
+            }
+            let previous_stream = self.stream.take();
+            self.analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(config)));
+            self.degraded_to_silence = false;
+            drop(previous_stream);
+        }
+
+        self.set_capture_active_state(capture_active)?;
+
+        tracing::info!(
+            input = %self.name,
+            source = ?self.config.source,
+            capture_active,
+            "Live audio capture source switched"
+        );
+
+        Ok(())
+    }
 }
 
 impl InputSource for AudioInput {
@@ -322,47 +553,24 @@ impl InputSource for AudioInput {
             return Ok(());
         }
 
-        match build_capture_stream(&self.config, Arc::clone(&self.analyzer)) {
-            Ok(stream) => {
-                if let Err(error) = stream
-                    .play()
-                    .context("failed to start audio capture stream")
-                {
-                    self.degraded_to_silence = true;
-                    tracing::warn!(
-                        source = ?self.config.source,
-                        %error,
-                        "Audio capture could not start; LightScript audio input will fall back to silence"
-                    );
-                } else {
-                    tracing::info!(
-                        input = %self.name,
-                        source = ?self.config.source,
-                        "Audio capture stream started"
-                    );
-                    self.stream = Some(stream);
-                }
-            }
-            Err(error) => {
-                self.degraded_to_silence = true;
-                tracing::warn!(
-                    source = ?self.config.source,
-                    %error,
-                    "Audio capture unavailable; LightScript audio input will fall back to silence"
-                );
-            }
+        if !self.capture_active {
+            tracing::debug!(
+                input = %self.name,
+                source = ?self.config.source,
+                "Audio input armed but idle until an audio-reactive effect requests capture"
+            );
+            return Ok(());
         }
 
-        Ok(())
+        self.start_capture_stream()
     }
 
     fn stop(&mut self) {
         self.stream = None;
         self.running = false;
+        self.capture_active = false;
         self.degraded_to_silence = false;
-        if let Ok(mut analyzer) = self.analyzer.lock() {
-            analyzer.reset();
-        }
+        self.reset_analyzer();
     }
 
     fn sample(&mut self) -> anyhow::Result<InputData> {
@@ -376,14 +584,31 @@ impl InputSource for AudioInput {
     fn is_running(&self) -> bool {
         self.running
     }
+
+    fn is_audio_source(&self) -> bool {
+        true
+    }
+
+    fn reconfigure_audio(
+        &mut self,
+        config: &AudioPipelineConfig,
+        name: &str,
+        capture_active: bool,
+    ) -> anyhow::Result<()> {
+        self.reconfigure_live(config, name, capture_active)
+    }
+
+    fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.set_capture_active_state(active)
+    }
 }
 
 fn build_capture_stream(
+    host: &cpal::Host,
     config: &AudioPipelineConfig,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
 ) -> anyhow::Result<Stream> {
-    let host = cpal::default_host();
-    let device = select_input_device(&host, &config.source)?;
+    let device = select_input_device(host, &config.source)?;
     let device_name = device.description().map_or_else(
         |_| "<unknown-audio-device>".to_owned(),
         |description| description.name().to_owned(),

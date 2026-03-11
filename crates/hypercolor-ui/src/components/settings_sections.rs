@@ -207,14 +207,14 @@ pub fn AudioSection(
             <AudioVuMeter enabled=enabled />
             <SettingToggle
                 label="Enabled"
-                description="Enable audio capture and spectrum analysis for reactive effects; changes apply after daemon restart"
+                description="Enable audio capture and spectrum analysis for reactive effects"
                 key="audio.enabled"
                 value=enabled
                 on_change=on_change
             />
             <SettingDropdown
                 label="Device"
-                description="Audio source for reactive effects; changes apply after daemon restart"
+                description="Audio source for reactive effects; applies live when the daemon can switch safely"
                 key="audio.device"
                 value=device
                 options=audio_devices

@@ -192,6 +192,89 @@ impl InputSource for MockAudioSource {
     }
 }
 
+struct DemandGatedMockAudioSource {
+    running: bool,
+    capture_active: bool,
+    audio: AudioData,
+    transitions: Arc<StdMutex<Vec<bool>>>,
+}
+
+impl DemandGatedMockAudioSource {
+    fn new(audio: AudioData, transitions: Arc<StdMutex<Vec<bool>>>) -> Self {
+        Self {
+            running: false,
+            capture_active: false,
+            audio,
+            transitions,
+        }
+    }
+}
+
+impl InputSource for DemandGatedMockAudioSource {
+    fn name(&self) -> &'static str {
+        "demand_gated_audio"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+        self.capture_active = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        if !self.running {
+            return Ok(InputData::None);
+        }
+        if !self.capture_active {
+            return Ok(InputData::Audio(AudioData::silence()));
+        }
+
+        Ok(InputData::Audio(self.audio.clone()))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_audio_source(&self) -> bool {
+        true
+    }
+
+    fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.capture_active = active;
+        self.transitions
+            .lock()
+            .expect("transition log should lock")
+            .push(active);
+        Ok(())
+    }
+}
+
+async fn wait_for_audio_capture_transition(
+    transitions: &Arc<StdMutex<Vec<bool>>>,
+    expected: bool,
+) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let seen = transitions
+                .lock()
+                .expect("transition log should lock")
+                .last()
+                .copied();
+            if seen == Some(expected) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("expected audio capture transition");
+}
+
 fn make_render_state(
     effect_engine: EffectEngine,
     spatial_engine: SpatialEngine,
@@ -388,6 +471,85 @@ async fn render_thread_publishes_audio_level_updates_for_active_effects() {
     assert!(bass > mid);
     assert!(mid > treble);
     assert!(beat);
+}
+
+#[tokio::test]
+async fn render_thread_gates_audio_capture_to_audio_reactive_effects() {
+    let mut effect_engine = EffectEngine::new();
+    effect_engine
+        .activate(
+            Box::new(MockEffectRenderer::solid(24, 32, 48)),
+            MockEffectRenderer::sample_metadata("solid-idle"),
+        )
+        .expect("activate non-audio effect");
+
+    let state = make_render_state(
+        effect_engine,
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+
+    let mut audio = AudioData::silence();
+    audio.rms_level = 0.7;
+    let transitions = Arc::new(StdMutex::new(Vec::new()));
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(DemandGatedMockAudioSource::new(
+            audio,
+            Arc::clone(&transitions),
+        )));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    wait_for_audio_capture_transition(&transitions, false).await;
+
+    {
+        let mut engine = state.effect_engine.lock().await;
+        let mut metadata = MockEffectRenderer::sample_metadata("audio-burst");
+        metadata.audio_reactive = true;
+        engine
+            .activate(
+                Box::new(MockEffectRenderer::audio_reactive(255, 64, 32)),
+                metadata,
+            )
+            .expect("activate audio-reactive effect");
+    }
+
+    wait_for_audio_capture_transition(&transitions, true).await;
+
+    {
+        let mut engine = state.effect_engine.lock().await;
+        engine
+            .activate(
+                Box::new(MockEffectRenderer::solid(8, 16, 24)),
+                MockEffectRenderer::sample_metadata("solid-return"),
+            )
+            .expect("reactivate non-audio effect");
+    }
+
+    wait_for_audio_capture_transition(&transitions, false).await;
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let transitions = transitions
+        .lock()
+        .expect("transition log should lock")
+        .clone();
+    assert_eq!(transitions, vec![false, true, false]);
 }
 
 // ── Frame Pipeline Tests ────────────────────────────────────────────────────

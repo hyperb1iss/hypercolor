@@ -12,7 +12,7 @@ use axum::extract::State;
 use axum::response::Response;
 use cpal::traits::{DeviceTrait, HostTrait};
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
@@ -141,6 +141,7 @@ fn audio_device_options(current: &str) -> Vec<AudioDeviceInfo> {
 fn enumerate_audio_input_devices() -> anyhow::Result<Vec<AudioDeviceInfo>> {
     let host = cpal::default_host();
     let mut devices = Vec::new();
+    let mut filtered = Vec::new();
 
     for device in host
         .input_devices()
@@ -159,12 +160,28 @@ fn enumerate_audio_input_devices() -> anyhow::Result<Vec<AudioDeviceInfo>> {
             continue;
         }
 
+        if !should_offer_named_audio_device(&name) {
+            filtered.push(name);
+            continue;
+        }
+
         devices.push(AudioDeviceInfo {
             id: name.clone(),
             name: name.clone(),
             description: name,
         });
     }
+
+    if !filtered.is_empty() {
+        debug!(
+            filtered = ?filtered,
+            "Filtered unsupported or synthetic audio devices from settings input list"
+        );
+    }
+    debug!(
+        count = devices.len(),
+        "Enumerated named audio capture devices"
+    );
 
     Ok(devices)
 }
@@ -205,6 +222,14 @@ fn dedupe_audio_devices(devices: &mut Vec<AudioDeviceInfo>) {
     devices.retain(|device| seen.insert(device.id.to_ascii_lowercase()));
 }
 
+#[doc(hidden)]
+pub fn should_offer_named_audio_device(name: &str) -> bool {
+    let normalized = name.trim();
+    !normalized.is_empty()
+        && !is_monitorish_device_name(normalized)
+        && !is_serverish_device_name(normalized)
+}
+
 fn normalize_audio_device_id(device: &str) -> String {
     let trimmed = device.trim();
     if trimmed.eq_ignore_ascii_case("default") || trimmed.eq_ignore_ascii_case("auto") {
@@ -216,6 +241,26 @@ fn normalize_audio_device_id(device: &str) -> String {
     } else {
         trimmed.to_owned()
     }
+}
+
+fn is_serverish_device_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    [
+        "sound server",
+        "pipewire",
+        "pulseaudio",
+        "default alsa output",
+        "default output",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn is_monitorish_device_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    ["monitor", "loopback", "what u hear", "stereo mix"]
+        .iter()
+        .any(|needle| normalized.contains(needle))
 }
 
 #[allow(

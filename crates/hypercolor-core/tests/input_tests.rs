@@ -1,7 +1,7 @@
 //! Tests for the input source abstraction layer.
 
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
-use hypercolor_core::types::audio::AudioData;
+use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
 use hypercolor_core::types::event::ZoneColors;
 
 // ── Mock Sources ───────────────────────────────────────────────────────────
@@ -43,6 +43,76 @@ impl InputSource for MockAudioSource {
 
     fn is_running(&self) -> bool {
         self.running
+    }
+}
+
+struct ReconfigurableAudioSource {
+    running: bool,
+    capture_active: bool,
+    config: AudioPipelineConfig,
+    name: String,
+}
+
+impl ReconfigurableAudioSource {
+    fn new() -> Self {
+        Self {
+            running: false,
+            capture_active: false,
+            config: AudioPipelineConfig::default(),
+            name: "AudioInput(default)".to_owned(),
+        }
+    }
+}
+
+impl InputSource for ReconfigurableAudioSource {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        let mut data = AudioData::silence();
+        data.rms_level = if matches!(self.config.source, AudioSourceType::None) || !self.capture_active
+        {
+            0.0
+        } else {
+            0.5
+        };
+        Ok(InputData::Audio(data))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_audio_source(&self) -> bool {
+        true
+    }
+
+    fn reconfigure_audio(
+        &mut self,
+        config: &AudioPipelineConfig,
+        name: &str,
+        capture_active: bool,
+    ) -> anyhow::Result<()> {
+        self.config = config.clone();
+        self.name = name.to_owned();
+        self.running = true;
+        self.capture_active = capture_active;
+        Ok(())
+    }
+
+    fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        self.capture_active = active;
+        Ok(())
     }
 }
 
@@ -390,4 +460,60 @@ fn screen_data_empty_zones_is_valid() {
         }
         _ => panic!("expected InputData::Screen"),
     }
+}
+
+#[test]
+fn manager_reconfigures_existing_audio_source_live() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(ReconfigurableAudioSource::new()));
+
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::Named("microphone".to_owned()),
+        ..AudioPipelineConfig::default()
+    };
+
+    mgr.apply_audio_runtime_config(true, &config, "AudioInput(microphone)", false)
+        .expect("audio reconfigure should succeed");
+
+    assert_eq!(mgr.source_count(), 1);
+    assert_eq!(mgr.source_names(), vec!["AudioInput(microphone)"]);
+
+    let samples = mgr.sample_all();
+    match &samples[0] {
+        InputData::Audio(audio) => assert!((audio.rms_level - 0.0).abs() < f32::EPSILON),
+        _ => panic!("expected audio data"),
+    }
+
+    mgr.set_audio_capture_active(true)
+        .expect("audio capture demand update should succeed");
+
+    let samples = mgr.sample_all();
+    match &samples[0] {
+        InputData::Audio(audio) => assert!((audio.rms_level - 0.5).abs() < f32::EPSILON),
+        _ => panic!("expected audio data"),
+    }
+}
+
+#[test]
+fn manager_adds_audio_source_when_live_audio_is_enabled() {
+    let mut mgr = InputManager::new();
+
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+
+    mgr.apply_audio_runtime_config(false, &config, "AudioInput(none)", false)
+        .expect("disabling absent audio source should be a no-op");
+    assert_eq!(mgr.source_count(), 0);
+
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::Microphone,
+        ..AudioPipelineConfig::default()
+    };
+    mgr.apply_audio_runtime_config(true, &config, "AudioInput(microphone)", false)
+        .expect("enabling audio should add a source");
+
+    assert_eq!(mgr.source_count(), 1);
+    assert_eq!(mgr.source_names(), vec!["AudioInput(microphone)"]);
 }

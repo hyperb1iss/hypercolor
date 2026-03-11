@@ -12,6 +12,9 @@ mod traits;
 pub use interaction::InteractionInput;
 pub use traits::{InputData, InputSource, InteractionData, KeyboardData, MouseData, ScreenData};
 
+use crate::input::audio::AudioInput;
+use crate::types::audio::AudioPipelineConfig;
+
 use tracing::{error, info};
 
 // ── InputManager ───────────────────────────────────────────────────────────
@@ -128,6 +131,78 @@ impl InputManager {
             info!(source = source.name(), "Stopping input source");
             source.stop();
         }
+    }
+
+    /// Apply a live audio config change without rebuilding unrelated sources.
+    ///
+    /// If an audio source already exists, it is reconfigured in place. If audio
+    /// is being enabled and no audio source exists yet, one is created and
+    /// started. Disabling audio reconfigures the existing source to silence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the live audio source switch fails.
+    pub fn apply_audio_runtime_config(
+        &mut self,
+        enabled: bool,
+        config: &AudioPipelineConfig,
+        display_name: &str,
+        capture_active: bool,
+    ) -> anyhow::Result<()> {
+        let effective_config = if enabled {
+            config.clone()
+        } else {
+            let mut disabled = config.clone();
+            disabled.source = crate::types::audio::AudioSourceType::None;
+            disabled
+        };
+
+        for source in &mut self.sources {
+            if source.is_audio_source() {
+                source.reconfigure_audio(&effective_config, display_name, capture_active)?;
+                info!(
+                    source = display_name,
+                    enabled,
+                    capture_active,
+                    "Reconfigured live audio input source"
+                );
+                return Ok(());
+            }
+        }
+
+        if !enabled {
+            return Ok(());
+        }
+
+        let mut audio_input = AudioInput::new(&effective_config).with_name(display_name.to_owned());
+        audio_input.set_capture_active(capture_active)?;
+        audio_input.start()?;
+        self.add_source(Box::new(audio_input));
+        info!(
+            source = display_name,
+            capture_active,
+            "Added live audio input source"
+        );
+        Ok(())
+    }
+
+    /// Toggle live audio capture for any registered audio sources.
+    ///
+    /// This keeps the input graph intact while allowing the audio backend to
+    /// pause or resume hardware capture based on current render demand.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an audio source cannot update its capture state.
+    pub fn set_audio_capture_active(&mut self, active: bool) -> anyhow::Result<()> {
+        for source in &mut self.sources {
+            if source.is_audio_source() {
+                source.set_audio_capture_active(active)?;
+                info!(source = source.name(), active, "Updated audio capture demand");
+            }
+        }
+
+        Ok(())
     }
 }
 

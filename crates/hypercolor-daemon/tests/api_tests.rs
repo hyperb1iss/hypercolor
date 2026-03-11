@@ -436,6 +436,33 @@ async fn audio_devices_normalize_legacy_aliases() {
     assert_eq!(json["data"]["current"], "microphone");
 }
 
+#[test]
+fn audio_device_filter_hides_synthetic_outputs_from_named_input_list() {
+    assert!(
+        !hypercolor_daemon::api::settings::should_offer_named_audio_device("PipeWire Sound Server",)
+    );
+    assert!(
+        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+            "PulseAudio Sound Server",
+        )
+    );
+    assert!(
+        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+            "Monitor of Built-in Audio Analog Stereo",
+        )
+    );
+    assert!(
+        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+            "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor",
+        )
+    );
+    assert!(
+        hypercolor_daemon::api::settings::should_offer_named_audio_device(
+            "Razer Seiren V3 Chroma, USB Audio",
+        )
+    );
+}
+
 #[tokio::test]
 async fn config_set_audio_device_persists_without_live_rebuild_by_default() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
@@ -515,7 +542,7 @@ async fn config_set_audio_device_rebuilds_live_input_manager_when_requested() {
 
     {
         let input_manager = state.input_manager.lock().await;
-        assert_eq!(input_manager.source_count(), 2);
+        assert_eq!(input_manager.source_count(), 1);
         assert!(
             input_manager
                 .source_names()

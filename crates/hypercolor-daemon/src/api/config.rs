@@ -2,18 +2,17 @@
 
 use std::sync::Arc;
 
-use anyhow::anyhow;
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::response::Response;
 use serde::Deserialize;
-use tracing::warn;
+use tracing::{info, warn};
 
+use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::HypercolorConfig;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
-use crate::startup::build_input_manager;
 
 #[derive(Debug, Deserialize)]
 pub struct GetConfigQuery {
@@ -209,9 +208,22 @@ async fn maybe_apply_audio_config_change(
     key: Option<&str>,
     live_requested: bool,
 ) -> bool {
-    if !live_requested || !should_reconfigure_audio_inputs(key) {
+    if !should_reconfigure_audio_inputs(key) {
         return false;
     }
+
+    if !live_requested {
+        info!(
+            key = key.unwrap_or("<all>"),
+            "Persisted audio config change without live apply; restart the daemon to activate it"
+        );
+        return false;
+    }
+
+    info!(
+        key = key.unwrap_or("<all>"),
+        "Applying live audio config change"
+    );
 
     match reconfigure_input_manager(state).await {
         Ok(()) => true,
@@ -232,26 +244,83 @@ async fn reconfigure_input_manager(state: &Arc<AppState>) -> anyhow::Result<()> 
     };
 
     let latest_config = manager.get();
-    let mut replacement = build_input_manager(latest_config.as_ref());
+    let capture_active = current_live_audio_capture_demand(state).await;
     let mut input_manager = state.input_manager.lock().await;
-    let mut previous = std::mem::take(&mut *input_manager);
+    let previous_sources = input_manager.source_names();
+    let audio_device = latest_config.audio.device.clone();
+    let effective_config = audio_pipeline_config(latest_config.as_ref());
+    let replacement_sources = if latest_config.audio.enabled {
+        vec![format!("AudioInput({audio_device})")]
+    } else {
+        Vec::new()
+    };
 
-    previous.stop_all();
-    match replacement.start_all() {
-        Ok(()) => {
-            *input_manager = replacement;
-            Ok(())
-        }
-        Err(error) => {
-            if let Err(restart_error) = previous.start_all() {
-                *input_manager = previous;
-                return Err(anyhow!(
-                    "failed to start rebuilt input sources: {error}; previous input sources could not be restarted cleanly: {restart_error}"
-                ));
-            }
+    info!(
+        audio_enabled = latest_config.audio.enabled,
+        audio_device = %audio_device,
+        capture_active,
+        previous_sources = ?previous_sources,
+        replacement_sources = ?replacement_sources,
+        "Applying targeted live audio config change"
+    );
 
-            *input_manager = previous;
-            Err(anyhow!("failed to start rebuilt input sources: {error}"))
-        }
+    input_manager.apply_audio_runtime_config(
+        latest_config.audio.enabled,
+        &effective_config,
+        &format!("AudioInput({audio_device})"),
+        capture_active,
+    )?;
+
+    info!(
+        audio_device = %audio_device,
+        sources = ?input_manager.source_names(),
+        "Live audio config change applied"
+    );
+    Ok(())
+}
+
+async fn current_live_audio_capture_demand(state: &Arc<AppState>) -> bool {
+    let power_state = *state.power_state.borrow();
+    if power_state.sleeping {
+        return false;
     }
+
+    let engine = state.effect_engine.lock().await;
+    engine.is_running() && engine.active_metadata().is_some_and(|metadata| metadata.audio_reactive)
+}
+
+fn audio_pipeline_config(config: &HypercolorConfig) -> AudioPipelineConfig {
+    AudioPipelineConfig {
+        source: audio_source_from_device(&config.audio.device, config.audio.enabled),
+        fft_size: usize::try_from(config.audio.fft_size).unwrap_or(1024),
+        smoothing: config.audio.smoothing.clamp(0.0, 1.0),
+        gain: 1.0,
+        noise_floor: noise_gate_to_db(config.audio.noise_gate),
+        beat_sensitivity: config.audio.beat_sensitivity.max(0.01),
+    }
+}
+
+fn audio_source_from_device(device: &str, enabled: bool) -> AudioSourceType {
+    if !enabled {
+        return AudioSourceType::None;
+    }
+
+    let normalized = device.trim();
+    if normalized.eq_ignore_ascii_case("none") {
+        AudioSourceType::None
+    } else if normalized.eq_ignore_ascii_case("auto") || normalized.eq_ignore_ascii_case("default")
+    {
+        AudioSourceType::SystemMonitor
+    } else if normalized.eq_ignore_ascii_case("mic")
+        || normalized.eq_ignore_ascii_case("microphone")
+    {
+        AudioSourceType::Microphone
+    } else {
+        AudioSourceType::Named(normalized.to_owned())
+    }
+}
+
+fn noise_gate_to_db(noise_gate: f32) -> f32 {
+    let linear = noise_gate.clamp(0.000_001, 1.0);
+    20.0 * linear.log10()
 }

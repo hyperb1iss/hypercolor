@@ -4,7 +4,7 @@
 //! into the effect pipeline. Each source produces [`InputData`] snapshots that
 //! the render loop consumes per frame.
 
-use crate::types::audio::AudioData;
+use crate::types::audio::{AudioData, AudioPipelineConfig};
 use crate::types::event::ZoneColors;
 
 // ── InputData ──────────────────────────────────────────────────────────────
@@ -119,4 +119,37 @@ pub trait InputSource: Send {
 
     /// Whether the source is actively capturing.
     fn is_running(&self) -> bool;
+
+    /// Whether this source supports runtime audio reconfiguration.
+    fn is_audio_source(&self) -> bool {
+        false
+    }
+
+    /// Reconfigure a running audio source without rebuilding the full input manager.
+    ///
+    /// Non-audio sources can ignore this by keeping the default implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source cannot apply the new audio configuration.
+    fn reconfigure_audio(
+        &mut self,
+        _config: &AudioPipelineConfig,
+        _name: &str,
+        _capture_active: bool,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    /// Toggle whether an audio source should actively capture from hardware.
+    ///
+    /// Audio sources can use this to pause their underlying stream while
+    /// remaining registered with the input manager.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source cannot update its capture state.
+    fn set_audio_capture_active(&mut self, _active: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
 }

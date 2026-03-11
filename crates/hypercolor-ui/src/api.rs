@@ -1130,9 +1130,11 @@ pub async fn fetch_config() -> Result<hypercolor_types::config::HypercolorConfig
 
 /// Set a single config key. Value is JSON-stringified per daemon contract.
 pub async fn set_config_value(key: &str, value: &serde_json::Value) -> Result<(), String> {
+    let live = key == "audio" || key.starts_with("audio.");
     let body = serde_json::json!({
         "key": key,
         "value": serde_json::to_string(value).unwrap_or_default(),
+        "live": live,
     });
 
     let resp = Request::post("/api/v1/config/set")
@@ -1151,7 +1153,10 @@ pub async fn set_config_value(key: &str, value: &serde_json::Value) -> Result<()
 
 /// Reset a config key or section to defaults.
 pub async fn reset_config_key(key: &str) -> Result<(), String> {
-    let body = serde_json::json!({ "key": key });
+    let body = serde_json::json!({
+        "key": key,
+        "live": key == "audio" || key.starts_with("audio."),
+    });
 
     let resp = Request::post("/api/v1/config/reset")
         .header("Content-Type", "application/json")
