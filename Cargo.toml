@@ -92,6 +92,7 @@ realfft = "3.4"
 rustfft = "6.2"
 cpal = "0.17.3"
 device_query = "4.0.1"
+evdev = "0.13.2"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json"] }

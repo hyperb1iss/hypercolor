@@ -252,6 +252,7 @@ pub struct AudioInput {
     config: AudioPipelineConfig,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
     stream: Option<Stream>,
+    parked_source: Option<AudioSourceType>,
     degraded_to_silence: bool,
 }
 
@@ -267,6 +268,7 @@ impl AudioInput {
             config: config.clone(),
             analyzer: Arc::new(Mutex::new(AudioAnalyzer::new(config))),
             stream: None,
+            parked_source: None,
             degraded_to_silence: false,
         }
     }
@@ -389,9 +391,35 @@ impl AudioInput {
         self.reset_analyzer();
     }
 
+    fn drop_capture_stream(&mut self, reason: &'static str) {
+        let stream_source = self
+            .parked_source
+            .clone()
+            .unwrap_or_else(|| self.config.source.clone());
+        let previous_stream = self.stream.take();
+        self.parked_source = None;
+
+        if previous_stream.is_none() {
+            tracing::debug!(
+                input = %self.name,
+                source = ?stream_source,
+                reason,
+                "No audio capture stream to drop"
+            );
+            return;
+        }
+
+        drop(previous_stream);
+        tracing::info!(
+            input = %self.name,
+            source = ?stream_source,
+            reason,
+            "Dropped audio capture stream"
+        );
+    }
+
     fn start_capture_stream(&mut self) -> anyhow::Result<()> {
         if matches!(self.config.source, AudioSourceType::None) {
-            self.stream = None;
             self.degraded_to_silence = false;
             return Ok(());
         }
@@ -470,8 +498,10 @@ impl AudioInput {
 
     /// Apply a runtime audio config change without rebuilding the whole input manager.
     ///
-    /// For source changes, a replacement stream is opened against the existing
-    /// host before the previous stream is paused and dropped.
+    /// Disabling audio parks any existing hardware stream so a plain toggle can
+    /// resume it without touching the native backend. Switching between live
+    /// sources still opens the replacement stream before dropping the previous
+    /// one so the capture path does not go completely dark in between.
     ///
     /// # Errors
     ///
@@ -483,7 +513,10 @@ impl AudioInput {
         capture_active: bool,
     ) -> anyhow::Result<()> {
         let next_name = name.into();
-        let source_changed = self.config.source != config.source;
+        let previous_source = self.config.source.clone();
+        let effective_capture_active =
+            capture_active && !matches!(config.source, AudioSourceType::None);
+        let source_changed = previous_source != config.source;
 
         self.name = next_name;
         self.config = config.clone();
@@ -492,42 +525,74 @@ impl AudioInput {
         if !source_changed {
             self.degraded_to_silence = false;
             self.apply_analyzer_config(config);
-            self.set_capture_active_state(capture_active)?;
+            self.set_capture_active_state(effective_capture_active)?;
             tracing::info!(
                 input = %self.name,
                 source = ?self.config.source,
-                capture_active,
+                capture_active = effective_capture_active,
                 "Live audio config updated without reopening capture stream"
             );
             return Ok(());
         }
 
-        if capture_active && !matches!(config.source, AudioSourceType::None) {
-            let (next_analyzer, next_stream) = self.start_stream_for_config(config)?;
-            if let Some(previous_stream) = &self.stream {
-                let _ = previous_stream.pause();
+        if matches!(config.source, AudioSourceType::None) {
+            if !matches!(previous_source, AudioSourceType::None) && self.stream.is_some() {
+                self.parked_source = Some(previous_source.clone());
             }
+            self.set_capture_active_state(false)?;
+            self.degraded_to_silence = false;
+            self.apply_analyzer_config(config);
+            tracing::info!(
+                input = %self.name,
+                previous_source = ?previous_source,
+                parked_source = ?self.parked_source,
+                source = ?self.config.source,
+                "Live audio input disabled; parked existing capture stream for fast resume"
+            );
+            return Ok(());
+        }
+
+        if matches!(previous_source, AudioSourceType::None)
+            && self.stream.is_some()
+            && self.parked_source.as_ref() == Some(&config.source)
+        {
+            self.parked_source = None;
+            self.degraded_to_silence = false;
+            self.apply_analyzer_config(config);
+            self.set_capture_active_state(effective_capture_active)?;
+            tracing::info!(
+                input = %self.name,
+                previous_source = ?previous_source,
+                source = ?self.config.source,
+                capture_active = effective_capture_active,
+                "Live audio input resumed parked capture stream"
+            );
+            return Ok(());
+        }
+
+        if effective_capture_active {
+            let (next_analyzer, next_stream) = self.start_stream_for_config(config)?;
             let previous_stream = self.stream.take();
+            self.parked_source = None;
             self.analyzer = next_analyzer;
             self.stream = next_stream;
             self.degraded_to_silence = false;
             drop(previous_stream);
         } else {
-            if let Some(previous_stream) = &self.stream {
-                let _ = previous_stream.pause();
-            }
             let previous_stream = self.stream.take();
+            self.parked_source = None;
             self.analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(config)));
             self.degraded_to_silence = false;
             drop(previous_stream);
         }
 
-        self.set_capture_active_state(capture_active)?;
+        self.set_capture_active_state(effective_capture_active)?;
 
         tracing::info!(
             input = %self.name,
+            previous_source = ?previous_source,
             source = ?self.config.source,
-            capture_active,
+            capture_active = effective_capture_active,
             "Live audio capture source switched"
         );
 
@@ -566,7 +631,7 @@ impl InputSource for AudioInput {
     }
 
     fn stop(&mut self) {
-        self.stream = None;
+        self.drop_capture_stream("input stopped");
         self.running = false;
         self.capture_active = false;
         self.degraded_to_silence = false;

@@ -5,15 +5,20 @@
 //! `sample_all()` each frame to collect fresh data from every active source.
 
 pub mod audio;
+#[cfg(target_os = "linux")]
+pub mod evdev;
 pub mod interaction;
 pub mod screen;
 mod traits;
 
+#[cfg(target_os = "linux")]
+pub use evdev::EvdevKeyboardInput;
 pub use interaction::InteractionInput;
 pub use traits::{InputData, InputSource, InteractionData, KeyboardData, MouseData, ScreenData};
 
 use crate::input::audio::AudioInput;
 use crate::types::audio::AudioPipelineConfig;
+use crate::types::event::InputEvent;
 
 use tracing::{error, info};
 
@@ -102,6 +107,15 @@ impl InputManager {
             .collect()
     }
 
+    /// Drain discrete input events from every registered source.
+    #[must_use]
+    pub fn drain_events(&mut self) -> Vec<InputEvent> {
+        self.sources
+            .iter_mut()
+            .flat_map(|source| source.drain_events())
+            .collect()
+    }
+
     /// Start all registered sources.
     ///
     /// Iterates in registration order. If any source fails to start, previously
@@ -149,6 +163,7 @@ impl InputManager {
         display_name: &str,
         capture_active: bool,
     ) -> anyhow::Result<()> {
+        let effective_capture_active = enabled && capture_active;
         let effective_config = if enabled {
             config.clone()
         } else {
@@ -159,10 +174,16 @@ impl InputManager {
 
         for source in &mut self.sources {
             if source.is_audio_source() {
-                source.reconfigure_audio(&effective_config, display_name, capture_active)?;
+                source.reconfigure_audio(
+                    &effective_config,
+                    display_name,
+                    effective_capture_active,
+                )?;
                 info!(
                     source = display_name,
-                    enabled, capture_active, "Reconfigured live audio input source"
+                    enabled,
+                    capture_active = effective_capture_active,
+                    "Reconfigured live audio input source"
                 );
                 return Ok(());
             }
@@ -173,12 +194,13 @@ impl InputManager {
         }
 
         let mut audio_input = AudioInput::new(&effective_config).with_name(display_name.to_owned());
-        audio_input.set_capture_active(capture_active)?;
+        audio_input.set_capture_active(effective_capture_active)?;
         audio_input.start()?;
         self.add_source(Box::new(audio_input));
         info!(
             source = display_name,
-            capture_active, "Added live audio input source"
+            capture_active = effective_capture_active,
+            "Added live audio input source"
         );
         Ok(())
     }

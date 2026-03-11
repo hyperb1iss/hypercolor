@@ -2,7 +2,7 @@
 
 use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
-use hypercolor_core::types::event::ZoneColors;
+use hypercolor_core::types::event::{InputButtonState, InputEvent, ZoneColors};
 
 // ── Mock Sources ───────────────────────────────────────────────────────────
 
@@ -256,6 +256,100 @@ impl InputSource for FaultySampleSource {
     }
 }
 
+struct EventfulSource {
+    running: bool,
+    events: Vec<InputEvent>,
+}
+
+impl EventfulSource {
+    fn new(events: Vec<InputEvent>) -> Self {
+        Self {
+            running: false,
+            events,
+        }
+    }
+}
+
+impl InputSource for EventfulSource {
+    fn name(&self) -> &'static str {
+        "EventfulSource"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn drain_events(&mut self) -> Vec<InputEvent> {
+        std::mem::take(&mut self.events)
+    }
+}
+
+struct CaptureTrackingAudioSource {
+    running: bool,
+    capture_active: bool,
+}
+
+impl CaptureTrackingAudioSource {
+    fn new() -> Self {
+        Self {
+            running: false,
+            capture_active: false,
+        }
+    }
+}
+
+impl InputSource for CaptureTrackingAudioSource {
+    fn name(&self) -> &'static str {
+        "CaptureTrackingAudio"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        let mut data = AudioData::silence();
+        data.rms_level = if self.capture_active { 1.0 } else { 0.0 };
+        Ok(InputData::Audio(data))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn is_audio_source(&self) -> bool {
+        true
+    }
+
+    fn reconfigure_audio(
+        &mut self,
+        _config: &AudioPipelineConfig,
+        _name: &str,
+        capture_active: bool,
+    ) -> anyhow::Result<()> {
+        self.capture_active = capture_active;
+        Ok(())
+    }
+}
+
 // ── InputSource Trait Tests ────────────────────────────────────────────────
 
 #[test]
@@ -431,6 +525,28 @@ fn manager_sample_all_with_delta_secs_uses_timing_aware_sources() {
 }
 
 #[test]
+fn manager_drains_discrete_input_events_from_all_sources() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(EventfulSource::new(vec![InputEvent::Key {
+        source_id: "host:/dev/input/event4".into(),
+        key: "Space".into(),
+        state: InputButtonState::Pressed,
+    }])));
+    mgr.add_source(Box::new(EventfulSource::new(vec![
+        InputEvent::MidiRealtime {
+            source_id: "midi:clock".into(),
+            message: hypercolor_core::types::event::MidiRealtimeMessage::Clock,
+        },
+    ])));
+
+    let first = mgr.drain_events();
+    assert_eq!(first.len(), 2);
+
+    let second = mgr.drain_events();
+    assert!(second.is_empty(), "events should drain exactly once");
+}
+
+#[test]
 fn audio_data_values_propagate_through_input_data() {
     let mut mgr = InputManager::new();
     mgr.add_source(Box::new(MockAudioSource::new(0.99)));
@@ -516,4 +632,67 @@ fn manager_adds_audio_source_when_live_audio_is_enabled() {
 
     assert_eq!(mgr.source_count(), 1);
     assert_eq!(mgr.source_names(), vec!["AudioInput(microphone)"]);
+}
+
+#[test]
+fn manager_forces_capture_inactive_when_live_audio_is_disabled() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(CaptureTrackingAudioSource::new()));
+
+    let config = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..AudioPipelineConfig::default()
+    };
+
+    mgr.apply_audio_runtime_config(false, &config, "AudioInput(none)", true)
+        .expect("disabling audio should clear capture demand");
+
+    let samples = mgr.sample_all();
+    match &samples[0] {
+        InputData::Audio(audio) => assert!((audio.rms_level - 0.0).abs() < f32::EPSILON),
+        _ => panic!("expected audio data"),
+    }
+}
+
+#[test]
+fn manager_reenables_existing_audio_source_after_live_disable() {
+    let mut mgr = InputManager::new();
+    mgr.add_source(Box::new(ReconfigurableAudioSource::new()));
+
+    let enabled_config = AudioPipelineConfig {
+        source: AudioSourceType::Named("microphone".to_owned()),
+        ..AudioPipelineConfig::default()
+    };
+
+    mgr.apply_audio_runtime_config(true, &enabled_config, "AudioInput(microphone)", true)
+        .expect("enabling audio should succeed");
+
+    let samples = mgr.sample_all();
+    match &samples[0] {
+        InputData::Audio(audio) => assert!((audio.rms_level - 0.5).abs() < f32::EPSILON),
+        _ => panic!("expected audio data"),
+    }
+
+    let disabled_config = AudioPipelineConfig {
+        source: AudioSourceType::None,
+        ..enabled_config.clone()
+    };
+
+    mgr.apply_audio_runtime_config(false, &disabled_config, "AudioInput(microphone)", true)
+        .expect("disabling audio should keep the existing source registered");
+
+    let samples = mgr.sample_all();
+    match &samples[0] {
+        InputData::Audio(audio) => assert!((audio.rms_level - 0.0).abs() < f32::EPSILON),
+        _ => panic!("expected audio data"),
+    }
+
+    mgr.apply_audio_runtime_config(true, &enabled_config, "AudioInput(microphone)", true)
+        .expect("re-enabling audio should restore live capture");
+
+    let samples = mgr.sample_all();
+    match &samples[0] {
+        InputData::Audio(audio) => assert!((audio.rms_level - 0.5).abs() < f32::EPSILON),
+        _ => panic!("expected audio data"),
+    }
 }

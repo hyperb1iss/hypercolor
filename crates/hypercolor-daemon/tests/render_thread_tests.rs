@@ -27,7 +27,7 @@ use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::device::{DeviceId, DeviceState};
-use hypercolor_types::event::{HypercolorEvent, ZoneColors};
+use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent, ZoneColors};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -254,6 +254,47 @@ impl InputSource for DemandGatedMockAudioSource {
     }
 }
 
+struct EventOnlySource {
+    running: bool,
+    events: Vec<InputEvent>,
+}
+
+impl EventOnlySource {
+    fn new(events: Vec<InputEvent>) -> Self {
+        Self {
+            running: false,
+            events,
+        }
+    }
+}
+
+impl InputSource for EventOnlySource {
+    fn name(&self) -> &'static str {
+        "event_only"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        Ok(InputData::None)
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+
+    fn drain_events(&mut self) -> Vec<InputEvent> {
+        std::mem::take(&mut self.events)
+    }
+}
+
 async fn wait_for_audio_capture_transition(transitions: &Arc<StdMutex<Vec<bool>>>, expected: bool) {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -362,6 +403,70 @@ async fn render_thread_exits_on_stop() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Stop the render loop — thread should exit.
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+
+    rt.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn render_thread_publishes_discrete_input_events() {
+    let state = make_render_state(
+        EffectEngine::new(),
+        SpatialEngine::new(test_layout(Vec::new())),
+        BackendManager::new(),
+    );
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(EventOnlySource::new(vec![InputEvent::Key {
+            source_id: "host:/dev/input/event4".into(),
+            key: "a".into(),
+            state: InputButtonState::Pressed,
+        }])));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let mut event_rx = state.event_bus.subscribe_all();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let input_event = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match event_rx.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::InputEventReceived { event } = timestamped.event {
+                        break event;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before input event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for input event");
+
+    assert_eq!(
+        input_event,
+        InputEvent::Key {
+            source_id: "host:/dev/input/event4".into(),
+            key: "a".into(),
+            state: InputButtonState::Pressed,
+        }
+    );
+
     {
         let mut rl = state.render_loop.write().await;
         rl.stop();

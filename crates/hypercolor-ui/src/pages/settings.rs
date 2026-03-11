@@ -302,7 +302,7 @@ pub fn SettingsPage() -> impl IntoView {
                         style="color: rgba(128, 255, 234, 0.4)"
                     >
                         <Icon icon=LuInfo width="12px" height="12px" />
-                        "Auto-saved. Restart daemon to apply."
+                        "Auto-saved"
                     </div>
                 </div>
 

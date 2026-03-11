@@ -5,7 +5,7 @@
 //! the render loop consumes per frame.
 
 use crate::types::audio::{AudioData, AudioPipelineConfig};
-use crate::types::event::ZoneColors;
+use crate::types::event::{InputEvent, ZoneColors};
 
 // ── InputData ──────────────────────────────────────────────────────────────
 
@@ -119,6 +119,14 @@ pub trait InputSource: Send {
 
     /// Whether the source is actively capturing.
     fn is_running(&self) -> bool;
+
+    /// Drain any discrete input events captured since the last frame.
+    ///
+    /// Sources that only expose sampled state can keep the default empty
+    /// implementation.
+    fn drain_events(&mut self) -> Vec<InputEvent> {
+        Vec::new()
+    }
 
     /// Whether this source supports runtime audio reconfiguration.
     fn is_audio_source(&self) -> bool {

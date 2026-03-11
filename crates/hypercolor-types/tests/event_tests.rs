@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use hypercolor_types::event::{
     ChangeTrigger, ContextType, DisconnectReason, EffectRef, EffectStopReason, EventCategory,
-    EventControlValue, EventPriority, FrameData, FrameTiming, HypercolorEvent, Severity,
-    TransitionRef, ZoneColors, ZoneRef,
+    EventControlValue, EventPriority, FrameData, FrameTiming, HypercolorEvent, InputButtonState,
+    InputEvent, Severity, TransitionRef, ZoneColors, ZoneRef,
 };
 use hypercolor_types::session::SessionEvent;
 
@@ -343,6 +343,13 @@ fn input_events_have_input_category() {
         HypercolorEvent::CaptureStopped {
             reason: "user request".into(),
         },
+        HypercolorEvent::InputEventReceived {
+            event: InputEvent::Key {
+                source_id: "host:/dev/input/event4".into(),
+                key: "a".into(),
+                state: InputButtonState::Pressed,
+            },
+        },
         HypercolorEvent::InputSourceChanged {
             input_id: "mic1".into(),
             input_type: "audio".into(),
@@ -356,6 +363,39 @@ fn input_events_have_input_category() {
             EventCategory::Input,
             "Expected Input category for {event:?}"
         );
+    }
+}
+
+#[test]
+fn input_event_received_round_trips_through_json() {
+    let original = HypercolorEvent::InputEventReceived {
+        event: InputEvent::MidiControlChange {
+            source_id: "midi:launch-control".into(),
+            channel: 1,
+            controller: 74,
+            value: 96,
+        },
+    };
+
+    let json = serde_json::to_string(&original).expect("serialize input event");
+    let restored: HypercolorEvent = serde_json::from_str(&json).expect("deserialize input event");
+
+    match restored {
+        HypercolorEvent::InputEventReceived {
+            event:
+                InputEvent::MidiControlChange {
+                    source_id,
+                    channel,
+                    controller,
+                    value,
+                },
+        } => {
+            assert_eq!(source_id, "midi:launch-control");
+            assert_eq!(channel, 1);
+            assert_eq!(controller, 74);
+            assert_eq!(value, 96);
+        }
+        other => panic!("expected InputEventReceived after round trip, got {other:?}"),
     }
 }
 

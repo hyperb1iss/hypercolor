@@ -35,6 +35,8 @@ use hypercolor_core::effect::{
     default_effect_search_paths, register_html_effects,
 };
 use hypercolor_core::engine::RenderLoop;
+#[cfg(target_os = "linux")]
+use hypercolor_core::input::EvdevKeyboardInput;
 use hypercolor_core::input::audio::AudioInput;
 use hypercolor_core::input::screen::{
     CaptureConfig as ScreenCaptureConfig, MonitorSelect, ScreenCaptureInput,
@@ -1235,6 +1237,8 @@ fn should_retry_unmapped_wled_targets(config: &HypercolorConfig) -> bool {
 pub(crate) fn build_input_manager(config: &HypercolorConfig) -> InputManager {
     let mut input_manager = InputManager::new();
     input_manager.add_source(Box::new(InteractionInput::new()));
+    #[cfg(target_os = "linux")]
+    input_manager.add_source(Box::new(EvdevKeyboardInput::new()));
 
     if config.audio.enabled {
         let audio_pipeline_config = AudioPipelineConfig {

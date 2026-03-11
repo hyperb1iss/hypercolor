@@ -39,6 +39,7 @@ realfft = { workspace = true }
 rustfft = { workspace = true }
 cpal = { workspace = true }
 device_query = { workspace = true }
+evdev = { workspace = true }
 tokio-util = { workspace = true }
 zbus = { workspace = true }
 dpi = { workspace = true, optional = true }

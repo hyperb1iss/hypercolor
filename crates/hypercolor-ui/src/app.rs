@@ -79,6 +79,8 @@ pub struct WsContext {
     pub active_effect: ReadSignal<Option<String>>,
     pub last_device_event: ReadSignal<Option<DeviceEventHint>>,
     pub audio_level: ReadSignal<AudioLevel>,
+    pub audio_enabled: ReadSignal<bool>,
+    pub set_audio_enabled: WriteSignal<bool>,
 }
 
 /// Shared active-effect state — accessible from sidebar, effects page, etc.
@@ -241,6 +243,15 @@ pub fn App() -> impl IntoView {
 
     // Global WebSocket connection
     let ws = WsManager::new();
+    let (audio_enabled, set_audio_enabled) = signal(false);
+
+    // Seed audio_enabled from daemon config
+    leptos::task::spawn_local(async move {
+        if let Ok(cfg) = api::fetch_config().await {
+            set_audio_enabled.set(cfg.audio.enabled);
+        }
+    });
+
     let ws_ctx = WsContext {
         canvas_frame: ws.canvas_frame,
         connection_state: ws.connection_state,
@@ -252,6 +263,8 @@ pub fn App() -> impl IntoView {
         active_effect: ws.active_effect,
         last_device_event: ws.last_device_event,
         audio_level: ws.audio_level,
+        audio_enabled,
+        set_audio_enabled,
     };
     provide_context(ws_ctx);
 

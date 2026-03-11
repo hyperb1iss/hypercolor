@@ -613,7 +613,7 @@ pub fn Sidebar() -> impl IntoView {
                             })
                         }}
 
-                        // Effect name + category
+                        // Effect name + category + audio toggle
                         <div class="px-4 flex items-center gap-2.5 min-w-0">
                             <div
                                 class="w-2 h-2 rounded-full dot-alive shrink-0"
@@ -628,6 +628,7 @@ pub fn Sidebar() -> impl IntoView {
                                     {move || fx.active_effect_category.get()}
                                 </div>
                             </div>
+                            <SidebarAudioToggle />
                         </div>
 
                         // Player controls
@@ -800,4 +801,81 @@ struct NavItem {
     label: &'static str,
     icon: icondata_core::Icon,
     divider_before: bool,
+}
+
+// ── Sidebar Audio Toggle ───────────────────────────────────────────────────
+
+/// Tiny icon button in the Now Playing metadata row.
+///
+/// - Audio on: waveform icon, glows coral (purple pulse on beat). Click to disable.
+/// - Audio off + audio-reactive effect: muted icon, dim. Click to enable.
+/// - Audio off + non-reactive: hidden entirely.
+#[component]
+fn SidebarAudioToggle() -> impl IntoView {
+    let ws = expect_context::<WsContext>();
+    let fx = expect_context::<EffectsContext>();
+
+    let active_is_audio_reactive = Memo::new(move |_| {
+        let Some(active_id) = fx.active_effect_id.get() else {
+            return false;
+        };
+        fx.effects_index.with(|effects| {
+            effects
+                .iter()
+                .any(|entry| entry.effect.id == active_id && entry.effect.audio_reactive)
+        })
+    });
+
+    let toggle_audio = move |ev: leptos::ev::MouseEvent| {
+        ev.stop_propagation();
+        let new_state = !ws.audio_enabled.get();
+        ws.set_audio_enabled.set(new_state);
+        leptos::task::spawn_local(async move {
+            if let Err(error) =
+                api::set_config_value("audio.enabled", &serde_json::json!(new_state)).await
+            {
+                toasts::toast_error(&format!("Failed to toggle audio: {error}"));
+            }
+        });
+    };
+
+    view! {
+        {move || {
+            let audio_on = ws.audio_enabled.get();
+            let is_reactive = active_is_audio_reactive.get();
+
+            if audio_on {
+                let al = ws.audio_level.get();
+                let (color, shadow) = if al.beat {
+                    ("rgb(225, 53, 255)", "0 0 6px rgba(225, 53, 255, 0.5)")
+                } else if al.level > 0.01 {
+                    ("rgba(255, 106, 193, 0.7)", "none")
+                } else {
+                    ("rgba(255, 106, 193, 0.4)", "none")
+                };
+                Some(view! {
+                    <button
+                        class="shrink-0 p-1 rounded transition-all duration-75"
+                        style=format!("color: {color}; filter: drop-shadow({shadow})")
+                        title="Disable audio"
+                        on:click=toggle_audio
+                    >
+                        <Icon icon=LuAudioLines width="13px" height="13px" />
+                    </button>
+                }.into_any())
+            } else if is_reactive {
+                Some(view! {
+                    <button
+                        class="shrink-0 p-1 rounded text-fg-tertiary/30 hover:text-coral/70 transition-colors"
+                        title="Enable audio"
+                        on:click=toggle_audio
+                    >
+                        <Icon icon=LuVolumeX width="13px" height="13px" />
+                    </button>
+                }.into_any())
+            } else {
+                None
+            }
+        }}
+    }
 }

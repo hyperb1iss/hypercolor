@@ -103,6 +103,67 @@ pub enum Severity {
     Critical,
 }
 
+/// Press/release semantics for discrete host input events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputButtonState {
+    Pressed,
+    Released,
+    Repeated,
+}
+
+/// MIDI transport-control messages that matter to rhythmic lighting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MidiRealtimeMessage {
+    Clock,
+    Start,
+    Continue,
+    Stop,
+}
+
+/// A discrete host input event from keyboard or MIDI sources.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InputEvent {
+    /// A host keyboard key changed state.
+    Key {
+        source_id: String,
+        key: String,
+        state: InputButtonState,
+    },
+
+    /// A MIDI note changed state.
+    MidiNote {
+        source_id: String,
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        state: InputButtonState,
+    },
+
+    /// A MIDI control-change message was received.
+    MidiControlChange {
+        source_id: String,
+        channel: u8,
+        controller: u8,
+        value: u8,
+    },
+
+    /// A MIDI pitch-bend message was received.
+    MidiPitchBend {
+        source_id: String,
+        channel: u8,
+        value: i16,
+    },
+
+    /// A MIDI realtime/transport message was received.
+    MidiRealtime {
+        source_id: String,
+        message: MidiRealtimeMessage,
+    },
+}
+
 /// Context dimensions for automation triggers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -487,6 +548,9 @@ pub enum HypercolorEvent {
     /// Screen capture stopped.
     CaptureStopped { reason: String },
 
+    /// A discrete host input event was observed.
+    InputEventReceived { event: InputEvent },
+
     // ── System Events ───────────────────────────────────────────────
     /// A frame was rendered and pushed to all device backends.
     FrameRendered {
@@ -723,6 +787,7 @@ impl HypercolorEvent {
 
             Self::CaptureStarted { .. }
             | Self::CaptureStopped { .. }
+            | Self::InputEventReceived { .. }
             | Self::InputSourceChanged { .. } => EventCategory::Input,
 
             Self::WebhookReceived { .. } => EventCategory::Integration,
@@ -752,6 +817,7 @@ impl HypercolorEvent {
             Self::BeatDetected { .. }
             | Self::AudioLevelUpdate { .. }
             | Self::FrameRendered { .. }
+            | Self::InputEventReceived { .. }
             | Self::DeviceDiscoveryCompleted { .. }
             | Self::LayoutUpdated { .. }
             | Self::WebhookReceived { .. } => EventPriority::Low,
