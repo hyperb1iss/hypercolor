@@ -1,5 +1,6 @@
 //! Effect metadata, controls, and lifecycle types.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -457,6 +458,23 @@ impl ControlDefinition {
     }
 }
 
+// ── PresetTemplate ────────────────────────────────────────────────────────
+
+/// An effect-defined preset — a named snapshot of control values bundled
+/// with the effect itself. Unlike user-created [`super::library::EffectPreset`]s,
+/// these are authored by the effect developer and are read-only at runtime.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PresetTemplate {
+    /// Human-readable preset name (e.g. "Sunset Glow", "Deep Ocean").
+    pub name: String,
+    /// Optional short description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Control values that define this preset. Keys are control IDs.
+    #[serde(default)]
+    pub controls: HashMap<String, ControlValue>,
+}
+
 // ── EffectMetadata ────────────────────────────────────────────────────────────
 
 /// Universal effect descriptor.
@@ -486,6 +504,10 @@ pub struct EffectMetadata {
     /// User-facing controls declared by this effect.
     #[serde(default)]
     pub controls: Vec<ControlDefinition>,
+    /// Effect-defined preset snapshots. Authored by the effect developer,
+    /// read-only at runtime. Shown alongside user-created presets in the UI.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<PresetTemplate>,
     /// Indicates whether the effect expects audio payload injection.
     #[serde(default)]
     pub audio_reactive: bool,

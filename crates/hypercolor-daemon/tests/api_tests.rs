@@ -660,6 +660,7 @@ async fn insert_test_effect(state: &Arc<AppState>, name: &str) {
             group: Some("General".to_owned()),
             tooltip: Some("Animation speed".to_owned()),
         }],
+        presets: Vec::new(),
         audio_reactive: false,
         source: EffectSource::Native {
             path: format!("builtin/{name}").into(),

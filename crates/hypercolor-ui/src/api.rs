@@ -5,7 +5,7 @@ use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use hypercolor_types::effect::{ControlDefinition, ControlValue};
+use hypercolor_types::effect::{ControlDefinition, ControlValue, PresetTemplate};
 
 // ── API Response Types ──────────────────────────────────────────────────────
 
@@ -66,6 +66,8 @@ pub struct EffectDetailResponse {
     pub audio_reactive: bool,
     #[serde(default)]
     pub controls: Vec<ControlDefinition>,
+    #[serde(default)]
+    pub presets: Vec<PresetTemplate>,
     #[serde(default)]
     pub active_control_values: Option<HashMap<String, ControlValue>>,
 }
@@ -341,6 +343,12 @@ pub async fn fetch_effect_detail(id: &str) -> Result<EffectDetailResponse, Strin
         resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
 
     Ok(envelope.data)
+}
+
+/// Fetch the bundled (effect-defined) presets for an effect.
+pub async fn fetch_bundled_presets(id: &str) -> Result<Vec<PresetTemplate>, String> {
+    let detail = fetch_effect_detail(id).await?;
+    Ok(detail.presets)
 }
 
 /// Apply an effect by ID or name.

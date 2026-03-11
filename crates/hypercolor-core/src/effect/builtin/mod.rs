@@ -37,7 +37,7 @@ use super::registry::{EffectEntry, EffectRegistry};
 use super::traits::EffectRenderer;
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
-    EffectMetadata, EffectSource, EffectState,
+    EffectMetadata, EffectSource, EffectState, PresetTemplate,
 };
 
 // ── Registry Helpers ────────────────────────────────────────────────────────
@@ -582,6 +582,166 @@ fn color_wave_controls() -> Vec<ControlDefinition> {
     ]
 }
 
+// ── Preset Helpers ────────────────────────────────────────────────────────
+
+fn preset(name: &str, controls: &[(&str, ControlValue)]) -> PresetTemplate {
+    PresetTemplate {
+        name: name.to_owned(),
+        description: None,
+        controls: controls
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), v.clone()))
+            .collect(),
+    }
+}
+
+fn preset_with_desc(
+    name: &str,
+    description: &str,
+    controls: &[(&str, ControlValue)],
+) -> PresetTemplate {
+    PresetTemplate {
+        name: name.to_owned(),
+        description: Some(description.to_owned()),
+        controls: controls
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), v.clone()))
+            .collect(),
+    }
+}
+
+fn breathing_presets() -> Vec<PresetTemplate> {
+    vec![
+        preset_with_desc(
+            "Warm Ember",
+            "Slow amber glow like dying embers",
+            &[
+                ("color", ControlValue::Color([1.0, 0.4, 0.1, 1.0])),
+                ("speed", ControlValue::Float(8.0)),
+                ("min_brightness", ControlValue::Float(0.05)),
+                ("max_brightness", ControlValue::Float(0.8)),
+            ],
+        ),
+        preset_with_desc(
+            "Ocean Calm",
+            "Deep blue with slow tidal rhythm",
+            &[
+                ("color", ControlValue::Color([0.1, 0.3, 1.0, 1.0])),
+                ("speed", ControlValue::Float(6.0)),
+                ("min_brightness", ControlValue::Float(0.08)),
+                ("max_brightness", ControlValue::Float(0.7)),
+            ],
+        ),
+        preset(
+            "Alert Pulse",
+            &[
+                ("color", ControlValue::Color([1.0, 0.1, 0.1, 1.0])),
+                ("speed", ControlValue::Float(40.0)),
+                ("min_brightness", ControlValue::Float(0.2)),
+                ("max_brightness", ControlValue::Float(1.0)),
+            ],
+        ),
+    ]
+}
+
+fn gradient_presets() -> Vec<PresetTemplate> {
+    vec![
+        preset_with_desc(
+            "Sunset",
+            "Warm horizon gradient",
+            &[
+                ("color_start", ControlValue::Color([1.0, 0.3, 0.1, 1.0])),
+                ("color_end", ControlValue::Color([0.4, 0.0, 0.6, 1.0])),
+                ("use_mid_color", ControlValue::Boolean(true)),
+                ("color_mid", ControlValue::Color([1.0, 0.6, 0.2, 1.0])),
+                ("angle", ControlValue::Float(0.0)),
+            ],
+        ),
+        preset_with_desc(
+            "Aurora",
+            "Northern lights with gentle motion",
+            &[
+                ("color_start", ControlValue::Color([0.0, 1.0, 0.5, 1.0])),
+                ("color_end", ControlValue::Color([0.3, 0.0, 1.0, 1.0])),
+                ("use_mid_color", ControlValue::Boolean(true)),
+                ("color_mid", ControlValue::Color([0.0, 0.8, 1.0, 1.0])),
+                ("speed", ControlValue::Float(0.15)),
+                ("repeat_mode", ControlValue::Enum("Mirror".to_owned())),
+            ],
+        ),
+        preset(
+            "Deep Ocean",
+            &[
+                ("color_start", ControlValue::Color([0.0, 0.02, 0.15, 1.0])),
+                ("color_end", ControlValue::Color([0.0, 0.2, 0.5, 1.0])),
+                ("mode", ControlValue::Enum("Radial".to_owned())),
+                ("speed", ControlValue::Float(0.08)),
+            ],
+        ),
+    ]
+}
+
+fn color_wave_presets() -> Vec<PresetTemplate> {
+    vec![
+        preset_with_desc(
+            "Neon Scanner",
+            "Fast cyan scan line",
+            &[
+                ("wave_color", ControlValue::Color([0.5, 1.0, 0.92, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.0, 0.01, 0.04, 1.0]),
+                ),
+                ("speed", ControlValue::Float(95.0)),
+                ("wave_width", ControlValue::Float(20.0)),
+                ("trail", ControlValue::Float(30.0)),
+                (
+                    "direction",
+                    ControlValue::Enum("Horizontal Pass".to_owned()),
+                ),
+            ],
+        ),
+        preset(
+            "Lava Flow",
+            &[
+                ("wave_color", ControlValue::Color([1.0, 0.3, 0.0, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.15, 0.02, 0.0, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(30.0)),
+                ("wave_width", ControlValue::Float(80.0)),
+                ("trail", ControlValue::Float(85.0)),
+            ],
+        ),
+    ]
+}
+
+fn audio_pulse_presets() -> Vec<PresetTemplate> {
+    vec![
+        preset_with_desc(
+            "Cyberpunk",
+            "Hot pink on dark blue",
+            &[
+                ("base_color", ControlValue::Color([0.0, 0.02, 0.12, 1.0])),
+                ("peak_color", ControlValue::Color([1.0, 0.1, 0.6, 1.0])),
+                ("sensitivity", ControlValue::Float(2.5)),
+                ("beat_decay", ControlValue::Float(0.88)),
+            ],
+        ),
+        preset(
+            "Fire Response",
+            &[
+                ("base_color", ControlValue::Color([0.08, 0.02, 0.0, 1.0])),
+                ("peak_color", ControlValue::Color([1.0, 0.4, 0.0, 1.0])),
+                ("sensitivity", ControlValue::Float(3.0)),
+                ("beat_decay", ControlValue::Float(0.82)),
+            ],
+        ),
+    ]
+}
+
 /// Metadata definitions for all built-in effects.
 ///
 /// Each entry carries a human-readable display name while the stable factory
@@ -606,6 +766,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
                 "utility".into(),
             ],
             controls: solid_color_controls(),
+            presets: Vec::new(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/solid_color"),
@@ -628,6 +789,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
                 "smooth".into(),
             ],
             controls: gradient_controls(),
+            presets: gradient_presets(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/gradient"),
@@ -643,6 +805,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             category: EffectCategory::Ambient,
             tags: vec!["rainbow".into(), "hue".into(), "colorful".into()],
             controls: rainbow_controls(),
+            presets: Vec::new(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/rainbow"),
@@ -658,6 +821,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             category: EffectCategory::Ambient,
             tags: vec!["breathing".into(), "pulse".into(), "calm".into()],
             controls: breathing_controls(),
+            presets: breathing_presets(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/breathing"),
@@ -678,6 +842,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
                 "pulse".into(),
             ],
             controls: audio_pulse_controls(),
+            presets: audio_pulse_presets(),
             audio_reactive: true,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/audio_pulse"),
@@ -695,6 +860,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             category: EffectCategory::Ambient,
             tags: vec!["wave".into(), "animation".into(), "pattern".into()],
             controls: color_wave_controls(),
+            presets: color_wave_presets(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("builtin/color_wave"),

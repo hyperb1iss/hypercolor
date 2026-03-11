@@ -5,7 +5,7 @@ use leptos_icons::Icon;
 use std::collections::HashMap;
 use wasm_bindgen::JsCast;
 
-use hypercolor_types::effect::ControlValue;
+use hypercolor_types::effect::{ControlValue, PresetTemplate};
 
 use crate::api;
 use crate::icons::*;
@@ -34,18 +34,18 @@ pub fn PresetToolbar(
     active_preset_id_signal: Option<Signal<Option<String>>>,
 ) -> impl IntoView {
     let (presets, set_presets) = signal(Vec::<api::PresetSummary>::new());
+    let (bundled_presets, set_bundled_presets) = signal(Vec::<PresetTemplate>::new());
     let (selected_id, set_selected_id) = signal(Option::<String>::None);
     let (mode, set_mode) = signal(ToolbarMode::Idle);
 
-    // Fetch presets whenever effect_id changes, and restore active preset selection
+    // Fetch user presets + bundled presets whenever effect_id changes
     Effect::new(move |_| {
-        let _eid = effect_id.get();
+        let eid = effect_id.get();
         set_selected_id.set(None);
         let restore_id = active_preset_id_signal.map(|s| s.get()).unwrap_or_default();
         leptos::task::spawn_local(async move {
             match api::fetch_presets().await {
                 Ok(all) => {
-                    // Restore the preset selection if the engine reports one
                     if let Some(ref preset_id) = restore_id {
                         if all.iter().any(|p| p.id == *preset_id) {
                             set_selected_id.set(Some(preset_id.clone()));
@@ -54,6 +54,15 @@ pub fn PresetToolbar(
                     set_presets.set(all);
                 }
                 Err(_) => set_presets.set(Vec::new()),
+            }
+            // Fetch bundled presets from effect detail
+            if let Some(ref id) = eid {
+                match api::fetch_bundled_presets(id).await {
+                    Ok(bp) => set_bundled_presets.set(bp),
+                    Err(_) => set_bundled_presets.set(Vec::new()),
+                }
+            } else {
+                set_bundled_presets.set(Vec::new());
             }
         });
     });
@@ -102,6 +111,26 @@ pub fn PresetToolbar(
             });
             return;
         }
+
+        // Handle bundled preset selection (value = "bundled:<index>")
+        if let Some(idx_str) = val.strip_prefix("bundled:") {
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                let bp = bundled_presets.get();
+                if let Some(template) = bp.get(idx) {
+                    let controls_json = bundled_preset_to_json(&template.controls);
+                    set_selected_id.set(Some(val));
+                    set_mode.set(ToolbarMode::Idle);
+                    let on_applied = on_preset_applied;
+                    leptos::task::spawn_local(async move {
+                        if api::update_controls(&controls_json).await.is_ok() {
+                            on_applied.run(());
+                        }
+                    });
+                }
+            }
+            return;
+        }
+
         set_selected_id.set(Some(val.clone()));
         set_mode.set(ToolbarMode::Idle);
         let on_applied = on_preset_applied;
@@ -218,6 +247,7 @@ pub fn PresetToolbar(
                         view! {
                             <PresetSelectorRow
                                 effect_presets=effect_presets
+                                bundled_presets=bundled_presets
                                 selected_id=selected_id
                                 has_selection=has_selection
                                 on_select=on_select
@@ -271,6 +301,7 @@ enum ToolbarMode {
 #[component]
 fn PresetSelectorRow(
     effect_presets: Memo<Vec<api::PresetSummary>>,
+    bundled_presets: ReadSignal<Vec<PresetTemplate>>,
     selected_id: ReadSignal<Option<String>>,
     has_selection: Memo<bool>,
     on_select: impl Fn(web_sys::Event) + Clone + 'static,
@@ -279,6 +310,9 @@ fn PresetSelectorRow(
     on_edit: impl Fn(leptos::ev::MouseEvent) + 'static,
     on_delete: impl Fn(leptos::ev::MouseEvent) + 'static,
 ) -> impl IntoView {
+    let has_bundled = move || !bundled_presets.get().is_empty();
+    let has_user = move || !effect_presets.get().is_empty();
+
     view! {
         <div class="flex items-center gap-2">
             // Preset selector dropdown
@@ -293,17 +327,52 @@ fn PresetSelectorRow(
                     <option value="" selected=move || selected_id.get().is_none()>
                         "No preset"
                     </option>
+                    // Bundled presets (effect-defined, read-only)
                     {move || {
-                        effect_presets.get().into_iter().map(|p| {
+                        let bp = bundled_presets.get();
+                        if bp.is_empty() {
+                            return view! { <></> }.into_any();
+                        }
+                        let show_groups = has_user();
+                        let options = bp.into_iter().enumerate().map(|(idx, p)| {
+                            let val = format!("bundled:{idx}");
+                            let is_sel = {
+                                let val = val.clone();
+                                move || selected_id.get().as_deref() == Some(&val)
+                            };
+                            let label = format!("\u{2726} {}", p.name);
+                            view! { <option value=val selected=is_sel>{label}</option> }
+                        }).collect_view();
+                        if show_groups {
+                            view! {
+                                <optgroup label="Built-in">{options}</optgroup>
+                            }.into_any()
+                        } else {
+                            options.into_any()
+                        }
+                    }}
+                    // User-created presets
+                    {move || {
+                        let user = effect_presets.get();
+                        if user.is_empty() {
+                            return view! { <></> }.into_any();
+                        }
+                        let show_groups = has_bundled();
+                        let options = user.into_iter().map(|p| {
                             let id = p.id.clone();
                             let is_sel = {
                                 let id = id.clone();
                                 move || selected_id.get().as_deref() == Some(&id)
                             };
+                            view! { <option value=id selected=is_sel>{p.name}</option> }
+                        }).collect_view();
+                        if show_groups {
                             view! {
-                                <option value=id selected=is_sel>{p.name}</option>
-                            }
-                        }).collect_view()
+                                <optgroup label="My Presets">{options}</optgroup>
+                            }.into_any()
+                        } else {
+                            options.into_any()
+                        }
                     }}
                 </select>
             </div>
@@ -468,6 +537,15 @@ fn controls_to_json(
         .iter()
         .map(|(k, v)| (k.clone(), control_value_to_json(v)))
         .collect()
+}
+
+/// Convert a bundled preset's control map to a JSON value for the PATCH API.
+fn bundled_preset_to_json(controls: &HashMap<String, ControlValue>) -> serde_json::Value {
+    let map: serde_json::Map<String, serde_json::Value> = controls
+        .iter()
+        .map(|(k, v)| (k.clone(), control_value_to_json(v)))
+        .collect();
+    serde_json::Value::Object(map)
 }
 
 fn control_value_to_json(value: &ControlValue) -> serde_json::Value {

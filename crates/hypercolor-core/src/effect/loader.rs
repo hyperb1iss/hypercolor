@@ -12,10 +12,12 @@ use uuid::Uuid;
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectId, EffectMetadata,
-    EffectSource, EffectState,
+    EffectSource, EffectState, PresetTemplate,
 };
 
-use super::meta_parser::{HtmlControlKind, HtmlControlMetadata, parse_html_effect_metadata};
+use super::meta_parser::{
+    HtmlControlKind, HtmlControlMetadata, HtmlPresetMetadata, parse_html_effect_metadata,
+};
 use super::paths::bundled_effects_root;
 use super::{EffectEntry, EffectRegistry};
 
@@ -123,6 +125,17 @@ pub fn register_html_effects(
                 .and_then(|metadata| metadata.modified())
                 .unwrap_or_else(|_| SystemTime::now());
 
+            let controls: Vec<ControlDefinition> = parsed
+                .controls
+                .iter()
+                .filter_map(control_definition_from_html)
+                .collect();
+            let presets = parsed
+                .presets
+                .iter()
+                .filter_map(|hp| preset_template_from_html(hp, &controls))
+                .collect();
+
             let metadata = EffectMetadata {
                 id: deterministic_html_effect_id(&source_path),
                 name: effect_name,
@@ -131,11 +144,8 @@ pub fn register_html_effects(
                 description: parsed.description,
                 category: parsed.category,
                 tags: parsed.tags,
-                controls: parsed
-                    .controls
-                    .iter()
-                    .filter_map(control_definition_from_html)
-                    .collect(),
+                controls,
+                presets,
                 audio_reactive: parsed.audio_reactive,
                 source: EffectSource::Html {
                     path: source_path.clone(),
@@ -380,6 +390,61 @@ fn text_default(raw: Option<&str>, fallback: &str) -> ControlValue {
     let selected = raw.map(str::trim).filter(|value| !value.is_empty());
     let decoded = decode_html_entities(selected.unwrap_or(fallback));
     ControlValue::Text(decoded)
+}
+
+/// Convert a parsed HTML preset into a typed `PresetTemplate`.
+///
+/// Control values in the HTML preset are raw strings — this function resolves
+/// each one against the effect's control definitions so the preset uses the
+/// correct typed [`ControlValue`] for each entry.
+fn preset_template_from_html(
+    raw: &HtmlPresetMetadata,
+    control_defs: &[ControlDefinition],
+) -> Option<PresetTemplate> {
+    if raw.name.is_empty() {
+        return None;
+    }
+
+    let mut controls = std::collections::HashMap::new();
+    for (key, raw_value) in &raw.controls {
+        if let Some(def) = control_defs
+            .iter()
+            .find(|c| c.control_id().eq_ignore_ascii_case(key))
+            && let Some(typed) = parse_raw_control_value(&def.kind, raw_value)
+        {
+            controls.insert(key.clone(), typed);
+        }
+    }
+
+    Some(PresetTemplate {
+        name: raw.name.clone(),
+        description: raw.description.clone(),
+        controls,
+    })
+}
+
+/// Parse a raw string control value using the control's kind for type guidance.
+fn parse_raw_control_value(kind: &ControlKind, raw: &str) -> Option<ControlValue> {
+    match kind {
+        ControlKind::Number | ControlKind::Hue | ControlKind::Area => {
+            raw.parse::<f32>().ok().map(ControlValue::Float)
+        }
+        ControlKind::Boolean => Some(ControlValue::Boolean(matches!(
+            raw.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ))),
+        ControlKind::Color => {
+            if raw.starts_with('#') {
+                parse_hex_color(raw)
+            } else {
+                Some(ControlValue::Text(raw.to_owned()))
+            }
+        }
+        ControlKind::Combobox => Some(ControlValue::Enum(raw.to_owned())),
+        ControlKind::Sensor | ControlKind::Text | ControlKind::Other(_) => {
+            Some(ControlValue::Text(raw.to_owned()))
+        }
+    }
 }
 
 fn decode_html_entities(input: &str) -> String {

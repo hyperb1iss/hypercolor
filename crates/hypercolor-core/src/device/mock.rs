@@ -374,6 +374,7 @@ impl MockEffectRenderer {
             category: EffectCategory::Utility,
             tags: vec!["test".to_owned(), "mock".to_owned()],
             controls: Vec::new(),
+            presets: Vec::new(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from(format!("mock/{name}.wgsl")),

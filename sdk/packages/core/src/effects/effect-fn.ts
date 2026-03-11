@@ -43,10 +43,19 @@ export interface ShaderContext {
     setUniform(name: string, value: UniformValue): void
 }
 
+/** A named preset with control overrides, defined by the effect author. */
+export interface PresetDef {
+    name: string
+    description?: string
+    controls: Record<string, unknown>
+}
+
 export interface EffectFnOptions {
     description?: string
     author?: string
     audio?: boolean
+    /** Effect-defined presets — named control snapshots bundled with the effect. */
+    presets?: PresetDef[]
     vertexShader?: string
     preserveDrawingBuffer?: boolean
     setup?: (ctx: ShaderContext) => void | Promise<void>
@@ -265,6 +274,7 @@ interface EffectDef {
     description?: string
     author?: string
     audio?: boolean
+    presets?: PresetDef[]
 }
 
 function storeMetadata(def: EffectDef): void {
@@ -306,6 +316,7 @@ export function effect(
             description: opts.description,
             author: opts.author,
             audio: opts.audio,
+            presets: opts.presets,
         })
         return
     }

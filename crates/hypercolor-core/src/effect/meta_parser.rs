@@ -53,6 +53,14 @@ pub struct HtmlControlMetadata {
     pub tooltip: Option<String>,
 }
 
+/// Parsed preset from a `<meta preset="..." ...>` tag.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HtmlPresetMetadata {
+    pub name: String,
+    pub description: Option<String>,
+    pub controls: HashMap<String, String>,
+}
+
 /// Parsed metadata summary for a single HTML effect file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedHtmlEffectMetadata {
@@ -60,6 +68,7 @@ pub struct ParsedHtmlEffectMetadata {
     pub description: String,
     pub publisher: String,
     pub controls: Vec<HtmlControlMetadata>,
+    pub presets: Vec<HtmlPresetMetadata>,
     pub category: EffectCategory,
     pub audio_reactive: bool,
     pub uses_canvas2d: bool,
@@ -77,6 +86,7 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
     let mut publisher = String::new();
     let mut title_from_meta: Option<String> = None;
     let mut controls = Vec::new();
+    let mut presets = Vec::new();
 
     for meta_tag in extract_start_tags(&sanitized, "meta") {
         let attrs = parse_tag_attributes(&meta_tag);
@@ -114,7 +124,9 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
             }
         }
 
-        if let Some(control) = parse_control_metadata(&attrs) {
+        if let Some(preset) = parse_preset_metadata(&attrs) {
+            presets.push(preset);
+        } else if let Some(control) = parse_control_metadata(&attrs) {
             controls.push(control);
         }
     }
@@ -149,6 +161,7 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
         description,
         publisher,
         controls,
+        presets,
         category,
         audio_reactive,
         uses_canvas2d,
@@ -346,6 +359,42 @@ fn parse_control_metadata(attrs: &HashMap<String, String>) -> Option<HtmlControl
         step: parse_f32_attr(attrs, "step"),
         values: parse_csv_attr(attrs, "values"),
         tooltip: attr_value(attrs, "tooltip").map(ToOwned::to_owned),
+    })
+}
+
+/// Parse a `<meta preset="Name" preset-description="..." preset-controls='{"k":"v"}'>` tag.
+fn parse_preset_metadata(attrs: &HashMap<String, String>) -> Option<HtmlPresetMetadata> {
+    let name = attr_value(attrs, "preset")?;
+    if name.is_empty() {
+        return None;
+    }
+
+    let description = attr_value(attrs, "preset-description").map(normalize_whitespace);
+
+    // Controls are stored as a JSON object in the preset-controls attribute.
+    let controls = attr_value(attrs, "preset-controls")
+        .and_then(|json_str| {
+            serde_json::from_str::<serde_json::Value>(json_str)
+                .ok()
+                .and_then(|v| v.as_object().cloned())
+        })
+        .map(|obj| {
+            obj.into_iter()
+                .map(|(k, v)| {
+                    let s = match &v {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    (k, s)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(HtmlPresetMetadata {
+        name: normalize_whitespace(name),
+        description,
+        controls,
     })
 }
 

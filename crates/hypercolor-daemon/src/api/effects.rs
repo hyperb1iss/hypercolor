@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 use hypercolor_core::effect::{EffectRegistry, create_renderer_for_metadata};
 use hypercolor_types::effect::{
-    ControlDefinition, ControlValue, EffectId, EffectMetadata, EffectSource,
+    ControlDefinition, ControlValue, EffectId, EffectMetadata, EffectSource, PresetTemplate,
 };
 use hypercolor_types::spatial::SpatialLayout;
 
@@ -88,6 +88,8 @@ pub struct EffectDetailResponse {
     pub version: String,
     pub audio_reactive: bool,
     pub controls: Vec<ControlDefinition>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub presets: Vec<PresetTemplate>,
     pub active_control_values: Option<HashMap<String, ControlValue>>,
 }
 
@@ -186,6 +188,7 @@ pub async fn get_effect(State(state): State<Arc<AppState>>, Path(id): Path<Strin
         version: meta.version,
         audio_reactive: meta.audio_reactive,
         controls: meta.controls,
+        presets: meta.presets,
         active_control_values,
     })
 }

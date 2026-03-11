@@ -223,6 +223,7 @@ fn effect_metadata_matches_display_name_and_native_source_alias() {
         category: EffectCategory::Utility,
         tags: vec!["solid".to_owned()],
         controls: Vec::new(),
+        presets: Vec::new(),
         audio_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("builtin/solid_color"),
@@ -587,6 +588,7 @@ fn sample_metadata() -> EffectMetadata {
         category: EffectCategory::Ambient,
         tags: vec!["ambient".into(), "audio-reactive".into(), "nature".into()],
         controls: vec![sample_slider_control(), sample_dropdown_control()],
+        presets: Vec::new(),
         audio_reactive: true,
         source: EffectSource::Native {
             path: PathBuf::from("native/aurora.wgsl"),

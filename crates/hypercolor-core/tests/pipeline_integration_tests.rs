@@ -161,6 +161,7 @@ fn test_metadata(name: &str) -> EffectMetadata {
         category: EffectCategory::Ambient,
         tags: vec!["test".to_string()],
         controls: Vec::new(),
+        presets: Vec::new(),
         audio_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from(format!("native/{name}.wgsl")),
@@ -1219,6 +1220,7 @@ fn effect_registry_search_and_categorize() {
                 category,
                 tags: tags.into_iter().map(String::from).collect(),
                 controls: Vec::new(),
+                presets: Vec::new(),
                 audio_reactive: false,
                 source: EffectSource::Native {
                     path: PathBuf::from(format!("native/{name}.wgsl")),

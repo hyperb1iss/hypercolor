@@ -92,6 +92,7 @@ fn sample_metadata() -> EffectMetadata {
         category: EffectCategory::Ambient,
         tags: vec!["test".into(), "ambient".into()],
         controls: Vec::new(),
+        presets: Vec::new(),
         audio_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from("native/test-aurora.wgsl"),
@@ -143,6 +144,7 @@ fn builtin_metadata(name: &str) -> EffectMetadata {
         category: EffectCategory::Ambient,
         tags: vec!["builtin".to_owned()],
         controls: Vec::new(),
+        presets: Vec::new(),
         audio_reactive: false,
         source: EffectSource::Native {
             path: PathBuf::from(format!("builtin/{name}")),
@@ -162,6 +164,7 @@ fn sample_entry(name: &str, category: EffectCategory, tags: Vec<&str>) -> Effect
             category,
             tags: tags.into_iter().map(String::from).collect(),
             controls: Vec::new(),
+            presets: Vec::new(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from(format!("native/{name}.wgsl")),
@@ -501,6 +504,7 @@ fn engine_activate_metadata_html_requires_servo_feature() {
         category: EffectCategory::Ambient,
         tags: vec!["html".to_owned()],
         controls: Vec::new(),
+        presets: Vec::new(),
         audio_reactive: false,
         source: EffectSource::Html {
             path: PathBuf::from("community/test.html"),
@@ -559,6 +563,7 @@ fn registry_register_replaces_existing() {
             category: EffectCategory::Ambient,
             tags: vec![],
             controls: Vec::new(),
+            presets: Vec::new(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("native/aurora.wgsl"),
@@ -580,6 +585,7 @@ fn registry_register_replaces_existing() {
             category: EffectCategory::Ambient,
             tags: vec![],
             controls: Vec::new(),
+            presets: Vec::new(),
             audio_reactive: false,
             source: EffectSource::Native {
                 path: PathBuf::from("native/aurora.wgsl"),

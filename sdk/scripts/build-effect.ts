@@ -55,12 +55,19 @@ function parseArgs() {
 
 // ── Metadata Extraction ────────────────────────────────────────────────
 
+interface PresetDef {
+    name: string
+    description?: string
+    controls: Record<string, unknown>
+}
+
 interface NewApiDef {
     name: string
     shader?: string
     description?: string
     author?: string
     audio?: boolean
+    presets?: PresetDef[]
     controls: Record<string, unknown>
     resolvedControls: Array<{
         key: string
@@ -165,6 +172,7 @@ async function extractMetadata(entryPath: string) {
                     description: def.description ?? '',
                     author: def.author ?? 'Hypercolor',
                     audioReactive: def.audio ?? false,
+                    presets: def.presets ?? [],
                 },
                 controls: newApiToControls(def),
             }
@@ -215,6 +223,13 @@ function controlToMeta(ctrl: ControlDef): string {
     return `  <meta ${attrs.join(' ')}/>`
 }
 
+function presetToMeta(preset: PresetDef): string {
+    const attrs: string[] = [`preset="${escapeAttr(preset.name)}"`]
+    if (preset.description) attrs.push(`preset-description="${escapeAttr(preset.description)}"`)
+    attrs.push(`preset-controls='${JSON.stringify(preset.controls)}'`)
+    return `  <meta ${attrs.join(' ')}/>`
+}
+
 function escapeAttr(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
 }
@@ -227,9 +242,11 @@ function generateHTML(
     author: string,
     audioReactive: boolean,
     controlMetas: string[],
+    presetMetas: string[],
     jsBundle: string,
 ): string {
     const audioTag = `\n  <meta audio-reactive="${audioReactive}"/>`
+    const presetBlock = presetMetas.length > 0 ? `\n${presetMetas.join('\n')}` : ''
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -238,7 +255,7 @@ function generateHTML(
   <title>${escapeAttr(effectName)}</title>
   <meta description="${escapeAttr(description)}"/>
   <meta publisher="${escapeAttr(author)}"/>${audioTag}
-${controlMetas.join('\n')}
+${controlMetas.join('\n')}${presetBlock}
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
   <canvas id="exCanvas" width="320" height="200"></canvas>
@@ -298,11 +315,16 @@ async function buildEffect(entryPath: string, outDir: string) {
     // 2. Generate control meta tags
     const controlMetas = (controls as ControlDef[]).map(controlToMeta)
 
-    // 3. Bundle JS
+    // 3. Generate preset meta tags
+    const presetMetas = (effect as any)?.presets
+        ? ((effect as any).presets as PresetDef[]).map(presetToMeta)
+        : []
+
+    // 4. Bundle JS
     const jsBundle = await bundleEffect(entryPath)
 
-    // 4. Generate HTML
-    const html = generateHTML(effectName, description, author, audioReactive, controlMetas, jsBundle)
+    // 5. Generate HTML
+    const html = generateHTML(effectName, description, author, audioReactive, controlMetas, presetMetas, jsBundle)
 
     // 5. Write output
     mkdirSync(outDir, { recursive: true })
