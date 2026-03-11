@@ -467,7 +467,7 @@ function drawEmitterCore(
     ctx.fillRect(x - inner, y - inner, inner * 2, inner * 2)
 }
 
-export default canvas.stateful('Bass Shockwave', {
+export default canvas.stateful('Shockwave', {
     speed:     [1, 10, 6],
     intensity: [0, 100, 78],
     ringCount: [2, 12, 6],

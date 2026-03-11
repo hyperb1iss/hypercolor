@@ -371,8 +371,6 @@ fn detect_audio_reactivity(lower: &str) -> bool {
         "audio.freq",
         "audio.level",
         "audio.density",
-        "fft",
-        "spectrum",
     ];
 
     AUDIO_MARKERS.iter().any(|marker| lower.contains(marker))

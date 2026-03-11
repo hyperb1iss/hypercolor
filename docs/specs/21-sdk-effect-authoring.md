@@ -695,7 +695,7 @@ Shader effects declare `audio: true` because the 18 audio uniforms need to be re
 
 ```typescript
 // Shorthand in controls — just include it
-export default effect('Bass Shockwave', shader, {
+export default effect('Shockwave', shader, {
     speed:     [1, 10, 5],
     intensity: [0, 100, 75],
     palette:   PALETTES,

@@ -141,7 +141,7 @@ and interactive categories:
 | | | | |
 |---|---|---|---|
 | Borealis | Neon City | Digital Rain | Meteor Storm |
-| Bass Shockwave | Voronoi Glass | Bubble Garden | Spectral Fire |
+| Shockwave | Voronoi Glass | Bubble Garden | Spectral Fire |
 | Plasma Engine | Synth Horizon | Deep Current | Lava Lamp |
 | Poisonous | Fiberflies | Ember Glow | Frost Crystal |
 | Nebula Drift | Nyan Dash | Retro Rink | Frequency Cascade |
