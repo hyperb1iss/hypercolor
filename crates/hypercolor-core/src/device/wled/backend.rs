@@ -550,6 +550,66 @@ async fn fetch_wled_live_receiver_config(ip: IpAddr) -> Result<Option<WledLiveRe
     parse_wled_live_receiver_config(&json)
 }
 
+/// Compare WLED realtime receiver settings with Hypercolor's stream settings.
+///
+/// WLED documents DDP as a fixed-port receiver on `4048`, but `/json/cfg`
+/// exposes the shared live-sync port and DMX settings used for E1.31/Art-Net.
+/// In DDP mode those fields are not authoritative, so Hypercolor only validates
+/// the generic realtime flags and skips the E1.31-specific checks.
+#[must_use]
+pub fn wled_receiver_config_mismatches(
+    config: &WledLiveReceiverConfig,
+    protocol: WledProtocol,
+    color_format: WledColorFormat,
+    e131_start_universe: u16,
+) -> Vec<String> {
+    let mut mismatches = Vec::new();
+
+    if !config.enabled {
+        mismatches.push("live receiver disabled".to_owned());
+    }
+    if !config.realtime_mode_enabled {
+        mismatches.push("realtime mode disabled".to_owned());
+    }
+
+    if protocol == WledProtocol::E131 {
+        let expected_mode = expected_wled_e131_mode(color_format);
+        if config.port != E131_PORT {
+            mismatches.push(format!(
+                "expected E1.31 port {E131_PORT}, WLED is set to {}",
+                config.port
+            ));
+        }
+        match config.dmx_universe {
+            Some(actual) if actual != e131_start_universe => mismatches.push(format!(
+                "expected start universe {e131_start_universe}, WLED is set to {actual}"
+            )),
+            None => mismatches.push("missing E1.31 start universe".to_owned()),
+            _ => {}
+        }
+        match config.dmx_address {
+            Some(1) => {}
+            Some(actual) => mismatches.push(format!(
+                "expected DMX start address 1, WLED is set to {actual}"
+            )),
+            None => mismatches.push("missing DMX start address".to_owned()),
+        }
+        match config.dmx_mode {
+            Some(actual) if actual != expected_mode => mismatches.push(format!(
+                "expected DMX mode {} ({}), WLED is set to {} ({})",
+                expected_mode,
+                wled_e131_mode_name(expected_mode),
+                actual,
+                wled_e131_mode_name(actual)
+            )),
+            None => mismatches.push("missing E1.31 DMX mode".to_owned()),
+            _ => {}
+        }
+    }
+
+    mismatches
+}
+
 const fn expected_wled_e131_mode(color_format: WledColorFormat) -> u8 {
     match color_format {
         WledColorFormat::Rgb => 4,
@@ -596,59 +656,8 @@ async fn validate_wled_receiver_config(
         }
     };
 
-    let mut mismatches = Vec::new();
-
-    if !config.enabled {
-        mismatches.push("live receiver disabled".to_owned());
-    }
-    if !config.realtime_mode_enabled {
-        mismatches.push("realtime mode disabled".to_owned());
-    }
-
-    match protocol {
-        WledProtocol::Ddp => {
-            if config.port != DDP_PORT {
-                mismatches.push(format!(
-                    "expected DDP port {DDP_PORT}, WLED is set to {}",
-                    config.port
-                ));
-            }
-        }
-        WledProtocol::E131 => {
-            let expected_mode = expected_wled_e131_mode(color_format);
-            if config.port != E131_PORT {
-                mismatches.push(format!(
-                    "expected E1.31 port {E131_PORT}, WLED is set to {}",
-                    config.port
-                ));
-            }
-            match config.dmx_universe {
-                Some(actual) if actual != e131_start_universe => mismatches.push(format!(
-                    "expected start universe {e131_start_universe}, WLED is set to {actual}"
-                )),
-                None => mismatches.push("missing E1.31 start universe".to_owned()),
-                _ => {}
-            }
-            match config.dmx_address {
-                Some(1) => {}
-                Some(actual) => mismatches.push(format!(
-                    "expected DMX start address 1, WLED is set to {actual}"
-                )),
-                None => mismatches.push("missing DMX start address".to_owned()),
-            }
-            match config.dmx_mode {
-                Some(actual) if actual != expected_mode => mismatches.push(format!(
-                    "expected DMX mode {} ({}), WLED is set to {} ({})",
-                    expected_mode,
-                    wled_e131_mode_name(expected_mode),
-                    actual,
-                    wled_e131_mode_name(actual)
-                )),
-                None => mismatches.push("missing E1.31 DMX mode".to_owned()),
-                _ => {}
-            }
-        }
-    }
+    let mismatches =
+        wled_receiver_config_mismatches(&config, protocol, color_format, e131_start_universe);
 
     if mismatches.is_empty() {
         debug!(
@@ -661,19 +670,35 @@ async fn validate_wled_receiver_config(
             "WLED realtime receiver config matches Hypercolor streaming configuration"
         );
     } else {
-        warn!(
-            ip = %ip,
-            protocol = ?protocol,
-            port = config.port,
-            dmx_address = config.dmx_address,
-            dmx_universe = config.dmx_universe,
-            dmx_mode = config.dmx_mode,
-            expected_universe = e131_start_universe,
-            expected_mode = expected_wled_e131_mode(color_format),
-            expected_mode_name = wled_e131_mode_name(expected_wled_e131_mode(color_format)),
-            mismatches = %mismatches.join("; "),
-            "WLED realtime receiver config does not match Hypercolor output"
-        );
+        match protocol {
+            WledProtocol::Ddp => {
+                warn!(
+                    ip = %ip,
+                    protocol = ?protocol,
+                    port = config.port,
+                    dmx_address = config.dmx_address,
+                    dmx_universe = config.dmx_universe,
+                    dmx_mode = config.dmx_mode,
+                    mismatches = %mismatches.join("; "),
+                    "WLED realtime receiver config does not match Hypercolor output"
+                );
+            }
+            WledProtocol::E131 => {
+                warn!(
+                    ip = %ip,
+                    protocol = ?protocol,
+                    port = config.port,
+                    dmx_address = config.dmx_address,
+                    dmx_universe = config.dmx_universe,
+                    dmx_mode = config.dmx_mode,
+                    expected_universe = e131_start_universe,
+                    expected_mode = expected_wled_e131_mode(color_format),
+                    expected_mode_name = wled_e131_mode_name(expected_wled_e131_mode(color_format)),
+                    mismatches = %mismatches.join("; "),
+                    "WLED realtime receiver config does not match Hypercolor output"
+                );
+            }
+        }
     }
 }
 

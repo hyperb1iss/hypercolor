@@ -786,6 +786,71 @@ fn parse_wled_live_receiver_config_missing_live_returns_none() {
     assert!(config.is_none(), "missing live block should return none");
 }
 
+#[test]
+fn ddp_receiver_config_mismatches_ignore_e131_fields() {
+    let config = WledLiveReceiverConfig {
+        enabled: true,
+        realtime_mode_enabled: true,
+        port: 5568,
+        dmx_address: Some(1),
+        dmx_universe: Some(1),
+        dmx_mode: Some(4),
+    };
+
+    let mismatches = hypercolor_core::device::wled::backend::wled_receiver_config_mismatches(
+        &config,
+        WledProtocol::Ddp,
+        WledColorFormat::Rgb,
+        1,
+    );
+
+    assert!(
+        mismatches.is_empty(),
+        "DDP should ignore E1.31-only /json/cfg fields"
+    );
+}
+
+#[test]
+fn e131_receiver_config_mismatches_report_port_and_mode() {
+    let config = WledLiveReceiverConfig {
+        enabled: true,
+        realtime_mode_enabled: true,
+        port: 4048,
+        dmx_address: Some(5),
+        dmx_universe: Some(2),
+        dmx_mode: Some(4),
+    };
+
+    let mismatches = hypercolor_core::device::wled::backend::wled_receiver_config_mismatches(
+        &config,
+        WledProtocol::E131,
+        WledColorFormat::Rgbw,
+        1,
+    );
+
+    assert_eq!(mismatches.len(), 4);
+    assert!(
+        mismatches
+            .iter()
+            .any(|m| m.contains("expected E1.31 port 5568"))
+    );
+    assert!(
+        mismatches
+            .iter()
+            .any(|m| m.contains("expected start universe 1"))
+    );
+    assert!(
+        mismatches
+            .iter()
+            .any(|m| m.contains("expected DMX start address 1"))
+    );
+    assert!(
+        mismatches
+            .iter()
+            .any(|m| m.contains("expected DMX mode 6 (multiple_rgbw)"))
+    );
+}
+
 // ── WledSegmentInfo pixel_count Tests ──────────────────────────────────
 
 #[test]
