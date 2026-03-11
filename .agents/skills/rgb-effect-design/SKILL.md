@@ -3,7 +3,7 @@ name: rgb-effect-design
 version: 1.0.0
 description: >-
   This skill should be used when creating, modifying, or debugging RGB lighting
-  effects for Hypercolor or SignalRGB-compatible engines. Triggers on "create an
+  effects for Hypercolor or LightScript-compatible engines. Triggers on "create an
   effect", "write a lighting effect", "design LED colors", "fix washed out
   colors", "port a shader to LEDs", "why does this look bad on LEDs",
   "color palette for RGB", "effect looks white", "colors too bright",

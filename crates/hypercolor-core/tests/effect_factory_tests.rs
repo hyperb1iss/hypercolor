@@ -28,7 +28,7 @@ fn html_metadata() -> EffectMetadata {
     EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
         name: "aurora-html".to_owned(),
-        author: "SignalRGB".to_owned(),
+        author: "test".to_owned(),
         version: "0.1.0".to_owned(),
         description: "html test effect".to_owned(),
         category: EffectCategory::Ambient,

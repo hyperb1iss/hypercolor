@@ -495,7 +495,7 @@ fn engine_activate_metadata_html_requires_servo_feature() {
     let metadata = EffectMetadata {
         id: EffectId::new(Uuid::now_v7()),
         name: "html-test".to_owned(),
-        author: "SignalRGB".to_owned(),
+        author: "test".to_owned(),
         version: "0.1.0".to_owned(),
         description: "HTML effect".to_owned(),
         category: EffectCategory::Ambient,

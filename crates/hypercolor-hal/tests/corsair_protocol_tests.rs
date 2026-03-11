@@ -395,7 +395,7 @@ fn xc7_lcd_supports_ring_zone_and_model_specific_keepalive() {
 }
 
 #[test]
-fn icue_link_lcd_matches_signalrgb_standard_lcd_flow() {
+fn icue_link_lcd_matches_standard_lcd_flow() {
     let protocol = build_icue_link_lcd_protocol();
 
     let init = protocol.init_sequence();

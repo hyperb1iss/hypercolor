@@ -1,4 +1,4 @@
-//! `SignalRGB` Lightscript runtime shim helpers.
+//! LightScript runtime shim helpers.
 //!
 //! This module builds JavaScript snippets for bootstrapping and per-frame
 //! runtime injection without binding directly to any specific web engine.
@@ -65,7 +65,7 @@ impl LightscriptRuntime {
         script.push_str(&format!("  window.engine.width = {};\n", self.width));
         script.push_str(&format!("  window.engine.height = {};\n", self.height));
 
-        // Core Lightscript/SignalRGB contract: audio + vision + zone are always present.
+        // Core LightScript contract: audio + vision + zone are always present.
         script.push_str(
             "  if (typeof window.engine.audio !== 'object' || window.engine.audio === null) { window.engine.audio = {}; }\n",
         );
@@ -77,7 +77,7 @@ impl LightscriptRuntime {
         );
         script.push_str("  window.engine.meters = window.engine.vision;\n");
 
-        // Audio defaults (SignalRGB-compatible surface + extended fields used by
+        // Audio defaults (LightScript-compatible surface + extended fields used by
         // lightscript-workshop helpers).
         script.push_str(&format!(
             "  if (!(window.engine.audio.freq instanceof Int8Array) || window.engine.audio.freq.length !== {}) {{ window.engine.audio.freq = new Int8Array({}); }}\n",
@@ -627,7 +627,7 @@ pub fn control_update_script(name: &str, value: &ControlValue) -> String {
     )
 }
 
-/// Convert normalized 0..1 level to dB scale used by many `SignalRGB` effects.
+/// Convert normalized 0..1 level to dB scale used by many LightScript effects.
 #[must_use]
 pub fn normalized_level_to_db(level: f32) -> f32 {
     if !level.is_finite() || level <= 0.0 {

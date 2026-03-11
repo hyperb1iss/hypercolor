@@ -1,4 +1,4 @@
-//! Lenient HTML metadata extraction for SignalRGB-style effects.
+//! Lenient HTML metadata extraction for LightScript-style effects.
 //!
 //! This parser intentionally avoids a full DOM/HTML dependency. It extracts
 //! enough metadata from `<title>` and `<meta ...>` tags to populate the effect
@@ -594,12 +594,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_signalrgb_style_metadata() {
+    fn parses_lightscript_style_metadata() {
         let html = r#"
 <head>
   <title>Aurora</title>
   <meta description="Northern lights simulation" />
-  <meta publisher="SignalRGB" />
+  <meta publisher="Hypercolor" />
   <meta property="speed" label="Speed" type="number" default="40" min="0" max="100" />
   <meta property="cycle" label="Cycle" type="boolean" default="1" />
 </head>
@@ -611,7 +611,7 @@ mod tests {
         let parsed = parse_html_effect_metadata(html);
         assert_eq!(parsed.title, "Aurora");
         assert_eq!(parsed.description, "Northern lights simulation");
-        assert_eq!(parsed.publisher, "SignalRGB");
+        assert_eq!(parsed.publisher, "Hypercolor");
         assert_eq!(parsed.controls.len(), 2);
         assert!(parsed.audio_reactive);
         assert_eq!(parsed.category, EffectCategory::Audio);

@@ -27,7 +27,7 @@ fn register_html_effects_loads_effects_from_directory_tree() {
 <head>
   <title>Aurora</title>
   <meta description="Northern lights" />
-  <meta publisher="SignalRGB" />
+  <meta publisher="Hypercolor" />
   <meta property="speed" label="Speed" type="number" default="50" min="0" max="100" />
 </head>
 <script>
@@ -92,7 +92,7 @@ fn register_html_effects_skips_duplicates_from_overlapping_roots() {
 <head>
   <title>Single</title>
   <meta description="single file" />
-  <meta publisher="SignalRGB" />
+  <meta publisher="Hypercolor" />
 </head>
 "#,
     );
@@ -117,7 +117,7 @@ fn register_html_effects_reports_unreadable_files() {
 <head>
   <title>Good</title>
   <meta description="good" />
-  <meta publisher="SignalRGB" />
+  <meta publisher="Hypercolor" />
 </head>
 "#,
     );
@@ -160,7 +160,7 @@ fn register_html_effects_decodes_color_defaults_to_linear_rgba() {
 <head>
   <title>Color Check</title>
   <meta description="color defaults" />
-  <meta publisher="SignalRGB" />
+  <meta publisher="Hypercolor" />
   <meta property="accent" label="Accent" type="color" default="#808080" />
 </head>
 "##,

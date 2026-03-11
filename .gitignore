@@ -25,8 +25,7 @@ bun.lock
 .env
 .env.local
 
-# Effects — community imports are reference-only, not shipped
-effects/community/
+# Effects — generated build output (SDK effects)
 /effects/hypercolor/
 
 # Trunk dev output

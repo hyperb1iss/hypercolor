@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 
 // ── Canvas Constants ───────────────────────────────────────────────────────
 
-/// The default canvas width, matching `SignalRGB`'s standard resolution.
+/// The default canvas width used by the render pipeline.
 pub const DEFAULT_CANVAS_WIDTH: u32 = 320;
 
-/// The default canvas height, matching `SignalRGB`'s standard resolution.
+/// The default canvas height used by the render pipeline.
 pub const DEFAULT_CANVAS_HEIGHT: u32 = 200;
 
 /// Bytes per pixel in the RGBA format.

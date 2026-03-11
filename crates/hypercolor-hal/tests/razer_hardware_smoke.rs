@@ -431,7 +431,7 @@ async fn basilisk_v3_interface_3_color_probe() -> Result<(), Box<dyn Error>> {
     clippy::similar_names,
     reason = "manual diagnostic test exercising raw HID packet sequences"
 )]
-async fn basilisk_v3_signalrgb_sequence_diagnostics() -> Result<(), Box<dyn Error>> {
+async fn basilisk_v3_hid_sequence_diagnostics() -> Result<(), Box<dyn Error>> {
     if !hardware_tests_enabled() {
         eprintln!("skipping hardware smoke test; set {HARDWARE_TEST_ENV}=1 to enable it");
         return Ok(());

@@ -176,7 +176,7 @@ pub enum ControlType {
 
 /// Semantic control kind declared by an effect source.
 ///
-/// This keeps LightScript/SignalRGB metadata semantics intact even when
+/// This keeps LightScript metadata semantics intact even when
 /// multiple kinds map to the same UI widget type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -337,7 +337,7 @@ pub struct ControlDefinition {
     pub id: String,
     /// Human-readable label shown in the control panel.
     pub name: String,
-    /// Semantic kind from source metadata (LightScript/SignalRGB).
+    /// Semantic kind from source metadata (LightScript).
     #[serde(default)]
     pub kind: ControlKind,
     /// Widget kind and constraints.
