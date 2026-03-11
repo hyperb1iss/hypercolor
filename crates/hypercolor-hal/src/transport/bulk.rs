@@ -117,7 +117,7 @@ impl UsbBulkTransport {
             in_max_packet_size,
             out_endpoint: Arc::new(Mutex::new(out_handle)),
             in_endpoint: Arc::new(Mutex::new(in_handle)),
-            out_buffer: Arc::new(Mutex::new(Some(Buffer::new(out_max_packet_size.into())))),
+            out_buffer: Arc::new(Mutex::new(Some(Buffer::new(out_max_packet_size)))),
             report_len: DEFAULT_REPORT_LEN,
             closed: AtomicBool::new(false),
             op_lock: Arc::new(Mutex::new(())),

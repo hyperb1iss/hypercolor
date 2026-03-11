@@ -104,7 +104,7 @@ impl InputSource for ReconfigurableAudioSource {
         capture_active: bool,
     ) -> anyhow::Result<()> {
         self.config = config.clone();
-        self.name = name.to_owned();
+        name.clone_into(&mut self.name);
         self.running = true;
         self.capture_active = capture_active;
         Ok(())

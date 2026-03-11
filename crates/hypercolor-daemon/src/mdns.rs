@@ -138,7 +138,7 @@ fn sanitize_dns_label(input: &str) -> String {
         .to_owned();
 
     if label.is_empty() {
-        label = "hypercolor".to_owned();
+        "hypercolor".clone_into(&mut label);
     }
 
     label.truncate(48);

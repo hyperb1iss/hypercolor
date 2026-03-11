@@ -180,10 +180,10 @@ impl SessionWatcher {
     pub async fn shutdown(self) {
         self.cancel.cancel();
         for task in self.tasks {
-            if let Err(error) = task.await {
-                if !error.is_cancelled() {
-                    warn!(%error, "Session watcher task terminated unexpectedly");
-                }
+            if let Err(error) = task.await
+                && !error.is_cancelled()
+            {
+                warn!(%error, "Session watcher task terminated unexpectedly");
             }
         }
     }

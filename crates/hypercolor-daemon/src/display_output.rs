@@ -423,6 +423,10 @@ async fn reconcile_display_workers(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "display worker is a self-contained event loop"
+)]
 async fn run_display_worker(
     backend_io: BackendIo,
     backend_key: String,
@@ -453,7 +457,7 @@ async fn run_display_worker(
             if rx.changed().await.is_err() {
                 break;
             }
-            pending = rx.borrow_and_update().clone();
+            pending.clone_from(&rx.borrow_and_update());
             continue;
         }
 
@@ -463,10 +467,10 @@ async fn run_display_worker(
                     if changed.is_err() {
                         break;
                     }
-                    pending = rx.borrow_and_update().clone();
+                    pending.clone_from(&rx.borrow_and_update());
                     continue;
                 }
-                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(next_send_at)) => {}
+                () = tokio::time::sleep_until(tokio::time::Instant::from_std(next_send_at)) => {}
             }
         }
 
@@ -603,6 +607,10 @@ async fn display_targets(
     };
     let logical_store = logical_devices.read().await;
     let registry_generation = registry.generation();
+    #[expect(
+        clippy::as_conversions,
+        reason = "pointer-to-usize for identity comparison"
+    )]
     let layout_ptr = Arc::as_ptr(&layout) as usize;
     let logical_signature = logical_device_store_signature(&logical_store);
 
@@ -667,7 +675,7 @@ async fn display_targets(
     cache.registry_generation = registry_generation;
     cache.layout_ptr = layout_ptr;
     cache.logical_signature = logical_signature;
-    cache.targets = targets.clone();
+    cache.targets.clone_from(&targets);
     targets
 }
 

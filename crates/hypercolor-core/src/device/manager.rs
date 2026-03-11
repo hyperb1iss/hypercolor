@@ -390,7 +390,7 @@ impl OutputQueue {
                     if rx.changed().await.is_err() {
                         break;
                     }
-                    pending = rx.borrow_and_update().clone();
+                    pending.clone_from(&rx.borrow_and_update());
                     continue;
                 }
 
@@ -400,10 +400,10 @@ impl OutputQueue {
                             if changed.is_err() {
                                 break;
                             }
-                            pending = rx.borrow_and_update().clone();
+                            pending.clone_from(&rx.borrow_and_update());
                             continue;
                         }
-                        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(next_send_at)) => {}
+                        () = tokio::time::sleep_until(tokio::time::Instant::from_std(next_send_at)) => {}
                     }
                 }
 

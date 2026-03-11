@@ -133,13 +133,12 @@ impl DaemonClient {
                 }
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
-                        Some(TrayCommand::Quit) => return Ok(true),
+                        Some(TrayCommand::Quit) | None => return Ok(true),
                         Some(command) => {
                             if self.handle_command(command).await {
                                 return Ok(false);
                             }
                         }
-                        None => return Ok(true),
                     }
                 }
             }
@@ -503,7 +502,7 @@ fn percent_encode(input: &str) -> String {
         if unreserved {
             encoded.push(char::from(byte));
         } else {
-            encoded.push_str(&format!("%{byte:02X}"));
+            let _ = std::fmt::Write::write_fmt(&mut encoded, format_args!("%{byte:02X}"));
         }
     }
     encoded

@@ -1,4 +1,8 @@
 //! QMK HID RGB protocol encoding tests.
+#![expect(
+    clippy::as_conversions,
+    reason = "enum-as-u8 and index casts in tests are intentional"
+)]
 
 use hypercolor_hal::drivers::qmk::{
     Command, PACKET_SIZE, ProtocolRevision, QmkKeyboardConfig, QmkProtocol,

@@ -673,18 +673,18 @@ async fn multiple_frames_increment_and_update() {
 
         // After a few frames, colors should differ from previous frame
         // (rainbow shifts over time). Skip frame 0 since there's no previous.
-        if let Some(ref prev) = previous_colors {
-            if frame_idx > 1 {
-                let any_changed = zone_colors[0]
-                    .colors
-                    .iter()
-                    .zip(prev.iter())
-                    .any(|(a, b)| a != b);
-                assert!(
-                    any_changed,
-                    "frame {frame_idx}: colors should change between frames"
-                );
-            }
+        if let Some(ref prev) = previous_colors
+            && frame_idx > 1
+        {
+            let any_changed = zone_colors[0]
+                .colors
+                .iter()
+                .zip(prev.iter())
+                .any(|(a, b)| a != b);
+            assert!(
+                any_changed,
+                "frame {frame_idx}: colors should change between frames"
+            );
         }
 
         previous_colors = Some(zone_colors[0].colors.clone());

@@ -131,13 +131,17 @@ impl ColorWaveRenderer {
         }
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::as_conversions,
+        reason = "canvas pixel dimensions are always safely representable as f32"
+    )]
     fn spawn_wave(&mut self, width: u32, height: u32) {
         let wave_width = self.wave_width_px();
         let (position, lane) = match self.direction {
-            WaveDirection::Right => (-wave_width, 0),
+            WaveDirection::Right | WaveDirection::Down => (-wave_width, 0),
             WaveDirection::Left => (width as f32, 0),
             WaveDirection::Up => (height as f32, 0),
-            WaveDirection::Down => (-wave_width, 0),
             WaveDirection::VerticalPass => {
                 if self.next_random() < 0.5 {
                     (-wave_width, 0)
@@ -167,18 +171,9 @@ impl ColorWaveRenderer {
         let delta = self.pixels_per_second() * delta_secs.max(0.0);
         for wave in &mut self.waves {
             match self.direction {
-                WaveDirection::Right => wave.position += delta,
-                WaveDirection::Left => wave.position -= delta,
-                WaveDirection::Up => wave.position -= delta,
-                WaveDirection::Down => wave.position += delta,
-                WaveDirection::VerticalPass => {
-                    if wave.lane == 0 {
-                        wave.position += delta;
-                    } else {
-                        wave.position -= delta;
-                    }
-                }
-                WaveDirection::HorizontalPass => {
+                WaveDirection::Right | WaveDirection::Down => wave.position += delta,
+                WaveDirection::Left | WaveDirection::Up => wave.position -= delta,
+                WaveDirection::VerticalPass | WaveDirection::HorizontalPass => {
                     if wave.lane == 0 {
                         wave.position += delta;
                     } else {
@@ -189,12 +184,16 @@ impl ColorWaveRenderer {
         }
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::as_conversions,
+        reason = "canvas pixel dimensions are always safely representable as f32"
+    )]
     fn retain_visible_waves(&mut self, width: u32, height: u32) {
         let wave_width = self.wave_width_px();
         self.waves.retain(|wave| match self.direction {
             WaveDirection::Right => wave.position < width as f32,
-            WaveDirection::Left => wave.position + wave_width > 0.0,
-            WaveDirection::Up => wave.position + wave_width > 0.0,
+            WaveDirection::Left | WaveDirection::Up => wave.position + wave_width > 0.0,
             WaveDirection::Down => wave.position < height as f32,
             WaveDirection::VerticalPass => {
                 if wave.lane == 0 {
@@ -463,13 +462,11 @@ fn fill_rect(canvas: &mut Canvas, x: i32, y: i32, width: i32, height: i32, color
         return;
     }
 
-    let canvas_width = match i32::try_from(canvas.width()) {
-        Ok(v) => v,
-        Err(_) => return,
+    let Ok(canvas_width) = i32::try_from(canvas.width()) else {
+        return;
     };
-    let canvas_height = match i32::try_from(canvas.height()) {
-        Ok(v) => v,
-        Err(_) => return,
+    let Ok(canvas_height) = i32::try_from(canvas.height()) else {
+        return;
     };
 
     let start_x = x.max(0);
@@ -483,13 +480,13 @@ fn fill_rect(canvas: &mut Canvas, x: i32, y: i32, width: i32, height: i32, color
 
     for py in start_y..end_y {
         for px in start_x..end_x {
-            let Ok(px_u) = u32::try_from(px) else {
+            let Ok(col) = u32::try_from(px) else {
                 continue;
             };
-            let Ok(py_u) = u32::try_from(py) else {
+            let Ok(row) = u32::try_from(py) else {
                 continue;
             };
-            canvas.set_pixel(px_u, py_u, color);
+            canvas.set_pixel(col, row, color);
         }
     }
 }

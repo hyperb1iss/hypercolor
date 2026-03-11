@@ -225,9 +225,11 @@ function generateHTML(
     effectName: string,
     description: string,
     author: string,
+    audioReactive: boolean,
     controlMetas: string[],
     jsBundle: string,
 ): string {
+    const audioTag = `\n  <meta audio-reactive="${audioReactive}"/>`
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -235,7 +237,7 @@ function generateHTML(
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeAttr(effectName)}</title>
   <meta description="${escapeAttr(description)}"/>
-  <meta publisher="${escapeAttr(author)}"/>
+  <meta publisher="${escapeAttr(author)}"/>${audioTag}
 ${controlMetas.join('\n')}
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
@@ -291,6 +293,7 @@ async function buildEffect(entryPath: string, outDir: string) {
     const effectName = effect?.name ?? effectId
     const description = effect?.description ?? ''
     const author = effect?.author ?? 'Hypercolor'
+    const audioReactive = effect?.audioReactive ?? false
 
     // 2. Generate control meta tags
     const controlMetas = (controls as ControlDef[]).map(controlToMeta)
@@ -299,7 +302,7 @@ async function buildEffect(entryPath: string, outDir: string) {
     const jsBundle = await bundleEffect(entryPath)
 
     // 4. Generate HTML
-    const html = generateHTML(effectName, description, author, controlMetas, jsBundle)
+    const html = generateHTML(effectName, description, author, audioReactive, controlMetas, jsBundle)
 
     // 5. Write output
     mkdirSync(outDir, { recursive: true })

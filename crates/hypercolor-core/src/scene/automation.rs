@@ -128,12 +128,12 @@ impl AutomationEngine {
 
         for (name, action, cooldown_secs) in candidates {
             // Cooldown check.
-            if cooldown_secs > 0 {
-                if let Some(last) = self.last_fired.get(&name) {
-                    let elapsed = now.duration_since(*last);
-                    if elapsed.as_secs() < cooldown_secs {
-                        continue;
-                    }
+            if cooldown_secs > 0
+                && let Some(last) = self.last_fired.get(&name)
+            {
+                let elapsed = now.duration_since(*last);
+                if elapsed.as_secs() < cooldown_secs {
+                    continue;
                 }
             }
 

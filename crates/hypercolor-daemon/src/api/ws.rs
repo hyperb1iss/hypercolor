@@ -1012,11 +1012,11 @@ async fn handle_client_message(
 
             let mut subs = subscriptions.write().await;
 
-            if let Some(config_patch) = config {
-                if let Err(error) = subs.config.apply_patch(config_patch) {
-                    let _ = send_json(socket, &error.into_message()).await;
-                    return;
-                }
+            if let Some(config_patch) = config
+                && let Err(error) = subs.config.apply_patch(config_patch)
+            {
+                let _ = send_json(socket, &error.into_message()).await;
+                return;
             }
 
             for channel in &parsed_channels {

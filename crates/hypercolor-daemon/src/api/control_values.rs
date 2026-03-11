@@ -19,15 +19,15 @@ pub fn json_to_control_value(value: &serde_json::Value) -> Option<ControlValue> 
     if let Some(v) = value.as_str() {
         return Some(ControlValue::Text(v.to_owned()));
     }
-    if let Some(array) = value.as_array() {
-        if array.len() == 4 {
-            let mut color = [0.0f32; 4];
-            for (idx, component) in array.iter().enumerate() {
-                let parsed = component.as_f64()?;
-                color[idx] = parse_f32(parsed)?;
-            }
-            return Some(ControlValue::Color(color));
+    if let Some(array) = value.as_array()
+        && array.len() == 4
+    {
+        let mut color = [0.0f32; 4];
+        for (idx, component) in array.iter().enumerate() {
+            let parsed = component.as_f64()?;
+            color[idx] = parse_f32(parsed)?;
         }
+        return Some(ControlValue::Color(color));
     }
     None
 }

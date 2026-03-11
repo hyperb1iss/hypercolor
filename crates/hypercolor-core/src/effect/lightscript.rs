@@ -1,4 +1,4 @@
-//! LightScript runtime shim helpers.
+//! `LightScript` runtime shim helpers.
 //!
 //! This module builds JavaScript snippets for bootstrapping and per-frame
 //! runtime injection without binding directly to any specific web engine.
@@ -627,7 +627,7 @@ pub fn control_update_script(name: &str, value: &ControlValue) -> String {
     )
 }
 
-/// Convert normalized 0..1 level to dB scale used by many LightScript effects.
+/// Convert normalized 0..1 level to dB scale used by many `LightScript` effects.
 #[must_use]
 pub fn normalized_level_to_db(level: f32) -> f32 {
     if !level.is_finite() || level <= 0.0 {

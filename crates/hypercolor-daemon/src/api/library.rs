@@ -601,13 +601,13 @@ pub async fn activate_playlist(
     };
     stop_runtime(previous);
 
-    if let Some(first_item) = playlist.items.first() {
-        if let Err(error) = activate_playlist_item(&state, first_item).await {
-            return ApiError::internal(format!(
-                "Failed to activate first playlist item for '{}': {error}",
-                playlist.name
-            ));
-        }
+    if let Some(first_item) = playlist.items.first()
+        && let Err(error) = activate_playlist_item(&state, first_item).await
+    {
+        return ApiError::internal(format!(
+            "Failed to activate first playlist item for '{}': {error}",
+            playlist.name
+        ));
     }
 
     let generation;

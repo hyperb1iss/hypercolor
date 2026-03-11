@@ -467,13 +467,13 @@ impl DeviceLifecycleManager {
         };
         let value = fingerprint.0.to_ascii_lowercase();
 
-        if backend_id == "wled" {
-            if let Some(value) = value.strip_prefix("net:") {
-                if let Some(hostname) = value.strip_prefix("wled:") {
-                    return format!("wled:{}", sanitize_component(hostname));
-                }
-                return format!("wled:{value}");
+        if backend_id == "wled"
+            && let Some(value) = value.strip_prefix("net:")
+        {
+            if let Some(hostname) = value.strip_prefix("wled:") {
+                return format!("wled:{}", sanitize_component(hostname));
             }
+            return format!("wled:{value}");
         }
 
         if let Some(value) = value.strip_prefix("usb:") {

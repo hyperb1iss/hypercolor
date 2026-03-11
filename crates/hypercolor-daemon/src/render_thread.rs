@@ -770,6 +770,10 @@ async fn frame_snapshot(state: &RenderThreadState) -> (u64, u32, u32) {
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "frame publishing needs state + all frame components"
+)]
 fn publish_frame_updates(
     state: &RenderThreadState,
     recycled_frame: &mut FrameData,

@@ -129,6 +129,10 @@ impl Push2Protocol {
         }
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "method is called via self in Protocol trait impl"
+    )]
     fn normalize_colors<'a>(&self, colors: &'a [[u8; 3]]) -> Cow<'a, [[u8; 3]]> {
         if colors.len() == PUSH2_TOTAL_LEDS {
             return Cow::Borrowed(colors);
@@ -179,6 +183,10 @@ impl Push2Protocol {
         commands
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "method is called via self in Protocol trait impl"
+    )]
     fn build_display_commands(&self, rgb_bytes: &[u8], commands: &mut Vec<ProtocolCommand>) {
         let mut buffer = CommandBuffer::new(commands);
         buffer.push_struct(
@@ -303,6 +311,10 @@ impl Protocol for Push2Protocol {
         commands
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "push2 frame encoding has inherent per-zone complexity"
+    )]
     fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let normalized = self.normalize_colors(colors);
         let normalized = normalized.as_ref();
@@ -446,6 +458,7 @@ impl Protocol for Push2Protocol {
         command_buffer.finish();
     }
 
+    #[expect(clippy::similar_names, reason = "lsb/msb are standard acronyms")]
     fn encode_brightness(&self, brightness: u8) -> Option<Vec<ProtocolCommand>> {
         let led_brightness = brightness / 2;
         let (display_lsb, display_msb) = encode_sysex_byte(brightness);

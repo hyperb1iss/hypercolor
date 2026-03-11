@@ -488,6 +488,11 @@ async fn execute_logs(_args: &LogsArgs, _ctx: &OutputContext) -> Result<()> {
 
 /// Format a byte count as a human-readable string (e.g., "45.2 MB").
 #[cfg(target_os = "linux")]
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::as_conversions,
+    reason = "byte counts in practical use are well within f64 precision"
+)]
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;

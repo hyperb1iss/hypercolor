@@ -275,6 +275,10 @@ impl UsbBackend {
         (pending.descriptor.protocol.build)()
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "transport construction dispatches across multiple backend types"
+    )]
     async fn build_transport(
         pending: &PendingUsbDevice,
         usb: &nusb::DeviceInfo,

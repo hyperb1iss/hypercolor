@@ -448,7 +448,7 @@ async fn render_thread_publishes_discrete_input_events() {
                         break event;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     panic!("event bus closed before input event arrived");
                 }
@@ -552,7 +552,7 @@ async fn render_thread_publishes_audio_level_updates_for_active_effects() {
                         break (level, bass, mid, treble, beat);
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     panic!("event bus closed before audio level update");
                 }

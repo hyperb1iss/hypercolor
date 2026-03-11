@@ -73,13 +73,12 @@ pub fn ensure_default_logical_device(
             .then(|| id.clone())
     });
 
-    if let Some(existing_id) = existing_default_id.as_deref() {
-        if existing_id != physical_layout_id
-            && let Some(existing) = store.get_mut(existing_id)
-        {
-            existing.kind = LogicalDeviceKind::LegacyDefault;
-            existing.enabled = false;
-        }
+    if let Some(existing_id) = existing_default_id.as_deref()
+        && existing_id != physical_layout_id
+        && let Some(existing) = store.get_mut(existing_id)
+    {
+        existing.kind = LogicalDeviceKind::LegacyDefault;
+        existing.enabled = false;
     }
 
     let id = physical_layout_id.to_owned();
@@ -232,10 +231,10 @@ pub fn validate_entry(
         if entry.kind != LogicalDeviceKind::Segment || !entry.enabled {
             return false;
         }
-        if let Some(ignore) = ignore_id {
-            if entry.id == ignore {
-                return false;
-            }
+        if let Some(ignore) = ignore_id
+            && entry.id == ignore
+        {
+            return false;
         }
 
         let entry_end = entry.led_end_exclusive();

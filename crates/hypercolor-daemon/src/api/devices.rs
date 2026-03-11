@@ -432,20 +432,18 @@ pub async fn update_device(
         return ApiError::not_found(format!("Device not found: {id}"));
     };
 
-    if !enabled_handled_by_lifecycle {
-        if let Some(enabled) = body.enabled {
-            let fallback_state = if enabled {
-                DeviceState::Known
-            } else {
-                DeviceState::Disabled
-            };
-            let _ = state
-                .device_registry
-                .set_state(&device_id, fallback_state)
-                .await;
-            if let Some(tracked) = state.device_registry.get(&device_id).await {
-                updated = tracked;
-            }
+    if !enabled_handled_by_lifecycle && let Some(enabled) = body.enabled {
+        let fallback_state = if enabled {
+            DeviceState::Known
+        } else {
+            DeviceState::Disabled
+        };
+        let _ = state
+            .device_registry
+            .set_state(&device_id, fallback_state)
+            .await;
+        if let Some(tracked) = state.device_registry.get(&device_id).await {
+            updated = tracked;
         }
     }
 

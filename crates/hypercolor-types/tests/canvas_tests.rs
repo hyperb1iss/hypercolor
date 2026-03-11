@@ -338,9 +338,15 @@ fn sample_bilinear_midpoint() {
 
     let mid = c.sample_bilinear(0.5, 0.0);
     let expected = linear_to_srgb(srgb_to_linear(200.0 / 255.0) * 0.5) * 255.0;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::as_conversions,
+        reason = "test helper: expected is a known-positive u8-range value"
+    )]
+    let expected_u8 = expected.round() as u8;
     assert_eq!(
-        mid.r,
-        expected.round() as u8,
+        mid.r, expected_u8,
         "bilinear midpoint should interpolate in linear light, got {}",
         mid.r
     );

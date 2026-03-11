@@ -1,5 +1,6 @@
 //! Composite USB MIDI + bulk transport used by Ableton Push 2-class devices.
 
+use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -50,6 +51,10 @@ impl Push2Transport {
     #[expect(
         clippy::too_many_arguments,
         reason = "transport open needs both USB and MIDI identity plus endpoint metadata"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "setup requires sequential USB + MIDI negotiation"
     )]
     pub async fn new(
         device: nusb::Device,
@@ -106,10 +111,10 @@ impl Push2Transport {
                 },
                 (),
             )
-            .map_err(|error| map_midi_connect_error(error, "input"))?;
+            .map_err(|error| map_midi_connect_error(&error, "input"))?;
         let midi_out_connection = midi_out
             .connect(&output_port, "hypercolor-push2-output")
-            .map_err(|error| map_midi_connect_error(error, "output"))?;
+            .map_err(|error| map_midi_connect_error(&error, "output"))?;
 
         #[cfg(target_os = "linux")]
         let display_interface_handle = device
@@ -138,7 +143,7 @@ impl Push2Transport {
                     && endpoint.address() == display_endpoint
                     && endpoint.address() & 0x80 == 0
             })
-            .map(|endpoint| usize::from(endpoint.max_packet_size()))
+            .map(|endpoint| endpoint.max_packet_size())
             .ok_or_else(|| TransportError::NotFound {
                 detail: format!(
                     "bulk OUT endpoint 0x{display_endpoint:02X} not found on interface {display_interface}"
@@ -415,7 +420,7 @@ fn format_hex_preview(bytes: &[u8], max_bytes: usize) -> String {
         .join(" ");
 
     if bytes.len() > preview_len {
-        rendered.push_str(&format!(" ... (+{} bytes)", bytes.len() - preview_len));
+        let _ = write!(rendered, " ... (+{} bytes)", bytes.len() - preview_len);
     }
 
     if rendered.is_empty() {
@@ -431,7 +436,7 @@ fn map_midi_init_error(error: InitError) -> TransportError {
     }
 }
 
-fn map_midi_connect_error<T>(error: ConnectError<T>, direction: &str) -> TransportError {
+fn map_midi_connect_error<T>(error: &ConnectError<T>, direction: &str) -> TransportError {
     TransportError::IoError {
         detail: format!("failed to connect MIDI {direction} port: {error}"),
     }

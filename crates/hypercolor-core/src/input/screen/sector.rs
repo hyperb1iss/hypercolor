@@ -80,11 +80,16 @@ impl SectorGrid {
                 let (sum_r, sum_g, sum_b, count) =
                     accumulate_region(frame, stride, x_start, x_end, y_start, y_end);
 
-                let n = count.max(1);
+                #[expect(
+                    clippy::cast_precision_loss,
+                    clippy::as_conversions,
+                    reason = "pixel count is always safely representable as f32"
+                )]
+                let n_f = count.max(1) as f32;
                 colors.push([
-                    linear_to_srgb_u8((sum_r / n as f32) / 255.0),
-                    linear_to_srgb_u8((sum_g / n as f32) / 255.0),
-                    linear_to_srgb_u8((sum_b / n as f32) / 255.0),
+                    linear_to_srgb_u8((sum_r / n_f) / 255.0),
+                    linear_to_srgb_u8((sum_g / n_f) / 255.0),
+                    linear_to_srgb_u8((sum_b / n_f) / 255.0),
                 ]);
             }
         }

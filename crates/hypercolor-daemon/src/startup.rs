@@ -664,15 +664,15 @@ impl DaemonState {
         info!("Render loop stopped");
 
         // 2. Wait for render thread to exit.
-        if let Some(mut rt) = self.render_thread.take() {
-            if let Err(e) = rt.shutdown().await {
-                warn!(error = %e, "render thread shutdown error");
-            }
+        if let Some(mut rt) = self.render_thread.take()
+            && let Err(e) = rt.shutdown().await
+        {
+            warn!(error = %e, "render thread shutdown error");
         }
-        if let Some(mut output) = self.display_output_thread.take() {
-            if let Err(e) = output.shutdown().await {
-                warn!(error = %e, "display output shutdown error");
-            }
+        if let Some(mut output) = self.display_output_thread.take()
+            && let Err(e) = output.shutdown().await
+        {
+            warn!(error = %e, "display output shutdown error");
         }
 
         if let Some(handle) = self.effect_watcher_task.take() {

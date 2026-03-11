@@ -87,29 +87,30 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
         if description.is_empty() {
             if let Some(value) = attr_value(&attrs, "description") {
                 description = normalize_whitespace(value);
-            } else if attr_name_is(&attrs, "description") {
-                if let Some(content) = attr_value(&attrs, "content") {
-                    description = normalize_whitespace(content);
-                }
+            } else if attr_name_is(&attrs, "description")
+                && let Some(content) = attr_value(&attrs, "content")
+            {
+                description = normalize_whitespace(content);
             }
         }
 
         if publisher.is_empty() {
             if let Some(value) = attr_value(&attrs, "publisher") {
                 publisher = normalize_whitespace(value);
-            } else if attr_name_is_any(&attrs, &["publisher", "author"]) {
-                if let Some(content) = attr_value(&attrs, "content") {
-                    publisher = normalize_whitespace(content);
-                }
+            } else if attr_name_is_any(&attrs, &["publisher", "author"])
+                && let Some(content) = attr_value(&attrs, "content")
+            {
+                publisher = normalize_whitespace(content);
             }
         }
 
-        if title_from_meta.is_none() && attr_name_is_any(&attrs, &["name", "title"]) {
-            if let Some(content) = attr_value(&attrs, "content") {
-                let normalized = normalize_whitespace(content);
-                if !normalized.is_empty() {
-                    title_from_meta = Some(normalized);
-                }
+        if title_from_meta.is_none()
+            && attr_name_is_any(&attrs, &["name", "title"])
+            && let Some(content) = attr_value(&attrs, "content")
+        {
+            let normalized = normalize_whitespace(content);
+            if !normalized.is_empty() {
+                title_from_meta = Some(normalized);
             }
         }
 
@@ -130,7 +131,8 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
         publisher.push_str("unknown");
     }
 
-    let audio_reactive = detect_audio_reactivity(&lower);
+    let audio_reactive = detect_audio_meta_tag(&sanitized)
+        .unwrap_or_else(|| detect_audio_reactivity_heuristic(&lower));
     let uses_three_js = detect_three_js(&lower);
     let uses_canvas2d = detect_canvas2d(&lower);
     let category = infer_category(&lower, &controls, audio_reactive);
@@ -364,7 +366,20 @@ fn parse_csv_attr(attrs: &HashMap<String, String>, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn detect_audio_reactivity(lower: &str) -> bool {
+/// Check for an explicit `<meta audio-reactive="true"/>` tag (emitted by the SDK build script).
+/// Returns `Some(true/false)` if found, `None` if absent (fall back to heuristic).
+fn detect_audio_meta_tag(html: &str) -> Option<bool> {
+    for meta_tag in extract_start_tags(html, "meta") {
+        let attrs = parse_tag_attributes(&meta_tag);
+        if let Some(value) = attr_value(&attrs, "audio-reactive") {
+            return Some(value.eq_ignore_ascii_case("true") || value == "1");
+        }
+    }
+    None
+}
+
+/// Heuristic fallback for legacy/custom effects that lack an explicit audio meta tag.
+fn detect_audio_reactivity_heuristic(lower: &str) -> bool {
     const AUDIO_MARKERS: &[&str] = &[
         "engine.audio",
         "iaudio",
@@ -668,5 +683,50 @@ mod tests {
         assert_eq!(parsed.controls.len(), 1);
         assert!(matches!(parsed.controls[0].kind, HtmlControlKind::Sensor));
         assert!(parsed.tags.contains(&"sensor-control".to_owned()));
+    }
+
+    #[test]
+    fn explicit_audio_meta_tag_overrides_heuristic() {
+        // Simulates a bundled SDK effect: engine.audio appears in the runtime code
+        // but the effect itself is NOT audio-reactive (no meta tag = would trigger heuristic).
+        // The explicit meta tag should take precedence.
+        let html = r#"
+<head>
+  <title>Borealis</title>
+  <meta description="Aurora borealis effect" />
+  <meta publisher="Hypercolor"/>
+</head>
+<script>
+  // Bundled SDK runtime includes audio infrastructure:
+  engine.audio.freq; audio.level; audio.density;
+</script>
+"#;
+        let parsed = parse_html_effect_metadata(html);
+        // Without explicit meta tag, heuristic fires — this is the legacy fallback
+        assert!(parsed.audio_reactive);
+
+        // Now with explicit audio-reactive="true" meta tag
+        let html_audio = r#"
+<head>
+  <title>Audio Pulse</title>
+  <meta description="Audio visualizer" />
+  <meta audio-reactive="true"/>
+</head>
+<script>engine.audio.freq;</script>
+"#;
+        let parsed = parse_html_effect_metadata(html_audio);
+        assert!(parsed.audio_reactive);
+        assert_eq!(parsed.category, EffectCategory::Audio);
+
+        // Explicit audio-reactive absent — but NO audio markers in body = not audio
+        let html_clean = r#"
+<head>
+  <title>Clean Effect</title>
+  <meta description="No audio" />
+</head>
+<script>console.log("hello");</script>
+"#;
+        let parsed = parse_html_effect_metadata(html_clean);
+        assert!(!parsed.audio_reactive);
     }
 }

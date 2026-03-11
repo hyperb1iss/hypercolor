@@ -50,17 +50,17 @@ impl EventFilter {
     #[must_use]
     pub fn matches(&self, event: &TimestampedEvent) -> bool {
         // Category filter
-        if let Some(ref cats) = self.categories {
-            if !cats.contains(&event.event.category()) {
-                return false;
-            }
+        if let Some(ref cats) = self.categories
+            && !cats.contains(&event.event.category())
+        {
+            return false;
         }
 
         // Priority filter
-        if let Some(min) = self.min_priority {
-            if event.event.priority() < min {
-                return false;
-            }
+        if let Some(min) = self.min_priority
+            && event.event.priority() < min
+        {
+            return false;
         }
 
         true

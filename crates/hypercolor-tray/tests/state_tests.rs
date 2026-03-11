@@ -32,6 +32,10 @@ struct WsHello {
 
 #[derive(Debug, serde::Deserialize)]
 struct ServerIdentity {
+    #[expect(
+        dead_code,
+        reason = "deserialized for structural completeness, asserted via Debug"
+    )]
     instance_id: String,
     instance_name: String,
     version: String,

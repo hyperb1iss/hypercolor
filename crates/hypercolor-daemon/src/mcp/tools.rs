@@ -1618,17 +1618,17 @@ fn control_value_from_json(value: &Value) -> Option<ControlValue> {
         return Some(ControlValue::Text(text.to_owned()));
     }
 
-    if let Some(array) = value.as_array() {
-        if array.len() == 4 {
-            let mut rgba = [0.0_f32; 4];
-            for (idx, component) in array.iter().enumerate() {
-                let number = component.as_f64()?;
-                #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
-                let number = number as f32;
-                rgba[idx] = number;
-            }
-            return Some(ControlValue::Color(rgba));
+    if let Some(array) = value.as_array()
+        && array.len() == 4
+    {
+        let mut rgba = [0.0_f32; 4];
+        for (idx, component) in array.iter().enumerate() {
+            let number = component.as_f64()?;
+            #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let number = number as f32;
+            rgba[idx] = number;
         }
+        return Some(ControlValue::Color(rgba));
     }
 
     None

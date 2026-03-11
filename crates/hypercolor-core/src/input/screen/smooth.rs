@@ -77,11 +77,6 @@ impl TemporalSmoother {
     /// across all zones: `sum(|prev_r - new_r| + |prev_g - new_g| + |prev_b - new_b|)`.
     /// When this exceeds `scene_cut_threshold`, the smoother copies the new
     /// colors directly (no blending), effectively resetting to the new scene.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::as_conversions
-    )]
     pub fn apply(&mut self, colors: &mut [[u8; 3]]) {
         // First frame or zone count changed — initialize without smoothing.
         if self.prev.len() != colors.len() {

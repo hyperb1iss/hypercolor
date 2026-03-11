@@ -583,10 +583,10 @@ pub fn encode_feature_report_request_buffer(
 ) -> Vec<u8> {
     let mut buffer = vec![0_u8; max_packet_len.saturating_add(1)];
     buffer[0] = report_id;
-    if let Some(transaction_id) = transaction_id {
-        if buffer.len() > 2 {
-            buffer[2] = transaction_id;
-        }
+    if let Some(transaction_id) = transaction_id
+        && buffer.len() > 2
+    {
+        buffer[2] = transaction_id;
     }
     buffer
 }
