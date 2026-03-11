@@ -161,6 +161,7 @@ fn vendor_name_for_family(family: &DeviceFamily) -> &'static str {
         DeviceFamily::LianLi => "Lian Li",
         DeviceFamily::PrismRgb => "PrismRGB",
         DeviceFamily::Asus => "ASUS",
+        DeviceFamily::Qmk => "QMK",
         DeviceFamily::Custom(_) => "Unknown",
     }
 }

@@ -2230,7 +2230,8 @@ pub(crate) fn backend_id_for_family(family: &DeviceFamily) -> String {
         | DeviceFamily::Dygma
         | DeviceFamily::LianLi
         | DeviceFamily::PrismRgb
-        | DeviceFamily::Asus => "usb".to_owned(),
+        | DeviceFamily::Asus
+        | DeviceFamily::Qmk => "usb".to_owned(),
         DeviceFamily::Custom(name) => name.to_ascii_lowercase(),
     }
 }

@@ -340,7 +340,8 @@ fn backend_hint(
         | hypercolor_types::device::DeviceFamily::Dygma
         | hypercolor_types::device::DeviceFamily::LianLi
         | hypercolor_types::device::DeviceFamily::PrismRgb
-        | hypercolor_types::device::DeviceFamily::Asus => "usb",
+        | hypercolor_types::device::DeviceFamily::Asus
+        | hypercolor_types::device::DeviceFamily::Qmk => "usb",
         hypercolor_types::device::DeviceFamily::Wled => "wled",
         hypercolor_types::device::DeviceFamily::Hue => "hue",
         hypercolor_types::device::DeviceFamily::Custom(_) => "custom",

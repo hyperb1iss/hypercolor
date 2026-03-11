@@ -299,6 +299,9 @@ pub enum DeviceFamily {
     /// Native ASUS Aura USB controllers.
     Asus,
 
+    /// QMK OpenRGB keyboards with per-key RGB.
+    Qmk,
+
     /// Unknown or user-defined device family.
     Custom(String),
 }
@@ -314,6 +317,7 @@ impl fmt::Display for DeviceFamily {
             Self::LianLi => write!(f, "Lian Li"),
             Self::PrismRgb => write!(f, "PrismRGB"),
             Self::Asus => write!(f, "ASUS"),
+            Self::Qmk => write!(f, "QMK"),
             Self::Custom(name) => write!(f, "{name}"),
         }
     }

@@ -43,5 +43,22 @@ SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0b05", MODE="0660
 # ─── Ableton ──────────────────────────────────────────────────────────────────
 SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2982", MODE="0660", GROUP="users", TAG+="uaccess"
 
+# ─── QMK OpenRGB keyboards ───────────────────────────────────────────────
+# Keychron
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3434", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3434", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# ZSA (Moonlander, Voyager)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="3297", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="3297", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# Drop / OLKB
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="feed", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="feed", MODE="0660", GROUP="users", TAG+="uaccess"
+
+# Glorious (GMMK)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="320f", MODE="0660", GROUP="users", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="320f", MODE="0660", GROUP="users", TAG+="uaccess"
+
 # ─── SMBus / I2C ──────────────────────────────────────────────────────────────
 SUBSYSTEM=="i2c-dev", KERNEL=="i2c-[0-9]*", MODE="0660", GROUP="users", TAG+="uaccess"

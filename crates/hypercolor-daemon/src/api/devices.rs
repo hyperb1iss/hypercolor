@@ -2066,6 +2066,7 @@ fn attachment_family_id(family: &DeviceFamily) -> String {
         DeviceFamily::LianLi => "lianli".to_owned(),
         DeviceFamily::PrismRgb => "prismrgb".to_owned(),
         DeviceFamily::Asus => "asus".to_owned(),
+        DeviceFamily::Qmk => "qmk".to_owned(),
         DeviceFamily::Custom(name) => name
             .chars()
             .filter(|character| {
