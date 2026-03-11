@@ -301,6 +301,54 @@ fn deferred_discovery_waits_for_readiness_upgrade_before_connecting() {
 }
 
 #[test]
+fn deferred_discovery_disconnects_connected_device() {
+    let mut lifecycle = DeviceLifecycleManager::new();
+    let device_id = DeviceId::new();
+    let info = device_info(device_id, "Desk Strip");
+    let fingerprint = DeviceFingerprint("mock:desk-strip".to_owned());
+
+    let initial_actions = lifecycle.on_discovered_with_behavior(
+        device_id,
+        &info,
+        "mock",
+        Some(&fingerprint),
+        DiscoveryConnectBehavior::AutoConnect,
+    );
+    assert!(
+        initial_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Connect { .. })),
+        "initial discovery should connect an auto-connect device"
+    );
+
+    lifecycle
+        .on_connected(device_id)
+        .expect("connected transition should succeed");
+    assert_eq!(lifecycle.state(device_id), Some(DeviceState::Connected));
+
+    let deferred_actions = lifecycle.on_discovered_with_behavior(
+        device_id,
+        &info,
+        "mock",
+        Some(&fingerprint),
+        DiscoveryConnectBehavior::Deferred,
+    );
+    assert!(
+        deferred_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Disconnect { .. })),
+        "downgrading to deferred should disconnect a connected device"
+    );
+    assert!(
+        deferred_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Unmap { .. })),
+        "downgrading to deferred should remove routing for the device"
+    );
+    assert_eq!(lifecycle.state(device_id), Some(DeviceState::Known));
+}
+
+#[test]
 fn lifecycle_uses_usb_fingerprint_for_same_name_devices() {
     let mut lifecycle = DeviceLifecycleManager::new();
     let first_id = DeviceId::new();
@@ -347,6 +395,53 @@ fn lifecycle_uses_smbus_fingerprint_for_same_name_devices() {
     assert_eq!(
         lifecycle.layout_device_id_for(device_id),
         Some("smbus:-dev-i2c-9:40")
+    );
+}
+
+#[test]
+fn runtime_deactivate_disconnects_without_disabling_the_device() {
+    let mut lifecycle = DeviceLifecycleManager::new();
+    let device_id = DeviceId::new();
+    let info = device_info(device_id, "Desk Strip");
+
+    let actions = lifecycle.on_discovered(
+        device_id,
+        &info,
+        "mock",
+        Some(&DeviceFingerprint("mock:desk-strip".to_owned())),
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Connect { .. })),
+        "discovery should still request the initial connect"
+    );
+
+    lifecycle
+        .on_connected(device_id)
+        .expect("connect transition should succeed");
+    assert_eq!(lifecycle.state(device_id), Some(DeviceState::Connected));
+
+    let standby_actions = lifecycle
+        .on_runtime_deactivate(device_id)
+        .expect("runtime standby should succeed");
+
+    assert!(
+        standby_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Disconnect { .. })),
+        "standby should disconnect an already connected device"
+    );
+    assert!(
+        standby_actions
+            .iter()
+            .any(|action| matches!(action, LifecycleAction::Unmap { .. })),
+        "standby should remove the layout mapping"
+    );
+    assert_eq!(
+        lifecycle.state(device_id),
+        Some(DeviceState::Known),
+        "standby should keep the device discovered and ready for later reconnect"
     );
 }
 

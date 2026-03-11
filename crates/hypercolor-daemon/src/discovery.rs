@@ -14,13 +14,14 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::wled::{WledKnownTarget, WledScanner};
 use hypercolor_core::device::{
     AsyncWriteFailure, BackendIo, BackendManager, DeviceLifecycleManager, DeviceRegistry,
-    DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction, ScannerScanReport, SmBusScanner,
-    UsbProtocolConfigStore, UsbScanner,
+    DiscoveryConnectBehavior, DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction,
+    ScannerScanReport, SmBusScanner, UsbProtocolConfigStore, UsbScanner,
 };
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
-    DeviceError, DeviceFamily, DeviceId, DeviceInfo, DeviceTopologyHint, DeviceUserSettings,
+    DeviceError, DeviceFamily, DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint,
+    DeviceUserSettings,
 };
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent, ZoneRef};
 use hypercolor_types::spatial::{
@@ -654,47 +655,49 @@ async fn process_discovered_device(
     let metadata = runtime.device_registry.metadata_for_id(&device_id).await;
     let backend = backend_id_for_device(&tracked_before.info.family, metadata.as_ref());
     let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
-    if !tracked_before.connect_behavior.should_auto_connect() {
+    let connect_behavior = desired_connect_behavior(
+        runtime,
+        device_id,
+        &tracked_before.info,
+        &backend,
+        fingerprint.as_ref(),
+        tracked_before.connect_behavior,
+        persisted_settings.enabled,
+    )
+    .await;
+    if !connect_behavior.should_auto_connect() {
         debug!(
             device = %tracked_before.info.name,
             device_id = %device_id,
-            "deferring auto-connect until discovery upgrades device readiness"
+            "deferring auto-connect until discovery/layout state enables the device"
         );
     }
-    let actions = {
+    let mut actions = {
         let mut lifecycle = runtime.lifecycle_manager.lock().await;
-        let mut actions = lifecycle.on_discovered_with_behavior(
+        lifecycle.on_discovered_with_behavior(
             device_id,
             &tracked_before.info,
             &backend,
             fingerprint.as_ref(),
-            tracked_before.connect_behavior,
-        );
-        if !persisted_settings.enabled {
-            match lifecycle.on_user_disable(device_id) {
-                Ok(disable_actions) => actions = disable_actions,
-                Err(error) => {
-                    warn!(
-                        device = %tracked_before.info.name,
-                        device_id = %device_id,
-                        error = %error,
-                        kind = ?kind,
-                        "failed to reapply persisted disabled state during discovery"
-                    );
-                }
+            connect_behavior,
+        )
+    };
+    if !persisted_settings.enabled {
+        let mut lifecycle = runtime.lifecycle_manager.lock().await;
+        match lifecycle.on_user_disable(device_id) {
+            Ok(disable_actions) => actions = disable_actions,
+            Err(error) => {
+                warn!(
+                    device = %tracked_before.info.name,
+                    device_id = %device_id,
+                    error = %error,
+                    kind = ?kind,
+                    "failed to reapply persisted disabled state during discovery"
+                );
             }
         }
-        actions
-    };
+    }
     let had_actions = !actions.is_empty();
-
-    ensure_default_logical_for_device(
-        runtime,
-        device_id,
-        &tracked_before.info.name,
-        tracked_before.info.total_led_count(),
-    )
-    .await;
     execute_lifecycle_actions(runtime.clone(), actions).await;
     sync_registry_state(runtime, device_id).await;
 
@@ -759,13 +762,43 @@ pub async fn apply_user_enabled_state(
     device_id: DeviceId,
     enabled: bool,
 ) -> anyhow::Result<UserEnabledStateResult> {
+    let should_activate = if enabled {
+        let Some(tracked) = runtime.device_registry.get(&device_id).await else {
+            return Ok(UserEnabledStateResult::MissingLifecycle);
+        };
+        let metadata = runtime.device_registry.metadata_for_id(&device_id).await;
+        let backend = backend_id_for_device(&tracked.info.family, metadata.as_ref());
+        let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
+
+        desired_connect_behavior(
+            runtime,
+            device_id,
+            &tracked.info,
+            &backend,
+            fingerprint.as_ref(),
+            tracked.connect_behavior,
+            true,
+        )
+        .await
+        .should_auto_connect()
+    } else {
+        false
+    };
+
     let actions = {
         let mut lifecycle = runtime.lifecycle_manager.lock().await;
-        let transition = if enabled {
+        let mut transition = if enabled {
             lifecycle.on_user_enable(device_id)
         } else {
             lifecycle.on_user_disable(device_id)
         };
+
+        if enabled
+            && !should_activate
+            && let Ok(actions) = transition.as_mut()
+        {
+            actions.clear();
+        }
 
         match transition {
             Ok(actions) => actions,
@@ -1282,21 +1315,15 @@ async fn disconnect_backend_device(
 async fn ensure_default_logical_for_device(
     runtime: &DiscoveryRuntime,
     device_id: DeviceId,
+    physical_layout_id: &str,
     device_name: &str,
     led_count: u32,
 ) {
-    let physical_layout_id = {
-        let lifecycle = runtime.lifecycle_manager.lock().await;
-        lifecycle
-            .layout_device_id_for(device_id)
-            .map_or_else(|| format!("device:{device_id}"), ToOwned::to_owned)
-    };
-
     let mut logical_store = runtime.logical_devices.write().await;
     logical_devices::ensure_default_logical_device(
         &mut logical_store,
         device_id,
-        &physical_layout_id,
+        physical_layout_id,
         device_name,
         led_count,
     );
@@ -1313,7 +1340,14 @@ async fn sync_logical_mappings_for_device(
     };
 
     let total_leds = tracked.info.total_led_count();
-    ensure_default_logical_for_device(runtime, device_id, &tracked.info.name, total_leds).await;
+    ensure_default_logical_for_device(
+        runtime,
+        device_id,
+        fallback_layout_id,
+        &tracked.info.name,
+        total_leds,
+    )
+    .await;
 
     let (logical_entries, legacy_default_ids) = {
         let logical_store = runtime.logical_devices.read().await;
@@ -1395,6 +1429,123 @@ async fn sync_logical_mappings_for_device(
             &tracked.info,
         );
     }
+}
+
+async fn desired_connect_behavior(
+    runtime: &DiscoveryRuntime,
+    device_id: DeviceId,
+    device_info: &DeviceInfo,
+    backend_id: &str,
+    fingerprint: Option<&DeviceFingerprint>,
+    discovered_behavior: DiscoveryConnectBehavior,
+    user_enabled: bool,
+) -> DiscoveryConnectBehavior {
+    let layout_device_id =
+        DeviceLifecycleManager::canonical_layout_device_id(backend_id, device_info, fingerprint);
+    ensure_default_logical_for_device(
+        runtime,
+        device_id,
+        &layout_device_id,
+        &device_info.name,
+        device_info.total_led_count(),
+    )
+    .await;
+
+    if !user_enabled || !discovered_behavior.should_auto_connect() {
+        return DiscoveryConnectBehavior::Deferred;
+    }
+
+    if active_layout_targets_enabled_device(runtime, device_id, &layout_device_id).await {
+        DiscoveryConnectBehavior::AutoConnect
+    } else {
+        DiscoveryConnectBehavior::Deferred
+    }
+}
+
+async fn active_layout_targets_enabled_device(
+    runtime: &DiscoveryRuntime,
+    physical_id: DeviceId,
+    layout_device_id: &str,
+) -> bool {
+    let candidate_ids = {
+        let logical_store = runtime.logical_devices.read().await;
+        let mut candidates = logical_devices::list_for_physical(&logical_store, physical_id)
+            .into_iter()
+            .filter(|entry| entry.enabled)
+            .map(|entry| entry.id)
+            .collect::<HashSet<_>>();
+
+        let default_enabled = logical_store
+            .get(layout_device_id)
+            .is_none_or(|entry| entry.enabled);
+        if default_enabled {
+            candidates.insert(layout_device_id.to_owned());
+            candidates.extend(logical_devices::legacy_default_ids_for_physical(
+                &logical_store,
+                physical_id,
+                layout_device_id,
+            ));
+            candidates.insert(physical_id.to_string());
+            candidates.insert(format!("device:{physical_id}"));
+        }
+
+        candidates
+    };
+
+    let spatial = runtime.spatial_engine.read().await;
+    spatial
+        .layout()
+        .zones
+        .iter()
+        .any(|zone| candidate_ids.contains(&zone.device_id))
+}
+
+#[doc(hidden)]
+pub async fn sync_active_layout_connectivity(
+    runtime: &DiscoveryRuntime,
+    limit_to_devices: Option<&HashSet<DeviceId>>,
+) {
+    let tracked_devices = runtime.device_registry.list().await;
+
+    for tracked in tracked_devices {
+        let device_id = tracked.info.id;
+        if limit_to_devices.is_some_and(|allowed| !allowed.contains(&device_id)) {
+            continue;
+        }
+
+        let metadata = runtime.device_registry.metadata_for_id(&device_id).await;
+        let backend = backend_id_for_device(&tracked.info.family, metadata.as_ref());
+        let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
+        let connect_behavior = desired_connect_behavior(
+            runtime,
+            device_id,
+            &tracked.info,
+            &backend,
+            fingerprint.as_ref(),
+            tracked.connect_behavior,
+            tracked.user_settings.enabled,
+        )
+        .await;
+
+        let actions = {
+            let mut lifecycle = runtime.lifecycle_manager.lock().await;
+            lifecycle.on_discovered_with_behavior(
+                device_id,
+                &tracked.info,
+                &backend,
+                fingerprint.as_ref(),
+                connect_behavior,
+            )
+        };
+        if actions.is_empty() {
+            continue;
+        }
+
+        execute_lifecycle_actions(runtime.clone(), actions).await;
+        sync_registry_state(runtime, device_id).await;
+    }
+
+    sync_active_layout_for_renderable_devices(runtime, limit_to_devices).await;
 }
 
 #[doc(hidden)]

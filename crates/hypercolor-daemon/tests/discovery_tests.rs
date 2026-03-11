@@ -1,5 +1,6 @@
 //! Integration tests for daemon discovery scan scoping.
 
+use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -11,14 +12,16 @@ use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_core::device::{
-    BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
+    BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry,
+    UsbProtocolConfigStore,
 };
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::discovery::{
     DiscoveryBackend, DiscoveryRuntime, execute_discovery_scan, resolve_wled_probe_ips,
-    resolve_wled_probe_targets, sync_active_layout_for_renderable_devices,
+    resolve_wled_probe_targets, sync_active_layout_connectivity,
+    sync_active_layout_for_renderable_devices,
 };
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::runtime_state;
@@ -27,8 +30,56 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
     DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
-use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+use hypercolor_types::spatial::{
+    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    StripDirection,
+};
 use tokio::sync::{Mutex, RwLock};
+
+#[derive(Clone)]
+struct CountingBackend {
+    expected_device_id: DeviceId,
+    connect_count: Arc<std::sync::atomic::AtomicUsize>,
+    disconnect_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for CountingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "mock".to_owned(),
+            name: "Counting Backend".to_owned(),
+            description: "Records connect/disconnect operations for discovery tests".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        self.connect_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        if *id != self.expected_device_id {
+            bail!("unexpected device id {id}");
+        }
+        self.disconnect_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        let _ = (id, colors);
+        Ok(())
+    }
+}
 
 fn empty_layout() -> SpatialLayout {
     SpatialLayout {
@@ -95,6 +146,71 @@ fn wled_device_info(name: &str) -> DeviceInfo {
             display_resolution: None,
             max_fps: 60,
         },
+    }
+}
+
+fn mock_device_info() -> DeviceInfo {
+    DeviceInfo {
+        id: DeviceId::new(),
+        name: "Mock Layout Device".into(),
+        vendor: "Mock".into(),
+        family: DeviceFamily::Custom("mock".into()),
+        model: Some("mock_layout_device".into()),
+        connection_type: ConnectionType::Network,
+        zones: vec![ZoneInfo {
+            name: "Main".into(),
+            led_count: 16,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: Some("1.0.0".into()),
+        capabilities: DeviceCapabilities {
+            led_count: 16,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 60,
+        },
+    }
+}
+
+fn layout_with_device(layout_device_id: &str) -> SpatialLayout {
+    SpatialLayout {
+        id: "default".into(),
+        name: "Default Layout".into(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![DeviceZone {
+            id: "zone_main".into(),
+            name: "Main".into(),
+            device_id: layout_device_id.to_owned(),
+            zone_name: None,
+            group_id: None,
+            position: NormalizedPosition { x: 0.5, y: 0.5 },
+            size: NormalizedPosition { x: 1.0, y: 1.0 },
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: 0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 16,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: None,
+            edge_behavior: None,
+            shape: None,
+            shape_preset: None,
+            attachment: None,
+        }],
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
     }
 }
 
@@ -448,5 +564,115 @@ async fn sync_active_layout_for_renderable_devices_does_not_auto_adopt_new_devic
     assert!(
         persisted_layouts.is_empty(),
         "discovery should not persist layout changes for unmapped devices"
+    );
+}
+
+#[tokio::test]
+async fn sync_active_layout_connectivity_keeps_layout_inactive_devices_disconnected() {
+    let device_registry = DeviceRegistry::new();
+    let info = mock_device_info();
+    let fingerprint = DeviceFingerprint("mock:layout-device".to_owned());
+    let metadata = HashMap::from([("backend_id".to_owned(), "mock".to_owned())]);
+    let device_id = device_registry
+        .add_with_fingerprint_and_metadata(info.clone(), fingerprint, metadata)
+        .await;
+    assert_eq!(device_id, info.id);
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime = make_runtime(
+        device_registry,
+        Arc::clone(&lifecycle_manager),
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+    );
+
+    let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let disconnect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        let mut manager = runtime.backend_manager.lock().await;
+        manager.register_backend(Box::new(CountingBackend {
+            expected_device_id: device_id,
+            connect_count: Arc::clone(&connect_count),
+            disconnect_count: Arc::clone(&disconnect_count),
+        }));
+    }
+
+    sync_active_layout_connectivity(&runtime, None).await;
+
+    assert_eq!(
+        connect_count.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "layout-inactive devices should not be connected"
+    );
+    assert_eq!(
+        lifecycle_manager.lock().await.state(device_id),
+        Some(DeviceState::Known)
+    );
+}
+
+#[tokio::test]
+async fn sync_active_layout_connectivity_disconnects_devices_removed_from_layout() {
+    let device_registry = DeviceRegistry::new();
+    let info = mock_device_info();
+    let fingerprint = DeviceFingerprint("mock:layout-device".to_owned());
+    let metadata = HashMap::from([("backend_id".to_owned(), "mock".to_owned())]);
+    let device_id = device_registry
+        .add_with_fingerprint_and_metadata(info.clone(), fingerprint.clone(), metadata)
+        .await;
+    assert_eq!(device_id, info.id);
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime = make_runtime(
+        device_registry,
+        Arc::clone(&lifecycle_manager),
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+    );
+
+    let connect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let disconnect_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    {
+        let mut manager = runtime.backend_manager.lock().await;
+        manager.register_backend(Box::new(CountingBackend {
+            expected_device_id: device_id,
+            connect_count: Arc::clone(&connect_count),
+            disconnect_count: Arc::clone(&disconnect_count),
+        }));
+    }
+
+    let layout_device_id =
+        DeviceLifecycleManager::canonical_layout_device_id("mock", &info, Some(&fingerprint));
+    {
+        let mut spatial = runtime.spatial_engine.write().await;
+        spatial.update_layout(layout_with_device(&layout_device_id));
+    }
+
+    sync_active_layout_connectivity(&runtime, None).await;
+    assert_eq!(
+        connect_count.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "active layout targets should connect the device"
+    );
+    assert_eq!(
+        lifecycle_manager.lock().await.state(device_id),
+        Some(DeviceState::Connected)
+    );
+
+    {
+        let mut spatial = runtime.spatial_engine.write().await;
+        spatial.update_layout(empty_layout());
+    }
+
+    sync_active_layout_connectivity(&runtime, None).await;
+    assert_eq!(
+        disconnect_count.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "removing the device from the active layout should disconnect it"
+    );
+    assert_eq!(
+        lifecycle_manager.lock().await.state(device_id),
+        Some(DeviceState::Known)
     );
 }

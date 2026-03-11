@@ -185,9 +185,25 @@ impl DeviceLifecycleManager {
             actions.push(LifecycleAction::CancelReconnect { device_id });
         }
 
-        if *managed.state_machine.state() == DeviceState::Known
-            && managed.connect_behavior.should_auto_connect()
-        {
+        let previous_state = managed.state_machine.state().clone();
+        if !managed.connect_behavior.should_auto_connect() {
+            match previous_state {
+                DeviceState::Connected | DeviceState::Active => {
+                    managed.state_machine.on_hot_unplug();
+                    actions.push(Self::disconnect_action(device_id, managed));
+                    actions.push(LifecycleAction::Unmap {
+                        layout_device_id: managed.layout_device_id.clone(),
+                    });
+                }
+                DeviceState::Reconnecting => {
+                    managed.state_machine.on_hot_unplug();
+                }
+                DeviceState::Known | DeviceState::Disabled => {}
+            }
+            return actions;
+        }
+
+        if *managed.state_machine.state() == DeviceState::Known {
             actions.push(Self::connect_action(device_id, managed));
         }
 
@@ -362,6 +378,41 @@ impl DeviceLifecycleManager {
         Ok(actions)
     }
 
+    /// Runtime-driven standby transition when a discovered device is not
+    /// currently targeted by the active layout.
+    pub fn on_runtime_deactivate(
+        &mut self,
+        device_id: DeviceId,
+    ) -> Result<Vec<LifecycleAction>, DeviceError> {
+        let reconnect_canceled = self.reconnect_scheduled.remove(&device_id);
+        let managed = self.managed_mut(device_id)?;
+        let previous = managed.state_machine.state().clone();
+
+        let mut actions = Vec::new();
+        match previous {
+            DeviceState::Connected | DeviceState::Active => {
+                managed.state_machine.on_hot_unplug();
+                actions.push(Self::disconnect_action(device_id, managed));
+                actions.push(LifecycleAction::Unmap {
+                    layout_device_id: managed.layout_device_id.clone(),
+                });
+            }
+            DeviceState::Reconnecting => {
+                managed.state_machine.on_hot_unplug();
+                actions.push(LifecycleAction::Unmap {
+                    layout_device_id: managed.layout_device_id.clone(),
+                });
+            }
+            DeviceState::Known | DeviceState::Disabled => {}
+        }
+
+        if reconnect_canceled {
+            actions.push(LifecycleAction::CancelReconnect { device_id });
+        }
+
+        Ok(actions)
+    }
+
     /// Derive a deterministic layout device ID from backend and device metadata.
     ///
     /// Fallback format: `<backend>:<normalized_name>`.
@@ -370,6 +421,17 @@ impl DeviceLifecycleManager {
         let backend = backend_id.trim().to_ascii_lowercase();
         let name = sanitize_component(&device_info.name);
         format!("{backend}:{name}")
+    }
+
+    /// Derive the canonical layout device ID using the discovery fingerprint
+    /// when one is available.
+    #[must_use]
+    pub fn canonical_layout_device_id(
+        backend_id: &str,
+        device_info: &DeviceInfo,
+        fingerprint: Option<&DeviceFingerprint>,
+    ) -> String {
+        Self::layout_device_id_with_fingerprint(backend_id, device_info, fingerprint)
     }
 
     fn managed_mut(&mut self, device_id: DeviceId) -> Result<&mut ManagedDevice, DeviceError> {
