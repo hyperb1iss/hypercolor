@@ -40,6 +40,7 @@ fn build_cmd() -> clap::Command {
                 .default_value("9420")
                 .value_parser(value_parser!(u16)),
         )
+        .arg(Arg::new("api-key").long("api-key").global(true))
         .arg(
             Arg::new("json")
                 .long("json")
@@ -358,6 +359,16 @@ fn build_cmd() -> clap::Command {
                 .arg(Arg::new("system").long("system").action(ArgAction::SetTrue)),
         )
         .subcommand(
+            Command::new("servers")
+                .about("Discover Hypercolor daemons on the local network")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("discover")
+                        .about("Discover Hypercolor daemons advertised via mDNS")
+                        .arg(Arg::new("timeout").long("timeout").default_value("3")),
+                ),
+        )
+        .subcommand(
             Command::new("completions")
                 .about("Generate shell completions")
                 .arg(Arg::new("shell").required(true).value_parser([
@@ -394,6 +405,28 @@ fn parse_status_with_watch() {
     let (name, sub) = matches.subcommand().expect("should have subcommand");
     assert_eq!(name, "status");
     assert!(sub.get_flag("watch"));
+}
+
+#[test]
+fn parse_servers_discover() {
+    let cmd = build_cmd();
+    let matches = cmd
+        .try_get_matches_from(["hyper", "servers", "discover", "--timeout", "1.5"])
+        .expect("servers discover should parse");
+    let (subcommand, nested) = matches
+        .subcommand()
+        .expect("servers subcommand should exist");
+    assert_eq!(subcommand, "servers");
+    let (nested_name, nested_matches) = nested
+        .subcommand()
+        .expect("discover subcommand should exist");
+    assert_eq!(nested_name, "discover");
+    assert_eq!(
+        nested_matches
+            .get_one::<String>("timeout")
+            .map(String::as_str),
+        Some("1.5")
+    );
 }
 
 #[test]

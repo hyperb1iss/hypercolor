@@ -5,6 +5,7 @@
 //! LED color data to devices over any transport (USB HID, UDP, TCP, HTTP).
 
 mod discovery;
+mod discovery_server;
 mod lifecycle;
 pub mod manager;
 pub mod mock;
@@ -22,6 +23,7 @@ pub use discovery::{
     DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryOrchestrator, DiscoveryProgress,
     DiscoveryReport, ScannerScanReport, TransportScanner,
 };
+pub use discovery_server::discover_servers;
 pub use lifecycle::{DeviceLifecycleManager, LifecycleAction};
 pub use manager::{AsyncWriteFailure, BackendIo, BackendManager, SegmentRange};
 pub use registry::DeviceRegistry;

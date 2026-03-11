@@ -2,8 +2,8 @@
 
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
-    FeatureFlags, HypercolorConfig, LogLevel, McpConfig, ShutdownBehavior, TuiConfig, WebConfig,
-    WledConfig, WledProtocolConfig,
+    FeatureFlags, HypercolorConfig, LogLevel, McpConfig, NetworkConfig, ShutdownBehavior,
+    TuiConfig, WebConfig, WledConfig, WledProtocolConfig,
 };
 use hypercolor_types::session::SessionConfig;
 
@@ -87,6 +87,14 @@ fn discovery_defaults_match_spec() {
 }
 
 #[test]
+fn network_defaults_match_spec() {
+    let n = NetworkConfig::default();
+    assert!(n.mdns_publish);
+    assert!(!n.remote_access);
+    assert_eq!(n.instance_name, None);
+}
+
+#[test]
 fn wled_defaults_match_spec() {
     let w = WledConfig::default();
     assert!(w.known_ips.is_empty());
@@ -163,6 +171,7 @@ fn full_config_toml_roundtrip() {
         audio: AudioConfig::default(),
         capture: CaptureConfig::default(),
         discovery: DiscoveryConfig::default(),
+        network: NetworkConfig::default(),
         wled: WledConfig::default(),
         dbus: DbusConfig::default(),
         tui: TuiConfig::default(),
@@ -180,6 +189,8 @@ fn full_config_toml_roundtrip() {
     assert_eq!(restored.audio.fft_size, 1024);
     assert!(!restored.capture.enabled);
     assert_eq!(restored.discovery.scan_interval_secs, 300);
+    assert!(restored.network.mdns_publish);
+    assert!(!restored.network.remote_access);
     assert!(restored.dbus.enabled);
     assert_eq!(restored.tui.theme, "silkcircuit");
     assert!(!restored.features.wasm_plugins);
@@ -198,6 +209,8 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.audio.device, "default");
     assert!(!config.capture.enabled);
     assert_eq!(config.tui.theme, "silkcircuit");
+    assert!(config.network.mdns_publish);
+    assert!(!config.network.remote_access);
     assert_eq!(config.wled.default_protocol, WledProtocolConfig::Ddp);
     assert!(config.wled.realtime_http_enabled);
     assert_eq!(config.wled.dedup_threshold, 2);
@@ -231,6 +244,11 @@ target_fps = 120
 enabled = false
 fft_size = 2048
 
+[network]
+mdns_publish = false
+remote_access = true
+instance_name = "desk-pc"
+
 [wled]
 default_protocol = "e131"
 known_ips = ["192.168.1.50"]
@@ -245,6 +263,9 @@ dedup_threshold = 0
     assert_eq!(config.daemon.listen_address, "127.0.0.1");
     assert!(!config.audio.enabled);
     assert_eq!(config.audio.fft_size, 2048);
+    assert!(!config.network.mdns_publish);
+    assert!(config.network.remote_access);
+    assert_eq!(config.network.instance_name.as_deref(), Some("desk-pc"));
     // Audio fields not overridden keep defaults
     assert!((config.audio.smoothing - 0.8).abs() < f32::EPSILON);
     assert_eq!(config.wled.default_protocol, WledProtocolConfig::E131);

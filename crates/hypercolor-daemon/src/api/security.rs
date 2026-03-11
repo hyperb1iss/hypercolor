@@ -64,6 +64,18 @@ impl SecurityState {
     }
 }
 
+#[must_use]
+pub fn api_auth_required_from_env() -> bool {
+    let control_key = std::env::var("HYPERCOLOR_API_KEY").ok();
+    let read_key = std::env::var("HYPERCOLOR_READ_API_KEY").ok();
+    control_key.is_some() || read_key.is_some()
+}
+
+#[must_use]
+pub fn control_api_key_configured_from_env() -> bool {
+    std::env::var("HYPERCOLOR_API_KEY").ok().is_some()
+}
+
 #[cfg(test)]
 impl SecurityState {
     fn with_keys(control_key: Option<&str>, read_key: Option<&str>) -> Self {
@@ -210,7 +222,7 @@ pub async fn enforce_security(
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    if request.uri().path() == "/health" {
+    if is_exempt_path(request.uri().path()) {
         return next.run(request).await;
     }
 
@@ -267,6 +279,10 @@ pub async fn enforce_security(
     let mut response = next.run(request).await;
     apply_rate_headers(&mut response, &decision);
     response
+}
+
+fn is_exempt_path(path: &str) -> bool {
+    matches!(path, "/health" | "/api/v1/server")
 }
 
 fn required_tier_for_method(method: &Method) -> AccessTier {

@@ -12,6 +12,8 @@ use serde::Serialize;
 pub struct DaemonClient {
     /// Base URL for the daemon (e.g., `http://localhost:9420`).
     base_url: String,
+    /// Optional API key sent as a bearer token.
+    api_key: Option<String>,
     /// Inner `reqwest` async client.
     http: reqwest::Client,
 }
@@ -19,10 +21,14 @@ pub struct DaemonClient {
 impl DaemonClient {
     /// Create a new client targeting the given host and port.
     #[must_use]
-    pub fn new(host: &str, port: u16) -> Self {
+    pub fn new(host: &str, port: u16, api_key: Option<&str>) -> Self {
         let base_url = format!("http://{host}:{port}");
         let http = reqwest::Client::new();
-        Self { base_url, http }
+        Self {
+            base_url,
+            api_key: api_key.map(ToOwned::to_owned),
+            http,
+        }
     }
 
     /// Send a GET request to the daemon and parse the JSON response.
@@ -33,9 +39,13 @@ impl DaemonClient {
     /// status code.
     pub async fn get(&self, path: &str) -> Result<serde_json::Value> {
         let url = format!("{}/api/v1{path}", self.base_url);
-        let response = self.http.get(&url).send().await.with_context(|| {
-            format!("Failed to connect to daemon at {url}. Is the daemon running?")
-        })?;
+        let response = self
+            .with_auth(self.http.get(&url))
+            .send()
+            .await
+            .with_context(|| {
+                format!("Failed to connect to daemon at {url}. Is the daemon running?")
+            })?;
         parse_api_response(response).await
     }
 
@@ -48,8 +58,7 @@ impl DaemonClient {
     pub async fn post(&self, path: &str, body: &impl Serialize) -> Result<serde_json::Value> {
         let url = format!("{}/api/v1{path}", self.base_url);
         let response = self
-            .http
-            .post(&url)
+            .with_auth(self.http.post(&url))
             .json(body)
             .send()
             .await
@@ -68,8 +77,7 @@ impl DaemonClient {
     pub async fn put(&self, path: &str, body: &impl Serialize) -> Result<serde_json::Value> {
         let url = format!("{}/api/v1{path}", self.base_url);
         let response = self
-            .http
-            .put(&url)
+            .with_auth(self.http.put(&url))
             .json(body)
             .send()
             .await
@@ -87,10 +95,22 @@ impl DaemonClient {
     /// status code.
     pub async fn delete(&self, path: &str) -> Result<serde_json::Value> {
         let url = format!("{}/api/v1{path}", self.base_url);
-        let response = self.http.delete(&url).send().await.with_context(|| {
-            format!("Failed to connect to daemon at {url}. Is the daemon running?")
-        })?;
+        let response = self
+            .with_auth(self.http.delete(&url))
+            .send()
+            .await
+            .with_context(|| {
+                format!("Failed to connect to daemon at {url}. Is the daemon running?")
+            })?;
         parse_api_response(response).await
+    }
+
+    fn with_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(api_key) = &self.api_key {
+            request.bearer_auth(api_key)
+        } else {
+            request
+        }
     }
 }
 

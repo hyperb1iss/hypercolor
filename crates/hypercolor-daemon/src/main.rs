@@ -1,12 +1,14 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use hypercolor_types::config::{HypercolorConfig, LogLevel};
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::mdns::MdnsPublisher;
 use hypercolor_daemon::startup::{DaemonState, install_signal_handlers, load_config};
 
 // ── CLI Arguments ───────────────────────────────────────────────────────────
@@ -66,10 +68,14 @@ async fn main() -> Result<()> {
         "Configuration ready"
     );
 
-    let bind = args
-        .bind
-        .clone()
-        .unwrap_or_else(|| format!("{}:{}", config.daemon.listen_address, config.daemon.port));
+    let bind = resolve_bind_address(args.bind.as_deref(), &config).await?;
+
+    if !bind.ip().is_loopback() && !api::security::control_api_key_configured_from_env() {
+        warn!(
+            bind = %bind,
+            "Network-accessible without API key — anyone on your network can control your lights"
+        );
+    }
 
     // 3. Initialize all subsystems.
     let mut daemon_state = DaemonState::initialize(&config, config_path)?;
@@ -92,9 +98,16 @@ async fn main() -> Result<()> {
     let app_state = Arc::new(AppState::from_daemon_state(&daemon_state));
     let router = api::build_router(app_state, ui_dir.as_deref());
 
-    let listener = tokio::net::TcpListener::bind(&bind)
+    let listener = tokio::net::TcpListener::bind(bind)
         .await
         .with_context(|| format!("failed to bind API server to {bind}"))?;
+
+    let mdns_publisher = MdnsPublisher::new(
+        &daemon_state.server_identity,
+        bind,
+        config.network.mdns_publish,
+        api::security::api_auth_required_from_env(),
+    )?;
 
     if ui_dir.is_some() {
         info!(url = %format!("http://{bind}/"), "Web UI available");
@@ -118,6 +131,10 @@ async fn main() -> Result<()> {
     })
     .await
     .context("API server error")?;
+
+    if let Some(publisher) = mdns_publisher {
+        publisher.shutdown().await;
+    }
 
     // 9. Graceful shutdown of daemon subsystems.
     daemon_state.shutdown().await?;
@@ -180,6 +197,43 @@ const fn config_log_level_name(level: &LogLevel) -> &'static str {
         LogLevel::Warn => "warn",
         LogLevel::Error => "error",
     }
+}
+
+async fn resolve_bind_address(
+    cli_bind: Option<&str>,
+    config: &HypercolorConfig,
+) -> Result<SocketAddr> {
+    if let Some(bind) = cli_bind {
+        return resolve_socket_addr(bind).await;
+    }
+
+    let host = if config.network.remote_access && is_loopback_host(&config.daemon.listen_address) {
+        IpAddr::from([0, 0, 0, 0]).to_string()
+    } else {
+        config.daemon.listen_address.clone()
+    };
+
+    resolve_socket_addr(&format!("{host}:{}", config.daemon.port)).await
+}
+
+async fn resolve_socket_addr(bind: &str) -> Result<SocketAddr> {
+    let mut addrs = tokio::net::lookup_host(bind)
+        .await
+        .with_context(|| format!("failed to resolve {bind}"))?;
+    addrs
+        .next()
+        .with_context(|| format!("no socket addresses resolved for {bind}"))
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let trimmed = host.trim();
+    if trimmed.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+
+    trimmed
+        .parse::<IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
 }
 
 #[cfg(test)]

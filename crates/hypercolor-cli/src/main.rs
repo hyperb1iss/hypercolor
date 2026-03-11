@@ -31,6 +31,10 @@ pub struct Cli {
     #[arg(long, global = true, default_value_t = 9420)]
     port: u16,
 
+    /// API key used for authenticated daemon requests.
+    #[arg(long, global = true, env = "HYPERCOLOR_API_KEY")]
+    api_key: Option<String>,
+
     /// JSON output (shorthand for --format json).
     #[arg(long, short = 'j', global = true)]
     json: bool,
@@ -74,6 +78,8 @@ pub enum Commands {
     Service(commands::service::ServiceArgs),
     /// Run system diagnostics and health checks.
     Diagnose(commands::diagnose::DiagnoseArgs),
+    /// Discover Hypercolor daemons on the local network.
+    Servers(commands::servers::ServersArgs),
     /// Generate shell completion scripts.
     Completions(commands::completions::CompletionsArgs),
 }
@@ -87,7 +93,7 @@ async fn main() -> Result<()> {
 
     // Build shared context
     let ctx = OutputContext::new(cli.format, cli.json, cli.quiet, cli.no_color);
-    let client = DaemonClient::new(&cli.host, cli.port);
+    let client = DaemonClient::new(&cli.host, cli.port, cli.api_key.as_deref());
 
     // Dispatch to subcommand handlers
     let result = match &cli.command {
@@ -101,6 +107,7 @@ async fn main() -> Result<()> {
         Commands::Config(args) => commands::config::execute(args, &client, &ctx).await,
         Commands::Service(args) => commands::service::execute(args, &ctx).await,
         Commands::Diagnose(args) => commands::diagnose::execute(args, &client, &ctx).await,
+        Commands::Servers(args) => commands::servers::execute(args, &ctx).await,
         Commands::Completions(args) => {
             let mut cmd = <Cli as clap::CommandFactory>::command();
             commands::completions::execute(args, &mut cmd);

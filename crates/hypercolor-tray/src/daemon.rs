@@ -1,36 +1,40 @@
 //! HTTP + WebSocket client for daemon communication.
 //!
-//! Manages the connection to the Hypercolor daemon at `localhost:9420`,
-//! fetches initial state via REST, subscribes to real-time updates via
-//! WebSocket, and sends commands back to the daemon.
+//! Manages the connection to Hypercolor daemons, including mDNS discovery,
+//! server switching, REST bootstrap, and WebSocket subscriptions.
 
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use hypercolor_core::config::paths;
+use hypercolor_core::device::discover_servers;
+use hypercolor_types::server::ServerIdentity;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
 use crate::state::{
     ApiEnvelope, AppState, DaemonMessage, EffectInfo, EffectListResponse, EffectSummary,
-    ProfileInfo, ProfileListResponse, ProfileSummary, StateUpdate, StatusResponse, TrayCommand,
-    WsEventMessage, WsHello,
+    ProfileInfo, ProfileListResponse, ProfileSummary, ServerEntry, ServerResponse, StateUpdate,
+    StatusResponse, TrayCommand, WsEventMessage, WsHello,
 };
 
 /// Interval between reconnection attempts when the daemon is unreachable.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(5);
-
-/// Daemon base URL.
-const DEFAULT_DAEMON_URL: &str = "http://localhost:9420";
-
-/// WebSocket URL derived from the daemon base URL.
-const DEFAULT_WS_URL: &str = "ws://localhost:9420/api/v1/ws";
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(3);
+const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_HOST: &str = "localhost";
+const DEFAULT_PORT: u16 = 9420;
 
 /// Manages communication with the Hypercolor daemon.
 pub struct DaemonClient {
     base_url: String,
     ws_url: String,
+    active_server_id: Option<String>,
+    known_servers: Vec<ServerEntry>,
+    stored_api_keys: HashMap<String, String>,
     tx: mpsc::Sender<DaemonMessage>,
     cmd_rx: tokio::sync::mpsc::UnboundedReceiver<TrayCommand>,
     http: reqwest::Client,
@@ -47,22 +51,24 @@ impl DaemonClient {
         cmd_rx: tokio::sync::mpsc::UnboundedReceiver<TrayCommand>,
     ) -> Self {
         Self {
-            base_url: DEFAULT_DAEMON_URL.to_owned(),
-            ws_url: DEFAULT_WS_URL.to_owned(),
+            base_url: build_base_url(DEFAULT_HOST, DEFAULT_PORT),
+            ws_url: build_ws_url(DEFAULT_HOST, DEFAULT_PORT, None),
+            active_server_id: None,
+            known_servers: Vec::new(),
+            stored_api_keys: load_server_api_keys(),
             tx,
             cmd_rx,
             http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(5))
+                .timeout(HTTP_TIMEOUT)
                 .build()
                 .expect("failed to build reqwest client"),
         }
     }
 
     /// Run the client forever, reconnecting as needed.
-    ///
-    /// This function never returns under normal operation. It loops between
-    /// connecting, watching for events, and reconnecting on failure.
     pub async fn run(&mut self) {
+        let _ = self.refresh_servers(true).await;
+
         loop {
             match self.connect_and_watch().await {
                 Ok(should_quit) => {
@@ -72,8 +78,8 @@ impl DaemonClient {
                     }
                     warn!("Daemon connection closed; reconnecting in 5s");
                 }
-                Err(e) => {
-                    debug!("Daemon connection failed: {e}; retrying in 5s");
+                Err(error) => {
+                    debug!("Daemon connection failed: {error}; retrying in 5s");
                 }
             }
 
@@ -83,19 +89,17 @@ impl DaemonClient {
     }
 
     /// Attempt to connect to the daemon and watch for events.
-    ///
-    /// Returns `Ok(true)` if we should quit, `Ok(false)` if the connection
-    /// was lost and we should reconnect, or `Err` on connection failure.
     async fn connect_and_watch(&mut self) -> anyhow::Result<bool> {
-        // Step 1: Fetch initial state via REST.
         let state = self.fetch_initial_state().await?;
+        self.active_server_id = state
+            .server_identity
+            .as_ref()
+            .map(|server| server.instance_id.clone());
         let _ = self.tx.send(DaemonMessage::Connected(state));
 
-        // Step 2: Connect to WebSocket for real-time updates.
         let (ws_stream, _) = connect_async(&self.ws_url).await?;
         let (mut ws_write, mut ws_read) = ws_stream.split();
 
-        // Subscribe to the events channel.
         let subscribe_msg = serde_json::json!({
             "type": "subscribe",
             "channels": ["events"]
@@ -106,7 +110,6 @@ impl DaemonClient {
 
         info!("Connected to daemon WebSocket at {}", self.ws_url);
 
-        // Step 3: Event loop — process WS messages and tray commands.
         loop {
             tokio::select! {
                 ws_msg = ws_read.next() => {
@@ -121,8 +124,8 @@ impl DaemonClient {
                             info!("WebSocket connection closed");
                             return Ok(false);
                         }
-                        Some(Err(e)) => {
-                            warn!("WebSocket error: {e}");
+                        Some(Err(error)) => {
+                            warn!("WebSocket error: {error}");
                             return Ok(false);
                         }
                         _ => {}
@@ -132,12 +135,11 @@ impl DaemonClient {
                     match cmd {
                         Some(TrayCommand::Quit) => return Ok(true),
                         Some(command) => {
-                            self.handle_command(command).await;
+                            if self.handle_command(command).await {
+                                return Ok(false);
+                            }
                         }
-                        None => {
-                            // Command channel closed — tray exited.
-                            return Ok(true);
-                        }
+                        None => return Ok(true),
                     }
                 }
             }
@@ -146,63 +148,78 @@ impl DaemonClient {
 
     /// Fetch initial state from the daemon REST API.
     async fn fetch_initial_state(&self) -> anyhow::Result<AppState> {
-        // Fetch status.
+        let server_url = format!("{}/api/v1/server", self.base_url);
+        let server_resp: ApiEnvelope<ServerResponse> = self
+            .auth_request(self.http.get(&server_url))
+            .send()
+            .await?
+            .json()
+            .await?;
+        let server = server_resp
+            .data
+            .ok_or_else(|| anyhow::anyhow!("Missing data in server response"))?;
+
         let status_url = format!("{}/api/v1/status", self.base_url);
-        let status_resp: ApiEnvelope<StatusResponse> =
-            self.http.get(&status_url).send().await?.json().await?;
+        let status_resp: ApiEnvelope<StatusResponse> = self
+            .auth_request(self.http.get(&status_url))
+            .send()
+            .await?
+            .json()
+            .await?;
         let status = status_resp
             .data
             .ok_or_else(|| anyhow::anyhow!("Missing data in status response"))?;
 
-        // Fetch effects.
         let effects_url = format!("{}/api/v1/effects", self.base_url);
-        let effects_resp: ApiEnvelope<EffectListResponse> =
-            self.http.get(&effects_url).send().await?.json().await?;
+        let effects_resp: ApiEnvelope<EffectListResponse> = self
+            .auth_request(self.http.get(&effects_url))
+            .send()
+            .await?
+            .json()
+            .await?;
         let effects: Vec<EffectInfo> = effects_resp
             .data
             .map(|list| {
                 list.items
                     .into_iter()
-                    .map(|s: EffectSummary| EffectInfo {
-                        id: s.id,
-                        name: s.name,
+                    .map(|item: EffectSummary| EffectInfo {
+                        id: item.id,
+                        name: item.name,
                     })
                     .collect()
             })
             .unwrap_or_default();
 
-        // Fetch profiles.
         let profiles_url = format!("{}/api/v1/profiles", self.base_url);
-        let profiles: Vec<ProfileInfo> = match self.http.get(&profiles_url).send().await {
-            Ok(resp) => {
-                let profile_resp: Result<ApiEnvelope<ProfileListResponse>, _> = resp.json().await;
-                profile_resp
-                    .ok()
-                    .and_then(|envelope| envelope.data)
-                    .map(|list| {
-                        list.items
-                            .into_iter()
-                            .map(|s: ProfileSummary| ProfileInfo {
-                                id: s.id,
-                                name: s.name,
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            }
-            Err(e) => {
-                debug!("Failed to fetch profiles: {e}");
-                Vec::new()
-            }
-        };
+        let profiles: Vec<ProfileInfo> =
+            match self.auth_request(self.http.get(&profiles_url)).send().await {
+                Ok(response) => {
+                    let profile_resp: Result<ApiEnvelope<ProfileListResponse>, _> =
+                        response.json().await;
+                    profile_resp
+                        .ok()
+                        .and_then(|envelope| envelope.data)
+                        .map(|list| {
+                            list.items
+                                .into_iter()
+                                .map(|item: ProfileSummary| ProfileInfo {
+                                    id: item.id,
+                                    name: item.name,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                }
+                Err(error) => {
+                    debug!("Failed to fetch profiles: {error}");
+                    Vec::new()
+                }
+            };
 
-        // Derive the current effect from the status active_effect name.
-        // The status endpoint returns just the name, not the ID. Match against
-        // the effects list to find the full info.
         let current_effect = status.active_effect.and_then(|name| {
             effects
                 .iter()
-                .find(|e| e.name == name)
+                .find(|effect| effect.name == name)
                 .cloned()
                 .or_else(|| {
                     Some(EffectInfo {
@@ -211,6 +228,12 @@ impl DaemonClient {
                     })
                 })
         });
+
+        let server_identity = ServerIdentity {
+            instance_id: server.instance_id,
+            instance_name: server.instance_name,
+            version: server.version,
+        };
 
         Ok(AppState {
             connected: true,
@@ -221,6 +244,9 @@ impl DaemonClient {
             device_count: status.device_count,
             effects,
             profiles,
+            server_identity: Some(server_identity.clone()),
+            servers: self.known_servers.clone(),
+            active_server: self.find_server_index(&server_identity.instance_id),
         })
     }
 
@@ -231,13 +257,10 @@ impl DaemonClient {
             return;
         };
 
-        // The daemon sends hello on connect — we already have initial state
-        // from REST, but we can update from the hello if present.
         if msg.msg_type == "hello"
             && let Ok(hello) = serde_json::from_str::<WsHello>(text)
             && let Some(state) = hello.state
         {
-            // Update brightness and pause state from hello.
             let _ = self
                 .tx
                 .send(DaemonMessage::StateUpdate(StateUpdate::BrightnessChanged(
@@ -258,11 +281,7 @@ impl DaemonClient {
             }
             return;
         }
-        if msg.msg_type == "hello" {
-            return;
-        }
 
-        // Only process event-type messages.
         if msg.msg_type != "event" {
             return;
         }
@@ -286,7 +305,6 @@ impl DaemonClient {
             }
             "paused" => Some(StateUpdate::Paused),
             "resumed" => Some(StateUpdate::Resumed),
-            // All other events: the tray re-fetches full state on reconnect.
             _ => None,
         };
 
@@ -296,53 +314,204 @@ impl DaemonClient {
     }
 
     /// Handle a command from the tray UI thread.
-    async fn handle_command(&self, command: TrayCommand) {
+    ///
+    /// Returns `true` when the current connection should be torn down so the
+    /// outer loop can reconnect with updated target settings.
+    async fn handle_command(&mut self, command: TrayCommand) -> bool {
         match command {
             TrayCommand::ApplyEffect(id) => {
                 let url = format!("{}/api/v1/effects/{}/apply", self.base_url, id);
-                if let Err(e) = self.http.post(&url).send().await {
-                    error!("Failed to apply effect {id}: {e}");
+                if let Err(error) = self.auth_request(self.http.post(&url)).send().await {
+                    error!("Failed to apply effect {id}: {error}");
                 }
+                false
             }
             TrayCommand::ApplyProfile(id) => {
                 let url = format!("{}/api/v1/profiles/{}/apply", self.base_url, id);
-                if let Err(e) = self.http.post(&url).send().await {
-                    error!("Failed to apply profile {id}: {e}");
+                if let Err(error) = self.auth_request(self.http.post(&url)).send().await {
+                    error!("Failed to apply profile {id}: {error}");
                 }
+                false
             }
             TrayCommand::StopEffect => {
                 let url = format!("{}/api/v1/effects/stop", self.base_url);
-                if let Err(e) = self.http.post(&url).send().await {
-                    error!("Failed to stop effect: {e}");
+                if let Err(error) = self.auth_request(self.http.post(&url)).send().await {
+                    error!("Failed to stop effect: {error}");
                 }
+                false
             }
             TrayCommand::SetBrightness(value) => {
                 let url = format!("{}/api/v1/settings/brightness", self.base_url);
                 let body = serde_json::json!({ "brightness": value });
-                if let Err(e) = self.http.put(&url).json(&body).send().await {
-                    error!("Failed to set brightness: {e}");
+                if let Err(error) = self
+                    .auth_request(self.http.put(&url))
+                    .json(&body)
+                    .send()
+                    .await
+                {
+                    error!("Failed to set brightness: {error}");
                 }
+                false
             }
             TrayCommand::TogglePause => {
-                // The daemon doesn't have a dedicated pause endpoint yet;
-                // the tray toggles by stopping/resuming the effect. For now,
-                // log that this is not yet implemented.
                 warn!("Pause/resume toggle not yet implemented in daemon API");
+                false
             }
             TrayCommand::OpenWebUi => {
                 let url = self.base_url.clone();
                 tokio::task::spawn_blocking(move || open_web_ui(&url));
+                false
             }
-            TrayCommand::Quit => {
-                // Handled in the event loop before reaching here.
+            TrayCommand::SwitchServer(index) => self.switch_server(index),
+            TrayCommand::RefreshServers => self.refresh_servers(false).await,
+            TrayCommand::Quit => false,
+        }
+    }
+
+    async fn refresh_servers(&mut self, allow_auto_switch: bool) -> bool {
+        match discover_servers(DISCOVERY_TIMEOUT).await {
+            Ok(servers) => {
+                self.known_servers = servers
+                    .into_iter()
+                    .map(|server| ServerEntry {
+                        has_api_key: self
+                            .stored_api_keys
+                            .contains_key(&server.identity.instance_id),
+                        server,
+                    })
+                    .collect();
+
+                let mut reconnect = false;
+
+                if let Some(active_id) = self.active_server_id.clone()
+                    && let Some(index) = self.find_server_index(&active_id)
+                {
+                    reconnect = self.switch_server(index);
+                } else if allow_auto_switch && self.known_servers.len() == 1 {
+                    reconnect = self.switch_server(0);
+                }
+
+                self.send_servers_updated();
+                reconnect
             }
+            Err(error) => {
+                debug!("Failed to refresh Hypercolor servers: {error}");
+                false
+            }
+        }
+    }
+
+    fn send_servers_updated(&self) {
+        let _ = self
+            .tx
+            .send(DaemonMessage::ServersUpdated(self.known_servers.clone()));
+    }
+
+    fn find_server_index(&self, instance_id: &str) -> Option<usize> {
+        self.known_servers
+            .iter()
+            .position(|entry| entry.server.identity.instance_id == instance_id)
+    }
+
+    fn switch_server(&mut self, index: usize) -> bool {
+        let Some(entry) = self.known_servers.get(index) else {
+            return false;
+        };
+
+        let host = entry.server.host.to_string();
+        let api_key = self
+            .stored_api_keys
+            .get(&entry.server.identity.instance_id)
+            .map(String::as_str);
+        let next_base = build_base_url(&host, entry.server.port);
+        let next_ws = build_ws_url(&host, entry.server.port, api_key);
+        let changed = self.base_url != next_base
+            || self.ws_url != next_ws
+            || self.active_server_id.as_deref() != Some(entry.server.identity.instance_id.as_str());
+
+        self.base_url = next_base;
+        self.ws_url = next_ws;
+        self.active_server_id = Some(entry.server.identity.instance_id.clone());
+        changed
+    }
+
+    fn auth_request(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(active_id) = &self.active_server_id
+            && let Some(api_key) = self.stored_api_keys.get(active_id)
+        {
+            return request.bearer_auth(api_key);
+        }
+
+        request
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct StoredServersFile {
+    #[serde(default)]
+    servers: Vec<StoredServerConfig>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct StoredServerConfig {
+    instance_id: String,
+    api_key: String,
+}
+
+fn load_server_api_keys() -> HashMap<String, String> {
+    let path = paths::config_dir().join("servers.toml");
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+
+    match toml::from_str::<StoredServersFile>(&contents) {
+        Ok(file) => file
+            .servers
+            .into_iter()
+            .filter_map(|entry| {
+                let instance_id = entry.instance_id.trim();
+                let api_key = entry.api_key.trim();
+                if instance_id.is_empty() || api_key.is_empty() {
+                    None
+                } else {
+                    Some((instance_id.to_owned(), api_key.to_owned()))
+                }
+            })
+            .collect(),
+        Err(error) => {
+            debug!(path = %path.display(), %error, "Failed to parse tray server config");
+            HashMap::new()
         }
     }
 }
 
+fn build_base_url(host: &str, port: u16) -> String {
+    format!("http://{host}:{port}")
+}
+
+fn build_ws_url(host: &str, port: u16, api_key: Option<&str>) -> String {
+    let base = format!("ws://{host}:{port}/api/v1/ws");
+    api_key.map_or(base.clone(), |key| {
+        format!("{base}?token={}", percent_encode(key))
+    })
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut encoded = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~');
+        if unreserved {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 /// Open the Hypercolor web UI in the default browser.
 fn open_web_ui(base_url: &str) {
-    if let Err(e) = open::that(base_url) {
-        error!("Failed to open web UI: {e}");
+    if let Err(error) = open::that(base_url) {
+        error!("Failed to open web UI: {error}");
     }
 }

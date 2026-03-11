@@ -49,6 +49,7 @@ use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::config::McpConfig;
 use hypercolor_types::device::DeviceId;
+use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::attachment_profiles::AttachmentProfileStore;
@@ -173,6 +174,9 @@ pub struct AppState {
 
     /// Daemon start time for uptime calculation.
     pub start_time: Instant,
+
+    /// Stable network identity exposed by API and discovery surfaces.
+    pub server_identity: ServerIdentity,
 }
 
 impl AppState {
@@ -272,6 +276,11 @@ impl AppState {
             library_store: Arc::new(InMemoryLibraryStore::new()),
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: Instant::now(),
+            server_identity: ServerIdentity {
+                instance_id: "00000000-0000-7000-8000-000000000000".to_owned(),
+                instance_name: "hypercolor".to_owned(),
+                version: env!("CARGO_PKG_VERSION").to_owned(),
+            },
         }
     }
 
@@ -329,6 +338,7 @@ impl AppState {
             library_store,
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: daemon.start_time,
+            server_identity: daemon.server_identity.clone(),
         }
     }
 }
@@ -605,6 +615,7 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(library::activate_playlist),
         )
         // ── System ───────────────────────────────────────────────────
+        .route("/server", axum::routing::get(system::get_server))
         .route("/status", axum::routing::get(system::get_status))
         .route("/state", axum::routing::get(system::get_status))
         .route("/audio/devices", axum::routing::get(settings::list_audio_devices))

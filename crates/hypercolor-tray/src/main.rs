@@ -212,7 +212,13 @@ fn main() -> anyhow::Result<()> {
                 }
                 DaemonMessage::Disconnected => {
                     info!("Disconnected from daemon");
-                    app_state = AppState::disconnected();
+                    mark_disconnected(&mut app_state);
+                    sync_active_server(&mut app_state);
+                    update_tray(&tray_icon, &app_state);
+                }
+                DaemonMessage::ServersUpdated(servers) => {
+                    app_state.servers = servers;
+                    sync_active_server(&mut app_state);
                     update_tray(&tray_icon, &app_state);
                 }
                 DaemonMessage::StateUpdate(update) => {
@@ -277,6 +283,27 @@ fn apply_state_update(state: &mut AppState, update: StateUpdate) {
     }
 }
 
+fn mark_disconnected(state: &mut AppState) {
+    state.connected = false;
+    state.running = false;
+    state.paused = false;
+    state.brightness = 0;
+    state.current_effect = None;
+    state.device_count = 0;
+    state.effects.clear();
+    state.profiles.clear();
+    state.server_identity = None;
+}
+
+fn sync_active_server(state: &mut AppState) {
+    state.active_server = state.server_identity.as_ref().and_then(|identity| {
+        state
+            .servers
+            .iter()
+            .position(|entry| entry.server.identity.instance_id == identity.instance_id)
+    });
+}
+
 /// Update the tray icon and menu to reflect the current state.
 fn update_tray(tray_icon: &tray_icon::TrayIcon, state: &AppState) {
     // Update icon.
@@ -332,6 +359,9 @@ fn handle_menu_event(
         menu::ids::PAUSE_RESUME => {
             let _ = cmd_tx.send(TrayCommand::TogglePause);
         }
+        menu::ids::REFRESH_SERVERS => {
+            let _ = cmd_tx.send(TrayCommand::RefreshServers);
+        }
         menu::ids::STOP_EFFECT => {
             let _ = cmd_tx.send(TrayCommand::StopEffect);
         }
@@ -344,6 +374,10 @@ fn handle_menu_event(
                 let _ = cmd_tx.send(TrayCommand::ApplyEffect(effect_id.to_owned()));
             } else if let Some(profile_id) = other.strip_prefix(menu::ids::PROFILE_PREFIX) {
                 let _ = cmd_tx.send(TrayCommand::ApplyProfile(profile_id.to_owned()));
+            } else if let Some(index) = other.strip_prefix(menu::ids::SERVER_PREFIX)
+                && let Ok(index) = index.parse::<usize>()
+            {
+                let _ = cmd_tx.send(TrayCommand::SwitchServer(index));
             }
         }
     }

@@ -9,5 +9,6 @@ pub mod layouts;
 pub mod library;
 pub mod profiles;
 pub mod scenes;
+pub mod servers;
 pub mod service;
 pub mod status;

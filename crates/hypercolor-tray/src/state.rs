@@ -4,6 +4,7 @@
 //! along with message types for cross-thread communication between the
 //! async daemon client and the synchronous tray UI thread.
 
+use hypercolor_types::server::{DiscoveredServer, ServerIdentity};
 use serde::Deserialize;
 
 /// Applet state synchronized from the daemon via WebSocket.
@@ -26,6 +27,12 @@ pub struct AppState {
     pub effects: Vec<EffectInfo>,
     /// All available profiles.
     pub profiles: Vec<ProfileInfo>,
+    /// Connected server identity, when known.
+    pub server_identity: Option<ServerIdentity>,
+    /// Discovered Hypercolor servers on the local network.
+    pub servers: Vec<ServerEntry>,
+    /// Selected server index within `servers`.
+    pub active_server: Option<usize>,
 }
 
 impl AppState {
@@ -41,6 +48,9 @@ impl AppState {
             device_count: 0,
             effects: Vec::new(),
             profiles: Vec::new(),
+            server_identity: None,
+            servers: Vec::new(),
+            active_server: None,
         }
     }
 }
@@ -65,6 +75,13 @@ pub struct ProfileInfo {
     pub name: String,
 }
 
+/// A discovered server plus local credential availability.
+#[derive(Debug, Clone)]
+pub struct ServerEntry {
+    pub server: DiscoveredServer,
+    pub has_api_key: bool,
+}
+
 /// Messages from the async daemon client to the tray UI thread.
 #[derive(Debug, Clone)]
 pub enum DaemonMessage {
@@ -72,6 +89,8 @@ pub enum DaemonMessage {
     Connected(AppState),
     /// Connection to the daemon was lost.
     Disconnected,
+    /// The set of discoverable servers changed.
+    ServersUpdated(Vec<ServerEntry>),
     /// Incremental state update from a WebSocket event.
     StateUpdate(StateUpdate),
 }
@@ -112,6 +131,10 @@ pub enum TrayCommand {
     TogglePause,
     /// Open the web UI in the default browser.
     OpenWebUi,
+    /// Switch the active daemon connection.
+    SwitchServer(usize),
+    /// Refresh the list of discoverable daemons.
+    RefreshServers,
     /// Quit the tray applet.
     Quit,
 }
@@ -131,6 +154,14 @@ pub struct StatusResponse {
     pub active_effect: Option<String>,
     pub global_brightness: u8,
     pub device_count: usize,
+}
+
+/// Response from `GET /api/v1/server`.
+#[derive(Debug, Deserialize)]
+pub struct ServerResponse {
+    pub instance_id: String,
+    pub instance_name: String,
+    pub version: String,
 }
 
 /// Response from `GET /api/v1/effects`.
@@ -165,6 +196,8 @@ pub struct ProfileSummary {
 pub struct WsHello {
     #[serde(rename = "type")]
     pub msg_type: String,
+    #[serde(default)]
+    pub server: Option<ServerIdentity>,
     pub state: Option<WsHelloState>,
 }
 

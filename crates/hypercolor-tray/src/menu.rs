@@ -12,6 +12,7 @@ use crate::state::AppState;
 pub mod ids {
     pub const OPEN_WEB_UI: &str = "open_web_ui";
     pub const PAUSE_RESUME: &str = "pause_resume";
+    pub const REFRESH_SERVERS: &str = "refresh_servers";
     pub const STOP_EFFECT: &str = "stop_effect";
     pub const QUIT: &str = "quit";
 
@@ -20,6 +21,9 @@ pub mod ids {
 
     /// Prefix for dynamically generated profile menu items.
     pub const PROFILE_PREFIX: &str = "profile:";
+
+    /// Prefix for dynamically generated server items.
+    pub const SERVER_PREFIX: &str = "server:";
 }
 
 /// Build the complete tray menu for the current application state.
@@ -48,7 +52,7 @@ pub fn build_menu(state: &AppState) -> anyhow::Result<Menu> {
     if state.connected {
         build_connected_menu(&menu, state)?;
     } else {
-        build_disconnected_menu(&menu)?;
+        build_disconnected_menu(&menu, state)?;
     }
 
     menu.append(&PredefinedMenuItem::separator())?;
@@ -98,6 +102,10 @@ fn build_connected_menu(menu: &Menu, state: &AppState) -> anyhow::Result<()> {
         menu.append(&profiles_submenu)?;
     }
 
+    if should_show_servers_menu(state) {
+        menu.append(&build_servers_submenu(state)?)?;
+    }
+
     menu.append(&PredefinedMenuItem::separator())?;
 
     // Brightness label
@@ -131,7 +139,7 @@ fn build_connected_menu(menu: &Menu, state: &AppState) -> anyhow::Result<()> {
 }
 
 /// Build menu items shown when disconnected from the daemon.
-fn build_disconnected_menu(menu: &Menu) -> anyhow::Result<()> {
+fn build_disconnected_menu(menu: &Menu, state: &AppState) -> anyhow::Result<()> {
     let status = MenuItem::with_id(
         MenuId::new("status_disconnected"),
         "Daemon not reachable",
@@ -141,8 +149,52 @@ fn build_disconnected_menu(menu: &Menu) -> anyhow::Result<()> {
     menu.append(&status)?;
     menu.append(&PredefinedMenuItem::separator())?;
 
+    if should_show_servers_menu(state) {
+        menu.append(&build_servers_submenu(state)?)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+    }
+
     let open_ui = MenuItem::with_id(MenuId::new(ids::OPEN_WEB_UI), "Open Web UI", true, None);
     menu.append(&open_ui)?;
 
     Ok(())
+}
+
+fn build_servers_submenu(state: &AppState) -> anyhow::Result<Submenu> {
+    let submenu = Submenu::new("Servers", true);
+
+    for (index, entry) in state.servers.iter().enumerate() {
+        let active_prefix = if state.active_server == Some(index) {
+            "\u{25cf} "
+        } else {
+            ""
+        };
+        let key_suffix = if entry.server.auth_required && !entry.has_api_key {
+            " (Key required)"
+        } else {
+            ""
+        };
+        let label = format!(
+            "{active_prefix}{} ({}){key_suffix}",
+            entry.server.identity.instance_name, entry.server.host
+        );
+        let item_id = format!("{}{}", ids::SERVER_PREFIX, index);
+        let item = MenuItem::with_id(MenuId::new(&item_id), &label, true, None);
+        submenu.append(&item)?;
+    }
+
+    submenu.append(&PredefinedMenuItem::separator())?;
+    let refresh = MenuItem::with_id(
+        MenuId::new(ids::REFRESH_SERVERS),
+        "Refresh Servers",
+        true,
+        None,
+    );
+    submenu.append(&refresh)?;
+
+    Ok(submenu)
+}
+
+fn should_show_servers_menu(state: &AppState) -> bool {
+    state.servers.len() > 1
 }

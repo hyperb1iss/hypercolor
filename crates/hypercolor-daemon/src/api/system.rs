@@ -12,10 +12,12 @@ use serde::Serialize;
 
 use crate::api::AppState;
 use crate::api::envelope::ApiResponse;
+use crate::api::security;
 use crate::api::settings;
 use crate::session::current_global_brightness;
 
 use hypercolor_core::config::ConfigManager;
+use hypercolor_types::server::ServerIdentity;
 
 const DEFAULT_CONFIG_FILE_NAME: &str = "hypercolor.toml";
 
@@ -25,6 +27,7 @@ const DEFAULT_CONFIG_FILE_NAME: &str = "hypercolor.toml";
 pub struct SystemStatus {
     pub running: bool,
     pub version: String,
+    pub server: ServerIdentity,
     pub config_path: String,
     pub data_dir: String,
     pub cache_dir: String,
@@ -62,6 +65,14 @@ pub struct HealthChecks {
     pub event_bus: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ServerInfo {
+    #[serde(flatten)]
+    pub identity: ServerIdentity,
+    pub device_count: usize,
+    pub auth_required: bool,
+}
+
 // ── Handlers ─────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/status` — Full system status overview.
@@ -96,6 +107,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     ApiResponse::ok(SystemStatus {
         running: true,
         version: env!("CARGO_PKG_VERSION").to_owned(),
+        server: state.server_identity.clone(),
         config_path,
         data_dir,
         cache_dir,
@@ -109,6 +121,17 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
         capture_available: settings::capture_input_available(),
         render_loop: render_loop_status,
         event_bus_subscribers: subscribers,
+    })
+}
+
+/// `GET /api/v1/server` — Lightweight server identity for discovery probes.
+pub async fn get_server(State(state): State<Arc<AppState>>) -> Response {
+    let device_count = state.device_registry.len().await;
+
+    ApiResponse::ok(ServerInfo {
+        identity: state.server_identity.clone(),
+        device_count,
+        auth_required: security::api_auth_required_from_env(),
     })
 }
 

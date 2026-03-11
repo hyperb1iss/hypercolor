@@ -42,6 +42,7 @@ cpal = { workspace = true }
 image = { workspace = true }
 turbojpeg = { workspace = true }
 tokio-util = { workspace = true }
+mdns-sd = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 sd-notify = "0.4"

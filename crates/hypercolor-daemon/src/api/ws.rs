@@ -23,6 +23,7 @@ use tracing::{debug, warn};
 
 use crate::api::AppState;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
+use hypercolor_types::server::ServerIdentity;
 
 /// Maximum number of events that can be buffered per WebSocket client.
 const WS_BUFFER_SIZE: usize = 64;
@@ -347,6 +348,7 @@ enum ServerMessage {
     /// Initial hello with state snapshot.
     Hello {
         version: String,
+        server: ServerIdentity,
         state: HelloState,
         capabilities: Vec<String>,
         subscriptions: Vec<String>,
@@ -550,6 +552,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
         let subs = subscriptions.read().await;
         ServerMessage::Hello {
             version: WS_PROTOCOL_VERSION.to_owned(),
+            server: state.server_identity.clone(),
             state: build_hello_state(&state).await,
             capabilities: ws_capabilities(),
             subscriptions: sorted_channel_names(&subs.channels),

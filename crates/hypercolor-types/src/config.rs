@@ -96,6 +96,11 @@ mod defaults {
         2
     }
 
+    // Network
+    pub fn remote_access() -> bool {
+        false
+    }
+
     // D-Bus
     pub fn bus_name() -> String {
         "tech.hyperbliss.hypercolor1".into()
@@ -160,6 +165,9 @@ pub struct HypercolorConfig {
     pub discovery: DiscoveryConfig,
 
     #[serde(default)]
+    pub network: NetworkConfig,
+
+    #[serde(default)]
     pub wled: WledConfig,
 
     #[serde(default)]
@@ -190,6 +198,7 @@ impl Default for HypercolorConfig {
             audio: AudioConfig::default(),
             capture: CaptureConfig::default(),
             discovery: DiscoveryConfig::default(),
+            network: NetworkConfig::default(),
             wled: WledConfig::default(),
             dbus: DbusConfig::default(),
             tui: TuiConfig::default(),
@@ -477,6 +486,31 @@ impl Default for DiscoveryConfig {
             scan_interval_secs: defaults::scan_interval(),
             wled_scan: defaults::bool_true(),
             hue_scan: defaults::bool_true(),
+        }
+    }
+}
+
+// ─── Network ────────────────────────────────────────────────────────────────
+
+/// Network discovery and remote access settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    #[serde(default = "defaults::bool_true")]
+    pub mdns_publish: bool,
+
+    #[serde(default = "defaults::remote_access")]
+    pub remote_access: bool,
+
+    #[serde(default)]
+    pub instance_name: Option<String>,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            mdns_publish: defaults::bool_true(),
+            remote_access: defaults::remote_access(),
+            instance_name: None,
         }
     }
 }

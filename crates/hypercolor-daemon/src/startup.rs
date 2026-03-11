@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
@@ -45,6 +46,7 @@ use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
 use hypercolor_types::config::{HypercolorConfig, WledProtocolConfig};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{EffectId, EffectMetadata};
+use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::attachment_profiles::AttachmentProfileStore;
@@ -65,6 +67,8 @@ use crate::{discovery, discovery::DiscoveryBackend};
 
 /// Default configuration file name within the config directory.
 const CONFIG_FILE_NAME: &str = "hypercolor.toml";
+const INSTANCE_ID_FILE_NAME: &str = "instance_id";
+const DEFAULT_INSTANCE_NAME: &str = "hypercolor";
 const STARTUP_WLED_RECOVERY_ATTEMPTS: usize = 3;
 const STARTUP_WLED_RECOVERY_INTERVAL_SECS: u64 = 5;
 
@@ -183,6 +187,9 @@ pub struct DaemonState {
 
     /// Wall-clock reference for daemon uptime reporting.
     pub start_time: Instant,
+
+    /// Stable network identity exposed by discovery and API responses.
+    pub server_identity: ServerIdentity,
 }
 
 impl DaemonState {
@@ -202,6 +209,9 @@ impl DaemonState {
     )]
     pub fn initialize(config: &HypercolorConfig, config_path: PathBuf) -> Result<Self> {
         info!("Initializing daemon subsystems");
+
+        let server_identity =
+            resolve_server_identity(config).context("failed to resolve server identity")?;
 
         // ── Configuration ───────────────────────────────────────────────
         let config_manager =
@@ -496,6 +506,7 @@ impl DaemonState {
             discovery_task: None,
             session_controller: None,
             start_time: Instant::now(),
+            server_identity,
         })
     }
 
@@ -1387,6 +1398,86 @@ fn resolve_effect_metadata_for_restore(
         .iter()
         .find(|(_, entry)| entry.metadata.matches_lookup(id_or_name))
         .map(|(_, entry)| entry.metadata.clone())
+}
+
+fn resolve_server_identity(config: &HypercolorConfig) -> Result<ServerIdentity> {
+    let instance_id = load_or_create_instance_id()?;
+    let instance_name = config
+        .network
+        .instance_name
+        .clone()
+        .unwrap_or_else(default_instance_name);
+
+    Ok(ServerIdentity {
+        instance_id,
+        instance_name,
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+    })
+}
+
+fn load_or_create_instance_id() -> Result<String> {
+    let instance_id_path = ConfigManager::data_dir().join(INSTANCE_ID_FILE_NAME);
+
+    if let Ok(raw) = std::fs::read_to_string(&instance_id_path) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() && Uuid::parse_str(trimmed).is_ok() {
+            return Ok(trimmed.to_owned());
+        }
+
+        warn!(
+            path = %instance_id_path.display(),
+            "Ignoring invalid persisted instance ID; generating a replacement"
+        );
+    }
+
+    if let Some(parent) = instance_id_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let instance_id = Uuid::now_v7().to_string();
+    std::fs::write(&instance_id_path, format!("{instance_id}\n"))
+        .with_context(|| format!("failed to write {}", instance_id_path.display()))?;
+
+    Ok(instance_id)
+}
+
+fn default_instance_name() -> String {
+    env_hostname()
+        .or_else(os_hostname)
+        .unwrap_or_else(|| DEFAULT_INSTANCE_NAME.to_owned())
+}
+
+fn env_hostname() -> Option<String> {
+    ["HOSTNAME", "COMPUTERNAME"].iter().find_map(|key| {
+        std::env::var(key).ok().and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        })
+    })
+}
+
+#[cfg(unix)]
+fn os_hostname() -> Option<String> {
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        })
+}
+
+#[cfg(not(unix))]
+fn os_hostname() -> Option<String> {
+    None
 }
 
 // ── Config Loading ──────────────────────────────────────────────────────────

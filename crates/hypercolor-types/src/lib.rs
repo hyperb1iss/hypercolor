@@ -12,5 +12,6 @@ pub mod event;
 pub mod library;
 pub mod palette;
 pub mod scene;
+pub mod server;
 pub mod session;
 pub mod spatial;

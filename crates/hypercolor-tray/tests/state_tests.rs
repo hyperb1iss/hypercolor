@@ -25,7 +25,16 @@ struct WsEventMessage {
 struct WsHello {
     #[serde(rename = "type")]
     msg_type: String,
+    #[serde(default)]
+    server: Option<ServerIdentity>,
     state: Option<WsHelloState>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ServerIdentity {
+    instance_id: String,
+    instance_name: String,
+    version: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -58,6 +67,14 @@ struct StatusResponse {
 }
 
 #[derive(Debug, serde::Deserialize)]
+struct ServerResponse {
+    instance_id: String,
+    instance_name: String,
+    version: String,
+    auth_required: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
 struct EffectListResponse {
     items: Vec<EffectSummary>,
 }
@@ -72,6 +89,11 @@ struct EffectSummary {
 fn parse_ws_hello_message() {
     let raw = json!({
         "type": "hello",
+        "server": {
+            "instance_id": "01912345-6789-7abc-def0-123456789abc",
+            "instance_name": "desk-pc",
+            "version": "0.1.0"
+        },
         "version": "1.0",
         "state": {
             "running": true,
@@ -88,6 +110,9 @@ fn parse_ws_hello_message() {
 
     let hello: WsHello = serde_json::from_value(raw).expect("should parse hello");
     assert_eq!(hello.msg_type, "hello");
+    let server = hello.server.expect("hello should include server metadata");
+    assert_eq!(server.instance_name, "desk-pc");
+    assert_eq!(server.version, "0.1.0");
 
     let state = hello.state.expect("hello should have state");
     assert!(state.running);
@@ -98,6 +123,27 @@ fn parse_ws_hello_message() {
     let effect = state.effect.expect("should have active effect");
     assert_eq!(effect.id, "abc-123");
     assert_eq!(effect.name, "Aurora Borealis");
+}
+
+#[test]
+fn parse_server_response() {
+    let raw = json!({
+        "data": {
+            "instance_id": "01912345-6789-7abc-def0-123456789abc",
+            "instance_name": "desk-pc",
+            "version": "0.1.0",
+            "device_count": 2,
+            "auth_required": true
+        }
+    });
+
+    let envelope: ApiEnvelope<ServerResponse> =
+        serde_json::from_value(raw).expect("should parse server response");
+    let server = envelope.data.expect("should have data");
+    assert_eq!(server.instance_id, "01912345-6789-7abc-def0-123456789abc");
+    assert_eq!(server.instance_name, "desk-pc");
+    assert_eq!(server.version, "0.1.0");
+    assert!(server.auth_required);
 }
 
 #[test]
