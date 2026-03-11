@@ -1,6 +1,6 @@
-//! Pure QMK OpenRGB protocol encoder/decoder.
+//! Pure QMK HID RGB protocol encoder/decoder.
 //!
-//! Implements the QMK OpenRGB HID protocol for per-key RGB control of
+//! Implements the QMK vendor HID protocol for per-key RGB control of
 //! QMK-firmware keyboards. Supports protocol revisions 9, B/C, and D/E.
 
 use std::borrow::Cow;
@@ -20,7 +20,7 @@ use super::types::{Command, PACKET_SIZE, ProtocolRevision, SPEED_NORMAL, STATUS_
 
 // ── Wire-format packets ──────────────────────────────────────────────────
 
-/// 65-byte QMK OpenRGB HID report.
+/// 65-byte QMK HID RGB report.
 #[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
 struct QmkPacket {
@@ -39,7 +39,7 @@ const _: () = assert!(
 
 // ── Protocol configuration ───────────────────────────────────────────────
 
-/// Per-keyboard configuration for the QMK OpenRGB protocol.
+/// Per-keyboard configuration for the QMK HID RGB protocol.
 #[derive(Debug, Clone)]
 pub struct QmkKeyboardConfig {
     /// Total addressable LEDs on this keyboard.
@@ -114,7 +114,7 @@ impl QmkKeyboardConfig {
 
 // ── Protocol implementation ──────────────────────────────────────────────
 
-/// QMK OpenRGB protocol encoder/decoder.
+/// QMK HID RGB protocol encoder/decoder.
 #[derive(Debug, Clone)]
 pub struct QmkProtocol {
     config: QmkKeyboardConfig,
@@ -211,7 +211,7 @@ impl QmkProtocol {
 
 impl Protocol for QmkProtocol {
     fn name(&self) -> &'static str {
-        "QMK OpenRGB"
+        "QMK HID RGB"
     }
 
     fn init_sequence(&self) -> Vec<ProtocolCommand> {
@@ -228,7 +228,7 @@ impl Protocol for QmkProtocol {
         set_mode.payload[0] = 0x00; // hue
         set_mode.payload[1] = 0x00; // saturation
         set_mode.payload[2] = 0xFF; // value (brightness)
-        set_mode.payload[3] = 0x01; // mode = OPENRGB_DIRECT
+        set_mode.payload[3] = 0x01; // mode = Direct
         set_mode.payload[4] = SPEED_NORMAL;
         set_mode.payload[5] = 0x00; // save = false
         commands.push(command_from_packet(set_mode, true));

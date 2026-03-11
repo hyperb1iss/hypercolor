@@ -724,10 +724,19 @@ fn panic_payload_message(panic: &(dyn Any + Send + 'static)) -> String {
 
 /// Sample current input values for the frame.
 async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) -> FrameInputs {
-    let samples = {
+    let (samples, events) = {
         let mut input_manager = state.input_manager.lock().await;
-        input_manager.sample_all_with_delta_secs(delta_secs)
+        (
+            input_manager.sample_all_with_delta_secs(delta_secs),
+            input_manager.drain_events(),
+        )
     };
+
+    for event in events {
+        state
+            .event_bus
+            .publish(HypercolorEvent::InputEventReceived { event });
+    }
 
     let mut audio = AudioData::silence();
     let mut interaction = InteractionData::default();
@@ -945,7 +954,7 @@ async fn render_effect(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use hypercolor_core::engine::FpsTier;
     use hypercolor_core::input::ScreenData;
@@ -953,7 +962,8 @@ mod tests {
     use hypercolor_core::types::event::ZoneColors;
 
     use super::{
-        SkipDecision, micros_u32, parse_sector_zone_id, screen_data_to_canvas, should_idle_throttle,
+        SkipDecision, advance_deadline, micros_u32, parse_sector_zone_id, screen_data_to_canvas,
+        should_idle_throttle,
     };
 
     fn frame_stats(

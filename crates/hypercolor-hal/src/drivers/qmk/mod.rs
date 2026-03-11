@@ -1,7 +1,8 @@
-//! QMK OpenRGB protocol driver for per-key RGB keyboards.
+//! QMK HID RGB protocol driver for per-key RGB keyboards.
 //!
-//! Supports keyboards running QMK firmware with the OpenRGB feature enabled.
-//! Protocol revisions 9, B/C, and D/E are implemented.
+//! Supports keyboards running QMK firmware with RGB Matrix enabled and the
+//! vendor HID RGB interface active. Protocol revisions 9, B/C, and D/E are
+//! implemented.
 
 pub mod devices;
 pub mod protocol;

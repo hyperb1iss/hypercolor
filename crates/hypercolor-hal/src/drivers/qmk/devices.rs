@@ -1,9 +1,9 @@
-//! QMK OpenRGB device registry entries.
+//! QMK HID RGB device registry entries.
 //!
-//! QMK keyboards are identified by their standard USB VID/PID, but the
-//! OpenRGB protocol is accessed through a vendor-defined HID usage page
-//! (`0xFF60`, usage `0x61`). Each keyboard entry specifies its known LED
-//! count, protocol revision, and optional matrix dimensions.
+//! QMK keyboards are identified by their standard USB VID/PID. The RGB
+//! protocol is accessed through a vendor-defined HID usage page (`0xFF60`,
+//! usage `0x61`). Each keyboard entry specifies its known LED count,
+//! protocol revision, and optional matrix dimensions.
 
 use hypercolor_types::device::DeviceFamily;
 

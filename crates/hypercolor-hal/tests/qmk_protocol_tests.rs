@@ -1,4 +1,4 @@
-//! QMK OpenRGB protocol encoding tests.
+//! QMK HID RGB protocol encoding tests.
 
 use hypercolor_hal::drivers::qmk::{
     Command, PACKET_SIZE, ProtocolRevision, QmkKeyboardConfig, QmkProtocol,
@@ -59,7 +59,7 @@ fn init_sequence_sends_version_query_then_direct_mode() {
     // Second packet: SET_MODE to Direct (mode 1)
     assert_eq!(init[1].data[0], 0x00, "report ID");
     assert_eq!(init[1].data[1], Command::SetMode as u8);
-    assert_eq!(init[1].data[5], 0x01, "mode = OPENRGB_DIRECT");
+    assert_eq!(init[1].data[5], 0x01, "mode = Direct");
     assert_eq!(init[1].data[4], 0xFF, "brightness = max");
     assert_eq!(init[1].data[7], 0x00, "save = false (no EEPROM write)");
 }
@@ -427,7 +427,7 @@ fn qmk_builder_produces_valid_protocol() {
     let desc = ProtocolDatabase::lookup(VID_ZSA, 0x1969).expect("Moonlander should exist");
     let protocol = (desc.protocol.build)();
 
-    assert_eq!(protocol.name(), "QMK OpenRGB");
+    assert_eq!(protocol.name(), "QMK HID RGB");
     assert!(protocol.total_leds() > 0);
     assert!(!protocol.zones().is_empty());
 }

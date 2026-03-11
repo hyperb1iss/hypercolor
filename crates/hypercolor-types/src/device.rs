@@ -4,6 +4,7 @@
 //! Hypercolor engine. They live in `hypercolor-types` so every crate can
 //! reference them without pulling in I/O, async, or backend-specific logic.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -274,6 +275,7 @@ pub enum ConnectionType {
 /// Known families are `Copy` and `Hash`-able. Truly unknown hardware uses
 /// `Custom(String)`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum DeviceFamily {
     /// WLED ESP8266/ESP32 controller.
     Wled,
@@ -299,27 +301,75 @@ pub enum DeviceFamily {
     /// Native ASUS Aura USB controllers.
     Asus,
 
-    /// QMK OpenRGB keyboards with per-key RGB.
+    /// QMK keyboards with per-key HID RGB control.
     Qmk,
 
     /// Unknown or user-defined device family.
     Custom(String),
 }
 
+impl DeviceFamily {
+    /// Human-readable vendor name for display purposes.
+    #[must_use]
+    pub fn vendor_name(&self) -> &str {
+        match self {
+            Self::Wled => "WLED",
+            Self::Hue => "Philips Hue",
+            Self::Razer => "Razer",
+            Self::Corsair => "Corsair",
+            Self::Dygma => "Dygma",
+            Self::LianLi => "Lian Li",
+            Self::PrismRgb => "PrismRGB",
+            Self::Asus => "ASUS",
+            Self::Qmk => "QMK",
+            Self::Custom(name) => name.as_str(),
+        }
+    }
+
+    /// Stable machine-readable identifier (lowercase, ASCII-safe).
+    ///
+    /// Used for attachment slot matching, API filtering, and persistent
+    /// configuration keys. Returns a borrowed `&str` for known families
+    /// and an owned sanitized `String` for custom families.
+    #[must_use]
+    pub fn id(&self) -> Cow<'static, str> {
+        match self {
+            Self::Wled => "wled".into(),
+            Self::Hue => "hue".into(),
+            Self::Razer => "razer".into(),
+            Self::Corsair => "corsair".into(),
+            Self::Dygma => "dygma".into(),
+            Self::LianLi => "lianli".into(),
+            Self::PrismRgb => "prismrgb".into(),
+            Self::Asus => "asus".into(),
+            Self::Qmk => "qmk".into(),
+            Self::Custom(name) => Cow::Owned(
+                name.chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                    .collect::<String>()
+                    .to_ascii_lowercase(),
+            ),
+        }
+    }
+
+    /// Backend service identifier for device routing.
+    ///
+    /// Network-native families (WLED, Hue) return their specific backend ID.
+    /// All HAL-managed USB/serial families return `"usb"`.
+    #[must_use]
+    pub fn backend_id(&self) -> &'static str {
+        match self {
+            Self::Wled => "wled",
+            Self::Hue => "hue",
+            Self::Custom(_) => "custom",
+            _ => "usb",
+        }
+    }
+}
+
 impl fmt::Display for DeviceFamily {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Wled => write!(f, "WLED"),
-            Self::Hue => write!(f, "Philips Hue"),
-            Self::Razer => write!(f, "Razer"),
-            Self::Corsair => write!(f, "Corsair"),
-            Self::Dygma => write!(f, "Dygma"),
-            Self::LianLi => write!(f, "Lian Li"),
-            Self::PrismRgb => write!(f, "PrismRGB"),
-            Self::Asus => write!(f, "ASUS"),
-            Self::Qmk => write!(f, "QMK"),
-            Self::Custom(name) => write!(f, "{name}"),
-        }
+        f.write_str(self.vendor_name())
     }
 }
 

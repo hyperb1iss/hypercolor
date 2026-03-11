@@ -1,15 +1,15 @@
-//! QMK OpenRGB protocol constants and type definitions.
+//! QMK HID RGB protocol constants and type definitions.
 
-/// Fixed HID report size for all QMK OpenRGB packets.
+/// Fixed HID report size for all QMK HID RGB packets.
 pub const PACKET_SIZE: usize = 65;
 
 /// HID read timeout in milliseconds.
 pub const HID_READ_TIMEOUT_MS: u64 = 50;
 
-/// QMK OpenRGB HID usage page (vendor-defined).
+/// QMK vendor-defined HID usage page.
 pub const USAGE_PAGE: u16 = 0xFF60;
 
-/// QMK OpenRGB HID usage ID.
+/// QMK vendor-defined HID usage ID.
 pub const USAGE_ID: u16 = 0x0061;
 
 // ── Command IDs ──────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ pub const STATUS_END_OF_MESSAGE: u8 = 100;
 
 // ── Protocol revisions ───────────────────────────────────────────────────
 
-/// QMK OpenRGB protocol revision negotiated during init.
+/// QMK HID RGB protocol revision negotiated during init.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolRevision {
     /// Rev9 — single-LED queries, 3 bytes/LED batch, max 20 LEDs.
@@ -94,12 +94,12 @@ impl ProtocolRevision {
 
 /// Built-in QMK RGB lighting effect modes.
 ///
-/// Mode 1 (`OpenrgbDirect`) is the one we use for per-LED control.
+/// Mode 1 (`Direct`) is the one we use for per-LED control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 #[allow(dead_code)]
 pub enum QmkMode {
-    OpenrgbDirect = 1,
+    Direct = 1,
     SolidColor = 2,
     AlphaMod = 3,
     GradientUpDown = 4,

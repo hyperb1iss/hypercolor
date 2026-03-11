@@ -334,18 +334,7 @@ fn backend_hint(
         return "smbus";
     }
 
-    match family {
-        hypercolor_types::device::DeviceFamily::Razer
-        | hypercolor_types::device::DeviceFamily::Corsair
-        | hypercolor_types::device::DeviceFamily::Dygma
-        | hypercolor_types::device::DeviceFamily::LianLi
-        | hypercolor_types::device::DeviceFamily::PrismRgb
-        | hypercolor_types::device::DeviceFamily::Asus
-        | hypercolor_types::device::DeviceFamily::Qmk => "usb",
-        hypercolor_types::device::DeviceFamily::Wled => "wled",
-        hypercolor_types::device::DeviceFamily::Hue => "hue",
-        hypercolor_types::device::DeviceFamily::Custom(_) => "custom",
-    }
+    family.backend_id()
 }
 
 fn timestamp_now() -> String {

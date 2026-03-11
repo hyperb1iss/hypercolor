@@ -1794,7 +1794,7 @@ fn validate_attachment_bindings(
         .iter()
         .map(|slot| (slot.id.as_str(), slot))
         .collect::<HashMap<_, _>>();
-    let family = attachment_family_id(&device.family);
+    let family = device.family.id();
     let mut resolved = Vec::with_capacity(bindings.len());
 
     for (index, binding) in bindings.iter().enumerate() {
@@ -2063,27 +2063,6 @@ async fn resolved_backend_id(
 ) -> String {
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
     crate::discovery::backend_id_for_device(family, metadata.as_ref())
-}
-
-fn attachment_family_id(family: &DeviceFamily) -> String {
-    match family {
-        DeviceFamily::Wled => "wled".to_owned(),
-        DeviceFamily::Hue => "hue".to_owned(),
-        DeviceFamily::Razer => "razer".to_owned(),
-        DeviceFamily::Corsair => "corsair".to_owned(),
-        DeviceFamily::Dygma => "dygma".to_owned(),
-        DeviceFamily::LianLi => "lianli".to_owned(),
-        DeviceFamily::PrismRgb => "prismrgb".to_owned(),
-        DeviceFamily::Asus => "asus".to_owned(),
-        DeviceFamily::Qmk => "qmk".to_owned(),
-        DeviceFamily::Custom(name) => name
-            .chars()
-            .filter(|character| {
-                character.is_ascii_alphanumeric() || *character == '_' || *character == '-'
-            })
-            .collect::<String>()
-            .to_ascii_lowercase(),
-    }
 }
 
 fn parse_status_filter(raw: Option<&str>) -> Result<Option<String>, String> {

@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase};
 use hypercolor_hal::protocol::{Protocol, ProtocolZone};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceIdentifier,
-    DeviceInfo, DeviceTopologyHint,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceIdentifier, DeviceInfo,
+    DeviceTopologyHint,
 };
 
 use super::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
@@ -56,7 +56,7 @@ impl UsbScanner {
         };
 
         let vendor = usb.manufacturer_string().map_or_else(
-            || vendor_name_for_family(&descriptor.family).to_owned(),
+            || descriptor.family.vendor_name().to_owned(),
             ToOwned::to_owned,
         );
 
@@ -148,21 +148,6 @@ fn protocol_zone_to_zone_info(zone: ProtocolZone) -> hypercolor_types::device::Z
         led_count: zone.led_count,
         topology: zone.topology,
         color_format: zone.color_format,
-    }
-}
-
-fn vendor_name_for_family(family: &DeviceFamily) -> &'static str {
-    match family {
-        DeviceFamily::Wled => "WLED",
-        DeviceFamily::Hue => "Philips Hue",
-        DeviceFamily::Razer => "Razer",
-        DeviceFamily::Corsair => "Corsair",
-        DeviceFamily::Dygma => "Dygma",
-        DeviceFamily::LianLi => "Lian Li",
-        DeviceFamily::PrismRgb => "PrismRGB",
-        DeviceFamily::Asus => "ASUS",
-        DeviceFamily::Qmk => "QMK",
-        DeviceFamily::Custom(_) => "Unknown",
     }
 }
 

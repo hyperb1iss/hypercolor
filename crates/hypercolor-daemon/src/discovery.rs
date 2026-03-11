@@ -2221,21 +2221,6 @@ fn format_error_chain(error: &anyhow::Error) -> String {
         .join(" | caused_by: ")
 }
 
-pub(crate) fn backend_id_for_family(family: &DeviceFamily) -> String {
-    match family {
-        DeviceFamily::Wled => "wled".to_owned(),
-        DeviceFamily::Hue => "hue".to_owned(),
-        DeviceFamily::Razer
-        | DeviceFamily::Corsair
-        | DeviceFamily::Dygma
-        | DeviceFamily::LianLi
-        | DeviceFamily::PrismRgb
-        | DeviceFamily::Asus
-        | DeviceFamily::Qmk => "usb".to_owned(),
-        DeviceFamily::Custom(name) => name.to_ascii_lowercase(),
-    }
-}
-
 pub(crate) fn backend_id_for_device(
     family: &DeviceFamily,
     metadata: Option<&HashMap<String, String>>,
@@ -2254,11 +2239,10 @@ pub(crate) fn backend_id_for_device(
         }
     }
 
-    metadata
-        .and_then(|metadata| metadata.get("backend_id"))
-        .filter(|backend_id| !backend_id.trim().is_empty())
-        .cloned()
-        .unwrap_or_else(|| backend_id_for_family(family))
+    match family {
+        DeviceFamily::Custom(_) => family.id().into_owned(),
+        _ => family.backend_id().to_owned(),
+    }
 }
 
 fn device_ref_for_tracked(
