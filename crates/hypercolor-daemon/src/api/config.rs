@@ -30,6 +30,7 @@ pub struct SetConfigRequest {
 #[derive(Debug, Deserialize)]
 pub struct ResetConfigRequest {
     pub key: Option<String>,
+    pub live: Option<bool>,
 }
 
 /// `GET /api/v1/config` — Show full effective config.
@@ -95,7 +96,8 @@ pub async fn set_config_value(
         return ApiError::internal(format!("Failed to persist config: {e}"));
     }
 
-    let live_applied = maybe_apply_audio_config_change(&state, Some(&body.key)).await;
+    let live_applied =
+        maybe_apply_audio_config_change(&state, Some(&body.key), body.live.unwrap_or(false)).await;
 
     ApiResponse::ok(serde_json::json!({
         "key": body.key,
@@ -145,7 +147,9 @@ pub async fn reset_config_value(
         return ApiError::internal(format!("Failed to persist config: {e}"));
     }
 
-    let live_applied = maybe_apply_audio_config_change(&state, body.key.as_deref()).await;
+    let live_applied =
+        maybe_apply_audio_config_change(&state, body.key.as_deref(), body.live.unwrap_or(false))
+            .await;
 
     ApiResponse::ok(serde_json::json!({
         "key": body.key,
@@ -200,8 +204,12 @@ fn should_reconfigure_audio_inputs(key: Option<&str>) -> bool {
     key.is_none_or(|value| value == "audio" || value.starts_with("audio."))
 }
 
-async fn maybe_apply_audio_config_change(state: &Arc<AppState>, key: Option<&str>) -> bool {
-    if !should_reconfigure_audio_inputs(key) {
+async fn maybe_apply_audio_config_change(
+    state: &Arc<AppState>,
+    key: Option<&str>,
+    live_requested: bool,
+) -> bool {
+    if !live_requested || !should_reconfigure_audio_inputs(key) {
         return false;
     }
 

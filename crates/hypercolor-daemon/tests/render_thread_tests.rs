@@ -25,6 +25,7 @@ use hypercolor_core::input::{InputData, InputManager, InputSource, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
+use hypercolor_types::audio::AudioData;
 use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::event::{HypercolorEvent, ZoneColors};
 use hypercolor_types::spatial::{
@@ -150,6 +151,47 @@ impl InputSource for MockScreenSource {
     }
 }
 
+struct MockAudioSource {
+    running: bool,
+    audio: AudioData,
+}
+
+impl MockAudioSource {
+    fn new(audio: AudioData) -> Self {
+        Self {
+            running: false,
+            audio,
+        }
+    }
+}
+
+impl InputSource for MockAudioSource {
+    fn name(&self) -> &'static str {
+        "mock_audio"
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        self.running = true;
+        Ok(())
+    }
+
+    fn stop(&mut self) {
+        self.running = false;
+    }
+
+    fn sample(&mut self) -> anyhow::Result<InputData> {
+        if !self.running {
+            return Ok(InputData::None);
+        }
+
+        Ok(InputData::Audio(self.audio.clone()))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running
+    }
+}
+
 fn make_render_state(
     effect_engine: EffectEngine,
     spatial_engine: SpatialEngine,
@@ -246,6 +288,106 @@ async fn render_thread_exits_on_stop() {
     }
 
     rt.shutdown().await.expect("shutdown should succeed");
+}
+
+#[tokio::test]
+async fn render_thread_publishes_audio_level_updates_for_active_effects() {
+    let device_id = DeviceId::new();
+    let mock_config = MockDeviceConfig {
+        name: "Audio Strip".into(),
+        led_count: 10,
+        topology: LedTopology::Strip {
+            count: 10,
+            direction: StripDirection::LeftToRight,
+        },
+        id: Some(device_id),
+    };
+
+    let mut backend = MockDeviceBackend::new().with_device(&mock_config);
+    backend.connect(&device_id).await.expect("connect");
+
+    let mut backend_manager = BackendManager::new();
+    backend_manager.register_backend(Box::new(backend));
+    backend_manager.map_device("mock:audio-strip", "mock", device_id);
+
+    let layout = test_layout(vec![strip_zone("zone_audio", "mock:audio-strip", 10)]);
+
+    let mut effect_engine = EffectEngine::new();
+    let renderer = MockEffectRenderer::solid(32, 64, 255);
+    let metadata = MockEffectRenderer::sample_metadata("audio-event");
+    effect_engine
+        .activate(Box::new(renderer), metadata)
+        .expect("activate");
+
+    let state = make_render_state(effect_engine, SpatialEngine::new(layout), backend_manager);
+
+    let mut audio = AudioData::silence();
+    audio.rms_level = 0.42;
+    audio.beat_detected = true;
+    audio.beat_confidence = 0.9;
+    for value in &mut audio.spectrum[..40] {
+        *value = 0.8;
+    }
+    for value in &mut audio.spectrum[40..130] {
+        *value = 0.4;
+    }
+    for value in &mut audio.spectrum[130..] {
+        *value = 0.2;
+    }
+
+    {
+        let mut input_manager = state.input_manager.lock().await;
+        input_manager.add_source(Box::new(MockAudioSource::new(audio)));
+        input_manager
+            .start_all()
+            .expect("input manager should start");
+    }
+
+    let mut event_rx = state.event_bus.subscribe_all();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    let audio_event = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match event_rx.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::AudioLevelUpdate {
+                        level,
+                        bass,
+                        mid,
+                        treble,
+                        beat,
+                    } = timestamped.event
+                    {
+                        break (level, bass, mid, treble, beat);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before audio level update");
+                }
+            }
+        }
+    })
+    .await
+    .expect("expected audio level update within 2 seconds");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let (level, bass, mid, treble, beat) = audio_event;
+    assert!((level - 0.42).abs() < f32::EPSILON);
+    assert!(bass > mid);
+    assert!(mid > treble);
+    assert!(beat);
 }
 
 // ── Frame Pipeline Tests ────────────────────────────────────────────────────

@@ -335,6 +335,11 @@ impl InputSource for AudioInput {
                         "Audio capture could not start; LightScript audio input will fall back to silence"
                     );
                 } else {
+                    tracing::info!(
+                        input = %self.name,
+                        source = ?self.config.source,
+                        "Audio capture stream started"
+                    );
                     self.stream = Some(stream);
                 }
             }
@@ -389,8 +394,8 @@ fn build_capture_stream(
     reconfigure_analyzer(&analyzer, config, &supported_config);
     let stream_config: cpal::StreamConfig = supported_config.config();
     let channels = usize::from(stream_config.channels.max(1));
-
-    match supported_config.sample_format() {
+    let sample_format = supported_config.sample_format();
+    let stream = match sample_format {
         SampleFormat::I8 => {
             build_stream::<i8>(&device, &stream_config, channels, analyzer, &device_name)
         }
@@ -428,7 +433,18 @@ fn build_capture_stream(
             build_stream::<f64>(&device, &stream_config, channels, analyzer, &device_name)
         }
         sample_format => Err(anyhow!("unsupported audio sample format: {sample_format}")),
-    }
+    }?;
+
+    tracing::info!(
+        source = ?config.source,
+        device = %device_name,
+        sample_rate_hz = supported_config.sample_rate(),
+        channels,
+        sample_format = ?sample_format,
+        "Audio capture stream configured"
+    );
+
+    Ok(stream)
 }
 
 fn reconfigure_analyzer(

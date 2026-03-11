@@ -209,6 +209,8 @@ enum NextWake {
 const IDLE_THROTTLE_SLEEP: Duration = Duration::from_millis(120);
 /// Sleep duration while session policy has output fully suspended.
 const SESSION_SLEEP_THROTTLE_SLEEP: Duration = Duration::from_millis(250);
+/// Emit UI audio summary events at 10 Hz.
+const AUDIO_LEVEL_EVENT_INTERVAL_MS: u32 = 100;
 
 struct FrameInputs {
     audio: AudioData,
@@ -246,6 +248,7 @@ async fn run_pipeline(state: RenderThreadState) {
     let mut idle_black_pushed = false;
     let mut sleep_black_pushed = false;
     let mut next_frame_at = Instant::now();
+    let mut last_audio_level_update_ms = None;
 
     loop {
         let now = Instant::now();
@@ -287,6 +290,7 @@ async fn run_pipeline(state: RenderThreadState) {
             &mut last_tick,
             &mut idle_black_pushed,
             &mut sleep_black_pushed,
+            &mut last_audio_level_update_ms,
         )
         .await;
         skip_decision = frame.next_skip_decision;
@@ -327,14 +331,21 @@ async fn execute_frame(
     last_tick: &mut Instant,
     idle_black_pushed: &mut bool,
     sleep_black_pushed: &mut bool,
+    last_audio_level_update_ms: &mut Option<u32>,
 ) -> FrameExecution {
     let frame_start = Instant::now();
     let delta_secs = last_tick.elapsed().as_secs_f32();
     *last_tick = frame_start;
 
     let output_power = *state.power_state.borrow();
-    if let Some(frame) =
-        maybe_sleep_throttle(state, output_power, recycled_frame, sleep_black_pushed).await
+    if let Some(frame) = maybe_sleep_throttle(
+        state,
+        output_power,
+        recycled_frame,
+        sleep_black_pushed,
+        last_audio_level_update_ms,
+    )
+    .await
     {
         return frame;
     }
@@ -403,6 +414,7 @@ async fn execute_frame(
         canvas,
         frame_num_u32,
         elapsed_ms,
+        last_audio_level_update_ms,
         FrameTiming {
             render_us,
             sample_us,
@@ -530,6 +542,7 @@ async fn maybe_sleep_throttle(
     power_state: OutputPowerState,
     recycled_frame: &mut FrameData,
     sleep_black_pushed: &mut bool,
+    last_audio_level_update_ms: &mut Option<u32>,
 ) -> Option<FrameExecution> {
     if !power_state.sleeping {
         *sleep_black_pushed = false;
@@ -581,6 +594,7 @@ async fn maybe_sleep_throttle(
         canvas,
         frame_num_u32,
         elapsed_ms,
+        last_audio_level_update_ms,
         FrameTiming {
             render_us: 0,
             sample_us,
@@ -699,6 +713,7 @@ fn publish_frame_updates(
     canvas: Canvas,
     frame_number: u32,
     elapsed_ms: u32,
+    last_audio_level_update_ms: &mut Option<u32>,
     timing: FrameTiming,
 ) -> u32 {
     let publish_start = Instant::now();
@@ -714,6 +729,7 @@ fn publish_frame_updates(
         .event_bus
         .spectrum_sender()
         .send(spectrum_from_audio(audio, elapsed_ms));
+    maybe_publish_audio_level_event(state, audio, elapsed_ms, last_audio_level_update_ms);
     let _ = state
         .event_bus
         .canvas_sender()
@@ -727,6 +743,28 @@ fn publish_frame_updates(
         timing,
     });
     micros_u32(publish_start.elapsed())
+}
+
+fn maybe_publish_audio_level_event(
+    state: &RenderThreadState,
+    audio: &AudioData,
+    elapsed_ms: u32,
+    last_audio_level_update_ms: &mut Option<u32>,
+) {
+    if last_audio_level_update_ms.is_some_and(|last_sent| {
+        elapsed_ms.saturating_sub(last_sent) < AUDIO_LEVEL_EVENT_INTERVAL_MS
+    }) {
+        return;
+    }
+
+    *last_audio_level_update_ms = Some(elapsed_ms);
+    state.event_bus.publish(HypercolorEvent::AudioLevelUpdate {
+        level: audio.rms_level,
+        bass: audio.bass(),
+        mid: audio.mid(),
+        treble: audio.treble(),
+        beat: audio.beat_detected,
+    });
 }
 
 fn spectrum_from_audio(audio: &AudioData, timestamp_ms: u32) -> SpectrumData {

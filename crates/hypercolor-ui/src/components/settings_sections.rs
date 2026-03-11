@@ -207,14 +207,14 @@ pub fn AudioSection(
             <AudioVuMeter enabled=enabled />
             <SettingToggle
                 label="Enabled"
-                description="Enable audio capture and spectrum analysis for reactive effects"
+                description="Enable audio capture and spectrum analysis for reactive effects; changes apply after daemon restart"
                 key="audio.enabled"
                 value=enabled
                 on_change=on_change
             />
             <SettingDropdown
                 label="Device"
-                description="Audio source for reactive effects"
+                description="Audio source for reactive effects; changes apply after daemon restart"
                 key="audio.device"
                 value=device
                 options=audio_devices
@@ -506,13 +506,10 @@ pub fn McpSection(
 ) -> impl IntoView {
     let enabled = Signal::derive(move || read_config(config, |cfg| cfg.mcp.enabled));
     let base_path = Signal::derive(move || read_config(config, |cfg| cfg.mcp.base_path.clone()));
-    let stateful_mode =
-        Signal::derive(move || read_config(config, |cfg| cfg.mcp.stateful_mode));
-    let json_response =
-        Signal::derive(move || read_config(config, |cfg| cfg.mcp.json_response));
-    let sse_keep_alive_secs = Signal::derive(move || {
-        read_config(config, |cfg| cfg.mcp.sse_keep_alive_secs as f64)
-    });
+    let stateful_mode = Signal::derive(move || read_config(config, |cfg| cfg.mcp.stateful_mode));
+    let json_response = Signal::derive(move || read_config(config, |cfg| cfg.mcp.json_response));
+    let sse_keep_alive_secs =
+        Signal::derive(move || read_config(config, |cfg| cfg.mcp.sse_keep_alive_secs as f64));
 
     view! {
         <section id="section-mcp" class="pt-5 pb-3 space-y-0">
@@ -579,10 +576,13 @@ pub fn SessionSection(
     let off_timeout =
         Signal::derive(move || read_config(config, |cfg| cfg.session.idle_off_timeout_secs as f64));
     let screen_lock_behavior = Signal::derive(move || {
-        read_config(config, |cfg| sleep_behavior_value(cfg.session.on_screen_lock))
+        read_config(config, |cfg| {
+            sleep_behavior_value(cfg.session.on_screen_lock)
+        })
     });
-    let screen_lock_brightness =
-        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.session.screen_lock_brightness)));
+    let screen_lock_brightness = Signal::derive(move || {
+        read_config(config, |cfg| f64::from(cfg.session.screen_lock_brightness))
+    });
     let screen_lock_fade =
         Signal::derive(move || read_config(config, |cfg| cfg.session.screen_lock_fade_ms as f64));
     let screen_unlock_fade =
