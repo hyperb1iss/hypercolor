@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+/* ◆ SILKCIRCUIT DESIGN TOKENS                                               */
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+@theme {
+  /* ── Accent Colors (SilkCircuit Neon) ── */
+  --color-sc-purple: oklch(0.58 0.29 315);
+  --color-sc-cyan: oklch(0.89 0.16 178);
+  --color-sc-coral: oklch(0.7 0.22 350);
+  --color-sc-yellow: oklch(0.93 0.14 110);
+  --color-sc-green: oklch(0.83 0.22 155);
+  --color-sc-red: oklch(0.65 0.22 25);
+
+  /* ── Surfaces ── */
+  --color-sc-bg-dark: oklch(0.07 0.015 285);
+  --color-sc-bg-base: oklch(0.13 0.02 285);
+  --color-sc-bg-highlight: oklch(0.18 0.025 285);
+  --color-sc-bg-elevated: oklch(0.22 0.03 285);
+
+  /* ── Text ── */
+  --color-sc-fg-primary: oklch(0.96 0.005 110);
+  --color-sc-fg-muted: oklch(0.82 0.02 280);
+  --color-sc-fg-subtle: oklch(0.66 0.02 280);
+
+  /* ── Borders ── */
+  --color-sc-border: oklch(0.28 0.025 285);
+  --color-sc-border-highlight: oklch(0.38 0.04 285);
+
+  /* ── Fonts ── */
+  --font-heading: var(--font-jura), ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--font-exo2), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-space-mono), ui-monospace, monospace;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+/* ◆ BASE STYLES                                                             */
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--color-sc-bg-dark);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 5% 20%, oklch(0.58 0.29 315 / 0.12), transparent 50%),
+    radial-gradient(ellipse 70% 40% at 95% 35%, oklch(0.89 0.16 178 / 0.1), transparent 50%),
+    radial-gradient(ellipse 80% 50% at 10% 55%, oklch(0.7 0.22 350 / 0.08), transparent 50%),
+    radial-gradient(ellipse 70% 40% at 92% 70%, oklch(0.83 0.22 155 / 0.1), transparent 50%),
+    radial-gradient(ellipse 80% 50% at 8% 85%, oklch(0.58 0.29 315 / 0.1), transparent 50%);
+  background-attachment: fixed;
+  color: var(--color-sc-fg-primary);
+  font-family: var(--font-body);
+}
+
+::selection {
+  background-color: oklch(0.58 0.29 315 / 0.3);
+  color: white;
+}
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+/* ◆ UTILITIES                                                               */
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+@utility glow-purple {
+  box-shadow:
+    0 0 20px oklch(0.58 0.29 315 / 0.15),
+    0 0 60px oklch(0.58 0.29 315 / 0.08);
+}
+
+@utility glow-cyan {
+  box-shadow:
+    0 0 20px oklch(0.89 0.16 178 / 0.15),
+    0 0 60px oklch(0.89 0.16 178 / 0.08);
+}
+
+@utility text-gradient-hero {
+  background: linear-gradient(135deg, var(--color-sc-purple), var(--color-sc-cyan));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+@utility glass {
+  background: oklch(0.1 0.02 285 / 0.6);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+}
