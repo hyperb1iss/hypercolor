@@ -78,6 +78,16 @@ impl HypercolorWebViewDelegate {
         self.page_loaded.swap(false, Ordering::AcqRel)
     }
 
+    /// Clear per-navigation state before loading a new page.
+    pub fn reset_navigation_state(&self) {
+        self.frame_ready.store(false, Ordering::Release);
+        self.page_loaded.store(false, Ordering::Release);
+        self.with_last_url_mut(|last_url| {
+            *last_url = None;
+        });
+        self.with_console_messages(VecDeque::clear);
+    }
+
     /// Drain all buffered console messages in FIFO order.
     pub fn drain_console_messages(&self) -> Vec<ConsoleMessage> {
         self.with_console_messages(|messages| messages.drain(..).collect())
@@ -295,5 +305,23 @@ mod tests {
         let drained = delegate.drain_console_messages();
         assert_eq!(drained.len(), 3);
         assert!(delegate.drain_console_messages().is_empty());
+    }
+
+    #[test]
+    fn reset_navigation_state_clears_navigation_tracking() {
+        let delegate = HypercolorWebViewDelegate::new();
+
+        delegate.on_new_frame_ready();
+        delegate.on_page_loaded();
+        delegate.on_url_changed("file:///tmp/effect.html");
+        delegate.on_console_message(&ConsoleLogLevel::Warn, "stale warning");
+
+        delegate.reset_navigation_state();
+
+        assert!(!delegate.is_frame_ready());
+        assert!(!delegate.is_page_loaded());
+        assert_eq!(delegate.last_url(), None);
+        assert!(delegate.drain_console_messages().is_empty());
+        assert_eq!(delegate.frame_count(), 1);
     }
 }

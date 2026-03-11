@@ -218,7 +218,7 @@ impl MidiInput {
         }
         Ok(MidiInputConnection {
             client: self.client,
-            details: InputConnectionDetails::Explicit(iport),
+            details: InputConnectionDetails::Explicit { _port: iport },
             handler_data: handler_data,
         })
     }
@@ -248,15 +248,15 @@ impl MidiInput {
         };
         Ok(MidiInputConnection {
             client: self.client,
-            details: InputConnectionDetails::Virtual(vrt),
+            details: InputConnectionDetails::Virtual { _destination: vrt },
             handler_data: handler_data,
         })
     }
 }
 
 enum InputConnectionDetails {
-    Explicit(InputPort),
-    Virtual(VirtualDestination),
+    Explicit { _port: InputPort },
+    Virtual { _destination: VirtualDestination },
 }
 
 pub struct MidiInputConnection<T> {

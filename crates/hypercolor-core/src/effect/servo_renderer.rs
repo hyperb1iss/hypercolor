@@ -20,7 +20,7 @@ use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
 use reqwest::Url;
 use servo::{
-    DeviceIntPoint, DeviceIntRect, JSValue, JavaScriptEvaluationError, LoadStatus, Preferences,
+    DeviceIntPoint, DeviceIntRect, JSValue, JavaScriptEvaluationError, Preferences,
     RenderingContext, Servo, ServoBuilder, WebView, WebViewBuilder,
 };
 use tracing::{debug, info, trace, warn};
@@ -36,6 +36,7 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const RENDER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
+const UNLOAD_TIMEOUT: Duration = Duration::from_secs(1);
 const RECENT_CONSOLE_SAMPLE_SIZE: usize = 6;
 const CONSOLE_SNIPPET_RADIUS: usize = 1;
 const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
@@ -179,6 +180,10 @@ impl ServoRenderer {
                         self.warned_fallback_frame = false;
                     }
                     Err(error) => {
+                        retire_shared_servo_worker_if_fatal("Servo frame render failed", &error);
+                        if servo_worker_is_fatal_error(&error) {
+                            self.worker = None;
+                        }
                         warn!(%error, "Servo frame render failed");
                         if !self.warned_fallback_frame {
                             warn!("Falling back to the previous completed frame for this effect");
@@ -201,6 +206,9 @@ impl ServoRenderer {
             Err(TryRecvError::Disconnected) => {
                 self.in_flight_render = None;
                 self.worker = None;
+                retire_shared_servo_worker(
+                    "Servo worker disconnected before sending frame response",
+                );
                 warn!("Servo worker disconnected before sending frame response");
                 if !self.warned_fallback_frame {
                     warn!("Falling back to the previous completed frame for this effect");
@@ -232,11 +240,52 @@ impl ServoRenderer {
             }
             Err(error) => {
                 self.worker = None;
+                retire_shared_servo_worker_if_fatal("Failed to queue Servo frame render", &error);
                 warn!(%error, "Failed to queue Servo frame render");
                 if !self.warned_fallback_frame {
                     warn!("Falling back to the previous completed frame for this effect");
                     self.warned_fallback_frame = true;
                 }
+            }
+        }
+    }
+
+    fn drain_in_flight_render(&mut self) {
+        let Some(render) = self.in_flight_render.take() else {
+            return;
+        };
+
+        match render.response_rx.recv_timeout(RENDER_RESPONSE_TIMEOUT) {
+            Ok(Ok(canvas)) => {
+                self.last_canvas = Some(canvas);
+                self.warned_fallback_frame = false;
+                self.warned_stalled_frame = false;
+            }
+            Ok(Err(error)) => {
+                retire_shared_servo_worker_if_fatal(
+                    "Servo frame render failed while draining effect teardown",
+                    &error,
+                );
+                if servo_worker_is_fatal_error(&error) {
+                    self.worker = None;
+                }
+                warn!(%error, "Servo frame render failed while draining effect teardown");
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                retire_shared_servo_worker(
+                    "Timed out waiting for in-flight Servo frame during effect teardown",
+                );
+                warn!(
+                    timeout_ms = RENDER_RESPONSE_TIMEOUT.as_millis(),
+                    "Timed out waiting for in-flight Servo frame during effect teardown"
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                retire_shared_servo_worker(
+                    "Servo worker disconnected while draining effect teardown",
+                );
+                warn!("Servo worker disconnected while draining effect teardown");
+                self.worker = None;
             }
         }
     }
@@ -300,7 +349,10 @@ impl EffectRenderer for ServoRenderer {
             })?;
 
         let worker = acquire_servo_worker(DEFAULT_WIDTH, DEFAULT_HEIGHT)?;
-        worker.load_effect(&runtime_source)?;
+        if let Err(error) = worker.load_effect(&runtime_source) {
+            retire_shared_servo_worker_if_fatal("Servo effect page load failed", &error);
+            return Err(error);
+        }
         self.worker = Some(worker);
         self.html_source = Some(path.clone());
         self.html_resolved_path = Some(runtime_source.clone());
@@ -338,6 +390,16 @@ impl EffectRenderer for ServoRenderer {
     }
 
     fn destroy(&mut self) {
+        self.drain_in_flight_render();
+        if let Some(worker) = self.worker.as_ref() {
+            if let Err(error) = worker.unload_effect() {
+                retire_shared_servo_worker_if_fatal(
+                    "Failed to unload Servo effect page during destroy",
+                    &error,
+                );
+                warn!(%error, "Failed to unload Servo effect page during destroy");
+            }
+        }
         self.worker = None;
         self.pending_scripts.clear();
         self.queued_frame = None;
@@ -475,6 +537,24 @@ impl ServoWorkerClient {
             submitted_at: Instant::now(),
         })
     }
+
+    fn unload_effect(&self) -> Result<()> {
+        let (response_tx, response_rx) = mpsc::sync_channel(1);
+        self.command_tx
+            .send(WorkerCommand::Unload { response_tx })
+            .context("failed to send unload command to Servo worker")?;
+
+        match response_rx.recv_timeout(UNLOAD_TIMEOUT) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => bail!(
+                "timed out waiting for Servo page unload after {}ms",
+                UNLOAD_TIMEOUT.as_millis()
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("Servo worker disconnected before confirming page unload")
+            }
+        }
+    }
 }
 
 /// Worker wrapper that owns the Servo runtime thread.
@@ -586,6 +666,9 @@ enum WorkerCommand {
         html_path: PathBuf,
         response_tx: SyncSender<Result<()>>,
     },
+    Unload {
+        response_tx: SyncSender<Result<()>>,
+    },
     Render {
         scripts: Vec<String>,
         width: u32,
@@ -656,6 +739,10 @@ impl ServoWorkerRuntime {
                     let result = self.load_effect(&html_path);
                     let _ = response_tx.send(result);
                 }
+                WorkerCommand::Unload { response_tx } => {
+                    let result = self.unload_effect();
+                    let _ = response_tx.send(result);
+                }
                 WorkerCommand::Render {
                     scripts,
                     width,
@@ -687,9 +774,14 @@ impl ServoWorkerRuntime {
     }
 
     fn load_effect(&mut self, html_path: &Path) -> Result<()> {
+        if self.loaded_html_path.is_some() {
+            self.unload_effect()
+                .context("failed to unload previous Servo effect page before loading new effect")?;
+        }
+
         let url = file_url_for_path(html_path)?;
         self.loaded_html_path = Some(html_path.to_path_buf());
-        self.delegate.take_page_loaded();
+        self.delegate.reset_navigation_state();
         // Keep the page throttled except for the single daemon-driven render step.
         self.webview.set_throttled(true);
         debug!(url = %url, "Loading Servo effect page");
@@ -713,6 +805,21 @@ impl ServoWorkerRuntime {
                 format_console_message(message, self.loaded_html_path.as_deref())
             );
         }
+        Ok(())
+    }
+
+    fn unload_effect(&mut self) -> Result<()> {
+        if self.loaded_html_path.is_none() {
+            return Ok(());
+        }
+
+        let url = Url::parse("about:blank").context("failed to parse about:blank URL")?;
+        self.delegate.reset_navigation_state();
+        self.webview.set_throttled(true);
+        debug!("Unloading Servo effect page");
+        self.webview.load(url.clone());
+        self.wait_for_load_completion(UNLOAD_TIMEOUT, Some(url.as_str()))?;
+        self.loaded_html_path = None;
         Ok(())
     }
 
@@ -828,8 +935,7 @@ impl ServoWorkerRuntime {
 
         loop {
             self.servo.spin_event_loop();
-            let status_complete = matches!(self.webview.load_status(), LoadStatus::Complete);
-            let loaded = self.delegate.is_page_loaded() || status_complete;
+            let loaded = self.delegate.is_page_loaded();
             let url_matches =
                 expected_url.is_none_or(|url| self.delegate.last_url().as_deref() == Some(url));
             if loaded && url_matches {
@@ -1222,6 +1328,48 @@ fn animation_fps_cap_script(fps_cap: u32) -> String {
     format!("window.__hypercolorFpsCap = {fps_cap};")
 }
 
+fn servo_worker_is_fatal_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("disconnected")
+        || message.contains("timed out waiting for servo page load")
+        || message.contains("timed out waiting for servo page unload")
+        || message.contains("timed out waiting for servo frame response")
+        || message.contains("timed out waiting for javascript callback")
+        || message.contains("failed to send load command to servo worker")
+        || message.contains("failed to send render command to servo worker")
+        || message.contains("failed to send unload command to servo worker")
+}
+
+fn retire_shared_servo_worker_if_fatal(context: &str, error: &anyhow::Error) {
+    if !servo_worker_is_fatal_error(error) {
+        return;
+    }
+    let message = format!("{context}: {error}");
+    retire_shared_servo_worker(&message);
+}
+
+fn retire_shared_servo_worker(reason: &str) {
+    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(None));
+    let mut guard = match slot.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    let Some(mut worker) = guard.take() else {
+        return;
+    };
+    drop(guard);
+
+    let had_command_tx = worker.command_tx.take().is_some();
+    let had_thread_handle = worker.thread_handle.take().is_some();
+    warn!(
+        reason = reason,
+        had_command_tx,
+        had_thread_handle,
+        "Retiring shared Servo worker without shutdown so a fresh worker can be spawned"
+    );
+}
+
 fn acquire_servo_worker(width: u32, height: u32) -> Result<ServoWorkerClient> {
     SERVO_WORKER_EXIT_GUARD.with(|_| {});
     let slot = SERVO_WORKER.get_or_init(|| Mutex::new(None));
@@ -1280,10 +1428,21 @@ mod tests {
         let stopped_clone = Arc::clone(&stopped);
         let thread_handle = thread::spawn(move || {
             while let Ok(command) = command_rx.recv() {
-                if let WorkerCommand::Shutdown { response_tx } = command {
-                    stopped_clone.store(true, Ordering::SeqCst);
-                    let _ = response_tx.send(());
-                    break;
+                match command {
+                    WorkerCommand::Unload { response_tx } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    WorkerCommand::Shutdown { response_tx } => {
+                        stopped_clone.store(true, Ordering::SeqCst);
+                        let _ = response_tx.send(());
+                        break;
+                    }
+                    WorkerCommand::Load { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(()));
+                    }
+                    WorkerCommand::Render { response_tx, .. } => {
+                        let _ = response_tx.send(Ok(solid_canvas(12, 34, 56)));
+                    }
                 }
             }
         });
@@ -1302,12 +1461,14 @@ mod tests {
         Receiver<RecordedRenderCommand>,
         Sender<Result<Canvas>>,
         Receiver<()>,
+        Receiver<()>,
         Arc<AtomicBool>,
     ) {
         let (command_tx, command_rx) = mpsc::channel();
         let (render_tx, render_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
         let (delivered_tx, delivered_rx) = mpsc::channel();
+        let (unload_tx, unload_rx) = mpsc::channel();
         let stopped = Arc::new(AtomicBool::new(false));
         let stopped_clone = Arc::clone(&stopped);
         let thread_handle = thread::spawn(move || {
@@ -1330,6 +1491,10 @@ mod tests {
                         let _ = response_tx.send(result);
                         let _ = delivered_tx.send(());
                     }
+                    WorkerCommand::Unload { response_tx } => {
+                        let _ = unload_tx.send(());
+                        let _ = response_tx.send(Ok(()));
+                    }
                     WorkerCommand::Shutdown { response_tx } => {
                         stopped_clone.store(true, Ordering::SeqCst);
                         let _ = response_tx.send(());
@@ -1350,6 +1515,7 @@ mod tests {
             render_rx,
             result_tx,
             delivered_rx,
+            unload_rx,
             stopped,
         )
     }
@@ -1685,7 +1851,8 @@ mod tests {
 
     #[test]
     fn queued_frames_submit_latest_state_after_in_flight_render_finishes() {
-        let (worker, render_rx, result_tx, delivered_rx, stopped) = spawn_render_test_worker();
+        let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
+            spawn_render_test_worker();
 
         let mut renderer = ServoRenderer::new();
         renderer.worker = Some(worker.client().expect("test worker client"));
@@ -1783,7 +1950,8 @@ mod tests {
 
     #[test]
     fn tick_reuses_last_completed_canvas_while_next_servo_frame_is_pending() {
-        let (worker, render_rx, result_tx, delivered_rx, stopped) = spawn_render_test_worker();
+        let (worker, render_rx, result_tx, delivered_rx, _unload_rx, stopped) =
+            spawn_render_test_worker();
 
         let mut renderer = ServoRenderer::new();
         renderer.worker = Some(worker.client().expect("test worker client"));
@@ -1822,6 +1990,45 @@ mod tests {
         delivered_rx
             .recv_timeout(Duration::from_millis(100))
             .expect("cleanup result delivery ack");
+
+        drop(worker);
+        assert!(stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn destroy_waits_for_in_flight_render_then_unloads_worker_page() {
+        let (worker, render_rx, result_tx, _delivered_rx, unload_rx, stopped) =
+            spawn_render_test_worker();
+
+        let mut renderer = ServoRenderer::new();
+        renderer.worker = Some(worker.client().expect("test worker client"));
+        renderer.initialized = true;
+        renderer.enqueue_bootstrap_scripts();
+
+        let interaction = custom_interaction(&[], &[]);
+        let audio = custom_audio(0.0);
+        let frame = frame_input_with(1.0 / 30.0, 1, &audio, &interaction, 320, 200);
+
+        renderer.tick(&frame).expect("initial tick");
+        let _ = render_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("first render command");
+
+        let release_render = thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            result_tx
+                .send(Ok(solid_canvas(7, 8, 9)))
+                .expect("destroy should drain in-flight render");
+        });
+
+        renderer.destroy();
+
+        unload_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("destroy should unload the active Servo page");
+        release_render
+            .join()
+            .expect("render release helper should not panic");
 
         drop(worker);
         assert!(stopped.load(Ordering::SeqCst));

@@ -2,6 +2,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use hypercolor_core::effect::{EffectEngine, bundled_effects_root, parse_html_effect_metadata};
 use hypercolor_types::audio::AudioData;
@@ -55,9 +57,11 @@ fn render_frames(path: &Path, frame_count: usize) -> Vec<Canvas> {
 
     (0..frame_count)
         .map(|_| {
-            engine
+            let frame = engine
                 .tick(FRAME_DT_SECONDS, &AudioData::silence())
-                .expect("servo tick should produce a frame")
+                .expect("servo tick should produce a frame");
+            thread::sleep(Duration::from_millis(16));
+            frame
         })
         .collect()
 }
@@ -168,6 +172,73 @@ ctx.fillRect(0, 0, canvas.width, canvas.height);
         frames.iter().any(frame_contains_red_pixel),
         "expected at least one frame to contain strong red output from smoke effect"
     );
+}
+
+#[test]
+#[ignore = "requires full Servo runtime and is expensive in CI/dev loops"]
+fn servo_renderer_smoke_renders_temp_webgl_effect() {
+    let tmp = tempdir().expect("tempdir should create");
+    let html_path = tmp.path().join("smoke-webgl.html");
+    let html = r#"<!doctype html>
+<html>
+<body style="margin:0;background:black;">
+<canvas id="fx" width="320" height="200"></canvas>
+<script>
+const canvas = document.getElementById('fx');
+const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
+if (!gl) {
+  throw new Error('WebGL2 not supported');
+}
+gl.viewport(0, 0, canvas.width, canvas.height);
+gl.clearColor(1, 0, 0, 1);
+gl.clear(gl.COLOR_BUFFER_BIT);
+</script>
+</body>
+</html>"#;
+    std::fs::write(&html_path, html).expect("html write should work");
+
+    let frames = render_frames(&html_path, 8);
+    assert!(
+        frames
+            .iter()
+            .all(|canvas| canvas.width() == 320 && canvas.height() == 200)
+    );
+    assert!(
+        frames.iter().any(frame_contains_red_pixel),
+        "expected at least one frame to contain strong red output from temp WebGL effect"
+    );
+}
+
+#[test]
+#[ignore = "requires full Servo runtime and is expensive in CI/dev loops"]
+fn servo_renderer_smoke_activates_generated_webgl_effect_sample() {
+    let frames = render_frames(Path::new("hypercolor/arc-storm.html"), 4);
+    for frame in frames {
+        assert_dimensions(&frame);
+    }
+}
+
+#[test]
+#[ignore = "manual macOS recovery check for fatal WebGL worker retirement"]
+fn servo_renderer_recovers_after_fatal_webgl_activation_failure() {
+    let mut engine = EffectEngine::new();
+    let first = engine.activate_metadata(html_metadata(PathBuf::from(
+        "custom/cellular-automaton.html",
+    )));
+
+    let Err(first_error) = first else {
+        return;
+    };
+    let first_message = first_error.to_string();
+    if !first_message.contains("Disconnected")
+        && !first_message.contains("timed out waiting for Servo page load completion")
+    {
+        return;
+    }
+
+    engine
+        .activate_metadata(html_metadata(PathBuf::from("hypercolor/arc-storm.html")))
+        .expect("Arc Storm should activate with a fresh Servo worker after retirement");
 }
 
 #[test]
