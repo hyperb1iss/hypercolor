@@ -162,7 +162,7 @@ impl QmkProtocol {
 
         for chunk in normalized.chunks(batch_size) {
             let mut packet = QmkPacket::new_zeroed();
-            packet.command = Command::DirectModeSetLeds as u8;
+            packet.command = Command::DirectModeSetLeds.byte();
 
             match self.config.revision {
                 ProtocolRevision::Rev9 | ProtocolRevision::RevB => {
@@ -219,19 +219,19 @@ impl Protocol for QmkProtocol {
 
         // Query protocol version to verify device compatibility.
         let mut version_query = QmkPacket::new_zeroed();
-        version_query.command = Command::GetProtocolVersion as u8;
-        commands.push(command_from_packet(version_query, true));
+        version_query.command = Command::GetProtocolVersion.byte();
+        commands.push(command_from_packet(&version_query, true));
 
         // Switch to Direct mode (mode 1) with full brightness, no EEPROM save.
         let mut set_mode = QmkPacket::new_zeroed();
-        set_mode.command = Command::SetMode as u8;
+        set_mode.command = Command::SetMode.byte();
         set_mode.payload[0] = 0x00; // hue
         set_mode.payload[1] = 0x00; // saturation
         set_mode.payload[2] = 0xFF; // value (brightness)
         set_mode.payload[3] = 0x01; // mode = Direct
         set_mode.payload[4] = SPEED_NORMAL;
         set_mode.payload[5] = 0x00; // save = false
-        commands.push(command_from_packet(set_mode, true));
+        commands.push(command_from_packet(&set_mode, true));
 
         commands
     }
@@ -240,7 +240,7 @@ impl Protocol for QmkProtocol {
         // Restore Solid Color mode (mode 2) so the keyboard reverts to its
         // built-in effect. No EEPROM save — just a session-level restore.
         let mut set_mode = QmkPacket::new_zeroed();
-        set_mode.command = Command::SetMode as u8;
+        set_mode.command = Command::SetMode.byte();
         set_mode.payload[0] = 0x00; // hue
         set_mode.payload[1] = 0xFF; // saturation
         set_mode.payload[2] = 0xFF; // value
@@ -248,7 +248,7 @@ impl Protocol for QmkProtocol {
         set_mode.payload[4] = SPEED_NORMAL;
         set_mode.payload[5] = 0x00; // save = false
 
-        vec![command_from_packet(set_mode, true)]
+        vec![command_from_packet(&set_mode, true)]
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
@@ -331,7 +331,7 @@ impl Protocol for QmkProtocol {
     }
 }
 
-fn command_from_packet(packet: QmkPacket, expects_response: bool) -> ProtocolCommand {
+fn command_from_packet(packet: &QmkPacket, expects_response: bool) -> ProtocolCommand {
     ProtocolCommand {
         data: packet.as_bytes().to_vec(),
         expects_response,

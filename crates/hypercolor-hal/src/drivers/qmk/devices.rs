@@ -27,10 +27,10 @@ pub const VID_DROP: u16 = 0xFEED;
 /// IDOBAO vendor ID.
 pub const VID_IDOBAO: u16 = 0x6964;
 
-/// KBDFans vendor ID.
+/// `KBDFans` vendor ID.
 pub const VID_KBDFANS: u16 = 0x4B42;
 
-/// Cannonkeys vendor ID.
+/// `Cannonkeys` vendor ID.
 pub const VID_CANNONKEYS: u16 = 0xCA04;
 
 /// Glorious vendor ID.
@@ -39,54 +39,54 @@ pub const VID_GLORIOUS: u16 = 0x320F;
 /// Sonix (used by many budget QMK boards).
 pub const VID_SONIX: u16 = 0x0C45;
 
-/// WinChipHead (CH552/CH558 based QMK boards).
+/// `WinChipHead` (CH552/CH558 based QMK boards).
 pub const VID_WCH: u16 = 0x1A86;
 
 // ── Builder functions ────────────────────────────────────────────────────
 
-/// Keychron Q1 (87 keys, RevD).
+/// Keychron Q1 — 87 keys, revision D.
 pub fn build_keychron_q1_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(87, ProtocolRevision::RevD).with_matrix(6, 16),
     ))
 }
 
-/// Keychron Q2 (68 keys, RevD).
+/// Keychron Q2 — 68 keys, revision D.
 pub fn build_keychron_q2_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(68, ProtocolRevision::RevD).with_matrix(5, 15),
     ))
 }
 
-/// Keychron Q3 (full-size, 104 keys, RevD).
+/// Keychron Q3 — full-size, 104 keys, revision D.
 pub fn build_keychron_q3_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(104, ProtocolRevision::RevD).with_matrix(6, 20),
     ))
 }
 
-/// Keychron Q5 (96%, 99 keys, RevD).
+/// Keychron Q5 — 96%, 99 keys, revision D.
 pub fn build_keychron_q5_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(99, ProtocolRevision::RevD).with_matrix(6, 19),
     ))
 }
 
-/// Keychron Q6 (full-size, 108 keys, RevD).
+/// Keychron Q6 — full-size, 108 keys, revision D.
 pub fn build_keychron_q6_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(108, ProtocolRevision::RevD).with_matrix(6, 21),
     ))
 }
 
-/// Keychron V1 (75%, 84 keys, RevD).
+/// Keychron V1 — 75%, 84 keys, revision D.
 pub fn build_keychron_v1_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(84, ProtocolRevision::RevD).with_matrix(6, 16),
     ))
 }
 
-/// ZSA Moonlander (72 keys, RevD, with underglow).
+/// ZSA Moonlander — 72 keys, revision D, with underglow.
 pub fn build_moonlander_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(72, ProtocolRevision::RevD)
@@ -95,21 +95,21 @@ pub fn build_moonlander_protocol() -> Box<dyn Protocol> {
     ))
 }
 
-/// ZSA Voyager (52 keys, RevD).
+/// ZSA Voyager — 52 keys, revision D.
 pub fn build_voyager_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(52, ProtocolRevision::RevD).with_matrix(4, 14),
     ))
 }
 
-/// Drop OLKB Planck (47 LEDs, ortholinear, RevD).
+/// Drop OLKB Planck — 47 LEDs, ortholinear, revision D.
 pub fn build_planck_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(47, ProtocolRevision::RevD).with_matrix(4, 12),
     ))
 }
 
-/// GMMK Pro (Glorious, 100 LEDs, RevD, with underglow).
+/// GMMK Pro (Glorious) — 100 LEDs, revision D, with underglow.
 pub fn build_gmmk_pro_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(100, ProtocolRevision::RevD)
@@ -118,21 +118,21 @@ pub fn build_gmmk_pro_protocol() -> Box<dyn Protocol> {
     ))
 }
 
-/// Generic QMK 60% (62 LEDs, RevD).
+/// Generic QMK 60% — 62 LEDs, revision D.
 pub fn build_generic_60_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(62, ProtocolRevision::RevD).with_matrix(5, 14),
     ))
 }
 
-/// Generic QMK TKL (87 LEDs, RevD).
+/// Generic QMK TKL — 87 LEDs, revision D.
 pub fn build_generic_tkl_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(87, ProtocolRevision::RevD).with_matrix(6, 17),
     ))
 }
 
-/// Generic QMK full-size (104 LEDs, RevD).
+/// Generic QMK full-size — 104 LEDs, revision D.
 pub fn build_generic_fullsize_protocol() -> Box<dyn Protocol> {
     Box::new(QmkProtocol::new(
         QmkKeyboardConfig::new(104, ProtocolRevision::RevD).with_matrix(6, 21),

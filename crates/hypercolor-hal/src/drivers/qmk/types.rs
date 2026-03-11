@@ -29,6 +29,15 @@ pub enum Command {
     DirectModeSetLeds = 0x0A,
 }
 
+impl Command {
+    /// Wire byte for this command.
+    #[must_use]
+    #[allow(clippy::as_conversions)]
+    pub const fn byte(self) -> u8 {
+        self as u8
+    }
+}
+
 // ── Status codes ─────────────────────────────────────────────────────────
 
 /// Response status sentinel values.
@@ -41,11 +50,11 @@ pub const STATUS_END_OF_MESSAGE: u8 = 100;
 /// QMK HID RGB protocol revision negotiated during init.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolRevision {
-    /// Rev9 — single-LED queries, 3 bytes/LED batch, max 20 LEDs.
+    /// Revision 9 — single-LED queries, 3 bytes/LED batch, max 20 LEDs.
     Rev9,
-    /// RevB — batch LED info (8/query), 3 bytes/LED batch, max 20 LEDs.
+    /// Revision B — batch LED info (8/query), 3 bytes/LED batch, max 20 LEDs.
     RevB,
-    /// RevD — batch LED info (8/query), 4 bytes/LED batch (indexed),
+    /// Revision D — batch LED info (8/query), 4 bytes/LED batch (indexed),
     /// max 15 LEDs, underglow separation.
     RevD,
 }
