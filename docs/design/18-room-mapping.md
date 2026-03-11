@@ -1833,7 +1833,7 @@ Transformations:
 
 ## Appendix B: Comparison with Existing Systems
 
-| Feature | Hypercolor | SignalRGB | Artemis | xLights | OpenRGB |
+| Feature | Hypercolor | SignalRGB* | Artemis | xLights | OpenRGB |
 |---------|-----------|-----------|---------|---------|---------|
 | Room-level mapping | Yes (Phase 1) | No | Partial (surface editor) | Yes (3D models) | No |
 | Multi-room | Yes (Phase 2) | No | No | Yes (controllers) | No |

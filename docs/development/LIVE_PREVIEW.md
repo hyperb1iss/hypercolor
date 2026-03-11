@@ -15,7 +15,7 @@ This path is fast to compile and includes native effects (`color_wave`,
 
 ## HTML Effects (Servo)
 
-SignalRGB-style HTML effects require the Servo renderer feature:
+LightScript-compatible HTML effects require the Servo renderer feature:
 
 ```bash
 ./scripts/run-preview-servo.sh

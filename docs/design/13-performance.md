@@ -369,7 +369,7 @@ pub fn select_servo_render_path(system: &SystemState) -> ServoRenderPath {
 }
 ```
 
-The software path for Servo at 320x200 is cheap: Canvas 2D operations at this resolution are CPU-trivial (we measured similar workloads at <2ms on modern CPUs). WebGL effects may be slower in software, but most SignalRGB community effects use Canvas 2D.
+The software path for Servo at 320x200 is cheap: Canvas 2D operations at this resolution are CPU-trivial (we measured similar workloads at <2ms on modern CPUs). WebGL effects may be slower in software, but most community HTML effects use Canvas 2D.
 
 ### GPU Contention Mitigation
 
@@ -457,7 +457,7 @@ impl AsyncReadback {
 **Problem:** A fully-loaded Prism 8 needs 49ms of USB transfer time per frame — that exceeds the 16.6ms frame budget at 60fps. This is a hardware limitation, not a software one.
 
 **Solutions:**
-1. **Reduce to 33fps for USB HID** — SignalRGB defaults Prism 8 to 33fps (30ms budget, still tight for full 8-channel)
+1. **Reduce to 33fps for USB HID** — other engines default Prism 8 to 33fps (30ms budget, still tight for full 8-channel)
 2. **Async fire-and-forget** — The render loop dispatches USB writes to a dedicated I/O thread and moves on. The USB thread sends as fast as the bus allows. If a new frame arrives before the previous one finished transmitting, the old frame is dropped.
 3. **Partial updates** — If only channels 0-3 changed significantly, skip channels 4-7 this frame
 4. **USB 2.0 High Speed** — If the device supports it (HID over High Speed allows 125us micro-frames, 8x faster)

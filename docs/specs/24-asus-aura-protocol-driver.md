@@ -32,7 +32,7 @@ Native driver for ASUS Aura RGB hardware via the `hypercolor-hal` abstraction la
 
 Clean-room implementation derived from publicly available protocol knowledge:
 - OpenRGB's `AsusAuraUSBController`, `ENESMBusController`, and `AsusAuraGPUController` (C++)
-- SignalRGB's ASUS plugin family (JavaScript)
+- Community ASUS plugin implementations (JavaScript)
 - ASUS Armoury Crate reverse-engineering community documentation
 
 ### Ecosystem Map
@@ -671,7 +671,7 @@ Hypercolor reserves `0xAA` (persistent) for explicit user "save to device" opera
 
 Direct-mode behavior splits by controller family:
 - Motherboard/GPU ENE direct writes generally take effect once direct mode is enabled; they do not require a per-frame `0x80A0` write.
-- DRAM variants `DIMM_LED-0102` and `AUDA0-E6K5-0101` require a **per-frame** latch write of `0x01` to register `0x802F` after the color block uploads. This matches the working SignalRGB ENE RAM flow.
+- DRAM variants `DIMM_LED-0102` and `AUDA0-E6K5-0101` require a **per-frame** latch write of `0x01` to register `0x802F` after the color block uploads. This matches the known working ENE RAM flow.
 - OpenRGB still uses `0x80A0 = 0x01` when switching controller mode/state, but not as the steady-state direct-frame commit path.
 
 ### 6.5 Color Byte Order
@@ -780,7 +780,7 @@ Zone channels are stored in the configuration table at the firmware-specific `ch
 RGB-capable DRAM modules may be managed through a hub controller at address `0x77`, but direct address-pool probing must remain available when no remap hub is exposed:
 
 ```
-1. Probe the chipset SMBus adapter only (OpenRGB/SignalRGB parity)
+1. Probe the chipset SMBus adapter only (OpenRGB parity)
 2. Check for optional remap hub at 0x77
 3. If the hub exists, for each DRAM slot (0–7):
    a. Write slot index:   ENE_write(0x77, 0x80F8, slot)
@@ -1639,6 +1639,6 @@ fn smoke_test_asus_aura_motherboard() {
 - `~/dev/OpenRGB/Controllers/AsusAuraUSBController/` — USB motherboard/keyboard/monitor protocol (C++)
 - `~/dev/OpenRGB/Controllers/ENESMBusController/` — ENE SMBus protocol (C++)
 - `~/dev/OpenRGB/Controllers/AsusAuraGPUController/` — Simple GPU controller (C++)
-- `/mnt/windows/.../Signal-x64/Plugins/Asus/` — SignalRGB ASUS plugins (JavaScript)
+- Community ASUS JS driver plugins (reverse-engineering reference)
 - OpenRGB `AsusAuraMouseDevices.h` — Mouse device ID registry
 - OpenRGB `ENESMBusController.h` — ENE register map and zone channel IDs

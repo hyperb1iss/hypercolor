@@ -6,7 +6,7 @@
 
 ## Overview
 
-Hypercolor's configuration system must serve four very different humans: Bliss, who symlinks everything from a dotfiles repo; Jake, who never opens a terminal; Marcus, who exports 15 profiles monthly; and Robin, who just migrated from SignalRGB on Windows and expects magic. The system must be simultaneously git-friendly, web-UI-friendly, migration-proof, and multi-editor-safe.
+Hypercolor's configuration system must serve four very different humans: Bliss, who symlinks everything from a dotfiles repo; Jake, who never opens a terminal; Marcus, who exports 15 profiles monthly; and Robin, who just migrated from Windows and expects magic. The system must be simultaneously git-friendly, web-UI-friendly, migration-proof, and multi-editor-safe.
 
 **Core design principles:**
 
@@ -986,36 +986,36 @@ Import flow:
 4. Save profile to `~/.config/hypercolor/profiles/`
 5. Optionally activate immediately
 
-### SignalRGB Import Wizard
+### LightScript Import Wizard
 
-For users migrating from Windows, Hypercolor can import SignalRGB configuration:
+For users migrating from Windows, Hypercolor can import existing configuration:
 
 ```bash
-hypercolor import --signalrgb /mnt/windows/Users/Stefanie/AppData/Local/VortxEngine/
+hypercolor import --lightscript /mnt/windows/Users/Stefanie/AppData/Local/VortxEngine/
 ```
 
 **What it reads:**
 
-| SignalRGB Source | Hypercolor Target |
+| Source | Hypercolor Target |
 |---|---|
 | `Effects/*.html` | `$XDG_DATA_HOME/hypercolor/effects/community/` |
-| `settings.json` (device layouts) | `~/.config/hypercolor/layouts/imported-signalrgb.toml` |
+| `settings.json` (device layouts) | `~/.config/hypercolor/layouts/imported-lightscript.toml` |
 | `profiles/` | `~/.config/hypercolor/profiles/imported-*.toml` |
 | Device → effect mappings | Best-effort zone assignments in profile |
 
 **What it translates:**
 
 ```rust
-pub struct SignalRGBImporter {
-    /// Parse SignalRGB settings.json for device layouts
+pub struct LightScriptImporter {
+    /// Parse settings.json for device layouts
     fn import_layout(&self, settings: &Path) -> Result<SpatialLayout>;
 
-    /// Copy effect HTML files, strip SignalRGB-specific paths
+    /// Copy effect HTML files, strip platform-specific paths
     fn import_effects(&self, effects_dir: &Path) -> Result<Vec<EffectInfo>>;
 
-    /// Map SignalRGB device names to Hypercolor device IDs
+    /// Map source device names to Hypercolor device IDs
     /// Uses fuzzy matching on device names + VID/PID when available
-    fn map_devices(&self, signalrgb_devices: &[SRGBDevice]) -> Vec<DeviceMapping>;
+    fn map_devices(&self, source_devices: &[SourceDevice]) -> Vec<DeviceMapping>;
 
     /// Generate a migration report
     fn report(&self) -> MigrationReport;
@@ -1032,8 +1032,8 @@ pub struct MigrationReport {
 
 **Known limitations documented in the wizard output:**
 
-- SignalRGB Canvas is always 320x200; Hypercolor matches this by default
-- SignalRGB's `<meta>` control values map directly to Lightscript globals
+- The LightScript canvas is always 320x200; Hypercolor matches this by default
+- The `<meta>` control values map directly to Lightscript globals
 - WebGL effects require Servo renderer (won't work with wgpu path)
 - Screen Ambience effect needs PipeWire reconfiguration for Linux
 - Hardware lighting (Prism Mini `0xBB` commands) needs separate per-device config
@@ -1729,7 +1729,7 @@ hypercolor profile clone evening-sunset --name night-reading  # Duplicate + modi
 
 ### Robin — The Windows Refugee
 
-Robin just installed Linux (CachyOS, on Bliss's recommendation). She has a full SignalRGB setup on her Windows partition and wants to bring it all over.
+Robin just installed Linux (CachyOS, on Bliss's recommendation). She has a full RGB setup on her Windows partition and wants to bring it all over.
 
 **Migration flow:**
 
@@ -1738,17 +1738,17 @@ Robin just installed Linux (CachyOS, on Bliss's recommendation). She has a full 
 sudo mount /dev/nvme0n1p3 /mnt/windows
 
 # Run the import wizard
-hypercolor import --signalrgb /mnt/windows/Users/Robin/AppData/Local/VortxEngine/
+hypercolor import --lightscript /mnt/windows/Users/Robin/AppData/Local/VortxEngine/
 ```
 
 **Wizard output:**
 
 ```
 ╔══════════════════════════════════════════════════════════════════╗
-║                  SignalRGB Import Wizard                         ║
+║                  LightScript Import Wizard                       ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║                                                                  ║
-║  ✦ Scanning SignalRGB installation...                            ║
+║  ✦ Scanning for HTML effects...                                  ║
 ║                                                                  ║
 ║  Effects found:          47                                      ║
 ║  Device configurations:  6                                       ║
@@ -1781,7 +1781,7 @@ hypercolor import --signalrgb /mnt/windows/Users/Robin/AppData/Local/VortxEngine
 ╚══════════════════════════════════════════════════════════════════╝
 ```
 
-Robin opens the web UI, adjusts the spatial layout (SignalRGB's coordinate system maps to 320x200 but zone positions need visual tweaking), and she's running the same effects on Linux within 10 minutes.
+Robin opens the web UI, adjusts the spatial layout (the imported coordinate system maps to 320x200 but zone positions need visual tweaking), and she's running the same effects on Linux within 10 minutes.
 
 ---
 
@@ -1850,7 +1850,7 @@ impl ConfigManager {
     /// Export a single profile
     pub async fn export_profile(&self, id: &str, output: &Path) -> Result<()>;
 
-    /// Import from file (profile, backup, or SignalRGB)
+    /// Import from file (profile, backup, or LightScript)
     pub async fn import(&self, input: &Path, opts: ImportOptions) -> Result<ImportResult>;
 
     /// Resolve XDG paths
@@ -1926,7 +1926,7 @@ hypercolor layout edit <name>                       # Open layout in web editor
 hypercolor export --full --output <path>            # Full backup
 hypercolor export --profile <name> --output <path>  # Single profile
 hypercolor import <path>                            # Import profile/backup
-hypercolor import --signalrgb <path>                # SignalRGB import wizard
+hypercolor import --lightscript <path>               # LightScript import wizard
 
 hypercolor migrate --dry-run                        # Preview pending migrations
 hypercolor migrate                                  # Run all pending migrations

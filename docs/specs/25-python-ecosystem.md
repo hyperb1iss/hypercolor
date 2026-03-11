@@ -5,7 +5,7 @@
 **Status:** Draft
 **Date:** 2026-03-08
 **Projects:** `hypercolor-python`, `hypercolor-homeassistant`, `hypercolor-card`
-**Reference:** Existing SignalRGB stack (`signalrgb-python`, `signalrgb-homeassistant`, `hyper-light-card`)
+**Reference:** Prior stack (`signalrgb-python`, `signalrgb-homeassistant`, `hyper-light-card`)
 
 ---
 
@@ -43,9 +43,9 @@ Hypercolor daemon API on `:9420` — REST + WebSocket with:
 - Optional Bearer token auth (when network-exposed)
 - Standard JSON envelope: `{ data, meta: { api_version, request_id, timestamp } }`
 
-### What's Different From SignalRGB
+### What's Different From the Prior Stack
 
-| Aspect | SignalRGB | Hypercolor |
+| Aspect | Prior Stack | Hypercolor |
 |--------|-----------|------------|
 | API surface | ~15 endpoints | ~60 endpoints |
 | WebSocket | None | 5 channels, binary frames |
@@ -626,9 +626,9 @@ hypercolor-homeassistant/
 └── .github/workflows/ci-cd.yml
 ```
 
-### 4.2 Key Differences From SignalRGB Integration
+### 4.2 Key Differences From Prior Integration
 
-| Aspect | SignalRGB HA | Hypercolor HA |
+| Aspect | Prior HA | Hypercolor HA |
 |--------|-------------|---------------|
 | Coordinator | Multiple ad-hoc coordinators | Single `HypercolorCoordinator` subclass + WS event push |
 | Platforms | Light, Select, Button | Light, Select, Button, Sensor, Switch, Number |
@@ -639,7 +639,7 @@ hypercolor-homeassistant/
 
 ### 4.3 Coordinator
 
-The SignalRGB integration uses raw coordinators per-platform. Hypercolor uses a single smart coordinator backed by WebSocket events.
+The prior integration uses raw coordinators per-platform. Hypercolor uses a single smart coordinator backed by WebSocket events.
 
 ```python
 class HypercolorCoordinator(DataUpdateCoordinator[HypercolorState]):
@@ -736,9 +736,9 @@ class HypercolorCoordinator(DataUpdateCoordinator[HypercolorState]):
 
 #### Per-Device Entities (one set per physical RGB device)
 
-This is the #1 community request from the SignalRGB integration (issue #6) — users want
+This is the #1 community request from the prior HA integration (issue #6) — users want
 individual device control for static colors, adaptive lighting sync, and per-device brightness.
-SignalRGB's API couldn't support this. Hypercolor's daemon exposes full per-device state.
+The previous API couldn't support this. Hypercolor's daemon exposes full per-device state.
 
 **Light: `light.hypercolor_{device_name}`** — individual device control:
 - On/off (enable/disable device output via `PUT /devices/{id}`)
@@ -766,7 +766,7 @@ SignalRGB's API couldn't support this. Hypercolor's daemon exposes full per-devi
 
 #### Per-Device Color Control — The Key Feature
 
-The per-device light entity is where Hypercolor leaps past SignalRGB's HA integration.
+The per-device light entity is where Hypercolor leaps past previous HA integrations.
 Three modes of operation:
 
 **1. Effect-driven (default):**
@@ -948,7 +948,7 @@ bun build src/hypercolor-card.ts --outdir dist --minify --target browser
 
 ### 5.2 Upgrades Over hyper-light-card
 
-| Aspect | hyper-light-card (SignalRGB) | hypercolor-card |
+| Aspect | hyper-light-card (previous) | hypercolor-card |
 |--------|----------------------------|-----------------|
 | Theme | Generic | SilkCircuit neon palette |
 | Devices | Single entity | Multi-device tree view |
@@ -1155,7 +1155,7 @@ Build order matters — the HA integration depends on the client.
 
 6. **Spectrum visualizer in card:** Canvas-based waveform or CSS bar chart? Canvas is smoother but heavier. CSS bars are simpler and may be enough.
 
-7. **monorepo vs polyrepo:** Three separate repos (like SignalRGB stack) or a monorepo? Separate repos match the existing pattern and allow independent versioning.
+7. **monorepo vs polyrepo:** Three separate repos (like the previous stack) or a monorepo? Separate repos match the existing pattern and allow independent versioning.
 
 ---
 
@@ -1170,9 +1170,9 @@ Three separate repos under `~/dev/`:
 
 **Start with `hypercolor-python`** — it's the foundation. Get the async client + models right, then the HA integration and card are mostly wiring.
 
-**Use msgspec** — it's the right tool for 2026. Zero-copy binary decode for WebSocket frames, fast JSON for REST, built-in validation. mashumaro served signalrgb-python well but msgspec is strictly better for this use case.
+**Use msgspec** — it's the right tool for 2026. Zero-copy binary decode for WebSocket frames, fast JSON for REST, built-in validation. mashumaro served the previous Python client well but msgspec is strictly better for this use case.
 
-**WebSocket-first HA integration** — unlike SignalRGB (polling-only), Hypercolor has a rich event system. Use it. The coordinator pattern with WS events + polling fallback gives the best UX with the reliability HA expects.
+**WebSocket-first HA integration** — unlike polling-only predecessors, Hypercolor has a rich event system. Use it. The coordinator pattern with WS events + polling fallback gives the best UX with the reliability HA expects.
 
 **SilkCircuit everywhere** — the CLI, the card, even the HA device icons. This is your design system; lean into it.
 

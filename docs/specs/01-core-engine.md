@@ -52,7 +52,7 @@ pub struct Canvas {
     pixels: Vec<u8>,
 }
 
-/// The default canvas resolution, matching SignalRGB's standard.
+/// The default canvas resolution, matching the LightScript standard.
 pub const DEFAULT_CANVAS_WIDTH: u32 = 320;
 pub const DEFAULT_CANVAS_HEIGHT: u32 = 200;
 
@@ -557,7 +557,7 @@ use std::fmt;
 ///
 /// - `ServoRenderer` -- Embedded Servo browser engine running HTML/Canvas/WebGL
 ///   effects. 3-10ms frame times. Provides full Lightscript API compatibility
-///   for existing SignalRGB effects.
+///   for existing HTML effects.
 ///
 /// # Thread Safety
 ///
@@ -845,7 +845,7 @@ pub struct TimeData {
 /// All normalized values are in [0.0, 1.0] unless otherwise noted.
 #[derive(Debug, Clone)]
 pub struct AudioData {
-    // -- Standard (SignalRGB compatible) --
+    // -- Standard (LightScript compatible) --
 
     /// Overall RMS audio level, 0.0 (silence) to 1.0 (clipping).
     pub level: f32,
@@ -993,7 +993,7 @@ pub struct AudioUniforms {
 /// the full display via PipeWire (Wayland) or xcap (X11), downsamples to
 /// a grid, and publishes the result via triple buffer.
 ///
-/// The grid resolution matches SignalRGB's `engine.zone` interface for
+/// The grid resolution matches the LightScript `engine.zone` interface for
 /// compatibility with existing Screen Ambience effects.
 #[derive(Debug, Clone)]
 pub struct ScreenData {

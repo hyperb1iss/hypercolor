@@ -599,7 +599,7 @@ Each backend implements `DeviceBackend`. Each agent owns one backend module. Aud
 
 **Tests:** Registry scan on test fixture directory, meta tag parsing from sample HTML, package creation/extraction roundtrip, search ranking
 
-### Task 5.3: SignalRGB Compatibility Layer
+### Task 5.3: LightScript Compatibility Layer
 
 **Module:** `crates/hypercolor-core/src/effect/compat/mod.rs`, `lightscript.rs`
 **Spec:** `docs/specs/07-effect-system.md` §10
@@ -607,13 +607,13 @@ Each backend implements `DeviceBackend`. Each agent owns one backend module. Aud
 
 ```rust
 // Lightscript API shim: window.signalrgb polyfill
-// window.engine.audio injection matching SignalRGB's format
+// window.engine.audio injection matching the LightScript format
 // Control decorator parsing (@Slider, @Toggle, @ColorPicker, etc.)
 // HTML meta tag extraction for effect metadata
 // Canvas 2D and WebGL context compatibility notes
 ```
 
-**Tests:** JavaScript polyfill output validation, control decorator parsing from sample effects, audio API shape matching, known SignalRGB effects loading metadata correctly
+**Tests:** JavaScript polyfill output validation, control decorator parsing from sample effects, audio API shape matching, known HTML effects loading metadata correctly
 
 ### Task 5.4: Desktop Integration
 
@@ -718,7 +718,7 @@ Wave 4 ───┬── Task 4.1 (REST API)          ← Wave 3
                │
 Wave 5 ───┬── Task 5.1 (TUI)              ← Wave 4
            ├── Task 5.2 (effect registry)   ← Wave 2
-           ├── Task 5.3 (SignalRGB compat)  ← 5.2
+           ├── Task 5.3 (LightScript compat) ← 5.2
            └── Task 5.4 (desktop integration) ← Wave 4
                │
 Wave 6 ───┬── Task 6.1 (integration tests) ← All

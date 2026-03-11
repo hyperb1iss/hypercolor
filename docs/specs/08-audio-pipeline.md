@@ -1064,8 +1064,8 @@ impl AudioData {
         )
     }
 
-    /// Convert freq[200] to Int8Array values (matching SignalRGB convention).
-    /// SignalRGB stores freq as signed 8-bit: -128 to 127.
+    /// Convert freq[200] to Int8Array values (matching LightScript convention).
+    /// LightScript stores freq as signed 8-bit: -128 to 127.
     fn freq_to_int8_string(&self) -> String {
         self.freq.iter()
             .map(|&f| ((f * 255.0 - 128.0).clamp(-128.0, 127.0)) as i8)
@@ -1085,7 +1085,7 @@ fn float_array_str(arr: &[f32]) -> String {
 
 ### Backward Compatibility
 
-Existing SignalRGB community effects (230+) access the original three fields: `level`, `density`, `width`, and `freq`. These are always populated. All Hypercolor extensions (`bass`, `mel_bands`, `chromagram`, `isOnBeat`, etc.) are additive -- effects that don't reference them are unaffected.
+Existing community HTML effects (230+) access the original three fields: `level`, `density`, `width`, and `freq`. These are always populated. All Hypercolor extensions (`bass`, `mel_bands`, `chromagram`, `isOnBeat`, etc.) are additive -- effects that don't reference them are unaffected.
 
 Effects can detect Hypercolor's extended API:
 

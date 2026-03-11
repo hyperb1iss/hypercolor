@@ -2173,8 +2173,8 @@ Every field has a compile-time default. A fresh install with zero config files s
 | | `port` | `9420` | |
 | | `unix_socket` | `true` | Linux only |
 | | `target_fps` | `60` | |
-| | `canvas_width` | `320` | Matches SignalRGB |
-| | `canvas_height` | `200` | Matches SignalRGB |
+| | `canvas_width` | `320` | LightScript standard |
+| | `canvas_height` | `200` | LightScript standard |
 | | `max_devices` | `32` | |
 | | `log_level` | `"info"` | |
 | | `log_file` | `""` | stderr only |

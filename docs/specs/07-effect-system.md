@@ -32,7 +32,7 @@ The effect system renders visual content to a 320x200 RGBA canvas. Everything do
 | Path | Renderer | Input Format | Use Case |
 |---|---|---|---|
 | **Fast path** | `WgpuRenderer` | `.wgsl` / `.glsl` shaders | Native effects, maximum throughput |
-| **Compat path** | `ServoRenderer` | `.html` (Canvas 2D / WebGL) | SignalRGB community effects, Lightscript |
+| **Compat path** | `ServoRenderer` | `.html` (Canvas 2D / WebGL) | Community HTML effects, Lightscript |
 
 Both paths produce the same output: a `Canvas` struct containing a 320x200 RGBA pixel buffer (256 KB/frame). The effect engine selects the appropriate renderer based on the `EffectSource` variant declared in metadata.
 
@@ -401,7 +401,7 @@ window['palette'] = "Aurora";
 window.update?.();
 ```
 
-The `window.update()` call is optional -- some SignalRGB effects use it to react to control changes, while others simply read globals on each frame.
+The `window.update()` call is optional -- some HTML effects use it to react to control changes, while others simply read globals on each frame.
 
 ---
 
@@ -700,7 +700,7 @@ The universal output type for all renderers.
 ```rust
 /// RGBA pixel buffer. The fundamental output of the effect system.
 ///
-/// Fixed at 320x200 (256 KB). This matches the SignalRGB standard
+/// Fixed at 320x200 (256 KB). This matches the LightScript standard
 /// resolution and keeps readback overhead trivial.
 #[derive(Debug, Clone)]
 pub struct Canvas {
@@ -975,7 +975,7 @@ use std::rc::Rc;
 
 /// HTML/Canvas/WebGL renderer using embedded Servo.
 ///
-/// Runs SignalRGB community effects and Lightscript effects unmodified.
+/// Runs community HTML effects and Lightscript effects unmodified.
 /// Uses `SoftwareRenderingContext` for headless rendering (no GPU
 /// required, though Servo can optionally use GPU compositing).
 pub struct ServoRenderer {
@@ -1061,7 +1061,7 @@ impl ServoRenderer {
     pub fn inject_audio(&mut self, audio: &AudioUniforms) {
         // Build the audio object as a JavaScript expression.
         // The freq array is a Uint8Array (0-255 scaled) for
-        // SignalRGB compatibility.
+        // LightScript compatibility.
         let freq_array: Vec<String> = audio.spectrum
             .iter()
             .map(|v| ((v * 255.0).clamp(0.0, 255.0) as u8).to_string())
@@ -1182,7 +1182,7 @@ pub enum RendererError {
 
 ## 7. HTML Meta Tag Parser
 
-Parses `<meta>` tags from HTML effect files into `ControlDefinition` values. This is the compatibility layer that allows SignalRGB community effects to run unmodified.
+Parses `<meta>` tags from HTML effect files into `ControlDefinition` values. This is the compatibility layer that allows community HTML effects to run unmodified.
 
 ### 7.1 Supported Tags
 
@@ -1355,11 +1355,11 @@ The parser must handle these patterns found in the 100+ community effects:
 | Pattern | Example | Handling |
 |---|---|---|
 | Missing `type` attribute | `<meta property="x" label="X" />` | Skip (not a control) |
-| `type="color"` with `min`/`max` | `<meta ... type="color" min="0" max="360" ...>` | Ignore `min`/`max` (artifact from SignalRGB) |
+| `type="color"` with `min`/`max` | `<meta ... type="color" min="0" max="360" ...>` | Ignore `min`/`max` (artifact from older engines) |
 | Multi-line meta tags | See `fire.html` | Regex matches across whitespace |
 | No `label` attribute | `<meta property="x" type="number" ...>` | Use `property` value as label |
-| `default="0"` for boolean | Common in SignalRGB effects | Parse as `false` |
-| `default="1"` for boolean | Common in SignalRGB effects | Parse as `true` |
+| `default="0"` for boolean | Common in community effects | Parse as `false` |
+| `default="1"` for boolean | Common in community effects | Parse as `true` |
 | Combobox with spaces | `values="Color Shift,Sparkle"` | Split on `,`, trim whitespace |
 | Duplicate `property` ids | Rare, but exists | Last definition wins |
 
@@ -1406,7 +1406,7 @@ Additional texture bindings for audio data:
 
 ### 8.2 WebGL/GLSL Standard Uniforms (Servo Path)
 
-For Three.js and raw WebGL effects running in Servo. These match the Shadertoy/SignalRGB convention:
+For Three.js and raw WebGL effects running in Servo. These match the Shadertoy/LightScript convention:
 
 | Uniform | GLSL Type | Description |
 |---|---|---|
@@ -1426,7 +1426,7 @@ These are injected by the Lightscript SDK's `WebGLEffect` base class. Raw HTML e
 
 ### 8.3 Servo Window Globals (Canvas 2D Path)
 
-For raw HTML/Canvas 2D effects (the SignalRGB-compatible path):
+For raw HTML/Canvas 2D effects (the LightScript-compatible path):
 
 ```javascript
 // Control values -- one global per <meta property="..."> tag

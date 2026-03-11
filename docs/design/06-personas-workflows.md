@@ -943,7 +943,7 @@
 
 ### What Robin Had on Windows
 
-**SignalRGB Profile (years of customization):**
+**Previous Setup (years of customization):**
 - 4 saved profiles: "Daily Driver" (subtle blue gradient), "Gaming" (reactive red/orange), "Movie" (dim ambient), "Off" (hardware standby colors)
 - Spatial layout meticulously configured: every device positioned to match physical location in the case
 - Custom effect parameters tuned: speed = 3.7, wave height = 0.6, palette = "Ocean Dusk"
@@ -968,24 +968,24 @@
 
 ### Dream Features
 
-- **Migration wizard.** "Import from SignalRGB" button. Point it at the SignalRGB config directory. It imports:
+- **Migration wizard.** "Import your setup" button. Point it at the previous config directory. It imports:
   - Device layout (with automatic mapping to Hypercolor device IDs)
   - Effect assignments (with closest-match mapping for effects that have equivalents)
   - Color palettes and custom parameter values
   - Profile names and hotkey assignments
-- **SignalRGB effect compatibility.** Run the actual HTML effect files from SignalRGB's effect library. Hypercolor's Servo renderer should handle them natively since they're just Canvas 2D / WebGL pages.
+- **HTML effect compatibility.** Run the actual HTML effect files from the existing effect library. Hypercolor's Servo renderer should handle them natively since they're just Canvas 2D / WebGL pages.
 - **Familiar UI.** A web interface that feels approachable. Not a terminal. Not a config file. A graphical tool with drag-and-drop, preview, and "Apply" buttons. Robin knows what they want their setup to look like -- the tool should make achieving it obvious.
 - **Strimer support on day one.** This is make-or-break. If Hypercolor can drive Prism S controllers (which have reverse-engineered protocols documented in DRIVERS.md), it instantly becomes the only Linux tool that can control the full setup.
-- **"It looks the same" validation.** A way to compare "what it looked like on SignalRGB" vs "what it looks like on Hypercolor." Side-by-side preview, ideally.
+- **"It looks the same" validation.** A way to compare "what it looked like before" vs "what it looks like on Hypercolor." Side-by-side preview, ideally.
 
 ### Detailed Workflow: Migrating from Windows
 
 ```
 1. Robin still has Windows on another drive. Boots into Windows one last time.
 
-2. Exports SignalRGB data:
-   -> SignalRGB > Settings > Export Configuration
-   -> Saves to USB drive: signalrgb-export.zip
+2. Exports previous RGB data:
+   -> Previous tool > Settings > Export Configuration
+   -> Saves to USB drive: rgb-export.zip
    -> Contains: layouts.json, profiles.json, effects/ folder
 
 3. Boots into Linux Mint. Installs Hypercolor:
@@ -1006,15 +1006,15 @@
    -> "11 of 11 devices detected!" -- Robin's eyes widen
 
 5. Migration wizard:
-   -> "Migrating from SignalRGB? Import your setup!"
-   -> Uploads signalrgb-export.zip
+   -> "Migrating from Windows? Import your setup!"
+   -> Uploads rgb-export.zip
    -> Wizard processes:
-      a. Device matching: maps SignalRGB device IDs to Hypercolor devices
+      a. Device matching: maps source device IDs to Hypercolor devices
          - "ASUS AURA Controller" -> "ASUS TUF Z790 AURA"
          - "Prism S #1" -> "PrismRGB Prism S (16D0:1294) #1"
          - Shows mapping table, lets Robin confirm/adjust
       b. Layout import: recreates spatial positions
-         - Shows before (SignalRGB screenshot) and after (Hypercolor preview)
+         - Shows before (original screenshot) and after (Hypercolor preview)
          - Minor position adjustments needed (different canvas aspect ratio)
       c. Effect mapping:
          - "Neon Rain" -> exact match (same HTML file runs on Hypercolor's Servo renderer)
@@ -1044,12 +1044,12 @@
 
 ### Edge Cases & Pain Points
 
-- **SignalRGB export format.** SignalRGB's export format is undocumented and may change between versions. The migration wizard needs to handle multiple format versions and degrade gracefully when fields are missing.
-- **Effect compatibility is not 100%.** Some SignalRGB effects use proprietary APIs (`SignalRGBPlugin.*`, `device.setImage()` for LCD, etc.). These won't work. The wizard should clearly indicate which effects are compatible, which need adjustment, and which are incompatible.
-- **Corsair LCD content.** On Windows, the iCUE/SignalRGB LCD showed animated content (GIFs, sensor data). Hypercolor would need OpenLinkHub integration and a way to push rendered content to the LCD. This is a separate subsystem.
+- **Import format compatibility.** The export format from previous tools is undocumented and may change between versions. The migration wizard needs to handle multiple format versions and degrade gracefully when fields are missing.
+- **Effect compatibility is not 100%.** Some effects use proprietary APIs (`device.setImage()` for LCD, etc.). These won't work. The wizard should clearly indicate which effects are compatible, which need adjustment, and which are incompatible.
+- **Corsair LCD content.** On Windows, the iCUE LCD showed animated content (GIFs, sensor data). Hypercolor would need OpenLinkHub integration and a way to push rendered content to the LCD. This is a separate subsystem.
 - **EVGA is defunct.** Robin's RTX 3080 FTW3 is an EVGA card. EVGA left the GPU market. OpenRGB support for EVGA cards may not be maintained long-term. Hypercolor should handle "device detected but no longer maintained" gracefully.
 - **Robin is not technical.** They won't debug driver issues, read tracing output, or file GitHub issues with reproduction steps. The UX must be self-healing or at minimum provide actionable error messages: "Your Strimer cable isn't responding. Try: 1. Unplug and replug the USB cable. 2. Check that your user is in the 'plugdev' group."
-- **Dual-boot coexistence.** Robin may keep Windows around for a while. If they boot Windows, iCUE/SignalRGB will reconfigure hardware RGB settings. When they boot back to Linux, Hypercolor needs to re-assert control without getting confused by stale device state.
+- **Dual-boot coexistence.** Robin may keep Windows around for a while. If they boot Windows, iCUE and other RGB tools will reconfigure hardware RGB settings. When they boot back to Linux, Hypercolor needs to re-assert control without getting confused by stale device state.
 
 ---
 
@@ -1222,7 +1222,7 @@ Bathroom motion sensor fires. WLED mirror backlight comes on at 2200K, 10% brigh
 - Corsair, Razer, ASUS, SteelSeries -- all proprietary protocols
 - No official SDKs for hardware control (or SDKs that are Windows-only, like Corsair's)
 - Community reverse-engineering is the only path (OpenRGB, OpenRazer)
-- SignalRGB's effect format is documented but their device plugins are JavaScript without specs
+- The LightScript effect format is documented but device plugins are JavaScript without specs
 - Plugin development requires reading other people's minified code
 - **Who feels this most:** Kai, Bliss
 

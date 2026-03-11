@@ -209,7 +209,7 @@ The authoring experience determines whether Hypercolor grows a creator community
 
 ### 2.1 HTML/Canvas Path (The Familiar Path)
 
-This is the path of least resistance. Anyone who can write a web page can write a Hypercolor effect. The 230+ existing SignalRGB community effects prove the model works.
+This is the path of least resistance. Anyone who can write a web page can write a Hypercolor effect. The 230+ existing community HTML effects prove the model works.
 
 **File structure:**
 ```
@@ -614,7 +614,7 @@ hypercolor-effects/                     # GitHub repository
 name = "Aurora"
 version = "2.1.0"
 description = "Northern lights illuminating your devices"
-author = "SignalRGB"
+author = "Hypercolor"
 license = "MIT"
 categories = ["ambient", "generative"]
 audio_reactive = false
@@ -1182,7 +1182,7 @@ pub struct AudioData {
 const audio = window.engine.audio;
 
 // Basic
-audio.level          // -100 to 0 (dB scale, SignalRGB compat) or 0-1 (Hypercolor mode)
+audio.level          // -100 to 0 (dB scale, LightScript compat) or 0-1 (Hypercolor mode)
 audio.bass           // 0.0 - 1.0
 audio.mid            // 0.0 - 1.0
 audio.treble         // 0.0 - 1.0
@@ -1673,7 +1673,7 @@ Uniform bindings:
 | **Canvas** | The 320x200 RGBA pixel buffer that effects render to |
 | **Spatial sampling** | Extracting LED colors from the canvas at physical LED positions |
 | **Zone** | A group of LEDs belonging to one device channel (e.g., "Fan 1", "Strimer ATX") |
-| **Lightscript** | TypeScript framework for SignalRGB-compatible effect authoring |
+| **Lightscript** | TypeScript framework for LightScript-compatible effect authoring |
 | **FFT** | Fast Fourier Transform -- converts audio time-domain signal to frequency domain |
 | **Mel scale** | Perceptual frequency scale matching human hearing sensitivity |
 | **Chromagram** | 12-bin pitch class distribution (one bin per semitone, octave-folded) |

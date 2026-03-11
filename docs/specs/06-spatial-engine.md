@@ -2490,7 +2490,7 @@ fn apply_canvas_transform(layout: &mut SpatialLayout, transform: &CanvasTransfor
 
 Effects can declare their preferred layout in metadata:
 
-**HTML meta tags (SignalRGB compatibility):**
+**HTML meta tags (LightScript compatibility):**
 ```html
 <meta property="layout_hint" content="vertical_stack" />
 ```

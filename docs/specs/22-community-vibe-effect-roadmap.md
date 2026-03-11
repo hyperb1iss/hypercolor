@@ -1,7 +1,7 @@
 # Community Vibe Effect Roadmap
 
 ## Goal
-Create evolved effects that feel like best-in-class SignalRGB community effects: expressive, playful, instantly recognizable, rich controls, and strong defaults that look good without audio.
+Create evolved effects that feel like best-in-class community HTML effects: expressive, playful, instantly recognizable, rich controls, and strong defaults that look good without audio.
 
 ## Improve, Don't Copy
 - We borrow **motifs and control language**, not code or one-to-one compositions.

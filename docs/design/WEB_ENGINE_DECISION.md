@@ -8,7 +8,7 @@
 
 ## Context
 
-Hypercolor has 236 HTML effects (SignalRGB format) that need to run headlessly at 60fps on a 320x200 canvas with RGBA pixel readback. After three rounds of research — initial survey (8 engines), deep Servo analysis (embedding API, build system, Canvas/WebGL status), and honest effort comparison (DIY vs Servo) — we're going all-in on Servo.
+Hypercolor has 236 HTML effects (LightScript format) that need to run headlessly at 60fps on a 320x200 canvas with RGBA pixel readback. After three rounds of research — initial survey (8 engines), deep Servo analysis (embedding API, build system, Canvas/WebGL status), and honest effort comparison (DIY vs Servo) — we're going all-in on Servo.
 
 ## Why Servo
 

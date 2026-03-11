@@ -1,8 +1,8 @@
 # Creating Great RGB Effects
 
-A practical guide to designing high-quality lighting effects for RGB LED hardware — distilled from analyzing 210 community SignalRGB effects, LED color science research, and the Hypercolor engine's rendering pipeline.
+A practical guide to designing high-quality lighting effects for RGB LED hardware — distilled from analyzing 210 community HTML effects, LED color science research, and the Hypercolor engine's rendering pipeline.
 
-**Audience:** Effect authors building for Hypercolor or SignalRGB-compatible engines.
+**Audience:** Effect authors building for Hypercolor or LightScript-compatible engines.
 
 ---
 
@@ -317,7 +317,7 @@ Adjacent LEDs with different colors blend at distance (pointillism effect). Red-
 
 ### What the Engine Provides
 
-The SignalRGB/Hypercolor engine exposes audio analysis:
+The Hypercolor engine exposes audio analysis:
 - **Beat detection** — boolean pulse on bass hits
 - **Frequency bands** — typically bass, mid, treble energy levels
 - **Overall level** — RMS amplitude
@@ -454,7 +454,7 @@ These are minor issues that affect mid-tone accuracy. The overall pipeline is so
 ## Sources
 
 This guide synthesizes findings from:
-- **210 community SignalRGB effects** (empirical analysis of `effects/community/*.html`)
+- **210 community HTML effects** (empirical analysis of `effects/community/*.html`)
 - **5 builtin reference effects** (API surface and canonical patterns)
 - **Hypercolor engine source** (`crates/hypercolor-types/src/canvas.rs`, `crates/hypercolor-core/src/spatial/sampler.rs`)
 - Color science research documented in:

@@ -33,7 +33,7 @@ Native USB HID driver for PrismRGB and Nollie LED controllers via the `hypercolo
 Clean-room implementation derived from publicly available protocol knowledge:
 - OpenRGB's `ENESMBusInterface` and `LianLiController` implementations (C++)
 - uni-sync Rust crate by EightB1ts
-- Original SignalRGB driver source documentation
+- Original community driver source documentation
 
 ### Controller Family
 
@@ -366,7 +366,7 @@ WRITE → 65 bytes: [0x00, 0xFE, 0x03, ch0_lo, ch0_hi, ch1_lo, ch1_hi, ...]
 
 Note: Query (0xFC 0x03) returns big-endian, but update (0xFE 0x03)
 uses little-endian. This asymmetry is confirmed from the original
-SignalRGB driver source.
+original driver source.
 ```
 
 ### 4.5 Shutdown Sequence

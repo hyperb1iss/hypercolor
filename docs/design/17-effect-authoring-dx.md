@@ -274,9 +274,9 @@ This is the minimum viable effect. If someone can write this, they can make LEDs
 </script>
 ```
 
-That's it. No build step, no imports, no classes, no decorators. Just HTML and the Canvas 2D API. The `speed` variable is injected as a window global from the `<meta>` tag, exactly like SignalRGB does today.
+That's it. No build step, no imports, no classes, no decorators. Just HTML and the Canvas 2D API. The `speed` variable is injected as a window global from the `<meta>` tag, exactly like the LightScript format does today.
 
-This compatibility with the existing SignalRGB effect format is deliberate. The 210+ community effects already in `effects/community/` run unmodified on this path. The Rainbow effect is 66 lines. The Borealis effect uses inline simplex noise. These are the patterns we preserve.
+This compatibility with the existing HTML effect format is deliberate. The 210+ community effects already in `effects/community/` run unmodified on this path. The Rainbow effect is 66 lines. The Borealis effect uses inline simplex noise. These are the patterns we preserve.
 
 ### 2.2 The Lightscript Path (TypeScript + Vite)
 
@@ -458,9 +458,9 @@ export class PlasmaShader extends WebGLEffect {
 
 These are the same uniforms used by lightscript-workshop today. Effect portability is preserved.
 
-### 2.4 SignalRGB Compatibility Layer
+### 2.4 LightScript Compatibility Layer
 
-Hypercolor must run the existing corpus of 210+ community effects and 5 built-in effects without modification. The compatibility layer handles the differences between SignalRGB's Ultralight/Qt WebEngine environment and Hypercolor's Servo renderer.
+Hypercolor must run the existing corpus of 210+ community effects and 5 built-in effects without modification. The compatibility layer handles the differences between the original Ultralight/Qt WebEngine environment and Hypercolor's Servo renderer.
 
 **What the shim provides:**
 
@@ -1235,7 +1235,7 @@ docs.hypercolor.dev
 │   │   ├── color.wgsl
 │   │   ├── audio.wgsl
 │   │   └── math.wgsl
-│   ├── Meta Tag Reference (SignalRGB-compatible)
+│   ├── Meta Tag Reference (LightScript-compatible)
 │   └── Standard Uniforms
 │
 ├── Cookbook

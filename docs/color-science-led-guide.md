@@ -637,7 +637,7 @@ The most visually effective LED application is often the simplest: a single-colo
 
 ### RGB Community & Keyboards
 - [What is the Best RGB Color for Your Keyboard? - Durgod](https://www.durgod.com/blogs/what-is-the-best-rgb-color-for-your-keyboard/)
-- [LED Strip Shows Incorrect Colors - SignalRGB Docs](https://docs.signalrgb.com/troubleshooting/led-strip-wrong-colors/)
+- [LED Strip Shows Incorrect Colors](https://docs.signalrgb.com/troubleshooting/led-strip-wrong-colors/)
 - [Fix RGB Lighting Issues on Keyboards - KeebsForAll](https://keebsforall.com/blogs/mechanical-keyboards-101/fix-rgb-lighting-issues-on-keyboards)
 - [Bias Lighting 101 - KontrolFreek](https://www.kontrolfreek.com/blogs/kfb/bias-lighting-101)
 - [5 Things That Shouldn't Have RGB LEDs - PC Gamer](https://www.pcgamer.com/rgb-led-lighting-controversy/)

@@ -233,7 +233,7 @@ POST   /api/v1/effects/shuffle              # Random effect
   "id": "aurora",
   "name": "Aurora",
   "description": "The colors of the Northern Lights illuminate your devices. v2.0",
-  "author": "SignalRGB",
+  "author": "Hypercolor",
   "engine": "servo",
   "category": "ambient",
   "tags": ["nature", "calm", "gradient"],
@@ -2185,7 +2185,7 @@ When bound to `127.0.0.1` (the default), no authentication is required. The reas
 - The Unix socket has filesystem permissions (`0660`, user + group)
 - D-Bus session bus is already authenticated per the D-Bus spec
 
-This matches the security model of OpenRGB (TCP 6742, no auth), WLED (HTTP, no auth on local network), and SignalRGB (HTTP API, local only by default).
+This matches the security model of OpenRGB (TCP 6742, no auth), WLED (HTTP, no auth on local network), and other RGB tools (HTTP API, local only by default).
 
 ### 9.3 Network Access (API Key)
 

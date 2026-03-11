@@ -942,7 +942,7 @@ Not all USB devices fit the Protocol+Transport pattern. Corsair Phase 1 uses an 
 | Pattern | When | Example |
 |---------|------|---------|
 | **Protocol + Transport (HAL)** | Direct USB access with known wire protocol | Razer, Lian Li, PrismRGB, Corsair Phase 2 |
-| **Bridge Backend (core)** | External service handles USB; we talk HTTP/gRPC | Corsair OpenLinkHub, future SignalRGB bridge |
+| **Bridge Backend (core)** | External service handles USB; we talk HTTP/gRPC | Corsair OpenLinkHub, future external bridges |
 
 ### Bridge Backend Characteristics
 

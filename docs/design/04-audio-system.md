@@ -8,7 +8,7 @@
 
 Audio-reactive lighting transforms sound into color, motion, and rhythm. When the bass drops and every LED in the room detonates in sync -- that is the moment Hypercolor exists to deliver.
 
-This document covers the complete audio pipeline: capturing system audio on Linux, transforming it through DSP into rich frequency/beat/harmonic data, and injecting that data into effects via both the Servo (Lightscript) and wgpu (native shader) paths. The target API surface matches and extends SignalRGB's Lightscript audio model for full effect compatibility.
+This document covers the complete audio pipeline: capturing system audio on Linux, transforming it through DSP into rich frequency/beat/harmonic data, and injecting that data into effects via both the Servo (Lightscript) and wgpu (native shader) paths. The target API surface matches and extends the Lightscript audio model for full effect compatibility.
 
 ### Design Goals
 
@@ -278,12 +278,12 @@ fn db_to_normalized(db: f32, floor: f32, ceiling: f32) -> f32 {
 }
 
 // floor = -80 dB (silence), ceiling = 0 dB (max)
-// Matches SignalRGB's internal scaling
+// Matches the LightScript internal scaling
 ```
 
 ### Frequency Bin Mapping: The 200-Bin Output
 
-SignalRGB provides effects with `engine.audio.freq[200]` -- 200 frequency bins. We must match this format exactly for compatibility.
+The LightScript API provides effects with `engine.audio.freq[200]` -- 200 frequency bins. We must match this format exactly for compatibility.
 
 **Linear-to-logarithmic remapping:**
 
@@ -1323,7 +1323,7 @@ This is the complete data structure injected into effects every frame. It matche
 /// Injected into Servo as `window.engine.audio` and
 /// into wgpu shaders as a uniform buffer.
 pub struct AudioData {
-    // ─── Standard (SignalRGB compatible) ────────────────────
+    // ─── Standard (LightScript compatible) ────────────────────
     /// Overall audio level (dBFS, typically -100 to 0)
     pub level: f32,
     /// Stereo width (0 = mono, 1 = full stereo)
@@ -1461,8 +1461,8 @@ impl AudioData {
         )
     }
 
-    /// Convert freq[200] to Int8Array format (matching SignalRGB)
-    /// SignalRGB stores freq as signed 8-bit: -128 to 127
+    /// Convert freq[200] to Int8Array format (matching LightScript convention)
+    /// LightScript stores freq as signed 8-bit: -128 to 127
     fn freq_to_int8_string(&self) -> String {
         self.freq.iter()
             .map(|&f| ((f * 255.0 - 128.0).clamp(-128.0, 127.0)) as i8)

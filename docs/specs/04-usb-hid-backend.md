@@ -587,7 +587,7 @@ WRITE → 65 bytes
 
 Note: Query (0xFC 0x03) returns big-endian, but update (0xFE 0x03)
 uses little-endian. This asymmetry is confirmed from the original
-SignalRGB driver source.
+original driver source.
 ```
 
 ```rust

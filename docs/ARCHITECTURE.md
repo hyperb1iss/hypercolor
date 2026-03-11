@@ -6,7 +6,7 @@
 
 ## Vision
 
-Hypercolor is what SignalRGB would be if it were open source, cross-platform, and built by people who actually use Linux. A daemon-first lighting engine that runs HTML/Canvas effects at 60fps, samples pixels at LED positions, and pushes colors to every RGB device in your setup — WLED strips, Philips Hue bulbs, and raw USB HID devices like PrismRGB.
+Hypercolor is the open-source, Linux-native RGB lighting engine that doesn't exist yet. A daemon-first lighting engine that runs HTML/Canvas effects at 60fps, samples pixels at LED positions, and pushes colors to every RGB device in your setup — WLED strips, Philips Hue bulbs, and raw USB HID devices like PrismRGB.
 
 **Core premise:** Effects are web pages. A 320×200 canvas renders visual effects (shaders, animations, particle systems). A spatial mapping engine samples that canvas at each LED's position. Color data flows to hardware over multiple transport protocols. The entire system is controllable via a gorgeous web UI, a snappy TUI, a scriptable CLI, or pure headless daemon mode.
 
@@ -29,7 +29,7 @@ Hypercolor is what SignalRGB would be if it were open source, cross-platform, an
 │  │  │  wgpu Path      │  │  Servo Path                        │  │  │
 │  │  │  (WGSL/GLSL)    │  │  (HTML/Canvas/WebGL)               │  │  │
 │  │  │  Native shaders │  │  Lightscript API compatibility     │  │  │
-│  │  │  1000s fps      │  │  Runs SignalRGB effects unmodified │  │  │
+│  │  │  1000s fps      │  │  Runs HTML effects unmodified     │  │  │
 │  │  └────────┬────────┘  └──────────────┬─────────────────────┘  │  │
 │  │           └──────────┬───────────────┘                        │  │
 │  │                      │ RGBA pixel buffer (320×200)            │  │
@@ -160,7 +160,7 @@ hypercolor/
 │   ├── native/                         # wgpu WGSL/GLSL shaders
 │   ├── custom/                         # User's Lightscript effects
 │   ├── builtin/                        # Stock effects
-│   └── community/                      # SignalRGB community effects
+│   └── community/                      # Community HTML effects
 │
 └── resources/                          # Runtime assets
     ├── servo/                          # Servo resource files (UA stylesheet, etc.)
@@ -253,7 +253,7 @@ The daemon runs the core engine. TUI/CLI connect via Unix socket. Web frontend v
 
 ### Dual-Path Architecture
 
-Mirrors SignalRGB's approach (Ultralight for Canvas 2D, Qt WebEngine for WebGL):
+Mirrors the dual-engine approach (fast path for Canvas 2D, full engine for WebGL):
 
 #### Path 1: wgpu Native Shaders (Fast Path)
 
@@ -283,7 +283,7 @@ At 320×200, readback is 256KB/frame — trivially fast. wgpu abstracts Vulkan/O
 
 #### Path 2: Servo Embedded (Compatibility Path)
 
-For running existing SignalRGB HTML effects and Lightscript effects unmodified.
+For running existing HTML effects and Lightscript effects unmodified.
 
 ```rust
 pub struct ServoRenderer {
@@ -347,7 +347,7 @@ impl ServoRenderer {
 
 Effects declare their parameters via metadata. The system must support two formats:
 
-**HTML meta tags (SignalRGB compatibility):**
+**HTML meta tags (LightScript compatibility):**
 ```html
 <meta property="speed" label="Speed" type="number" min="1" max="10" default="5" />
 <meta property="palette" label="Palette" type="combobox" values="Aurora,Rainbow,Neon" default="Aurora" />
@@ -618,7 +618,7 @@ pub struct ScreenInput {
 }
 ```
 
-Captures screen content, downsamples to effect canvas resolution. Used for ambient lighting (SignalRGB's "Screen Ambience" effect equivalent).
+Captures screen content, downsamples to effect canvas resolution. Used for ambient lighting ("Screen Ambience" style effects).
 
 ### Keyboard State
 
@@ -771,7 +771,7 @@ Servo is a git dependency (not on crates.io). Requires pinned revision + matchin
 - Servo integration: headless HTML/Canvas rendering
 - Lightscript API shim (inject controls + audio into window globals)
 - Parse `<meta>` tags for effect metadata/controls
-- Run existing SignalRGB HTML effects
+- Run existing HTML effects
 - Web UI: Axum + embedded SvelteKit with effect browser + live preview
 
 ### Phase 3: Full Frontend Suite
@@ -796,7 +796,7 @@ Servo is a git dependency (not on crates.io). Requires pinned revision + matchin
 | Decision | Choice | Why |
 |---|---|---|
 | **Language** | Rust | Performance (60fps render loop), safety (USB HID), ecosystem (wgpu, Servo, Ratatui) |
-| **Effect renderer** | wgpu + Servo dual path | Native performance for new effects + compatibility with 230 existing SignalRGB effects |
+| **Effect renderer** | wgpu + Servo dual path | Native performance for new effects + compatibility with 230 existing HTML effects |
 | **Web UI framework** | SvelteKit (not Leptos/Dioxus) | Rich Canvas/WebGL ecosystem needed for spatial editor; effects are literally HTML — they render natively in a browser UI |
 | **Web server** | Axum | tokio-native, first-class WebSocket, serves embedded SPA |
 | **Plugin system** | Compile-time traits → Wasm later | Ship fast with zero overhead; add runtime extensibility when community demands it |
@@ -804,5 +804,5 @@ Servo is a git dependency (not on crates.io). Requires pinned revision + matchin
 | **Audio** | cpal + spectrum-analyzer | Cross-platform capture, efficient FFT |
 | **IPC** | tokio broadcast/watch channels | Multi-consumer events + latest-value state — perfect for real-time LED data |
 | **Config format** | TOML | Rust ecosystem standard, human-readable |
-| **Canvas resolution** | 320×200 | SignalRGB standard; 256KB/frame readback is negligible |
+| **Canvas resolution** | 320×200 | LightScript standard; 256KB/frame readback is negligible |
 | **License** | MIT/Apache-2.0 (dual) | Maximum openness, GPL-2.0 components isolated behind process boundaries |

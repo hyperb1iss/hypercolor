@@ -140,7 +140,7 @@ servo = ["dep:libservo"]
 
 ### 6.2 — HTML Meta Tag Parser
 
-Parse `<meta>` tags from SignalRGB HTML effects to extract:
+Parse `<meta>` tags from HTML effects to extract:
 - Title, description, publisher
 - Control definitions (type, min, max, default, label)
 - Category detection
@@ -186,7 +186,7 @@ Minimal implementation — we don't need navigation, history, cookies, etc.
 
 ### 6.5 — Lightscript API Shim
 
-Inject SignalRGB-compatible runtime into each effect via JS evaluation:
+Inject LightScript-compatible runtime into each effect via JS evaluation:
 
 ```javascript
 window.engine = {

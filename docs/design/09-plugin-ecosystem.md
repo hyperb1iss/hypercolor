@@ -42,7 +42,7 @@ Hypercolor's plugin system exists because no core team can support every RGB con
 | **Zed** | WIT-based Wasm extensions | WIT interface contracts, capability-based permissions, `extension.toml` manifest |
 | **Nushell** | stdio JSON-RPC plugins | Process isolation, language-agnostic, plugin registry with signatures |
 | **Bevy** | Compile-time `Plugin` trait + `App::add_plugins()` | Zero-overhead trait-based plugins, builder pattern, feature flags |
-| **SignalRGB** | JS device drivers + HTML effects | Separate effect authoring from device communication, meta-tag driven UI |
+| **LightScript engines** | JS device drivers + HTML effects | Separate effect authoring from device communication, meta-tag driven UI |
 | **OpenRGB** | Qt C++ plugins (DLL/.so) | Plugin categories (effects, hardware sync, scheduling), SDK bindings |
 
 ---
@@ -1203,7 +1203,7 @@ async fn test_graceful_disconnect() {
 | **Cookbook** | Common patterns: mDNS discovery, chunked USB writes, rate limiting, error recovery |
 | **Architecture Guide** | How the host calls your plugin, threading model, memory layout |
 | **Examples** | Annotated source of every first-party plugin |
-| **Migration Guide** | Porting SignalRGB JS device plugins to Hypercolor |
+| **Migration Guide** | Porting JS device plugins to Hypercolor |
 | **Troubleshooting** | Common Wasm build issues, debugging with DWARF, profiling |
 
 ### 7.6 Example Plugins
@@ -2010,13 +2010,13 @@ $ hypercolor dev
 
 4. **Office hours:** Monthly live stream where the core team answers plugin development questions. Record and publish as searchable archive.
 
-### 14.6 The SignalRGB Migration Path
+### 14.6 The JS Plugin Migration Path
 
-A significant growth vector: helping SignalRGB device plugin authors port their JavaScript drivers to Hypercolor.
+A significant growth vector: helping existing JS device plugin authors port their drivers to Hypercolor.
 
-**SignalRGB JS → Hypercolor Rust mapping:**
+**JS Plugin → Hypercolor Rust mapping:**
 
-| SignalRGB API | Hypercolor Equivalent |
+| JS Plugin API | Hypercolor Equivalent |
 |---|---|
 | `device.write(data, len)` | `host.usb_hid_write(data)` (gRPC bridge) |
 | `device.read(data, len, timeout)` | `host.usb_hid_read(timeout)` (gRPC bridge) |
@@ -2032,7 +2032,7 @@ A significant growth vector: helping SignalRGB device plugin authors port their 
 4. Test with `hypercolor dev` and the device simulator
 5. Validate with real hardware
 
-Over 200 SignalRGB device plugins exist. Each one ported is a new class of hardware supported on Linux.
+Over 200 community device plugins exist in the JS ecosystem. Each one ported is a new class of hardware supported on Linux.
 
 ---
 

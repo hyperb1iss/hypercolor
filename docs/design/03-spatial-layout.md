@@ -673,7 +673,7 @@ when your strip is horizontal. But a radial pulse effect looks better when zones
 "Screen Ambience" effect needs zones arranged to match physical monitor positions. A music visualizer
 might want all zones stacked vertically for a spectrum bar layout.
 
-SignalRGB handles this by giving each effect its own independent layout. Hypercolor takes a smarter
+Some engines handle this by giving each effect its own independent layout. Hypercolor takes a smarter
 approach.
 
 ### Architecture: Global Layout + Per-Effect Overrides
@@ -796,7 +796,7 @@ saved per-effect and persisted in the profile.
 Effects can declare layout preferences in their metadata:
 
 ```html
-<!-- SignalRGB compatibility -->
+<!-- LightScript compatibility -->
 <meta property="layout_hint" content="vertical_stack" />
 
 <!-- Hypercolor native -->
@@ -2100,12 +2100,12 @@ Bliss's Layout:
 ```
 
 **Bliss's pain points that Hypercolor solves:**
-- SignalRGB's layout editor is clunky for 12 devices -- Hypercolor's snap/align makes it fast
-- Per-effect layouts in SignalRGB require redoing the entire layout -- Hypercolor's override system
+- Traditional layout editors are clunky for 12 devices -- Hypercolor's snap/align makes it fast
+- Per-effect layouts in other engines require redoing the entire layout -- Hypercolor's override system
   applies transforms to the global layout
-- Room-scale WLED strips aren't natively supported in SignalRGB -- Hypercolor treats them as
+- Room-scale WLED strips aren't natively supported in most engines -- Hypercolor treats them as
   first-class citizens
-- No live preview while editing in SignalRGB -- Hypercolor shows real-time effect colors on zones
+- No live preview while editing in other tools -- Hypercolor shows real-time effect colors on zones
 
 ---
 
@@ -2212,7 +2212,7 @@ Effects designed for PC-scale (6 devices) may look wrong at room-scale (30 devic
    This is configurable per-layout. The performance impact is minimal (256KB → 1MB per frame).
 
 **Design implication:** The canvas resolution should not be hardcoded at 320x200. It should be
-configurable, with 320x200 as the default for SignalRGB compatibility and higher resolutions
+configurable, with 320x200 as the default for LightScript compatibility and higher resolutions
 available for multi-room setups.
 
 ```rust

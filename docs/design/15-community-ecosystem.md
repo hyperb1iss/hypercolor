@@ -192,7 +192,7 @@ Adopt the **Contributor Covenant v2.1** -- the de facto standard for open source
 
 | Community | Size | Why They Care | Entry Strategy |
 |---|---|---|---|
-| **r/linux_gaming** | 600K+ | RGB on Linux is a known pain point | "I built SignalRGB for Linux" post |
+| **r/linux_gaming** | 600K+ | RGB on Linux is a known pain point | "Open-source RGB lighting for Linux" post |
 | **r/pcmasterrace** | 7M+ | RGB enthusiasts, setup showcases | Demo videos of effects running on Linux |
 | **r/homeassistant** | 500K+ | Smart home + RGB integration | HA integration announcement |
 | **r/WLED** | 30K+ | LED strip enthusiasts, already open source | Native WLED DDP support |
@@ -484,22 +484,22 @@ original_url = "https://..."
 
 **Credit is non-negotiable.** If an effect is ported from another platform, the original author MUST be credited. If the original license doesn't permit redistribution, the effect cannot be included.
 
-### 3.6 Porting SignalRGB Effects: Legal Considerations
+### 3.6 Porting HTML Effects: Legal Considerations
 
 **The landscape:**
-- SignalRGB effects are HTML files. Many are authored by community members, not WhirlwindFX.
+- LightScript effects are HTML files. Many are authored by community members.
 - Community effects often have no explicit license. This is legally ambiguous.
 - WhirlwindFX's built-in effects are proprietary.
 
 **Policy:**
 
-1. **Built-in SignalRGB effects:** Do NOT port. These are proprietary to WhirlwindFX. Period.
+1. **Built-in proprietary effects:** Do NOT port. These are proprietary to their respective owners. Period.
 2. **Community effects with explicit open-source licenses:** Port freely with attribution.
 3. **Community effects with no license:** Contact the author. Request permission and a license grant. Document the permission in the effect's `effect.toml`.
 4. **Effects from the Lightscript Workshop or similar open frameworks:** Check the framework license. If MIT/Apache/similar, ports are fine with attribution.
 5. **Inspired-by effects:** Writing a new effect that produces a similar visual result is always fine. You can't copyright a visual style. Just don't copy code.
 
-**"Compatibility, not piracy."** The Servo renderer can RUN SignalRGB effects, but the marketplace should contain properly licensed content. Users can point Hypercolor at their own SignalRGB effect files -- that's their prerogative.
+**"Compatibility, not piracy."** The Servo renderer can RUN existing HTML effects, but the marketplace should contain properly licensed content. Users can point Hypercolor at their own effect files -- that's their prerogative.
 
 ---
 
@@ -864,11 +864,11 @@ WLED is the most natural ally. It's already open source, already has a massive c
 
 No other project offers this combination:
 
-1. **HTML effects engine.** Effects are web pages. The entire web platform is your creative canvas. Write effects in HTML/CSS/Canvas/WebGL/Three.js. The same format used by SignalRGB's 230+ community effects.
+1. **HTML effects engine.** Effects are web pages. The entire web platform is your creative canvas. Write effects in HTML/CSS/Canvas/WebGL/Three.js. Compatible with the 230+ community LightScript effects.
 
 2. **Dual-path rendering.** wgpu for maximum performance (native shaders at 1000+ fps). Servo for maximum compatibility (run existing HTML effects unmodified). Choose per-effect.
 
-3. **Lightscript compatibility.** The only open-source engine that can run SignalRGB community effects with minimal or no modification.
+3. **Lightscript compatibility.** The only open-source engine that can run existing community HTML effects with minimal or no modification.
 
 4. **Rust performance + safety.** 60fps render loop, zero-copy frame delivery, safe USB HID access, no GC pauses, no Python GIL.
 
@@ -890,7 +890,7 @@ docs.hypercolor.dev (mdBook)
 │   ├── Installation
 │   ├── Quick Start (5-minute guide)
 │   ├── Your First Setup
-│   └── Migrating from SignalRGB
+│   └── Migrating from Windows
 │
 ├── User Guide
 │   ├── Configuration Reference
@@ -919,7 +919,7 @@ docs.hypercolor.dev (mdBook)
 │   ├── Lightscript API Reference
 │   ├── Performance Optimization
 │   ├── Publishing to the Marketplace
-│   └── Porting SignalRGB Effects
+│   └── Porting HTML Effects
 │
 ├── Plugin Development Guide
 │   ├── Plugin Architecture Overview
@@ -987,7 +987,7 @@ docs.hypercolor.dev (mdBook)
 
 | Month | Video | Purpose |
 |---|---|---|
-| Launch | "Hypercolor: SignalRGB for Linux" (5 min) | Project introduction, demo reel |
+| Launch | "Hypercolor: Open-Source RGB for Linux" (5 min) | Project introduction, demo reel |
 | +1 | "Setting Up Hypercolor with WLED" (10 min) | Most common use case |
 | +2 | "Create Your First Effect" (15 min) | Effect authoring tutorial |
 | +3 | "Hypercolor + OpenRGB: Full Setup" (10 min) | Complete desktop RGB |
@@ -997,18 +997,18 @@ docs.hypercolor.dev (mdBook)
 
 **Demo GIFs:** Every effect, every feature, every device should have a demo GIF in the docs. RGB is visual -- show, don't tell.
 
-### 7.5 Migrating from SignalRGB Guide
+### 7.5 Migrating from Windows Guide
 
 A dedicated guide for the primary migration path:
 
 1. **Inventory your devices** -- Which ones work with OpenRGB/Hypercolor?
-2. **Export your effects** -- Copy HTML files from SignalRGB's effect directory
+2. **Export your effects** -- Copy HTML effect files from the previous tool's effect directory
 3. **Set up Hypercolor** -- Install, configure devices, import effects
 4. **Recreate your layout** -- Spatial layout editor walkthrough
 5. **Known differences** -- What works differently, what's not supported yet
 6. **Getting help** -- Discord, GitHub, community resources
 
-This guide is a strategic asset. Every SignalRGB user who considers Linux is a potential Hypercolor user.
+This guide is a strategic asset. Every Windows RGB user who considers Linux is a potential Hypercolor user.
 
 ---
 
@@ -1045,7 +1045,7 @@ The README is the most important marketing asset. It should:
 
 | Platform | Content |
 |---|---|
-| **Reddit (r/linux)** | "I built an open-source SignalRGB alternative for Linux" (demo GIF + story) |
+| **Reddit (r/linux)** | "I built an open-source RGB lighting engine for Linux" (demo GIF + story) |
 | **Reddit (r/rust)** | "Hypercolor: wgpu + Servo for real-time RGB LED control" (technical focus) |
 | **Reddit (r/pcmasterrace)** | "RGB on Linux that doesn't suck" (visual focus, demo video) |
 | **Hacker News** | "Show HN: Hypercolor -- HTML effects engine for RGB LEDs, written in Rust" |
@@ -1303,7 +1303,7 @@ No funding needed. The project is a passion project by Bliss, developed in perso
 | **"More GitHub stars than Artemis"** | Year 2 | Overtaking closest competitor |
 | **"Hardware manufacturer acknowledges us"** | Year 2 | Industry recognition |
 | **"Default RGB recommendation for Linux"** | Year 3 | Category leadership |
-| **"SignalRGB users cite us as reason to try Linux"** | Year 5 | Platform-shifting influence |
+| **"Windows RGB users cite us as reason to try Linux"** | Year 5 | Platform-shifting influence |
 
 ---
 
@@ -1326,7 +1326,7 @@ Q2: Hardware Expansion
 ├── AUR package
 ├── "Good first issue" program launches
 ├── First external contributor
-└── Lightscript compatibility demo (run SignalRGB effects)
+└── Lightscript compatibility demo (run HTML effects)
 
 Q3: Web Compatibility
 ├── v0.3 (Servo integration + Web UI + Lightscript API)

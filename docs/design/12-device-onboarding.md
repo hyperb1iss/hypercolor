@@ -26,7 +26,7 @@
 
 ## 1. Design Philosophy
 
-Onboarding is make-or-break. Most users will tolerate exactly one failure before going back to Windows and SignalRGB. The entire flow must feel like plugging in a USB stick — the system notices, does the work, and shows you the result.
+Onboarding is make-or-break. Most users will tolerate exactly one failure before going back to Windows and proprietary tools. The entire flow must feel like plugging in a USB stick — the system notices, does the work, and shows you the result.
 
 ### Core Principles
 
