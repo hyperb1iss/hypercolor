@@ -35,6 +35,7 @@ export default effect('Cyber Descent', shader, {
     // City
     buildingHeight: num('Building Height', [1, 10], 5),
     buildingFill: num('Building Fill', [0, 100], 20, { tooltip: 'Surface glow density for RGB' }),
+    rgbSmoothing: num('RGB Smoothing', [0, 100], 60, { tooltip: 'Softens thin building detail for LED layouts' }),
     neonFlash: num('Neon Flash', [0, 100], 50),
     streetLights: num('Street Lights', [0, 100], 50),
 

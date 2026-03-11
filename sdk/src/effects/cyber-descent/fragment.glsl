@@ -20,6 +20,7 @@ uniform float iCameraRoll;       // 0–100, 50 = level
 uniform float iCameraYaw;        // 0–100, 50 = forward
 uniform float iBuildingHeight;   // 1–10
 uniform float iBuildingFill;     // 0–100
+uniform float iRgbSmoothing;     // 0–100
 uniform float iNeonFlash;        // 0–100
 uniform float iStreetLights;     // 0–100
 uniform float iColorIntensity;   // 0–100
@@ -33,6 +34,7 @@ uniform float iPanWidth;         // 0–100
 float cSpeed, cZoom;
 float cPitch, cRoll, cYaw;
 float cBuildingHeight, cBuildingFill;
+float cRgbSmooth;
 float cNeonFlash, cStreetLights;
 float cColorInt, cColorSat, cLightInt, cFogDens;
 float cPanSpeed, cPanWidth;
@@ -70,6 +72,7 @@ void normalizeControls() {
     cYaw           = (iCameraYaw - 50.0) / 50.0;     // -1 to +1
     cBuildingHeight = iBuildingHeight / 5.0;          // 0.2–2.0
     cBuildingFill  = iBuildingFill / 100.0;           // 0–1
+    cRgbSmooth     = iRgbSmoothing / 100.0;           // 0–1
     cNeonFlash     = iNeonFlash / 50.0;               // 0–2
     cStreetLights  = iStreetLights / 50.0;            // 0–2
     cColorInt      = iColorIntensity / 50.0;          // 0–2
@@ -298,6 +301,13 @@ float noise(vec2 p) {
     );
 }
 
+float repeatedBand(float coord, float period, float width, float softness) {
+    float scaled = coord / max(period, 0.0001);
+    float stripe = abs(fract(scaled) - 0.5);
+    float aa = max(fwidth(scaled), 0.015) * (1.0 + 3.5 * softness);
+    return 1.0 - smoothstep(width, width + aa, stripe);
+}
+
 // ── Raymarching ─────────────────────────────────────────────────
 vec4 castRay(vec3 eye, vec3 ray, vec2 center) {
     vec2 block = floor(eye.xy);
@@ -387,15 +397,20 @@ vec4 castRay(vec3 eye, vec3 ray, vec2 center) {
 
 // ── Building windows ────────────────────────────────────────────
 vec3 window(float z, vec2 pos, vec2 id) {
-    float windowSize = 0.03 + 0.12 * hash1(id + 0.1);
+    float windowSize = (0.03 + 0.12 * hash1(id + 0.1)) * mix(1.0, 2.4, cRgbSmooth);
     float baseProb = 0.3 + 0.8 * hash1(id + 0.2);
     float windowProb = baseProb - cBuildingFill * 0.4;
-    float depth = z / windowSize;
+    float depth = z / max(windowSize, 0.0001);
     float level = floor(depth);
     vec3 colorA = mix(windowColorA, windowColorB, hash3(id));
     vec3 colorB = mix(windowColorA, windowColorB, hash3(id + 0.1));
     vec3 color = mix(colorA, colorB, hash1(id, level));
-    color *= 0.3 + 0.7 * smoothstep(0.1, 0.5, noise(20.0 * pos + 100.0 * hash1(level)));
+    float facadeNoiseFreq = mix(20.0, 7.0, cRgbSmooth);
+    color *= 0.45 + 0.55 * smoothstep(
+        0.15,
+        0.55,
+        noise(facadeNoiseFreq * pos + 60.0 * hash1(level))
+    );
 
     float windowMask = smoothstep(
         windowProb - 0.2,
@@ -404,9 +419,11 @@ vec3 window(float z, vec2 pos, vec2 id) {
     );
 
     // Ambient surface glow
-    vec3 surfaceGlow = mix(windowColorA, fogColor, 0.6) * cBuildingFill * 0.3;
+    vec3 surfaceGlow = mix(windowColorA, fogColor, 0.6) * cBuildingFill * mix(0.3, 0.45, cRgbSmooth);
 
-    vec3 windowColor = color * windowMask * (0.5 - 0.5 * cos(tau * depth));
+    float bandWidth = mix(0.18, 0.34, cRgbSmooth);
+    float windowBand = repeatedBand(z, windowSize, bandWidth, cRgbSmooth);
+    vec3 windowColor = color * windowMask * windowBand;
     return windowColor + surfaceGlow;
 }
 
@@ -453,7 +470,7 @@ vec3 addSign(vec3 color, vec3 pos, float side, vec2 id) {
 
     vec2 center = vec2(0.2, -0.4) + vec2(0.6, -0.8) * signHash.xy;
     vec2 p = mix(pos.xz, pos.yz, s);
-    float halfWidth = 0.04 + 0.06 * signHash.w;
+    float halfWidth = (0.04 + 0.06 * signHash.w) * mix(1.0, 1.75, cRgbSmooth);
 
     float charCount = floor(1.0 + 8.0 * hash1(id + 0.5));
     if (center.y - p.y > 2.0 * halfWidth * (charCount + 1.0)) {
@@ -461,6 +478,7 @@ vec3 addSign(vec3 color, vec3 pos, float side, vec2 id) {
         charCount = floor(2.0 + 12.0 * hash1(id + 0.7));
         id += 0.05;
     }
+    charCount = max(1.0, floor(mix(charCount, max(2.0, charCount * 0.65), cRgbSmooth)));
 
     vec3 signColor = mix(signColorA, signColorB, hash3(id + 0.5));
     vec3 outlineColor = mix(signColorA, signColorB, hash3(id + 0.6));
@@ -478,42 +496,39 @@ vec3 addSign(vec3 color, vec3 pos, float side, vec2 id) {
     vec2 halfSize = vec2(halfWidth, halfWidth * charCount);
     center.y -= halfSize.y;
     float outline = length(max(abs(p - center) - halfSize, 0.0)) / halfWidth;
-    color *= smoothstep(0.1, 0.4, outline);
+    float outlineAA = max(fwidth(outline), 0.02) * (1.0 + 2.5 * cRgbSmooth);
+    color *= smoothstep(0.1, 0.4 + outlineAA, outline);
 
     vec2 charPos = 0.5 * (p - center + halfSize) / halfWidth;
     vec2 charId = id + 0.05 + 0.1 * floor(charPos);
-    float flicker = hash1(charId);
-    flicker = step(0.93, flicker);
-    flicker = 1.0 - flicker * step(0.96, hash1(charId, iTime));
+    float blinkSeed = hash1(charId);
+    float randomBlink = step(0.93, blinkSeed);
+    randomBlink = 1.0 - randomBlink * step(0.96, hash1(charId, iTime));
+    float softBlink = 0.72 + 0.28 * sin(
+        tau * hash1(charId + 0.3) + iTime * (1.5 + 2.5 * hash1(charId + 0.4))
+    );
+    float flicker = mix(randomBlink, softBlink, cRgbSmooth);
 
     float char_ = -3.5 + 8.0 * noise(id + 6.0 * charPos);
     charPos = fract(charPos);
-    char_ *= smoothstep(0.0, 0.4, charPos.x) * smoothstep(1.0, 0.6, charPos.x);
-    char_ *= smoothstep(0.0, 0.4, charPos.y) * smoothstep(1.0, 0.6, charPos.y);
+    float charAA = max(max(fwidth(charPos.x), fwidth(charPos.y)), 0.02) * (1.0 + 2.0 * cRgbSmooth);
+    float charMaskX = smoothstep(0.0, 0.4 + charAA, charPos.x)
+                    * (1.0 - smoothstep(0.6 - charAA, 1.0, charPos.x));
+    float charMaskY = smoothstep(0.0, 0.4 + charAA, charPos.y)
+                    * (1.0 - smoothstep(0.6 - charAA, 1.0, charPos.y));
+    char_ *= charMaskX * charMaskY;
     color = mix(
         color,
         signColor,
-        flash * flicker * step(outline, 0.01) * clamp(char_, 0.0, 1.0)
+        flash * flicker * (1.0 - smoothstep(0.01, 0.01 + outlineAA, outline)) * clamp(char_, 0.0, 1.0)
     );
 
-    outline = smoothstep(0.0, 0.2, outline) * smoothstep(0.5, 0.3, outline);
+    outline = smoothstep(0.0, 0.2 + outlineAA, outline)
+            * (1.0 - smoothstep(0.3 - outlineAA, 0.5 + outlineAA, outline));
     return mix(color, outlineColor, flash * outline);
 }
 
-// ── Main ────────────────────────────────────────────────────────
-void main() {
-    // Normalize all UI controls to shader-internal ranges
-    normalizeControls();
-
-    // Initialize camera, fog, and color settings
-    initializeSettings();
-
-    // Apply color saturation and intensity
-    windowColorA *= cColorSat * cColorInt;
-    windowColorB *= cColorSat * cColorInt;
-    signColorA   *= cColorSat * cColorInt;
-    signColorB   *= cColorSat * cColorInt;
-
+vec3 renderScene(vec2 fragCoord) {
     // Camera position along flight path
     vec2 center = -speed * iTime * cameraDir.xy;
 
@@ -539,7 +554,7 @@ void main() {
     vec3 rolledRight = right * cosRoll + up * sinRoll;
     vec3 rolledUp    = up * cosRoll - right * sinRoll;
 
-    vec2 xy = 2.0 * gl_FragCoord.xy - iResolution.xy;
+    vec2 xy = 2.0 * fragCoord - iResolution.xy;
     vec3 ray = normalize(
         xy.x * rolledRight + xy.y * rolledUp + zoom * forward * iResolution.y
     );
@@ -596,6 +611,30 @@ void main() {
         float c = clamp(dot(vec3(0.4, 0.3, 0.4), color), 0.0, 1.0);
         c = 1.0 - pow(1.0 - pow(c, 2.0), 4.0);
         color = vec3(c);
+    }
+
+    return color;
+}
+
+// ── Main ────────────────────────────────────────────────────────
+void main() {
+    // Normalize all UI controls to shader-internal ranges
+    normalizeControls();
+
+    // Initialize camera, fog, and color settings
+    initializeSettings();
+
+    // Apply color saturation and intensity
+    windowColorA *= cColorSat * cColorInt;
+    windowColorB *= cColorSat * cColorInt;
+    signColorA   *= cColorSat * cColorInt;
+    signColorB   *= cColorSat * cColorInt;
+
+    vec3 color = renderScene(gl_FragCoord.xy);
+    if (cRgbSmooth > 0.001) {
+        vec2 aaOffset = vec2(0.42, 0.58) * cRgbSmooth;
+        vec3 shifted = renderScene(gl_FragCoord.xy + aaOffset);
+        color = mix(color, 0.5 * (color + shifted), 0.65 * cRgbSmooth);
     }
 
     fragColor = vec4(color, 1.0);
