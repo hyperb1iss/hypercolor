@@ -76,6 +76,20 @@ pub async fn set_config_value(
     let parsed_value = serde_json::from_str::<serde_json::Value>(&body.value)
         .unwrap_or_else(|_| serde_json::Value::String(body.value.clone()));
 
+    if get_json_path(&root, &body.key).is_some_and(|current| current == &parsed_value) {
+        info!(
+            key = %body.key,
+            live_requested = body.live.unwrap_or(false),
+            "Skipping config update because value is unchanged"
+        );
+        return ApiResponse::ok(serde_json::json!({
+            "key": body.key,
+            "value": parsed_value,
+            "live": false,
+            "path": manager.path().display().to_string(),
+        }));
+    }
+
     if !set_json_path(&mut root, &body.key, parsed_value.clone()) {
         return ApiError::validation(format!("Invalid config key path: {}", body.key));
     }

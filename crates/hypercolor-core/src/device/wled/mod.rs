@@ -25,9 +25,23 @@ pub use e131::{
 pub use scanner::{WledKnownTarget, WledScanner};
 
 use std::net::IpAddr;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+
+static WLED_INFO_HTTP_CLIENT: LazyLock<Result<reqwest::Client, String>> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| error.to_string())
+});
+
+fn wled_info_http_client() -> Result<&'static reqwest::Client> {
+    WLED_INFO_HTTP_CLIENT
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("Failed to build shared WLED HTTP client: {error}"))
+}
 
 /// Fetch and parse `/json/info` from a WLED device over HTTP.
 ///
@@ -35,10 +49,7 @@ use anyhow::{Context, Result};
 /// to avoid duplicating HTTP client construction and JSON parsing logic.
 async fn fetch_wled_info(ip: IpAddr) -> Result<backend::WledDeviceInfo> {
     let url = format!("http://{ip}/json/info");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .context("Failed to build HTTP client")?;
+    let client = wled_info_http_client()?;
 
     let resp = client
         .get(&url)
