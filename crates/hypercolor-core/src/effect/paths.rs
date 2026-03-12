@@ -4,10 +4,31 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
-/// Return the bundled `effects/` root in the repository.
+use crate::config::paths::data_dir;
+
+/// Return the installed bundled effects directory.
+///
+/// Resolution order:
+/// 1. `$XDG_DATA_HOME/hypercolor/effects/bundled/` (installed location)
+/// 2. Repository `effects/` directory (development fallback via `CARGO_MANIFEST_DIR`)
 #[must_use]
 pub fn bundled_effects_root() -> PathBuf {
+    let installed = data_dir().join("effects").join("bundled");
+    if installed.is_dir() {
+        return installed;
+    }
+
+    // Development fallback — resolves to repo root effects/ at compile time
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../effects")
+}
+
+/// Return the user effects directory.
+///
+/// Defaults to `$XDG_DATA_HOME/hypercolor/effects/user/`
+/// (typically `~/.local/share/hypercolor/effects/user/`).
+#[must_use]
+pub fn user_effects_dir() -> PathBuf {
+    data_dir().join("effects").join("user")
 }
 
 /// Resolve an HTML source path to an existing path on disk.
@@ -15,6 +36,7 @@ pub fn bundled_effects_root() -> PathBuf {
 /// Accepts either:
 /// - absolute file paths
 /// - paths relative to bundled `effects/`
+/// - paths relative to user effects directory
 /// - paths relative to the current working directory
 ///
 /// # Errors
@@ -31,7 +53,10 @@ pub fn resolve_html_source_path(path: &Path) -> Result<PathBuf> {
         );
     }
 
-    let mut candidates = vec![bundled_effects_root().join(path)];
+    let mut candidates = vec![
+        bundled_effects_root().join(path),
+        user_effects_dir().join(path),
+    ];
     if let Ok(current_dir) = std::env::current_dir() {
         candidates.push(current_dir.join(path));
     }
@@ -44,7 +69,7 @@ pub fn resolve_html_source_path(path: &Path) -> Result<PathBuf> {
     }
 
     bail!(
-        "could not resolve HTML effect source '{}'; expected relative to bundled effects root or current directory",
+        "could not resolve HTML effect source '{}'; searched bundled, user, and current directories",
         path.display()
     );
 }
@@ -55,16 +80,27 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{bundled_effects_root, resolve_html_source_path};
+    use super::{bundled_effects_root, resolve_html_source_path, user_effects_dir};
 
     #[test]
-    fn bundled_effects_root_ends_with_effects() {
-        assert_eq!(
-            bundled_effects_root()
-                .file_name()
-                .and_then(|value| value.to_str()),
-            Some("effects")
+    fn bundled_effects_root_returns_valid_path() {
+        let root = bundled_effects_root();
+        // In dev, falls back to repo effects/; in prod, uses XDG data dir
+        let name = root.file_name().and_then(|v| v.to_str());
+        assert!(
+            name == Some("effects") || name == Some("bundled"),
+            "expected 'effects' or 'bundled', got {name:?}"
         );
+    }
+
+    #[test]
+    fn user_effects_dir_ends_with_user() {
+        let dir = user_effects_dir();
+        assert_eq!(
+            dir.file_name().and_then(|v| v.to_str()),
+            Some("user")
+        );
+        assert!(dir.to_string_lossy().contains("hypercolor"));
     }
 
     #[test]

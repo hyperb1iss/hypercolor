@@ -12,6 +12,7 @@ PREFIX="${HOME}/.local"
 BIN_DIR="${PREFIX}/bin"
 DATA_DIR="${PREFIX}/share/hypercolor"
 UI_DIR="${DATA_DIR}/ui"
+EFFECTS_DIR="${DATA_DIR}/effects/bundled"
 APP_DIR="${PREFIX}/share/applications"
 BASH_COMPLETION_DIR="${PREFIX}/share/bash-completion/completions"
 ZSH_COMPLETION_DIR="${PREFIX}/share/zsh/site-functions"
@@ -148,6 +149,15 @@ install_user_files() {
   install -d "${UI_DIR}"
   cp -R "${ROOT_DIR}/crates/hypercolor-ui/dist/." "${UI_DIR}/"
 
+  rm -rf "${EFFECTS_DIR}"
+  install -d "${EFFECTS_DIR}"
+  if [[ -d "${ROOT_DIR}/effects/hypercolor" ]]; then
+    cp -R "${ROOT_DIR}/effects/hypercolor/." "${EFFECTS_DIR}/"
+    info "installed bundled effects into ${EFFECTS_DIR}"
+  else
+    warn "no built effects found at effects/hypercolor/; run 'just effects-build' first"
+  fi
+
   render_desktop_entry "${APP_DIR}/hypercolor.desktop"
   install_completions
 }
@@ -252,6 +262,7 @@ configure_service
 
 info "installed user binaries into ${BIN_DIR}"
 info "installed web UI into ${UI_DIR}"
+info "installed bundled effects into ${EFFECTS_DIR}"
 info "desktop launcher: ${APP_DIR}/hypercolor.desktop"
 info "systemd user unit: ${SYSTEMD_USER_DIR}/hypercolor.service"
 

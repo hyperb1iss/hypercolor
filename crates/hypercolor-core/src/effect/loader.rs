@@ -49,14 +49,23 @@ impl HtmlDiscoveryReport {
 }
 
 /// Returns the default effect search roots plus any extra config roots.
+///
+/// Search order:
+/// 1. Bundled effects (`$XDG_DATA_HOME/hypercolor/effects/bundled/` or repo `effects/`)
+/// 2. User effects (`$XDG_DATA_HOME/hypercolor/effects/user/`)
+/// 3. Any extra directories from `[effect_engine] extra_effect_dirs` in config
 #[must_use]
 pub fn default_effect_search_paths(extra_dirs: &[PathBuf]) -> Vec<PathBuf> {
     let bundled = bundled_effects_root();
+    let user = super::paths::user_effects_dir();
 
     let mut deduped = Vec::new();
     let mut seen = HashSet::new();
 
-    for path in std::iter::once(bundled).chain(extra_dirs.iter().cloned()) {
+    for path in [bundled, user]
+        .into_iter()
+        .chain(extra_dirs.iter().cloned())
+    {
         let normalized = normalize_path(&path);
         if seen.insert(normalized) {
             deduped.push(path);
