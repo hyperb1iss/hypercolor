@@ -352,6 +352,11 @@ impl App {
 
     /// Render the full TUI frame.
     fn render(&self, frame: &mut Frame) {
+        use ratatui::layout::Rect;
+        use ratatui::style::{Modifier, Style};
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::Paragraph;
+
         let area = frame.area();
 
         // Chrome renders the shell and returns the content area
@@ -362,8 +367,35 @@ impl App {
             screen.render(frame, content_area);
         }
 
-        // Auto-dismiss stale notifications (> 5 seconds)
-        // (checked on next tick, not here — render is pure)
+        // Render notification toast (centered, overlays content bottom)
+        if let Some((notif, _)) = &self.notification {
+            let color = match notif.level {
+                NotificationLevel::Success => crate::theme::success(),
+                NotificationLevel::Error => crate::theme::error(),
+                NotificationLevel::Warning => crate::theme::warning(),
+                NotificationLevel::Info => crate::theme::accent_primary(),
+            };
+            let icon = match notif.level {
+                NotificationLevel::Success => "\u{2714} ",
+                NotificationLevel::Error => "\u{2718} ",
+                NotificationLevel::Warning => "\u{26A0} ",
+                NotificationLevel::Info => "\u{2139} ",
+            };
+            let text = format!(" {icon}{} ", notif.message);
+            #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+            let width = (text.len() as u16).min(area.width.saturating_sub(4));
+            let x = area.x + (area.width.saturating_sub(width)) / 2;
+            let y = area.y + area.height.saturating_sub(3);
+
+            let toast = Paragraph::new(Line::from(Span::styled(
+                text,
+                Style::default()
+                    .fg(crate::theme::bg_base())
+                    .bg(color)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            frame.render_widget(toast, Rect::new(x, y, width, 1));
+        }
     }
 }
 
