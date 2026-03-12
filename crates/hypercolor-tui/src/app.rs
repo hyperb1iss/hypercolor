@@ -11,10 +11,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::action::Action;
 use crate::chrome::Chrome;
+use crate::client::rest::DaemonClient;
 use crate::component::Component;
 use crate::event::{Event, EventReader};
 use crate::screen::ScreenId;
-use crate::state::{AppState, ConnectionStatus, Notification};
+use crate::state::{AppState, ConnectionStatus, ControlValue, Notification, NotificationLevel};
 
 /// Top-level application that owns all screens and drives the event loop.
 pub struct App {
@@ -38,6 +39,8 @@ pub struct App {
     action_tx: mpsc::UnboundedSender<Action>,
     /// Action receiver (drained each frame).
     action_rx: mpsc::UnboundedReceiver<Action>,
+    /// REST client for sending commands to the daemon.
+    client: DaemonClient,
     /// Cancellation token for the data bridge.
     data_cancel: CancellationToken,
     /// Daemon host.
@@ -52,6 +55,8 @@ impl App {
         let (action_tx, action_rx) = mpsc::unbounded_channel();
         let screens = crate::views::create_screens();
 
+        let client = DaemonClient::new(&host, port);
+
         Self {
             active_screen: ScreenId::Dashboard,
             previous_screen: None,
@@ -63,6 +68,7 @@ impl App {
             notification: None,
             action_tx,
             action_rx,
+            client,
             data_cancel: CancellationToken::new(),
             host,
             port,
@@ -180,6 +186,7 @@ impl App {
     }
 
     /// Process a single action, updating state and forwarding to components.
+    #[allow(clippy::too_many_lines)]
     fn process_action(&mut self, action: &Action) {
         match action {
             Action::Quit => self.running = false,
@@ -238,12 +245,77 @@ impl App {
                 self.state.spectrum = Some(spectrum.as_ref().clone());
             }
 
+            // ── Commands → daemon API ─────────────────────────
+            Action::ApplyEffect(effect_id) => {
+                self.spawn_command({
+                    let client = self.client.clone();
+                    let id = effect_id.clone();
+                    async move {
+                        client.apply_effect(&id, None).await?;
+                        Ok(Action::Notify(Notification {
+                            message: format!("Applied effect: {id}"),
+                            level: NotificationLevel::Success,
+                        }))
+                    }
+                });
+            }
+            Action::ToggleFavorite(effect_id) => {
+                let is_fav = self.state.favorites.contains(effect_id);
+                self.spawn_command({
+                    let client = self.client.clone();
+                    let id = effect_id.clone();
+                    async move {
+                        client.toggle_favorite(&id, is_fav).await?;
+                        Ok(Action::Notify(Notification {
+                            message: if is_fav {
+                                format!("Removed from favorites: {id}")
+                            } else {
+                                format!("Added to favorites: {id}")
+                            },
+                            level: NotificationLevel::Info,
+                        }))
+                    }
+                });
+            }
+            Action::UpdateControl(control_id, value) => {
+                self.spawn_command({
+                    let client = self.client.clone();
+                    let id = control_id.clone();
+                    let json_value = control_value_to_json(value);
+                    async move {
+                        client.update_control(&id, &json_value).await?;
+                        Ok(Action::Tick) // silent success, no notification
+                    }
+                });
+            }
+            Action::ResetControls => {
+                self.spawn_command({
+                    let client = self.client.clone();
+                    async move {
+                        client.reset_controls().await?;
+                        Ok(Action::Notify(Notification {
+                            message: "Controls reset to defaults".to_string(),
+                            level: NotificationLevel::Info,
+                        }))
+                    }
+                });
+            }
+
             // ── Notifications ───────────────────────────────
             Action::Notify(notif) => {
                 self.notification = Some((notif.clone(), Instant::now()));
             }
             Action::DismissNotification => {
                 self.notification = None;
+            }
+
+            // ── Tick: auto-dismiss notifications ─────────────
+            Action::Tick => {
+                if let Some((_, created)) = &self.notification
+                    && created.elapsed() > Duration::from_secs(5)
+                {
+                    self.notification = None;
+                }
             }
 
             _ => {}
@@ -255,6 +327,27 @@ impl App {
         {
             let _ = self.action_tx.send(follow_up);
         }
+    }
+
+    /// Spawn an async command that sends a follow-up action on completion.
+    fn spawn_command<F>(&self, fut: F)
+    where
+        F: std::future::Future<Output = anyhow::Result<Action>> + Send + 'static,
+    {
+        let tx = self.action_tx.clone();
+        tokio::spawn(async move {
+            match fut.await {
+                Ok(action) => {
+                    let _ = tx.send(action);
+                }
+                Err(e) => {
+                    let _ = tx.send(Action::Notify(Notification {
+                        message: format!("Command failed: {e}"),
+                        level: NotificationLevel::Error,
+                    }));
+                }
+            }
+        });
     }
 
     /// Render the full TUI frame.
@@ -271,5 +364,16 @@ impl App {
 
         // Auto-dismiss stale notifications (> 5 seconds)
         // (checked on next tick, not here — render is pure)
+    }
+}
+
+/// Convert a `ControlValue` to a JSON value for the REST API.
+fn control_value_to_json(value: &ControlValue) -> serde_json::Value {
+    match value {
+        ControlValue::Float(v) => serde_json::json!(v),
+        ControlValue::Integer(v) => serde_json::json!(v),
+        ControlValue::Boolean(v) => serde_json::json!(v),
+        ControlValue::Color(c) => serde_json::json!(c),
+        ControlValue::Text(s) => serde_json::json!(s),
     }
 }

@@ -23,6 +23,12 @@ impl DaemonClient {
         }
     }
 
+    /// The base URL for the daemon.
+    #[must_use]
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// Fetch the daemon's current state.
     pub async fn get_status(&self) -> Result<DaemonState> {
         self.get_data("/status").await
@@ -92,6 +98,17 @@ impl DaemonClient {
             .send()
             .await
             .with_context(|| "Failed to update control")?;
+        Ok(())
+    }
+
+    /// Reset all controls on the active effect to their defaults.
+    pub async fn reset_controls(&self) -> Result<()> {
+        let url = format!("{}/api/v1/effects/current/reset", self.base_url);
+        self.http
+            .post(&url)
+            .send()
+            .await
+            .context("Failed to reset controls")?;
         Ok(())
     }
 
