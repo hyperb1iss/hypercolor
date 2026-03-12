@@ -124,6 +124,8 @@ clap_complete = "4.5"
 ratatui = "0.29"
 crossterm = "0.28"
 dpi = "0.1"
+opaline = { git = "https://github.com/hyperb1iss/opaline", features = ["global-state"] }
+tokio-tungstenite = "0.26"
 
 # Imaging
 image = { version = "0.25.9", default-features = false, features = ["jpeg"] }

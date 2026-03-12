@@ -1,0 +1,55 @@
+[package]
+name = "hypercolor-tui"
+description = "Terminal UI for the Hypercolor RGB lighting engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hypercolor-tui"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-types = { workspace = true }
+
+# TUI
+ratatui = { workspace = true }
+crossterm = { workspace = true, features = ["event-stream"] }
+
+# Theme
+opaline = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures-util = { workspace = true }
+
+# WebSocket client
+tokio-tungstenite = { workspace = true }
+
+# HTTP client
+reqwest = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling + logging
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# CLI args
+clap = { workspace = true }
+
+# Data structures
+strum = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
