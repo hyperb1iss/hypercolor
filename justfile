@@ -120,6 +120,22 @@ build-servo-release:
 run-servo-release-bin *args='':
     ~/.cache/hypercolor/target/release/hypercolor --bind 127.0.0.1:9420 {{ args }}
 
+# ─── TUI ─────────────────────────────────────────────────
+
+# Run the TUI (connects to daemon on default host:port)
+tui *args='':
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-tui -- {{ args }}
+
+# Run daemon + TUI together
+tui-dev *args='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'kill 0' EXIT
+    ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 &
+    sleep 2
+    ./scripts/cargo-cache-build.sh cargo run -p hypercolor-tui -- {{ args }} &
+    wait
+
 # ─── UI ──────────────────────────────────────────────────
 
 # Run daemon + UI dev server together (daemon on :9420, UI on :9430 proxying API)
