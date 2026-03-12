@@ -37,6 +37,7 @@ pub struct EffectControlView {
     action_tx: Option<UnboundedSender<Action>>,
 
     // Effect data
+    effect_id: String,
     effect_name: String,
     effect_description: String,
     controls: Vec<ControlDefinition>,
@@ -58,6 +59,7 @@ impl EffectControlView {
         Self {
             focused: false,
             action_tx: None,
+            effect_id: String::new(),
             effect_name: String::new(),
             effect_description: String::new(),
             controls: Vec::new(),
@@ -143,6 +145,7 @@ impl EffectControlView {
 
     /// Populate controls from an effect summary.
     fn load_effect(&mut self, effect: &EffectSummary) {
+        self.effect_id.clone_from(&effect.id);
         self.effect_name.clone_from(&effect.name);
         self.effect_description.clone_from(&effect.description);
         self.controls.clone_from(&effect.controls);
@@ -521,25 +524,27 @@ impl Component for EffectControlView {
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {
         match action {
             Action::EffectsUpdated(effects) => {
-                if let Some(effect) = effects.iter().find(|e| e.name == self.effect_name) {
+                if let Some(effect) = effects
+                    .iter()
+                    .find(|e| !self.effect_id.is_empty() && e.id == self.effect_id)
+                    .or_else(|| effects.iter().find(|e| e.name == self.effect_name))
+                {
                     self.load_effect(effect);
                 }
             }
             Action::DaemonStateUpdated(state) | Action::DaemonConnected(state) => {
-                if state.effect_id.is_some() {
-                    let name_changed = state
-                        .effect_name
-                        .as_deref()
-                        .is_some_and(|n| n != self.effect_name);
-                    if name_changed {
-                        if let Some(name) = &state.effect_name {
-                            self.effect_name.clone_from(name);
-                        }
-                        self.control_values.clear();
+                if let Some(effect_id) = &state.effect_id
+                    && effect_id != &self.effect_id
+                {
+                    self.effect_id.clone_from(effect_id);
+                    if let Some(name) = &state.effect_name {
+                        self.effect_name.clone_from(name);
                     }
+                    self.control_values.clear();
                 }
             }
             Action::ApplyEffect(_) => {
+                self.effect_id.clear();
                 self.effect_name.clear();
                 self.control_values.clear();
                 self.controls.clear();

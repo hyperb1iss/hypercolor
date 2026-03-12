@@ -1,9 +1,19 @@
 //! REST client for the Hypercolor daemon HTTP API.
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
+use futures_util::stream::{self, StreamExt};
+use hypercolor_types::effect::{
+    ControlDefinition as ApiControlDefinition, ControlType as ApiControlType,
+    ControlValue as ApiControlValue, PresetTemplate as ApiPresetTemplate,
+};
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::state::{DaemonState, DeviceSummary, EffectSummary};
+use crate::state::{
+    ControlDefinition, ControlValue, DaemonState, DeviceSummary, EffectSummary, PresetTemplate,
+};
 
 /// HTTP client for the daemon REST API.
 #[derive(Debug, Clone)]
@@ -31,22 +41,79 @@ impl DaemonClient {
 
     /// Fetch the daemon's current state.
     pub async fn get_status(&self) -> Result<DaemonState> {
-        self.get_data("/status").await
+        let status: SystemStatusResponse = self.get_data("/status").await?;
+        let active_effect = self.get_active_effect().await.ok();
+
+        #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let device_count = status.device_count as u32;
+
+        Ok(DaemonState {
+            running: status.running,
+            brightness: status.global_brightness,
+            fps_target: 0.0,
+            fps_actual: 0.0,
+            effect_name: active_effect
+                .as_ref()
+                .map(|effect| effect.name.clone())
+                .or(status.active_effect),
+            effect_id: active_effect.map(|effect| effect.id),
+            profile_name: None,
+            device_count,
+            total_leds: 0,
+        })
     }
 
     /// Fetch all available effects.
     pub async fn get_effects(&self) -> Result<Vec<EffectSummary>> {
-        self.get_data("/effects").await
+        let response: EffectListResponse = self.get_data("/effects").await?;
+
+        let mut effects = stream::iter(response.items.into_iter().map(|summary| {
+            let client = self.clone();
+            async move {
+                let detail = client
+                    .get_effect_detail(&summary.id)
+                    .await
+                    .map_err(|error| {
+                        tracing::warn!(
+                            effect_id = %summary.id,
+                            %error,
+                            "Failed to fetch effect details; using summary only"
+                        );
+                        error
+                    });
+
+                map_effect_summary(summary, detail.ok())
+            }
+        }))
+        .buffer_unordered(8)
+        .collect::<Vec<_>>()
+        .await;
+
+        effects.sort_by(|left, right| {
+            let left_norm = left.name.to_ascii_lowercase();
+            let right_norm = right.name.to_ascii_lowercase();
+            left_norm
+                .cmp(&right_norm)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+
+        Ok(effects)
     }
 
     /// Fetch all connected devices.
     pub async fn get_devices(&self) -> Result<Vec<DeviceSummary>> {
-        self.get_data("/devices").await
+        let response: DeviceListResponse = self.get_data("/devices").await?;
+        Ok(response.items.into_iter().map(map_device_summary).collect())
     }
 
     /// Fetch the favorites list (effect IDs).
     pub async fn get_favorites(&self) -> Result<Vec<String>> {
-        self.get_data("/library/favorites").await
+        let response: FavoriteListResponse = self.get_data("/library/favorites").await?;
+        Ok(response
+            .items
+            .into_iter()
+            .map(|favorite| favorite.effect_id)
+            .collect())
     }
 
     /// Apply an effect by ID.
@@ -65,26 +132,24 @@ impl DaemonClient {
         let response = req.send().await.with_context(|| {
             format!("Failed to apply effect {effect_id}. Is the daemon running?")
         })?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Apply effect failed ({status}): {body}");
-        }
-        Ok(())
+        ensure_success(response, &format!("Apply effect failed for {effect_id}")).await
     }
 
     /// Toggle favorite for an effect.
     pub async fn toggle_favorite(&self, effect_id: &str, is_favorite: bool) -> Result<()> {
         if is_favorite {
             let url = format!("{}/api/v1/library/favorites/{effect_id}", self.base_url);
-            self.http.delete(&url).send().await?;
+            let response = self.http.delete(&url).send().await?;
+            ensure_success(response, &format!("Failed to remove favorite {effect_id}")).await?;
         } else {
             let url = format!("{}/api/v1/library/favorites", self.base_url);
-            self.http
+            let response = self
+                .http
                 .post(&url)
-                .json(&serde_json::json!({ "effect_id": effect_id }))
+                .json(&serde_json::json!({ "effect": effect_id }))
                 .send()
                 .await?;
+            ensure_success(response, &format!("Failed to add favorite {effect_id}")).await?;
         }
         Ok(())
     }
@@ -92,24 +157,26 @@ impl DaemonClient {
     /// Update a control value on the active effect.
     pub async fn update_control(&self, control_id: &str, value: &serde_json::Value) -> Result<()> {
         let url = format!("{}/api/v1/effects/current/controls", self.base_url);
-        self.http
+        let response = self
+            .http
             .patch(&url)
-            .json(&serde_json::json!({ control_id: value }))
+            .json(&serde_json::json!({ "controls": { control_id: value } }))
             .send()
             .await
             .with_context(|| "Failed to update control")?;
-        Ok(())
+        ensure_success(response, &format!("Failed to update control {control_id}")).await
     }
 
     /// Reset all controls on the active effect to their defaults.
     pub async fn reset_controls(&self) -> Result<()> {
         let url = format!("{}/api/v1/effects/current/reset", self.base_url);
-        self.http
+        let response = self
+            .http
             .post(&url)
             .send()
             .await
             .context("Failed to reset controls")?;
-        Ok(())
+        ensure_success(response, "Failed to reset controls").await
     }
 
     // ── Internal helpers ────────────────────────────────────
@@ -138,4 +205,211 @@ impl DaemonClient {
             Ok(serde_json::from_value(envelope)?)
         }
     }
+
+    async fn get_effect_detail(&self, effect_id: &str) -> Result<EffectDetailResponse> {
+        self.get_data(&format!("/effects/{effect_id}")).await
+    }
+
+    async fn get_active_effect(&self) -> Result<ActiveEffectResponse> {
+        self.get_data("/effects/active").await
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct EffectListResponse {
+    items: Vec<ApiEffectSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiEffectSummary {
+    id: String,
+    name: String,
+    description: String,
+    author: String,
+    category: String,
+    source: String,
+    #[serde(default)]
+    audio_reactive: bool,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EffectDetailResponse {
+    id: String,
+    name: String,
+    description: String,
+    author: String,
+    category: String,
+    source: String,
+    #[serde(default)]
+    audio_reactive: bool,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    controls: Vec<ApiControlDefinition>,
+    #[serde(default)]
+    presets: Vec<ApiPresetTemplate>,
+    #[serde(default)]
+    active_control_values: Option<HashMap<String, ApiControlValue>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeviceListResponse {
+    items: Vec<ApiDeviceSummary>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiDeviceSummary {
+    id: String,
+    name: String,
+    backend: String,
+    status: String,
+    total_leds: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct FavoriteListResponse {
+    items: Vec<FavoriteSummaryResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FavoriteSummaryResponse {
+    effect_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SystemStatusResponse {
+    running: bool,
+    global_brightness: u8,
+    device_count: usize,
+    active_effect: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActiveEffectResponse {
+    id: String,
+    name: String,
+}
+
+fn map_effect_summary(
+    summary: ApiEffectSummary,
+    detail: Option<EffectDetailResponse>,
+) -> EffectSummary {
+    if let Some(detail) = detail {
+        let overrides = detail.active_control_values.as_ref();
+        return EffectSummary {
+            id: detail.id,
+            name: detail.name,
+            description: detail.description,
+            author: detail.author,
+            category: detail.category,
+            source: detail.source,
+            audio_reactive: detail.audio_reactive,
+            tags: detail.tags,
+            controls: detail
+                .controls
+                .iter()
+                .map(|control| map_control_definition(control, overrides))
+                .collect(),
+            presets: detail.presets.iter().map(map_preset_template).collect(),
+        };
+    }
+
+    EffectSummary {
+        id: summary.id,
+        name: summary.name,
+        description: summary.description,
+        author: summary.author,
+        category: summary.category,
+        source: summary.source,
+        audio_reactive: summary.audio_reactive,
+        tags: summary.tags,
+        controls: Vec::new(),
+        presets: Vec::new(),
+    }
+}
+
+fn map_control_definition(
+    control: &ApiControlDefinition,
+    overrides: Option<&HashMap<String, ApiControlValue>>,
+) -> ControlDefinition {
+    let control_id = control.control_id().to_owned();
+    let default_value = overrides
+        .and_then(|values| values.get(&control_id))
+        .map_or_else(
+            || map_control_value(&control.default_value),
+            map_control_value,
+        );
+
+    ControlDefinition {
+        id: control_id,
+        name: control.name.clone(),
+        control_type: map_control_type(&control.control_type),
+        default_value,
+        min: control.min,
+        max: control.max,
+        step: control.step,
+        labels: control.labels.clone(),
+        group: control.group.clone(),
+        tooltip: control.tooltip.clone(),
+    }
+}
+
+fn map_control_type(control_type: &ApiControlType) -> String {
+    match control_type {
+        ApiControlType::Slider => "slider",
+        ApiControlType::Toggle => "toggle",
+        ApiControlType::ColorPicker => "color",
+        ApiControlType::GradientEditor => "gradient",
+        ApiControlType::Dropdown => "dropdown",
+        ApiControlType::TextInput => "text",
+    }
+    .to_string()
+}
+
+fn map_control_value(value: &ApiControlValue) -> ControlValue {
+    match value {
+        ApiControlValue::Float(v) => ControlValue::Float(*v),
+        ApiControlValue::Integer(v) => ControlValue::Integer(*v),
+        ApiControlValue::Boolean(v) => ControlValue::Boolean(*v),
+        ApiControlValue::Color(v) => ControlValue::Color(*v),
+        ApiControlValue::Enum(v) | ApiControlValue::Text(v) => ControlValue::Text(v.clone()),
+        ApiControlValue::Gradient(stops) => {
+            ControlValue::Text(format!("{} gradient stops", stops.len()))
+        }
+    }
+}
+
+fn map_preset_template(template: &ApiPresetTemplate) -> PresetTemplate {
+    PresetTemplate {
+        name: template.name.clone(),
+        description: template.description.clone(),
+        controls: template
+            .controls
+            .iter()
+            .map(|(name, value)| (name.clone(), map_control_value(value)))
+            .collect(),
+    }
+}
+
+fn map_device_summary(device: ApiDeviceSummary) -> DeviceSummary {
+    DeviceSummary {
+        id: device.id,
+        name: device.name,
+        family: device.backend,
+        led_count: device.total_leds,
+        state: device.status,
+        fps: None,
+    }
+}
+
+async fn ensure_success(response: reqwest::Response, context: &str) -> Result<()> {
+    if response.status().is_success() {
+        return Ok(());
+    }
+
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    anyhow::bail!("{context} ({status}): {body}");
 }

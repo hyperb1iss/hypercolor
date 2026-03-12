@@ -20,12 +20,11 @@ impl NavSidebar {
     ///
     /// Each screen appears as a single line with its key hint bracketed:
     /// `[D]ash  [E]ffx  [C]trl  De[v]s  [P]rof  [S]ttg  De[b]ug`
-    pub fn render(&self, frame: &mut Frame, area: Rect, active: ScreenId) {
+    pub fn render(&self, frame: &mut Frame, area: Rect, active: ScreenId, screens: &[ScreenId]) {
         if area.height == 0 || area.width == 0 {
             return;
         }
 
-        let screens = ScreenId::all();
         let lines: Vec<Line<'_>> = screens
             .iter()
             .map(|&screen| build_nav_line(screen, screen == active))

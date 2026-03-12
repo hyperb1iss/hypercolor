@@ -154,14 +154,20 @@ impl App {
 
     /// Handle a key event, returning an action to dispatch.
     fn handle_key_event(&mut self, key: KeyEvent) -> Option<Action> {
+        if self.help_visible {
+            return match key.code {
+                KeyCode::Esc | KeyCode::Char('?') => Some(Action::ToggleHelp),
+                _ => None,
+            };
+        }
+
         // Global keybindings (always active)
         match key.code {
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Char('?') => return Some(Action::ToggleHelp),
-            KeyCode::Tab => return Some(Action::FocusNext),
-            KeyCode::BackTab => return Some(Action::FocusPrev),
             KeyCode::Char(c) if c.is_ascii_alphabetic() => {
                 if let Some(screen) = ScreenId::from_key(c)
+                    && self.screens.contains_key(&screen)
                     && screen != self.active_screen
                 {
                     return Some(Action::SwitchScreen(screen));
@@ -193,6 +199,17 @@ impl App {
             Action::Quit => self.running = false,
 
             Action::SwitchScreen(screen_id) => {
+                if !self.screens.contains_key(screen_id) {
+                    self.notification = Some((
+                        Notification {
+                            message: format!("{screen_id} is not available in the TUI yet"),
+                            level: NotificationLevel::Warning,
+                        },
+                        Instant::now(),
+                    ));
+                    return;
+                }
+
                 if let Some(old) = self.screens.get_mut(&self.active_screen) {
                     old.set_focused(false);
                 }
@@ -218,6 +235,7 @@ impl App {
             Action::DaemonConnected(daemon_state) => {
                 self.state.daemon = Some(daemon_state.as_ref().clone());
                 self.state.connection_status = ConnectionStatus::Connected;
+                self.sync_daemon_device_summary();
             }
             Action::DaemonDisconnected(_reason) => {
                 self.state.connection_status = ConnectionStatus::Disconnected;
@@ -227,6 +245,7 @@ impl App {
             }
             Action::DaemonStateUpdated(daemon_state) => {
                 self.state.daemon = Some(daemon_state.as_ref().clone());
+                self.sync_daemon_device_summary();
             }
 
             // ── Data updates ────────────────────────────────
@@ -235,6 +254,7 @@ impl App {
             }
             Action::DevicesUpdated(devices) => {
                 self.state.devices.clone_from(devices.as_ref());
+                self.sync_daemon_device_summary();
             }
             Action::FavoritesUpdated(favorites) => {
                 self.state.favorites.clone_from(favorites.as_ref());
@@ -248,33 +268,37 @@ impl App {
 
             // ── Commands → daemon API ─────────────────────────
             Action::ApplyEffect(effect_id) => {
-                self.spawn_command({
+                self.spawn_actions({
                     let client = self.client.clone();
                     let id = effect_id.clone();
                     async move {
                         client.apply_effect(&id, None).await?;
-                        Ok(Action::Notify(Notification {
+                        let mut actions = refresh_effects_and_status(client).await?;
+                        actions.push(Action::Notify(Notification {
                             message: format!("Applied effect: {id}"),
                             level: NotificationLevel::Success,
-                        }))
+                        }));
+                        Ok(actions)
                     }
                 });
             }
             Action::ToggleFavorite(effect_id) => {
                 let is_fav = self.state.favorites.contains(effect_id);
-                self.spawn_command({
+                self.spawn_actions({
                     let client = self.client.clone();
                     let id = effect_id.clone();
                     async move {
                         client.toggle_favorite(&id, is_fav).await?;
-                        Ok(Action::Notify(Notification {
+                        let mut actions = refresh_favorites(client).await?;
+                        actions.push(Action::Notify(Notification {
                             message: if is_fav {
                                 format!("Removed from favorites: {id}")
                             } else {
                                 format!("Added to favorites: {id}")
                             },
                             level: NotificationLevel::Info,
-                        }))
+                        }));
+                        Ok(actions)
                     }
                 });
             }
@@ -290,14 +314,16 @@ impl App {
                 });
             }
             Action::ResetControls => {
-                self.spawn_command({
+                self.spawn_actions({
                     let client = self.client.clone();
                     async move {
                         client.reset_controls().await?;
-                        Ok(Action::Notify(Notification {
+                        let mut actions = refresh_effects(client).await?;
+                        actions.push(Action::Notify(Notification {
                             message: "Controls reset to defaults".to_string(),
                             level: NotificationLevel::Info,
-                        }))
+                        }));
+                        Ok(actions)
                     }
                 });
             }
@@ -330,16 +356,41 @@ impl App {
         }
     }
 
-    /// Spawn an async command that sends a follow-up action on completion.
-    fn spawn_command<F>(&self, fut: F)
+    fn available_screens(&self) -> Vec<ScreenId> {
+        ScreenId::all()
+            .iter()
+            .copied()
+            .filter(|screen| self.screens.contains_key(screen))
+            .collect()
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    fn sync_daemon_device_summary(&mut self) {
+        let Some(daemon) = self.state.daemon.as_mut() else {
+            return;
+        };
+
+        daemon.device_count = self.state.devices.len() as u32;
+        daemon.total_leds = self
+            .state
+            .devices
+            .iter()
+            .map(|device| device.led_count)
+            .sum();
+    }
+
+    /// Spawn async work that can emit multiple follow-up actions.
+    fn spawn_actions<F>(&self, fut: F)
     where
-        F: std::future::Future<Output = anyhow::Result<Action>> + Send + 'static,
+        F: std::future::Future<Output = anyhow::Result<Vec<Action>>> + Send + 'static,
     {
         let tx = self.action_tx.clone();
         tokio::spawn(async move {
             match fut.await {
-                Ok(action) => {
-                    let _ = tx.send(action);
+                Ok(actions) => {
+                    for action in actions {
+                        let _ = tx.send(action);
+                    }
                 }
                 Err(e) => {
                     let _ = tx.send(Action::Notify(Notification {
@@ -349,6 +400,14 @@ impl App {
                 }
             }
         });
+    }
+
+    /// Spawn an async command that sends a follow-up action on completion.
+    fn spawn_command<F>(&self, fut: F)
+    where
+        F: std::future::Future<Output = anyhow::Result<Action>> + Send + 'static,
+    {
+        self.spawn_actions(async move { fut.await.map(|action| vec![action]) });
     }
 
     /// Render the full TUI frame.
@@ -361,7 +420,9 @@ impl App {
         let area = frame.area();
 
         // Chrome renders the shell and returns the content area
-        let content_area = self.chrome.render(frame, area, &self.state);
+        let content_area = self
+            .chrome
+            .render(frame, area, &self.state, &self.available_screens());
 
         // Active screen fills the content area
         if let Some(screen) = self.screens.get(&self.active_screen) {
@@ -400,38 +461,39 @@ impl App {
 
         // Help overlay (modal)
         if self.help_visible {
-            Self::render_help(frame, area);
+            self.render_help(frame, area);
         }
     }
 
     /// Render a centered help overlay listing all keybindings.
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-    fn render_help(frame: &mut Frame, area: Rect) {
+    fn render_help(&self, frame: &mut Frame, area: Rect) {
         use ratatui::layout::Rect;
         use ratatui::style::{Color, Modifier, Style};
         use ratatui::text::{Line, Span};
         use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-        let bindings = [
-            ("q", "Quit"),
-            ("?", "Toggle help"),
-            ("Tab", "Focus next panel"),
-            ("Esc", "Go back"),
-            ("d", "Dashboard"),
-            ("e", "Effect Browser"),
-            ("c", "Effect Control"),
-            ("v", "Device Manager"),
-            ("p", "Profiles"),
-            ("s", "Settings"),
-            ("b", "Debug"),
-            ("", ""),
-            ("j/k", "Navigate up/down"),
-            ("h/l", "Adjust value"),
-            ("Enter", "Apply / confirm"),
-            ("f", "Toggle favorite"),
-            ("/", "Search"),
-            ("g/G", "Jump to top/bottom"),
+        let mut bindings: Vec<(String, String)> = vec![
+            ("q".to_string(), "Quit".to_string()),
+            ("?".to_string(), "Toggle help".to_string()),
+            ("Tab".to_string(), "Switch pane in browser".to_string()),
+            ("Esc".to_string(), "Go back".to_string()),
         ];
+        bindings.extend(self.available_screens().into_iter().map(|screen| {
+            (
+                screen.key_hint().to_ascii_lowercase().to_string(),
+                screen.to_string(),
+            )
+        }));
+        bindings.extend([
+            (String::new(), String::new()),
+            ("j/k".to_string(), "Navigate up/down".to_string()),
+            ("h/l".to_string(), "Adjust value".to_string()),
+            ("Enter".to_string(), "Apply / confirm".to_string()),
+            ("f".to_string(), "Toggle favorite".to_string()),
+            ("/".to_string(), "Search".to_string()),
+            ("g/G".to_string(), "Jump to top/bottom".to_string()),
+        ]);
 
         let width = 40u16.min(area.width.saturating_sub(4));
         let height = (bindings.len() as u16 + 2).min(area.height.saturating_sub(4));
@@ -455,7 +517,7 @@ impl App {
                                 .fg(Color::Rgb(128, 255, 234))
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(*desc, Style::default().fg(Color::Rgb(248, 248, 242))),
+                        Span::styled(desc, Style::default().fg(Color::Rgb(248, 248, 242))),
                     ])
                 }
             })
@@ -486,4 +548,25 @@ fn control_value_to_json(value: &ControlValue) -> serde_json::Value {
         ControlValue::Color(c) => serde_json::json!(c),
         ControlValue::Text(s) => serde_json::json!(s),
     }
+}
+
+async fn refresh_effects(client: DaemonClient) -> anyhow::Result<Vec<Action>> {
+    let effects = client.get_effects().await?;
+    Ok(vec![Action::EffectsUpdated(std::sync::Arc::new(effects))])
+}
+
+async fn refresh_favorites(client: DaemonClient) -> anyhow::Result<Vec<Action>> {
+    let favorites = client.get_favorites().await?;
+    Ok(vec![Action::FavoritesUpdated(std::sync::Arc::new(
+        favorites,
+    ))])
+}
+
+async fn refresh_effects_and_status(client: DaemonClient) -> anyhow::Result<Vec<Action>> {
+    let status = client.get_status().await?;
+    let effects = client.get_effects().await?;
+    Ok(vec![
+        Action::DaemonStateUpdated(Box::new(status)),
+        Action::EffectsUpdated(std::sync::Arc::new(effects)),
+    ])
 }

@@ -14,6 +14,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::action::Action;
+use crate::screen::ScreenId;
 use crate::state::AppState;
 
 pub use audio_strip::AudioStrip;
@@ -69,7 +70,13 @@ impl Chrome {
     /// │ Status Bar                 (1 row)   │
     /// └─────────────────────────────────────┘
     /// ```
-    pub fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) -> Rect {
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &AppState,
+        available_screens: &[ScreenId],
+    ) -> Rect {
         let full = area;
 
         // Vertical split: title(1) | led(2) | middle(flex) | audio(2) | status(1)
@@ -106,7 +113,7 @@ impl Chrome {
         self.title_bar.render(frame, title_area, state);
         self.led_strip.render(frame, led_area, state);
         self.nav_sidebar
-            .render(frame, nav_area, state.active_screen);
+            .render(frame, nav_area, state.active_screen, available_screens);
         self.audio_strip.render(frame, audio_area, state);
         self.status_bar.render(frame, status_area, state);
 

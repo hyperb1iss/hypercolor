@@ -78,9 +78,10 @@ pub async fn spawn_data_bridge(
                         Some(WsMessage::Spectrum(snapshot)) => {
                             let _ = action_tx.send(Action::SpectrumUpdated(Arc::new(snapshot)));
                         }
-                        Some(WsMessage::Event(_event)) => {
-                            // TODO: parse event type and dispatch specific actions
-                            // For now, trigger a data refresh
+                        Some(WsMessage::Event(event)) => {
+                            if let Err(error) = refresh_for_event(&client, &action_tx, &event).await {
+                                tracing::warn!(%error, "Failed to refresh TUI state after daemon event");
+                            }
                         }
                         Some(WsMessage::Metrics(_metrics)) => {
                             // TODO: parse metrics and update state
@@ -116,16 +117,83 @@ async fn bootstrap_rest(
     let status = client.get_status().await?;
     let _ = action_tx.send(Action::DaemonConnected(Box::new(status)));
 
-    let effects = client.get_effects().await.unwrap_or_default();
-    let _ = action_tx.send(Action::EffectsUpdated(Arc::new(effects)));
-
-    let devices = client.get_devices().await.unwrap_or_default();
-    let _ = action_tx.send(Action::DevicesUpdated(Arc::new(devices)));
-
-    let favorites = client.get_favorites().await.unwrap_or_default();
-    let _ = action_tx.send(Action::FavoritesUpdated(Arc::new(favorites)));
+    refresh_effects(client, action_tx).await;
+    refresh_devices(client, action_tx).await;
+    refresh_favorites(client, action_tx).await;
 
     Ok(())
+}
+
+async fn refresh_for_event(
+    client: &DaemonClient,
+    action_tx: &mpsc::UnboundedSender<Action>,
+    event: &serde_json::Value,
+) -> anyhow::Result<()> {
+    match event_name(event).unwrap_or_default() {
+        name if name.starts_with("device_") => {
+            refresh_status(client, action_tx).await?;
+            refresh_devices(client, action_tx).await;
+        }
+        name if name.starts_with("effect_") => {
+            refresh_status(client, action_tx).await?;
+            refresh_effects(client, action_tx).await;
+        }
+        name if name.starts_with("profile_") || name == "session_changed" => {
+            refresh_status(client, action_tx).await?;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+async fn refresh_status(
+    client: &DaemonClient,
+    action_tx: &mpsc::UnboundedSender<Action>,
+) -> anyhow::Result<()> {
+    let status = client.get_status().await?;
+    let _ = action_tx.send(Action::DaemonStateUpdated(Box::new(status)));
+    Ok(())
+}
+
+async fn refresh_effects(client: &DaemonClient, action_tx: &mpsc::UnboundedSender<Action>) {
+    match client.get_effects().await {
+        Ok(effects) => {
+            let _ = action_tx.send(Action::EffectsUpdated(Arc::new(effects)));
+        }
+        Err(error) => {
+            tracing::warn!(%error, "Failed to refresh effect list");
+        }
+    }
+}
+
+async fn refresh_devices(client: &DaemonClient, action_tx: &mpsc::UnboundedSender<Action>) {
+    match client.get_devices().await {
+        Ok(devices) => {
+            let _ = action_tx.send(Action::DevicesUpdated(Arc::new(devices)));
+        }
+        Err(error) => {
+            tracing::warn!(%error, "Failed to refresh device list");
+        }
+    }
+}
+
+async fn refresh_favorites(client: &DaemonClient, action_tx: &mpsc::UnboundedSender<Action>) {
+    match client.get_favorites().await {
+        Ok(favorites) => {
+            let _ = action_tx.send(Action::FavoritesUpdated(Arc::new(favorites)));
+        }
+        Err(error) => {
+            tracing::warn!(%error, "Failed to refresh favorites");
+        }
+    }
+}
+
+fn event_name(event: &serde_json::Value) -> Option<&str> {
+    event
+        .get("event")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| event.get("event_type").and_then(serde_json::Value::as_str))
 }
 
 /// Parse the daemon state from the WebSocket hello message.
