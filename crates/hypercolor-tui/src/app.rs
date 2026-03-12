@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
+use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -396,6 +397,83 @@ impl App {
             )));
             frame.render_widget(toast, Rect::new(x, y, width, 1));
         }
+
+        // Help overlay (modal)
+        if self.help_visible {
+            Self::render_help(frame, area);
+        }
+    }
+
+    /// Render a centered help overlay listing all keybindings.
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    fn render_help(frame: &mut Frame, area: Rect) {
+        use ratatui::layout::Rect;
+        use ratatui::style::{Color, Modifier, Style};
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+
+        let bindings = [
+            ("q", "Quit"),
+            ("?", "Toggle help"),
+            ("Tab", "Focus next panel"),
+            ("Esc", "Go back"),
+            ("d", "Dashboard"),
+            ("e", "Effect Browser"),
+            ("c", "Effect Control"),
+            ("v", "Device Manager"),
+            ("p", "Profiles"),
+            ("s", "Settings"),
+            ("b", "Debug"),
+            ("", ""),
+            ("j/k", "Navigate up/down"),
+            ("h/l", "Adjust value"),
+            ("Enter", "Apply / confirm"),
+            ("f", "Toggle favorite"),
+            ("/", "Search"),
+            ("g/G", "Jump to top/bottom"),
+        ];
+
+        let width = 40u16.min(area.width.saturating_sub(4));
+        let height = (bindings.len() as u16 + 2).min(area.height.saturating_sub(4));
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let help_area = Rect::new(x, y, width, height);
+
+        // Clear the area behind the overlay
+        frame.render_widget(Clear, help_area);
+
+        let lines: Vec<Line<'_>> = bindings
+            .iter()
+            .map(|(key, desc)| {
+                if key.is_empty() {
+                    Line::raw("")
+                } else {
+                    Line::from(vec![
+                        Span::styled(
+                            format!("  {key:<10}"),
+                            Style::default()
+                                .fg(Color::Rgb(128, 255, 234))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(*desc, Style::default().fg(Color::Rgb(248, 248, 242))),
+                    ])
+                }
+            })
+            .collect();
+
+        let block = Block::default()
+            .title(" Keybindings ")
+            .title_style(
+                Style::default()
+                    .fg(Color::Rgb(225, 53, 255))
+                    .add_modifier(Modifier::BOLD),
+            )
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Rgb(90, 21, 102)))
+            .style(Style::default().bg(Color::Rgb(30, 30, 46)));
+
+        let help = Paragraph::new(lines).block(block);
+        frame.render_widget(help, help_area);
     }
 }
 
