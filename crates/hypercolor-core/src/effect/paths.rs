@@ -96,10 +96,7 @@ mod tests {
     #[test]
     fn user_effects_dir_ends_with_user() {
         let dir = user_effects_dir();
-        assert_eq!(
-            dir.file_name().and_then(|v| v.to_str()),
-            Some("user")
-        );
+        assert_eq!(dir.file_name().and_then(|v| v.to_str()), Some("user"));
         assert!(dir.to_string_lossy().contains("hypercolor"));
     }
 
