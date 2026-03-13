@@ -25,7 +25,7 @@ pub struct BlocksBackend {
     /// Known devices reported by blocksd.
     devices: HashMap<DeviceId, BlocksDevice>,
     /// UID-to-`DeviceId` mapping for event routing.
-    uid_map: HashMap<u32, DeviceId>,
+    uid_map: HashMap<u64, DeviceId>,
     /// Per-device brightness (applied by blocksd).
     brightness: HashMap<DeviceId, u8>,
     /// Reconnection state.
@@ -33,7 +33,7 @@ pub struct BlocksBackend {
 }
 
 struct BlocksDevice {
-    uid: u32,
+    uid: u64,
     info: DeviceInfo,
     connected: bool,
     frames_sent: u64,

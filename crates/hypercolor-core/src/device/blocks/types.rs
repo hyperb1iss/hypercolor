@@ -57,7 +57,7 @@ impl RoliBlockType {
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
 pub struct BlocksDeviceResponse {
-    pub uid: u32,
+    pub uid: u64,
     pub serial: String,
     pub block_type: String,
     pub name: String,
