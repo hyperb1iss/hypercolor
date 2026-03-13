@@ -410,4 +410,71 @@ export default canvas.stateful('Frost Crystal', {
     }
 }, {
     description: 'Bold crystalline hex lattice with frost-growth waves, breathing nodes, and field rotation',
+    presets: [
+        {
+            name: 'Frozen Tundra at Dawn',
+            description: 'First light creeping across permafrost — vast hexagonal ice plates slowly pulsing with pale blue fire, the field barely turning like a frozen compass',
+            controls: {
+                speed: 2,
+                scale: 28,
+                edgeGlow: 80,
+                growth: 45,
+                rotation: 8,
+                palette: 'Ice',
+                scene: 'Lattice',
+            },
+        },
+        {
+            name: 'Crystal Cave Bioluminescence',
+            description: 'Deep underground where quartz meets living light — prismatic hexagons breathing in aurora greens and purples, rippling outward from an invisible heart',
+            controls: {
+                speed: 4,
+                scale: 52,
+                edgeGlow: 72,
+                growth: 85,
+                rotation: -15,
+                palette: 'Aurora',
+                scene: 'Prism',
+            },
+        },
+        {
+            name: 'Obsidian Shatter',
+            description: 'Volcanic glass exploding under pressure — sharp diamond shards spinning fast in hot magenta and cyan, edges crackling with electric discharge',
+            controls: {
+                speed: 9,
+                scale: 75,
+                edgeGlow: 95,
+                growth: 92,
+                rotation: -68,
+                palette: 'Cyberpunk',
+                scene: 'Shardfield',
+            },
+        },
+        {
+            name: 'Frost Mandala',
+            description: 'Sacred geometry forming on a windowpane at absolute zero — concentric signal rings rippling through deep azure frost, spinning with meditative precision',
+            controls: {
+                speed: 3,
+                scale: 40,
+                edgeGlow: 60,
+                growth: 55,
+                rotation: 32,
+                palette: 'Frost',
+                scene: 'Signal',
+            },
+        },
+        {
+            name: 'SilkCircuit Lattice',
+            description: 'A motherboard dreaming in crystalline geometry — electric purple hex cells breathing with neon nodes, the entire field rotating like a silicon prayer wheel',
+            controls: {
+                speed: 6,
+                scale: 58,
+                edgeGlow: 88,
+                growth: 72,
+                rotation: 42,
+                palette: 'SilkCircuit',
+                scene: 'Prism',
+            },
+        },
+    ],
 })

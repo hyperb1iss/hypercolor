@@ -438,4 +438,76 @@ canvas('Nyan Dash', {
     }
 }, {
     description: 'Playful stylized cat dash with rainbow trail variants, star pops, and smooth looping motion',
+    presets: [
+        {
+            name: 'Saturday Morning 1994',
+            description: 'CRT static, cereal milk puddles, and a cat zooming across the screen at maximum Nickelodeon energy',
+            controls: {
+                animationSpeed: 8,
+                scale: 120,
+                positionX: 0,
+                positionY: -15,
+                trailMode: 'Classic',
+                colorCycle: true,
+                cycleSpeed: 52,
+                starDensity: 80,
+            },
+        },
+        {
+            name: 'Vaporwave Poptart',
+            description: 'Slowed-down, dreamy, pastel — the cat floats through a lo-fi aesthetic void of cotton candy nebulae',
+            controls: {
+                animationSpeed: 2,
+                scale: 160,
+                positionX: 20,
+                positionY: 10,
+                trailMode: 'Pulse',
+                colorCycle: true,
+                cycleSpeed: 12,
+                starDensity: 25,
+            },
+        },
+        {
+            name: 'Comet Kitty',
+            description: 'Tiny pixel cat blazing across the void like a burning meteorite trailing sparkle debris',
+            controls: {
+                animationSpeed: 10,
+                scale: 55,
+                positionX: -30,
+                positionY: 0,
+                trailMode: 'Comet',
+                colorCycle: true,
+                cycleSpeed: 78,
+                starDensity: 60,
+            },
+        },
+        {
+            name: 'Midnight Snack Run',
+            description: 'Minimal stars, no color cycle — monochrome cat dashing through the quiet dark toward the fridge',
+            controls: {
+                animationSpeed: 5,
+                scale: 100,
+                positionX: 0,
+                positionY: 30,
+                trailMode: 'Classic',
+                colorCycle: false,
+                cycleSpeed: 0,
+                starDensity: 8,
+            },
+        },
+        {
+            name: 'Disco Inferno 1977',
+            description: 'Maximum color cycle on a big chunky cat under a mirror ball — Studio 54 energy with sprinkles',
+            controls: {
+                animationSpeed: 7,
+                scale: 180,
+                positionX: 0,
+                positionY: -20,
+                trailMode: 'Pulse',
+                colorCycle: true,
+                cycleSpeed: 100,
+                starDensity: 95,
+            },
+        },
+    ],
 })

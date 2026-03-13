@@ -121,6 +121,69 @@ export default effect(
         audio: true,
         description: 'Cinematic audio visualizer with motion-led audio response instead of beat flashes',
 
+        presets: [
+            {
+                name: 'Warehouse Ritual',
+                description: 'Sub-bass becomes architecture — slow vortex pull in a concrete bunker where the kick drum is a seismic event',
+                controls: {
+                    colorScheme: 'Lava',
+                    colorSpeed: 25,
+                    flow: -80,
+                    glowIntensity: 180,
+                    sensitivity: 180,
+                    visualStyle: 'Vortex',
+                },
+            },
+            {
+                name: 'Neon Meridian',
+                description: 'Synthwave highway at 2am — chrome reflections streak through rain as the arpeggios cascade forward endlessly',
+                controls: {
+                    colorScheme: 'Cyberpunk',
+                    colorSpeed: 120,
+                    flow: 75,
+                    glowIntensity: 130,
+                    sensitivity: 90,
+                    visualStyle: 'Waveform',
+                },
+            },
+            {
+                name: 'Glass Cathedral',
+                description: 'Ambient drone through stained glass — prismatic light breathes with glacial patience, each harmonic a new color',
+                controls: {
+                    colorScheme: 'Prism',
+                    colorSpeed: 15,
+                    flow: 10,
+                    glowIntensity: 85,
+                    sensitivity: 35,
+                    visualStyle: 'Pulse Field',
+                },
+            },
+            {
+                name: 'Toxic Mainframe',
+                description: 'Industrial grid flickers under acid-green data streams — percussive hits tear holes in the matrix',
+                controls: {
+                    colorScheme: 'Toxic',
+                    colorSpeed: 160,
+                    flow: -45,
+                    glowIntensity: 150,
+                    sensitivity: 145,
+                    visualStyle: 'Grid',
+                },
+            },
+            {
+                name: 'Aurora Lounge',
+                description: 'Jazz club at closing time — warm aurora ripples respond to brushed cymbals and upright bass with velvet restraint',
+                controls: {
+                    colorScheme: 'Aurora',
+                    colorSpeed: 40,
+                    flow: 20,
+                    glowIntensity: 70,
+                    sensitivity: 55,
+                    visualStyle: 'Pulse Field',
+                },
+            },
+        ],
+
         frame: (ctx, time) => {
             const dt = Math.min(lastTime > 0 ? time - lastTime : 0.016, 0.05)
             lastTime = time

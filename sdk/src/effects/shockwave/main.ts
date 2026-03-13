@@ -563,4 +563,66 @@ export default canvas.stateful('Shockwave', {
     }
 }, {
     description: 'Sharp bass-reactive shockwaves with segmented bursts, bridge sweeps, and cascade chevrons',
+    presets: [
+        {
+            name: 'Seismic Epicenter',
+            description: 'Standing at ground zero of a tectonic rupture — massive concentric shockwaves tearing outward from a single point, fire-colored rings decaying into the abyss',
+            controls: {
+                speed: 7,
+                intensity: 95,
+                ringCount: 10,
+                decay: 35,
+                palette: 'Fire',
+                scene: 'Core Burst',
+            },
+        },
+        {
+            name: 'Glacier Calving',
+            description: 'An ice shelf fracturing in slow motion — wide, cold shockwaves cascading downward like frozen thunder, sparse rings holding their shape before dissolving',
+            controls: {
+                speed: 3,
+                intensity: 60,
+                ringCount: 4,
+                decay: 75,
+                palette: 'Ice',
+                scene: 'Cascade',
+            },
+        },
+        {
+            name: 'Twin Reactor Breach',
+            description: 'Two containment fields failing simultaneously — mirrored shockwaves colliding in a corridor of neon plasma, bridge bands sweeping between the rupture points',
+            controls: {
+                speed: 8,
+                intensity: 88,
+                ringCount: 8,
+                decay: 42,
+                palette: 'Cyberpunk',
+                scene: 'Twin Burst',
+            },
+        },
+        {
+            name: 'Aurora Shatter',
+            description: 'The northern lights breaking apart like stained glass — gentle waves rippling through green and violet, rings fading slowly into the polar dark',
+            controls: {
+                speed: 4,
+                intensity: 55,
+                ringCount: 6,
+                decay: 68,
+                palette: 'Aurora',
+                scene: 'Cascade',
+            },
+        },
+        {
+            name: 'SilkCircuit Detonation',
+            description: 'A digital bomb exploding inside a circuit board — maximum ring density, rapid-fire bursts of electric purple and cyan, spoke patterns spinning through the debris',
+            controls: {
+                speed: 10,
+                intensity: 100,
+                ringCount: 12,
+                decay: 20,
+                palette: 'SilkCircuit',
+                scene: 'Core Burst',
+            },
+        },
+    ],
 })

@@ -31,6 +31,7 @@ import { comboboxValueToIndex, getControlValue, normalizePercentage, normalizeSp
 import { createPaletteFn } from '../palette'
 import type { PaletteFn } from '../palette'
 import { initializeEffect } from '../init'
+import type { PresetDef } from './effect-fn'
 import { CanvasEffect } from './canvas-effect'
 
 // ── Types ────────────────────────────────────────────────────────────────
@@ -48,6 +49,8 @@ export interface CanvasFnOptions {
     author?: string
     width?: number
     height?: number
+    /** Effect-defined presets — named control snapshots bundled with the effect. */
+    presets?: PresetDef[]
 }
 
 /** Resolved control entry used at runtime. */
@@ -214,6 +217,7 @@ interface CanvasDef {
     author?: string
     width?: number
     height?: number
+    presets?: PresetDef[]
 }
 
 function storeCanvasMetadata(def: CanvasDef): void {
@@ -255,6 +259,7 @@ export function canvas(
             author: opts.author,
             width: opts.width,
             height: opts.height,
+            presets: opts.presets,
         })
         return
     }
@@ -286,6 +291,7 @@ canvas.stateful = function stateful(
             author: opts.author,
             width: opts.width,
             height: opts.height,
+            presets: opts.presets,
         })
         return
     }

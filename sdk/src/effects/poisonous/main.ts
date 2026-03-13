@@ -245,4 +245,71 @@ export default canvas.stateful('Poisonous', {
 }, {
     description: 'Neon toxin rings drifting through a dark haze with theme and palette controls',
     author: 'Hypercolor',
+    presets: [
+        {
+            name: 'Radioactive Waste Pool',
+            description: 'Bubbling toxic sludge in an abandoned reactor basement — rings surfacing through fluorescent green murk',
+            controls: {
+                theme: 'Radioactive',
+                bgColor: '#060b05',
+                color1: '#5cff24',
+                color2: '#00ff9d',
+                color3: '#ff9a3d',
+                speedRaw: 22,
+                ringCount: 4,
+            },
+        },
+        {
+            name: 'Jellyfish Ballet',
+            description: 'Translucent deep-sea bells pulsing in slow vertical procession through a violet abyss',
+            controls: {
+                theme: 'Nightshade',
+                bgColor: '#0b0615',
+                color1: '#8d5cff',
+                color2: '#ff4fd1',
+                color3: '#56d8ff',
+                speedRaw: 6,
+                ringCount: 6,
+            },
+        },
+        {
+            name: 'Bubblegum Cauldron',
+            description: 'Hot pink potions bubbling in a candy witch\'s workshop — sweet, menacing, impossibly bright',
+            controls: {
+                theme: 'Cotton Candy',
+                bgColor: '#110816',
+                color1: '#ff74c5',
+                color2: '#79ecff',
+                color3: '#ffb347',
+                speedRaw: 38,
+                ringCount: 3,
+            },
+        },
+        {
+            name: 'Frozen in Amber',
+            description: 'Zero-speed suspended rings caught mid-drift — a museum display of crystallized neon toxins',
+            controls: {
+                theme: 'Poison',
+                bgColor: '#130032',
+                color1: '#6000fc',
+                color2: '#b300ff',
+                color3: '#8a42ff',
+                speedRaw: 0,
+                ringCount: 5,
+            },
+        },
+        {
+            name: 'UV Dance Floor',
+            description: 'Blacklight rings expanding outward from invisible dancers — orange, cyan, and magenta halos in the dark',
+            controls: {
+                theme: 'Blacklight',
+                bgColor: '#06050d',
+                color1: '#ff58c8',
+                color2: '#30e5ff',
+                color3: '#ffb347',
+                speedRaw: 58,
+                ringCount: 2,
+            },
+        },
+    ],
 })

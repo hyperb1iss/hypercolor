@@ -321,4 +321,66 @@ export default canvas.stateful('Meteor Storm', {
     }
 }, {
     description: 'Crisp falling stars with directional hyperspace trails over a gradient night sky',
+    presets: [
+        {
+            name: 'Leonids Over Montana',
+            description: 'Peak meteor shower on a clear November night — fat streaks tearing through a blue-black sky over endless prairie',
+            controls: {
+                path: 'Diagonal',
+                speed: 7,
+                starSize: 12,
+                density: 88,
+                trail: 90,
+                skyTop: '#050818',
+                skyBottom: '#0e1e52',
+                starColor: '#c8e8ff',
+                scene: 'Night',
+            },
+        },
+        {
+            name: 'Aurora Teardrops',
+            description: 'Soft luminous streaks dissolving into a northern lights wash — the sky weeping color over a frozen lake',
+            controls: {
+                path: 'Vertical',
+                speed: 3,
+                starSize: 16,
+                density: 45,
+                trail: 85,
+                skyTop: '#0a1030',
+                skyBottom: '#143868',
+                starColor: '#96eaff',
+                scene: 'Aurora',
+            },
+        },
+        {
+            name: 'Tokyo Rooftop 3am',
+            description: 'Tiny pinprick stars racing above the city glow — fast, clinical, the sky buzzing like fluorescent tubes',
+            controls: {
+                path: 'Diagonal',
+                speed: 10,
+                starSize: 3,
+                density: 100,
+                trail: 40,
+                skyTop: '#0f0a1e',
+                skyBottom: '#2a1854',
+                starColor: '#e0b8ff',
+                scene: 'Night',
+            },
+        },
+        {
+            name: 'Perseid Campfire',
+            description: 'Warm amber meteors crawling across a velvet desert sky — campfire smoke blurring the constellations',
+            controls: {
+                path: 'Diagonal',
+                speed: 4,
+                starSize: 18,
+                density: 30,
+                trail: 100,
+                skyTop: '#0d0c14',
+                skyBottom: '#1a2040',
+                starColor: '#ffd4a0',
+                scene: 'Night',
+            },
+        },
+    ],
 })

@@ -406,4 +406,31 @@ export default canvas.stateful('Bubble Garden', {
     }
 }, {
     description: 'Theme-rich bubble field with custom triads, colored rims, and glossy highlights',
+    presets: [
+        {
+            name: 'Bathypelagic Siphonophore',
+            description: 'Colonial organisms drift in eternal darkness — each translucent bell a separate creature chained in bioluminescent congress',
+            controls: { colorMode: 'Palette Blend', theme: 'Jellyfish', bgColor: '#020108', color: '#8a7cff', color2: '#ff7fcf', color3: '#76fff1', speed: 8, size: 7, count: 65 },
+        },
+        {
+            name: 'Champagne Supernova',
+            description: 'Golden effervescence erupts from the bottle — a billion tiny spheres racing upward through amber light',
+            controls: { colorMode: 'Single Color', theme: 'Citrus Pop', bgColor: '#0e0800', color: '#ffcc33', color2: '#ff7a2f', color3: '#ff5478', speed: 45, size: 3, count: 120 },
+        },
+        {
+            name: 'Toxic Waste Lagoon',
+            description: 'Chemical bubbles surface through contaminated sediment — each one a pressurized capsule of fluorescent mutation',
+            controls: { colorMode: 'Triad', theme: 'Neon Soda', bgColor: '#040a02', color: '#36ff9a', color2: '#18e4ff', color3: '#ff4ed1', speed: 18, size: 6, count: 42 },
+        },
+        {
+            name: 'Soap Film Interference',
+            description: 'Razor-thin membranes refract white light into impossible rainbows — each bubble a floating physics experiment',
+            controls: { colorMode: 'Color Cycle', theme: 'Lavender Fizz', bgColor: '#08060e', color: '#9f72ff', color2: '#ff5ec8', color3: '#66d4ff', speed: 5, size: 9, count: 22 },
+        },
+        {
+            name: 'Cytoplasmic Vesicle Transport',
+            description: 'Endosomes shuttle through cellular fluid — lipid bilayer spheres ferrying molecular cargo in warm biological pink',
+            controls: { colorMode: 'Palette Blend', theme: 'Bubblegum', bgColor: '#0a0208', color: '#ff4f9a', color2: '#ff74c5', color3: '#8a5cff', speed: 12, size: 4, count: 85 },
+        },
+    ],
 })

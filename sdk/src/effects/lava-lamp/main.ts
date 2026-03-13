@@ -345,5 +345,32 @@ export default canvas.stateful(
     },
     {
         description: 'Classic metaball blobs with smooth marching-squares contours and radial gradient fills',
+        presets: [
+            {
+                name: 'Hadean Mantle Convection',
+                description: 'Molten silicate blobs churn in primordial magma — the young Earth\'s crust fractures and remelts in slow geological fury',
+                controls: { bCount: 5, bgColor: '#1a0800', bgCycle: false, color1: '#ff4400', color2: '#ff8c00', color3: '#cc2200', cycleSpeed: 15, rainbow: false, speed: 18, theme: 'Molten' },
+            },
+            {
+                name: 'Abyssal Jellyfish Bloom',
+                description: 'Translucent medusae drift upward through midnight water — their bells pulse with stolen bioluminescence',
+                controls: { bCount: 12, bgColor: '#020818', bgCycle: false, color1: '#00ffd5', color2: '#4488ff', color3: '#0022aa', cycleSpeed: 30, rainbow: false, speed: 12, theme: 'Lagoon' },
+            },
+            {
+                name: 'Xenobiological Specimen',
+                description: 'Alien cytoplasm divides in toxic green mitosis — each blob a living organelle in some vast extraterrestrial cell',
+                controls: { bCount: 8, bgColor: '#050a02', bgCycle: false, color1: '#36ff9a', color2: '#0ae0cb', color3: '#6c2bff', cycleSpeed: 40, rainbow: false, speed: 28, theme: 'Toxic' },
+            },
+            {
+                name: 'Mercury in Zero Gravity',
+                description: 'Liquid metal spheres collide and merge in freefall — rainbow-sheened quicksilver dances in the vacuum',
+                controls: { bCount: 6, bgColor: '#0a0a12', bgCycle: true, color1: '#ff4ed6', color2: '#8f48ff', color3: '#42d9ff', cycleSpeed: 65, rainbow: true, speed: 35, theme: 'Synthwave' },
+            },
+            {
+                name: 'Thermal Nursery',
+                description: 'Warm bubblegum globules rise through a candy-colored incubator — gentle, hypnotic, impossibly soft',
+                controls: { bCount: 18, bgColor: '#12041a', bgCycle: false, color1: '#ff4f9a', color2: '#ff74c5', color3: '#8a5cff', cycleSpeed: 20, rainbow: false, speed: 8, theme: 'Bubblegum' },
+            },
+        ],
     },
 )

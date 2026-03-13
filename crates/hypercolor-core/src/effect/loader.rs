@@ -139,11 +139,12 @@ pub fn register_html_effects(
                 .iter()
                 .filter_map(control_definition_from_html)
                 .collect();
-            let presets = parsed
+            let mut presets: Vec<_> = parsed
                 .presets
                 .iter()
                 .filter_map(|hp| preset_template_from_html(hp, &controls))
                 .collect();
+            presets.sort_by(|a, b| a.name.cmp(&b.name));
 
             let metadata = EffectMetadata {
                 id: deterministic_html_effect_id(&source_path),
