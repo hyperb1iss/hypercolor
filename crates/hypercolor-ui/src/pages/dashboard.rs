@@ -194,6 +194,8 @@ fn FavoriteRow(effect: EffectSummary, delay: String) -> impl IntoView {
                 <button
                     class="shrink-0 p-1 rounded opacity-0 group-hover:opacity-100 \
                            hover:bg-surface-hover/60 transition-all duration-150"
+                    title="Remove from favorites"
+                    aria-label="Remove from favorites"
                     on:click={
                         let fav_id = fav_id.clone();
                         move |ev: web_sys::MouseEvent| {

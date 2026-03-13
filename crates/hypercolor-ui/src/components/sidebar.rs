@@ -622,6 +622,7 @@ pub fn Sidebar() -> impl IntoView {
                             <button
                                 class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Previous effect"
+                                aria-label="Previous effect"
                                 on:click=move |_| navigate_effect(-1)
                             >
                                 <Icon icon=LuSkipBack width="16px" height="16px" />
@@ -629,6 +630,7 @@ pub fn Sidebar() -> impl IntoView {
                             <button
                                 class="p-2 rounded-lg text-error-red/40 hover:text-error-red hover:bg-error-red/[0.06] player-btn"
                                 title="Stop effect"
+                                aria-label="Stop effect"
                                 on:click=move |_| fx.stop_effect()
                             >
                                 <Icon icon=LuSquare width="16px" height="16px" />
@@ -636,6 +638,7 @@ pub fn Sidebar() -> impl IntoView {
                             <button
                                 class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Next effect"
+                                aria-label="Next effect"
                                 on:click=move |_| navigate_effect(1)
                             >
                                 <Icon icon=LuSkipForward width="16px" height="16px" />
@@ -643,6 +646,7 @@ pub fn Sidebar() -> impl IntoView {
                             <button
                                 class="p-2 rounded-lg text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 player-btn"
                                 title="Random effect"
+                                aria-label="Random effect"
                                 on:click=move |_| random_effect()
                             >
                                 <Icon icon=LuShuffle width="16px" height="16px" />
@@ -730,6 +734,7 @@ pub fn Sidebar() -> impl IntoView {
                                             <button
                                                 class="p-1.5 rounded-md text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 btn-press"
                                                 title="Search effects (⌘K)"
+                                                aria-label="Search effects"
                                                 on:click=move |_| open.run(())
                                             >
                                                 <Icon icon=LuSearch width="14px" height="14px" />
@@ -747,6 +752,7 @@ pub fn Sidebar() -> impl IntoView {
                                             <button
                                                 class="p-1.5 rounded-md text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40 btn-press"
                                                 title=move || if is_dark.get() { "Light mode" } else { "Dark mode" }
+                                                aria-label=move || if is_dark.get() { "Light mode" } else { "Dark mode" }
                                                 on:click=move |_| toggle.run(())
                                             >
                                                 {move || if is_dark.get() {
@@ -767,6 +773,7 @@ pub fn Sidebar() -> impl IntoView {
                                    hover:bg-surface-hover/30 btn-press"
                             on:click=move |_| set_collapsed.update(|v| *v = !*v)
                             title=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }
+                            aria-label=move || if collapsed.get() { "Expand sidebar" } else { "Collapse sidebar" }
                         >
                             <span
                                 class="w-4 h-4 flex items-center justify-center transition-transform duration-200"

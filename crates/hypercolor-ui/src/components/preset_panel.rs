@@ -38,15 +38,24 @@ pub fn PresetToolbar(
     let (selected_id, set_selected_id) = signal(Option::<String>::None);
     let (mode, set_mode) = signal(ToolbarMode::Idle);
 
-    // Fetch user presets + bundled presets whenever effect_id changes.
-    // Read active_preset_id_signal untracked — we only restore the preset
-    // selection when the *effect* switches, not when the preset ID updates
-    // within the same effect (which would clear the dropdown mid-selection).
-    Effect::new(move |_| {
+    // Fetch user presets + bundled presets whenever effect_id *actually* changes.
+    //
+    // Leptos signals always notify on `set()` (no PartialEq guard), so the
+    // derived `effect_id` signal can re-fire even when the ID is unchanged
+    // (e.g., after `refresh_active_effect`). We compare against the previous
+    // value and skip the fetch+clear when nothing changed — this prevents
+    // option recreation from resetting the <select> element.
+    Effect::new(move |prev_eid: Option<Option<String>>| {
         let eid = effect_id.get();
+        if prev_eid.as_ref() == Some(&eid) {
+            return eid; // Same effect — skip everything
+        }
+
         set_selected_id.set(None);
-        let restore_id =
-            active_preset_id_signal.map(|s| s.get_untracked()).unwrap_or_default();
+        let restore_id = active_preset_id_signal
+            .map(|s| s.get_untracked())
+            .unwrap_or_default();
+        let fetch_eid = eid.clone();
         leptos::task::spawn_local(async move {
             match api::fetch_presets().await {
                 Ok(all) => {
@@ -60,7 +69,7 @@ pub fn PresetToolbar(
                 Err(_) => set_presets.set(Vec::new()),
             }
             // Fetch bundled presets from effect detail
-            if let Some(ref id) = eid {
+            if let Some(ref id) = fetch_eid {
                 match api::fetch_bundled_presets(id).await {
                     Ok(bp) => set_bundled_presets.set(bp),
                     Err(_) => set_bundled_presets.set(Vec::new()),
@@ -69,6 +78,7 @@ pub fn PresetToolbar(
                 set_bundled_presets.set(Vec::new());
             }
         });
+        eid
     });
 
     // Filter presets to the active effect
@@ -314,8 +324,11 @@ fn PresetSelectorRow(
     on_edit: impl Fn(leptos::ev::MouseEvent) + 'static,
     on_delete: impl Fn(leptos::ev::MouseEvent) + 'static,
 ) -> impl IntoView {
-    let has_bundled = move || !bundled_presets.get().is_empty();
-    let has_user = move || !effect_presets.get().is_empty();
+    // Pre-compute optgroup visibility so the option closures don't
+    // cross-subscribe to each other's data (which would recreate all
+    // <option> elements any time either list changes).
+    let show_optgroups =
+        Memo::new(move |_| !bundled_presets.get().is_empty() && !effect_presets.get().is_empty());
 
     view! {
         <div class="flex items-center gap-2">
@@ -327,8 +340,9 @@ fn PresetSelectorRow(
                            focus:outline-none focus:border-accent-muted
                            transition-all duration-150"
                     on:change=on_select
+                    prop:value=move || selected_id.get().unwrap_or_default()
                 >
-                    <option value="" selected=move || selected_id.get().is_none()>
+                    <option value="">
                         "No preset"
                     </option>
                     // Bundled presets (effect-defined, read-only)
@@ -337,17 +351,13 @@ fn PresetSelectorRow(
                         if bp.is_empty() {
                             return view! { <></> }.into_any();
                         }
-                        let show_groups = has_user();
+                        let groups = show_optgroups.get();
                         let options = bp.into_iter().enumerate().map(|(idx, p)| {
                             let val = format!("bundled:{idx}");
-                            let is_sel = {
-                                let val = val.clone();
-                                move || selected_id.get().as_deref() == Some(&val)
-                            };
                             let label = format!("\u{2726} {}", p.name);
-                            view! { <option value=val selected=is_sel>{label}</option> }
+                            view! { <option value=val>{label}</option> }
                         }).collect_view();
-                        if show_groups {
+                        if groups {
                             view! {
                                 <optgroup label="Built-in">{options}</optgroup>
                             }.into_any()
@@ -361,16 +371,12 @@ fn PresetSelectorRow(
                         if user.is_empty() {
                             return view! { <></> }.into_any();
                         }
-                        let show_groups = has_bundled();
+                        let groups = show_optgroups.get();
                         let options = user.into_iter().map(|p| {
                             let id = p.id.clone();
-                            let is_sel = {
-                                let id = id.clone();
-                                move || selected_id.get().as_deref() == Some(&id)
-                            };
-                            view! { <option value=id selected=is_sel>{p.name}</option> }
+                            view! { <option value=id>{p.name}</option> }
                         }).collect_view();
-                        if show_groups {
+                        if groups {
                             view! {
                                 <optgroup label="My Presets">{options}</optgroup>
                             }.into_any()
@@ -410,6 +416,7 @@ fn PresetActionButtons(
                        hover:text-success-green hover:bg-success-green/10
                        disabled:opacity-20 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-tertiary/50"
                 title="Save controls to preset"
+                aria-label="Save controls to preset"
                 disabled=move || !has_selection.get()
                 on:click=on_save
             >
@@ -421,6 +428,7 @@ fn PresetActionButtons(
                 class="p-1.5 rounded-md text-fg-tertiary/50 transition-colors duration-150
                        hover:text-neon-cyan hover:bg-neon-cyan/10"
                 title="Create new preset"
+                aria-label="Create new preset"
                 on:click=on_new
             >
                 <Icon icon=LuPlus width="14px" height="14px" />
@@ -432,6 +440,7 @@ fn PresetActionButtons(
                        hover:text-electric-purple hover:bg-electric-purple/10
                        disabled:opacity-20 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-tertiary/50"
                 title="Rename preset"
+                aria-label="Rename preset"
                 disabled=move || !has_selection.get()
                 on:click=on_edit
             >
@@ -444,6 +453,7 @@ fn PresetActionButtons(
                        hover:text-error-red hover:bg-error-red/10
                        disabled:opacity-20 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-fg-tertiary/50"
                 title="Delete preset"
+                aria-label="Delete preset"
                 disabled=move || !has_selection.get()
                 on:click=on_delete
             >
