@@ -11,10 +11,15 @@ use crate::components::canvas_preview::CanvasPreview;
 use crate::components::control_panel::ControlPanel;
 use crate::components::effect_card::EffectCard;
 use crate::components::preset_panel::PresetToolbar;
+use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
 const EFFECTS_PREVIEW_FPS_CAP: u32 = 24;
+const MIN_DETAIL_WIDTH: f64 = 260.0;
+const MAX_DETAIL_WIDTH: f64 = 1200.0;
+const MIN_CONTROLS_WIDTH: f64 = 220.0;
+const MAX_CONTROLS_WIDTH: f64 = 800.0;
 
 /// Category -> accent RGB string for inline styles.
 fn category_accent_rgb(category: &str) -> &'static str {
@@ -76,6 +81,25 @@ pub fn EffectsPage() -> impl IntoView {
         signal(stored("hc-fx-favorites").as_deref() == Some("true"));
     let (audio_reactive_only, set_audio_reactive_only) =
         signal(stored("hc-fx-audio").as_deref() == Some("true"));
+
+    // Panel layout state (persisted to localStorage)
+    let (detail_width, set_detail_width) = signal(
+        stored("hc-fx-detail-width")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(380.0)
+            .clamp(MIN_DETAIL_WIDTH, MAX_DETAIL_WIDTH),
+    );
+    let (controls_detached, set_controls_detached) =
+        signal(stored("hc-fx-controls-detached").as_deref() != Some("false"));
+    let (controls_width, set_controls_width) = signal(
+        stored("hc-fx-controls-width")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(320.0)
+            .clamp(MIN_CONTROLS_WIDTH, MAX_CONTROLS_WIDTH),
+    );
+    let detail_drag_start = StoredValue::new(0.0_f64);
+    let controls_drag_start = StoredValue::new(0.0_f64);
+
     let pending_control_updates =
         StoredValue::new(std::collections::HashMap::<String, serde_json::Value>::new());
     let flush_control_updates = use_debounce_fn(
@@ -228,6 +252,42 @@ pub fn EffectsPage() -> impl IntoView {
         });
 
         flush_control_updates();
+    });
+
+    // Detail panel resize callbacks
+    let on_detail_drag_start = Callback::new(move |()| {
+        detail_drag_start.set_value(detail_width.get_untracked());
+        toggle_body_resizing(true);
+    });
+    let on_detail_drag = Callback::new(move |delta_x: f64| {
+        let new_w =
+            (detail_drag_start.get_value() - delta_x).clamp(MIN_DETAIL_WIDTH, MAX_DETAIL_WIDTH);
+        set_detail_width.set(new_w);
+    });
+    let on_detail_drag_end = Callback::new(move |()| {
+        toggle_body_resizing(false);
+        persist_to_storage(
+            "hc-fx-detail-width",
+            &detail_width.get_untracked().to_string(),
+        );
+    });
+
+    // Controls panel resize callbacks (when detached)
+    let on_controls_drag_start = Callback::new(move |()| {
+        controls_drag_start.set_value(controls_width.get_untracked());
+        toggle_body_resizing(true);
+    });
+    let on_controls_drag = Callback::new(move |delta_x: f64| {
+        let new_w = (controls_drag_start.get_value() - delta_x)
+            .clamp(MIN_CONTROLS_WIDTH, MAX_CONTROLS_WIDTH);
+        set_controls_width.set(new_w);
+    });
+    let on_controls_drag_end = Callback::new(move |()| {
+        toggle_body_resizing(false);
+        persist_to_storage(
+            "hc-fx-controls-width",
+            &controls_width.get_untracked().to_string(),
+        );
     });
 
     view! {
@@ -446,10 +506,10 @@ pub fn EffectsPage() -> impl IntoView {
                 </div>
             </div>
 
-            // Two-column layout — each side scrolls independently
-            <div class="flex-1 flex gap-5 min-h-0 px-6 pb-6">
+            // Resizable multi-column layout — grid | handle | preview [| handle | controls]
+            <div class="flex-1 flex min-h-0 px-6 pb-6">
                 // Effect grid — independently scrollable left column
-                <div class="flex-1 min-w-0 overflow-y-auto pr-1">
+                <div class="flex-1 min-w-0 overflow-y-auto" style="min-width: 120px">
                     <Suspense fallback=move || view! { <LoadingSkeleton /> }>
                         {move || {
                             let effects = filtered_effects.get();
@@ -462,7 +522,7 @@ pub fn EffectsPage() -> impl IntoView {
                                 }.into_any()
                             } else {
                                 let grid_class = if has_active.get() {
-                                    "grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3"
+                                    "grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3"
                                 } else {
                                     "grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4"
                                 };
@@ -498,7 +558,7 @@ pub fn EffectsPage() -> impl IntoView {
                     </Suspense>
                 </div>
 
-                // Detail panel — independently scrollable right column
+                // Detail panel(s) — right side, visible when an effect is selected
                 //
                 // IMPORTANT: Only read active_effect_id here so that accent color
                 // changes don't rebuild the DOM (which destroys CanvasPreview and
@@ -506,94 +566,184 @@ pub fn EffectsPage() -> impl IntoView {
                 {move || {
                     fx.active_effect_id.get().map(|_| {
                         view! {
-                            <aside
-                                class="w-[380px] shrink-0 flex flex-col min-h-0 animate-slide-in-right"
-                            >
-                                // Sticky top: unified info card + preview
-                                <div class="shrink-0 space-y-2 pb-2">
-                                    // Unified effect info + preset card
-                                    <div
-                                        class="rounded-lg bg-surface-overlay/40 border border-edge-subtle px-3 py-2.5 space-y-2"
-                                        style:border-top=move || format!("2px solid rgba({}, 0.2)", accent_rgb.get())
-                                    >
-                                        // Line 1: Name + Author
-                                        <div class="flex items-center gap-2 min-w-0">
-                                            <div
-                                                class="w-2 h-2 rounded-full dot-alive shrink-0"
-                                                style:background=move || format!("rgb({})", accent_rgb.get())
-                                                style:box-shadow=move || format!("0 0 8px rgba({}, 0.6)", accent_rgb.get())
-                                            />
-                                            <span class="text-[13px] font-medium text-fg-primary truncate">
-                                                {move || fx.active_effect_name.get().unwrap_or_default()}
-                                            </span>
+                            <div style="display: contents">
+                                // Resize handle between grid and preview
+                                <ResizeHandle
+                                    on_drag_start=on_detail_drag_start
+                                    on_drag=on_detail_drag
+                                    on_drag_end=on_detail_drag_end
+                                />
+
+                                // Preview panel (always visible when effect selected)
+                                <aside
+                                    class="shrink-0 flex flex-col min-h-0 animate-slide-in-right"
+                                    style=move || format!("width: {}px", detail_width.get())
+                                >
+                                    // Info card + live preview
+                                    <div class="shrink-0 space-y-2 pb-2">
+                                        <div
+                                            class="rounded-lg bg-surface-overlay/40 border border-edge-subtle px-3 py-2.5 space-y-2"
+                                            style:border-top=move || format!("2px solid rgba({}, 0.2)", accent_rgb.get())
+                                        >
+                                            <div class="flex items-center gap-2 min-w-0">
+                                                <div
+                                                    class="w-2 h-2 rounded-full dot-alive shrink-0"
+                                                    style:background=move || format!("rgb({})", accent_rgb.get())
+                                                    style:box-shadow=move || format!("0 0 8px rgba({}, 0.6)", accent_rgb.get())
+                                                />
+                                                <span class="text-[13px] font-medium text-fg-primary truncate">
+                                                    {move || fx.active_effect_name.get().unwrap_or_default()}
+                                                </span>
+                                                {move || {
+                                                    active_effect_meta.get().map(|meta| {
+                                                        view! {
+                                                            <span class="ml-auto text-[10px] text-fg-tertiary/50 shrink-0 truncate max-w-[120px]">
+                                                                {meta.author.clone()}
+                                                            </span>
+                                                        }
+                                                    })
+                                                }}
+                                            </div>
                                             {move || {
-                                                active_effect_meta.get().map(|meta| {
-                                                    view! {
-                                                        <span class="ml-auto text-[10px] text-fg-tertiary/50 shrink-0 truncate max-w-[120px]">
-                                                            {meta.author.clone()}
-                                                        </span>
-                                                    }
+                                                active_effect_meta.get().and_then(|meta| {
+                                                    (!meta.description.is_empty()).then(|| view! {
+                                                        <p class="text-[10px] text-fg-tertiary/40 truncate pl-4 -mt-1">
+                                                            {meta.description.clone()}
+                                                        </p>
+                                                    })
                                                 })
                                             }}
+                                            <div class="h-px bg-edge-subtle/50" />
+                                            <PresetToolbar
+                                                effect_id=Signal::derive(move || fx.active_effect_id.get())
+                                                control_values=control_values
+                                                accent_rgb=accent_rgb
+                                                on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
+                                                active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
+                                            />
                                         </div>
-                                        // Line 2: Description
-                                        {move || {
-                                            active_effect_meta.get().and_then(|meta| {
-                                                (!meta.description.is_empty()).then(|| view! {
-                                                    <p class="text-[10px] text-fg-tertiary/40 truncate pl-4 -mt-1">
-                                                        {meta.description.clone()}
-                                                    </p>
-                                                })
-                                            })
-                                        }}
-                                        // Divider
-                                        <div class="h-px bg-edge-subtle/50" />
-                                        // Preset toolbar
-                                        <PresetToolbar
-                                            effect_id=Signal::derive(move || fx.active_effect_id.get())
-                                            control_values=control_values
-                                            accent_rgb=accent_rgb
-                                            on_preset_applied=Callback::new(move |()| fx.refresh_active_effect())
-                                            active_preset_id_signal=Signal::derive(move || fx.active_preset_id.get())
-                                        />
-                                    </div>
 
-                                    // Live preview
-                                    <div class="rounded-lg bg-black overflow-hidden edge-glow">
-                                        <CanvasPreview
-                                            frame=ws.canvas_frame
-                                            fps=ws.preview_fps
-                                            show_fps=true
-                                            fps_target=ws.preview_target_fps
-                                        />
-                                    </div>
-                                </div>
-
-                                // Scrollable controls
-                                <div
-                                    class="flex-1 min-h-0 overflow-y-auto"
-                                    style="overscroll-behavior: contain"
-                                >
-                                    <div
-                                        class="rounded-lg bg-surface-raised border border-edge-subtle p-2.5 edge-glow"
-                                        style:border-top=move || format!("2px solid rgba({}, 0.15)", accent_rgb.get())
-                                    >
-                                        <div class="flex items-center gap-1.5 mb-2">
-                                            <Icon icon=LuSettings width="12px" height="12px" style="color: rgba(139, 133, 160, 1)" />
-                                            <h3 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">
-                                                "Controls"
-                                            </h3>
+                                        <div class="rounded-lg bg-black overflow-hidden edge-glow">
+                                            <CanvasPreview
+                                                frame=ws.canvas_frame
+                                                fps=ws.preview_fps
+                                                show_fps=true
+                                                fps_target=ws.preview_target_fps
+                                            />
                                         </div>
-                                        <ControlPanel
-                                            controls=controls
-                                            control_values=control_values
-                                            accent_rgb=accent_rgb
-                                            on_change=on_control_change
-                                        />
                                     </div>
-                                </div>
 
-                            </aside>
+                                    // Controls (docked mode — inside preview panel)
+                                    {move || (!controls_detached.get()).then(|| {
+                                        view! {
+                                            <div
+                                                class="flex-1 min-h-0 overflow-y-auto"
+                                                style="overscroll-behavior: contain"
+                                            >
+                                                <div
+                                                    class="rounded-xl bg-surface-raised/80 border border-edge-subtle p-3 edge-glow"
+                                                    style:border-top=move || format!("2px solid rgba({}, 0.2)", accent_rgb.get())
+                                                >
+                                                    <div class="flex items-center gap-2 mb-3 pb-2 border-b border-edge-subtle/50">
+                                                        <div
+                                                            class="w-6 h-6 rounded-md flex items-center justify-center"
+                                                            style=move || format!(
+                                                                "background: rgba({0}, 0.1); box-shadow: 0 0 8px rgba({0}, 0.08)",
+                                                                accent_rgb.get()
+                                                            )
+                                                        >
+                                                            <span style=move || format!("color: rgba({}, 0.7)", accent_rgb.get())>
+                                                                <Icon icon=LuSettings2 width="13px" height="13px" />
+                                                            </span>
+                                                        </div>
+                                                        <h3 class="text-[11px] font-semibold tracking-wide text-fg-secondary uppercase">
+                                                            "Controls"
+                                                        </h3>
+                                                        <div class="flex-1" />
+                                                        <button
+                                                            class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"
+                                                            title="Float controls into separate panel"
+                                                            on:click=move |_| {
+                                                                set_controls_detached.set(true);
+                                                                persist_to_storage("hc-fx-controls-detached", "true");
+                                                            }
+                                                        >
+                                                            <Icon icon=LuUnlink width="11px" height="11px" />
+                                                        </button>
+                                                    </div>
+                                                    <ControlPanel
+                                                        controls=controls
+                                                        control_values=control_values
+                                                        accent_rgb=accent_rgb
+                                                        on_change=on_control_change
+                                                    />
+                                                </div>
+                                            </div>
+                                        }
+                                    })}
+                                </aside>
+
+                                // Controls (detached mode — own column with resize handle)
+                                {move || controls_detached.get().then(|| {
+                                    view! {
+                                        <div style="display: contents">
+                                            <ResizeHandle
+                                                on_drag_start=on_controls_drag_start
+                                                on_drag=on_controls_drag
+                                                on_drag_end=on_controls_drag_end
+                                            />
+                                            <aside
+                                                class="shrink-0 flex flex-col min-h-0 animate-slide-in-right"
+                                                style=move || format!("width: {}px", controls_width.get())
+                                            >
+                                                <div
+                                                    class="flex-1 min-h-0 overflow-y-auto"
+                                                    style="overscroll-behavior: contain"
+                                                >
+                                                    <div
+                                                        class="rounded-xl bg-surface-raised/80 border border-edge-subtle p-3 edge-glow"
+                                                        style:border-top=move || format!("2px solid rgba({}, 0.2)", accent_rgb.get())
+                                                    >
+                                                        <div class="flex items-center gap-2 mb-3 pb-2 border-b border-edge-subtle/50">
+                                                            <div
+                                                                class="w-6 h-6 rounded-md flex items-center justify-center"
+                                                                style=move || format!(
+                                                                    "background: rgba({0}, 0.1); box-shadow: 0 0 8px rgba({0}, 0.08)",
+                                                                    accent_rgb.get()
+                                                                )
+                                                            >
+                                                                <span style=move || format!("color: rgba({}, 0.7)", accent_rgb.get())>
+                                                                    <Icon icon=LuSettings2 width="13px" height="13px" />
+                                                                </span>
+                                                            </div>
+                                                            <h3 class="text-[11px] font-semibold tracking-wide text-fg-secondary uppercase">
+                                                                "Controls"
+                                                            </h3>
+                                                            <div class="flex-1" />
+                                                            <button
+                                                                class="p-1 rounded-md hover:bg-surface-hover/40 text-fg-tertiary/50 hover:text-fg-secondary transition-all duration-150"
+                                                                title="Dock controls back"
+                                                                on:click=move |_| {
+                                                                    set_controls_detached.set(false);
+                                                                    persist_to_storage("hc-fx-controls-detached", "false");
+                                                                }
+                                                            >
+                                                                <Icon icon=LuLink width="11px" height="11px" />
+                                                            </button>
+                                                        </div>
+                                                        <ControlPanel
+                                                            controls=controls
+                                                            control_values=control_values
+                                                            accent_rgb=accent_rgb
+                                                            on_change=on_control_change
+                                                        />
+                                                    </div>
+                                                </div>
+                                            </aside>
+                                        </div>
+                                    }
+                                })}
+                            </div>
                         }
                     })
                 }}
@@ -775,6 +925,25 @@ fn hex_to_color_value(hex: &str) -> Option<ControlValue> {
         f32::from(blue) / 255.0,
         1.0,
     ]))
+}
+
+fn toggle_body_resizing(active: bool) {
+    if let Some(body) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.body())
+    {
+        if active {
+            let _ = body.class_list().add_1("resizing");
+        } else {
+            let _ = body.class_list().remove_1("resizing");
+        }
+    }
+}
+
+fn persist_to_storage(key: &str, value: &str) {
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = storage.set_item(key, value);
+    }
 }
 
 /// Loading skeleton for the effects grid.

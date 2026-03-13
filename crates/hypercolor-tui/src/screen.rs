@@ -8,7 +8,6 @@ pub enum ScreenId {
     #[default]
     Dashboard,
     EffectBrowser,
-    EffectControl,
     DeviceManager,
     Profiles,
     Settings,
@@ -22,7 +21,6 @@ impl ScreenId {
         match self {
             Self::Dashboard => 'D',
             Self::EffectBrowser => 'E',
-            Self::EffectControl => 'C',
             Self::DeviceManager => 'V',
             Self::Profiles => 'P',
             Self::Settings => 'S',
@@ -36,7 +34,6 @@ impl ScreenId {
         match self {
             Self::Dashboard => "Dash",
             Self::EffectBrowser => "Effx",
-            Self::EffectControl => "Ctrl",
             Self::DeviceManager => "Devs",
             Self::Profiles => "Prof",
             Self::Settings => "Sttg",
@@ -50,7 +47,6 @@ impl ScreenId {
         match self {
             Self::Dashboard => "Dashboard",
             Self::EffectBrowser => "Effects",
-            Self::EffectControl => "Controls",
             Self::DeviceManager => "Devices",
             Self::Profiles => "Profiles",
             Self::Settings => "Settings",
@@ -64,7 +60,6 @@ impl ScreenId {
         &[
             Self::Dashboard,
             Self::EffectBrowser,
-            Self::EffectControl,
             Self::DeviceManager,
             Self::Profiles,
             Self::Settings,
@@ -78,7 +73,6 @@ impl ScreenId {
         match c {
             'D' | 'd' => Some(Self::Dashboard),
             'E' | 'e' => Some(Self::EffectBrowser),
-            'C' | 'c' => Some(Self::EffectControl),
             'V' | 'v' => Some(Self::DeviceManager),
             'P' | 'p' => Some(Self::Profiles),
             'S' | 's' => Some(Self::Settings),

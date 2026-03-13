@@ -3,8 +3,8 @@
 use hypercolor_tui::screen::ScreenId;
 
 #[test]
-fn all_screens_returns_seven() {
-    assert_eq!(ScreenId::all().len(), 7);
+fn all_screens_returns_six() {
+    assert_eq!(ScreenId::all().len(), 6);
 }
 
 #[test]
@@ -16,7 +16,6 @@ fn default_screen_is_dashboard() {
 fn from_key_lowercase() {
     assert_eq!(ScreenId::from_key('d'), Some(ScreenId::Dashboard));
     assert_eq!(ScreenId::from_key('e'), Some(ScreenId::EffectBrowser));
-    assert_eq!(ScreenId::from_key('c'), Some(ScreenId::EffectControl));
     assert_eq!(ScreenId::from_key('v'), Some(ScreenId::DeviceManager));
     assert_eq!(ScreenId::from_key('p'), Some(ScreenId::Profiles));
     assert_eq!(ScreenId::from_key('s'), Some(ScreenId::Settings));
@@ -27,7 +26,6 @@ fn from_key_lowercase() {
 fn from_key_uppercase() {
     assert_eq!(ScreenId::from_key('D'), Some(ScreenId::Dashboard));
     assert_eq!(ScreenId::from_key('E'), Some(ScreenId::EffectBrowser));
-    assert_eq!(ScreenId::from_key('C'), Some(ScreenId::EffectControl));
 }
 
 #[test]
@@ -35,6 +33,7 @@ fn from_key_unmapped_returns_none() {
     assert_eq!(ScreenId::from_key('x'), None);
     assert_eq!(ScreenId::from_key('q'), None);
     assert_eq!(ScreenId::from_key('1'), None);
+    assert_eq!(ScreenId::from_key('c'), None);
 }
 
 #[test]
@@ -85,5 +84,5 @@ fn screen_id_hash_eq() {
     for &screen in ScreenId::all() {
         assert!(set.insert(screen), "duplicate screen: {screen:?}");
     }
-    assert_eq!(set.len(), 7);
+    assert_eq!(set.len(), 6);
 }

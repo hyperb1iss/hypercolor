@@ -599,6 +599,49 @@ button:hover:not(:disabled) > .relative {
     display: none;
 }
 
+/* ── Resize Handle ─────────────────────────────────────────────────────── */
+
+.resize-handle-zone {
+    width: 10px;
+    margin: 0 -1px;
+    cursor: col-resize;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 5;
+}
+
+.resize-handle-line {
+    width: 2px;
+    height: 40px;
+    border-radius: 999px;
+    background: var(--border-subtle, rgba(139, 133, 160, 0.12));
+    transition: all 200ms ease;
+}
+
+.resize-handle-zone:hover .resize-handle-line {
+    background: rgba(225, 53, 255, 0.45);
+    height: 64px;
+    box-shadow: 0 0 10px rgba(225, 53, 255, 0.2);
+}
+
+.resize-handle-active .resize-handle-line {
+    background: rgba(225, 53, 255, 0.65);
+    height: 80px;
+    box-shadow: 0 0 14px rgba(225, 53, 255, 0.35);
+}
+
+/* Lock cursor & prevent selection during panel resize drag */
+body.resizing {
+    cursor: col-resize !important;
+    user-select: none !important;
+}
+body.resizing * {
+    cursor: col-resize !important;
+}
+
 /* ── Logo Animations ────────────────────────────────────────────────────── */
 
 /* Shared gradient text base */

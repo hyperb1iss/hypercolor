@@ -3,14 +3,16 @@
 //! falling back to the definition's `default_value`.
 
 use leptos::prelude::*;
+use leptos_icons::Icon;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use wasm_bindgen::prelude::*;
 
 use hypercolor_types::canvas::{linear_to_srgb, srgb_to_linear};
-use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
+use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
 
 use super::color_wheel::ColorWheel;
+use crate::icons::*;
 
 const QUICK_COLOR_SWATCHES: [&str; 10] = [
     "#6000fc", "#e135ff", "#ff6ac1", "#80ffea", "#f1fa8c", "#50fa7b", "#82aaff", "#ffffff",
@@ -26,6 +28,29 @@ fn effective_value(
         .get(def.control_id())
         .cloned()
         .unwrap_or_else(|| def.default_value.clone())
+}
+
+/// Map a control's semantic kind to a Lucide icon.
+fn control_icon(kind: &ControlKind, control_type: &ControlType) -> icondata::Icon {
+    match kind {
+        ControlKind::Color | ControlKind::Hue => LuPalette,
+        ControlKind::Boolean => LuToggleLeft,
+        ControlKind::Combobox => LuList,
+        ControlKind::Sensor => LuCpu,
+        ControlKind::Area | ControlKind::Number => match control_type {
+            ControlType::Slider => LuGauge,
+            _ => LuSettings2,
+        },
+        ControlKind::Text => LuType,
+        ControlKind::Other(_) => match control_type {
+            ControlType::Slider => LuGauge,
+            ControlType::Toggle => LuToggleLeft,
+            ControlType::ColorPicker => LuPalette,
+            ControlType::Dropdown => LuList,
+            ControlType::TextInput => LuType,
+            ControlType::GradientEditor => LuPalette,
+        },
+    }
 }
 
 /// Auto-generated control panel for the active effect.
@@ -58,13 +83,13 @@ pub fn ControlPanel(
     });
 
     view! {
-        <div class="space-y-0.5">
+        <div class="space-y-1">
             {move || {
                 let groups = grouped.get();
                 if groups.is_empty() {
                     view! {
-                        <div class="text-center py-4">
-                            <div class="text-fg-tertiary/50 text-[11px]">"No controls available"</div>
+                        <div class="text-center py-6">
+                            <div class="text-fg-tertiary/40 text-xs">"No controls available"</div>
                         </div>
                     }.into_any()
                 } else {
@@ -72,17 +97,16 @@ pub fn ControlPanel(
                     let total_groups = groups.len();
                     groups.into_iter().map(|(group, items)| {
                         let values = values.clone();
-                        // Only show group header for non-General groups when there are multiple groups
                         let show_header = total_groups > 1 && group != "General";
                         view! {
                             <div class="animate-fade-in-up">
                                 {show_header.then(|| view! {
-                                    <div class="flex items-center gap-2 mt-2 mb-1">
-                                        <div class="h-px flex-1 bg-border-subtle" />
-                                        <h4 class="text-[8px] font-mono uppercase tracking-[0.2em] text-fg-tertiary/50 shrink-0">
+                                    <div class="flex items-center gap-2.5 mt-3 mb-1.5 px-1">
+                                        <div class="h-px flex-1 bg-gradient-to-r from-transparent via-border-subtle to-transparent" />
+                                        <h4 class="text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary/60 shrink-0">
                                             {group.clone()}
                                         </h4>
-                                        <div class="h-px flex-1 bg-border-subtle" />
+                                        <div class="h-px flex-1 bg-gradient-to-r from-transparent via-border-subtle to-transparent" />
                                     </div>
                                 })}
                                 {items.into_iter().enumerate().map(|(i, (def, rgb))| {
@@ -145,6 +169,8 @@ fn ControlWidget(
     let name = def.name.clone();
     let control_id = def.control_id().to_owned();
     let tooltip = def.tooltip.clone();
+    let icon = control_icon(&def.kind, &def.control_type);
+    let icon_style = format!("color: rgba({}, 0.55)", accent_rgb);
 
     match def.control_type {
         ControlType::Slider => {
@@ -170,9 +196,10 @@ fn ControlWidget(
             };
 
             view! {
-                <div class="flex items-center gap-2 rounded px-2.5 py-1.5 hover:bg-surface-hover/20 transition-colors duration-150"
+                <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-150 group"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-[11px] text-fg-secondary font-medium shrink-0 w-[100px] truncate">{name.clone()}</label>
+                    <Icon icon=icon width="13px" height="13px" style=icon_style.clone() />
+                    <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] max-w-[120px] truncate">{name.clone()}</label>
                     <input
                         type="range"
                         class="flex-1 min-w-0 cursor-pointer"
@@ -191,7 +218,7 @@ fn ControlWidget(
                             }
                         }
                     />
-                    <span class="text-[10px] font-mono tabular-nums w-[32px] text-right shrink-0 px-1 rounded"
+                    <span class="text-[10px] font-mono tabular-nums w-[36px] text-right shrink-0 px-1.5 py-0.5 rounded"
                           style=badge_style>
                         {fmt_value}
                     </span>
@@ -208,12 +235,13 @@ fn ControlWidget(
             );
 
             view! {
-                <div class="flex items-center gap-2 rounded px-2.5 py-1.5 hover:bg-surface-hover/20 transition-colors duration-150"
+                <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-150 group"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-[11px] text-fg-secondary font-medium shrink-0 w-[100px] truncate">{name.clone()}</label>
+                    <Icon icon=icon width="13px" height="13px" style=icon_style.clone() />
+                    <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] truncate">{name.clone()}</label>
                     <div class="flex-1" />
                     <button
-                        class="relative w-9 h-[18px] rounded-full toggle-track shrink-0"
+                        class="relative w-10 h-5 rounded-full toggle-track shrink-0"
                         class=("toggle-track-on", move || checked.get())
                         style=move || if checked.get() { on_style.clone() } else { "background: rgba(255,255,255,0.08)".to_string() }
                         on:click=move |_| {
@@ -225,9 +253,9 @@ fn ControlWidget(
                         <div
                             class=move || {
                                 if checked.get() {
-                                    "absolute top-[2px] w-3.5 h-3.5 rounded-full toggle-thumb translate-x-[19px] bg-white toggle-thumb-on"
+                                    "absolute top-[3px] w-3.5 h-3.5 rounded-full toggle-thumb translate-x-[21px] bg-white toggle-thumb-on"
                                 } else {
-                                    "absolute top-[2px] w-3.5 h-3.5 rounded-full toggle-thumb translate-x-[2px] bg-fg-tertiary"
+                                    "absolute top-[3px] w-3.5 h-3.5 rounded-full toggle-thumb translate-x-[3px] bg-fg-tertiary"
                                 }
                             }
                         />
@@ -261,14 +289,14 @@ fn ControlWidget(
             });
 
             view! {
-                <div class="relative rounded px-2 py-1 transition-colors duration-150"
+                <div class="relative rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-150 group"
                      title=tooltip.unwrap_or_default()>
-                    // Trigger row — swatch + label + hex value
-                    <div class="flex items-center gap-2">
+                    // Trigger row — icon + swatch + label + hex value
+                    <div class="flex items-center gap-2.5">
                         <button
                             type="button"
-                            class="h-6 w-6 shrink-0 rounded-lg border border-edge-default swatch-glow
-                                   transition-all duration-200 hover:border-edge-strong"
+                            class="h-7 w-7 shrink-0 rounded-lg border border-edge-default swatch-glow
+                                   transition-all duration-200 hover:border-edge-strong hover:scale-105"
                             style=move || format!(
                                 "background: linear-gradient(145deg, {0}, color-mix(in srgb, {0} 65%, black)); \
                                  --swatch-color: {0}55",
@@ -287,8 +315,8 @@ fn ControlWidget(
                                 }
                             }
                         />
-                        <label class="text-[11px] text-fg-secondary font-medium truncate flex-1 min-w-0">{name.clone()}</label>
-                        <span class="text-[9px] font-mono text-fg-tertiary/60 uppercase shrink-0">
+                        <label class="text-xs text-fg-secondary font-medium truncate flex-1 min-w-0">{name.clone()}</label>
+                        <span class="text-[10px] font-mono text-fg-tertiary/50 uppercase shrink-0">
                             {move || color.get().to_uppercase()}
                         </span>
                     </div>
@@ -408,11 +436,12 @@ fn ControlWidget(
             let control_name = control_id.clone();
 
             view! {
-                <div class="flex items-center gap-2 rounded px-2.5 py-1.5 hover:bg-surface-hover/20 transition-colors duration-150"
+                <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-150 group"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-[11px] text-fg-secondary font-medium shrink-0 w-[100px] truncate">{name.clone()}</label>
+                    <Icon icon=icon width="13px" height="13px" style=icon_style.clone() />
+                    <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] max-w-[120px] truncate">{name.clone()}</label>
                     <select
-                        class="flex-1 min-w-0 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-xs text-fg-primary
+                        class="flex-1 min-w-0 bg-surface-sunken border border-edge-subtle rounded-lg px-2.5 py-1.5 text-xs text-fg-primary
                                focus:outline-none focus:border-accent-muted glow-ring
                                cursor-pointer transition-all duration-150"
                         prop:value=move || selected.get()
@@ -445,12 +474,13 @@ fn ControlWidget(
             let control_name = control_id.clone();
 
             view! {
-                <div class="flex items-center gap-2 rounded px-2.5 py-1.5 hover:bg-surface-hover/20 transition-colors duration-150"
+                <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-150 group"
                      title=tooltip.unwrap_or_default()>
-                    <label class="text-[11px] text-fg-secondary font-medium shrink-0 w-[100px] truncate">{name.clone()}</label>
+                    <Icon icon=icon width="13px" height="13px" style=icon_style.clone() />
+                    <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] max-w-[120px] truncate">{name.clone()}</label>
                     <input
                         type="text"
-                        class="flex-1 min-w-0 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1 text-xs text-fg-primary
+                        class="flex-1 min-w-0 bg-surface-sunken border border-edge-subtle rounded-lg px-2.5 py-1.5 text-xs text-fg-primary
                                focus:outline-none focus:border-accent-muted glow-ring
                                placeholder-fg-tertiary/40 transition-all duration-150"
                         prop:value=move || text.get()
@@ -469,9 +499,10 @@ fn ControlWidget(
         }
         ControlType::GradientEditor => {
             view! {
-                <div class="flex items-center gap-2 rounded px-2 py-1 opacity-40">
-                    <label class="text-[11px] text-fg-secondary font-medium shrink-0 w-[100px] truncate">{name.clone()}</label>
-                    <div class="flex-1 h-4 rounded bg-gradient-to-r from-electric-purple via-neon-cyan to-coral opacity-30" />
+                <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 opacity-40">
+                    <Icon icon=icon width="13px" height="13px" style=icon_style.clone() />
+                    <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] max-w-[120px] truncate">{name.clone()}</label>
+                    <div class="flex-1 h-5 rounded-lg bg-gradient-to-r from-electric-purple via-neon-cyan to-coral opacity-30" />
                 </div>
             }.into_any()
         }

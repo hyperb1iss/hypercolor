@@ -1,10 +1,11 @@
-//! Effect browser view — browse, search, preview, and apply effects.
+//! Effect browser view — 3-pane layout: browse, preview, and control effects.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -14,30 +15,40 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::action::Action;
 use crate::component::Component;
-use crate::state::{CanvasFrame, ControlValue, EffectSummary};
-use crate::widgets::{HalfBlockCanvas, ParamSlider};
+use crate::state::{ControlDefinition, ControlValue, EffectSummary};
+use crate::widgets::{ColorPickerPopup, HalfBlockCanvas, ParamSlider, hsl_to_rgb, rgb_to_hsl};
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
 
 const NEON_CYAN: Color = Color::Rgb(128, 255, 234);
 const ELECTRIC_PURPLE: Color = Color::Rgb(225, 53, 255);
-const CORAL: Color = Color::Rgb(255, 106, 193);
 const ELECTRIC_YELLOW: Color = Color::Rgb(241, 250, 140);
 const SUCCESS_GREEN: Color = Color::Rgb(80, 250, 123);
 const BASE_WHITE: Color = Color::Rgb(248, 248, 242);
 const DIM_GRAY: Color = Color::Rgb(98, 114, 164);
 const BORDER_DIM: Color = Color::Rgb(90, 21, 102);
 
+/// Slider adjustment step when no `step` is defined on the control.
+const DEFAULT_STEP: f32 = 0.05;
+
 /// Focus panel within the effect browser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FocusPane {
     List,
     Preview,
+    Controls,
+}
+
+/// Color picker popup state.
+struct ColorPickerState {
+    ctrl_idx: usize,
+    hsl: [f32; 3],
+    selected_channel: usize,
 }
 
 // ── Effect Browser View ────────────────────────────────────────────────
 
-/// Two-pane effect browser with search, category grouping, and canvas preview.
+/// Three-pane effect browser: list (left), preview (top-right), controls (bottom-right).
 pub struct EffectBrowserView {
     focused: bool,
     action_tx: Option<UnboundedSender<Action>>,
@@ -56,7 +67,19 @@ pub struct EffectBrowserView {
     search_query: String,
 
     // Canvas preview
-    canvas_frame: Option<Arc<CanvasFrame>>,
+    canvas_frame: Option<Arc<crate::state::CanvasFrame>>,
+
+    // Control interaction state
+    control_values: HashMap<String, ControlValue>,
+    selected_control: usize,
+    color_picker: Option<ColorPickerState>,
+
+    // Layout cache for mouse hit-testing (populated during render)
+    list_rect: Cell<Rect>,
+    preview_rect: Cell<Rect>,
+    controls_rect: Cell<Rect>,
+    list_inner_rect: Cell<Rect>,
+    controls_content_y: Cell<u16>,
 }
 
 impl Default for EffectBrowserView {
@@ -81,10 +104,19 @@ impl EffectBrowserView {
             search_active: false,
             search_query: String::new(),
             canvas_frame: None,
+            control_values: HashMap::new(),
+            selected_control: 0,
+            color_picker: None,
+            list_rect: Cell::new(Rect::default()),
+            preview_rect: Cell::new(Rect::default()),
+            controls_rect: Cell::new(Rect::default()),
+            list_inner_rect: Cell::new(Rect::default()),
+            controls_content_y: Cell::new(0),
         }
     }
 
-    /// Apply the current search query to filter effects.
+    // ── Filtering & selection ────────────────────────────────────────
+
     fn apply_filter(&mut self) {
         let query = self.search_query.to_lowercase();
         if query.is_empty() {
@@ -105,7 +137,6 @@ impl EffectBrowserView {
         self.scroll_offset.set(0);
     }
 
-    /// Clamp the selected index to valid bounds.
     fn clamp_selection(&mut self) {
         if self.effects.is_empty() {
             self.selected_index = 0;
@@ -117,17 +148,218 @@ impl EffectBrowserView {
         self.selected_preset = 0;
     }
 
-    /// Check if an effect is in the favorites list.
     fn is_favorite(&self, id: &str) -> bool {
         self.favorites.iter().any(|f| f == id)
     }
 
-    /// Get the currently selected effect, if any.
     fn selected_effect(&self) -> Option<&EffectSummary> {
         self.effects.get(self.selected_index)
     }
 
-    /// Handle key events when the search bar is active.
+    /// Load control defaults for the selected effect.
+    fn sync_controls_to_selection(&mut self) {
+        self.control_values.clear();
+        self.selected_control = 0;
+        self.color_picker = None;
+        if let Some(effect) = self.effects.get(self.selected_index) {
+            let defaults: Vec<_> = effect
+                .controls
+                .iter()
+                .map(|c| (c.id.clone(), c.default_value.clone()))
+                .collect();
+            for (id, val) in defaults {
+                self.control_values.insert(id, val);
+            }
+        }
+    }
+
+    // ── Control value helpers ────────────────────────────────────────
+
+    fn adjust_slider(&mut self, ctrl_idx: usize, direction: f32) -> Option<Action> {
+        let ctrl = self.effects.get(self.selected_index)?.controls.get(ctrl_idx)?.clone();
+        let current = current_value(&self.control_values, &ctrl).as_f32().unwrap_or(0.0);
+        let step = ctrl.step.unwrap_or(DEFAULT_STEP);
+        let min = ctrl.min.unwrap_or(0.0);
+        let max = ctrl.max.unwrap_or(1.0);
+
+        let new_val = (current + step * direction).clamp(min, max);
+        let new_cv = ControlValue::Float(new_val);
+        self.control_values.insert(ctrl.id.clone(), new_cv.clone());
+        Some(Action::UpdateControl(ctrl.id, new_cv))
+    }
+
+    fn toggle_bool(&mut self, ctrl_idx: usize) -> Option<Action> {
+        let ctrl = self.effects.get(self.selected_index)?.controls.get(ctrl_idx)?.clone();
+        let current = current_value(&self.control_values, &ctrl).as_bool().unwrap_or(false);
+        let new_cv = ControlValue::Boolean(!current);
+        self.control_values.insert(ctrl.id.clone(), new_cv.clone());
+        Some(Action::UpdateControl(ctrl.id, new_cv))
+    }
+
+    fn cycle_dropdown(&mut self, ctrl_idx: usize, forward: bool) -> Option<Action> {
+        let ctrl = self.effects.get(self.selected_index)?.controls.get(ctrl_idx)?.clone();
+        if ctrl.labels.is_empty() {
+            return None;
+        }
+        let current_text = match current_value(&self.control_values, &ctrl) {
+            ControlValue::Text(s) => s,
+            _ => String::new(),
+        };
+        let current_idx = ctrl
+            .labels
+            .iter()
+            .position(|l| l == &current_text)
+            .unwrap_or(0);
+        let new_idx = if forward {
+            (current_idx + 1) % ctrl.labels.len()
+        } else if current_idx == 0 {
+            ctrl.labels.len().saturating_sub(1)
+        } else {
+            current_idx - 1
+        };
+        let new_text = ctrl.labels.get(new_idx)?.clone();
+        let new_cv = ControlValue::Text(new_text);
+        self.control_values.insert(ctrl.id.clone(), new_cv.clone());
+        Some(Action::UpdateControl(ctrl.id, new_cv))
+    }
+
+    // ── Mouse helpers ─────────────────────────────────────────────────
+
+    /// Map a visual row offset (within the list area) to an effect index.
+    fn effect_index_at_visual_row(&self, target_row: usize) -> Option<usize> {
+        let mut visual_row = 0;
+        let mut current_category = String::new();
+
+        for (flat_idx, effect) in self.effects.iter().enumerate() {
+            if effect.category != current_category {
+                if !current_category.is_empty() {
+                    visual_row += 1; // blank separator
+                }
+                visual_row += 1; // category header
+                current_category.clone_from(&effect.category);
+            }
+
+            if visual_row == target_row {
+                return Some(flat_idx);
+            }
+            visual_row += 1;
+        }
+        None
+    }
+
+    fn select_effect_at_row(&mut self, row: u16) {
+        let inner = self.list_inner_rect.get();
+        let list_content_y = inner.y + 2; // after search bar + gap
+        if row < list_content_y {
+            return;
+        }
+        let visible_row = usize::from(row - list_content_y);
+        let absolute_row = visible_row + self.scroll_offset.get();
+        if let Some(idx) = self.effect_index_at_visual_row(absolute_row)
+            && idx != self.selected_index
+        {
+            self.selected_index = idx;
+            self.selected_preset = 0;
+            self.sync_controls_to_selection();
+        }
+    }
+
+    fn select_control_at_row(&mut self, row: u16) {
+        let start_y = self.controls_content_y.get();
+        if row < start_y {
+            return;
+        }
+        let offset = usize::from(row - start_y);
+        let ctrl_idx = offset / 2; // 2 rows per control (content + padding)
+        let ctrl_count = self
+            .selected_effect()
+            .map_or(0, |e| e.controls.len());
+        if ctrl_idx < ctrl_count {
+            self.selected_control = ctrl_idx;
+        }
+    }
+
+    // ── Color picker ─────────────────────────────────────────────────
+
+    fn open_color_picker(&mut self) {
+        let idx = self.selected_control;
+        let Some(ctrl) = self
+            .effects
+            .get(self.selected_index)
+            .and_then(|e| e.controls.get(idx).cloned())
+        else {
+            return;
+        };
+        if ctrl.control_type == "color" {
+            let color_arr = match current_value(&self.control_values, &ctrl) {
+                ControlValue::Color(c) => c,
+                _ => [0.5, 0.5, 0.5, 1.0],
+            };
+            let (h, s, l) = rgb_to_hsl(color_arr[0], color_arr[1], color_arr[2]);
+            self.color_picker = Some(ColorPickerState {
+                ctrl_idx: idx,
+                hsl: [h, s, l],
+                selected_channel: 0,
+            });
+        }
+    }
+
+    fn confirm_color_picker(&mut self) -> Option<Action> {
+        let picker = self.color_picker.take()?;
+        let ctrl = self
+            .effects
+            .get(self.selected_index)?
+            .controls
+            .get(picker.ctrl_idx)?
+            .clone();
+        let (r, g, b) = hsl_to_rgb(picker.hsl[0], picker.hsl[1], picker.hsl[2]);
+        let alpha = match current_value(&self.control_values, &ctrl) {
+            ControlValue::Color(c) => c[3],
+            _ => 1.0,
+        };
+        let new_cv = ControlValue::Color([r, g, b, alpha]);
+        self.control_values.insert(ctrl.id.clone(), new_cv.clone());
+        Some(Action::UpdateControl(ctrl.id, new_cv))
+    }
+
+    fn handle_picker_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let picker = self.color_picker.as_mut()?;
+        match key.code {
+            KeyCode::Esc => {
+                self.color_picker = None;
+                None
+            }
+            KeyCode::Enter => self.confirm_color_picker(),
+            KeyCode::Down => {
+                picker.selected_channel = (picker.selected_channel + 1).min(2);
+                None
+            }
+            KeyCode::Up => {
+                picker.selected_channel = picker.selected_channel.saturating_sub(1);
+                None
+            }
+            KeyCode::Left => {
+                let step = match picker.selected_channel {
+                    0 => -5.0,
+                    _ => -0.02,
+                };
+                adjust_hsl_channel(&mut picker.hsl, picker.selected_channel, step);
+                None
+            }
+            KeyCode::Right => {
+                let step = match picker.selected_channel {
+                    0 => 5.0,
+                    _ => 0.02,
+                };
+                adjust_hsl_channel(&mut picker.hsl, picker.selected_channel, step);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    // ── Key handlers ─────────────────────────────────────────────────
+
     fn handle_search_key(&mut self, key: KeyEvent) -> Option<Action> {
         match key.code {
             KeyCode::Esc => {
@@ -154,26 +386,57 @@ impl EffectBrowserView {
         }
     }
 
-    /// Handle key events when navigating the effect list.
     fn handle_list_key(&mut self, key: KeyEvent) -> Option<Action> {
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Down => {
                 if !self.effects.is_empty() {
                     let new = (self.selected_index + 1)
                         .min(self.effects.len().saturating_sub(1));
                     if new != self.selected_index {
                         self.selected_index = new;
                         self.selected_preset = 0;
+                        self.sync_controls_to_selection();
                     }
                 }
                 None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Up => {
                 let new = self.selected_index.saturating_sub(1);
                 if new != self.selected_index {
                     self.selected_index = new;
                     self.selected_preset = 0;
+                    self.sync_controls_to_selection();
                 }
+                None
+            }
+            KeyCode::Home => {
+                self.selected_index = 0;
+                self.selected_preset = 0;
+                self.scroll_offset.set(0);
+                self.sync_controls_to_selection();
+                None
+            }
+            KeyCode::End => {
+                if !self.effects.is_empty() {
+                    self.selected_index = self.effects.len().saturating_sub(1);
+                    self.selected_preset = 0;
+                    self.sync_controls_to_selection();
+                }
+                None
+            }
+            KeyCode::PageDown => {
+                if !self.effects.is_empty() {
+                    self.selected_index = (self.selected_index + 10)
+                        .min(self.effects.len().saturating_sub(1));
+                    self.selected_preset = 0;
+                    self.sync_controls_to_selection();
+                }
+                None
+            }
+            KeyCode::PageUp => {
+                self.selected_index = self.selected_index.saturating_sub(10);
+                self.selected_preset = 0;
+                self.sync_controls_to_selection();
                 None
             }
             KeyCode::Char('/') => {
@@ -186,31 +449,13 @@ impl EffectBrowserView {
             KeyCode::Char('f') => self
                 .selected_effect()
                 .map(|e| Action::ToggleFavorite(e.id.clone())),
-            KeyCode::Tab => {
-                self.focus_pane = FocusPane::Preview;
-                None
-            }
-            KeyCode::Char('g') => {
-                self.selected_index = 0;
-                self.selected_preset = 0;
-                self.scroll_offset.set(0);
-                None
-            }
-            KeyCode::Char('G') => {
-                if !self.effects.is_empty() {
-                    self.selected_index = self.effects.len().saturating_sub(1);
-                    self.selected_preset = 0;
-                }
-                None
-            }
             _ => None,
         }
     }
 
-    /// Handle key events when browsing presets in the preview pane.
     fn handle_preview_key(&mut self, key: KeyEvent) -> Option<Action> {
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Down => {
                 let count = self
                     .selected_effect()
                     .map_or(0, |e| e.presets.len());
@@ -220,7 +465,7 @@ impl EffectBrowserView {
                 }
                 None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Up => {
                 self.selected_preset = self.selected_preset.saturating_sub(1);
                 None
             }
@@ -241,20 +486,16 @@ impl EffectBrowserView {
             KeyCode::Char('f') => self
                 .selected_effect()
                 .map(|e| Action::ToggleFavorite(e.id.clone())),
-            KeyCode::Tab => {
-                self.focus_pane = FocusPane::List;
-                None
-            }
             KeyCode::Char('/') => {
                 self.search_active = true;
                 self.focus_pane = FocusPane::List;
                 None
             }
-            KeyCode::Char('g') => {
+            KeyCode::Home => {
                 self.selected_preset = 0;
                 None
             }
-            KeyCode::Char('G') => {
+            KeyCode::End => {
                 let count = self
                     .selected_effect()
                     .map_or(0, |e| e.presets.len());
@@ -267,9 +508,79 @@ impl EffectBrowserView {
         }
     }
 
-    // ── Panel renderers ─────────────────────────────────────────────
+    fn handle_controls_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let ctrl_count = self
+            .selected_effect()
+            .map_or(0, |e| e.controls.len());
 
-    /// Render the left pane: effect list with search and category grouping.
+        if ctrl_count == 0 {
+            return None;
+        }
+
+        match key.code {
+            KeyCode::Down => {
+                self.selected_control =
+                    (self.selected_control + 1).min(ctrl_count.saturating_sub(1));
+                None
+            }
+            KeyCode::Up => {
+                self.selected_control = self.selected_control.saturating_sub(1);
+                None
+            }
+            KeyCode::Left => {
+                let idx = self.selected_control;
+                let ctrl_type = self
+                    .selected_effect()
+                    .and_then(|e| e.controls.get(idx))
+                    .map(|c| c.control_type.clone());
+                match ctrl_type.as_deref() {
+                    Some("slider") => self.adjust_slider(idx, -1.0),
+                    Some("dropdown") => self.cycle_dropdown(idx, false),
+                    _ => None,
+                }
+            }
+            KeyCode::Right => {
+                let idx = self.selected_control;
+                let ctrl_type = self
+                    .selected_effect()
+                    .and_then(|e| e.controls.get(idx))
+                    .map(|c| c.control_type.clone());
+                match ctrl_type.as_deref() {
+                    Some("slider") => self.adjust_slider(idx, 1.0),
+                    Some("dropdown") => self.cycle_dropdown(idx, true),
+                    _ => None,
+                }
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                let idx = self.selected_control;
+                let ctrl_type = self
+                    .selected_effect()
+                    .and_then(|e| e.controls.get(idx))
+                    .map(|c| c.control_type.clone());
+                match ctrl_type.as_deref() {
+                    Some("toggle") => self.toggle_bool(idx),
+                    Some("dropdown") => self.cycle_dropdown(idx, true),
+                    Some("color") => {
+                        self.open_color_picker();
+                        None
+                    }
+                    _ => None,
+                }
+            }
+            KeyCode::Home => {
+                self.selected_control = 0;
+                None
+            }
+            KeyCode::End => {
+                self.selected_control = ctrl_count.saturating_sub(1);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    // ── List pane rendering ──────────────────────────────────────────
+
     fn render_list_pane(&self, frame: &mut Frame, area: Rect) {
         let is_focused = self.focus_pane == FocusPane::List;
         let border_color = if is_focused { NEON_CYAN } else { BORDER_DIM };
@@ -285,6 +596,7 @@ impl EffectBrowserView {
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        self.list_inner_rect.set(inner);
 
         if inner.width < 4 || inner.height < 3 {
             return;
@@ -294,7 +606,6 @@ impl EffectBrowserView {
         self.render_effect_list(frame, inner);
     }
 
-    /// Render the search bar at the top of the list pane.
     fn render_search_bar(&self, frame: &mut Frame, inner: Rect) {
         let search_text = if self.search_active {
             format!("/ {}\u{2588}", self.search_query)
@@ -316,7 +627,6 @@ impl EffectBrowserView {
         );
     }
 
-    /// Render the scrollable list of effects grouped by category.
     fn render_effect_list(&self, frame: &mut Frame, inner: Rect) {
         let list_area = Rect::new(
             inner.x,
@@ -333,7 +643,6 @@ impl EffectBrowserView {
         let visible = usize::from(list_area.height);
         let mut offset = self.scroll_offset.get();
 
-        // Keep selected item visible within the scroll viewport
         if let Some(sel) = selected_item_idx {
             if sel < offset {
                 offset = sel;
@@ -349,16 +658,12 @@ impl EffectBrowserView {
         frame.render_widget(List::new(visible_items), list_area);
     }
 
-    /// Build `ListItem`s for the effect list with category headers.
-    ///
-    /// Returns the items and the list-item index of the selected effect.
     fn build_list_items(&self, avail_width: u16) -> (Vec<ListItem<'_>>, Option<usize>) {
         let mut items: Vec<ListItem<'_>> = Vec::new();
         let mut current_category = String::new();
         let mut selected_item_idx = None;
 
         for (flat_idx, effect) in self.effects.iter().enumerate() {
-            // Category header
             if effect.category != current_category {
                 if !current_category.is_empty() {
                     items.push(ListItem::new(Line::from("")));
@@ -381,7 +686,6 @@ impl EffectBrowserView {
             items.push(self.build_effect_item(flat_idx, effect, avail_width));
         }
 
-        // Footer
         items.push(ListItem::new(Line::from("")));
         items.push(ListItem::new(Line::from(Span::styled(
             format!("{} effects", self.effects.len()),
@@ -391,7 +695,6 @@ impl EffectBrowserView {
         (items, selected_item_idx)
     }
 
-    /// Build a single effect list item.
     fn build_effect_item<'a>(
         &self,
         flat_idx: usize,
@@ -438,7 +741,8 @@ impl EffectBrowserView {
         ListItem::new(Line::from(spans))
     }
 
-    /// Render the right pane: canvas preview, metadata, control summary.
+    // ── Preview pane rendering ───────────────────────────────────────
+
     fn render_preview_pane(&self, frame: &mut Frame, area: Rect) {
         let is_focused = self.focus_pane == FocusPane::Preview;
         let border_color = if is_focused { NEON_CYAN } else { BORDER_DIM };
@@ -455,7 +759,7 @@ impl EffectBrowserView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        if inner.width < 4 || inner.height < 4 {
+        if inner.width < 4 || inner.height < 2 {
             return;
         }
 
@@ -470,19 +774,63 @@ impl EffectBrowserView {
             return;
         };
 
-        // Split: canvas top (proportional), metadata bottom
-        let sections =
-            Layout::vertical([Constraint::Percentage(50), Constraint::Fill(1)]).split(inner);
+        // Canvas takes most of the space, metadata at the bottom
+        let has_presets = !effect.presets.is_empty();
+        let meta_rows = if has_presets { 4 } else { 2 };
+        let canvas_h = inner.height.saturating_sub(meta_rows);
 
-        self.render_canvas_preview(frame, sections[0]);
-        self.render_metadata(frame, sections[1], effect);
+        if canvas_h > 0 {
+            let canvas_area = Rect::new(inner.x, inner.y, inner.width, canvas_h);
+            self.render_canvas_preview(frame, canvas_area);
+        }
+
+        // Compact metadata below canvas
+        let meta_y = inner.y + canvas_h;
+        let x = inner.x + 1;
+        let w = inner.width.saturating_sub(2);
+
+        // Effect name + author line
+        if meta_y < inner.y + inner.height {
+            let author_part = if effect.author.is_empty() {
+                effect.source.clone()
+            } else {
+                format!("{} \u{00B7} {}", effect.author, effect.source)
+            };
+            let fav = if self.is_favorite(&effect.id) {
+                " \u{2605}"
+            } else {
+                ""
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        &effect.name,
+                        Style::default()
+                            .fg(BASE_WHITE)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(fav, Style::default().fg(ELECTRIC_YELLOW)),
+                    Span::styled(
+                        format!("  {author_part}"),
+                        Style::default().fg(DIM_GRAY),
+                    ),
+                ])),
+                Rect::new(x, meta_y, w, 1),
+            );
+        }
+
+        // Presets (if any)
+        if has_presets {
+            let presets_y = meta_y + 1;
+            self.render_presets_compact(frame, x, presets_y, w, inner, effect);
+        }
     }
 
-    /// Render the canvas preview area.
     fn render_canvas_preview(&self, frame: &mut Frame, area: Rect) {
         if let Some(ref cf) = self.canvas_frame {
+            let fitted = aspect_fit(cf.width, cf.height, area);
             let canvas = HalfBlockCanvas::new(&cf.pixels, cf.width, cf.height);
-            frame.render_widget(canvas, area);
+            frame.render_widget(canvas, fitted);
         } else {
             let placeholder = Paragraph::new(Line::from(Span::styled(
                 "\u{2584}".repeat(usize::from(area.width)),
@@ -492,25 +840,9 @@ impl EffectBrowserView {
         }
     }
 
-    /// Render effect metadata and control summary.
-    fn render_metadata(&self, frame: &mut Frame, area: Rect, effect: &EffectSummary) {
-        if area.height < 2 {
-            return;
-        }
-
-        let x_pad = area.x + 1;
-        let w_pad = area.width.saturating_sub(2);
-        let mut y = area.y;
-
-        y = Self::render_meta_header(frame, x_pad, y, w_pad, area, effect);
-        y = self.render_presets(frame, x_pad, y, w_pad, area, effect);
-        y = self.render_meta_info(frame, x_pad, y, w_pad, area, effect);
-        Self::render_meta_controls(frame, x_pad, y, w_pad, area, effect);
-    }
-
-    /// Render the preset selection section. Returns next y.
+    /// Compact preset list for the preview pane.
     #[allow(clippy::too_many_arguments)]
-    fn render_presets(
+    fn render_presets_compact(
         &self,
         frame: &mut Frame,
         x: u16,
@@ -518,39 +850,13 @@ impl EffectBrowserView {
         w: u16,
         area: Rect,
         effect: &EffectSummary,
-    ) -> u16 {
+    ) {
         let max_y = area.y + area.height;
-        if effect.presets.is_empty() || y >= max_y {
-            return y;
+        if y >= max_y {
+            return;
         }
 
         let is_focused = self.focus_pane == FocusPane::Preview;
-
-        // Section header
-        let header = format!(
-            "\u{2500}\u{2500} Presets ({}) ",
-            effect.presets.len()
-        );
-        let hint = if is_focused { "" } else { "Tab\u{21e5} " };
-        let fill_len = usize::from(w)
-            .saturating_sub(header.len() + hint.len());
-        let fill = "\u{2500}".repeat(fill_len);
-
-        let mut header_spans = vec![Span::styled(
-            format!("{header}{fill}"),
-            Style::default().fg(DIM_GRAY).add_modifier(Modifier::BOLD),
-        )];
-        if !hint.is_empty() {
-            header_spans.push(Span::styled(
-                hint,
-                Style::default().fg(ELECTRIC_YELLOW),
-            ));
-        }
-        frame.render_widget(
-            Paragraph::new(Line::from(header_spans)),
-            Rect::new(x, y, w, 1),
-        );
-        y += 1;
 
         for (i, preset) in effect.presets.iter().enumerate() {
             if y >= max_y {
@@ -558,12 +864,7 @@ impl EffectBrowserView {
             }
 
             let is_selected = i == self.selected_preset && is_focused;
-            let pointer = if is_selected {
-                "\u{25B8} "
-            } else {
-                "  "
-            };
-
+            let pointer = if is_selected { "\u{25B8} " } else { "  " };
             let name_style = if is_selected {
                 Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD)
             } else {
@@ -590,221 +891,383 @@ impl EffectBrowserView {
             );
             y += 1;
         }
-
-        y + 1 // blank line after presets
     }
 
-    /// Render effect name and author in the metadata section. Returns next y.
-    fn render_meta_header(
-        frame: &mut Frame,
-        x: u16,
-        mut y: u16,
-        w: u16,
-        area: Rect,
-        effect: &EffectSummary,
-    ) -> u16 {
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                &effect.name,
-                Style::default().fg(BASE_WHITE).add_modifier(Modifier::BOLD),
-            ))),
-            Rect::new(x, y, w, 1),
-        );
-        y += 1;
+    // ── Controls pane rendering ──────────────────────────────────────
 
-        if y < area.y + area.height {
-            let author_text = if effect.author.is_empty() {
-                effect.source.clone()
-            } else {
-                format!("by {} \u{00B7} {}", effect.author, effect.source)
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    author_text,
-                    Style::default().fg(DIM_GRAY),
-                ))),
-                Rect::new(x, y, w, 1),
-            );
-            y += 1;
-        }
+    #[allow(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::too_many_lines
+    )]
+    fn render_controls_pane(&self, frame: &mut Frame, area: Rect) {
+        let is_focused = self.focus_pane == FocusPane::Controls;
+        let border_color = if is_focused { NEON_CYAN } else { BORDER_DIM };
 
-        y + 1 // blank line
-    }
+        let effect_name = self
+            .selected_effect()
+            .map_or("Controls", |e| &e.name);
 
-    /// Render description, audio reactive, params, favorite. Returns next y.
-    #[allow(clippy::too_many_arguments)]
-    fn render_meta_info(
-        &self,
-        frame: &mut Frame,
-        x: u16,
-        mut y: u16,
-        w: u16,
-        area: Rect,
-        effect: &EffectSummary,
-    ) -> u16 {
-        let max_y = area.y + area.height;
+        let block = Block::default()
+            .title(Line::from(vec![
+                Span::styled(" ", Style::default().fg(ELECTRIC_PURPLE)),
+                Span::styled(
+                    effect_name,
+                    Style::default()
+                        .fg(ELECTRIC_PURPLE)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" \u{2500} Controls ", Style::default().fg(BORDER_DIM)),
+            ]))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
-        // Description
-        if y < max_y && !effect.description.is_empty() {
-            let desc_height = (max_y - y).min(3);
-            frame.render_widget(
-                Paragraph::new(effect.description.as_str())
-                    .style(Style::default().fg(BASE_WHITE))
-                    .wrap(Wrap { trim: true }),
-                Rect::new(x, y, w, desc_height),
-            );
-            y += desc_height + 1;
-        }
-
-        // Audio reactive
-        if y < max_y {
-            let (audio_text, audio_color) = if effect.audio_reactive {
-                ("yes", SUCCESS_GREEN)
-            } else {
-                ("no", DIM_GRAY)
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled("Audio reactive: ", Style::default().fg(DIM_GRAY)),
-                    Span::styled(audio_text, Style::default().fg(audio_color)),
-                ])),
-                Rect::new(x, y, w, 1),
-            );
-            y += 1;
-        }
-
-        // Parameters count
-        if y < max_y {
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled("Parameters: ", Style::default().fg(DIM_GRAY)),
-                    Span::styled(
-                        effect.controls.len().to_string(),
-                        Style::default().fg(CORAL),
-                    ),
-                ])),
-                Rect::new(x, y, w, 1),
-            );
-            y += 2;
-        }
-
-        // Favorite status
-        if y < max_y {
-            let fav = self.is_favorite(&effect.id);
-            let (fav_text, fav_color) = if fav {
-                ("\u{2605} Favorite (f to remove)", ELECTRIC_YELLOW)
-            } else {
-                ("\u{2606} Press f to favorite", DIM_GRAY)
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    fav_text,
-                    Style::default().fg(fav_color),
-                ))),
-                Rect::new(x, y, w, 1),
-            );
-            y += 2;
-        }
-
-        y
-    }
-
-    /// Render inline control summaries.
-    fn render_meta_controls(
-        frame: &mut Frame,
-        x: u16,
-        mut y: u16,
-        w: u16,
-        area: Rect,
-        effect: &EffectSummary,
-    ) {
-        let max_y = area.y + area.height;
-
-        if y >= max_y || effect.controls.is_empty() {
+        if inner.width < 10 || inner.height < 2 {
             return;
         }
 
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "\u{2500}\u{2500}\u{2500} Controls \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
-                Style::default().fg(DIM_GRAY),
-            ))),
-            Rect::new(x, y, w, 1),
-        );
-        y += 1;
+        let Some(effect_ref) = self.selected_effect() else {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "No effect selected",
+                    Style::default().fg(DIM_GRAY),
+                )),
+                Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), 1),
+            );
+            return;
+        };
+        let controls = &effect_ref.controls;
 
-        for ctrl in effect.controls.iter().take(4) {
-            if y >= max_y {
+        if controls.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "No adjustable controls",
+                    Style::default().fg(DIM_GRAY),
+                )),
+                Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), 1),
+            );
+            return;
+        }
+
+        // Description (1 line max)
+        let mut content_y = inner.y;
+        if !effect_ref.description.is_empty() {
+            frame.render_widget(
+                Paragraph::new(effect_ref.description.as_str())
+                    .style(Style::default().fg(DIM_GRAY))
+                    .wrap(Wrap { trim: true }),
+                Rect::new(
+                    inner.x + 1,
+                    content_y,
+                    inner.width.saturating_sub(2),
+                    1,
+                ),
+            );
+            content_y += 2;
+        }
+
+        let label_w = controls
+            .iter()
+            .map(|c| c.name.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(4);
+        let ctrl_width = inner.width.saturating_sub(3);
+
+        // Cache for mouse hit-testing
+        self.controls_content_y.set(content_y);
+
+        for (i, ctrl) in controls.iter().enumerate() {
+            if content_y >= inner.y + inner.height.saturating_sub(1) {
                 break;
             }
 
-            match ctrl.control_type.as_str() {
-                "slider" => {
-                    let norm = normalize_control(
-                        ctrl.default_value.as_f32().unwrap_or(0.0),
-                        ctrl.min.unwrap_or(0.0),
-                        ctrl.max.unwrap_or(1.0),
-                    );
-                    let slider = ParamSlider::new(&ctrl.name, norm).accent_color(NEON_CYAN);
-                    frame.render_widget(slider, Rect::new(x, y, w, 1));
-                }
-                "toggle" => {
-                    let on = ctrl.default_value.as_bool().unwrap_or(false);
-                    let toggle_text = if on { "[\u{25CF}] On" } else { "[ ] Off" };
-                    let toggle_color = if on { SUCCESS_GREEN } else { DIM_GRAY };
-                    frame.render_widget(
-                        Paragraph::new(Line::from(vec![
-                            Span::styled(
-                                format!("{:<12}", ctrl.name),
-                                Style::default().fg(BASE_WHITE).add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(toggle_text, Style::default().fg(toggle_color)),
-                        ])),
-                        Rect::new(x, y, w, 1),
-                    );
-                }
-                "dropdown" => {
-                    let text = match &ctrl.default_value {
-                        ControlValue::Text(s) => s.as_str(),
-                        _ => "",
-                    };
-                    frame.render_widget(
-                        Paragraph::new(Line::from(vec![
-                            Span::styled(
-                                format!("{:<12}", ctrl.name),
-                                Style::default().fg(BASE_WHITE).add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(
-                                format!("[\u{25B8} {text}]"),
-                                Style::default().fg(NEON_CYAN),
-                            ),
-                        ])),
-                        Rect::new(x, y, w, 1),
-                    );
-                }
-                _ => {
-                    frame.render_widget(
-                        Paragraph::new(Line::from(Span::styled(
-                            format!("{}: ...", ctrl.name),
-                            Style::default().fg(DIM_GRAY),
-                        ))),
-                        Rect::new(x, y, w, 1),
-                    );
-                }
+            let is_selected = i == self.selected_control && is_focused;
+
+            // Selection bar
+            if is_selected {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        "\u{2503}",
+                        Style::default().fg(NEON_CYAN),
+                    )),
+                    Rect::new(inner.x, content_y, 1, 1),
+                );
             }
-            y += 1;
+
+            let ctrl_area = Rect::new(inner.x + 2, content_y, ctrl_width, 1);
+            self.render_control(frame, ctrl, ctrl_area, is_selected, label_w);
+            content_y += 2;
+        }
+
+        // Key hints
+        let hint_y = inner.y + inner.height.saturating_sub(1);
+        if hint_y > content_y {
+            let hints = if is_focused {
+                vec![
+                    Span::styled("\u{2191}\u{2193}", Style::default().fg(ELECTRIC_YELLOW)),
+                    Span::styled(" nav  ", Style::default().fg(DIM_GRAY)),
+                    Span::styled("\u{2190}\u{2192}", Style::default().fg(ELECTRIC_YELLOW)),
+                    Span::styled(" adjust  ", Style::default().fg(DIM_GRAY)),
+                    Span::styled("Tab", Style::default().fg(ELECTRIC_YELLOW)),
+                    Span::styled(" pane", Style::default().fg(DIM_GRAY)),
+                ]
+            } else {
+                vec![
+                    Span::styled("Tab", Style::default().fg(ELECTRIC_YELLOW)),
+                    Span::styled(" to focus controls", Style::default().fg(DIM_GRAY)),
+                ]
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(hints)),
+                Rect::new(inner.x + 1, hint_y, inner.width.saturating_sub(2), 1),
+            );
+        }
+    }
+
+    /// Render a single control row.
+    #[allow(
+        clippy::as_conversions,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::too_many_lines
+    )]
+    fn render_control(
+        &self,
+        frame: &mut Frame,
+        ctrl: &ControlDefinition,
+        area: Rect,
+        is_selected: bool,
+        label_w: usize,
+    ) {
+        if area.width < 10 {
+            return;
+        }
+
+        match ctrl.control_type.as_str() {
+            "slider" => {
+                let norm = normalized_value(&self.control_values, ctrl);
+                let (grad_from, grad_to) = if is_selected {
+                    ((128, 255, 234), (225, 53, 255))
+                } else {
+                    ((255, 106, 193), (225, 53, 255))
+                };
+                let padded = format!("{:<width$}", ctrl.name, width = label_w + 1);
+                let slider = ParamSlider::new(&padded, norm)
+                    .gradient_fill(grad_from, grad_to)
+                    .accent_color(NEON_CYAN);
+                frame.render_widget(slider, area);
+            }
+            "toggle" => {
+                let on = current_value(&self.control_values, ctrl).as_bool().unwrap_or(false);
+                let name_style = selected_style(is_selected);
+                let (indicator, state_text, color) = if on {
+                    ("\u{25C9}", "On", SUCCESS_GREEN)
+                } else {
+                    ("\u{25CB}", "Off", DIM_GRAY)
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            format!("{:<width$}", ctrl.name, width = label_w + 1),
+                            name_style,
+                        ),
+                        Span::styled(
+                            format!("{indicator} {state_text}"),
+                            Style::default().fg(color),
+                        ),
+                    ])),
+                    area,
+                );
+            }
+            "dropdown" => {
+                let current_text = match current_value(&self.control_values, ctrl) {
+                    ControlValue::Text(s) => s,
+                    _ => String::new(),
+                };
+                let name_style = selected_style(is_selected);
+                let val_color = if is_selected { NEON_CYAN } else { ELECTRIC_YELLOW };
+                let arrows = if is_selected { " \u{25C0}\u{25B6}" } else { "" };
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            format!("{:<width$}", ctrl.name, width = label_w + 1),
+                            name_style,
+                        ),
+                        Span::styled(
+                            format!("\u{25B8} {current_text}"),
+                            Style::default().fg(val_color),
+                        ),
+                        Span::styled(arrows, Style::default().fg(DIM_GRAY)),
+                    ])),
+                    area,
+                );
+            }
+            "color" => {
+                let name_style = selected_style(is_selected);
+                let color_arr = match current_value(&self.control_values, ctrl) {
+                    ControlValue::Color(c) => c,
+                    _ => [0.5, 0.5, 0.5, 1.0],
+                };
+                let r = float_to_u8(color_arr[0]);
+                let g = float_to_u8(color_arr[1]);
+                let b = float_to_u8(color_arr[2]);
+                let swatch = Color::Rgb(r, g, b);
+                let mut spans = vec![
+                    Span::styled(
+                        format!("{:<width$}", ctrl.name, width = label_w + 1),
+                        name_style,
+                    ),
+                    Span::styled(
+                        "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}",
+                        Style::default().fg(swatch),
+                    ),
+                    Span::styled(
+                        format!("  #{r:02x}{g:02x}{b:02x}"),
+                        Style::default()
+                            .fg(BASE_WHITE)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ];
+                if is_selected {
+                    spans.push(Span::styled(
+                        "  \u{25C8}Enter",
+                        Style::default().fg(ELECTRIC_PURPLE),
+                    ));
+                }
+                frame.render_widget(Paragraph::new(Line::from(spans)), area);
+            }
+            _ => {
+                let ctrl_type = &ctrl.control_type;
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            format!("{:<width$}", ctrl.name, width = label_w + 1),
+                            Style::default().fg(BASE_WHITE),
+                        ),
+                        Span::styled(
+                            format!("({ctrl_type})"),
+                            Style::default().fg(DIM_GRAY),
+                        ),
+                    ])),
+                    area,
+                );
+            }
+        }
+    }
+
+    /// Render color picker popup overlay.
+    fn render_color_picker(&self, frame: &mut Frame, area: Rect) {
+        if let Some(ref picker) = self.color_picker {
+            let ctrl_name = self
+                .selected_effect()
+                .and_then(|e| e.controls.get(picker.ctrl_idx))
+                .map_or("Color", |c| &c.name);
+
+            let popup_w = 40.min(area.width.saturating_sub(4));
+            let popup_h = 9.min(area.height.saturating_sub(2));
+            let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+            let popup_y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+            let popup_area = Rect::new(popup_x, popup_y, popup_w, popup_h);
+
+            let widget = ColorPickerPopup::new(ctrl_name, picker.hsl, picker.selected_channel);
+            frame.render_widget(widget, popup_area);
         }
     }
 }
 
-/// Normalize a raw value to `[0, 1]` given min/max bounds.
-fn normalize_control(raw: f32, min: f32, max: f32) -> f32 {
+// ── Free helpers ─────────────────────────────────────────────────────
+
+/// Get the current value for a control, falling back to its default.
+fn current_value(values: &HashMap<String, ControlValue>, ctrl: &ControlDefinition) -> ControlValue {
+    values
+        .get(&ctrl.id)
+        .cloned()
+        .unwrap_or_else(|| ctrl.default_value.clone())
+}
+
+/// Normalize a control's current value to `[0, 1]`.
+fn normalized_value(
+    values: &HashMap<String, ControlValue>,
+    ctrl: &ControlDefinition,
+) -> f32 {
+    normalize(
+        current_value(values, ctrl).as_f32().unwrap_or(0.0),
+        ctrl.min.unwrap_or(0.0),
+        ctrl.max.unwrap_or(1.0),
+    )
+}
+
+fn normalize(raw: f32, min: f32, max: f32) -> f32 {
     if (max - min).abs() < f32::EPSILON {
         0.0
     } else {
         ((raw - min) / (max - min)).clamp(0.0, 1.0)
     }
 }
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions
+)]
+fn float_to_u8(value: f32) -> u8 {
+    value.mul_add(255.0, 0.5).clamp(0.0, 255.0) as u8
+}
+
+fn selected_style(is_selected: bool) -> Style {
+    if is_selected {
+        Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(BASE_WHITE)
+    }
+}
+
+fn adjust_hsl_channel(hsl: &mut [f32; 3], channel: usize, delta: f32) {
+    match channel {
+        0 => hsl[0] = (hsl[0] + delta).rem_euclid(360.0),
+        1 => hsl[1] = (hsl[1] + delta).clamp(0.0, 1.0),
+        _ => hsl[2] = (hsl[2] + delta).clamp(0.0, 1.0),
+    }
+}
+
+/// Compute the largest sub-rect of `area` that preserves `src_w:src_h` aspect ratio.
+/// Accounts for half-block rendering (2 vertical pixels per terminal row).
+#[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+fn aspect_fit(src_w: u16, src_h: u16, area: Rect) -> Rect {
+    if src_w == 0 || src_h == 0 || area.width == 0 || area.height == 0 {
+        return area;
+    }
+    let sw = u32::from(src_w);
+    let sh = u32::from(src_h);
+    let tw = u32::from(area.width);
+    let th = u32::from(area.height);
+
+    // Each terminal row = 2 pixel rows (half-block)
+    let fit_h_pixels = sh * tw / sw;
+    let fit_h_rows = fit_h_pixels.div_ceil(2);
+
+    let (rw, rh) = if fit_h_rows <= th {
+        (tw as u16, fit_h_rows as u16)
+    } else {
+        let th2 = th * 2;
+        let fit_w = sw * th2 / sh;
+        (fit_w.min(tw) as u16, th as u16)
+    };
+
+    let x = area.x + (area.width.saturating_sub(rw)) / 2;
+    let y = area.y + (area.height.saturating_sub(rh)) / 2;
+    Rect::new(x, y, rw, rh)
+}
+
+fn rect_contains(r: Rect, col: u16, row: u16) -> bool {
+    col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
+}
+
+// ── Component impl ──────────────────────────────────────────────────
 
 impl Component for EffectBrowserView {
     fn init(&mut self, action_tx: UnboundedSender<Action>) -> Result<()> {
@@ -813,27 +1276,120 @@ impl Component for EffectBrowserView {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
+        // Color picker intercepts everything
+        if self.color_picker.is_some() {
+            return Ok(self.handle_picker_key(key));
+        }
+
         if self.search_active {
             return Ok(self.handle_search_key(key));
         }
 
-        // Esc clears search if query present, or returns to list from preview
+        // Esc clears search or returns focus to list
         if key.code == KeyCode::Esc {
             if !self.search_query.is_empty() {
                 self.search_query.clear();
                 self.apply_filter();
                 return Ok(None);
             }
-            if self.focus_pane == FocusPane::Preview {
+            if self.focus_pane != FocusPane::List {
                 self.focus_pane = FocusPane::List;
                 return Ok(None);
             }
         }
 
+        // Tab / Shift+Tab cycles focus between panes
+        match key.code {
+            KeyCode::Tab => {
+                self.focus_pane = match self.focus_pane {
+                    FocusPane::List => FocusPane::Preview,
+                    FocusPane::Preview => FocusPane::Controls,
+                    FocusPane::Controls => FocusPane::List,
+                };
+                return Ok(None);
+            }
+            KeyCode::BackTab => {
+                self.focus_pane = match self.focus_pane {
+                    FocusPane::List => FocusPane::Controls,
+                    FocusPane::Preview => FocusPane::List,
+                    FocusPane::Controls => FocusPane::Preview,
+                };
+                return Ok(None);
+            }
+            _ => {}
+        }
+
         Ok(match self.focus_pane {
             FocusPane::List => self.handle_list_key(key),
             FocusPane::Preview => self.handle_preview_key(key),
+            FocusPane::Controls => self.handle_controls_key(key),
         })
+    }
+
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
+        let col = mouse.column;
+        let row = mouse.row;
+        let list_r = self.list_rect.get();
+        let preview_r = self.preview_rect.get();
+        let controls_r = self.controls_rect.get();
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if rect_contains(list_r, col, row) {
+                    self.focus_pane = FocusPane::List;
+                    self.select_effect_at_row(row);
+                } else if rect_contains(preview_r, col, row) {
+                    self.focus_pane = FocusPane::Preview;
+                } else if rect_contains(controls_r, col, row) {
+                    self.focus_pane = FocusPane::Controls;
+                    self.select_control_at_row(row);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if rect_contains(list_r, col, row) {
+                    if !self.effects.is_empty() {
+                        let new = (self.selected_index + 1)
+                            .min(self.effects.len().saturating_sub(1));
+                        if new != self.selected_index {
+                            self.selected_index = new;
+                            self.selected_preset = 0;
+                            self.sync_controls_to_selection();
+                        }
+                    }
+                } else if rect_contains(controls_r, col, row) {
+                    let ctrl_count = self
+                        .selected_effect()
+                        .map_or(0, |e| e.controls.len());
+                    if ctrl_count > 0 {
+                        self.selected_control =
+                            (self.selected_control + 1).min(ctrl_count.saturating_sub(1));
+                    }
+                } else if rect_contains(preview_r, col, row) {
+                    let count = self.selected_effect().map_or(0, |e| e.presets.len());
+                    if count > 0 {
+                        self.selected_preset =
+                            (self.selected_preset + 1).min(count.saturating_sub(1));
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if rect_contains(list_r, col, row) {
+                    let new = self.selected_index.saturating_sub(1);
+                    if new != self.selected_index {
+                        self.selected_index = new;
+                        self.selected_preset = 0;
+                        self.sync_controls_to_selection();
+                    }
+                } else if rect_contains(controls_r, col, row) {
+                    self.selected_control = self.selected_control.saturating_sub(1);
+                } else if rect_contains(preview_r, col, row) {
+                    self.selected_preset = self.selected_preset.saturating_sub(1);
+                }
+            }
+            _ => {}
+        }
+
+        Ok(None)
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {
@@ -841,6 +1397,7 @@ impl Component for EffectBrowserView {
             Action::EffectsUpdated(effects) => {
                 self.all_effects.clone_from(effects);
                 self.apply_filter();
+                self.sync_controls_to_selection();
             }
             Action::FavoritesUpdated(favs) => {
                 self.favorites.clone_from(favs);
@@ -858,11 +1415,34 @@ impl Component for EffectBrowserView {
             return;
         }
 
-        let panes = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(area);
+        // 3-pane: list (left 35%) | preview + controls (right 65%)
+        let cols = Layout::horizontal([
+            Constraint::Percentage(35),
+            Constraint::Percentage(65),
+        ])
+        .split(area);
 
-        self.render_list_pane(frame, panes[0]);
-        self.render_preview_pane(frame, panes[1]);
+        // Cache rects for mouse hit-testing
+        self.list_rect.set(cols[0]);
+
+        // Right side: preview (top) + controls (bottom)
+        let right = Layout::vertical([
+            Constraint::Percentage(45),
+            Constraint::Percentage(55),
+        ])
+        .split(cols[1]);
+
+        self.preview_rect.set(right[0]);
+        self.controls_rect.set(right[1]);
+
+        self.render_list_pane(frame, cols[0]);
+        self.render_preview_pane(frame, right[0]);
+        self.render_controls_pane(frame, right[1]);
+
+        // Color picker overlay on top
+        if self.color_picker.is_some() {
+            self.render_color_picker(frame, area);
+        }
     }
 
     fn focused(&self) -> bool {

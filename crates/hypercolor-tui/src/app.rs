@@ -83,6 +83,10 @@ impl App {
     pub async fn run(&mut self) -> Result<()> {
         // Initialize terminal
         let mut terminal = ratatui::init();
+        crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::EnableMouseCapture
+        )?;
 
         // Initialize all screens
         for screen in self.screens.values_mut() {
@@ -150,6 +154,10 @@ impl App {
         // Cleanup
         self.data_cancel.cancel();
         events.stop();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::DisableMouseCapture
+        );
         ratatui::restore();
         tracing::info!("TUI event loop ended");
         Ok(())
@@ -547,8 +555,8 @@ impl App {
         }));
         bindings.extend([
             (String::new(), String::new()),
-            ("j/k".to_string(), "Navigate up/down".to_string()),
-            ("h/l".to_string(), "Adjust value".to_string()),
+            ("\u{2191}/\u{2193}".to_string(), "Navigate up/down".to_string()),
+            ("\u{2190}/\u{2192}".to_string(), "Adjust value".to_string()),
             ("Enter".to_string(), "Apply / confirm".to_string()),
             ("f".to_string(), "Toggle favorite".to_string()),
             ("/".to_string(), "Search".to_string()),
