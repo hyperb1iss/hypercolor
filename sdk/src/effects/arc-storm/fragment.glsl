@@ -11,6 +11,8 @@ uniform float iSpeed;
 uniform float iIntensity;
 uniform float iBranches;
 uniform float iFlicker;
+uniform float iDensity;
+uniform float iPrismatic;
 
 struct ArcPalette {
     vec3 deep;
@@ -104,81 +106,81 @@ ArcPalette getPalette(int pal) {
     ArcPalette palette;
 
     if (pal == 0) {
-        palette.deep = vec3(0.03, 0.08, 0.28);       // Electric — midnight blue
-        palette.secondary = vec3(0.08, 0.32, 0.96);  // Electric — blue
+        palette.deep = vec3(0.04, 0.03, 0.28);       // Electric — midnight indigo
+        palette.secondary = vec3(0.18, 0.15, 0.96);  // Electric — violet-blue
         palette.primary = vec3(0.10, 0.92, 1.00);    // Electric — cyan
-        palette.contrast = vec3(0.72, 0.20, 1.00);   // Electric — violet split
-        palette.accent = vec3(0.46, 0.70, 1.00);     // Electric — azure
-        palette.core = vec3(0.78, 0.90, 1.00);       // Electric — icy blue
+        palette.contrast = vec3(1.00, 0.18, 0.72);   // Electric — hot magenta
+        palette.accent = vec3(1.00, 0.72, 0.40);     // Electric — peach-gold
+        palette.core = vec3(0.85, 0.80, 1.00);       // Electric — pale lavender
         return palette;
     }
 
     if (pal == 1) {
         palette.deep = vec3(0.10, 0.02, 0.22);       // SilkCircuit Storm — deep violet
-        palette.secondary = vec3(0.48, 0.06, 0.96);  // SilkCircuit Storm — electric purple
+        palette.secondary = vec3(0.38, 0.10, 1.00);  // SilkCircuit Storm — blue-purple
         palette.primary = vec3(0.88, 0.14, 1.00);    // SilkCircuit Storm — neon magenta
-        palette.contrast = vec3(0.12, 0.82, 1.00);   // SilkCircuit Storm — neon cyan
-        palette.accent = vec3(1.00, 0.22, 0.58);     // SilkCircuit Storm — coral
-        palette.core = vec3(0.35, 0.96, 1.00);       // SilkCircuit Storm — neon cyan
+        palette.contrast = vec3(0.08, 1.00, 0.72);   // SilkCircuit Storm — neon mint
+        palette.accent = vec3(1.00, 0.35, 0.22);     // SilkCircuit Storm — hot orange
+        palette.core = vec3(0.60, 1.00, 0.45);       // SilkCircuit Storm — electric lime
         return palette;
     }
 
     if (pal == 2) {
-        palette.deep = vec3(0.22, 0.02, 0.04);       // Crimson Arc — ember wine
-        palette.secondary = vec3(0.72, 0.05, 0.16);  // Crimson Arc — crimson
-        palette.primary = vec3(1.00, 0.15, 0.10);    // Crimson Arc — hot red
-        palette.contrast = vec3(0.22, 0.44, 1.00);   // Crimson Arc — cobalt split
-        palette.accent = vec3(1.00, 0.44, 0.05);     // Crimson Arc — electric orange
-        palette.core = vec3(1.00, 0.74, 0.18);       // Crimson Arc — gold
+        palette.deep = vec3(0.22, 0.02, 0.12);       // Crimson Arc — plum wine
+        palette.secondary = vec3(0.85, 0.08, 0.42);  // Crimson Arc — hot magenta
+        palette.primary = vec3(1.00, 0.22, 0.05);    // Crimson Arc — solar red-orange
+        palette.contrast = vec3(0.15, 0.50, 1.00);   // Crimson Arc — cobalt split
+        palette.accent = vec3(1.00, 0.62, 0.08);     // Crimson Arc — electric amber
+        palette.core = vec3(1.00, 0.88, 0.55);       // Crimson Arc — warm white-gold
         return palette;
     }
 
     if (pal == 3) {
-        palette.deep = vec3(0.03, 0.12, 0.06);       // Toxic — swamp teal
-        palette.secondary = vec3(0.09, 0.52, 0.18);  // Toxic — venom green
-        palette.primary = vec3(0.13, 1.00, 0.38);    // Toxic — neon green
-        palette.contrast = vec3(0.66, 0.20, 1.00);   // Toxic — ultraviolet
-        palette.accent = vec3(0.00, 0.96, 0.82);     // Toxic — acid cyan
-        palette.core = vec3(0.60, 1.00, 0.24);       // Toxic — lime spark
+        palette.deep = vec3(0.02, 0.10, 0.12);       // Toxic — midnight teal
+        palette.secondary = vec3(0.04, 0.52, 0.28);  // Toxic — forest emerald
+        palette.primary = vec3(0.45, 1.00, 0.12);    // Toxic — neon chartreuse
+        palette.contrast = vec3(0.92, 0.12, 0.72);   // Toxic — hot magenta
+        palette.accent = vec3(0.08, 1.00, 0.92);     // Toxic — electric cyan
+        palette.core = vec3(0.90, 1.00, 0.18);       // Toxic — neon yellow
         return palette;
     }
 
     if (pal == 4) {
-        palette.deep = vec3(0.03, 0.11, 0.23);       // Frozen — midnight ice
-        palette.secondary = vec3(0.12, 0.46, 0.88);  // Frozen — glacier blue
-        palette.primary = vec3(0.38, 0.80, 1.00);    // Frozen — ice blue
-        palette.contrast = vec3(0.62, 0.52, 1.00);   // Frozen — frost violet
-        palette.accent = vec3(0.58, 1.00, 0.92);     // Frozen — mint frost
-        palette.core = vec3(0.80, 0.96, 1.00);       // Frozen — pale cyan
+        palette.deep = vec3(0.03, 0.08, 0.24);       // Frozen — midnight ice
+        palette.secondary = vec3(0.22, 0.35, 0.92);  // Frozen — deep periwinkle
+        palette.primary = vec3(0.72, 0.55, 1.00);    // Frozen — frost pink-lavender
+        palette.contrast = vec3(0.15, 1.00, 0.55);   // Frozen — aurora green
+        palette.accent = vec3(0.62, 0.95, 0.85);     // Frozen — warm mint
+        palette.core = vec3(0.92, 0.85, 1.00);       // Frozen — pale rose-white
         return palette;
     }
 
     if (pal == 5) {
         palette.deep = vec3(0.04, 0.02, 0.13);       // Phantom — void indigo
-        palette.secondary = vec3(0.18, 0.11, 0.46);  // Phantom — indigo
-        palette.primary = vec3(0.67, 0.53, 1.00);    // Phantom — spectral lavender
-        palette.contrast = vec3(0.12, 0.95, 1.00);   // Phantom — spectral cyan
-        palette.accent = vec3(0.95, 0.30, 0.80);     // Phantom — rose flare
-        palette.core = vec3(0.42, 0.66, 1.00);       // Phantom — ghost blue
+        palette.secondary = vec3(0.12, 0.18, 0.52);  // Phantom — deep teal-indigo
+        palette.primary = vec3(0.30, 0.80, 0.85);    // Phantom — spectral teal
+        palette.contrast = vec3(1.00, 0.52, 0.40);   // Phantom — rose-gold flare
+        palette.accent = vec3(0.88, 0.35, 0.78);     // Phantom — spectral rose
+        palette.core = vec3(0.85, 0.82, 0.60);       // Phantom — pale ghost-gold
         return palette;
     }
 
     if (pal == 6) {
-        palette.deep = vec3(0.14, 0.02, 0.09);       // Solar Surge — dusk maroon
-        palette.secondary = vec3(0.62, 0.07, 0.38);  // Solar Surge — hot rose
-        palette.primary = vec3(1.00, 0.24, 0.32);    // Solar Surge — solar red
-        palette.contrast = vec3(0.26, 0.30, 1.00);   // Solar Surge — electric blue
-        palette.accent = vec3(1.00, 0.55, 0.08);     // Solar Surge — arc amber
-        palette.core = vec3(1.00, 0.80, 0.30);       // Solar Surge — bright gold
+        palette.deep = vec3(0.18, 0.02, 0.15);       // Solar Surge — dusk purple
+        palette.secondary = vec3(0.75, 0.05, 0.52);  // Solar Surge — hot magenta
+        palette.primary = vec3(1.00, 0.38, 0.08);    // Solar Surge — solar orange
+        palette.contrast = vec3(0.08, 0.72, 1.00);   // Solar Surge — electric teal
+        palette.accent = vec3(1.00, 0.72, 0.05);     // Solar Surge — hot yellow
+        palette.core = vec3(1.00, 0.95, 0.70);       // Solar Surge — warm white
         return palette;
     }
 
     palette.deep = vec3(0.07, 0.02, 0.19);           // Rosewire — deep plum
-    palette.secondary = vec3(0.24, 0.14, 0.70);      // Rosewire — indigo violet
+    palette.secondary = vec3(0.18, 0.20, 0.75);      // Rosewire — midnight blue
     palette.primary = vec3(0.96, 0.18, 0.62);        // Rosewire — electric rose
-    palette.contrast = vec3(0.12, 1.00, 0.90);       // Rosewire — seafoam neon
-    palette.accent = vec3(1.00, 0.42, 0.48);         // Rosewire — coral pink
-    palette.core = vec3(1.00, 0.63, 0.84);           // Rosewire — hot blush
+    palette.contrast = vec3(0.05, 1.00, 0.65);       // Rosewire — neon green
+    palette.accent = vec3(1.00, 0.55, 0.35);         // Rosewire — peach-coral
+    palette.core = vec3(1.00, 0.78, 0.62);           // Rosewire — warm gold-blush
     return palette;
 }
 
@@ -197,6 +199,18 @@ vec3 sampleArcGradient(ArcPalette palette, float t) {
     return mix(palette.accent, palette.core, smoothstep(0.0, 1.0, (gradientT - 0.82) / 0.18));
 }
 
+// ── Zip pulse — traveling intensity bursts along arc geometry ──
+// Two counter-propagating waves at different scales create irregular
+// bright pulses that race along the ridged-noise tendrils. The field
+// value acts as a "distance along the arc" coordinate, so the waves
+// track the lightning paths rather than sweeping uniformly.
+
+float zipPulse(float field, vec2 p, float t) {
+    float wave1 = sin(field * 26.0 - t * 8.5 + dot(p, vec2(2.7, -3.1)));
+    float wave2 = sin(field * 17.0 + t * 5.5 - dot(p, vec2(1.8, 2.4)));
+    return smoothstep(0.5, 0.95, max(wave1, wave2));
+}
+
 float contrastWeave(float field, float discharge, float time, float channelShift) {
     float braidA = 0.5 + 0.5 * sin(field * (17.0 + channelShift * 9.0) + time * (2.4 + channelShift * 0.8));
     float braidB = 0.5 + 0.5 * sin(field * (29.0 + channelShift * 11.0) - time * (3.6 + channelShift * 1.1) + channelShift * 18.0);
@@ -210,8 +224,14 @@ float contrastWeave(float field, float discharge, float time, float channelShift
 
 vec3 arcColor(float energy, float field, float channelShift, float time, ArcPalette palette) {
     float discharge = saturate(energy);
-    float baseT = saturate(discharge * 0.70 + channelShift);
-    float accentT = saturate(0.18 + discharge * 0.62 + channelShift * 0.55);
+
+    // Slow color cycling — hues drift through the gradient over time.
+    // The field term creates spatial variation so different parts of
+    // the arc cycle at different phases, producing flowing color bands.
+    float cycleDrift = sin(time * 0.12 + field * 1.8) * 0.14;
+
+    float baseT = saturate(discharge * 0.70 + channelShift + cycleDrift);
+    float accentT = saturate(0.18 + discharge * 0.62 + channelShift * 0.55 + cycleDrift * 0.7);
 
     vec3 base = sampleArcGradient(palette, baseT);
     vec3 accent = sampleArcGradient(palette, accentT);
@@ -262,16 +282,10 @@ void main() {
     // Domain warp strength — more branches = more organic drift
     float warpStrength = 0.6 + branches * 0.8;
 
-    // ── Discrete temporal flicker ────────────────────────────────
-    // Quantized time creates electrical instability — discrete jumps
-    // instead of smooth interpolation, like real discharge events.
-    float flickerTime = floor(time * 12.0) / 12.0;
-    float flickerNoise = hash21(vec2(flickerTime * 7.3, flickerTime * 3.1));
-    float flickerMod = 1.0 - flicker * 0.6 * step(0.55, flickerNoise);
-
-    // Occasional bright flash — heightened discharge event
-    float flashNoise = hash21(vec2(floor(time * 3.0) * 11.7, 42.0));
-    float flash = step(0.88, flashNoise) * flicker * 0.5;
+    // ── Traveling instability ──────────────────────────────────────
+    // Intensity pulses zip along arc paths instead of global flash.
+    // Uses field values as spatial coordinates for traveling waves,
+    // so bright spots race through the tendrils rather than blanket-blinking.
 
     // ── Channel 1 — Primary tendrils (large scale) ───────────────
     float field1 = electricChannel(
@@ -300,33 +314,82 @@ void main() {
         vec2(-4.1, 7.6)
     );
 
+    // ── Density + Prismatic ──────────────────────────────────────
+    float density = clamp(iDensity * 0.01, 0.0, 1.0);
+    float prismatic = clamp(iPrismatic * 0.01, 0.0, 1.0);
+
     // ── Inverse-distance glow from ridged fields ─────────────────
-    // k / abs(threshold - field) creates crisp bright lines exactly
-    // where the ridged FBM peaks, falling off sharply to darkness.
     float glowWidth = 0.008 + intensity * 0.024;
     float glowK = 0.015 + intensity * 0.045;
 
-    float glow1 = glowK / (abs(0.72 - field1) + glowWidth);
-    float glow2 = glowK * 0.6 / (abs(0.68 - field2) + glowWidth * 1.2);
-    float glow3 = glowK * 0.35 / (abs(0.65 - field3) + glowWidth * 1.5);
+    // Density shifts glow thresholds and widens the catch range.
+    // Low density = few crisp bolts, high = dense crackling web.
+    float t1 = 0.72 - density * 0.18;
+    float t2 = 0.68 - density * 0.16;
+    float t3 = 0.65 - density * 0.14;
+    float dWidth = glowWidth * (1.0 + density * 0.8);
 
-    // Apply flicker modulation
-    glow1 *= flickerMod;
-    glow2 *= mix(1.0, flickerMod, 0.7);
-    glow3 *= mix(1.0, flickerMod, 0.5);
+    // At high density, secondary/tertiary channels catch up to primary
+    float ch2w = 0.6 + density * 0.3;
+    float ch3w = 0.35 + density * 0.35;
+
+    // ── Prismatic refraction ─────────────────────────────────────
+    // Offsets glow thresholds per RGB component so each color "sees"
+    // the arc at a slightly different field value. The result is
+    // rainbow fringing that follows the arc geometry — like light
+    // through a prism. The offset direction slowly rotates so the
+    // chromatic split drifts around the arcs over time.
+    float prismAmt = prismatic * 0.10;
+    float prismPhase = time * 0.18;
+    float prismR = prismAmt * sin(prismPhase);
+    float prismB = prismAmt * sin(prismPhase + 2.094); // 120° offset
+
+    // Per-channel prismatic glow — vec3(R, G, B) glow intensities
+    vec3 pglow1 = vec3(
+        glowK / (abs(t1 + prismR - field1) + dWidth),
+        glowK / (abs(t1 - field1) + dWidth),
+        glowK / (abs(t1 + prismB - field1) + dWidth)
+    );
+    vec3 pglow2 = vec3(
+        glowK * ch2w / (abs(t2 + prismR * 0.8 - field2) + dWidth * 1.2),
+        glowK * ch2w / (abs(t2 - field2) + dWidth * 1.2),
+        glowK * ch2w / (abs(t2 + prismB * 0.8 - field2) + dWidth * 1.2)
+    );
+    vec3 pglow3 = vec3(
+        glowK * ch3w / (abs(t3 + prismR * 0.6 - field3) + dWidth * 1.5),
+        glowK * ch3w / (abs(t3 - field3) + dWidth * 1.5),
+        glowK * ch3w / (abs(t3 + prismB * 0.6 - field3) + dWidth * 1.5)
+    );
+
+    // Per-channel traveling instability — each arc layer zips independently
+    pglow1 *= 1.0 - flicker * 0.50 * zipPulse(field1, p, time);
+    pglow2 *= 1.0 - flicker * 0.45 * zipPulse(field2, p, time * 1.2 + 7.0);
+    pglow3 *= 1.0 - flicker * 0.40 * zipPulse(field3, p, time * 1.5 + 19.0);
+
+    // ── Localized discharge surge ──────────────────────────────────
+    float surgeField = field1 + field2 * 0.5;
+    float surgeWave = pow(0.5 + 0.5 * sin(surgeField * 14.0 - time * 6.0), 8.0);
+    float surgeTrigger = step(0.85, hash21(vec2(floor(time * 2.0) * 11.7, 42.0)));
+    float surge = surgeTrigger * surgeWave * flicker * 0.4;
 
     // ── Color composition ────────────────────────────────────────
-    // Each channel gets its own color mapping, then additive blend
-    vec3 col1 = arcColor(clamp(glow1 * 1.2, 0.0, 1.0), field1, 0.02, time, palette) * glow1;
-    vec3 col2 = arcColor(clamp(glow2 * 1.5, 0.0, 1.0), field2, 0.20, time, palette) * glow2;
-    vec3 col3 = arcColor(clamp(glow3 * 2.0, 0.0, 1.0), field3, 0.38, time, palette) * glow3;
+    // Scalar glow (green channel = unshifted) drives the palette lookup.
+    // Prismatic blends between uniform glow and per-RGB split glow.
+    float sg1 = pglow1.g, sg2 = pglow2.g, sg3 = pglow3.g;
 
-    // Additive layering — channel crossings intensify into the palette's hot tint
+    vec3 tint1 = arcColor(clamp(sg1 * 1.2, 0.0, 1.0), field1, 0.02, time, palette);
+    vec3 tint2 = arcColor(clamp(sg2 * 1.5, 0.0, 1.0), field2, 0.20, time, palette);
+    vec3 tint3 = arcColor(clamp(sg3 * 2.0, 0.0, 1.0), field3, 0.38, time, palette);
+
+    vec3 col1 = mix(tint1 * sg1, tint1 * pglow1, prismatic);
+    vec3 col2 = mix(tint2 * sg2, tint2 * pglow2, prismatic);
+    vec3 col3 = mix(tint3 * sg3, tint3 * pglow3, prismatic);
+
     vec3 col = col1 + col2 + col3;
 
-    // Flash event — brief global intensity spike
-    col *= 1.0 + flash;
-    col += palette.core * flash * (0.05 + intensity * 0.05);
+    // Surge event — localized traveling intensity spike along arc paths
+    col += col * surge;
+    col += palette.core * surge * 0.05;
 
     // ── Very faint ambient so the background isn't pure black ────
     float ambientDrift = 0.5 + 0.5 * sin(time * 0.34 + p.x * 1.6 - p.y * 1.3);

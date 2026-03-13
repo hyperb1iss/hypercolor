@@ -10,6 +10,11 @@ export default effect(
             step: 1,
             tooltip: 'How much the arcs split and web outward.',
         }),
+        density: num('Arc Density', [0, 100], 50, {
+            group: 'Geometry',
+            step: 1,
+            tooltip: 'How much of the electric field resolves into visible arcs. Sparse clean bolts → dense crackling web.',
+        }),
         flicker: num('Instability', [0, 100], 30, {
             group: 'Motion',
             step: 1,
@@ -31,6 +36,11 @@ export default effect(
                     'Select the discharge palette. Each theme now drives the outer glow, contrast veins, accent arcs, and core tint.',
             },
         ),
+        prismatic: num('Prismatic', [0, 100], 12, {
+            group: 'Atmosphere',
+            step: 1,
+            tooltip: 'Chromatic refraction splitting along the arcs — rainbow fringing that slowly drifts around the tendrils.',
+        }),
         speed: num('Charge Rate', [1, 10], 5, {
             group: 'Motion',
             step: 0.5,
@@ -44,9 +54,11 @@ export default effect(
             {
                 controls: {
                     branches: 85,
+                    density: 55,
                     flicker: 22,
                     intensity: 88,
                     palette: 'SilkCircuit Storm',
+                    prismatic: 20,
                     speed: 4,
                 },
                 description:
@@ -56,9 +68,11 @@ export default effect(
             {
                 controls: {
                     branches: 55,
+                    density: 35,
                     flicker: 50,
                     intensity: 95,
                     palette: 'Crimson Arc',
+                    prismatic: 8,
                     speed: 7,
                 },
                 description:
@@ -68,9 +82,11 @@ export default effect(
             {
                 controls: {
                     branches: 92,
+                    density: 70,
                     flicker: 12,
                     intensity: 60,
                     palette: 'Frozen',
+                    prismatic: 35,
                     speed: 2,
                 },
                 description:
@@ -80,9 +96,11 @@ export default effect(
             {
                 controls: {
                     branches: 100,
+                    density: 85,
                     flicker: 65,
                     intensity: 100,
                     palette: 'Solar Surge',
+                    prismatic: 45,
                     speed: 10,
                 },
                 description:
@@ -92,9 +110,11 @@ export default effect(
             {
                 controls: {
                     branches: 38,
+                    density: 25,
                     flicker: 35,
                     intensity: 35,
                     palette: 'Phantom',
+                    prismatic: 55,
                     speed: 3,
                 },
                 description:
