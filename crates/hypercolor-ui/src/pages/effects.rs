@@ -238,10 +238,18 @@ pub fn EffectsPage() -> impl IntoView {
 
     // Resize callbacks for detail and controls panels
     let (on_detail_drag_start, on_detail_drag, on_detail_drag_end) = drag_callbacks(
-        detail_width, set_detail_width, MIN_DETAIL_WIDTH, MAX_DETAIL_WIDTH, "hc-fx-detail-width",
+        detail_width,
+        set_detail_width,
+        MIN_DETAIL_WIDTH,
+        MAX_DETAIL_WIDTH,
+        "hc-fx-detail-width",
     );
     let (on_controls_drag_start, on_controls_drag, on_controls_drag_end) = drag_callbacks(
-        controls_width, set_controls_width, MIN_CONTROLS_WIDTH, MAX_CONTROLS_WIDTH, "hc-fx-controls-width",
+        controls_width,
+        set_controls_width,
+        MIN_CONTROLS_WIDTH,
+        MAX_CONTROLS_WIDTH,
+        "hc-fx-controls-width",
     );
 
     // Track which filter dropdown section is expanded (if any)
@@ -581,7 +589,8 @@ pub fn EffectsPage() -> impl IntoView {
                                     // Info card + live preview
                                     <div class="shrink-0 space-y-2 pb-2">
                                         <div
-                                            class="rounded-lg bg-surface-overlay/40 border border-edge-subtle px-3 py-2.5 space-y-2"
+                                            class="rounded-lg bg-surface-overlay/40 border border-edge-subtle px-3 py-2.5 space-y-2 relative"
+                                            style="overflow: visible; z-index: 20"
                                             style:border-top=move || format!("2px solid rgba({}, 0.2)", accent_rgb.get())
                                         >
                                             <div class="flex items-center gap-2 min-w-0">
