@@ -3,6 +3,7 @@
 use std::cmp::min;
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -28,6 +29,8 @@ struct PendingSmBusDevice {
 }
 
 struct ConnectedSmBusDevice {
+    bus_path: String,
+    address: u16,
     protocol: Box<dyn Protocol>,
     transport: Box<dyn Transport>,
     info_template: DeviceInfo,
@@ -35,11 +38,14 @@ struct ConnectedSmBusDevice {
     frame_commands: Vec<ProtocolCommand>,
 }
 
+type SmBusTransportFactory = Arc<dyn Fn(&str, u16) -> Result<Box<dyn Transport>> + Send + Sync>;
+
 /// Core `SMBus` backend for HAL-managed ENE controllers.
 pub struct SmBusBackend {
-    scanner: SmBusScanner,
+    scanner: Box<dyn TransportScanner>,
     pending: HashMap<DeviceId, PendingSmBusDevice>,
     connected: HashMap<DeviceId, ConnectedSmBusDevice>,
+    transport_factory: SmBusTransportFactory,
 }
 
 impl SmBusBackend {
@@ -50,11 +56,31 @@ impl SmBusBackend {
     }
 
     #[must_use]
-    pub fn with_scanner(scanner: SmBusScanner) -> Self {
+    pub fn with_scanner<S>(scanner: S) -> Self
+    where
+        S: TransportScanner + 'static,
+    {
+        Self::with_scanner_and_transport_factory(scanner, |bus_path, address| {
+            Ok(Box::new(
+                SmBusTransport::open(bus_path, address).with_context(|| {
+                    format!("failed to open SMBus transport at {bus_path} address 0x{address:02X}")
+                })?,
+            ))
+        })
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_scanner_and_transport_factory<S, F>(scanner: S, transport_factory: F) -> Self
+    where
+        S: TransportScanner + 'static,
+        F: Fn(&str, u16) -> Result<Box<dyn Transport>> + Send + Sync + 'static,
+    {
         Self {
-            scanner,
+            scanner: Box::new(scanner),
             pending: HashMap::new(),
             connected: HashMap::new(),
+            transport_factory: Arc::new(transport_factory),
         }
     }
 }
@@ -106,41 +132,8 @@ impl DeviceBackend for SmBusBackend {
             "attempting SMBus connect"
         );
 
-        let transport: Box<dyn Transport> = Box::new(
-            SmBusTransport::open(&pending.bus_path, pending.address).with_context(|| {
-                format!(
-                    "failed to open SMBus transport at {} address 0x{:02X}",
-                    pending.bus_path, pending.address
-                )
-            })?,
-        );
-        let protocol: Box<dyn Protocol> = Box::new(AuraSmBusProtocol::new());
-
-        let init_sequence = protocol.init_sequence();
-        run_commands(
-            protocol.as_ref(),
-            transport.as_ref(),
-            init_sequence.as_slice(),
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "failed to run SMBus init sequence for {} at {} address 0x{:02X}",
-                pending.info_template.name, pending.bus_path, pending.address
-            )
-        })?;
-
-        let target_fps = fps_from_frame_interval(protocol.frame_interval());
-        self.connected.insert(
-            *id,
-            ConnectedSmBusDevice {
-                protocol,
-                transport,
-                info_template: pending.info_template,
-                target_fps,
-                frame_commands: Vec::new(),
-            },
-        );
+        let device = connect_pending_device(&pending, self.transport_factory.as_ref()).await?;
+        self.connected.insert(*id, device);
 
         Ok(())
     }
@@ -165,6 +158,7 @@ impl DeviceBackend for SmBusBackend {
     }
 
     async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        let transport_factory = Arc::clone(&self.transport_factory);
         let device = self
             .connected
             .get_mut(id)
@@ -173,12 +167,53 @@ impl DeviceBackend for SmBusBackend {
         device
             .protocol
             .encode_frame_into(colors, &mut device.frame_commands);
-        run_commands(
+        if let Err(initial_error) = run_commands(
             device.protocol.as_ref(),
             device.transport.as_ref(),
             device.frame_commands.as_slice(),
         )
         .await
+        {
+            warn!(
+                device_id = %id,
+                bus_path = device.bus_path,
+                address = format_args!("0x{:02X}", device.address),
+                error = %initial_error,
+                "SMBus frame write failed; attempting one-shot transport reinitialize"
+            );
+
+            reinitialize_connected_device(device, transport_factory.as_ref())
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to recover SMBus device {id} after write failure: {initial_error}"
+                    )
+                })?;
+
+            device
+                .protocol
+                .encode_frame_into(colors, &mut device.frame_commands);
+            run_commands(
+                device.protocol.as_ref(),
+                device.transport.as_ref(),
+                device.frame_commands.as_slice(),
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "SMBus frame write still failing for device {id} after recovery (initial error: {initial_error})"
+                )
+            })?;
+
+            debug!(
+                device_id = %id,
+                bus_path = device.bus_path,
+                address = format_args!("0x{:02X}", device.address),
+                "SMBus transport recovered after frame write failure"
+            );
+        }
+
+        Ok(())
     }
 
     async fn connected_device_info(&self, id: &DeviceId) -> Result<Option<DeviceInfo>> {
@@ -207,6 +242,81 @@ fn pending_from_discovered(discovered: &DiscoveredDevice) -> Option<PendingSmBus
         address,
         info_template: discovered.info.clone(),
     })
+}
+
+async fn connect_pending_device(
+    pending: &PendingSmBusDevice,
+    transport_factory: &(dyn Fn(&str, u16) -> Result<Box<dyn Transport>> + Send + Sync),
+) -> Result<ConnectedSmBusDevice> {
+    let transport = transport_factory(&pending.bus_path, pending.address)?;
+    let protocol: Box<dyn Protocol> = Box::new(AuraSmBusProtocol::new());
+    run_init_sequence(
+        protocol.as_ref(),
+        transport.as_ref(),
+        &pending.info_template.name,
+        &pending.bus_path,
+        pending.address,
+    )
+    .await?;
+
+    let target_fps = fps_from_frame_interval(protocol.frame_interval());
+    Ok(ConnectedSmBusDevice {
+        bus_path: pending.bus_path.clone(),
+        address: pending.address,
+        protocol,
+        transport,
+        info_template: pending.info_template.clone(),
+        target_fps,
+        frame_commands: Vec::new(),
+    })
+}
+
+async fn reinitialize_connected_device(
+    device: &mut ConnectedSmBusDevice,
+    transport_factory: &(dyn Fn(&str, u16) -> Result<Box<dyn Transport>> + Send + Sync),
+) -> Result<()> {
+    let replacement = transport_factory(&device.bus_path, device.address)?;
+    if let Err(error) = run_init_sequence(
+        device.protocol.as_ref(),
+        replacement.as_ref(),
+        &device.info_template.name,
+        &device.bus_path,
+        device.address,
+    )
+    .await
+    {
+        let _ = replacement.close().await;
+        return Err(error);
+    }
+
+    let old_transport = std::mem::replace(&mut device.transport, replacement);
+    if let Err(error) = old_transport.close().await.map_err(map_transport_error) {
+        warn!(
+            bus_path = device.bus_path,
+            address = format_args!("0x{:02X}", device.address),
+            error = %error,
+            "failed to close previous SMBus transport during recovery"
+        );
+    }
+
+    Ok(())
+}
+
+async fn run_init_sequence(
+    protocol: &dyn Protocol,
+    transport: &dyn Transport,
+    device_name: &str,
+    bus_path: &str,
+    address: u16,
+) -> Result<()> {
+    let init_sequence = protocol.init_sequence();
+    run_commands(protocol, transport, init_sequence.as_slice())
+        .await
+        .with_context(|| {
+            format!(
+                "failed to run SMBus init sequence for {device_name} at {bus_path} address 0x{address:02X}"
+            )
+        })
 }
 
 async fn run_commands(

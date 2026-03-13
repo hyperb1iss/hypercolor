@@ -429,7 +429,11 @@ impl Protocol for AuraSmBusProtocol {
             return Vec::new();
         };
 
-        let mut operations = ene_direct_color_writes(variant, colors);
+        let mut operations = Vec::new();
+        if variant.frame_apply_register.is_some() {
+            operations.extend(ene_write_register(ENE_DIRECT_MODE_REGISTER, ENE_APPLY_VAL));
+        }
+        operations.extend(ene_direct_color_writes(variant, colors));
         if let Some(register) = variant.frame_apply_register {
             operations.extend(ene_write_register(register, ENE_APPLY_VAL));
         }

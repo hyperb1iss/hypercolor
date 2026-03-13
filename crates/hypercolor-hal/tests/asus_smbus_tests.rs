@@ -344,7 +344,7 @@ fn smbus_protocol_frame_encoding_uses_serialized_direct_writes() {
 }
 
 #[test]
-fn smbus_protocol_frame_encoding_appends_dram_apply_latch() {
+fn smbus_protocol_frame_encoding_reasserts_direct_mode_and_appends_dram_apply_latch() {
     let protocol = AuraSmBusProtocol::new();
     let mut firmware = [0_u8; 16];
     firmware[..15].copy_from_slice(b"AUDA0-E6K5-0101");
@@ -358,7 +358,11 @@ fn smbus_protocol_frame_encoding_appends_dram_apply_latch() {
         decode_ene_transaction(&commands[0].data).expect("frame transaction should decode");
     let variant = lookup_ene_firmware_variant("AUDA0-E6K5-0101").expect("variant should resolve");
 
-    let mut expected = ene_direct_color_writes(variant, &[[0x10, 0x20, 0x30], [0xAA, 0xBB, 0xCC]]);
+    let mut expected = ene_write_register(0x8020, 0x01);
+    expected.extend(ene_direct_color_writes(
+        variant,
+        &[[0x10, 0x20, 0x30], [0xAA, 0xBB, 0xCC]],
+    ));
     expected.extend(ene_write_register(
         ENE_DRAM_COLOR_APPLY_REGISTER,
         ENE_APPLY_VAL,
