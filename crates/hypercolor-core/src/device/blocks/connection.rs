@@ -9,6 +9,8 @@ use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::time::timeout;
+use zerocopy::byteorder::{LittleEndian, U64};
+use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use super::types::{DiscoverResponse, PongResponse};
 
@@ -17,20 +19,32 @@ const BINARY_MAGIC: u8 = 0xBD;
 const BINARY_TYPE_FRAME: u8 = 0x01;
 /// 1 magic + 1 type + 8 uid (LE u64) + 675 pixels = 685 bytes.
 const BINARY_FRAME_SIZE: usize = 685;
-/// Byte offset where pixel data begins (after magic + type + uid).
-const PIXEL_OFFSET: usize = 10;
 /// 15 × 15 × 3 bytes (RGB888).
 const PIXEL_DATA_SIZE: usize = 675;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
+const _: () = assert!(
+    std::mem::size_of::<BinaryFramePacket>() == BINARY_FRAME_SIZE,
+    "BinaryFramePacket must match blocksd's 685-byte frame layout"
+);
+
+#[derive(FromZeros, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
+struct BinaryFramePacket {
+    magic: u8,
+    message_type: u8,
+    uid: U64<LittleEndian>,
+    pixels: [u8; PIXEL_DATA_SIZE],
+}
+
 /// Active connection to a blocksd instance.
 pub struct BlocksConnection {
     reader: BufReader<tokio::io::ReadHalf<UnixStream>>,
     writer: tokio::io::WriteHalf<UnixStream>,
     read_buf: String,
-    frame_buf: Vec<u8>,
+    frame_buf: BinaryFramePacket,
 }
 
 impl BlocksConnection {
@@ -47,7 +61,7 @@ impl BlocksConnection {
             reader: BufReader::new(read_half),
             writer: write_half,
             read_buf: String::with_capacity(4096),
-            frame_buf: vec![0u8; BINARY_FRAME_SIZE],
+            frame_buf: BinaryFramePacket::new_zeroed(),
         })
     }
 
@@ -87,30 +101,28 @@ impl BlocksConnection {
 
     /// Write an RGB888 frame using the binary fast path.
     ///
-    /// Returns `Ok(true)` if accepted, `Ok(false)` if dropped (backpressure).
+    /// Returns `Ok(true)` if accepted, `Ok(false)` if rejected by blocksd.
     pub async fn write_frame_binary(&mut self, uid: u64, colors: &[[u8; 3]]) -> Result<bool> {
-        // Build binary frame: magic + type + uid (u64 LE) + pixels
-        self.frame_buf[0] = BINARY_MAGIC;
-        self.frame_buf[1] = BINARY_TYPE_FRAME;
-        self.frame_buf[2..10].copy_from_slice(&uid.to_le_bytes());
+        self.frame_buf.magic = BINARY_MAGIC;
+        self.frame_buf.message_type = BINARY_TYPE_FRAME;
+        self.frame_buf.uid = U64::new(uid);
 
-        // Copy pixel data (up to 225 pixels)
         let pixel_count = colors.len().min(225);
-        for (i, color) in colors[..pixel_count].iter().enumerate() {
-            let offset = PIXEL_OFFSET + i * 3;
-            self.frame_buf[offset] = color[0];
-            self.frame_buf[offset + 1] = color[1];
-            self.frame_buf[offset + 2] = color[2];
+        for (chunk, color) in self
+            .frame_buf
+            .pixels
+            .chunks_exact_mut(3)
+            .zip(colors.iter().take(pixel_count))
+        {
+            chunk.copy_from_slice(color);
         }
 
-        // Zero-fill remaining pixels if fewer than 225
         if pixel_count < 225 {
-            let start = PIXEL_OFFSET + pixel_count * 3;
-            self.frame_buf[start..BINARY_FRAME_SIZE].fill(0);
+            self.frame_buf.pixels[pixel_count * 3..].fill(0);
         }
 
         self.writer
-            .write_all(&self.frame_buf)
+            .write_all(self.frame_buf.as_bytes())
             .await
             .context("blocksd frame write failed")?;
         self.writer.flush().await?;

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::device::traits::{BackendInfo, DeviceBackend};
 use crate::types::device::{
@@ -87,22 +87,20 @@ impl BlocksBackend {
 
         self.reconnect_state.last_attempt = Some(Instant::now());
 
-        match BlocksConnection::connect(&self.socket_path).await {
-            Ok(mut conn) => {
-                // Verify connection with ping
-                match conn.ping().await {
-                    Ok(pong) => {
-                        info!(
-                            version = %pong.version,
-                            devices = pong.device_count,
-                            "blocksd connected"
-                        );
-                    }
-                    Err(e) => {
-                        warn!("blocksd ping failed: {e}");
-                    }
-                }
+        let connect_attempt = async {
+            let mut conn = BlocksConnection::connect(&self.socket_path).await?;
+            let pong = conn.ping().await?;
+            Ok::<_, anyhow::Error>((conn, pong))
+        }
+        .await;
 
+        match connect_attempt {
+            Ok((conn, pong)) => {
+                info!(
+                    version = %pong.version,
+                    devices = pong.device_count,
+                    "blocksd connected"
+                );
                 self.reconnect_state.delay = Duration::from_millis(500);
                 self.reconnect_state.consecutive_failures = 0;
                 self.connection = Some(conn);
@@ -224,10 +222,15 @@ impl DeviceBackend for BlocksBackend {
             .ok_or_else(|| anyhow::anyhow!("blocksd not connected"))?;
 
         match conn.write_frame_binary(uid, colors).await {
-            Ok(_accepted) => {
-                if let Some(device) = self.devices.get_mut(id) {
-                    device.frames_sent += 1;
+            Ok(accepted) => {
+                if accepted {
+                    if let Some(device) = self.devices.get_mut(id) {
+                        device.frames_sent += 1;
+                    }
+                } else {
+                    debug!(%id, uid, "blocks frame deferred by daemon");
                 }
+
                 Ok(())
             }
             Err(e) => {
