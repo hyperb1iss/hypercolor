@@ -3,6 +3,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
@@ -74,6 +75,10 @@ pub struct EffectBrowserView {
     selected_control: usize,
     color_picker: Option<ColorPickerState>,
 
+    // Slider acceleration state
+    last_slider_adjust: Instant,
+    slider_accel: f32,
+
     // Layout cache for mouse hit-testing (populated during render)
     list_rect: Cell<Rect>,
     preview_rect: Cell<Rect>,
@@ -109,6 +114,8 @@ impl EffectBrowserView {
             control_values: HashMap::new(),
             selected_control: 0,
             color_picker: None,
+            last_slider_adjust: Instant::now(),
+            slider_accel: 1.0,
             list_rect: Cell::new(Rect::default()),
             preview_rect: Cell::new(Rect::default()),
             controls_rect: Cell::new(Rect::default()),
@@ -186,7 +193,23 @@ impl EffectBrowserView {
         let min = ctrl.min.unwrap_or(0.0);
         let max = ctrl.max.unwrap_or(1.0);
 
-        let new_val = (current + step * direction).clamp(min, max);
+        // Adaptive acceleration: ramp up when holding the key, reset on pause.
+        // Max accel scales with how many steps span the range so sliders with
+        // big ranges (e.g. [0,100] step 1) get fast traversal while small ranges
+        // stay precise.
+        let now = Instant::now();
+        if now.duration_since(self.last_slider_adjust).as_millis() < 200 {
+            let range = max - min;
+            let steps_in_range = range / step;
+            let max_accel = (steps_in_range / 30.0).max(1.0);
+            let ramp = (max_accel - 1.0) / 15.0;
+            self.slider_accel = (self.slider_accel + ramp).min(max_accel);
+        } else {
+            self.slider_accel = 1.0;
+        }
+        self.last_slider_adjust = now;
+
+        let new_val = (current + step * self.slider_accel * direction).clamp(min, max);
         let new_cv = ControlValue::Float(new_val);
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
         Some(Action::UpdateControl(ctrl.id, new_cv))
