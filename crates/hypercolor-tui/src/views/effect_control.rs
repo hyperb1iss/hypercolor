@@ -36,7 +36,10 @@ pub struct EffectControlView {
     focused: bool,
     action_tx: Option<UnboundedSender<Action>>,
 
-    // Effect data
+    // Effect catalog (kept in sync via broadcast)
+    all_effects: Vec<EffectSummary>,
+
+    // Active effect data
     effect_id: String,
     effect_name: String,
     effect_description: String,
@@ -59,6 +62,7 @@ impl EffectControlView {
         Self {
             focused: false,
             action_tx: None,
+            all_effects: Vec::new(),
             effect_id: String::new(),
             effect_name: String::new(),
             effect_description: String::new(),
@@ -141,6 +145,22 @@ impl EffectControlView {
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
 
         Some(Action::UpdateControl(ctrl.id.clone(), new_cv))
+    }
+
+    /// Look up the current `effect_id` in the cached catalog and load it.
+    /// Returns `true` if the effect was found and loaded.
+    fn try_load_from_catalog(&mut self) -> bool {
+        if let Some(effect) = self
+            .all_effects
+            .iter()
+            .find(|e| e.id == self.effect_id)
+            .cloned()
+        {
+            self.load_effect(&effect);
+            true
+        } else {
+            false
+        }
     }
 
     /// Populate controls from an effect summary.
@@ -524,12 +544,10 @@ impl Component for EffectControlView {
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {
         match action {
             Action::EffectsUpdated(effects) => {
-                if let Some(effect) = effects
-                    .iter()
-                    .find(|e| !self.effect_id.is_empty() && e.id == self.effect_id)
-                    .or_else(|| effects.iter().find(|e| e.name == self.effect_name))
-                {
-                    self.load_effect(effect);
+                self.all_effects.clone_from(effects);
+                // If we have a pending effect_id, try to resolve it now.
+                if !self.effect_id.is_empty() && self.controls.is_empty() {
+                    self.try_load_from_catalog();
                 }
             }
             Action::DaemonStateUpdated(state) | Action::DaemonConnected(state) => {
@@ -540,7 +558,10 @@ impl Component for EffectControlView {
                     if let Some(name) = &state.effect_name {
                         self.effect_name.clone_from(name);
                     }
-                    self.control_values.clear();
+                    // Try to load full effect data from cached catalog.
+                    if !self.try_load_from_catalog() {
+                        self.control_values.clear();
+                    }
                 }
             }
             Action::ApplyEffect(_) => {

@@ -363,8 +363,27 @@ impl App {
             _ => {}
         }
 
-        // Forward to active screen
-        if let Some(screen) = self.screens.get_mut(&self.active_screen)
+        // Broadcast state-update actions to all screens so inactive views
+        // stay current; forward other actions only to the active screen.
+        let broadcast = matches!(
+            action,
+            Action::DaemonConnected(_)
+                | Action::DaemonStateUpdated(_)
+                | Action::DaemonDisconnected(_)
+                | Action::EffectsUpdated(_)
+                | Action::DevicesUpdated(_)
+                | Action::FavoritesUpdated(_)
+                | Action::CanvasFrameReceived(_)
+                | Action::SpectrumUpdated(_)
+        );
+
+        if broadcast {
+            for screen in self.screens.values_mut() {
+                if let Ok(Some(follow_up)) = screen.update(action) {
+                    let _ = self.action_tx.send(follow_up);
+                }
+            }
+        } else if let Some(screen) = self.screens.get_mut(&self.active_screen)
             && let Ok(Some(follow_up)) = screen.update(action)
         {
             let _ = self.action_tx.send(follow_up);
@@ -614,35 +633,33 @@ impl App {
             .as_ref()
             .map_or(0.0, |d| d.fps_actual);
 
+        let left_preview = " PREVIEW ";
+        let left_name = format!(" {effect_name} ");
+        let left_fps = format!("{fps:.0} fps");
+        let right_hint = "F11/Esc to exit ";
+        let used: u16 = (left_preview.len() + left_name.len() + left_fps.len() + right_hint.len())
+            .try_into()
+            .unwrap_or(0);
+        let pad = area.width.saturating_sub(used);
+
+        let muted = Style::default().fg(Color::Rgb(100, 100, 120));
         let info_line = Line::from(vec![
             Span::styled(
-                " PREVIEW ",
+                left_preview,
                 Style::default()
                     .fg(Color::Rgb(20, 20, 30))
                     .bg(Color::Rgb(225, 53, 255))
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" {effect_name} "),
+                left_name,
                 Style::default()
                     .fg(Color::Rgb(128, 255, 234))
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                format!("{fps:.0} fps"),
-                Style::default().fg(Color::Rgb(100, 100, 120)),
-            ),
-            Span::styled(
-                format!(
-                    "{}F11/Esc to exit ",
-                    " ".repeat(
-                        area.width
-                            .saturating_sub(30 + effect_name.len() as u16)
-                            .into()
-                    )
-                ),
-                Style::default().fg(Color::Rgb(100, 100, 120)),
-            ),
+            Span::styled(left_fps, muted),
+            Span::styled(" ".repeat(pad.into()), muted),
+            Span::styled(right_hint, muted),
         ]);
 
         let info = Paragraph::new(info_line)
