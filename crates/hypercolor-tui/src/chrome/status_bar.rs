@@ -85,41 +85,51 @@ fn build_left(state: &AppState) -> Vec<Span<'static>> {
     spans
 }
 
-/// Build right-aligned nav key hints: `[d]ash [e]ffx [c]trl [?]help`
+/// Build right-aligned nav hints: `dash | effx | ctrl | ?help`
+/// Active screen's first char is highlighted; items separated by `|`.
 fn build_nav_hints(active: ScreenId, screens: &[ScreenId]) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let muted = theme::text_muted();
+    let sep = Style::default().fg(muted);
 
     for &screen in screens {
         if !spans.is_empty() {
-            spans.push(Span::raw(" "));
+            spans.push(Span::styled(" \u{2502} ", sep));
         }
-        let key = screen.key_hint().to_ascii_lowercase();
+        let label = screen.label().to_ascii_lowercase();
         let is_active = screen == active;
 
-        spans.push(Span::styled(
-            format!("[{key}]"),
-            if is_active {
-                Style::default()
-                    .fg(theme::accent_secondary())
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(muted)
-            },
-        ));
-        spans.push(Span::styled(
-            screen.label().to_ascii_lowercase(),
-            if is_active {
-                Style::default().fg(theme::accent_primary())
-            } else {
-                Style::default().fg(muted)
-            },
-        ));
+        if is_active {
+            // Highlight first char, rest in accent
+            let mut chars = label.chars();
+            if let Some(first) = chars.next() {
+                spans.push(Span::styled(
+                    first.to_string(),
+                    Style::default()
+                        .fg(theme::accent_secondary())
+                        .add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(
+                    chars.collect::<String>(),
+                    Style::default().fg(theme::accent_primary()),
+                ));
+            }
+        } else {
+            // Highlight first char as key hint, rest muted
+            let mut chars = label.chars();
+            if let Some(first) = chars.next() {
+                spans.push(Span::styled(
+                    first.to_string(),
+                    Style::default().fg(theme::warning()),
+                ));
+                spans.push(Span::styled(chars.collect::<String>(), Style::default().fg(muted)));
+            }
+        }
     }
 
     // Help hint
-    spans.push(Span::raw(" "));
-    spans.push(Span::styled("[?]", Style::default().fg(muted)));
+    spans.push(Span::styled(" \u{2502} ", sep));
+    spans.push(Span::styled("?", Style::default().fg(theme::warning())));
     spans.push(Span::styled("help", Style::default().fg(muted)));
     spans.push(Span::raw(" "));
     spans

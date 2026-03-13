@@ -297,6 +297,24 @@ impl App {
                     }
                 });
             }
+            Action::ApplyEffectPreset(effect_id, controls) => {
+                self.spawn_actions({
+                    let client = self.client.clone();
+                    let id = effect_id.clone();
+                    let ctrl = controls.clone();
+                    async move {
+                        let body = serde_json::to_value(&ctrl)?;
+                        let payload = serde_json::json!({ "controls": body });
+                        client.apply_effect(&id, Some(&payload)).await?;
+                        let mut actions = refresh_effects_and_status(client).await?;
+                        actions.push(Action::Notify(Notification {
+                            message: format!("Applied preset for: {id}"),
+                            level: NotificationLevel::Success,
+                        }));
+                        Ok(actions)
+                    }
+                });
+            }
             Action::ToggleFavorite(effect_id) => {
                 let is_fav = self.state.favorites.contains(effect_id);
                 self.spawn_actions({

@@ -1,5 +1,6 @@
 //! Action enum — the sole mechanism for state mutation in the TUI.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::screen::ScreenId;
@@ -72,6 +73,8 @@ pub enum Action {
     UpdateControl(String, ControlValue),
     /// Apply a preset by name.
     ApplyPreset(String),
+    /// Apply an effect with a bundled preset's control overrides.
+    ApplyEffectPreset(String, HashMap<String, ControlValue>),
     /// Reset all controls to defaults.
     ResetControls,
 

@@ -1,5 +1,6 @@
 //! Effect browser view — browse, search, preview, and apply effects.
 
+use std::cell::Cell;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -47,6 +48,8 @@ pub struct EffectBrowserView {
     effects: Vec<EffectSummary>,
     favorites: Vec<String>,
     selected_index: usize,
+    scroll_offset: Cell<usize>,
+    selected_preset: usize,
 
     // Search
     search_active: bool,
@@ -73,6 +76,8 @@ impl EffectBrowserView {
             effects: Vec::new(),
             favorites: Vec::new(),
             selected_index: 0,
+            scroll_offset: Cell::new(0),
+            selected_preset: 0,
             search_active: false,
             search_query: String::new(),
             canvas_frame: None,
@@ -97,6 +102,7 @@ impl EffectBrowserView {
                 .collect();
         }
         self.clamp_selection();
+        self.scroll_offset.set(0);
     }
 
     /// Clamp the selected index to valid bounds.
@@ -108,6 +114,7 @@ impl EffectBrowserView {
                 .selected_index
                 .min(self.effects.len().saturating_sub(1));
         }
+        self.selected_preset = 0;
     }
 
     /// Check if an effect is in the favorites list.
@@ -152,13 +159,21 @@ impl EffectBrowserView {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if !self.effects.is_empty() {
-                    self.selected_index =
-                        (self.selected_index + 1).min(self.effects.len().saturating_sub(1));
+                    let new = (self.selected_index + 1)
+                        .min(self.effects.len().saturating_sub(1));
+                    if new != self.selected_index {
+                        self.selected_index = new;
+                        self.selected_preset = 0;
+                    }
                 }
                 None
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.selected_index = self.selected_index.saturating_sub(1);
+                let new = self.selected_index.saturating_sub(1);
+                if new != self.selected_index {
+                    self.selected_index = new;
+                    self.selected_preset = 0;
+                }
                 None
             }
             KeyCode::Char('/') => {
@@ -172,19 +187,79 @@ impl EffectBrowserView {
                 .selected_effect()
                 .map(|e| Action::ToggleFavorite(e.id.clone())),
             KeyCode::Tab => {
-                self.focus_pane = match self.focus_pane {
-                    FocusPane::List => FocusPane::Preview,
-                    FocusPane::Preview => FocusPane::List,
-                };
+                self.focus_pane = FocusPane::Preview;
                 None
             }
             KeyCode::Char('g') => {
                 self.selected_index = 0;
+                self.selected_preset = 0;
+                self.scroll_offset.set(0);
                 None
             }
             KeyCode::Char('G') => {
                 if !self.effects.is_empty() {
                     self.selected_index = self.effects.len().saturating_sub(1);
+                    self.selected_preset = 0;
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Handle key events when browsing presets in the preview pane.
+    fn handle_preview_key(&mut self, key: KeyEvent) -> Option<Action> {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                let count = self
+                    .selected_effect()
+                    .map_or(0, |e| e.presets.len());
+                if count > 0 {
+                    self.selected_preset =
+                        (self.selected_preset + 1).min(count.saturating_sub(1));
+                }
+                None
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.selected_preset = self.selected_preset.saturating_sub(1);
+                None
+            }
+            KeyCode::Enter => {
+                if let Some(effect) = self.selected_effect() {
+                    if let Some(preset) = effect.presets.get(self.selected_preset) {
+                        Some(Action::ApplyEffectPreset(
+                            effect.id.clone(),
+                            preset.controls.clone(),
+                        ))
+                    } else {
+                        Some(Action::ApplyEffect(effect.id.clone()))
+                    }
+                } else {
+                    None
+                }
+            }
+            KeyCode::Char('f') => self
+                .selected_effect()
+                .map(|e| Action::ToggleFavorite(e.id.clone())),
+            KeyCode::Tab => {
+                self.focus_pane = FocusPane::List;
+                None
+            }
+            KeyCode::Char('/') => {
+                self.search_active = true;
+                self.focus_pane = FocusPane::List;
+                None
+            }
+            KeyCode::Char('g') => {
+                self.selected_preset = 0;
+                None
+            }
+            KeyCode::Char('G') => {
+                let count = self
+                    .selected_effect()
+                    .map_or(0, |e| e.presets.len());
+                if count > 0 {
+                    self.selected_preset = count.saturating_sub(1);
                 }
                 None
             }
@@ -254,15 +329,33 @@ impl EffectBrowserView {
             return;
         }
 
-        let items = self.build_list_items(inner.width.saturating_sub(2));
+        let (items, selected_item_idx) = self.build_list_items(inner.width.saturating_sub(2));
+        let visible = usize::from(list_area.height);
+        let mut offset = self.scroll_offset.get();
 
-        frame.render_widget(List::new(items), list_area);
+        // Keep selected item visible within the scroll viewport
+        if let Some(sel) = selected_item_idx {
+            if sel < offset {
+                offset = sel;
+            } else if sel >= offset + visible {
+                offset = sel.saturating_sub(visible.saturating_sub(1));
+            }
+        }
+        self.scroll_offset.set(offset);
+
+        let visible_items: Vec<ListItem<'_>> =
+            items.into_iter().skip(offset).take(visible).collect();
+
+        frame.render_widget(List::new(visible_items), list_area);
     }
 
     /// Build `ListItem`s for the effect list with category headers.
-    fn build_list_items(&self, avail_width: u16) -> Vec<ListItem<'_>> {
+    ///
+    /// Returns the items and the list-item index of the selected effect.
+    fn build_list_items(&self, avail_width: u16) -> (Vec<ListItem<'_>>, Option<usize>) {
         let mut items: Vec<ListItem<'_>> = Vec::new();
         let mut current_category = String::new();
+        let mut selected_item_idx = None;
 
         for (flat_idx, effect) in self.effects.iter().enumerate() {
             // Category header
@@ -282,6 +375,9 @@ impl EffectBrowserView {
                 current_category.clone_from(&effect.category);
             }
 
+            if flat_idx == self.selected_index {
+                selected_item_idx = Some(items.len());
+            }
             items.push(self.build_effect_item(flat_idx, effect, avail_width));
         }
 
@@ -292,7 +388,7 @@ impl EffectBrowserView {
             Style::default().fg(DIM_GRAY),
         ))));
 
-        items
+        (items, selected_item_idx)
     }
 
     /// Build a single effect list item.
@@ -374,10 +470,9 @@ impl EffectBrowserView {
             return;
         };
 
-        // Split: canvas top, metadata bottom
-        let canvas_height = inner.height.clamp(2, 8);
+        // Split: canvas top (proportional), metadata bottom
         let sections =
-            Layout::vertical([Constraint::Length(canvas_height), Constraint::Fill(1)]).split(inner);
+            Layout::vertical([Constraint::Percentage(50), Constraint::Fill(1)]).split(inner);
 
         self.render_canvas_preview(frame, sections[0]);
         self.render_metadata(frame, sections[1], effect);
@@ -408,8 +503,95 @@ impl EffectBrowserView {
         let mut y = area.y;
 
         y = Self::render_meta_header(frame, x_pad, y, w_pad, area, effect);
+        y = self.render_presets(frame, x_pad, y, w_pad, area, effect);
         y = self.render_meta_info(frame, x_pad, y, w_pad, area, effect);
         Self::render_meta_controls(frame, x_pad, y, w_pad, area, effect);
+    }
+
+    /// Render the preset selection section. Returns next y.
+    #[allow(clippy::too_many_arguments)]
+    fn render_presets(
+        &self,
+        frame: &mut Frame,
+        x: u16,
+        mut y: u16,
+        w: u16,
+        area: Rect,
+        effect: &EffectSummary,
+    ) -> u16 {
+        let max_y = area.y + area.height;
+        if effect.presets.is_empty() || y >= max_y {
+            return y;
+        }
+
+        let is_focused = self.focus_pane == FocusPane::Preview;
+
+        // Section header
+        let header = format!(
+            "\u{2500}\u{2500} Presets ({}) ",
+            effect.presets.len()
+        );
+        let hint = if is_focused { "" } else { "Tab\u{21e5} " };
+        let fill_len = usize::from(w)
+            .saturating_sub(header.len() + hint.len());
+        let fill = "\u{2500}".repeat(fill_len);
+
+        let mut header_spans = vec![Span::styled(
+            format!("{header}{fill}"),
+            Style::default().fg(DIM_GRAY).add_modifier(Modifier::BOLD),
+        )];
+        if !hint.is_empty() {
+            header_spans.push(Span::styled(
+                hint,
+                Style::default().fg(ELECTRIC_YELLOW),
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(header_spans)),
+            Rect::new(x, y, w, 1),
+        );
+        y += 1;
+
+        for (i, preset) in effect.presets.iter().enumerate() {
+            if y >= max_y {
+                break;
+            }
+
+            let is_selected = i == self.selected_preset && is_focused;
+            let pointer = if is_selected {
+                "\u{25B8} "
+            } else {
+                "  "
+            };
+
+            let name_style = if is_selected {
+                Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(BASE_WHITE)
+            };
+
+            let mut spans = vec![
+                Span::styled(pointer, name_style),
+                Span::styled(preset.name.as_str(), name_style),
+            ];
+
+            if let Some(ref desc) = preset.description
+                && !desc.is_empty()
+            {
+                spans.push(Span::styled(
+                    format!(" \u{00B7} {desc}"),
+                    Style::default().fg(DIM_GRAY),
+                ));
+            }
+
+            frame.render_widget(
+                Paragraph::new(Line::from(spans)),
+                Rect::new(x, y, w, 1),
+            );
+            y += 1;
+        }
+
+        y + 1 // blank line after presets
     }
 
     /// Render effect name and author in the metadata section. Returns next y.
@@ -635,14 +817,23 @@ impl Component for EffectBrowserView {
             return Ok(self.handle_search_key(key));
         }
 
-        // Esc clears search if query present
-        if key.code == KeyCode::Esc && !self.search_query.is_empty() {
-            self.search_query.clear();
-            self.apply_filter();
-            return Ok(None);
+        // Esc clears search if query present, or returns to list from preview
+        if key.code == KeyCode::Esc {
+            if !self.search_query.is_empty() {
+                self.search_query.clear();
+                self.apply_filter();
+                return Ok(None);
+            }
+            if self.focus_pane == FocusPane::Preview {
+                self.focus_pane = FocusPane::List;
+                return Ok(None);
+            }
         }
 
-        Ok(self.handle_list_key(key))
+        Ok(match self.focus_pane {
+            FocusPane::List => self.handle_list_key(key),
+            FocusPane::Preview => self.handle_preview_key(key),
+        })
     }
 
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {
