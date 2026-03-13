@@ -40,22 +40,24 @@ export default canvas(
     'Swirl Reactor',
     {
         colorMode: combo('Color Mode', ['Color Cycle', 'Custom', 'Rainbow'], {
-            default: 'Custom', group: 'Color',
+            default: 'Custom',
+            group: 'Color',
         }),
+        cycleSpeed: num('Color Cycle Speed', [0, 100], 50, { group: 'Color' }),
         color1: color('Color 1', '#f100ff', { group: 'Color' }),
         color2: color('Color 2', '#00ffd2', { group: 'Color' }),
         color3: color('Color 3', '#0000ff', { group: 'Color' }),
         backColor: color('Background Color', '#050505', { group: 'Color' }),
-        cycleSpeed: num('Color Cycle Speed', [0, 100], 50, { group: 'Color' }),
         rotationMode: combo('Rotation Mode', ['Pulse', 'Regular', 'Reverse'], {
-            default: 'Regular', group: 'Motion',
+            default: 'Regular',
+            group: 'Motion',
         }),
         effectRotate: num('Rotation Speed', [0, 100], 50, { group: 'Motion' }),
         particleSpeed: num('Particle Speed', [0, 100], 50, { group: 'Motion' }),
+        spiralAmount: num('Spiral Amount', [1, 3], 3, { group: 'Particles' }),
+        particleSpawn: num('Particle Amount', [0, 100], 50, { group: 'Particles' }),
         particleSize: num('Particle Size', [0, 100], 10, { group: 'Particles' }),
         particleGrowth: num('Particle Growth', [-100, 100], 100, { group: 'Particles' }),
-        particleSpawn: num('Particle Amount', [0, 100], 50, { group: 'Particles' }),
-        spiralAmount: num('Spiral Amount', [1, 3], 3, { group: 'Particles' }),
     },
     (ctx, time, controls) => {
         const W = ctx.canvas.width
@@ -157,8 +159,6 @@ export default canvas(
         description: 'So colorful you just want to eat it',
         presets: [
             {
-                name: 'Hypnotic Peppermint',
-                description: 'Three candy-striped arms spinning in perfect formation — a barber pole from the astral plane',
                 controls: {
                     backColor: '#050505',
                     color1: '#ff1744',
@@ -174,10 +174,11 @@ export default canvas(
                     rotationMode: 'Regular',
                     spiralAmount: 3,
                 },
+                description:
+                    'Three candy-striped arms spinning in perfect formation — a barber pole from the astral plane',
+                name: 'Hypnotic Peppermint',
             },
             {
-                name: 'Galaxy Drain',
-                description: 'A single cosmic arm spiraling inward like water down a black hole — rainbow matter shredding into the void',
                 controls: {
                     backColor: '#020108',
                     color1: '#9b59b6',
@@ -193,10 +194,11 @@ export default canvas(
                     rotationMode: 'Reverse',
                     spiralAmount: 1,
                 },
+                description:
+                    'A single cosmic arm spiraling inward like water down a black hole — rainbow matter shredding into the void',
+                name: 'Galaxy Drain',
             },
             {
-                name: 'Rave Sprinkler',
-                description: 'Maximum arms, maximum speed, maximum chaos — a lawn sprinkler at a warehouse party throwing neon everywhere',
                 controls: {
                     backColor: '#080008',
                     color1: '#e135ff',
@@ -212,10 +214,11 @@ export default canvas(
                     rotationMode: 'Regular',
                     spiralAmount: 3,
                 },
+                description:
+                    'Maximum arms, maximum speed, maximum chaos — a lawn sprinkler at a warehouse party throwing neon everywhere',
+                name: 'Rave Sprinkler',
             },
             {
-                name: 'Breathing Mandala',
-                description: 'Two arms pulsing in and out like lungs — slow meditative rotation with warm amber and deep indigo',
                 controls: {
                     backColor: '#04020a',
                     color1: '#ffb347',
@@ -231,10 +234,11 @@ export default canvas(
                     rotationMode: 'Pulse',
                     spiralAmount: 2,
                 },
+                description:
+                    'Two arms pulsing in and out like lungs — slow meditative rotation with warm amber and deep indigo',
+                name: 'Breathing Mandala',
             },
             {
-                name: 'Toxic Centrifuge',
-                description: 'Poison green particles flung outward by violent spin — a lab experiment gone beautifully wrong',
                 controls: {
                     backColor: '#030802',
                     color1: '#39ff14',
@@ -250,6 +254,9 @@ export default canvas(
                     rotationMode: 'Regular',
                     spiralAmount: 3,
                 },
+                description:
+                    'Poison green particles flung outward by violent spin — a lab experiment gone beautifully wrong',
+                name: 'Toxic Centrifuge',
             },
         ],
     },

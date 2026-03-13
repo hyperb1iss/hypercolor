@@ -42,53 +42,33 @@ const DEFAULT_COLOR_3 = '#3659ff'
 
 const PALETTES: Record<Exclude<PaletteName, 'Custom'>, GlassPalette> = {
     Glacier: {
-        bg:     { r: 4, g: 9, b: 22 },
-        colors: [
-            hsvToRgb(192, 0.94, 0.94),
-            hsvToRgb(224, 0.88, 0.92),
-            hsvToRgb(278, 0.76, 0.82),
-        ],
-        edge:  hsvToRgb(206, 0.78, 0.90),
+        bg: { b: 22, g: 9, r: 4 },
+        colors: [hsvToRgb(192, 0.94, 0.94), hsvToRgb(224, 0.88, 0.92), hsvToRgb(278, 0.76, 0.82)],
+        edge: hsvToRgb(206, 0.78, 0.9),
         glint: hsvToRgb(248, 0.58, 0.72),
     },
-    Prism: {
-        bg:     { r: 6, g: 3, b: 18 },
-        colors: [
-            hsvToRgb(188, 0.96, 0.98),
-            hsvToRgb(244, 0.90, 0.98),
-            hsvToRgb(320, 0.92, 0.96),
-        ],
-        edge:  hsvToRgb(214, 0.86, 0.92),
-        glint: hsvToRgb(292, 0.62, 0.76),
-    },
     Lagoon: {
-        bg:     { r: 2, g: 12, b: 20 },
-        colors: [
-            hsvToRgb(156, 0.88, 0.88),
-            hsvToRgb(188, 0.96, 0.96),
-            hsvToRgb(252, 0.86, 0.92),
-        ],
-        edge:  hsvToRgb(182, 0.78, 0.90),
+        bg: { b: 20, g: 12, r: 2 },
+        colors: [hsvToRgb(156, 0.88, 0.88), hsvToRgb(188, 0.96, 0.96), hsvToRgb(252, 0.86, 0.92)],
+        edge: hsvToRgb(182, 0.78, 0.9),
         glint: hsvToRgb(210, 0.56, 0.72),
     },
+    Prism: {
+        bg: { b: 18, g: 3, r: 6 },
+        colors: [hsvToRgb(188, 0.96, 0.98), hsvToRgb(244, 0.9, 0.98), hsvToRgb(320, 0.92, 0.96)],
+        edge: hsvToRgb(214, 0.86, 0.92),
+        glint: hsvToRgb(292, 0.62, 0.76),
+    },
     'Rose Quartz': {
-        bg:     { r: 10, g: 5, b: 18 },
-        colors: [
-            hsvToRgb(334, 0.90, 0.96),
-            hsvToRgb(286, 0.86, 0.92),
-            hsvToRgb(210, 0.90, 0.96),
-        ],
-        edge:  hsvToRgb(318, 0.80, 0.92),
+        bg: { b: 18, g: 5, r: 10 },
+        colors: [hsvToRgb(334, 0.9, 0.96), hsvToRgb(286, 0.86, 0.92), hsvToRgb(210, 0.9, 0.96)],
+        edge: hsvToRgb(318, 0.8, 0.92),
         glint: hsvToRgb(254, 0.52, 0.74),
     },
     Solar: {
-        bg:     { r: 14, g: 6, b: 12 },
-        colors: [
-            hsvToRgb(22, 0.92, 0.98),
-            hsvToRgb(320, 0.92, 0.96),
-            hsvToRgb(248, 0.90, 0.94),
-        ],
-        edge:  hsvToRgb(24, 0.88, 0.92),
+        bg: { b: 12, g: 6, r: 14 },
+        colors: [hsvToRgb(22, 0.92, 0.98), hsvToRgb(320, 0.92, 0.96), hsvToRgb(248, 0.9, 0.94)],
+        edge: hsvToRgb(24, 0.88, 0.92),
         glint: hsvToRgb(334, 0.58, 0.76),
     },
 }
@@ -131,17 +111,18 @@ function hsvToRgb(h: number, s: number, v: number): Rgb {
     else [r, g, b] = [chroma, 0, x]
 
     return {
-        r: Math.round((r + m) * 255),
-        g: Math.round((g + m) * 255),
         b: Math.round((b + m) * 255),
+        g: Math.round((g + m) * 255),
+        r: Math.round((r + m) * 255),
     }
 }
 
 function hexToRgb(hex: string, fallback: Rgb): Rgb {
     const normalized = hex.trim().replace('#', '')
-    const full = normalized.length === 3
-        ? `${normalized[0]}${normalized[0]}${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}`
-        : normalized
+    const full =
+        normalized.length === 3
+            ? `${normalized[0]}${normalized[0]}${normalized[1]}${normalized[1]}${normalized[2]}${normalized[2]}`
+            : normalized
 
     if (!/^[0-9a-fA-F]{6}$/.test(full)) {
         return fallback
@@ -150,9 +131,9 @@ function hexToRgb(hex: string, fallback: Rgb): Rgb {
     const value = Number.parseInt(full, 16)
 
     return {
-        r: (value >> 16) & 255,
-        g: (value >> 8) & 255,
         b: value & 255,
+        g: (value >> 8) & 255,
+        r: (value >> 16) & 255,
     }
 }
 
@@ -160,9 +141,9 @@ function mixRgb(a: Rgb, b: Rgb, amount: number): Rgb {
     const t = clamp(amount, 0, 1)
 
     return {
-        r: Math.round(a.r + (b.r - a.r) * t),
-        g: Math.round(a.g + (b.g - a.g) * t),
         b: Math.round(a.b + (b.b - a.b) * t),
+        g: Math.round(a.g + (b.g - a.g) * t),
+        r: Math.round(a.r + (b.r - a.r) * t),
     }
 }
 
@@ -170,17 +151,17 @@ function saturateRgb(color: Rgb, amount: number): Rgb {
     const luminance = color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722
 
     return {
-        r: clamp(Math.round(luminance + (color.r - luminance) * amount), 0, 255),
-        g: clamp(Math.round(luminance + (color.g - luminance) * amount), 0, 255),
         b: clamp(Math.round(luminance + (color.b - luminance) * amount), 0, 255),
+        g: clamp(Math.round(luminance + (color.g - luminance) * amount), 0, 255),
+        r: clamp(Math.round(luminance + (color.r - luminance) * amount), 0, 255),
     }
 }
 
 function scaleRgb(color: Rgb, scale: number): Rgb {
     return {
-        r: clamp(Math.round(color.r * scale), 0, 255),
-        g: clamp(Math.round(color.g * scale), 0, 255),
         b: clamp(Math.round(color.b * scale), 0, 255),
+        g: clamp(Math.round(color.g * scale), 0, 255),
+        r: clamp(Math.round(color.r * scale), 0, 255),
     }
 }
 
@@ -192,23 +173,18 @@ function createSeed(index: number): GlassSeed {
     const i = index + 1
 
     return {
-        baseX:     hash(i * 1.37 + 0.31),
-        baseY:     hash(i * 2.11 + 1.91),
-        driftX:    hash(i * 3.73 + 4.17),
-        driftY:    hash(i * 5.19 + 2.83),
-        phaseX:    hash(i * 7.43 + 9.21) * TAU,
-        phaseY:    hash(i * 11.87 + 5.61) * TAU,
-        phase:     hash(i * 13.91 + 6.23) * TAU,
+        baseX: hash(i * 1.37 + 0.31),
+        baseY: hash(i * 2.11 + 1.91),
         colorBias: hash(i * 17.07 + 3.47),
+        driftX: hash(i * 3.73 + 4.17),
+        driftY: hash(i * 5.19 + 2.83),
+        phase: hash(i * 13.91 + 6.23) * TAU,
+        phaseX: hash(i * 7.43 + 9.21) * TAU,
+        phaseY: hash(i * 11.87 + 5.61) * TAU,
     }
 }
 
-function resolvePalette(
-    name: PaletteName,
-    color1: string,
-    color2: string,
-    color3: string,
-): GlassPalette {
+function resolvePalette(name: PaletteName, color1: string, color2: string, color3: string): GlassPalette {
     if (name !== 'Custom') {
         return PALETTES[name] ?? PALETTES.Prism
     }
@@ -217,346 +193,333 @@ function resolvePalette(
     const secondary = hexToRgb(color2, PALETTES.Prism.colors[1])
     const accent = hexToRgb(color3, PALETTES.Prism.colors[2])
     const edge = saturateRgb(mixRgb(primary, secondary, 0.38), 1.16)
-    const glint = scaleRgb(saturateRgb(mixRgb(primary, accent, 0.52), 1.10), 0.82)
+    const glint = scaleRgb(saturateRgb(mixRgb(primary, accent, 0.52), 1.1), 0.82)
 
     return {
-        bg: { r: 5, g: 9, b: 19 },
+        bg: { b: 19, g: 9, r: 5 },
         colors: [primary, secondary, accent],
         edge,
         glint,
     }
 }
 
-export default canvas.stateful('Voronoi Glass', {
-    speed:      num('Speed', [1, 10], 4, { group: 'Motion' }),
-    density:    num('Density', [10, 100], 42, { group: 'Geometry' }),
-    drift:      num('Drift', [0, 100], 44, { group: 'Motion' }),
-    refraction: num('Refraction', [0, 100], 58, { group: 'Geometry' }),
-    contrast:   num('Contrast', [0, 100], 56, { group: 'Geometry' }),
-    edgeGlow:   num('Edge Glow', [0, 100], 66, { group: 'Geometry' }),
-    glaze:      num('Glaze', [0, 100], 18, { group: 'Geometry' }),
-    palette:    combo('Palette', PALETTE_NAMES, { default: 'Prism', group: 'Color' }),
-    color1:     color('Color 1', DEFAULT_COLOR_1, { group: 'Color' }),
-    color2:     color('Color 2', DEFAULT_COLOR_2, { group: 'Color' }),
-    color3:     color('Color 3', DEFAULT_COLOR_3, { group: 'Color' }),
-    background: color('Backdrop', DEFAULT_BACKGROUND, { group: 'Color' }),
-}, () => {
-    const seeds: GlassSeed[] = []
-    let seedCount = 0
-    let frame: ImageData | null = null
-    let frameKey = ''
+export default canvas.stateful(
+    'Voronoi Glass',
+    {
+        palette: combo('Palette', PALETTE_NAMES, { default: 'Prism', group: 'Color' }),
+        color1: color('Color 1', DEFAULT_COLOR_1, { group: 'Color' }),
+        color2: color('Color 2', DEFAULT_COLOR_2, { group: 'Color' }),
+        color3: color('Color 3', DEFAULT_COLOR_3, { group: 'Color' }),
+        background: color('Backdrop', DEFAULT_BACKGROUND, { group: 'Color' }),
+        speed: num('Speed', [1, 10], 4, { group: 'Motion' }),
+        drift: num('Drift', [0, 100], 44, { group: 'Motion' }),
+        density: num('Density', [10, 100], 42, { group: 'Geometry' }),
+        refraction: num('Refraction', [0, 100], 58, { group: 'Geometry' }),
+        contrast: num('Contrast', [0, 100], 56, { group: 'Geometry' }),
+        edgeGlow: num('Edge Glow', [0, 100], 66, { group: 'Geometry' }),
+        glaze: num('Glaze', [0, 100], 18, { group: 'Geometry' }),
+    },
+    () => {
+        const seeds: GlassSeed[] = []
+        let seedCount = 0
+        let frame: ImageData | null = null
+        let frameKey = ''
 
-    function ensureSeedCount(count: number): void {
-        const target = clamp(Math.round(count), 6, 20)
-        if (target === seedCount && seeds.length === target) return
+        function ensureSeedCount(count: number): void {
+            const target = clamp(Math.round(count), 6, 20)
+            if (target === seedCount && seeds.length === target) return
 
-        if (target > seeds.length) {
-            for (let i = seeds.length; i < target; i++) {
-                seeds.push(createSeed(i))
-            }
-        } else {
-            seeds.length = target
-        }
-
-        seedCount = target
-    }
-
-    function ensureFrame(ctx: CanvasRenderingContext2D): ImageData {
-        const { width, height } = ctx.canvas
-        const key = `${width}:${height}`
-
-        if (!frame || frameKey !== key) {
-            frame = ctx.createImageData(width, height)
-            frameKey = key
-        }
-
-        return frame
-    }
-
-    return (ctx, time, c) => {
-        const speedMix = clamp(((c.speed as number) - 1) / 9, 0, 1)
-        const densityMix = clamp(((c.density as number) - 10) / 90, 0, 1)
-        const driftMix = clamp((c.drift as number) / 100, 0, 1)
-        const refractionMix = clamp((c.refraction as number) / 100, 0, 1)
-        const contrastMix = clamp((c.contrast as number) / 100, 0, 1)
-        const edgeGlowMix = clamp((c.edgeGlow as number) / 100, 0, 1)
-        const glazeMix = clamp((c.glaze as number) / 100, 0, 1)
-        const palette = resolvePalette(
-            c.palette as PaletteName,
-            c.color1 as string,
-            c.color2 as string,
-            c.color3 as string,
-        )
-        const background = mixRgb(
-            palette.bg,
-            hexToRgb(c.background as string, palette.bg),
-            0.82,
-        )
-
-        const w = ctx.canvas.width
-        const h = ctx.canvas.height
-        const minDim = Math.min(w, h)
-
-        if (w === 0 || h === 0) return
-
-        ensureSeedCount(6 + Math.round(densityMix * 12))
-        if (seeds.length === 0) return
-
-        const image = ensureFrame(ctx)
-        const data = image.data
-        const positions: SeedPosition[] = new Array(seeds.length)
-
-        const driftRate = 0.08 + speedMix * 0.22 + driftMix * 0.16
-        const refractionRate = 0.16 + speedMix * 0.2
-        const glazeRate = 0.06 + speedMix * 0.08 + glazeMix * 0.08
-
-        for (let i = 0; i < seeds.length; i++) {
-            const seed = seeds[i]
-            const orbitX = Math.sin(
-                time * (driftRate * (0.75 + seed.driftX * 0.75)) + seed.phaseX,
-            ) * ((0.03 + seed.driftX * 0.06) * (0.45 + driftMix * 0.95))
-            const orbitY = Math.cos(
-                time * (driftRate * (0.65 + seed.driftY * 0.85)) + seed.phaseY,
-            ) * ((0.03 + seed.driftY * 0.05) * (0.45 + driftMix * 0.95))
-
-            positions[i] = {
-                x: clamp(0.08 + seed.baseX * 0.84 + orbitX, 0.04, 0.96) * w,
-                y: clamp(0.08 + seed.baseY * 0.84 + orbitY, 0.04, 0.96) * h,
-                phase: seed.phase,
-                colorIndex: Math.floor(seed.colorBias * palette.colors.length) % palette.colors.length,
-            }
-        }
-
-        const cellRadius = Math.sqrt((w * h) / positions.length) * (0.7 + (1 - densityMix) * 0.18)
-        const edgeWidth = cellRadius * (0.10 + edgeGlowMix * 0.10 + contrastMix * 0.05)
-
-        let offset = 0
-
-        for (let y = 0; y < h; y++) {
-            const cy = (y - h * 0.5) / Math.max(1, h * 0.5)
-
-            for (let x = 0; x < w; x++) {
-                const cx = (x - w * 0.5) / Math.max(1, w * 0.5)
-
-                let nearest2 = Number.POSITIVE_INFINITY
-                let second2 = Number.POSITIVE_INFINITY
-                let nearestIndex = 0
-                let secondIndex = 0
-                let nearestDx = 0
-                let nearestDy = 0
-
-                for (let i = 0; i < positions.length; i++) {
-                    const seed = positions[i]
-                    const dx = x - seed.x
-                    const dy = y - seed.y
-                    const distance2 = dx * dx + dy * dy
-
-                    if (distance2 < nearest2) {
-                        second2 = nearest2
-                        secondIndex = nearestIndex
-                        nearest2 = distance2
-                        nearestIndex = i
-                        nearestDx = dx
-                        nearestDy = dy
-                    } else if (distance2 < second2) {
-                        second2 = distance2
-                        secondIndex = i
-                    }
+            if (target > seeds.length) {
+                for (let i = seeds.length; i < target; i++) {
+                    seeds.push(createSeed(i))
                 }
-
-                const lead = positions[nearestIndex]
-                const neighbor = positions[secondIndex]
-                const baseColor = palette.colors[lead.colorIndex]
-                const neighborColor = palette.colors[neighbor.colorIndex]
-
-                const nearestDistance = Math.sqrt(nearest2)
-                const secondDistance = Math.sqrt(second2)
-                const edgeFactor = 1 - smoothstep(0, edgeWidth, secondDistance - nearestDistance)
-                const centerFactor = 1 - smoothstep(cellRadius * 0.18, cellRadius * 0.94, nearestDistance)
-
-                const facet = 0.5 + 0.5 * Math.sin(
-                    nearestDx * (0.052 + refractionMix * 0.04)
-                    + nearestDy * (0.041 + refractionMix * 0.035)
-                    + lead.phase
-                    + time * refractionRate,
-                )
-
-                const glaze = 0.5 + 0.5 * Math.sin(
-                    x * 0.018
-                    + y * 0.021
-                    + lead.phase * 1.4
-                    + time * glazeRate,
-                )
-
-                const tintMix = clamp(
-                    0.04 + refractionMix * 0.10 + edgeFactor * 0.14 + glaze * glazeMix * 0.04,
-                    0.03,
-                    0.26,
-                )
-
-                const interior = mixRgb(
-                    baseColor,
-                    palette.glint,
-                    0.04 + facet * (0.06 + glazeMix * 0.04) + centerFactor * (0.04 + contrastMix * 0.06),
-                )
-                const refracted = mixRgb(interior, neighborColor, tintMix)
-
-                const light = clamp(
-                    0.12 + centerFactor * (0.22 + contrastMix * 0.12) + facet * 0.06 + glaze * glazeMix * 0.03,
-                    0.10,
-                    0.66 + contrastMix * 0.06,
-                )
-
-                let pixel = mixRgb(background, refracted, light)
-
-                const edgeColor = saturateRgb(mixRgb(palette.edge, neighborColor, 0.06 + glaze * 0.05), 1.08)
-                pixel = mixRgb(
-                    pixel,
-                    edgeColor,
-                    edgeFactor * (0.10 + edgeGlowMix * 0.26 + contrastMix * 0.06),
-                )
-
-                const vignette = clamp(1 - (cx * cx + cy * cy) * (0.12 + contrastMix * 0.08), 0.72, 1)
-                pixel = scaleRgb(pixel, vignette)
-
-                data[offset] = pixel.r
-                data[offset + 1] = pixel.g
-                data[offset + 2] = pixel.b
-                data[offset + 3] = 255
-                offset += 4
+            } else {
+                seeds.length = target
             }
+
+            seedCount = target
         }
 
-        ctx.putImageData(image, 0, 0)
+        function ensureFrame(ctx: CanvasRenderingContext2D): ImageData {
+            const { width, height } = ctx.canvas
+            const key = `${width}:${height}`
 
-        ctx.save()
-        ctx.globalCompositeOperation = 'lighter'
+            if (!frame || frameKey !== key) {
+                frame = ctx.createImageData(width, height)
+                frameKey = key
+            }
 
-        const glowX = w * (0.35 + Math.sin(time * (0.09 + speedMix * 0.08)) * 0.12)
-        const glowY = h * (0.32 + Math.cos(time * (0.07 + speedMix * 0.06)) * 0.14)
-        const glow = ctx.createRadialGradient(
-            glowX,
-            glowY,
-            0,
-            glowX,
-            glowY,
-            minDim * (0.62 + refractionMix * 0.18),
-        )
-        glow.addColorStop(0, toRgba(palette.glint, 0.012 + glazeMix * 0.014 + edgeGlowMix * 0.010))
-        glow.addColorStop(0.55, toRgba(palette.edge, 0.008 + edgeGlowMix * 0.016))
-        glow.addColorStop(1, 'rgba(0,0,0,0)')
-        ctx.fillStyle = glow
-        ctx.fillRect(0, 0, w, h)
+            return frame
+        }
 
-        const glazeOverlay = ctx.createLinearGradient(0, 0, w, h)
-        const shimmerStop = clamp(
-            0.42 + Math.sin(time * (0.06 + speedMix * 0.05)) * 0.18,
-            0.18,
-            0.82,
-        )
-        glazeOverlay.addColorStop(0, toRgba(palette.glint, 0.004 + glazeMix * 0.006))
-        glazeOverlay.addColorStop(
-            shimmerStop,
-            toRgba(palette.edge, 0.010 + glazeMix * 0.010 + refractionMix * 0.010),
-        )
-        glazeOverlay.addColorStop(1, 'rgba(0,0,0,0)')
-        ctx.fillStyle = glazeOverlay
-        ctx.fillRect(0, 0, w, h)
+        return (ctx, time, c) => {
+            const speedMix = clamp(((c.speed as number) - 1) / 9, 0, 1)
+            const densityMix = clamp(((c.density as number) - 10) / 90, 0, 1)
+            const driftMix = clamp((c.drift as number) / 100, 0, 1)
+            const refractionMix = clamp((c.refraction as number) / 100, 0, 1)
+            const contrastMix = clamp((c.contrast as number) / 100, 0, 1)
+            const edgeGlowMix = clamp((c.edgeGlow as number) / 100, 0, 1)
+            const glazeMix = clamp((c.glaze as number) / 100, 0, 1)
+            const palette = resolvePalette(
+                c.palette as PaletteName,
+                c.color1 as string,
+                c.color2 as string,
+                c.color3 as string,
+            )
+            const background = mixRgb(palette.bg, hexToRgb(c.background as string, palette.bg), 0.82)
 
-        ctx.restore()
-    }
-}, {
-    description: 'LED-friendly stained glass cells with deeper controls, lower white skew, and restrained glaze overlays',
-    presets: [
-        {
-            name: 'Cathedral at Twilight',
-            description: 'Vast rose window flooding a stone nave with fractured color — slow-drifting cells in deep jewel tones, edges burning like leaded glass catching the last light',
-            controls: {
-                speed: 2,
-                density: 32,
-                drift: 28,
-                refraction: 72,
-                contrast: 70,
-                edgeGlow: 85,
-                glaze: 12,
-                palette: 'Rose Quartz',
-                color1: '#22f0ff',
-                color2: '#ff46c8',
-                color3: '#3659ff',
-                background: '#0a0518',
+            const w = ctx.canvas.width
+            const h = ctx.canvas.height
+            const minDim = Math.min(w, h)
+
+            if (w === 0 || h === 0) return
+
+            ensureSeedCount(6 + Math.round(densityMix * 12))
+            if (seeds.length === 0) return
+
+            const image = ensureFrame(ctx)
+            const data = image.data
+            const positions: SeedPosition[] = new Array(seeds.length)
+
+            const driftRate = 0.08 + speedMix * 0.22 + driftMix * 0.16
+            const refractionRate = 0.16 + speedMix * 0.2
+            const glazeRate = 0.06 + speedMix * 0.08 + glazeMix * 0.08
+
+            for (let i = 0; i < seeds.length; i++) {
+                const seed = seeds[i]
+                const orbitX =
+                    Math.sin(time * (driftRate * (0.75 + seed.driftX * 0.75)) + seed.phaseX) *
+                    ((0.03 + seed.driftX * 0.06) * (0.45 + driftMix * 0.95))
+                const orbitY =
+                    Math.cos(time * (driftRate * (0.65 + seed.driftY * 0.85)) + seed.phaseY) *
+                    ((0.03 + seed.driftY * 0.05) * (0.45 + driftMix * 0.95))
+
+                positions[i] = {
+                    colorIndex: Math.floor(seed.colorBias * palette.colors.length) % palette.colors.length,
+                    phase: seed.phase,
+                    x: clamp(0.08 + seed.baseX * 0.84 + orbitX, 0.04, 0.96) * w,
+                    y: clamp(0.08 + seed.baseY * 0.84 + orbitY, 0.04, 0.96) * h,
+                }
+            }
+
+            const cellRadius = Math.sqrt((w * h) / positions.length) * (0.7 + (1 - densityMix) * 0.18)
+            const edgeWidth = cellRadius * (0.1 + edgeGlowMix * 0.1 + contrastMix * 0.05)
+
+            let offset = 0
+
+            for (let y = 0; y < h; y++) {
+                const cy = (y - h * 0.5) / Math.max(1, h * 0.5)
+
+                for (let x = 0; x < w; x++) {
+                    const cx = (x - w * 0.5) / Math.max(1, w * 0.5)
+
+                    let nearest2 = Number.POSITIVE_INFINITY
+                    let second2 = Number.POSITIVE_INFINITY
+                    let nearestIndex = 0
+                    let secondIndex = 0
+                    let nearestDx = 0
+                    let nearestDy = 0
+
+                    for (let i = 0; i < positions.length; i++) {
+                        const seed = positions[i]
+                        const dx = x - seed.x
+                        const dy = y - seed.y
+                        const distance2 = dx * dx + dy * dy
+
+                        if (distance2 < nearest2) {
+                            second2 = nearest2
+                            secondIndex = nearestIndex
+                            nearest2 = distance2
+                            nearestIndex = i
+                            nearestDx = dx
+                            nearestDy = dy
+                        } else if (distance2 < second2) {
+                            second2 = distance2
+                            secondIndex = i
+                        }
+                    }
+
+                    const lead = positions[nearestIndex]
+                    const neighbor = positions[secondIndex]
+                    const baseColor = palette.colors[lead.colorIndex]
+                    const neighborColor = palette.colors[neighbor.colorIndex]
+
+                    const nearestDistance = Math.sqrt(nearest2)
+                    const secondDistance = Math.sqrt(second2)
+                    const edgeFactor = 1 - smoothstep(0, edgeWidth, secondDistance - nearestDistance)
+                    const centerFactor = 1 - smoothstep(cellRadius * 0.18, cellRadius * 0.94, nearestDistance)
+
+                    const facet =
+                        0.5 +
+                        0.5 *
+                            Math.sin(
+                                nearestDx * (0.052 + refractionMix * 0.04) +
+                                    nearestDy * (0.041 + refractionMix * 0.035) +
+                                    lead.phase +
+                                    time * refractionRate,
+                            )
+
+                    const glaze = 0.5 + 0.5 * Math.sin(x * 0.018 + y * 0.021 + lead.phase * 1.4 + time * glazeRate)
+
+                    const tintMix = clamp(
+                        0.04 + refractionMix * 0.1 + edgeFactor * 0.14 + glaze * glazeMix * 0.04,
+                        0.03,
+                        0.26,
+                    )
+
+                    const interior = mixRgb(
+                        baseColor,
+                        palette.glint,
+                        0.04 + facet * (0.06 + glazeMix * 0.04) + centerFactor * (0.04 + contrastMix * 0.06),
+                    )
+                    const refracted = mixRgb(interior, neighborColor, tintMix)
+
+                    const light = clamp(
+                        0.12 + centerFactor * (0.22 + contrastMix * 0.12) + facet * 0.06 + glaze * glazeMix * 0.03,
+                        0.1,
+                        0.66 + contrastMix * 0.06,
+                    )
+
+                    let pixel = mixRgb(background, refracted, light)
+
+                    const edgeColor = saturateRgb(mixRgb(palette.edge, neighborColor, 0.06 + glaze * 0.05), 1.08)
+                    pixel = mixRgb(pixel, edgeColor, edgeFactor * (0.1 + edgeGlowMix * 0.26 + contrastMix * 0.06))
+
+                    const vignette = clamp(1 - (cx * cx + cy * cy) * (0.12 + contrastMix * 0.08), 0.72, 1)
+                    pixel = scaleRgb(pixel, vignette)
+
+                    data[offset] = pixel.r
+                    data[offset + 1] = pixel.g
+                    data[offset + 2] = pixel.b
+                    data[offset + 3] = 255
+                    offset += 4
+                }
+            }
+
+            ctx.putImageData(image, 0, 0)
+
+            ctx.save()
+            ctx.globalCompositeOperation = 'lighter'
+
+            const glowX = w * (0.35 + Math.sin(time * (0.09 + speedMix * 0.08)) * 0.12)
+            const glowY = h * (0.32 + Math.cos(time * (0.07 + speedMix * 0.06)) * 0.14)
+            const glow = ctx.createRadialGradient(glowX, glowY, 0, glowX, glowY, minDim * (0.62 + refractionMix * 0.18))
+            glow.addColorStop(0, toRgba(palette.glint, 0.012 + glazeMix * 0.014 + edgeGlowMix * 0.01))
+            glow.addColorStop(0.55, toRgba(palette.edge, 0.008 + edgeGlowMix * 0.016))
+            glow.addColorStop(1, 'rgba(0,0,0,0)')
+            ctx.fillStyle = glow
+            ctx.fillRect(0, 0, w, h)
+
+            const glazeOverlay = ctx.createLinearGradient(0, 0, w, h)
+            const shimmerStop = clamp(0.42 + Math.sin(time * (0.06 + speedMix * 0.05)) * 0.18, 0.18, 0.82)
+            glazeOverlay.addColorStop(0, toRgba(palette.glint, 0.004 + glazeMix * 0.006))
+            glazeOverlay.addColorStop(shimmerStop, toRgba(palette.edge, 0.01 + glazeMix * 0.01 + refractionMix * 0.01))
+            glazeOverlay.addColorStop(1, 'rgba(0,0,0,0)')
+            ctx.fillStyle = glazeOverlay
+            ctx.fillRect(0, 0, w, h)
+
+            ctx.restore()
+        }
+    },
+    {
+        description:
+            'LED-friendly stained glass cells with deeper controls, lower white skew, and restrained glaze overlays',
+        presets: [
+            {
+                controls: {
+                    background: '#0a0518',
+                    color1: '#22f0ff',
+                    color2: '#ff46c8',
+                    color3: '#3659ff',
+                    contrast: 70,
+                    density: 32,
+                    drift: 28,
+                    edgeGlow: 85,
+                    glaze: 12,
+                    palette: 'Rose Quartz',
+                    refraction: 72,
+                    speed: 2,
+                },
+                description:
+                    'Vast rose window flooding a stone nave with fractured color — slow-drifting cells in deep jewel tones, edges burning like leaded glass catching the last light',
+                name: 'Cathedral at Twilight',
             },
-        },
-        {
-            name: 'Glacier Crevasse',
-            description: 'Looking up through a crack in ancient ice — dense tessellations of blue-white shards refracting polar light, cold and sharp as a diamond saw',
-            controls: {
-                speed: 3,
-                density: 78,
-                drift: 16,
-                refraction: 88,
-                contrast: 82,
-                edgeGlow: 42,
-                glaze: 6,
-                palette: 'Glacier',
-                color1: '#22f0ff',
-                color2: '#ff46c8',
-                color3: '#3659ff',
-                background: '#020814',
+            {
+                controls: {
+                    background: '#020814',
+                    color1: '#22f0ff',
+                    color2: '#ff46c8',
+                    color3: '#3659ff',
+                    contrast: 82,
+                    density: 78,
+                    drift: 16,
+                    edgeGlow: 42,
+                    glaze: 6,
+                    palette: 'Glacier',
+                    refraction: 88,
+                    speed: 3,
+                },
+                description:
+                    'Looking up through a crack in ancient ice — dense tessellations of blue-white shards refracting polar light, cold and sharp as a diamond saw',
+                name: 'Glacier Crevasse',
             },
-        },
-        {
-            name: 'Molten Stained Glass',
-            description: 'A furnace-hot window melting at the seams — cells drift and warp like cooling magma, amber edges bleeding into deep solar orange',
-            controls: {
-                speed: 6,
-                density: 55,
-                drift: 90,
-                refraction: 65,
-                contrast: 48,
-                edgeGlow: 72,
-                glaze: 35,
-                palette: 'Solar',
-                color1: '#22f0ff',
-                color2: '#ff46c8',
-                color3: '#3659ff',
-                background: '#0e060c',
+            {
+                controls: {
+                    background: '#0e060c',
+                    color1: '#22f0ff',
+                    color2: '#ff46c8',
+                    color3: '#3659ff',
+                    contrast: 48,
+                    density: 55,
+                    drift: 90,
+                    edgeGlow: 72,
+                    glaze: 35,
+                    palette: 'Solar',
+                    refraction: 65,
+                    speed: 6,
+                },
+                description:
+                    'A furnace-hot window melting at the seams — cells drift and warp like cooling magma, amber edges bleeding into deep solar orange',
+                name: 'Molten Stained Glass',
             },
-        },
-        {
-            name: 'Abyssal Lagoon',
-            description: 'Bioluminescent jellyfish pulsing through deep ocean glass — slow, hypnotic cells in teal and violet, glazed with an unearthly aquatic shimmer',
-            controls: {
-                speed: 2,
-                density: 48,
-                drift: 60,
-                refraction: 45,
-                contrast: 38,
-                edgeGlow: 55,
-                glaze: 58,
-                palette: 'Lagoon',
-                color1: '#22f0ff',
-                color2: '#ff46c8',
-                color3: '#3659ff',
-                background: '#020c14',
+            {
+                controls: {
+                    background: '#020c14',
+                    color1: '#22f0ff',
+                    color2: '#ff46c8',
+                    color3: '#3659ff',
+                    contrast: 38,
+                    density: 48,
+                    drift: 60,
+                    edgeGlow: 55,
+                    glaze: 58,
+                    palette: 'Lagoon',
+                    refraction: 45,
+                    speed: 2,
+                },
+                description:
+                    'Bioluminescent jellyfish pulsing through deep ocean glass — slow, hypnotic cells in teal and violet, glazed with an unearthly aquatic shimmer',
+                name: 'Abyssal Lagoon',
             },
-        },
-        {
-            name: 'Diamond Refraction Chamber',
-            description: 'White light shattering through a room of cut diamonds — maximum density, maximum refraction, prismatic edges firing in every direction',
-            controls: {
-                speed: 8,
-                density: 95,
-                drift: 72,
-                refraction: 100,
-                contrast: 90,
-                edgeGlow: 95,
-                glaze: 22,
-                palette: 'Prism',
-                color1: '#22f0ff',
-                color2: '#ff46c8',
-                color3: '#3659ff',
-                background: '#060312',
+            {
+                controls: {
+                    background: '#060312',
+                    color1: '#22f0ff',
+                    color2: '#ff46c8',
+                    color3: '#3659ff',
+                    contrast: 90,
+                    density: 95,
+                    drift: 72,
+                    edgeGlow: 95,
+                    glaze: 22,
+                    palette: 'Prism',
+                    refraction: 100,
+                    speed: 8,
+                },
+                description:
+                    'White light shattering through a room of cut diamonds — maximum density, maximum refraction, prismatic edges firing in every direction',
+                name: 'Diamond Refraction Chamber',
             },
-        },
-    ],
-})
+        ],
+    },
+)

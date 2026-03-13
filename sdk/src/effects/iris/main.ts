@@ -44,11 +44,6 @@ function smoothAsymmetric(
     return current + (target - current) * factor
 }
 
-function decay(value: number, lambda: number, dt: number): number {
-    if (!Number.isFinite(lambda) || lambda <= 0) return value
-    return value * Math.exp(-lambda * Math.max(dt, 0))
-}
-
 /** Normalize a raw 0-100 slider to 0-1 range. */
 function pct(value: unknown, fallback = 0.5): number {
     const v = typeof value === 'number' && !Number.isNaN(value) ? value : fallback * 100
@@ -64,35 +59,33 @@ function norm(value: unknown, min: number, max: number, fallback: number): numbe
 // ── State ───────────────────────────────────────────────────────
 
 const state = {
-    audioTime: 0,
-    smoothMouseX: 0,
-    smoothMouseY: 0,
-    smoothRotation: 0,
-    smoothZoom: 1,
-    beatAccum: 0,
     anticipation: 0,
-    harmonicHueSmooth: 0,
-    radialFlow: 0,
-    flowVelocity: 0,
-    glowEnergy: 0.7,
-    coreEnergy: 0.8,
-    irisEnergy: 0.85,
-    subBassEnergy: 0,
-    displacementAngle: 0,
-    // Smoothed audio feature envelopes (prevent spasm)
-    smoothOnset: 0,
-    smoothLevel: 0,
-    smoothBass: 0,
-    smoothMid: 0,
-    smoothTreble: 0,
-    smoothMomentum: 0,
-    smoothSwell: 0,
-    smoothBrightness: 0,
-    // Smoothed per-uniform audio boosts
-    boostIris: 1,
+    audioTime: 0,
+    boostBand: 1,
     boostCore: 1,
     boostFlow: 1,
-    boostBand: 1,
+    // Smoothed per-uniform audio boosts
+    boostIris: 1,
+    coreEnergy: 0.8,
+    displacementAngle: 0,
+    flowVelocity: 0,
+    glowEnergy: 0.7,
+    irisEnergy: 0.85,
+    radialFlow: 0,
+    smoothBass: 0,
+    smoothBrightness: 0,
+    smoothLevel: 0,
+    smoothMid: 0,
+    smoothMomentum: 0,
+    smoothMouseX: 0,
+    smoothMouseY: 0,
+    // Smoothed audio feature envelopes (prevent spasm)
+    smoothOnset: 0,
+    smoothRotation: 0,
+    smoothSwell: 0,
+    smoothTreble: 0,
+    smoothZoom: 1,
+    subBassEnergy: 0,
     timeWarpSmooth: 1,
 }
 
@@ -100,7 +93,20 @@ let lastTime = 0
 
 // ── Controls ────────────────────────────────────────────────────
 
-const COLOR_SCHEMES = ['Aurora', 'Cyberpunk', 'Gold & Blue', 'Harmonic', 'Ice', 'Lava', 'Midnight Flux', 'Neon Flux', 'Phosphor', 'Solar Storm', 'Synesthesia', 'Vaporwave'] as const
+const COLOR_SCHEMES = [
+    'Aurora',
+    'Cyberpunk',
+    'Gold & Blue',
+    'Harmonic',
+    'Ice',
+    'Lava',
+    'Midnight Flux',
+    'Neon Flux',
+    'Phosphor',
+    'Solar Storm',
+    'Synesthesia',
+    'Vaporwave',
+] as const
 
 const controls = {
     // Color
@@ -109,82 +115,58 @@ const controls = {
         tooltip: 'Color scheme (Harmonic uses Circle of Fifths)',
         group: 'Color',
     }),
-    harmonicColor: num('Harmonic Mix', [0, 100], 50, {
-        tooltip: 'Blend harmonic colors with base palette',
-        group: 'Color',
-    }),
     glowIntensity: num('Glow', [0, 100], 70, {
-        tooltip: 'Center glow intensity',
+        tooltip: 'Core bloom and radiance',
         group: 'Color',
     }),
     colorAccent: num('Accent', [0, 100], 65, {
-        tooltip: 'Boost palette saturation',
-        group: 'Color',
-    }),
-    colorContrast: num('Contrast', [0, 100], 60, {
-        tooltip: 'Control overall contrast curve',
+        tooltip: 'Saturation and tonal punch',
         group: 'Color',
     }),
 
     // Motion
-    timeSpeed: num('Time Speed', [0, 100], 50, {
-        tooltip: 'Control animation speed',
-        group: 'Motion',
-    }),
-    rotationSpeed: num('Rotation', [0, 100], 0, {
-        tooltip: 'Pattern rotation speed',
+    timeSpeed: num('Time Warp', [0, 100], 50, {
+        tooltip: 'Base animation speed and temporal warp',
         group: 'Motion',
     }),
     flowDrive: num('Flow', [0, 100], 50, {
-        tooltip: 'Continuous outward flow strength',
+        tooltip: 'Forward rush and radial twisting',
+        group: 'Motion',
+    }),
+    rotationSpeed: num('Rotation', [0, 100], 0, {
+        tooltip: 'Spin and orbital motion',
         group: 'Motion',
     }),
 
     // Audio
-    wanderSpeed: num('Wander', [0, 100], 30, {
-        tooltip: 'View wandering with audio',
+    beatFlash: num('Beat Flash', [0, 100], 45, {
+        tooltip: 'How violently beats flare, pulse, and explode',
         group: 'Audio',
     }),
-    timeSensitivity: num('Time Warp', [0, 100], 50, {
-        tooltip: 'Audio influence on speed',
-        group: 'Audio',
-    }),
-    bassPull: num('Bass Pull', [0, 100], 60, {
-        tooltip: 'Bass influence on movement',
-        group: 'Audio',
-    }),
-    treblePull: num('Treble Pull', [0, 100], 60, {
-        tooltip: 'Treble influence on movement',
+    wanderSpeed: num('Drift', [0, 100], 35, {
+        tooltip: 'Audio-driven camera drift and pull',
         group: 'Audio',
     }),
 
     // Pattern
     scale: num('Scale', [20, 200], 80, {
-        tooltip: 'Zoom level',
+        tooltip: 'Macro zoom and spatial density',
         group: 'Pattern',
     }),
     irisStrength: num('Iris', [0, 100], 65, {
-        tooltip: 'Iris/radial pattern strength',
+        tooltip: 'Ripple count and iris aggression',
         group: 'Pattern',
     }),
-    corePulse: num('Core Pulse', [0, 100], 60, {
-        tooltip: 'Energy in the center column',
+    corePulse: num('Core', [0, 100], 60, {
+        tooltip: 'Center beam width and vascular energy',
         group: 'Pattern',
     }),
-    bandSharpness: num('Bands', [0, 100], 50, {
-        tooltip: 'Sharpen or soften band edges',
+    bandSharpness: num('Geometry', [0, 100], 50, {
+        tooltip: 'From soft folds to razor bands',
         group: 'Pattern',
     }),
-    particleDensity: num('Texture Strength', [0, 100], 60, {
-        tooltip: 'Glitch texture intensity',
-        group: 'Pattern',
-    }),
-    particleSize: num('Texture Scale', [0, 100], 50, {
-        tooltip: 'Texture size',
-        group: 'Pattern',
-    }),
-    particleColorMix: num('Texture Hue', [0, 100], 50, {
-        tooltip: 'Texture color mixing',
+    particleDensity: num('Texture', [0, 100], 55, {
+        tooltip: 'Particle fabric and glitch texture strength',
         group: 'Pattern',
     }),
 }
@@ -192,157 +174,9 @@ const controls = {
 // ── Effect ──────────────────────────────────────────────────────
 
 export default effect('Iris', shader, controls, {
+    audio: true,
     description:
         'Geometric audio visualizer with Mobius inversions, harmonic color mapping, and spectral flux beat detection',
-    audio: true,
-
-    presets: [
-        {
-            name: 'Hypnagogic Temple',
-            description: 'Drone metal in a candlelit crypt — massive bass displacement warps concentric rings while lava glow bleeds from the core',
-            controls: {
-                colorScheme: 'Lava',
-                harmonicColor: 20,
-                timeSpeed: 25,
-                rotationSpeed: 8,
-                flowDrive: 80,
-                wanderSpeed: 15,
-                timeSensitivity: 70,
-
-                bassPull: 95,
-                treblePull: 20,
-                scale: 120,
-                irisStrength: 85,
-                corePulse: 90,
-                bandSharpness: 35,
-                glowIntensity: 90,
-                colorAccent: 80,
-                colorContrast: 75,
-                particleDensity: 40,
-                particleSize: 70,
-                particleColorMix: 25,
-            },
-        },
-        {
-            name: 'Chromatic Fugue',
-            description: 'Every note has a color — Circle of Fifths mapping transforms a string quartet into spinning harmonic stained glass',
-            controls: {
-                colorScheme: 'Harmonic',
-                harmonicColor: 95,
-                timeSpeed: 45,
-                rotationSpeed: 30,
-                flowDrive: 40,
-                wanderSpeed: 50,
-                timeSensitivity: 60,
-
-                bassPull: 45,
-                treblePull: 80,
-                scale: 70,
-                irisStrength: 70,
-                corePulse: 50,
-                bandSharpness: 65,
-                glowIntensity: 60,
-                colorAccent: 90,
-                colorContrast: 55,
-                particleDensity: 50,
-                particleSize: 40,
-                particleColorMix: 85,
-            },
-        },
-        {
-            name: 'Midnight Mainframe',
-            description: 'IDM at 3am in a server room — cyberpunk iris geometry spasms with glitch texture as fractured beats rearrange the grid',
-            controls: {
-                colorScheme: 'Cyberpunk',
-                harmonicColor: 30,
-                timeSpeed: 75,
-                rotationSpeed: 55,
-                flowDrive: 65,
-                wanderSpeed: 70,
-                timeSensitivity: 85,
-
-                bassPull: 50,
-                treblePull: 75,
-                scale: 55,
-                irisStrength: 80,
-                corePulse: 70,
-                bandSharpness: 85,
-                glowIntensity: 55,
-                colorAccent: 75,
-                colorContrast: 80,
-                particleDensity: 90,
-                particleSize: 35,
-                particleColorMix: 60,
-            },
-        },
-        {
-            name: 'Phosphor Meditation',
-            description: 'Ambient pads dissolve into bioluminescent geometry — soft green phosphor rings expand like breath, zero flash, pure presence',
-            controls: {
-                colorScheme: 'Phosphor',
-                harmonicColor: 40,
-                timeSpeed: 20,
-                rotationSpeed: 5,
-                flowDrive: 30,
-                wanderSpeed: 20,
-                timeSensitivity: 25,
-
-                bassPull: 30,
-                treblePull: 40,
-                scale: 150,
-                irisStrength: 45,
-                corePulse: 35,
-                bandSharpness: 25,
-                glowIntensity: 85,
-                colorAccent: 50,
-                colorContrast: 40,
-                particleDensity: 30,
-                particleSize: 65,
-                particleColorMix: 35,
-            },
-        },
-        {
-            name: 'Solar Storm Apex',
-            description: 'Stadium EDM climax — iris geometry detonates on every drop, golden plasma jets compete with ice-blue shockwaves at maximum warp',
-            controls: {
-                colorScheme: 'Solar Storm',
-                harmonicColor: 60,
-                timeSpeed: 85,
-                rotationSpeed: 70,
-                flowDrive: 90,
-                wanderSpeed: 80,
-                timeSensitivity: 95,
-
-                bassPull: 85,
-                treblePull: 70,
-                scale: 45,
-                irisStrength: 95,
-                corePulse: 85,
-                bandSharpness: 75,
-                glowIntensity: 95,
-                colorAccent: 95,
-                colorContrast: 85,
-                particleDensity: 80,
-                particleSize: 55,
-                particleColorMix: 70,
-            },
-        },
-    ],
-
-    setup: (ctx) => {
-        ctx.registerUniform('iAudioTime', 0)
-        ctx.registerUniform('iBeatRotation', 0)
-        ctx.registerUniform('iBeatZoom', 1)
-        ctx.registerUniform('iSmoothMouse', [0, 0])
-        ctx.registerUniform('iRadialFlow', 0)
-        ctx.registerUniform('iFlowVelocity', 0)
-        ctx.registerUniform('iGlowEnergy', 0.7)
-        ctx.registerUniform('iCoreEnergy', 0.8)
-        ctx.registerUniform('iIrisEnergy', 0.85)
-        ctx.registerUniform('iSubBassDisplace', [0, 0])
-        ctx.registerUniform('iBeatAnticipation', 0)
-        ctx.registerUniform('iBeatFlashOnset', 0)
-    },
 
     frame: (ctx, time) => {
         const dt = Math.min(lastTime > 0 ? time - lastTime : 0.016, 0.05)
@@ -354,48 +188,35 @@ export default effect('Iris', shader, controls, {
         const raw = ctx.controls
 
         // ── Normalize controls (raw 0-100 → internal ranges) ────────
-        const scaleFactor = norm(raw.scale, 40, 200, 160)
-        const wanderFactor = pct(raw.wanderSpeed, 0.3)
-        const timeFactor = pct(raw.timeSensitivity, 0.5)
-        const bassFactor = pct(raw.bassPull, 0.6)
-        const trebleFactor = pct(raw.treblePull, 0.6)
+        const scaleFactor = norm(raw.scale, 20, 200, 80)
         const glowFactor = pct(raw.glowIntensity, 0.7)
+        const accentFactor = pct(raw.colorAccent, 0.65)
+        const timeSpeedFactor = pct(raw.timeSpeed, 0.5)
         const rotationFactor = pct(raw.rotationSpeed, 0)
+        const flowFactor = pct(raw.flowDrive, 0.5)
+        const beatFlashFactor = pct(raw.beatFlash, 0.45)
+        const wanderFactor = pct(raw.wanderSpeed, 0.35)
         const irisFactor = pct(raw.irisStrength, 0.65)
         const coreFactor = pct(raw.corePulse, 0.6)
-        const flowFactor = pct(raw.flowDrive, 0.5)
-        const accentFactor = pct(raw.colorAccent, 0.65)
-        const contrastFactor = pct(raw.colorContrast, 0.6)
         const bandFactor = pct(raw.bandSharpness, 0.5)
-        const particleDensityFactor = pct(raw.particleDensity, 0.6)
-        const particleSizeFactor = pct(raw.particleSize, 0.5)
-        const particleColorFactor = pct(raw.particleColorMix, 0.5)
-        const timeSpeedFactor = pct(raw.timeSpeed, 0.5)
-        const beatFlashFactor = pct(raw.beatFlash, 0.2)
-        const harmonicFactor = pct(raw.harmonicColor, 0.5)
+        const textureFactor = pct(raw.particleDensity, 0.55)
 
         // Map normalized factors to shader-domain values
         const c = {
-            scale: lerp(2.0, 5.0, scaleFactor ** 0.7),
-            wanderSpeed: lerp(0.15, 2.2, (0.08 + wanderFactor * 0.92) ** 0.9),
-            timeSensitivity: lerp(0.35, 2.8, timeFactor ** 0.9),
-            bassPull: lerp(0.0, 2.4, bassFactor ** 1.1),
-            treblePull: lerp(0.0, 2.0, trebleFactor ** 1.05),
-            glowIntensity: lerp(0.12, 1.2, glowFactor),
-            rotationSpeed: lerp(0.0, 2.4, rotationFactor ** 1.2),
-            irisStrength: lerp(0.3, 3.2, irisFactor ** 0.85),
-            corePulse: lerp(0.2, 2.8, coreFactor ** 0.95),
-            flowDrive: lerp(0.2, 2.5, flowFactor ** 0.9),
-            colorAccent: lerp(0.6, 1.6, accentFactor ** 0.9),
-            colorContrast: lerp(0.7, 2.0, contrastFactor ** 0.8),
-            bandSharpness: lerp(0.5, 2.0, bandFactor ** 0.8),
-            particleDensity: lerp(0.05, 3.0, particleDensityFactor ** 0.8),
-            particleSize: lerp(0.2, 2.0, particleSizeFactor ** 0.8),
-            particleColorMix: lerp(0.05, 1.2, particleColorFactor ** 0.9),
-            timeSpeed: lerp(0.3, 2.5, timeSpeedFactor ** 0.8),
-            harmonicColor: harmonicFactor,
+            bandSharpness: lerp(0.25, 3.4, bandFactor ** 0.85),
             beatFlash: beatFlashFactor,
+            colorAccent: lerp(0.45, 2.15, accentFactor ** 0.8),
+            corePulse: lerp(0.15, 4.2, coreFactor ** 0.9),
+            flowDrive: lerp(0.0, 4.0, flowFactor ** 0.85),
+            glowIntensity: lerp(0.04, 1.35, glowFactor ** 0.9),
+            irisStrength: lerp(0.2, 5.4, irisFactor ** 0.85),
+            rotationSpeed: lerp(0.0, 3.6, rotationFactor ** 1.1),
+            scale: lerp(1.25, 8.5, scaleFactor ** 0.85),
+            texture: lerp(0.0, 1.0, textureFactor ** 0.9),
+            timeSpeed: lerp(0.18, 3.4, timeSpeedFactor ** 0.95),
+            wanderSpeed: lerp(0.0, 3.2, wanderFactor ** 0.85),
         }
+        const beatFlashGain = lerp(0.0, 1.65, c.beatFlash ** 0.75)
 
         // ── Smooth audio features first (prevent spasm) ─────────────
         // Everything flows through smoothed envelopes — no raw impulses
@@ -418,16 +239,8 @@ export default effect('Iris', shader, controls, {
         const swell = state.smoothSwell
 
         // ── Anticipation ─────────────────────────────────────────────
-        const anticipation = audio.beatPhase > 0.7
-            ? ((audio.beatPhase - 0.7) / 0.3) * audio.beatConfidence
-            : 0
+        const anticipation = audio.beatPhase > 0.7 ? ((audio.beatPhase - 0.7) / 0.3) * audio.beatConfidence : 0
         state.anticipation = smoothApproach(state.anticipation, Math.max(0, anticipation), 3, dt)
-
-        // ── Harmonic hue smoothing (with wraparound) ────────────────
-        let hueDiff = audio.harmonicHue - state.harmonicHueSmooth
-        if (hueDiff > 180) hueDiff -= 360
-        if (hueDiff < -180) hueDiff += 360
-        state.harmonicHueSmooth += hueDiff * 0.06
 
         // ── Spectral flux bands (smoothed) ──────────────────────────
         const fluxBass = audio.spectralFluxBands[0]
@@ -436,83 +249,67 @@ export default effect('Iris', shader, controls, {
 
         // ── Audio boosts — smoothed separately so elements breathe ──
         // Each visual element responds to different bands at different rates
-        const bf = c.beatFlash
-        const targetBoostIris = 0.92 + mid * 0.4 + onset * 0.25 * bf + fluxMid * 0.2
-        const targetBoostCore = 0.88 + bass * 0.45 + onset * 0.2 * bf + swell * 0.2
-        const targetBoostFlow = 0.75 + mom * 0.35 + lvl * 0.25 + swell * 0.25
-        const targetBoostBand = 0.85 + onset * 0.3 * bf + audio.roughness * 0.15
+        const bf = beatFlashGain
+        const targetBoostIris = 0.78 + mid * 0.7 + fluxMid * 0.4 + onset * 0.6 * bf
+        const targetBoostCore = 0.7 + bass * 0.85 + swell * 0.35 + fluxBass * 0.3 + onset * 0.45 * bf
+        const targetBoostFlow = 0.55 + mom * 0.9 + lvl * 0.45 + swell * 0.5 + onset * 0.35 * bf
+        const targetBoostBand = 0.65 + onset * 0.95 * bf + audio.roughness * 0.3 + fluxTreble * 0.2
 
-        state.boostIris = smoothAsymmetric(state.boostIris, targetBoostIris, 5, 2, dt)
-        state.boostCore = smoothAsymmetric(state.boostCore, targetBoostCore, 4, 1.5, dt)
-        state.boostFlow = smoothAsymmetric(state.boostFlow, targetBoostFlow, 3, 1.2, dt)
-        state.boostBand = smoothAsymmetric(state.boostBand, targetBoostBand, 6, 2, dt)
+        state.boostIris = smoothAsymmetric(state.boostIris, targetBoostIris, 6, 2.2, dt)
+        state.boostCore = smoothAsymmetric(state.boostCore, targetBoostCore, 5, 1.7, dt)
+        state.boostFlow = smoothAsymmetric(state.boostFlow, targetBoostFlow, 4, 1.3, dt)
+        state.boostBand = smoothAsymmetric(state.boostBand, targetBoostBand, 7, 2.3, dt)
 
-        const flowBeatMod = state.boostFlow * (0.85 + onset * 0.35 * bf)
-        const colorAudioAccent = 0.92 + lvl * 0.2 + Math.abs(audio.chordMood) * 0.15
-        const colorAudioContrast = 0.92 + mom * 0.15 + state.smoothBrightness * 0.1
-        const particleAudioDensity = 0.85 + onset * 0.25 * bf + fluxTreble * 0.2
-        const particleAudioSize = 0.92 + lvl * 0.15 + audio.spread * 0.1
-        const particleAudioColor = 0.85 + treb * 0.2 + state.smoothBrightness * 0.15
+        const flowBeatMod = state.boostFlow * (0.6 + onset * 0.8 * bf)
+        const colorAudioAccent = 0.85 + lvl * 0.25 + Math.abs(audio.chordMood) * 0.25 + state.smoothBrightness * 0.2
+        const textureAudioDensity = 0.65 + onset * 0.9 * bf + fluxTreble * 0.55 + state.smoothBrightness * 0.25
 
         // ── Time warp — smooth, momentum-driven with gentle beat swell ─
-        const targetTimeWarp = 0.6 + lvl * 0.5 + mom * 0.3 + onset * 0.25 + swell * 0.2
-        state.timeWarpSmooth = smoothAsymmetric(state.timeWarpSmooth, targetTimeWarp, 4, 1.5, dt)
-        const timeWarp = (0.8 + c.timeSensitivity) * c.timeSpeed
+        const targetTimeWarp = 0.55 + lvl * 0.6 + mom * 0.5 + onset * 0.55 * bf + swell * 0.35
+        state.timeWarpSmooth = smoothAsymmetric(state.timeWarpSmooth, targetTimeWarp, 5, 1.7, dt)
+        const timeWarp = c.timeSpeed * (0.65 + mom * 0.25 + onset * 0.35 * bf + state.smoothBrightness * 0.15)
         state.audioTime += dt * timeWarp * state.timeWarpSmooth
 
         // ── Radial flow ("flying through") ──────────────────────────
         // Momentum and swell drive sustained flow, bass gives surge
         const baseFlowSpeed = c.flowDrive * 0.5
-        const flowTarget = baseFlowSpeed * (1.0 + bass * 0.4 + mom * 0.5 + swell * 0.4 + onset * 0.5)
+        const flowTarget = baseFlowSpeed * (0.65 + bass * 0.55 + mom * 0.8 + swell * 0.55 + onset * 0.65 * bf)
 
-        state.flowVelocity = smoothAsymmetric(
-            state.flowVelocity, flowTarget,
-            6, 1.8, dt,
-        )
+        state.flowVelocity = smoothAsymmetric(state.flowVelocity, flowTarget, 6, 1.8, dt)
         state.radialFlow += state.flowVelocity * dt
 
-        // ── Beat accumulation for rotation ──────────────────────────
-        state.beatAccum += onset * (0.5 + c.timeSensitivity * 0.06)
-        state.beatAccum = Math.max(0, decay(state.beatAccum, 1.8, dt))
-
         // ── Continuous rotation — momentum-driven, not beat-jerked ──
-        const spinAudio = mom * 0.35 + lvl * 0.1
+        const spinAudio = mom * 0.55 + lvl * 0.15 + onset * 0.25 * bf
         const rotationSpeed = c.rotationSpeed * (0.4 + spinAudio)
         state.smoothRotation += rotationSpeed * dt
 
         // ── Zoom — gentle swell, not beat explosion ─────────────────
-        const anticipationZoom = 1.0 - state.anticipation * 0.1
-        const zoomSwell = onset * 0.3 + swell * 0.12 + lvl * 0.08
+        const anticipationZoom = 1.0 - state.anticipation * (0.04 + bf * 0.04)
+        const zoomSwell = onset * 0.18 + onset * 0.32 * bf + swell * 0.18 + lvl * 0.12
         const targetZoom = anticipationZoom + zoomSwell
 
-        state.smoothZoom = smoothAsymmetric(
-            state.smoothZoom, targetZoom,
-            6, 2.5, dt,
-        )
+        state.smoothZoom = smoothAsymmetric(state.smoothZoom, targetZoom, 6, 2.5, dt)
 
         // ── Energy envelopes — different rates per band ─────────────
         // Glow: brightness-driven, slow and warm (onset scaled by beat flash)
-        const targetGlow = 0.7 + lvl * 0.35 + onset * 0.25 * bf + state.smoothBrightness * 0.25
+        const targetGlow = 0.55 + lvl * 0.45 + onset * 0.55 * bf + state.smoothBrightness * 0.35
         // Core: bass-driven, slow heave
-        const targetCore = 0.8 + bass * 0.45 + swell * 0.2 + fluxBass * 0.2
+        const targetCore = 0.65 + bass * 0.75 + swell * 0.3 + fluxBass * 0.3 + onset * 0.25 * bf
         // Iris: mid-driven, medium pace
-        const targetIris = 0.85 + mid * 0.35 + fluxMid * 0.25
+        const targetIris = 0.7 + mid * 0.6 + fluxMid * 0.4 + onset * 0.25 * bf
 
         state.glowEnergy = smoothAsymmetric(state.glowEnergy, targetGlow, 5, 1.8, dt)
         state.coreEnergy = smoothAsymmetric(state.coreEnergy, targetCore, 4, 1.5, dt)
         state.irisEnergy = smoothAsymmetric(state.irisEnergy, targetIris, 5, 2, dt)
 
         // ── Sub-bass displacement — slow, tidal ─────────────────────
-        const subBassTarget = bass * 0.5 + fluxBass * 0.5 + onset * 0.35
-        state.subBassEnergy = smoothAsymmetric(
-            state.subBassEnergy, subBassTarget,
-            5, 1.2, dt,
-        )
+        const subBassTarget = bass * 0.65 + fluxBass * 0.55 + onset * 0.25 * bf
+        state.subBassEnergy = smoothAsymmetric(state.subBassEnergy, subBassTarget, 5, 1.2, dt)
         state.displacementAngle += dt * 1.8 + mom * dt * 2.0
 
         // ── Wander system — lazy drift, not twitchy ─────────────────
-        const wanderRate = 0.18 + c.wanderSpeed * 0.25 + mom * 0.03
-        const wanderAmplitude = 0.2 + c.wanderSpeed * 0.45
+        const wanderRate = 0.08 + c.wanderSpeed * 0.48 + mom * 0.08
+        const wanderAmplitude = 0.04 + c.wanderSpeed * 0.72
         const wanderTime = state.audioTime * wanderRate
         const pathX = smoothNoise(wanderTime, 0) * wanderAmplitude
         const pathY = smoothNoise(wanderTime, 123.45) * wanderAmplitude
@@ -521,24 +318,24 @@ export default effect('Iris', shader, controls, {
         const bassBlend = bass * 0.5 + fluxBass * 0.2
         const trebleBlend = treb * 0.5 + fluxTreble * 0.2
 
-        const wanderNormalized = Math.min(1, c.wanderSpeed / 2.2)
-        const audioWanderScale = 0.3 + wanderNormalized * 0.7
+        const wanderNormalized = Math.min(1, c.wanderSpeed / 3.2)
+        const audioWanderScale = 0.18 + wanderNormalized * 1.05
 
-        let targetX = pathX + bassBlend * c.bassPull * audioWanderScale
-        let targetY = pathY + trebleBlend * c.treblePull * audioWanderScale
+        let targetX = pathX + bassBlend * (0.15 + c.wanderSpeed * 0.82) * audioWanderScale
+        let targetY = pathY + trebleBlend * (0.12 + c.wanderSpeed * 0.75) * audioWanderScale
 
         // Pull back toward center as wander decreases
-        const focusStrength = 0.25 + (1 - wanderNormalized) * 0.4
+        const focusStrength = 0.62 - wanderNormalized * 0.42
         targetX = lerp(targetX, 0, focusStrength)
         targetY = lerp(targetY, 0, focusStrength)
 
         // Clamp to safe range
-        const clampRange = 0.6 + wanderNormalized * 0.35
+        const clampRange = 0.2 + wanderNormalized * 0.95
         const clampedX = Math.max(-clampRange, Math.min(clampRange, targetX))
         const clampedY = Math.max(-clampRange, Math.min(clampRange, targetY))
 
         // Smooth wander — no onset acceleration, just steady drift
-        const wanderResponse = 2.0 + c.wanderSpeed * 0.8
+        const wanderResponse = 1.4 + c.wanderSpeed * 1.1
         state.smoothMouseX = smoothApproach(state.smoothMouseX, clampedX, wanderResponse, dt)
         state.smoothMouseY = smoothApproach(state.smoothMouseY, clampedY, wanderResponse, dt)
 
@@ -551,12 +348,8 @@ export default effect('Iris', shader, controls, {
         ctx.setUniform('iCorePulse', c.corePulse * state.boostCore)
         ctx.setUniform('iFlowDrive', c.flowDrive * flowBeatMod)
         ctx.setUniform('iColorAccent', c.colorAccent * colorAudioAccent)
-        ctx.setUniform('iColorContrast', c.colorContrast * colorAudioContrast)
         ctx.setUniform('iBandSharpness', c.bandSharpness * state.boostBand)
-        ctx.setUniform('iParticleDensity', c.particleDensity * particleAudioDensity)
-        ctx.setUniform('iParticleSize', c.particleSize * particleAudioSize)
-        ctx.setUniform('iParticleColorMix', c.particleColorMix * particleAudioColor)
-        ctx.setUniform('iHarmonicColor', c.harmonicColor)
+        ctx.setUniform('iParticleDensity', Math.min(1.25, c.texture * textureAudioDensity))
         ctx.setUniform('iBeatFlashOnset', onset * bf)
 
         // State uniforms
@@ -576,5 +369,128 @@ export default effect('Iris', shader, controls, {
         const displaceX = Math.cos(state.displacementAngle) * displaceStrength
         const displaceY = Math.sin(state.displacementAngle) * displaceStrength
         ctx.setUniform('iSubBassDisplace', [displaceX, displaceY])
+    },
+
+    presets: [
+        {
+            controls: {
+                bandSharpness: 35,
+                beatFlash: 18,
+                colorAccent: 80,
+                colorScheme: 'Lava',
+                corePulse: 90,
+                flowDrive: 80,
+                glowIntensity: 90,
+                irisStrength: 85,
+                particleDensity: 40,
+                rotationSpeed: 8,
+
+                scale: 120,
+                timeSpeed: 25,
+                wanderSpeed: 18,
+            },
+            description:
+                'Drone metal in a candlelit crypt — massive bass displacement warps concentric rings while lava glow bleeds from the core',
+            name: 'Hypnagogic Temple',
+        },
+        {
+            controls: {
+                bandSharpness: 65,
+                beatFlash: 42,
+                colorAccent: 90,
+                colorScheme: 'Harmonic',
+                corePulse: 50,
+                flowDrive: 40,
+                glowIntensity: 60,
+                irisStrength: 70,
+                particleDensity: 50,
+                rotationSpeed: 30,
+
+                scale: 70,
+                timeSpeed: 45,
+                wanderSpeed: 52,
+            },
+            description:
+                'Every note has a color — Circle of Fifths mapping transforms a string quartet into spinning harmonic stained glass',
+            name: 'Chromatic Fugue',
+        },
+        {
+            controls: {
+                bandSharpness: 85,
+                beatFlash: 72,
+                colorAccent: 75,
+                colorScheme: 'Cyberpunk',
+                corePulse: 70,
+                flowDrive: 65,
+                glowIntensity: 55,
+                irisStrength: 80,
+                particleDensity: 90,
+                rotationSpeed: 55,
+
+                scale: 55,
+                timeSpeed: 75,
+                wanderSpeed: 74,
+            },
+            description:
+                'IDM at 3am in a server room — cyberpunk iris geometry spasms with glitch texture as fractured beats rearrange the grid',
+            name: 'Midnight Mainframe',
+        },
+        {
+            controls: {
+                bandSharpness: 25,
+                beatFlash: 6,
+                colorAccent: 50,
+                colorScheme: 'Phosphor',
+                corePulse: 35,
+                flowDrive: 30,
+                glowIntensity: 85,
+                irisStrength: 45,
+                particleDensity: 30,
+                rotationSpeed: 5,
+
+                scale: 150,
+                timeSpeed: 20,
+                wanderSpeed: 22,
+            },
+            description:
+                'Ambient pads dissolve into bioluminescent geometry — soft green phosphor rings expand like breath, zero flash, pure presence',
+            name: 'Phosphor Meditation',
+        },
+        {
+            controls: {
+                bandSharpness: 75,
+                beatFlash: 95,
+                colorAccent: 95,
+                colorScheme: 'Solar Storm',
+                corePulse: 85,
+                flowDrive: 90,
+                glowIntensity: 95,
+                irisStrength: 95,
+                particleDensity: 80,
+                rotationSpeed: 70,
+
+                scale: 45,
+                timeSpeed: 85,
+                wanderSpeed: 82,
+            },
+            description:
+                'Stadium EDM climax — iris geometry detonates on every drop, golden plasma jets compete with ice-blue shockwaves at maximum warp',
+            name: 'Solar Storm Apex',
+        },
+    ],
+
+    setup: (ctx) => {
+        ctx.registerUniform('iAudioTime', 0)
+        ctx.registerUniform('iBeatRotation', 0)
+        ctx.registerUniform('iBeatZoom', 1)
+        ctx.registerUniform('iSmoothMouse', [0, 0])
+        ctx.registerUniform('iRadialFlow', 0)
+        ctx.registerUniform('iFlowVelocity', 0)
+        ctx.registerUniform('iGlowEnergy', 0.7)
+        ctx.registerUniform('iCoreEnergy', 0.8)
+        ctx.registerUniform('iIrisEnergy', 0.85)
+        ctx.registerUniform('iSubBassDisplace', [0, 0])
+        ctx.registerUniform('iBeatAnticipation', 0)
+        ctx.registerUniform('iBeatFlashOnset', 0)
     },
 })

@@ -51,7 +51,10 @@ function hslToHex(h: number, s: number, l: number): string {
     else if (hNorm < 300) [r, g, b] = [x, 0, c]
     else [r, g, b] = [c, 0, x]
 
-    const toHex = (value: number) => Math.round((value + m) * 255).toString(16).padStart(2, '0')
+    const toHex = (value: number) =>
+        Math.round((value + m) * 255)
+            .toString(16)
+            .padStart(2, '0')
     return `#${toHex(r)}${toHex(g)}${toHex(b)}`
 }
 
@@ -82,13 +85,13 @@ function buildStars(targetCount: number): DashStar[] {
         const s6 = hash(i * 16.53 + 5.09)
 
         stars.push({
-            x: s1,
-            y: s2,
+            drift: 4 + s5 * 28,
+            hueOffset: s4 * 360,
+            seed: s6,
             size: 1 + s3 * 2.3,
             twinkle: 1.1 + s4 * 2.6,
-            drift: 4 + s5 * 28,
-            seed: s6,
-            hueOffset: s4 * 360,
+            x: s1,
+            y: s2,
         })
     }
 
@@ -140,9 +143,7 @@ function drawStars(
         const alpha = 0.16 + twinkle * 0.82
         const size = Math.max(1, Math.round(star.size + twinkle * 0.8))
 
-        const color = colorCycle
-            ? hslToHex(cycleHue + star.hueOffset, 96, 66)
-            : '#ecf2ff'
+        const color = colorCycle ? hslToHex(cycleHue + star.hueOffset, 96, 66) : '#ecf2ff'
 
         ctx.globalAlpha = alpha
         ctx.fillStyle = color
@@ -191,9 +192,7 @@ function drawTrail(
     const dt = 1 / 60
 
     for (let bandIndex = 0; bandIndex < baseBands.length; bandIndex++) {
-        const color = colorCycle
-            ? hslToHex(cycleHue + bandIndex * 42, 96, 58)
-            : baseBands[bandIndex]
+        const color = colorCycle ? hslToHex(cycleHue + bandIndex * 42, 96, 58) : baseBands[bandIndex]
         const yBase = top + bandIndex * bandHeight
 
         for (let x = -segment * 2; x < trailLength + segment; x += segment) {
@@ -294,12 +293,12 @@ function drawCat(
 
     const sprinklePalette = colorCycle
         ? [
-            hslToHex(cycleHue + 22, 96, 64),
-            hslToHex(cycleHue + 120, 94, 70),
-            hslToHex(cycleHue + 190, 96, 72),
-            hslToHex(cycleHue + 276, 92, 74),
-            hslToHex(cycleHue + 340, 94, 72),
-        ]
+              hslToHex(cycleHue + 22, 96, 64),
+              hslToHex(cycleHue + 120, 94, 70),
+              hslToHex(cycleHue + 190, 96, 72),
+              hslToHex(cycleHue + 276, 92, 74),
+              hslToHex(cycleHue + 340, 94, 72),
+          ]
         : ['#ffb347', '#74f3ff', '#7eff9a', '#b7a8ff', '#ffb4d9']
 
     const sprinkles: Array<[number, number, number]> = [
@@ -315,14 +314,7 @@ function drawCat(
 
     for (let i = 0; i < sprinkles.length; i++) {
         const [sx, sy, colorIndex] = sprinkles[i]
-        fillRect(
-            ctx,
-            bodyX + sx * unit,
-            bodyY + sy * unit,
-            2 * unit,
-            Math.max(1, unit),
-            sprinklePalette[colorIndex],
-        )
+        fillRect(ctx, bodyX + sx * unit, bodyY + sy * unit, 2 * unit, Math.max(1, unit), sprinklePalette[colorIndex])
     }
 
     // Head
@@ -363,151 +355,160 @@ function drawCat(
 
 // ── Effect ──────────────────────────────────────────────────────────────
 
-canvas('Nyan Dash', {
-    animationSpeed: num('Speed', [1, 10], 6, { group: 'Motion' }),
-    trailMode: combo('Trail Mode', TRAIL_MODES, { group: 'Motion' }),
-    scale: num('Scale', [40, 180], 100, { group: 'Layout' }),
-    positionX: num('Position X', [-100, 100], 0, { group: 'Layout' }),
-    positionY: num('Position Y', [-100, 100], 0, { group: 'Layout' }),
-    colorCycle: toggle('Color Cycle', true, { group: 'Color' }),
-    cycleSpeed: num('Cycle Speed', [0, 100], 34, { group: 'Color' }),
-    starDensity: num('Star Density', [0, 100], 44, { group: 'Atmosphere' }),
-}, () => {
-    // Persistent state across frames
-    let stars: DashStar[] = []
-    let starCount = 0
-    let canvasWidth = 0
-    let canvasHeight = 0
+canvas(
+    'Nyan Dash',
+    {
+        trailMode: combo('Trail Mode', TRAIL_MODES, { group: 'Motion' }),
+        animationSpeed: num('Speed', [1, 10], 6, { group: 'Motion' }),
+        cycleSpeed: num('Cycle Speed', [0, 100], 34, { group: 'Color' }),
+        colorCycle: toggle('Color Cycle', true, { group: 'Color' }),
+        scale: num('Scale', [40, 180], 100, { group: 'Layout' }),
+        positionX: num('Position X', [-100, 100], 0, { group: 'Layout' }),
+        positionY: num('Position Y', [-100, 100], 0, { group: 'Layout' }),
+        starDensity: num('Star Density', [0, 100], 44, { group: 'Atmosphere' }),
+    },
+    () => {
+        // Persistent state across frames
+        let stars: DashStar[] = []
+        let starCount = 0
+        let canvasWidth = 0
+        let canvasHeight = 0
 
-    function syncStars(width: number, height: number, targetCount: number, force = false): void {
-        const sizeChanged = canvasWidth !== width || canvasHeight !== height
+        function syncStars(width: number, height: number, targetCount: number, force = false): void {
+            const sizeChanged = canvasWidth !== width || canvasHeight !== height
 
-        if (!force && !sizeChanged && targetCount === starCount) return
+            if (!force && !sizeChanged && targetCount === starCount) return
 
-        canvasWidth = width
-        canvasHeight = height
-        starCount = targetCount
-        stars = buildStars(targetCount)
-    }
+            canvasWidth = width
+            canvasHeight = height
+            starCount = targetCount
+            stars = buildStars(targetCount)
+        }
 
-    // Initial sync
-    syncStars(320, 200, Math.max(0, Math.floor(44 * 1.25)), true)
+        // Initial sync
+        syncStars(320, 200, Math.max(0, Math.floor(44 * 1.25)), true)
 
-    return (ctx, time, controls) => {
-        const width = ctx.canvas.width
-        const height = ctx.canvas.height
+        return (ctx, time, controls) => {
+            const width = ctx.canvas.width
+            const height = ctx.canvas.height
 
-        const rawAnimationSpeed = controls.animationSpeed as number
-        const speed = normalizeSpeed(rawAnimationSpeed)
-        const rawScale = clamp(controls.scale as number, 40, 180)
-        const positionX = clamp(controls.positionX as number, -100, 100)
-        const positionY = clamp(controls.positionY as number, -100, 100)
-        const trailMode = TRAIL_MODES.includes(controls.trailMode as string)
-            ? (controls.trailMode as string)
-            : 'Classic'
-        const colorCycle = controls.colorCycle as boolean
-        const cycleSpeed = clamp(controls.cycleSpeed as number, 0, 100)
-        const starDensity = clamp(controls.starDensity as number, 0, 100)
+            const rawAnimationSpeed = controls.animationSpeed as number
+            const speed = normalizeSpeed(rawAnimationSpeed)
+            const rawScale = clamp(controls.scale as number, 40, 180)
+            const positionX = clamp(controls.positionX as number, -100, 100)
+            const positionY = clamp(controls.positionY as number, -100, 100)
+            const trailMode = TRAIL_MODES.includes(controls.trailMode as string)
+                ? (controls.trailMode as string)
+                : 'Classic'
+            const colorCycle = controls.colorCycle as boolean
+            const cycleSpeed = clamp(controls.cycleSpeed as number, 0, 100)
+            const starDensity = clamp(controls.starDensity as number, 0, 100)
 
-        const targetStarCount = Math.max(0, Math.floor(starDensity * 1.25))
-        syncStars(width, height, targetStarCount)
+            const targetStarCount = Math.max(0, Math.floor(starDensity * 1.25))
+            syncStars(width, height, targetStarCount)
 
-        const scale = clamp(rawScale / 100, 0.4, 1.8)
-        const unit = Math.max(1, Math.round(2 * scale))
-        const cycleHue = colorCycle ? time * cycleSpeed * 0.9 : 0
+            const scale = clamp(rawScale / 100, 0.4, 1.8)
+            const unit = Math.max(1, Math.round(2 * scale))
+            const cycleHue = colorCycle ? time * cycleSpeed * 0.9 : 0
 
-        drawBackdrop(ctx, width, height, cycleHue, colorCycle)
-        drawStars(ctx, stars, width, height, time, speed, cycleHue, colorCycle)
+            drawBackdrop(ctx, width, height, cycleHue, colorCycle)
+            drawStars(ctx, stars, width, height, time, speed, cycleHue, colorCycle)
 
-        const travelPadding = 70 * scale
-        const travel = (time * speed * 0.14) % 1
-        const loopX = travel * (width + travelPadding * 2) - travelPadding
+            const travelPadding = 70 * scale
+            const travel = (time * speed * 0.14) % 1
+            const loopX = travel * (width + travelPadding * 2) - travelPadding
 
-        const offsetX = (positionX / 100) * width * 0.36
-        const offsetY = (positionY / 100) * height * 0.36
-        const bob = Math.sin(time * (2.6 + speed * 0.5)) * 4 * scale
+            const offsetX = (positionX / 100) * width * 0.36
+            const offsetY = (positionY / 100) * height * 0.36
+            const bob = Math.sin(time * (2.6 + speed * 0.5)) * 4 * scale
 
-        const catX = loopX + offsetX
-        const catY = clamp(height * 0.55 + offsetY + bob, 18 * scale, height - 18 * scale)
+            const catX = loopX + offsetX
+            const catY = clamp(height * 0.55 + offsetY + bob, 18 * scale, height - 18 * scale)
 
-        const bodyWidth = 20 * unit
-        const catLeft = catX - bodyWidth * 0.5 - 2 * unit
+            const bodyWidth = 20 * unit
+            const catLeft = catX - bodyWidth * 0.5 - 2 * unit
 
-        drawTrail(ctx, width, catLeft, catY, time, unit, cycleHue, colorCycle, trailMode, speed)
-        drawCat(ctx, catX, catY, unit, time, cycleHue, colorCycle, speed)
-    }
-}, {
-    description: 'Playful stylized cat dash with rainbow trail variants, star pops, and smooth looping motion',
-    presets: [
-        {
-            name: 'Saturday Morning 1994',
-            description: 'CRT static, cereal milk puddles, and a cat zooming across the screen at maximum Nickelodeon energy',
-            controls: {
-                animationSpeed: 8,
-                scale: 120,
-                positionX: 0,
-                positionY: -15,
-                trailMode: 'Classic',
-                colorCycle: true,
-                cycleSpeed: 52,
-                starDensity: 80,
+            drawTrail(ctx, width, catLeft, catY, time, unit, cycleHue, colorCycle, trailMode, speed)
+            drawCat(ctx, catX, catY, unit, time, cycleHue, colorCycle, speed)
+        }
+    },
+    {
+        description: 'Playful stylized cat dash with rainbow trail variants, star pops, and smooth looping motion',
+        presets: [
+            {
+                controls: {
+                    animationSpeed: 8,
+                    colorCycle: true,
+                    cycleSpeed: 52,
+                    positionX: 0,
+                    positionY: -15,
+                    scale: 120,
+                    starDensity: 80,
+                    trailMode: 'Classic',
+                },
+                description:
+                    'CRT static, cereal milk puddles, and a cat zooming across the screen at maximum Nickelodeon energy',
+                name: 'Saturday Morning 1994',
             },
-        },
-        {
-            name: 'Vaporwave Poptart',
-            description: 'Slowed-down, dreamy, pastel — the cat floats through a lo-fi aesthetic void of cotton candy nebulae',
-            controls: {
-                animationSpeed: 2,
-                scale: 160,
-                positionX: 20,
-                positionY: 10,
-                trailMode: 'Pulse',
-                colorCycle: true,
-                cycleSpeed: 12,
-                starDensity: 25,
+            {
+                controls: {
+                    animationSpeed: 2,
+                    colorCycle: true,
+                    cycleSpeed: 12,
+                    positionX: 20,
+                    positionY: 10,
+                    scale: 160,
+                    starDensity: 25,
+                    trailMode: 'Pulse',
+                },
+                description:
+                    'Slowed-down, dreamy, pastel — the cat floats through a lo-fi aesthetic void of cotton candy nebulae',
+                name: 'Vaporwave Poptart',
             },
-        },
-        {
-            name: 'Comet Kitty',
-            description: 'Tiny pixel cat blazing across the void like a burning meteorite trailing sparkle debris',
-            controls: {
-                animationSpeed: 10,
-                scale: 55,
-                positionX: -30,
-                positionY: 0,
-                trailMode: 'Comet',
-                colorCycle: true,
-                cycleSpeed: 78,
-                starDensity: 60,
+            {
+                controls: {
+                    animationSpeed: 10,
+                    colorCycle: true,
+                    cycleSpeed: 78,
+                    positionX: -30,
+                    positionY: 0,
+                    scale: 55,
+                    starDensity: 60,
+                    trailMode: 'Comet',
+                },
+                description: 'Tiny pixel cat blazing across the void like a burning meteorite trailing sparkle debris',
+                name: 'Comet Kitty',
             },
-        },
-        {
-            name: 'Midnight Snack Run',
-            description: 'Minimal stars, no color cycle — monochrome cat dashing through the quiet dark toward the fridge',
-            controls: {
-                animationSpeed: 5,
-                scale: 100,
-                positionX: 0,
-                positionY: 30,
-                trailMode: 'Classic',
-                colorCycle: false,
-                cycleSpeed: 0,
-                starDensity: 8,
+            {
+                controls: {
+                    animationSpeed: 5,
+                    colorCycle: false,
+                    cycleSpeed: 0,
+                    positionX: 0,
+                    positionY: 30,
+                    scale: 100,
+                    starDensity: 8,
+                    trailMode: 'Classic',
+                },
+                description:
+                    'Minimal stars, no color cycle — monochrome cat dashing through the quiet dark toward the fridge',
+                name: 'Midnight Snack Run',
             },
-        },
-        {
-            name: 'Disco Inferno 1977',
-            description: 'Maximum color cycle on a big chunky cat under a mirror ball — Studio 54 energy with sprinkles',
-            controls: {
-                animationSpeed: 7,
-                scale: 180,
-                positionX: 0,
-                positionY: -20,
-                trailMode: 'Pulse',
-                colorCycle: true,
-                cycleSpeed: 100,
-                starDensity: 95,
+            {
+                controls: {
+                    animationSpeed: 7,
+                    colorCycle: true,
+                    cycleSpeed: 100,
+                    positionX: 0,
+                    positionY: -20,
+                    scale: 180,
+                    starDensity: 95,
+                    trailMode: 'Pulse',
+                },
+                description:
+                    'Maximum color cycle on a big chunky cat under a mirror ball — Studio 54 energy with sprinkles',
+                name: 'Disco Inferno 1977',
             },
-        },
-    ],
-})
+        ],
+    },
+)

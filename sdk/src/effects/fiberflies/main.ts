@@ -395,8 +395,6 @@ export default canvas.stateful(
         description: 'Fiberflies with breathing halo blooms, neon palette modes, and gentle drift',
         presets: [
             {
-                name: 'Witch\'s Greenhouse',
-                description: 'Bioluminescent spores drifting through a humid glass conservatory at 2am — slow, verdant, hypnotic',
                 controls: {
                     baseColor: '#39ff14',
                     bgColor: '#060d08',
@@ -408,10 +406,11 @@ export default canvas.stateful(
                     speed: 2,
                     wander: 78,
                 },
+                description:
+                    'Bioluminescent spores drifting through a humid glass conservatory at 2am — slow, verdant, hypnotic',
+                name: "Witch's Greenhouse",
             },
             {
-                name: 'Midnight Carnival',
-                description: 'Neon confetti sparks whipping through a fairground after dark — chaotic, electric, and slightly feral',
                 controls: {
                     baseColor: '#ff2d6b',
                     bgColor: '#0a0412',
@@ -423,10 +422,11 @@ export default canvas.stateful(
                     speed: 9,
                     wander: 90,
                 },
+                description:
+                    'Neon confetti sparks whipping through a fairground after dark — chaotic, electric, and slightly feral',
+                name: 'Midnight Carnival',
             },
             {
-                name: 'Firefly Requiem',
-                description: 'A dying summer field at dusk — amber pulses fade in and out like the last warm breath of the season',
                 controls: {
                     baseColor: '#ffb347',
                     bgColor: '#14071f',
@@ -438,10 +438,11 @@ export default canvas.stateful(
                     speed: 3,
                     wander: 55,
                 },
+                description:
+                    'A dying summer field at dusk — amber pulses fade in and out like the last warm breath of the season',
+                name: 'Firefly Requiem',
             },
             {
-                name: 'Deep Sea Angler',
-                description: 'Abyssal creatures luring prey with cold alien light — sparse, eerie, impossibly deep blue-black void',
                 controls: {
                     baseColor: '#00d4ff',
                     bgColor: '#020408',
@@ -453,10 +454,11 @@ export default canvas.stateful(
                     speed: 1,
                     wander: 30,
                 },
+                description:
+                    'Abyssal creatures luring prey with cold alien light — sparse, eerie, impossibly deep blue-black void',
+                name: 'Deep Sea Angler',
             },
             {
-                name: 'Rave in a Jar',
-                description: 'Fifty trapped lightning bugs on MDMA bouncing off the glass walls of a mason jar at a house party',
                 controls: {
                     baseColor: '#e135ff',
                     bgColor: '#0d0018',
@@ -468,6 +470,9 @@ export default canvas.stateful(
                     speed: 10,
                     wander: 100,
                 },
+                description:
+                    'Fifty trapped lightning bugs on MDMA bouncing off the glass walls of a mason jar at a house party',
+                name: 'Rave in a Jar',
             },
         ],
     },

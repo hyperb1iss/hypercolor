@@ -89,6 +89,17 @@
                     }
                 }
             }
+        },
+        {
+            // Effect control order is intentional UX ordering — not alphabetical
+            "includes": ["src/effects/**/main.ts"],
+            "assist": {
+                "actions": {
+                    "source": {
+                        "useSortedKeys": "off"
+                    }
+                }
+            }
         }
     ]
 }

@@ -1,81 +1,91 @@
-import { effect, num, combo } from '@hypercolor/sdk'
+import { combo, effect, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
-export default effect('Nebula Drift', shader, {
-    speed:        num('Speed', [1, 10], 6, { group: 'Motion' }),
-    warpStrength: num('Warp Strength', [0, 100], 78, { group: 'Motion' }),
-    cloudDensity: num('Cloud Density', [10, 100], 72, { group: 'Atmosphere' }),
-    starField:    num('Star Field', [0, 100], 28, { group: 'Atmosphere' }),
-    palette:      combo('Palette', ['Aurora', 'Cyberpunk', 'Fire', 'SilkCircuit', 'Vaporwave'], { group: 'Color' }),
-    saturation:   num('Saturation', [60, 160], 120, { group: 'Color' }),
-    contrast:     num('Contrast', [70, 150], 106, { group: 'Color' }),
-}, {
-    description: 'Layered nebula ribbons with richer palette grading, visible parallax drift, and twinkling stars',
-    presets: [
-        {
-            name: 'Pillars of Creation',
-            description: 'Dense stellar nursery columns — massive gas clouds sculpted by newborn stars piercing through the dark',
-            controls: {
-                speed: 3,
-                cloudDensity: 95,
-                warpStrength: 55,
-                starField: 80,
-                saturation: 100,
-                contrast: 130,
-                palette: 'Aurora',
+export default effect(
+    'Nebula Drift',
+    shader,
+    {
+        cloudDensity: num('Cloud Density', [10, 100], 72, { group: 'Atmosphere' }),
+        contrast: num('Contrast', [70, 150], 106, { group: 'Color' }),
+        palette: combo('Palette', ['Aurora', 'Cyberpunk', 'Fire', 'SilkCircuit', 'Vaporwave'], { group: 'Color' }),
+        saturation: num('Saturation', [60, 160], 120, { group: 'Color' }),
+        speed: num('Speed', [1, 10], 6, { group: 'Motion' }),
+        starField: num('Star Field', [0, 100], 28, { group: 'Atmosphere' }),
+        warpStrength: num('Warp Strength', [0, 100], 78, { group: 'Motion' }),
+    },
+    {
+        description: 'Layered nebula ribbons with richer palette grading, visible parallax drift, and twinkling stars',
+        presets: [
+            {
+                controls: {
+                    cloudDensity: 95,
+                    contrast: 130,
+                    palette: 'Aurora',
+                    saturation: 100,
+                    speed: 3,
+                    starField: 80,
+                    warpStrength: 55,
+                },
+                description:
+                    'Dense stellar nursery columns — massive gas clouds sculpted by newborn stars piercing through the dark',
+                name: 'Pillars of Creation',
             },
-        },
-        {
-            name: 'Void Bloom',
-            description: 'A lone supernova remnant expanding into the abyss — delicate tendrils of light in total darkness',
-            controls: {
-                speed: 2,
-                cloudDensity: 30,
-                warpStrength: 90,
-                starField: 15,
-                saturation: 75,
-                contrast: 145,
-                palette: 'Cyberpunk',
+            {
+                controls: {
+                    cloudDensity: 30,
+                    contrast: 145,
+                    palette: 'Cyberpunk',
+                    saturation: 75,
+                    speed: 2,
+                    starField: 15,
+                    warpStrength: 90,
+                },
+                description:
+                    'A lone supernova remnant expanding into the abyss — delicate tendrils of light in total darkness',
+                name: 'Void Bloom',
             },
-        },
-        {
-            name: 'Astral Reef',
-            description: 'Bioluminescent coral translated to cosmic scale — warm pulsing clouds teeming with particle life',
-            controls: {
-                speed: 5,
-                cloudDensity: 78,
-                warpStrength: 65,
-                starField: 60,
-                saturation: 155,
-                contrast: 95,
-                palette: 'Fire',
+            {
+                controls: {
+                    cloudDensity: 78,
+                    contrast: 95,
+                    palette: 'Fire',
+                    saturation: 155,
+                    speed: 5,
+                    starField: 60,
+                    warpStrength: 65,
+                },
+                description:
+                    'Bioluminescent coral translated to cosmic scale — warm pulsing clouds teeming with particle life',
+                name: 'Astral Reef',
             },
-        },
-        {
-            name: 'Quantum Fog',
-            description: 'Reality dissolving at the Planck scale — probability clouds shimmering between existence and void',
-            controls: {
-                speed: 8,
-                cloudDensity: 50,
-                warpStrength: 100,
-                starField: 5,
-                saturation: 68,
-                contrast: 80,
-                palette: 'SilkCircuit',
+            {
+                controls: {
+                    cloudDensity: 50,
+                    contrast: 80,
+                    palette: 'SilkCircuit',
+                    saturation: 68,
+                    speed: 8,
+                    starField: 5,
+                    warpStrength: 100,
+                },
+                description:
+                    'Reality dissolving at the Planck scale — probability clouds shimmering between existence and void',
+                name: 'Quantum Fog',
             },
-        },
-        {
-            name: 'Synthwave Cosmos',
-            description: 'The universe as seen through a CRT monitor in 2087 — saturated, scan-lined, impossibly vivid',
-            controls: {
-                speed: 7,
-                cloudDensity: 65,
-                warpStrength: 82,
-                starField: 45,
-                saturation: 160,
-                contrast: 140,
-                palette: 'Vaporwave',
+            {
+                controls: {
+                    cloudDensity: 65,
+                    contrast: 140,
+                    palette: 'Vaporwave',
+                    saturation: 160,
+                    speed: 7,
+                    starField: 45,
+                    warpStrength: 82,
+                },
+                description:
+                    'The universe as seen through a CRT monitor in 2087 — saturated, scan-lined, impossibly vivid',
+                name: 'Synthwave Cosmos',
             },
-        },
-    ],
-})
+        ],
+    },
+)

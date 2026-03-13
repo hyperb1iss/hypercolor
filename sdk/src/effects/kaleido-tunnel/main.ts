@@ -1,7 +1,17 @@
 import { combo, effect, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
-const PALETTE_MODES = ['Amethyst', 'Deep Sea', 'Electric', 'Monochrome', 'Neon', 'Rainbow', 'Sunset', 'Toxic', 'Vaporwave'] as const
+const PALETTE_MODES = [
+    'Amethyst',
+    'Deep Sea',
+    'Electric',
+    'Monochrome',
+    'Neon',
+    'Rainbow',
+    'Sunset',
+    'Toxic',
+    'Vaporwave',
+] as const
 const STYLE_MODES = ['Glitch', 'Grain', 'Holo', 'Standard'] as const
 
 export default effect(
@@ -9,53 +19,53 @@ export default effect(
     shader,
     {
         intensity: num('Intensity', [20, 220], 120, {
+            group: 'Color',
             step: 1,
             tooltip: 'Overall brightness and energy in the tunnel.',
             uniform: 'iColorIntensity',
-            group: 'Color',
         }),
         palette: combo('Palette', PALETTE_MODES, {
             default: 'Rainbow',
+            group: 'Color',
             tooltip: 'Core tunnel palette.',
             uniform: 'iColorMode',
-            group: 'Color',
         }),
         pulse: num('Pulse', [0, 100], 50, {
+            group: 'Geometry',
             step: 1,
             tooltip: 'Breathing and shimmer in the tunnel energy.',
             uniform: 'iPulse',
-            group: 'Geometry',
         }),
         segments: num('Segments', [3, 12], 6, {
+            group: 'Geometry',
             step: 1,
             tooltip: 'Number of mirrored kaleidoscope slices.',
             uniform: 'iSegments',
-            group: 'Geometry',
         }),
         speed: num('Speed', [1, 20], 5, {
+            group: 'Motion',
             normalize: 'none',
             step: 0.5,
             tooltip: 'Controls tunnel motion speed. Values above 10 push into extra overdrive.',
             uniform: 'iSpeed',
-            group: 'Motion',
         }),
         style: combo('Style', STYLE_MODES, {
             default: 'Standard',
+            group: 'Color',
             tooltip: 'Post-processing treatment.',
             uniform: 'iStyle',
-            group: 'Color',
         }),
         twist: num('Twist', [0, 100], 40, {
+            group: 'Motion',
             step: 1,
             tooltip: 'Angular twist through the tunnel depth.',
             uniform: 'iTwist',
-            group: 'Motion',
         }),
         warp: num('Warp', [0, 100], 30, {
+            group: 'Geometry',
             step: 1,
             tooltip: 'Psychedelic distortion before the kaleidoscope fold.',
             uniform: 'iWarp',
-            group: 'Geometry',
         }),
     },
     {
@@ -64,8 +74,6 @@ export default effect(
             'Port of the Lightscript Workshop kaleidoscopic tunnel with full symmetry, warp, and palette controls',
         presets: [
             {
-                name: 'DMT Breakthrough',
-                description: 'Fractal geometry shatters into infinite recursive symmetry — maximum segments, full warp, neon overload',
                 controls: {
                     intensity: 210,
                     palette: 'Neon',
@@ -76,10 +84,11 @@ export default effect(
                     twist: 95,
                     warp: 100,
                 },
+                description:
+                    'Fractal geometry shatters into infinite recursive symmetry — maximum segments, full warp, neon overload',
+                name: 'DMT Breakthrough',
             },
             {
-                name: 'Cathedral of Light',
-                description: 'Stained glass mandala rotating in slow reverence — deep amethyst hues through a holographic prism',
                 controls: {
                     intensity: 160,
                     palette: 'Amethyst',
@@ -90,10 +99,11 @@ export default effect(
                     twist: 55,
                     warp: 25,
                 },
+                description:
+                    'Stained glass mandala rotating in slow reverence — deep amethyst hues through a holographic prism',
+                name: 'Cathedral of Light',
             },
             {
-                name: 'Abyssal Descent',
-                description: 'Sinking through bioluminescent depths — toxic greens pulse through a grainy deep-sea corridor',
                 controls: {
                     intensity: 80,
                     palette: 'Toxic',
@@ -104,10 +114,11 @@ export default effect(
                     twist: 40,
                     warp: 65,
                 },
+                description:
+                    'Sinking through bioluminescent depths — toxic greens pulse through a grainy deep-sea corridor',
+                name: 'Abyssal Descent',
             },
             {
-                name: 'Sunset Kaleidoscope',
-                description: 'Golden hour refracting through a desert crystal — warm vaporwave tones fold into gentle geometry',
                 controls: {
                     intensity: 140,
                     palette: 'Sunset',
@@ -118,10 +129,11 @@ export default effect(
                     twist: 60,
                     warp: 35,
                 },
+                description:
+                    'Golden hour refracting through a desert crystal — warm vaporwave tones fold into gentle geometry',
+                name: 'Sunset Kaleidoscope',
             },
             {
-                name: 'Monochrome Asylum',
-                description: 'Stripped of color, pure geometry remains — clinical black and white spinning at the edge of sanity',
                 controls: {
                     intensity: 190,
                     palette: 'Monochrome',
@@ -132,6 +144,9 @@ export default effect(
                     twist: 80,
                     warp: 50,
                 },
+                description:
+                    'Stripped of color, pure geometry remains — clinical black and white spinning at the edge of sanity',
+                name: 'Monochrome Asylum',
             },
         ],
     },

@@ -1,5 +1,5 @@
-import { canvas, audio, combo, num } from '@hypercolor/sdk'
 import type { AudioData } from '@hypercolor/sdk'
+import { audio, canvas, combo, num } from '@hypercolor/sdk'
 
 type SceneName = (typeof SCENES)[number]
 type PaletteName = (typeof PALETTE_NAMES)[number]
@@ -69,35 +69,35 @@ const PALETTE_NAMES = ['Aurora', 'Cyberpunk', 'Fire', 'Ice', 'SilkCircuit'] as c
 const TAU = Math.PI * 2
 
 const LED_PALETTES: Record<PaletteName, readonly Rgb[]> = {
-    SilkCircuit: [
-        { r: 225, g: 53, b: 255 },
-        { r: 128, g: 255, b: 234 },
-        { r: 255, g: 106, b: 193 },
-        { r: 80, g: 250, b: 123 },
+    Aurora: [
+        { b: 255, g: 229, r: 0 },
+        { b: 80, g: 175, r: 76 },
+        { b: 255, g: 77, r: 124 },
+        { b: 165, g: 191, r: 0 },
     ],
     Cyberpunk: [
-        { r: 255, g: 0, b: 255 },
-        { r: 0, g: 255, b: 255 },
-        { r: 255, g: 0, b: 102 },
-        { r: 102, g: 0, b: 255 },
+        { b: 255, g: 0, r: 255 },
+        { b: 255, g: 255, r: 0 },
+        { b: 102, g: 0, r: 255 },
+        { b: 255, g: 0, r: 102 },
     ],
     Fire: [
-        { r: 255, g: 48, b: 0 },
-        { r: 255, g: 106, b: 0 },
-        { r: 255, g: 148, b: 0 },
-        { r: 191, g: 20, b: 0 },
-    ],
-    Aurora: [
-        { r: 0, g: 229, b: 255 },
-        { r: 76, g: 175, b: 80 },
-        { r: 124, g: 77, b: 255 },
-        { r: 0, g: 191, b: 165 },
+        { b: 0, g: 48, r: 255 },
+        { b: 0, g: 106, r: 255 },
+        { b: 0, g: 148, r: 255 },
+        { b: 0, g: 20, r: 191 },
     ],
     Ice: [
-        { r: 13, g: 71, b: 161 },
-        { r: 0, g: 229, b: 255 },
-        { r: 0, g: 140, b: 255 },
-        { r: 48, g: 96, b: 255 },
+        { b: 161, g: 71, r: 13 },
+        { b: 255, g: 229, r: 0 },
+        { b: 255, g: 140, r: 0 },
+        { b: 255, g: 96, r: 48 },
+    ],
+    SilkCircuit: [
+        { b: 255, g: 53, r: 225 },
+        { b: 234, g: 255, r: 128 },
+        { b: 193, g: 106, r: 255 },
+        { b: 123, g: 250, r: 80 },
     ],
 }
 
@@ -123,7 +123,7 @@ function rgbString(color: Rgb, brightness = 1): string {
 
 function resolvePaletteName(): PaletteName {
     const raw = String((globalThis as Record<string, unknown>).palette ?? 'SilkCircuit')
-    return PALETTE_NAMES.includes(raw as PaletteName) ? raw as PaletteName : 'SilkCircuit'
+    return PALETTE_NAMES.includes(raw as PaletteName) ? (raw as PaletteName) : 'SilkCircuit'
 }
 
 function samplePaletteColor(paletteName: PaletteName, phase: number): Rgb {
@@ -158,7 +158,10 @@ function emitterPositions(scene: SceneName, w: number, h: number): [number, numb
     return [[cx, cy]]
 }
 
-function resolveAudio(a: AudioData, fallbackPhase: number): {
+function resolveAudio(
+    a: AudioData,
+    fallbackPhase: number,
+): {
     shouldSpawn: boolean
     pulse: number
     motion: number
@@ -169,18 +172,18 @@ function resolveAudio(a: AudioData, fallbackPhase: number): {
         const pulse = clamp(Math.max(a.bass, a.beatPulse * 0.85, a.onsetPulse * 0.75), 0, 1)
         const motion = clamp(Math.max(a.mid * 0.8, a.treble, a.level), 0, 1)
         return {
-            shouldSpawn: a.beatPulse > 0.38 || a.onsetPulse > 0.48 || a.bass > 0.62,
-            pulse,
             motion,
+            pulse,
+            shouldSpawn: a.beatPulse > 0.38 || a.onsetPulse > 0.48 || a.bass > 0.62,
         }
     }
 
     const syntheticBeat = Math.max(0, Math.sin(fallbackPhase * 1.6)) ** 8
     const motion = 0.3 + (0.5 + 0.5 * Math.sin(fallbackPhase * 0.9)) * 0.35
     return {
-        shouldSpawn: syntheticBeat > 0.7,
-        pulse: syntheticBeat * 0.75,
         motion,
+        pulse: syntheticBeat * 0.75,
+        shouldSpawn: syntheticBeat > 0.7,
     }
 }
 
@@ -201,42 +204,38 @@ function spawnWavefront(
 
     if (scene === 'Cascade') {
         return {
+            age: 0,
+            colorPhase,
             kind: 'diamond',
+            life: persistence + randomBetween(0.08, 0.28),
+            radius: 10,
+            rotation: Math.PI * 0.25,
+            segmentCount: 4,
+            speed: 58 + speedMul * 42 + randomBetween(0, 18),
+            sweep: TAU,
+            width: baseWidth * 0.9,
             x,
             y,
-            radius: 10,
-            speed: 58 + speedMul * 42 + randomBetween(0, 18),
-            width: baseWidth * 0.9,
-            age: 0,
-            life: persistence + randomBetween(0.08, 0.28),
-            colorPhase,
-            segmentCount: 4,
-            rotation: Math.PI * 0.25,
-            sweep: TAU,
         }
     }
 
     const sweep = scene === 'Twin Burst' ? Math.PI * 0.92 : TAU * 0.94
-    const segmentCount = scene === 'Twin Burst'
-        ? 4 + Math.round(density * 3)
-        : 6 + Math.round(density * 4)
-    const heading = scene === 'Twin Burst'
-        ? (x < w * 0.5 ? Math.PI : 0)
-        : randomBetween(0, TAU)
+    const segmentCount = scene === 'Twin Burst' ? 4 + Math.round(density * 3) : 6 + Math.round(density * 4)
+    const heading = scene === 'Twin Burst' ? (x < w * 0.5 ? Math.PI : 0) : randomBetween(0, TAU)
 
     return {
+        age: 0,
+        colorPhase,
         kind: 'arc',
+        life: persistence + randomBetween(0.12, 0.34),
+        radius: 10,
+        rotation: heading,
+        segmentCount,
+        speed: 72 + speedMul * 50 + randomBetween(0, 25),
+        sweep,
+        width: baseWidth,
         x,
         y,
-        radius: 10,
-        speed: 72 + speedMul * 50 + randomBetween(0, 25),
-        width: baseWidth,
-        age: 0,
-        life: persistence + randomBetween(0.12, 0.34),
-        colorPhase,
-        segmentCount,
-        rotation: heading,
-        sweep,
     }
 }
 
@@ -251,17 +250,17 @@ function spawnSpokeBurst(
 ): SpokeBurst {
     const persistence = 0.35 + (1 - decay) * 0.45
     return {
+        age: 0,
+        colorPhase,
         kind: 'spokes',
+        life: persistence + randomBetween(0.04, 0.14),
+        radius: 18,
+        rotation: randomBetween(0, TAU),
+        speed: 90 + speed * 7 + density * 22,
+        spokeCount: 6 + Math.round(density * 4),
+        width: 5 + intensity * 3,
         x,
         y,
-        radius: 18,
-        speed: 90 + speed * 7 + density * 22,
-        width: 5 + intensity * 3,
-        age: 0,
-        life: persistence + randomBetween(0.04, 0.14),
-        colorPhase,
-        spokeCount: 6 + Math.round(density * 4),
-        rotation: randomBetween(0, TAU),
     }
 }
 
@@ -275,35 +274,29 @@ function spawnBridgeBand(
 ): BridgeBand {
     const persistence = 0.4 + (1 - decay) * 0.4
     return {
+        age: 0,
+        colorPhase,
+        direction,
         kind: 'bridge',
-        y,
+        life: persistence + randomBetween(0.08, 0.16),
+        skew: randomBetween(10, 22),
         speed: 0.65 + speed * 0.08,
         thickness: 10 + intensity * 7,
-        age: 0,
-        life: persistence + randomBetween(0.08, 0.16),
-        colorPhase,
-        skew: randomBetween(10, 22),
-        direction,
+        y,
     }
 }
 
-function spawnCascadeBand(
-    y: number,
-    speed: number,
-    intensity: number,
-    decay: number,
-    colorPhase: number,
-): CascadeBand {
+function spawnCascadeBand(y: number, speed: number, intensity: number, decay: number, colorPhase: number): CascadeBand {
     const persistence = 0.45 + (1 - decay) * 0.5
     return {
-        kind: 'cascade',
-        y,
-        speed: 72 + speed * 8,
-        thickness: 12 + intensity * 8,
         age: 0,
-        life: persistence + randomBetween(0.08, 0.2),
         colorPhase,
         drift: randomBetween(12, 36),
+        kind: 'cascade',
+        life: persistence + randomBetween(0.08, 0.2),
+        speed: 72 + speed * 8,
+        thickness: 12 + intensity * 8,
+        y,
     }
 }
 
@@ -340,12 +333,7 @@ function drawDiamondBand(ctx: CanvasRenderingContext2D, wave: Wavefront, color: 
     ctx.stroke()
 }
 
-function drawWavefront(
-    ctx: CanvasRenderingContext2D,
-    wave: Wavefront,
-    paletteName: PaletteName,
-    motion: number,
-): void {
+function drawWavefront(ctx: CanvasRenderingContext2D, wave: Wavefront, paletteName: PaletteName, motion: number): void {
     const lifeFrac = clamp(wave.age / wave.life, 0, 1)
     if (lifeFrac >= 1) return
 
@@ -391,12 +379,7 @@ function drawSpokeBurst(
     }
 }
 
-function drawBridgeBand(
-    ctx: CanvasRenderingContext2D,
-    band: BridgeBand,
-    paletteName: PaletteName,
-    w: number,
-): void {
+function drawBridgeBand(ctx: CanvasRenderingContext2D, band: BridgeBand, paletteName: PaletteName, w: number): void {
     const lifeFrac = clamp(band.age / band.life, 0, 1)
     if (lifeFrac >= 1) return
 
@@ -418,12 +401,7 @@ function drawBridgeBand(
     ctx.fill()
 }
 
-function drawCascadeBand(
-    ctx: CanvasRenderingContext2D,
-    band: CascadeBand,
-    paletteName: PaletteName,
-    w: number,
-): void {
+function drawCascadeBand(ctx: CanvasRenderingContext2D, band: CascadeBand, paletteName: PaletteName, w: number): void {
     const lifeFrac = clamp(band.age / band.life, 0, 1)
     if (lifeFrac >= 1) return
 
@@ -467,162 +445,175 @@ function drawEmitterCore(
     ctx.fillRect(x - inner, y - inner, inner * 2, inner * 2)
 }
 
-export default canvas.stateful('Shockwave', {
-    speed:     num('Speed', [1, 10], 6, { group: 'Motion' }),
-    intensity: num('Intensity', [0, 100], 78, { group: 'Motion' }),
-    ringCount: num('Ring Count', [2, 12], 6, { group: 'Geometry' }),
-    decay:     num('Decay', [0, 100], 52, { group: 'Motion' }),
-    palette:   combo('Palette', ['Aurora', 'Cyberpunk', 'Fire', 'Ice', 'SilkCircuit'], { default: 'SilkCircuit', group: 'Scene' }),
-    scene:     combo('Scene', [...SCENES], { default: 'Cascade', group: 'Scene' }),
-}, () => {
-    let waves: Wavefront[] = []
-    let accents: Accent[] = []
-    let lastTime = -1
-    let beatCooldown = 0
-    let fallbackPhase = 0
-    let colorPhase = 0
+export default canvas.stateful(
+    'Shockwave',
+    {
+        palette: combo('Palette', ['Aurora', 'Cyberpunk', 'Fire', 'Ice', 'SilkCircuit'], {
+            default: 'SilkCircuit',
+            group: 'Scene',
+        }),
+        scene: combo('Scene', [...SCENES], { default: 'Cascade', group: 'Scene' }),
+        speed: num('Speed', [1, 10], 6, { group: 'Motion' }),
+        intensity: num('Intensity', [0, 100], 78, { group: 'Motion' }),
+        decay: num('Decay', [0, 100], 52, { group: 'Motion' }),
+        ringCount: num('Ring Count', [2, 12], 6, { group: 'Geometry' }),
+    },
+    () => {
+        let waves: Wavefront[] = []
+        let accents: Accent[] = []
+        let lastTime = -1
+        let beatCooldown = 0
+        let fallbackPhase = 0
+        let colorPhase = 0
 
-    return (ctx, time, controls) => {
-        const speed = controls.speed as number
-        const intensity = clamp((controls.intensity as number) / 100, 0, 1)
-        const decay = clamp((controls.decay as number) / 100, 0, 1)
-        const maxRings = Math.max(2, Math.round(controls.ringCount as number))
-        const sceneRaw = String(controls.scene ?? SCENES[0])
-        const scene = SCENES.includes(sceneRaw as SceneName) ? sceneRaw as SceneName : SCENES[0]
-        const paletteName = resolvePaletteName()
+        return (ctx, time, controls) => {
+            const speed = controls.speed as number
+            const intensity = clamp((controls.intensity as number) / 100, 0, 1)
+            const decay = clamp((controls.decay as number) / 100, 0, 1)
+            const maxRings = Math.max(2, Math.round(controls.ringCount as number))
+            const sceneRaw = String(controls.scene ?? SCENES[0])
+            const scene = SCENES.includes(sceneRaw as SceneName) ? (sceneRaw as SceneName) : SCENES[0]
+            const paletteName = resolvePaletteName()
 
-        const w = ctx.canvas.width
-        const h = ctx.canvas.height
-        const dt = lastTime < 0 ? 1 / 60 : Math.min(0.05, time - lastTime)
-        lastTime = time
+            const w = ctx.canvas.width
+            const h = ctx.canvas.height
+            const dt = lastTime < 0 ? 1 / 60 : Math.min(0.05, time - lastTime)
+            lastTime = time
 
-        fallbackPhase += dt * (0.8 + speed * 0.3)
+            fallbackPhase += dt * (0.8 + speed * 0.3)
 
-        const analysis = resolveAudio(audio(), fallbackPhase)
-        const density = clamp(maxRings / 12, 0.2, 1)
-        const emitters = emitterPositions(scene, w, h)
+            const analysis = resolveAudio(audio(), fallbackPhase)
+            const density = clamp(maxRings / 12, 0.2, 1)
+            const emitters = emitterPositions(scene, w, h)
 
-        beatCooldown = Math.max(0, beatCooldown - dt)
-        if (analysis.shouldSpawn && beatCooldown <= 0) {
-            for (const [x, y] of emitters) {
-                waves.push(spawnWavefront(scene, x, y, w, speed, intensity, decay, density, colorPhase))
-                colorPhase += 0.18
+            beatCooldown = Math.max(0, beatCooldown - dt)
+            if (analysis.shouldSpawn && beatCooldown <= 0) {
+                for (const [x, y] of emitters) {
+                    waves.push(spawnWavefront(scene, x, y, w, speed, intensity, decay, density, colorPhase))
+                    colorPhase += 0.18
+                }
+
+                if (scene === 'Core Burst') {
+                    const [x, y] = emitters[0] ?? [w * 0.5, h * 0.5]
+                    accents.push(spawnSpokeBurst(x, y, speed, intensity, decay, density, colorPhase))
+                    colorPhase += 0.21
+                } else if (scene === 'Twin Burst') {
+                    accents.push(spawnBridgeBand(h * 0.5, speed, intensity, decay, 1, colorPhase))
+                    colorPhase += 0.17
+                    accents.push(spawnBridgeBand(h * 0.5, speed, intensity, decay, -1, colorPhase))
+                    colorPhase += 0.17
+                } else {
+                    accents.push(spawnCascadeBand(h * 0.18, speed, intensity, decay, colorPhase))
+                    colorPhase += 0.16
+                    accents.push(spawnCascadeBand(h * 0.36, speed, intensity, decay, colorPhase))
+                    colorPhase += 0.16
+                }
+
+                waves = trimEntities(waves, maxRings * emitters.length * 2)
+                accents = trimEntities(accents, maxRings * 3)
+                beatCooldown = 0.08 + (1 - speed / 10) * 0.14
             }
 
-            if (scene === 'Core Burst') {
-                const [x, y] = emitters[0] ?? [w * 0.5, h * 0.5]
-                accents.push(spawnSpokeBurst(x, y, speed, intensity, decay, density, colorPhase))
-                colorPhase += 0.21
-            } else if (scene === 'Twin Burst') {
-                accents.push(spawnBridgeBand(h * 0.5, speed, intensity, decay, 1, colorPhase))
-                colorPhase += 0.17
-                accents.push(spawnBridgeBand(h * 0.5, speed, intensity, decay, -1, colorPhase))
-                colorPhase += 0.17
-            } else {
-                accents.push(spawnCascadeBand(h * 0.18, speed, intensity, decay, colorPhase))
-                colorPhase += 0.16
-                accents.push(spawnCascadeBand(h * 0.36, speed, intensity, decay, colorPhase))
-                colorPhase += 0.16
+            ctx.fillStyle = 'rgb(0,0,0)'
+            ctx.fillRect(0, 0, w, h)
+
+            for (const wave of waves) {
+                wave.age += dt
+                wave.radius += wave.speed * dt * (1 + analysis.pulse * 0.25)
+                wave.rotation += dt * (0.2 + analysis.motion * 0.35)
+                drawWavefront(ctx, wave, paletteName, analysis.motion)
             }
 
-            waves = trimEntities(waves, maxRings * emitters.length * 2)
-            accents = trimEntities(accents, maxRings * 3)
-            beatCooldown = 0.08 + (1 - speed / 10) * 0.14
-        }
+            for (const accent of accents) {
+                accent.age += dt
 
-        ctx.fillStyle = 'rgb(0,0,0)'
-        ctx.fillRect(0, 0, w, h)
-
-        for (const wave of waves) {
-            wave.age += dt
-            wave.radius += wave.speed * dt * (1 + analysis.pulse * 0.25)
-            wave.rotation += dt * (0.2 + analysis.motion * 0.35)
-            drawWavefront(ctx, wave, paletteName, analysis.motion)
-        }
-
-        for (const accent of accents) {
-            accent.age += dt
-
-            if (accent.kind === 'spokes') {
-                accent.radius += accent.speed * dt * (1 + analysis.motion * 0.15)
-                accent.rotation += dt * (0.4 + analysis.motion * 0.8)
-                drawSpokeBurst(ctx, accent, paletteName, analysis.pulse)
-            } else if (accent.kind === 'bridge') {
-                drawBridgeBand(ctx, accent, paletteName, w)
-            } else {
-                drawCascadeBand(ctx, accent, paletteName, w)
+                if (accent.kind === 'spokes') {
+                    accent.radius += accent.speed * dt * (1 + analysis.motion * 0.15)
+                    accent.rotation += dt * (0.4 + analysis.motion * 0.8)
+                    drawSpokeBurst(ctx, accent, paletteName, analysis.pulse)
+                } else if (accent.kind === 'bridge') {
+                    drawBridgeBand(ctx, accent, paletteName, w)
+                } else {
+                    drawCascadeBand(ctx, accent, paletteName, w)
+                }
             }
+
+            emitters.forEach(([x, y], index) => {
+                drawEmitterCore(ctx, x, y, paletteName, colorPhase + index * 0.22, analysis.pulse)
+            })
+
+            waves = waves.filter((wave) => wave.age < wave.life)
+            accents = accents.filter((accent) => accent.age < accent.life)
         }
-
-        emitters.forEach(([x, y], index) => {
-            drawEmitterCore(ctx, x, y, paletteName, colorPhase + index * 0.22, analysis.pulse)
-        })
-
-        waves = waves.filter((wave) => wave.age < wave.life)
-        accents = accents.filter((accent) => accent.age < accent.life)
-    }
-}, {
-    description: 'Sharp bass-reactive shockwaves with segmented bursts, bridge sweeps, and cascade chevrons',
-    presets: [
-        {
-            name: 'Seismic Epicenter',
-            description: 'Standing at ground zero of a tectonic rupture — massive concentric shockwaves tearing outward from a single point, fire-colored rings decaying into the abyss',
-            controls: {
-                speed: 7,
-                intensity: 95,
-                ringCount: 10,
-                decay: 35,
-                palette: 'Fire',
-                scene: 'Core Burst',
+    },
+    {
+        description: 'Sharp bass-reactive shockwaves with segmented bursts, bridge sweeps, and cascade chevrons',
+        presets: [
+            {
+                controls: {
+                    decay: 35,
+                    intensity: 95,
+                    palette: 'Fire',
+                    ringCount: 10,
+                    scene: 'Core Burst',
+                    speed: 7,
+                },
+                description:
+                    'Standing at ground zero of a tectonic rupture — massive concentric shockwaves tearing outward from a single point, fire-colored rings decaying into the abyss',
+                name: 'Seismic Epicenter',
             },
-        },
-        {
-            name: 'Glacier Calving',
-            description: 'An ice shelf fracturing in slow motion — wide, cold shockwaves cascading downward like frozen thunder, sparse rings holding their shape before dissolving',
-            controls: {
-                speed: 3,
-                intensity: 60,
-                ringCount: 4,
-                decay: 75,
-                palette: 'Ice',
-                scene: 'Cascade',
+            {
+                controls: {
+                    decay: 75,
+                    intensity: 60,
+                    palette: 'Ice',
+                    ringCount: 4,
+                    scene: 'Cascade',
+                    speed: 3,
+                },
+                description:
+                    'An ice shelf fracturing in slow motion — wide, cold shockwaves cascading downward like frozen thunder, sparse rings holding their shape before dissolving',
+                name: 'Glacier Calving',
             },
-        },
-        {
-            name: 'Twin Reactor Breach',
-            description: 'Two containment fields failing simultaneously — mirrored shockwaves colliding in a corridor of neon plasma, bridge bands sweeping between the rupture points',
-            controls: {
-                speed: 8,
-                intensity: 88,
-                ringCount: 8,
-                decay: 42,
-                palette: 'Cyberpunk',
-                scene: 'Twin Burst',
+            {
+                controls: {
+                    decay: 42,
+                    intensity: 88,
+                    palette: 'Cyberpunk',
+                    ringCount: 8,
+                    scene: 'Twin Burst',
+                    speed: 8,
+                },
+                description:
+                    'Two containment fields failing simultaneously — mirrored shockwaves colliding in a corridor of neon plasma, bridge bands sweeping between the rupture points',
+                name: 'Twin Reactor Breach',
             },
-        },
-        {
-            name: 'Aurora Shatter',
-            description: 'The northern lights breaking apart like stained glass — gentle waves rippling through green and violet, rings fading slowly into the polar dark',
-            controls: {
-                speed: 4,
-                intensity: 55,
-                ringCount: 6,
-                decay: 68,
-                palette: 'Aurora',
-                scene: 'Cascade',
+            {
+                controls: {
+                    decay: 68,
+                    intensity: 55,
+                    palette: 'Aurora',
+                    ringCount: 6,
+                    scene: 'Cascade',
+                    speed: 4,
+                },
+                description:
+                    'The northern lights breaking apart like stained glass — gentle waves rippling through green and violet, rings fading slowly into the polar dark',
+                name: 'Aurora Shatter',
             },
-        },
-        {
-            name: 'SilkCircuit Detonation',
-            description: 'A digital bomb exploding inside a circuit board — maximum ring density, rapid-fire bursts of electric purple and cyan, spoke patterns spinning through the debris',
-            controls: {
-                speed: 10,
-                intensity: 100,
-                ringCount: 12,
-                decay: 20,
-                palette: 'SilkCircuit',
-                scene: 'Core Burst',
+            {
+                controls: {
+                    decay: 20,
+                    intensity: 100,
+                    palette: 'SilkCircuit',
+                    ringCount: 12,
+                    scene: 'Core Burst',
+                    speed: 10,
+                },
+                description:
+                    'A digital bomb exploding inside a circuit board — maximum ring density, rapid-fire bursts of electric purple and cyan, spoke patterns spinning through the debris',
+                name: 'SilkCircuit Detonation',
             },
-        },
-    ],
-})
+        ],
+    },
+)

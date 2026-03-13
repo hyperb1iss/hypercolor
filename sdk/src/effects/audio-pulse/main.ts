@@ -92,6 +92,11 @@ export default effect(
     'Audio Pulse',
     shader,
     {
+        visualStyle: combo('Style', ['Grid', 'Pulse Field', 'Vortex', 'Waveform'], {
+            default: 'Pulse Field',
+            tooltip: 'Visualization style',
+            group: 'Scene',
+        }),
         colorScheme: combo('Colors', ['Aurora', 'Cyberpunk', 'Lava', 'Prism', 'Toxic', 'Vaporwave'], {
             default: 'Cyberpunk',
             tooltip: 'Color scheme',
@@ -102,93 +107,25 @@ export default effect(
             tooltip: 'Color cycling speed',
             group: 'Color',
         }),
-        flow: num('Flow', [-100, 100], 30, {
-            normalize: 'none',
-            tooltip: 'Travel direction and speed',
-            group: 'Motion',
-        }),
         glowIntensity: num('Glow', [10, 200], 100, {
             normalize: 'none',
             tooltip: 'Overall brightness',
             group: 'Color',
+        }),
+        flow: num('Flow', [-100, 100], 30, {
+            normalize: 'none',
+            tooltip: 'Travel direction and speed',
+            group: 'Motion',
         }),
         sensitivity: num('Sensitivity', [10, 200], 50, {
             normalize: 'none',
             tooltip: 'Audio reactivity',
             group: 'Audio',
         }),
-        visualStyle: combo('Style', ['Grid', 'Pulse Field', 'Vortex', 'Waveform'], {
-            default: 'Pulse Field',
-            tooltip: 'Visualization style',
-            group: 'Scene',
-        }),
     },
     {
         audio: true,
         description: 'Cinematic audio visualizer with motion-led audio response instead of beat flashes',
-
-        presets: [
-            {
-                name: 'Warehouse Ritual',
-                description: 'Sub-bass becomes architecture — slow vortex pull in a concrete bunker where the kick drum is a seismic event',
-                controls: {
-                    colorScheme: 'Lava',
-                    colorSpeed: 25,
-                    flow: -80,
-                    glowIntensity: 180,
-                    sensitivity: 180,
-                    visualStyle: 'Vortex',
-                },
-            },
-            {
-                name: 'Neon Meridian',
-                description: 'Synthwave highway at 2am — chrome reflections streak through rain as the arpeggios cascade forward endlessly',
-                controls: {
-                    colorScheme: 'Cyberpunk',
-                    colorSpeed: 120,
-                    flow: 75,
-                    glowIntensity: 130,
-                    sensitivity: 90,
-                    visualStyle: 'Waveform',
-                },
-            },
-            {
-                name: 'Glass Cathedral',
-                description: 'Ambient drone through stained glass — prismatic light breathes with glacial patience, each harmonic a new color',
-                controls: {
-                    colorScheme: 'Prism',
-                    colorSpeed: 15,
-                    flow: 10,
-                    glowIntensity: 85,
-                    sensitivity: 35,
-                    visualStyle: 'Pulse Field',
-                },
-            },
-            {
-                name: 'Toxic Mainframe',
-                description: 'Industrial grid flickers under acid-green data streams — percussive hits tear holes in the matrix',
-                controls: {
-                    colorScheme: 'Toxic',
-                    colorSpeed: 160,
-                    flow: -45,
-                    glowIntensity: 150,
-                    sensitivity: 145,
-                    visualStyle: 'Grid',
-                },
-            },
-            {
-                name: 'Aurora Lounge',
-                description: 'Jazz club at closing time — warm aurora ripples respond to brushed cymbals and upright bass with velvet restraint',
-                controls: {
-                    colorScheme: 'Aurora',
-                    colorSpeed: 40,
-                    flow: 20,
-                    glowIntensity: 70,
-                    sensitivity: 55,
-                    visualStyle: 'Pulse Field',
-                },
-            },
-        ],
 
         frame: (ctx, time) => {
             const dt = Math.min(lastTime > 0 ? time - lastTime : 0.016, 0.05)
@@ -355,6 +292,74 @@ export default effect(
             ctx.setUniform('iFlowDrift', state.drift)
             ctx.setUniform('iWarpPhase', state.warpPhase)
         },
+
+        presets: [
+            {
+                controls: {
+                    colorScheme: 'Lava',
+                    colorSpeed: 25,
+                    flow: -80,
+                    glowIntensity: 180,
+                    sensitivity: 180,
+                    visualStyle: 'Vortex',
+                },
+                description:
+                    'Sub-bass becomes architecture — slow vortex pull in a concrete bunker where the kick drum is a seismic event',
+                name: 'Warehouse Ritual',
+            },
+            {
+                controls: {
+                    colorScheme: 'Cyberpunk',
+                    colorSpeed: 120,
+                    flow: 75,
+                    glowIntensity: 130,
+                    sensitivity: 90,
+                    visualStyle: 'Waveform',
+                },
+                description:
+                    'Synthwave highway at 2am — chrome reflections streak through rain as the arpeggios cascade forward endlessly',
+                name: 'Neon Meridian',
+            },
+            {
+                controls: {
+                    colorScheme: 'Prism',
+                    colorSpeed: 15,
+                    flow: 10,
+                    glowIntensity: 85,
+                    sensitivity: 35,
+                    visualStyle: 'Pulse Field',
+                },
+                description:
+                    'Ambient drone through stained glass — prismatic light breathes with glacial patience, each harmonic a new color',
+                name: 'Glass Cathedral',
+            },
+            {
+                controls: {
+                    colorScheme: 'Toxic',
+                    colorSpeed: 160,
+                    flow: -45,
+                    glowIntensity: 150,
+                    sensitivity: 145,
+                    visualStyle: 'Grid',
+                },
+                description:
+                    'Industrial grid flickers under acid-green data streams — percussive hits tear holes in the matrix',
+                name: 'Toxic Mainframe',
+            },
+            {
+                controls: {
+                    colorScheme: 'Aurora',
+                    colorSpeed: 40,
+                    flow: 20,
+                    glowIntensity: 70,
+                    sensitivity: 55,
+                    visualStyle: 'Pulse Field',
+                },
+                description:
+                    'Jazz club at closing time — warm aurora ripples respond to brushed cymbals and upright bass with velvet restraint',
+                name: 'Aurora Lounge',
+            },
+        ],
 
         setup: (ctx) => {
             ctx.registerUniform('iAudioLevelSmooth', 0)

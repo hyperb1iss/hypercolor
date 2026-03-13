@@ -55,35 +55,35 @@ const SCENES: SceneName[] = ['Pattern 1', 'Pattern 2', 'Pattern 3']
 const COLOR_MODES: ColorMode[] = ['Static', 'Color Cycle']
 
 const THEME_PALETTES: Record<Exclude<ThemeName, 'Custom'>, Palette> = {
-    Blacklight: {
-        background: '#05050b',
-        front: '#ff52c8',
-        squiggle: '#25e7ff',
-        accent: '#ffb347',
-    },
-    'Bus Seat': {
-        background: '#11140a',
-        front: '#00d3a8',
-        squiggle: '#00b8ff',
-        accent: '#ff8c24',
-    },
-    'Laser Lime': {
-        background: '#060b04',
-        front: '#68ff42',
-        squiggle: '#00f0bc',
-        accent: '#ff6ac1',
-    },
-    'Cotton Candy': {
-        background: '#0b0811',
-        front: '#ff61bf',
-        squiggle: '#6af2ff',
-        accent: '#ffb347',
-    },
     'Arcade Heat': {
+        accent: '#20ecff',
         background: '#0d0406',
         front: '#ff8d1f',
         squiggle: '#ff3d7e',
-        accent: '#20ecff',
+    },
+    Blacklight: {
+        accent: '#ffb347',
+        background: '#05050b',
+        front: '#ff52c8',
+        squiggle: '#25e7ff',
+    },
+    'Bus Seat': {
+        accent: '#ff8c24',
+        background: '#11140a',
+        front: '#00d3a8',
+        squiggle: '#00b8ff',
+    },
+    'Cotton Candy': {
+        accent: '#ffb347',
+        background: '#0b0811',
+        front: '#ff61bf',
+        squiggle: '#6af2ff',
+    },
+    'Laser Lime': {
+        accent: '#ff6ac1',
+        background: '#060b04',
+        front: '#68ff42',
+        squiggle: '#00f0bc',
     },
 }
 
@@ -107,19 +107,23 @@ function hash(value: number): number {
 
 function hexToRgb(hex: string): RGB {
     const normalized = hex.trim().replace('#', '')
-    const expanded = normalized.length === 3
-        ? normalized.split('').map((char) => `${char}${char}`).join('')
-        : normalized
+    const expanded =
+        normalized.length === 3
+            ? normalized
+                  .split('')
+                  .map((char) => `${char}${char}`)
+                  .join('')
+            : normalized
 
     if (!/^[0-9a-fA-F]{6}$/.test(expanded)) {
-        return { r: 255, g: 255, b: 255 }
+        return { b: 255, g: 255, r: 255 }
     }
 
     const value = Number.parseInt(expanded, 16)
     return {
-        r: (value >> 16) & 255,
-        g: (value >> 8) & 255,
         b: value & 255,
+        g: (value >> 8) & 255,
+        r: (value >> 16) & 255,
     }
 }
 
@@ -131,9 +135,9 @@ function rgbToHex(rgb: RGB): string {
 function mixRgb(a: RGB, b: RGB, amount: number): RGB {
     const t = clamp(amount, 0, 1)
     return {
-        r: a.r + (b.r - a.r) * t,
-        g: a.g + (b.g - a.g) * t,
         b: a.b + (b.b - a.b) * t,
+        g: a.g + (b.g - a.g) * t,
+        r: a.r + (b.r - a.r) * t,
     }
 }
 
@@ -164,8 +168,8 @@ function rgbToHsl(rgb: RGB): HSL {
 
     return {
         h,
-        s: s * 100,
         l: l * 100,
+        s: s * 100,
     }
 }
 
@@ -204,9 +208,9 @@ function hslToRgb(hsl: HSL): RGB {
 
     const match = l - chroma / 2
     return {
-        r: (r + match) * 255,
-        g: (g + match) * 255,
         b: (b + match) * 255,
+        g: (g + match) * 255,
+        r: (r + match) * 255,
     }
 }
 
@@ -224,8 +228,8 @@ function shiftHexHue(hex: string, degrees: number): string {
     return rgbToHex({
         ...hslToRgb({
             h: ledSafeHue(hsl.h + degrees),
-            s: hsl.s,
             l: hsl.l,
+            s: hsl.s,
         }),
     })
 }
@@ -242,12 +246,7 @@ function scalePoints(points: SquigglePoint[], ox: number, oy: number, sx: number
     }))
 }
 
-function drawPolyline(
-    ctx: CanvasRenderingContext2D,
-    points: SquigglePoint[],
-    color: string,
-    width: number,
-): void {
+function drawPolyline(ctx: CanvasRenderingContext2D, points: SquigglePoint[], color: string, width: number): void {
     if (points.length < 2) return
     ctx.strokeStyle = color
     ctx.lineWidth = width
@@ -402,13 +401,7 @@ function drawMiniSquiggle(
     ctx.restore()
 }
 
-function drawStarburst(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    radius: number,
-    color: string,
-): void {
+function drawStarburst(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number, color: string): void {
     ctx.strokeStyle = color
     ctx.lineWidth = Math.max(1, radius * 0.14)
     ctx.lineCap = 'round'
@@ -437,7 +430,7 @@ function drawBackground(
     ctx.globalCompositeOperation = 'lighter'
 
     const glowCenterX = w * (0.34 + Math.sin(time * (0.08 + motion * 0.06)) * 0.08)
-    const glowCenterY = h * (0.30 + Math.cos(time * (0.07 + motion * 0.05)) * 0.08)
+    const glowCenterY = h * (0.3 + Math.cos(time * (0.07 + motion * 0.05)) * 0.08)
     const glowRadius = Math.max(w, h) * (0.72 + glow * 0.12)
 
     const halo = ctx.createRadialGradient(glowCenterX, glowCenterY, 0, glowCenterX, glowCenterY, glowRadius)
@@ -461,10 +454,10 @@ function getBasePalette(controls: Record<string, unknown>): Palette {
     const theme = controls.theme as ThemeName
     if (theme === 'Custom') {
         return {
+            accent: controls.accentColor as string,
             background: controls.backgroundColor as string,
             front: controls.frontColor as string,
             squiggle: controls.squiggleColor as string,
-            accent: controls.accentColor as string,
         }
     }
 
@@ -479,36 +472,36 @@ function getActivePalette(controls: Record<string, unknown>, time: number): Pale
     const cycleSpeed = controls.cycleSpeed as number
     const shift = time * (1.2 + cycleSpeed * 0.18)
     return {
+        accent: shiftHexHue(base.accent, shift - 90),
         background: shiftHexHue(base.background, shift * 0.2 - 24),
         front: shiftHexHue(base.front, shift),
         squiggle: shiftHexHue(base.squiggle, shift + 100),
-        accent: shiftHexHue(base.accent, shift - 90),
     }
 }
 
 function buildFlecks(count: number): Fleck[] {
     return Array.from({ length: count }, (_, index) => ({
-        x: 0.04 + hash(index * 0.83 + 1.1) * 0.92,
-        y: 0.05 + hash(index * 1.21 + 6.2) * 0.90,
-        size: 0.8 + hash(index * 1.71 + 2.3) * 2.1,
-        rotation: hash(index * 2.31 + 7.4) * Math.PI * 2,
-        variant: Math.floor(hash(index * 3.07 + 4.8) * 5),
         colorIndex: Math.floor(hash(index * 4.41 + 5.3) * 3),
         drift: 1.2 + hash(index * 5.31 + 2.2) * 4.4,
         phase: hash(index * 7.19 + 8.1) * Math.PI * 2,
+        rotation: hash(index * 2.31 + 7.4) * Math.PI * 2,
+        size: 0.8 + hash(index * 1.71 + 2.3) * 2.1,
+        variant: Math.floor(hash(index * 3.07 + 4.8) * 5),
+        x: 0.04 + hash(index * 0.83 + 1.1) * 0.92,
+        y: 0.05 + hash(index * 1.21 + 6.2) * 0.9,
     }))
 }
 
 function buildOrnaments(count: number): Ornament[] {
     return Array.from({ length: count }, (_, index) => ({
-        x: 0.10 + hash(index * 0.91 + 2.4) * 0.80,
-        y: 0.12 + hash(index * 1.47 + 4.2) * 0.74,
-        size: 8 + hash(index * 2.93 + 6.1) * 18,
-        rotation: hash(index * 3.71 + 9.5) * Math.PI * 2,
-        variant: Math.floor(hash(index * 4.13 + 2.9) * 5),
         colorIndex: Math.floor(hash(index * 5.81 + 7.7) * 3),
-        phase: hash(index * 6.71 + 1.7) * Math.PI * 2,
         drift: 8 + hash(index * 7.43 + 8.9) * 14,
+        phase: hash(index * 6.71 + 1.7) * Math.PI * 2,
+        rotation: hash(index * 3.71 + 9.5) * Math.PI * 2,
+        size: 8 + hash(index * 2.93 + 6.1) * 18,
+        variant: Math.floor(hash(index * 4.13 + 2.9) * 5),
+        x: 0.1 + hash(index * 0.91 + 2.4) * 0.8,
+        y: 0.12 + hash(index * 1.47 + 4.2) * 0.74,
     }))
 }
 
@@ -524,12 +517,14 @@ function drawCarpetFlecks(
     const colors = [palette.front, palette.squiggle, palette.accent]
 
     for (const fleck of flecks) {
-        const swayX = Math.sin(time * (0.12 + fleck.drift * 0.015) + fleck.phase) * fleck.drift * (0.25 + moveScale * 0.45)
-        const swayY = Math.cos(time * (0.10 + fleck.drift * 0.012) + fleck.phase * 1.2) * fleck.drift * (0.16 + moveScale * 0.28)
+        const swayX =
+            Math.sin(time * (0.12 + fleck.drift * 0.015) + fleck.phase) * fleck.drift * (0.25 + moveScale * 0.45)
+        const swayY =
+            Math.cos(time * (0.1 + fleck.drift * 0.012) + fleck.phase * 1.2) * fleck.drift * (0.16 + moveScale * 0.28)
         const x = clamp(fleck.x * w + swayX, 2, w - 2)
         const y = clamp(fleck.y * h + swayY, 2, h - 2)
         const color = colors[fleck.colorIndex] ?? palette.front
-        const size = fleck.size * (0.88 + 0.16 * Math.sin(time * 0.20 + fleck.phase))
+        const size = fleck.size * (0.88 + 0.16 * Math.sin(time * 0.2 + fleck.phase))
         const alpha = 0.38 + 0.14 * Math.sin(time * 0.24 + fleck.phase * 0.9)
         const ink = rgba(color, alpha)
 
@@ -565,9 +560,18 @@ function drawOrnaments(
     const driftMultiplier = scene === 'Pattern 1' ? 0.8 : scene === 'Pattern 2' ? 1 : 0.65
 
     for (const ornament of ornaments) {
-        const orbitX = Math.sin(time * (0.11 + ornament.drift * 0.004) + ornament.phase) * ornament.drift * driftMultiplier * (0.18 + moveScale * 0.34)
-        const orbitY = Math.cos(time * (0.09 + ornament.drift * 0.003) + ornament.phase * 1.2) * ornament.drift * 0.8 * driftMultiplier * (0.16 + moveScale * 0.28)
-        const size = ornament.size * (0.84 + 0.10 * Math.sin(time * 0.22 + ornament.phase))
+        const orbitX =
+            Math.sin(time * (0.11 + ornament.drift * 0.004) + ornament.phase) *
+            ornament.drift *
+            driftMultiplier *
+            (0.18 + moveScale * 0.34)
+        const orbitY =
+            Math.cos(time * (0.09 + ornament.drift * 0.003) + ornament.phase * 1.2) *
+            ornament.drift *
+            0.8 *
+            driftMultiplier *
+            (0.16 + moveScale * 0.28)
+        const size = ornament.size * (0.84 + 0.1 * Math.sin(time * 0.22 + ornament.phase))
         const x = clamp(ornament.x * w + orbitX, size, w - size)
         const y = clamp(ornament.y * h + orbitY, size, h - size)
         const color = colors[ornament.colorIndex] ?? palette.front
@@ -578,7 +582,7 @@ function drawOrnaments(
         } else if (ornament.variant === 1) {
             drawDiamond(ctx, x, y, size * 0.36, ornament.rotation, ink)
         } else if (ornament.variant === 2) {
-            drawRing(ctx, x, y, size * 0.30, Math.max(1.2, size * 0.08), ink)
+            drawRing(ctx, x, y, size * 0.3, Math.max(1.2, size * 0.08), ink)
         } else if (ornament.variant === 3) {
             drawDash(ctx, x, y, size * 0.9, ornament.rotation, Math.max(1.8, size * 0.09), ink)
         } else {
@@ -638,17 +642,17 @@ function drawPatternOne(
     ]
 
     for (let bandIndex = 0; bandIndex < bandY.length; bandIndex++) {
-        const y = h * bandY[bandIndex] + Math.sin(time * (0.26 + moveScale * 0.40) + bandIndex * 1.1) * h * 0.03
+        const y = h * bandY[bandIndex] + Math.sin(time * (0.26 + moveScale * 0.4) + bandIndex * 1.1) * h * 0.03
         const xOffset = Math.sin(time * (0.18 + moveScale * 0.24) + bandIndex * 0.7) * 22 * scale
 
         for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
             const points = scalePoints(rows[rowIndex], xOffset, y, sx, sy)
-            drawPolyline(ctx, points, rgba(palette.squiggle, 0.10 + glow * 0.06), lineWidth * 1.55)
+            drawPolyline(ctx, points, rgba(palette.squiggle, 0.1 + glow * 0.06), lineWidth * 1.55)
             drawPolyline(ctx, points, palette.squiggle, lineWidth)
         }
     }
 
-    const upwardLanes = [0.18 * w, 0.50 * w, 0.82 * w]
+    const upwardLanes = [0.18 * w, 0.5 * w, 0.82 * w]
     for (let laneIndex = 0; laneIndex < upwardLanes.length; laneIndex++) {
         const laneX = upwardLanes[laneIndex]
         const laneSlant = laneIndex % 2 === 0 ? -1 : 1
@@ -656,7 +660,7 @@ function drawPatternOne(
         for (let item = 0; item < 5; item++) {
             const anchor = h * lerp(0.18, 0.82, item / 4)
             const y = anchor + Math.sin(time * (0.34 + moveScale * 0.46) + laneIndex * 0.7 + item * 0.8) * h * 0.028
-            const x = laneX + laneSlant * Math.cos(time * (0.22 + moveScale * 0.30) + item * 0.9) * w * 0.018
+            const x = laneX + laneSlant * Math.cos(time * (0.22 + moveScale * 0.3) + item * 0.9) * w * 0.018
             const color = item % 2 === 0 ? palette.front : palette.accent
 
             if (item % 3 === 0) {
@@ -685,8 +689,9 @@ function drawPatternTwo(
 
     for (let index = 0; index < squiggleCount; index++) {
         const baseX = (index + 0.5) * (w / squiggleCount)
-        const y = h * lerp(0.18, 0.82, index / Math.max(1, squiggleCount - 1))
-            + Math.sin(time * (0.40 + moveScale * 0.36) + index * 0.9) * h * 0.05
+        const y =
+            h * lerp(0.18, 0.82, index / Math.max(1, squiggleCount - 1)) +
+            Math.sin(time * (0.4 + moveScale * 0.36) + index * 0.9) * h * 0.05
         const size = 8 + (index % 3) * 4
         drawMiniSquiggle(
             ctx,
@@ -720,7 +725,7 @@ function drawPatternTwo(
 
             if (lane.shape === 'capsule') {
                 drawCapsule(ctx, x, y, 30, 98, 0, rgba(color, 0.78))
-                drawCapsule(ctx, x, y, 14, 72, 0, rgba(isAccent ? lane.colorB : lane.colorA, 0.70))
+                drawCapsule(ctx, x, y, 14, 72, 0, rgba(isAccent ? lane.colorB : lane.colorA, 0.7))
             } else {
                 drawTriangle(ctx, x, y + 12, 30, Math.PI, rgba(color, 0.76))
                 drawTriangle(ctx, x + 4, y + 20, 20, Math.PI * 0.88, rgba(isAccent ? lane.colorB : lane.colorA, 0.68))
@@ -730,7 +735,14 @@ function drawPatternTwo(
         ctx.restore()
     }
 
-    drawRing(ctx, w * 0.5, h * 0.5, Math.min(w, h) * 0.16, Math.max(4, Math.min(w, h) * 0.022), rgba(palette.squiggle, 0.10 + glow * 0.06))
+    drawRing(
+        ctx,
+        w * 0.5,
+        h * 0.5,
+        Math.min(w, h) * 0.16,
+        Math.max(4, Math.min(w, h) * 0.022),
+        rgba(palette.squiggle, 0.1 + glow * 0.06),
+    )
 }
 
 function drawRibbon(
@@ -785,20 +797,20 @@ function drawPatternThree(
 ): void {
     const flow = time * (0.34 + moveScale * 0.52)
 
-    drawRibbon(ctx, w, h * 0.42, h * 0.09, Math.max(26, h * 0.15), rgba(palette.front, 0.10 + glow * 0.05), flow, 0)
-    drawRibbon(ctx, w, h * 0.42, h * 0.09, Math.max(17, h * 0.10), palette.front, flow, 0)
+    drawRibbon(ctx, w, h * 0.42, h * 0.09, Math.max(26, h * 0.15), rgba(palette.front, 0.1 + glow * 0.05), flow, 0)
+    drawRibbon(ctx, w, h * 0.42, h * 0.09, Math.max(17, h * 0.1), palette.front, flow, 0)
     drawRibbon(ctx, w, h * 0.42, h * 0.09, Math.max(7, h * 0.042), palette.accent, flow, 0.7)
-    drawRibbon(ctx, w, h * 0.68, h * 0.08, Math.max(22, h * 0.13), rgba(palette.squiggle, 0.10 + glow * 0.05), flow, 1.4)
+    drawRibbon(ctx, w, h * 0.68, h * 0.08, Math.max(22, h * 0.13), rgba(palette.squiggle, 0.1 + glow * 0.05), flow, 1.4)
     drawRibbon(ctx, w, h * 0.68, h * 0.08, Math.max(14, h * 0.085), palette.squiggle, flow, 1.4)
     drawRibbon(ctx, w, h * 0.68, h * 0.08, Math.max(6, h * 0.034), palette.accent, flow, 2.1)
 
     const dotCount = 8
     for (let index = 0; index < dotCount; index++) {
         const baseProgress = index / Math.max(1, dotCount - 1)
-        const x = lerp(w * 0.08, w * 0.92, baseProgress)
-            + Math.sin(time * (0.28 + moveScale * 0.22) + index * 0.9) * w * 0.016
-        const y = (index % 2 === 0 ? h * 0.22 : h * 0.84)
-            + Math.sin(time * 0.48 + index) * (h * 0.03)
+        const x =
+            lerp(w * 0.08, w * 0.92, baseProgress) +
+            Math.sin(time * (0.28 + moveScale * 0.22) + index * 0.9) * w * 0.016
+        const y = (index % 2 === 0 ? h * 0.22 : h * 0.84) + Math.sin(time * 0.48 + index) * (h * 0.03)
         const color = index % 2 === 0 ? palette.accent : palette.front
         if (index % 3 === 0) {
             drawRing(ctx, x, y, Math.max(10, h * 0.04), Math.max(2, h * 0.01), color)
@@ -810,146 +822,155 @@ function drawPatternThree(
     }
 }
 
-export default canvas.stateful('Roller Rink', {
-    theme:           combo('Palette', THEMES, { default: 'Blacklight', group: 'Scene' }),
-    scene:           combo('Layout', SCENES, { default: 'Pattern 3', group: 'Scene' }),
-    density:         num('Decor Density', [0, 100], 42, { group: 'Scene' }),
-    colorMode:       combo('Palette Motion', COLOR_MODES, { default: 'Static', group: 'Color' }),
-    cycleSpeed:      num('Color Drift', [0, 100], 22, { group: 'Color' }),
-    frontColor:      color('Primary Color', '#ff52c8', { group: 'Color' }),
-    squiggleColor:   color('Line Color', '#25e7ff', { group: 'Color' }),
-    accentColor:     color('Accent Color', '#ffb347', { group: 'Color' }),
-    backgroundColor: color('Backdrop Color', '#05050b', { group: 'Color' }),
-    moveSpeed:       num('Motion', [0, 100], 24, { group: 'Motion' }),
-    glow:            num('Glow', [0, 100], 34, { group: 'Motion' }),
-}, () => {
-    let flecks: Fleck[] = []
-    let ornaments: Ornament[] = []
-    let lastDensity = -1
+export default canvas.stateful(
+    'Roller Rink',
+    {
+        theme: combo('Palette', THEMES, { default: 'Blacklight', group: 'Scene' }),
+        scene: combo('Layout', SCENES, { default: 'Pattern 3', group: 'Scene' }),
+        density: num('Decor Density', [0, 100], 42, { group: 'Scene' }),
+        colorMode: combo('Palette Motion', COLOR_MODES, { default: 'Static', group: 'Color' }),
+        cycleSpeed: num('Color Drift', [0, 100], 22, { group: 'Color' }),
+        frontColor: color('Primary Color', '#ff52c8', { group: 'Color' }),
+        squiggleColor: color('Line Color', '#25e7ff', { group: 'Color' }),
+        accentColor: color('Accent Color', '#ffb347', { group: 'Color' }),
+        backgroundColor: color('Backdrop Color', '#05050b', { group: 'Color' }),
+        moveSpeed: num('Motion', [0, 100], 24, { group: 'Motion' }),
+        glow: num('Glow', [0, 100], 34, { group: 'Motion' }),
+    },
+    () => {
+        let flecks: Fleck[] = []
+        let ornaments: Ornament[] = []
+        let lastDensity = -1
 
-    function reseed(density: number): void {
-        const fleckCount = Math.floor(20 + density * 0.46)
-        const ornamentCount = Math.floor(4 + density * 0.08)
-        flecks = buildFlecks(fleckCount)
-        ornaments = buildOrnaments(ornamentCount)
-        lastDensity = density
-    }
-
-    return (ctx, time, controls) => {
-        const width = ctx.canvas.width
-        const height = ctx.canvas.height
-        const density = controls.density as number
-        const glow = clamp((controls.glow as number) / 100, 0, 1)
-
-        if (flecks.length === 0 || ornaments.length === 0 || density !== lastDensity) {
-            reseed(density)
+        function reseed(density: number): void {
+            const fleckCount = Math.floor(20 + density * 0.46)
+            const ornamentCount = Math.floor(4 + density * 0.08)
+            flecks = buildFlecks(fleckCount)
+            ornaments = buildOrnaments(ornamentCount)
+            lastDensity = density
         }
 
-        const moveScale = clamp((controls.moveSpeed as number) / 100, 0, 1)
-        const scene = controls.scene as SceneName
-        const palette = getActivePalette(controls as Record<string, unknown>, time)
+        return (ctx, time, controls) => {
+            const width = ctx.canvas.width
+            const height = ctx.canvas.height
+            const density = controls.density as number
+            const glow = clamp((controls.glow as number) / 100, 0, 1)
 
-        drawBackground(ctx, width, height, palette, time, glow, moveScale)
-        drawCarpetFlecks(ctx, width, height, flecks, palette, time, moveScale)
-        drawOrnaments(ctx, width, height, ornaments, palette, time, scene, moveScale)
+            if (flecks.length === 0 || ornaments.length === 0 || density !== lastDensity) {
+                reseed(density)
+            }
 
-        if (scene === 'Pattern 1') {
-            drawPatternOne(ctx, width, height, palette, time, moveScale, glow)
-        } else if (scene === 'Pattern 2') {
-            drawPatternTwo(ctx, width, height, palette, time, moveScale, density, glow)
-        } else {
-            drawPatternThree(ctx, width, height, palette, time, moveScale, glow)
+            const moveScale = clamp((controls.moveSpeed as number) / 100, 0, 1)
+            const scene = controls.scene as SceneName
+            const palette = getActivePalette(controls as Record<string, unknown>, time)
+
+            drawBackground(ctx, width, height, palette, time, glow, moveScale)
+            drawCarpetFlecks(ctx, width, height, flecks, palette, time, moveScale)
+            drawOrnaments(ctx, width, height, ornaments, palette, time, scene, moveScale)
+
+            if (scene === 'Pattern 1') {
+                drawPatternOne(ctx, width, height, palette, time, moveScale, glow)
+            } else if (scene === 'Pattern 2') {
+                drawPatternTwo(ctx, width, height, palette, time, moveScale, density, glow)
+            } else {
+                drawPatternThree(ctx, width, height, palette, time, moveScale, glow)
+            }
         }
-
-    }
-}, {
-    description: 'Smooth blacklight carpet patterns with softer motion, calmer decor, and richer palette controls',
-    author: 'Hypercolor',
-    presets: [
-        {
-            name: 'Carpet Burns & Arcade Tokens',
-            description: 'Crusty 1987 roller rink carpet under full UV — neon triangles, mystery stains, and pure nostalgic magic',
-            controls: {
-                theme: 'Blacklight',
-                scene: 'Pattern 1',
-                colorMode: 'Static',
-                moveSpeed: 18,
-                cycleSpeed: 0,
-                density: 72,
-                glow: 55,
-                frontColor: '#ff52c8',
-                squiggleColor: '#25e7ff',
-                accentColor: '#ffb347',
-                backgroundColor: '#05050b',
+    },
+    {
+        author: 'Hypercolor',
+        description: 'Smooth blacklight carpet patterns with softer motion, calmer decor, and richer palette controls',
+        presets: [
+            {
+                controls: {
+                    accentColor: '#ffb347',
+                    backgroundColor: '#05050b',
+                    colorMode: 'Static',
+                    cycleSpeed: 0,
+                    density: 72,
+                    frontColor: '#ff52c8',
+                    glow: 55,
+                    moveSpeed: 18,
+                    scene: 'Pattern 1',
+                    squiggleColor: '#25e7ff',
+                    theme: 'Blacklight',
+                },
+                description:
+                    'Crusty 1987 roller rink carpet under full UV — neon triangles, mystery stains, and pure nostalgic magic',
+                name: 'Carpet Burns & Arcade Tokens',
             },
-        },
-        {
-            name: 'Lisa Frank Trapper Keeper',
-            description: 'Maximum saturation color cycling over dense geometric confetti — the visual equivalent of a dolphin sticker sheet',
-            controls: {
-                theme: 'Cotton Candy',
-                scene: 'Pattern 2',
-                colorMode: 'Color Cycle',
-                moveSpeed: 40,
-                cycleSpeed: 68,
-                density: 95,
-                glow: 78,
-                frontColor: '#ff61bf',
-                squiggleColor: '#6af2ff',
-                accentColor: '#ffb347',
-                backgroundColor: '#0b0811',
+            {
+                controls: {
+                    accentColor: '#ffb347',
+                    backgroundColor: '#0b0811',
+                    colorMode: 'Color Cycle',
+                    cycleSpeed: 68,
+                    density: 95,
+                    frontColor: '#ff61bf',
+                    glow: 78,
+                    moveSpeed: 40,
+                    scene: 'Pattern 2',
+                    squiggleColor: '#6af2ff',
+                    theme: 'Cotton Candy',
+                },
+                description:
+                    'Maximum saturation color cycling over dense geometric confetti — the visual equivalent of a dolphin sticker sheet',
+                name: 'Lisa Frank Trapper Keeper',
             },
-        },
-        {
-            name: 'Wes Anderson Lobby',
-            description: 'Precisely placed pastels drifting with deliberate symmetry — every shape knows exactly where it belongs',
-            controls: {
-                theme: 'Bus Seat',
-                scene: 'Pattern 3',
-                colorMode: 'Static',
-                moveSpeed: 8,
-                cycleSpeed: 0,
-                density: 28,
-                glow: 22,
-                frontColor: '#00d3a8',
-                squiggleColor: '#00b8ff',
-                accentColor: '#ff8c24',
-                backgroundColor: '#11140a',
+            {
+                controls: {
+                    accentColor: '#ff8c24',
+                    backgroundColor: '#11140a',
+                    colorMode: 'Static',
+                    cycleSpeed: 0,
+                    density: 28,
+                    frontColor: '#00d3a8',
+                    glow: 22,
+                    moveSpeed: 8,
+                    scene: 'Pattern 3',
+                    squiggleColor: '#00b8ff',
+                    theme: 'Bus Seat',
+                },
+                description:
+                    'Precisely placed pastels drifting with deliberate symmetry — every shape knows exactly where it belongs',
+                name: 'Wes Anderson Lobby',
             },
-        },
-        {
-            name: 'Laser Tag Aftermath',
-            description: 'Acid green squiggles and hot pink geometry vibrating in the dark — smells like fog machine and victory',
-            controls: {
-                theme: 'Laser Lime',
-                scene: 'Pattern 1',
-                colorMode: 'Color Cycle',
-                moveSpeed: 62,
-                cycleSpeed: 44,
-                density: 58,
-                glow: 90,
-                frontColor: '#68ff42',
-                squiggleColor: '#00f0bc',
-                accentColor: '#ff6ac1',
-                backgroundColor: '#060b04',
+            {
+                controls: {
+                    accentColor: '#ff6ac1',
+                    backgroundColor: '#060b04',
+                    colorMode: 'Color Cycle',
+                    cycleSpeed: 44,
+                    density: 58,
+                    frontColor: '#68ff42',
+                    glow: 90,
+                    moveSpeed: 62,
+                    scene: 'Pattern 1',
+                    squiggleColor: '#00f0bc',
+                    theme: 'Laser Lime',
+                },
+                description:
+                    'Acid green squiggles and hot pink geometry vibrating in the dark — smells like fog machine and victory',
+                name: 'Laser Tag Aftermath',
             },
-        },
-        {
-            name: 'Taco Bell 2am',
-            description: 'Warm arcade heat patterns barely moving — the exhausted glow of fast food neon through rain-streaked glass',
-            controls: {
-                theme: 'Arcade Heat',
-                scene: 'Pattern 2',
-                colorMode: 'Static',
-                moveSpeed: 4,
-                cycleSpeed: 0,
-                density: 35,
-                glow: 45,
-                frontColor: '#ff8d1f',
-                squiggleColor: '#ff3d7e',
-                accentColor: '#20ecff',
-                backgroundColor: '#0d0406',
+            {
+                controls: {
+                    accentColor: '#20ecff',
+                    backgroundColor: '#0d0406',
+                    colorMode: 'Static',
+                    cycleSpeed: 0,
+                    density: 35,
+                    frontColor: '#ff8d1f',
+                    glow: 45,
+                    moveSpeed: 4,
+                    scene: 'Pattern 2',
+                    squiggleColor: '#ff3d7e',
+                    theme: 'Arcade Heat',
+                },
+                description:
+                    'Warm arcade heat patterns barely moving — the exhausted glow of fast food neon through rain-streaked glass',
+                name: 'Taco Bell 2am',
             },
-        },
-    ],
-})
+        ],
+    },
+)

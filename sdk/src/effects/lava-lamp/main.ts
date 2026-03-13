@@ -4,8 +4,16 @@ import { canvas, color, combo, num, toggle } from '@hypercolor/sdk'
 // Types
 // ---------------------------------------------------------------------------
 
-interface Rgb { r: number; g: number; b: number }
-interface ThemePalette { color1: string; color2: string; color3: string }
+interface Rgb {
+    r: number
+    g: number
+    b: number
+}
+interface ThemePalette {
+    color1: string
+    color2: string
+    color3: string
+}
 
 interface Ball {
     x: number
@@ -29,14 +37,14 @@ interface GridPoint {
 const THEMES = ['Aurora', 'Bubblegum', 'Citrus', 'Custom', 'Lagoon', 'Molten', 'Synthwave', 'Toxic']
 
 const THEME_PALETTES: Record<string, ThemePalette> = {
-    Aurora:    { color1: '#33f587', color2: '#3fdcff', color3: '#8c4bff' },
+    Aurora: { color1: '#33f587', color2: '#3fdcff', color3: '#8c4bff' },
     Bubblegum: { color1: '#ff4f9a', color2: '#ff74c5', color3: '#8a5cff' },
-    Citrus:    { color1: '#ffb347', color2: '#ff7a2f', color3: '#ff5778' },
-    Custom:    { color1: '#16d1d9', color2: '#ff4fb4', color3: '#7d49ff' },
-    Lagoon:    { color1: '#3cf2df', color2: '#4a96ff', color3: '#163dff' },
-    Molten:    { color1: '#ff6329', color2: '#ff8d1f', color3: '#ff4b5c' },
+    Citrus: { color1: '#ffb347', color2: '#ff7a2f', color3: '#ff5778' },
+    Custom: { color1: '#16d1d9', color2: '#ff4fb4', color3: '#7d49ff' },
+    Lagoon: { color1: '#3cf2df', color2: '#4a96ff', color3: '#163dff' },
+    Molten: { color1: '#ff6329', color2: '#ff8d1f', color3: '#ff4b5c' },
     Synthwave: { color1: '#ff4ed6', color2: '#8f48ff', color3: '#42d9ff' },
-    Toxic:     { color1: '#36ff9a', color2: '#0ae0cb', color3: '#6c2bff' },
+    Toxic: { color1: '#36ff9a', color2: '#0ae0cb', color3: '#6c2bff' },
 }
 
 const STEP = 5
@@ -45,7 +53,7 @@ const STEP = 5
 const MSCASES = [0, 3, 0, 3, 1, 3, 0, 3, 2, 2, 0, 2, 1, 1, 0]
 const PLX = [0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0]
 const PLY = [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1]
-const IX  = [1, 0, -1, 0, 0, 1, 0, -1, -1, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1]
+const IX = [1, 0, -1, 0, 0, 1, 0, -1, -1, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1]
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -53,11 +61,9 @@ const IX  = [1, 0, -1, 0, 0, 1, 0, -1, -1, 0, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1]
 
 function hexToRgb(hex: string): Rgb {
     const h = hex.replace('#', '')
-    const f = h.length === 3
-        ? `${h[0]}${h[0]}${h[1]}${h[1]}${h[2]}${h[2]}`
-        : h
+    const f = h.length === 3 ? `${h[0]}${h[0]}${h[1]}${h[1]}${h[2]}${h[2]}` : h
     const v = Number.parseInt(f, 16)
-    return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 }
+    return { b: v & 255, g: (v >> 8) & 255, r: (v >> 16) & 255 }
 }
 
 function rgbToHsl(c: Rgb): [number, number, number] {
@@ -95,11 +101,11 @@ function createBalls(count: number, w: number, h: number): Ball[] {
     const balls: Ball[] = []
     for (let i = 0; i < count; i++) {
         balls.push({
-            x: w * 0.2 + Math.random() * w * 0.6,
-            y: h * 0.2 + Math.random() * h * 0.6,
+            size: wh / 15 + (Math.random() * 1.4 + 0.1) * (wh / 15),
             vx: (Math.random() > 0.5 ? 1 : -1) * (0.2 + Math.random() * 0.25),
             vy: (Math.random() > 0.5 ? 1 : -1) * (0.2 + Math.random()),
-            size: wh / 15 + (Math.random() * 1.4 + 0.1) * (wh / 15),
+            x: w * 0.2 + Math.random() * w * 0.6,
+            y: h * 0.2 + Math.random() * h * 0.6,
         })
     }
     return balls
@@ -108,10 +114,20 @@ function createBalls(count: number, w: number, h: number): Ball[] {
 function moveBalls(balls: Ball[], speed: number, w: number, h: number): void {
     const spd = speed / 25
     for (const b of balls) {
-        if (b.x >= w - b.size) { if (b.vx > 0) b.vx = -b.vx; b.x = w - b.size }
-        else if (b.x <= b.size) { if (b.vx < 0) b.vx = -b.vx; b.x = b.size }
-        if (b.y >= h - b.size) { if (b.vy > 0) b.vy = -b.vy; b.y = h - b.size }
-        else if (b.y <= b.size) { if (b.vy < 0) b.vy = -b.vy; b.y = b.size }
+        if (b.x >= w - b.size) {
+            if (b.vx > 0) b.vx = -b.vx
+            b.x = w - b.size
+        } else if (b.x <= b.size) {
+            if (b.vx < 0) b.vx = -b.vx
+            b.x = b.size
+        }
+        if (b.y >= h - b.size) {
+            if (b.vy > 0) b.vy = -b.vy
+            b.y = h - b.size
+        } else if (b.y <= b.size) {
+            if (b.vy < 0) b.vy = -b.vy
+            b.y = b.size
+        }
         b.x += b.vx * spd
         b.y += b.vy * spd
     }
@@ -127,10 +143,10 @@ function createGrid(sx: number, sy: number): GridPoint[] {
     const grid: GridPoint[] = new Array(total)
     for (let i = 0; i < total; i++) {
         grid[i] = {
+            computed: 0,
+            force: 0,
             x: (i % cols) * STEP,
             y: Math.floor(i / cols) * STEP,
-            force: 0,
-            computed: 0,
         }
     }
     return grid
@@ -198,7 +214,7 @@ function renderMetaballs(
                 const ny = y + IX[i + 16]
                 const nid = nx + ny * cols
                 if (nid >= 0 && nid < grid.length && Math.abs(ensureForce(nx, ny, nid)) > 1) {
-                    mscase += (1 << i)
+                    mscase += 1 << i
                 }
             }
 
@@ -250,16 +266,16 @@ function renderMetaballs(
 export default canvas.stateful(
     'Lava Lamp',
     {
-        bCount:     num('Blob Count', [1, 18], 7, { group: 'Scene' }),
-        bgColor:    color('Background', '#0b0312', { group: 'Scene' }),
-        bgCycle:    toggle('BG Cycle', false, { group: 'Scene' }),
-        color1:     color('Color 1', '#16d1d9', { group: 'Color' }),
-        color2:     color('Color 2', '#ff4fb4', { group: 'Color' }),
-        color3:     color('Color 3', '#7d49ff', { group: 'Color' }),
+        bCount: num('Blob Count', [1, 18], 7, { group: 'Scene' }),
+        bgColor: color('Background', '#0b0312', { group: 'Scene' }),
+        bgCycle: toggle('BG Cycle', false, { group: 'Scene' }),
+        color1: color('Color 1', '#16d1d9', { group: 'Color' }),
+        color2: color('Color 2', '#ff4fb4', { group: 'Color' }),
+        color3: color('Color 3', '#7d49ff', { group: 'Color' }),
         cycleSpeed: num('Cycle Speed', [1, 100], 22, { group: 'Motion' }),
-        rainbow:    toggle('Rainbow', false, { group: 'Color' }),
-        speed:      num('Speed', [1, 100], 22, { group: 'Motion' }),
-        theme:      combo('Theme', THEMES, { group: 'Color' }),
+        rainbow: toggle('Rainbow', false, { group: 'Color' }),
+        speed: num('Speed', [1, 100], 22, { group: 'Motion' }),
+        theme: combo('Theme', THEMES, { group: 'Color' }),
     },
     () => {
         let balls: Ball[] = []
@@ -347,29 +363,89 @@ export default canvas.stateful(
         description: 'Classic metaball blobs with smooth marching-squares contours and radial gradient fills',
         presets: [
             {
+                controls: {
+                    bCount: 5,
+                    bgColor: '#1a0800',
+                    bgCycle: false,
+                    color1: '#ff4400',
+                    color2: '#ff8c00',
+                    color3: '#cc2200',
+                    cycleSpeed: 15,
+                    rainbow: false,
+                    speed: 18,
+                    theme: 'Molten',
+                },
+                description:
+                    "Molten silicate blobs churn in primordial magma — the young Earth's crust fractures and remelts in slow geological fury",
                 name: 'Hadean Mantle Convection',
-                description: 'Molten silicate blobs churn in primordial magma — the young Earth\'s crust fractures and remelts in slow geological fury',
-                controls: { bCount: 5, bgColor: '#1a0800', bgCycle: false, color1: '#ff4400', color2: '#ff8c00', color3: '#cc2200', cycleSpeed: 15, rainbow: false, speed: 18, theme: 'Molten' },
             },
             {
+                controls: {
+                    bCount: 12,
+                    bgColor: '#020818',
+                    bgCycle: false,
+                    color1: '#00ffd5',
+                    color2: '#4488ff',
+                    color3: '#0022aa',
+                    cycleSpeed: 30,
+                    rainbow: false,
+                    speed: 12,
+                    theme: 'Lagoon',
+                },
+                description:
+                    'Translucent medusae drift upward through midnight water — their bells pulse with stolen bioluminescence',
                 name: 'Abyssal Jellyfish Bloom',
-                description: 'Translucent medusae drift upward through midnight water — their bells pulse with stolen bioluminescence',
-                controls: { bCount: 12, bgColor: '#020818', bgCycle: false, color1: '#00ffd5', color2: '#4488ff', color3: '#0022aa', cycleSpeed: 30, rainbow: false, speed: 12, theme: 'Lagoon' },
             },
             {
+                controls: {
+                    bCount: 8,
+                    bgColor: '#050a02',
+                    bgCycle: false,
+                    color1: '#36ff9a',
+                    color2: '#0ae0cb',
+                    color3: '#6c2bff',
+                    cycleSpeed: 40,
+                    rainbow: false,
+                    speed: 28,
+                    theme: 'Toxic',
+                },
+                description:
+                    'Alien cytoplasm divides in toxic green mitosis — each blob a living organelle in some vast extraterrestrial cell',
                 name: 'Xenobiological Specimen',
-                description: 'Alien cytoplasm divides in toxic green mitosis — each blob a living organelle in some vast extraterrestrial cell',
-                controls: { bCount: 8, bgColor: '#050a02', bgCycle: false, color1: '#36ff9a', color2: '#0ae0cb', color3: '#6c2bff', cycleSpeed: 40, rainbow: false, speed: 28, theme: 'Toxic' },
             },
             {
+                controls: {
+                    bCount: 6,
+                    bgColor: '#0a0a12',
+                    bgCycle: true,
+                    color1: '#ff4ed6',
+                    color2: '#8f48ff',
+                    color3: '#42d9ff',
+                    cycleSpeed: 65,
+                    rainbow: true,
+                    speed: 35,
+                    theme: 'Synthwave',
+                },
+                description:
+                    'Liquid metal spheres collide and merge in freefall — rainbow-sheened quicksilver dances in the vacuum',
                 name: 'Mercury in Zero Gravity',
-                description: 'Liquid metal spheres collide and merge in freefall — rainbow-sheened quicksilver dances in the vacuum',
-                controls: { bCount: 6, bgColor: '#0a0a12', bgCycle: true, color1: '#ff4ed6', color2: '#8f48ff', color3: '#42d9ff', cycleSpeed: 65, rainbow: true, speed: 35, theme: 'Synthwave' },
             },
             {
+                controls: {
+                    bCount: 18,
+                    bgColor: '#12041a',
+                    bgCycle: false,
+                    color1: '#ff4f9a',
+                    color2: '#ff74c5',
+                    color3: '#8a5cff',
+                    cycleSpeed: 20,
+                    rainbow: false,
+                    speed: 8,
+                    theme: 'Bubblegum',
+                },
+                description:
+                    'Warm bubblegum globules rise through a candy-colored incubator — gentle, hypnotic, impossibly soft',
                 name: 'Thermal Nursery',
-                description: 'Warm bubblegum globules rise through a candy-colored incubator — gentle, hypnotic, impossibly soft',
-                controls: { bCount: 18, bgColor: '#12041a', bgCycle: false, color1: '#ff4f9a', color2: '#ff74c5', color3: '#8a5cff', cycleSpeed: 20, rainbow: false, speed: 8, theme: 'Bubblegum' },
             },
         ],
     },
