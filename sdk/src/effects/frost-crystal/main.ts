@@ -419,7 +419,8 @@ export default canvas.stateful(
         }
     },
     {
-        description: 'Bold crystalline hex lattice with frost-growth waves, breathing nodes, and field rotation',
+        description:
+            'Crystalline hex lattice propagates in frost-growth waves — nodes breathe with cold light as the frozen field slowly rotates',
         presets: [
             {
                 controls: {
@@ -490,6 +491,48 @@ export default canvas.stateful(
                 description:
                     'A motherboard dreaming in crystalline geometry — electric purple hex cells breathing with neon nodes, the entire field rotating like a silicon prayer wheel',
                 name: 'SilkCircuit Lattice',
+            },
+            {
+                controls: {
+                    edgeGlow: 40,
+                    growth: 100,
+                    palette: 'Aurora',
+                    rotation: 0,
+                    scale: 10,
+                    scene: 'Lattice',
+                    speed: 1,
+                },
+                description:
+                    'A continent of microscopic ice crystals forms on a telescope lens aimed at the aurora — infinite tiny hexagons pulse with captured starlight',
+                name: 'Polar Microscope',
+            },
+            {
+                controls: {
+                    edgeGlow: 100,
+                    growth: 30,
+                    palette: 'Cyberpunk',
+                    rotation: -100,
+                    scale: 90,
+                    scene: 'Signal',
+                    speed: 10,
+                },
+                description:
+                    'A rogue satellite broadcasts distress rings in hot magenta while spinning out of control — signal pulses scream into the void',
+                name: 'Rogue Satellite',
+            },
+            {
+                controls: {
+                    edgeGlow: 55,
+                    growth: 80,
+                    palette: 'Frost',
+                    rotation: 18,
+                    scale: 62,
+                    scene: 'Shardfield',
+                    speed: 4,
+                },
+                description:
+                    'Stained glass shatters in slow motion inside a collapsing ice cathedral — azure diamond shards tumble through pale blue fog',
+                name: 'Ice Cathedral Collapse',
             },
         ],
     },

@@ -17,7 +17,8 @@ export default effect(
         speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
     },
     {
-        description: 'Crisp retro roller-rink geometry with arcade carpet motifs and neon horizon scenes',
+        description:
+            'Drive toward a neon horizon — wireframe grid geometry and arcade carpet motifs pulse beneath synthetic retrowave skies',
         presets: [
             {
                 controls: {
@@ -88,6 +89,34 @@ export default effect(
                 description:
                     'Deep space navigation grid — minimal geometry pulsing in the dark, a single neon frequency marking the path forward',
                 name: 'Void Protocol',
+            },
+            {
+                controls: {
+                    colorMode: 'Color Cycle',
+                    cycleSpeed: 100,
+                    glow: 100,
+                    gridDensity: 90,
+                    palette: 'SilkCircuit',
+                    scene: 'Arcade Carpet',
+                    speed: 10,
+                },
+                description:
+                    'Every cabinet lit at once, every quarter burning — the carpet is alive and the whole floor throbs with electric geometry',
+                name: 'Dopamine Rush',
+            },
+            {
+                controls: {
+                    colorMode: 'Static',
+                    cycleSpeed: 0,
+                    glow: 18,
+                    gridDensity: 18,
+                    palette: 'Ice Neon',
+                    scene: 'Laser Lanes',
+                    speed: 1,
+                },
+                description:
+                    'Frozen highway stretching to a dead star — sparse cyan lines crawl through absolute silence toward a horizon that will never arrive',
+                name: 'Permafrost Causeway',
             },
         ],
     },

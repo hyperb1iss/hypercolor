@@ -126,7 +126,7 @@ export default effect(
     {
         audio: true,
         description:
-            'Sound made visible — cinematic audio visualizer with spring-physics camera, frequency-reactive geometry, and motion-led response',
+            'Sound made visible — frequency-reactive geometry pulses and shatters as a spring-physics camera tracks the sonic field',
 
         frame: (ctx, time) => {
             const dt = Math.min(lastTime > 0 ? time - lastTime : 0.016, 0.05)
@@ -384,6 +384,45 @@ export default effect(
                 description:
                     'Frequency ribbons unfurl like magnetic tape in zero gravity — each band a living seismograph of its octave, bass ripples propagating through pastel shimmer',
                 name: 'Chladni Plate',
+            },
+            {
+                controls: {
+                    colorScheme: 'Lava',
+                    colorSpeed: 8,
+                    flow: -5,
+                    glowIntensity: 60,
+                    sensitivity: 25,
+                    visualStyle: 'Lattice',
+                },
+                description:
+                    'Cooling magma crystallizes into obsidian geometry — each low rumble redraws the lattice lines in dim volcanic amber',
+                name: 'Tectonic Meditation',
+            },
+            {
+                controls: {
+                    colorScheme: 'Cyberpunk',
+                    colorSpeed: 185,
+                    flow: 95,
+                    glowIntensity: 195,
+                    sensitivity: 195,
+                    visualStyle: 'Vortex',
+                },
+                description:
+                    'A particle accelerator at full bore — colliding beams of magenta and cyan spiral into the event horizon as the bass line breaks physics',
+                name: 'Dopamine Collider',
+            },
+            {
+                controls: {
+                    colorScheme: 'Aurora',
+                    colorSpeed: 30,
+                    flow: -30,
+                    glowIntensity: 90,
+                    sensitivity: 80,
+                    visualStyle: 'Resonance',
+                },
+                description:
+                    'Northern lights draped across a frozen lake — emerald and violet frequency bands ripple like curtains pulled by the solar wind',
+                name: 'Magnetosphere',
             },
         ],
 

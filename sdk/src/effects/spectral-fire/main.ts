@@ -15,7 +15,8 @@ export default effect(
     },
     {
         audio: true,
-        description: 'Layered fire tongues with embers and optional audio lift',
+        description:
+            'Spectral flames lick upward in layered tongues — embers scatter as audio energy lifts the fire into frenzy',
         presets: [
             {
                 controls: {
@@ -28,7 +29,7 @@ export default effect(
                     turbulence: 40,
                 },
                 description:
-                    'Magma churning in the throat of an active volcano — dense, slow, suffocating heat with drifting ash',
+                    'Magma churns in the throat of an active volcano — dense, slow, suffocating heat with drifting ash',
                 name: 'Volcanic Caldera',
             },
             {
@@ -42,7 +43,7 @@ export default effect(
                     turbulence: 75,
                 },
                 description:
-                    'Spectral green flames licking through the bones of a cursed forest — cold fire that consumes nothing',
+                    'Spectral green flames lick through the bones of a cursed forest — cold fire that consumes nothing',
                 name: 'Witch Light',
             },
             {
@@ -69,8 +70,7 @@ export default effect(
                     speed: 7,
                     turbulence: 90,
                 },
-                description:
-                    'Toxic vents splitting the earth open — acid-yellow flames dancing over a field of black glass',
+                description: 'Toxic vents split the earth open — acid-yellow flames dance over a field of black glass',
                 name: 'Sulfur Rift',
             },
             {
@@ -84,8 +84,36 @@ export default effect(
                     turbulence: 15,
                 },
                 description:
-                    'The dying breath of a great fire — low smoldering ash with faint orange pulses barely clinging to life',
+                    'The dying breath of a great fire — low smoldering ash with faint orange pulses cling to life in the dark',
                 name: 'Last Ember',
+            },
+            {
+                controls: {
+                    emberAmount: 0,
+                    flameHeight: 100,
+                    intensity: 100,
+                    palette: 'Spellfire',
+                    scene: 'Inferno',
+                    speed: 10,
+                    turbulence: 100,
+                },
+                description:
+                    'A dimensional rift tears open and vomits pure spectral plasma — towering green pillars of chaos with no ash, no mercy',
+                name: 'Eldritch Gate',
+            },
+            {
+                controls: {
+                    emberAmount: 60,
+                    flameHeight: 40,
+                    intensity: 50,
+                    palette: 'Bonfire',
+                    scene: 'Wildfire',
+                    speed: 8,
+                    turbulence: 65,
+                },
+                description:
+                    'Wildfire races across dry prairie at dusk — low frantic flames and kicked-up embers devour the horizon',
+                name: 'Prairie Burn',
             },
         ],
     },

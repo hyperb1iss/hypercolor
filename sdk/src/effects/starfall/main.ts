@@ -14,7 +14,8 @@ export default effect(
         trails: num('Trails', [0, 100], 60, { group: 'Atmosphere' }),
     },
     {
-        description: 'Luminous particles cascading through darkness with glowing comet trails',
+        description:
+            'Luminous particles cascade through infinite black — each one trailing a comet glow as it falls through the dark',
         presets: [
             {
                 controls: {
@@ -24,7 +25,7 @@ export default effect(
                     speed: 8,
                     trails: 90,
                 },
-                description: 'Peak Perseid night in the high desert — blazing streaks tearing across a moonless sky',
+                description: 'Peak Perseid night in the high desert — blazing streaks tear across a moonless sky',
                 name: 'Meteor Shower',
             },
             {
@@ -36,7 +37,7 @@ export default effect(
                     trails: 75,
                 },
                 description:
-                    'Ice crystals falling through the stratosphere — impossibly slow, catching starlight as they descend',
+                    'Ice crystals fall through the stratosphere — impossibly slow, catching starlight as they descend',
                 name: 'Frozen Requiem',
             },
             {
@@ -47,7 +48,7 @@ export default effect(
                     speed: 9,
                     trails: 45,
                 },
-                description: 'Rain on a Tokyo alley at 3AM — every droplet carrying the glow of a thousand signs',
+                description: 'Rain hammers a Tokyo alley at 3AM — every droplet carries the glow of a thousand signs',
                 name: 'Neon Monsoon',
             },
             {
@@ -58,7 +59,7 @@ export default effect(
                     speed: 3,
                     trails: 95,
                 },
-                description: 'Slow-moving constellation fragments crossing the meridian — stately, ancient, unhurried',
+                description: 'Constellation fragments cross the meridian in silence — stately, ancient, unhurried',
                 name: 'Celestial Procession',
             },
             {
@@ -69,9 +70,32 @@ export default effect(
                     speed: 5,
                     trails: 55,
                 },
-                description:
-                    'Campfire sparks lifting into a cold mountain night, then falling back to earth as dying light',
+                description: 'Campfire sparks lift into a cold mountain night, then fall back to earth as dying light',
                 name: 'Ember Descent',
+            },
+            {
+                controls: {
+                    density: 10,
+                    palette: 'Aurora Rain',
+                    sparkle: 100,
+                    speed: 1,
+                    trails: 100,
+                },
+                description:
+                    'A single luminous thread unspools from the aurora — one solitary particle descends forever, dragging the entire sky behind it',
+                name: 'Last Light of Thule',
+            },
+            {
+                controls: {
+                    density: 100,
+                    palette: 'Cosmic',
+                    sparkle: 0,
+                    speed: 10,
+                    trails: 0,
+                },
+                description:
+                    'The sky collapses — a hundred thousand particles plummet without trails, pure velocity, a white-noise waterfall of falling stars',
+                name: 'Extinction Event',
             },
         ],
     },

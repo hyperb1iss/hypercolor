@@ -14,7 +14,8 @@ export default effect(
         speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
     },
     {
-        description: 'Crisp ember flecks in directional poison-forge flow with selectable scene behavior',
+        description:
+            'Molten ember flecks spiral through a directional forge — glowing particles caught in toxic thermals, trailing heat into shadow',
         presets: [
             {
                 controls: {
@@ -84,6 +85,48 @@ export default effect(
                 description:
                     'A dying star venting rust-colored plasma through cracks in its own surface — apocalyptic and beautiful',
                 name: 'Corroded Sun',
+            },
+            {
+                controls: {
+                    emberDensity: 45,
+                    flowSpread: 85,
+                    glow: 35,
+                    intensity: 50,
+                    palette: 'Ash Bloom',
+                    scene: 'Crosswind',
+                    speed: 2,
+                },
+                description:
+                    'Paper lanterns dissolve into ash over a night river — scattered flecks coast sideways on a warm autumn draft',
+                name: 'Lantern Festival',
+            },
+            {
+                controls: {
+                    emberDensity: 100,
+                    flowSpread: 10,
+                    glow: 92,
+                    intensity: 95,
+                    palette: 'Forge',
+                    scene: 'Vortex',
+                    speed: 10,
+                },
+                description:
+                    'Thermite ignites inside a centrifuge — white-hot sparks compress into a roaring column of molten fury',
+                name: 'Thermite Cyclone',
+            },
+            {
+                controls: {
+                    emberDensity: 30,
+                    flowSpread: 70,
+                    glow: 60,
+                    intensity: 45,
+                    palette: 'Poison',
+                    scene: 'Updraft',
+                    speed: 4,
+                },
+                description:
+                    'Bioluminescent pollen rises from a swamp orchid at midnight — toxic green motes float upward into black canopy',
+                name: 'Swamp Orchid',
             },
         ],
     },

@@ -176,7 +176,7 @@ const controls = {
 export default effect('Iris', shader, controls, {
     audio: true,
     description:
-        'Geometric audio visualizer with Mobius inversions, harmonic color mapping, and spectral flux beat detection',
+        'Sacred geometry dances to the beat — Mobius inversions warp harmonic shapes as spectral flux drives color, form, and motion',
 
     frame: (ctx, time) => {
         const dt = Math.min(lastTime > 0 ? time - lastTime : 0.016, 0.05)
@@ -476,6 +476,48 @@ export default effect('Iris', shader, controls, {
             description:
                 'Stadium EDM climax — iris geometry detonates on every drop, golden plasma jets compete with ice-blue shockwaves at maximum warp',
             name: 'Solar Storm Apex',
+        },
+        {
+            controls: {
+                bandSharpness: 15,
+                beatFlash: 0,
+                colorAccent: 40,
+                colorScheme: 'Ice',
+                corePulse: 20,
+                flowDrive: 15,
+                glowIntensity: 100,
+                irisStrength: 30,
+                particleDensity: 10,
+                rotationSpeed: 0,
+
+                scale: 200,
+                timeSpeed: 10,
+                wanderSpeed: 8,
+            },
+            description:
+                'Frozen cathedral at the edge of the world — a single ice mandala breathes in glacial silence, all glow, no violence',
+            name: 'Permafrost Halo',
+        },
+        {
+            controls: {
+                bandSharpness: 100,
+                beatFlash: 60,
+                colorAccent: 70,
+                colorScheme: 'Neon Flux',
+                corePulse: 45,
+                flowDrive: 55,
+                glowIntensity: 40,
+                irisStrength: 100,
+                particleDensity: 100,
+                rotationSpeed: 100,
+
+                scale: 20,
+                timeSpeed: 100,
+                wanderSpeed: 100,
+            },
+            description:
+                'Feed a drum machine into a particle accelerator — neon iris blades spin at impossible speed while glitch fabric tears reality apart',
+            name: 'Centrifuge Protocol',
         },
     ],
 

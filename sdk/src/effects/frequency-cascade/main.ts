@@ -21,7 +21,8 @@ export default effect(
     },
     {
         audio: true,
-        description: 'Spectrum cascade with scene modes and no-audio fallback motion',
+        description:
+            'Feed it sound and watch the spectrum erupt — frequency bands cascade in surging peaks of light across a pulsing audio field',
         presets: [
             {
                 controls: {
@@ -92,6 +93,48 @@ export default effect(
                 description:
                     'The machine is dreaming — cascading frequency analysis rendered in electric purple and neon cyan, smooth and sentient',
                 name: 'SilkCircuit Flux',
+            },
+            {
+                controls: {
+                    barWidth: 15,
+                    glow: 90,
+                    intensity: 70,
+                    palette: 'Aurora',
+                    scene: 'Spectrum Tunnel',
+                    smoothing: 95,
+                    speed: 2,
+                },
+                description:
+                    'Whale song reverberates through a borealis-lit ice cave — thin spectral lines shimmer inside a tunnel of frozen green',
+                name: 'Whale Song Cavern',
+            },
+            {
+                controls: {
+                    barWidth: 100,
+                    glow: 20,
+                    intensity: 100,
+                    palette: 'Cyberpunk',
+                    scene: 'Pulse Grid',
+                    smoothing: 5,
+                    speed: 10,
+                },
+                description:
+                    'A Tokyo arcade cabinet overloads on drum-and-bass — razor-wide columns slam the grid in magenta and cyan at 174 BPM',
+                name: 'Akihabara Overload',
+            },
+            {
+                controls: {
+                    barWidth: 42,
+                    glow: 72,
+                    intensity: 55,
+                    palette: 'Ice',
+                    scene: 'Prism Skyline',
+                    smoothing: 75,
+                    speed: 3,
+                },
+                description:
+                    'A glass city skyline refracts ambient piano into pale blue towers — each note lifts a column of cold crystal light',
+                name: 'Glass City Lullaby',
             },
         ],
     },

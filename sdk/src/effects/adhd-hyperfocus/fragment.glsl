@@ -1,5 +1,5 @@
 #version 300 es
-// ADHD Hyperfocus — tunnel vision, dopamine sparks, peripheral fade
+// Hyperfocus — tunnel vision, dopamine sparks, peripheral fade
 precision highp float;
 
 out vec4 fragColor;

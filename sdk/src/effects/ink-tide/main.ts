@@ -32,7 +32,8 @@ export default effect(
         }),
     },
     {
-        description: 'Liquid neon ink blooms with deeper folds, brighter defaults, and a richer color lift',
+        description:
+            'Liquid neon ink unfurls in luminous blooms — turbulent folds swirl and merge, saturated color bleeding through dark water',
         presets: [
             {
                 controls: { flow: 42, palette: 'Abyss', saturation: 68, speed: 2.5, turbulence: 88 },
@@ -63,6 +64,18 @@ export default effect(
                 description:
                     'Industrial runoff meets brackish tide — phosphorescent poison seeps through stagnant folds of dead water',
                 name: 'Toxic Estuary',
+            },
+            {
+                controls: { flow: 100, palette: 'Phantom', saturation: 35, speed: 1, turbulence: 15 },
+                description:
+                    'Smoke trapped under black ice — phantom silver exhales in slow motion, barely disturbing the frozen surface',
+                name: 'Séance Smoke',
+            },
+            {
+                controls: { flow: 70, palette: 'Sakura', saturation: 100, speed: 9.5, turbulence: 95 },
+                description:
+                    'A paint factory detonates in a monsoon — every pigment collides at terminal velocity in a riot of saturated chaos',
+                name: 'Dopamine Rush',
             },
         ],
     },

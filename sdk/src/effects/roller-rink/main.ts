@@ -879,7 +879,8 @@ export default canvas.stateful(
     },
     {
         author: 'Hypercolor',
-        description: 'Smooth blacklight carpet patterns with softer motion, calmer decor, and richer palette controls',
+        description:
+            'Step onto blacklight carpet geometry — retro arcade patterns glow under ultraviolet, pulsing and shifting in warm nostalgic haze',
         presets: [
             {
                 controls: {
@@ -914,7 +915,7 @@ export default canvas.stateful(
                     theme: 'Cotton Candy',
                 },
                 description:
-                    'Maximum saturation color cycling over dense geometric confetti — the visual equivalent of a dolphin sticker sheet',
+                    'Saturated color cycling floods dense geometric confetti — the visual equivalent of a dolphin sticker sheet',
                 name: 'Lisa Frank Trapper Keeper',
             },
             {
@@ -932,7 +933,7 @@ export default canvas.stateful(
                     theme: 'Bus Seat',
                 },
                 description:
-                    'Precisely placed pastels drifting with deliberate symmetry — every shape knows exactly where it belongs',
+                    'Precisely placed pastels drift with deliberate symmetry — every shape knows exactly where it belongs',
                 name: 'Wes Anderson Lobby',
             },
             {
@@ -950,7 +951,7 @@ export default canvas.stateful(
                     theme: 'Laser Lime',
                 },
                 description:
-                    'Acid green squiggles and hot pink geometry vibrating in the dark — smells like fog machine and victory',
+                    'Acid green squiggles and hot pink geometry vibrate in the dark — smells like fog machine and victory',
                 name: 'Laser Tag Aftermath',
             },
             {
@@ -968,8 +969,44 @@ export default canvas.stateful(
                     theme: 'Arcade Heat',
                 },
                 description:
-                    'Warm arcade heat patterns barely moving — the exhausted glow of fast food neon through rain-streaked glass',
+                    'Warm arcade heat patterns hover in place — the exhausted glow of fast food neon through rain-streaked glass',
                 name: 'Taco Bell 2am',
+            },
+            {
+                controls: {
+                    accentColor: '#ffb347',
+                    backgroundColor: '#0b0811',
+                    colorMode: 'Color Cycle',
+                    cycleSpeed: 100,
+                    density: 100,
+                    frontColor: '#ff61bf',
+                    glow: 100,
+                    moveSpeed: 88,
+                    scene: 'Pattern 3',
+                    squiggleColor: '#6af2ff',
+                    theme: 'Cotton Candy',
+                },
+                description:
+                    'Every surface screams with color-shifting ribbons and maximum confetti — a birthday party inside a kaleidoscope',
+                name: 'Dopamine Rush',
+            },
+            {
+                controls: {
+                    accentColor: '#ff8c24',
+                    backgroundColor: '#11140a',
+                    colorMode: 'Static',
+                    cycleSpeed: 0,
+                    density: 0,
+                    frontColor: '#00d3a8',
+                    glow: 12,
+                    moveSpeed: 2,
+                    scene: 'Pattern 1',
+                    squiggleColor: '#00b8ff',
+                    theme: 'Bus Seat',
+                },
+                description:
+                    'Bare geometric bones float on a near-black canvas — the rink after closing, lights dimmed, last song echoing',
+                name: 'Closing Time',
             },
         ],
     },

@@ -423,7 +423,7 @@ export default canvas.stateful(
     },
     {
         description:
-            'LED-friendly stained glass cells with deeper controls, lower white skew, and restrained glaze overlays',
+            'Peer through luminous stained glass — Voronoi cells shift and reform, each facet glowing with cathedral light',
         presets: [
             {
                 controls: {
@@ -517,8 +517,46 @@ export default canvas.stateful(
                     speed: 8,
                 },
                 description:
-                    'White light shattering through a room of cut diamonds — maximum density, maximum refraction, prismatic edges firing in every direction',
+                    'White light shatters through a room of cut diamonds — prismatic edges fire in every direction at once',
                 name: 'Diamond Refraction Chamber',
+            },
+            {
+                controls: {
+                    background: '#0c0808',
+                    color1: '#ff6600',
+                    color2: '#ffcc00',
+                    color3: '#ff0044',
+                    contrast: 62,
+                    density: 28,
+                    drift: 95,
+                    edgeGlow: 80,
+                    glaze: 45,
+                    palette: 'Solar',
+                    refraction: 30,
+                    speed: 5,
+                },
+                description:
+                    'Stare into the corona during totality — vast amber cells drift and collide, each seam blazing with trapped solar wind',
+                name: 'Eclipse Corona',
+            },
+            {
+                controls: {
+                    background: '#020204',
+                    color1: '#22f0ff',
+                    color2: '#ff46c8',
+                    color3: '#3659ff',
+                    contrast: 18,
+                    density: 15,
+                    drift: 10,
+                    edgeGlow: 12,
+                    glaze: 90,
+                    palette: 'Glacier',
+                    refraction: 20,
+                    speed: 1,
+                },
+                description:
+                    'Sea glass worn smooth by a thousand tides — faint cells suspended in glacial stillness, light barely remembering where it entered',
+                name: 'Frozen Reliquary',
             },
         ],
     },

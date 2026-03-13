@@ -33,7 +33,7 @@ export default effect(
     },
     {
         description:
-            'Dense layered star lanes with longer trails and stronger tunnel twist for a bolder hyperspace jump',
+            'Punch through the light barrier — star lanes streak into infinite trails as the tunnel warps and twists around you',
         presets: [
             {
                 controls: {
@@ -94,6 +94,29 @@ export default effect(
                 description:
                     'Containment failure — the tunnel collapses into an overdrive vortex of classic blue-white streaks',
                 name: 'Warp Core Breach',
+            },
+            {
+                controls: {
+                    density: 85,
+                    palette: 'Classic',
+                    speed: 4,
+                    streak: 110,
+                    warp: 55,
+                },
+                description:
+                    "Lean back in the captain's chair and watch the milky way unspool — steady cruise through a blue-white star corridor",
+                name: 'Starliner Cruise',
+            },
+            {
+                controls: {
+                    density: 6,
+                    palette: 'Solar Wind',
+                    speed: 2,
+                    streak: 25,
+                    warp: 10,
+                },
+                description: 'A lone amber filament drifts across an empty sky — the last photon escaping a dying sun',
+                name: 'Last Light of Andromeda',
             },
         ],
     },

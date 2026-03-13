@@ -521,7 +521,8 @@ export default canvas.stateful(
     },
     {
         author: 'Hypercolor',
-        description: 'Neon skyline silhouettes with lit windows, transit trails, and rooftop beacons',
+        description:
+            'A neon skyline hums after dark — lit windows flicker behind silhouettes as transit trails and rooftop beacons cut the night',
         presets: [
             {
                 controls: {
@@ -597,6 +598,36 @@ export default canvas.stateful(
                 description:
                     'An alien city grown not built — organic towers pulse with aurora-green phosphorescence, transit filaments weaving through living architecture',
                 name: 'Bioluminescent Rain Grid',
+            },
+            {
+                controls: {
+                    beacons: false,
+                    colorMode: 'Dark Matter',
+                    glow: 100,
+                    haze: 100,
+                    scene: 'Rain Grid',
+                    speed: 8,
+                    trafficFlow: 100,
+                    windowDensity: 100,
+                },
+                description:
+                    'Every circuit lit, every lane screaming — the megacity grid maxed out and hallucinating in indigo overload',
+                name: 'Dopamine Rush',
+            },
+            {
+                controls: {
+                    beacons: true,
+                    colorMode: 'Ion Storm',
+                    glow: 5,
+                    haze: 3,
+                    scene: 'Skyline',
+                    speed: 1,
+                    trafficFlow: 0,
+                    windowDensity: 30,
+                },
+                description:
+                    'A frozen city under permafrost skies — scattered windows glow like embers in ice, beacons signaling to no one',
+                name: 'Abandoned Outpost',
             },
         ],
     },

@@ -2,7 +2,7 @@ import { combo, effect, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect(
-    'ADHD Hyperfocus',
+    'Hyperfocus',
     shader,
     {
         colorMode: combo(
@@ -63,7 +63,8 @@ export default effect(
         }),
     },
     {
-        description: 'Tunnel vision with hyperfocused center and dopamine sparks. Peripheral fade, paralysis control.',
+        description:
+            'Lock into the tunnel — dopamine sparks ignite through dissolving periphery as the world collapses to a single blazing point',
         presets: [
             {
                 controls: {
@@ -234,6 +235,40 @@ export default effect(
                 description:
                     'The dissociative pause — everything fades to near-nothing, subtle violet pulses are the only proof you still exist',
                 name: 'Into the Void',
+            },
+            {
+                controls: {
+                    colorMode: 'Bubblegum',
+                    energy: 145,
+                    focusRadius: 55,
+                    focusStrength: 100,
+                    noise: 10,
+                    paralysis: 5,
+                    peripheralBlur: 70,
+                    saturation: 190,
+                    sparkDensity: 130,
+                    tunnelSpeed: 110,
+                },
+                description:
+                    'Sugar-soaked hyperdrive through a candy-coated wormhole — pink sparks burst like pop rocks dissolving on your retinas',
+                name: 'Sugar Rush Protocol',
+            },
+            {
+                controls: {
+                    colorMode: 'Melatonin',
+                    energy: 80,
+                    focusRadius: 40,
+                    focusStrength: 110,
+                    noise: 90,
+                    paralysis: 50,
+                    peripheralBlur: 100,
+                    saturation: 100,
+                    sparkDensity: 55,
+                    tunnelSpeed: 45,
+                },
+                description:
+                    'Thoughts scatter like moths around a dying streetlamp — the tunnel drifts sideways, half-asleep, refusing to commit to any direction',
+                name: 'Task Paralysis Limbo',
             },
         ],
     },

@@ -14,7 +14,8 @@ export default effect(
         warpStrength: num('Warp Strength', [0, 100], 78, { group: 'Motion' }),
     },
     {
-        description: 'Layered nebula ribbons with richer palette grading, visible parallax drift, and twinkling stars',
+        description:
+            'Drift through layered nebula ribbons in slow parallax — twinkling stars pierce luminous veils of cosmic gas and dust',
         presets: [
             {
                 controls: {
@@ -85,6 +86,34 @@ export default effect(
                 description:
                     'The universe as seen through a CRT monitor in 2087 — saturated, scan-lined, impossibly vivid',
                 name: 'Synthwave Cosmos',
+            },
+            {
+                controls: {
+                    cloudDensity: 15,
+                    contrast: 150,
+                    palette: 'Cyberpunk',
+                    saturation: 60,
+                    speed: 1,
+                    starField: 100,
+                    warpStrength: 10,
+                },
+                description:
+                    'Ten thousand frozen stars suspended in crystal-clear vacuum — the void between galaxies, silent and absolute',
+                name: 'Intergalactic Corridor',
+            },
+            {
+                controls: {
+                    cloudDensity: 100,
+                    contrast: 70,
+                    palette: 'Aurora',
+                    saturation: 145,
+                    speed: 10,
+                    starField: 0,
+                    warpStrength: 100,
+                },
+                description:
+                    "Ionized plasma cascades through a gas giant's magnetosphere — emerald and violet storm bands tearing across a world with no surface",
+                name: 'Jovian Storm Dive',
             },
         ],
     },

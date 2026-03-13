@@ -156,7 +156,8 @@ export default canvas(
     },
     {
         author: 'Hypercolor',
-        description: 'So colorful you just want to eat it',
+        description:
+            'Spiral into a candy-colored vortex — particle trails wind tight as HSL cycling paints each revolution in electric hues',
         presets: [
             {
                 controls: {
@@ -257,6 +258,46 @@ export default canvas(
                 description:
                     'Poison green particles flung outward by violent spin — a lab experiment gone beautifully wrong',
                 name: 'Toxic Centrifuge',
+            },
+            {
+                controls: {
+                    backColor: '#000000',
+                    color1: '#ff00cc',
+                    color2: '#00ffff',
+                    color3: '#ff00cc',
+                    colorMode: 'Color Cycle',
+                    cycleSpeed: 100,
+                    effectRotate: 5,
+                    particleGrowth: -80,
+                    particleSize: 50,
+                    particleSpawn: 30,
+                    particleSpeed: 15,
+                    rotationMode: 'Reverse',
+                    spiralAmount: 1,
+                },
+                description:
+                    'One luminous arm spirals inward and dissolves — massive orbs shrink to pinpoints as the universe drains through a keyhole',
+                name: 'Singularity Drain',
+            },
+            {
+                controls: {
+                    backColor: '#0a0005',
+                    color1: '#ffd700',
+                    color2: '#ff4500',
+                    color3: '#ff0066',
+                    colorMode: 'Custom',
+                    cycleSpeed: 0,
+                    effectRotate: 60,
+                    particleGrowth: -20,
+                    particleSize: 35,
+                    particleSpawn: 70,
+                    particleSpeed: 60,
+                    rotationMode: 'Pulse',
+                    spiralAmount: 2,
+                },
+                description:
+                    'Twin serpents of molten gold and crimson coil around each other, breathing fire as they chase their own tails',
+                name: 'Phoenix Helix',
             },
         ],
     },

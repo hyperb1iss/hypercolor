@@ -32,7 +32,8 @@ export default effect(
         }),
     },
     {
-        description: 'Sharper kaleidoscopic refraction with explicit symmetry, detail, and scale control',
+        description:
+            'Light shatters through a prismatic lattice — kaleidoscopic refraction splits and recombines in crystalline symmetric patterns',
         presets: [
             {
                 controls: {
@@ -67,7 +68,7 @@ export default effect(
                     zoom: 72,
                 },
                 description:
-                    'Ice crystals under an electron microscope — minimal symmetry amplifies the alien geometry, frozen blue structures repeating into infinite depth',
+                    'Ice crystals magnified under an electron microscope — three-fold alien geometry locks frozen blue structures into infinite recursive depth',
                 name: 'Permafrost Fractal',
             },
             {
@@ -93,6 +94,30 @@ export default effect(
                 description:
                     'A cyberpunk cathedral rendered in pure light — fast-spinning 10-fold symmetry drenched in electric neon, maximum refraction shattering every surface',
                 name: 'Neon Sanctum',
+            },
+            {
+                controls: {
+                    complexity: 42,
+                    palette: 'SilkCircuit',
+                    segments: 4,
+                    speed: 1.5,
+                    zoom: 90,
+                },
+                description:
+                    'A stained glass window turns in a forgotten chapel — four-fold symmetry holds electric purple and cyan in slow, meditative orbit',
+                name: 'Cathedral of Circuits',
+            },
+            {
+                controls: {
+                    complexity: 88,
+                    palette: 'Ember',
+                    segments: 5,
+                    speed: 9.5,
+                    zoom: 5,
+                },
+                description:
+                    'Pentagonal fire collapses inward at terminal velocity — incandescent geometry folding and unfolding in a white-hot maelstrom',
+                name: 'Furnace Mandala',
             },
         ],
     },

@@ -547,7 +547,8 @@ export default canvas.stateful(
         }
     },
     {
-        description: 'Sharp bass-reactive shockwaves with segmented bursts, bridge sweeps, and cascade chevrons',
+        description:
+            'Bass drops detonate concentric shockwaves — segmented bursts and cascade chevrons ripple outward on every impact',
         presets: [
             {
                 controls: {
@@ -559,7 +560,7 @@ export default canvas.stateful(
                     speed: 7,
                 },
                 description:
-                    'Standing at ground zero of a tectonic rupture — massive concentric shockwaves tearing outward from a single point, fire-colored rings decaying into the abyss',
+                    'Stand at ground zero of a tectonic rupture — massive concentric shockwaves tear outward from a single point as fire-colored rings decay into the abyss',
                 name: 'Seismic Epicenter',
             },
             {
@@ -572,7 +573,7 @@ export default canvas.stateful(
                     speed: 3,
                 },
                 description:
-                    'An ice shelf fracturing in slow motion — wide, cold shockwaves cascading downward like frozen thunder, sparse rings holding their shape before dissolving',
+                    'An ice shelf fractures in slow motion — wide, cold shockwaves cascade downward like frozen thunder while sparse rings hold their shape before dissolving',
                 name: 'Glacier Calving',
             },
             {
@@ -585,7 +586,7 @@ export default canvas.stateful(
                     speed: 8,
                 },
                 description:
-                    'Two containment fields failing simultaneously — mirrored shockwaves colliding in a corridor of neon plasma, bridge bands sweeping between the rupture points',
+                    'Two containment fields fail simultaneously — mirrored shockwaves collide in a corridor of neon plasma as bridge bands sweep between the rupture points',
                 name: 'Twin Reactor Breach',
             },
             {
@@ -598,7 +599,7 @@ export default canvas.stateful(
                     speed: 4,
                 },
                 description:
-                    'The northern lights breaking apart like stained glass — gentle waves rippling through green and violet, rings fading slowly into the polar dark',
+                    'The northern lights break apart like stained glass — gentle waves ripple through green and violet as rings dissolve into the polar dark',
                 name: 'Aurora Shatter',
             },
             {
@@ -611,8 +612,34 @@ export default canvas.stateful(
                     speed: 10,
                 },
                 description:
-                    'A digital bomb exploding inside a circuit board — maximum ring density, rapid-fire bursts of electric purple and cyan, spoke patterns spinning through the debris',
+                    'A digital bomb detonates inside a circuit board — maximum ring density, rapid-fire bursts of electric purple and cyan, spoke patterns spinning through the debris',
                 name: 'SilkCircuit Detonation',
+            },
+            {
+                controls: {
+                    decay: 90,
+                    intensity: 30,
+                    palette: 'Ice',
+                    ringCount: 2,
+                    scene: 'Twin Burst',
+                    speed: 1,
+                },
+                description:
+                    'Two frozen sigils pulse once and hold — glacial rings linger in the void like the last heartbeat of a dying star',
+                name: 'Event Horizon',
+            },
+            {
+                controls: {
+                    decay: 15,
+                    intensity: 72,
+                    palette: 'Fire',
+                    ringCount: 12,
+                    scene: 'Cascade',
+                    speed: 9,
+                },
+                description:
+                    'Molten chevrons pour down the screen in relentless waves — every beat hammers another cascade of burning geometry into the dark',
+                name: 'Forge Hammer',
             },
         ],
     },

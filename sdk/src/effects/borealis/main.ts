@@ -20,7 +20,8 @@ export default effect(
         warpStrength: num('Warp Strength', [0, 100], 62, { group: 'Motion' }),
     },
     {
-        description: 'Aurora borealis — layered curtains of light with richer palette grading and tonal control',
+        description:
+            'Luminous aurora curtains ripple across a star-dusted polar sky — slow magnetic waves painting the dark in spectral color',
         presets: [
             {
                 controls: {
@@ -35,7 +36,7 @@ export default effect(
                     warpStrength: 45,
                 },
                 description:
-                    'Midnight sun refracting through polar ice — slow, towering curtains in crystalline blues and greens',
+                    'Stand beneath the midnight sun as towering ice curtains fracture the sky into crystalline blues and greens',
                 name: 'Arctic Solstice',
             },
             {
@@ -100,6 +101,54 @@ export default effect(
                 },
                 description: 'A retro-future skyline hums with neon — synthetic aurora over a digital ocean at dusk',
                 name: 'Silicon Vaporwave',
+            },
+            {
+                controls: {
+                    banding: 10,
+                    contrast: 78,
+                    curtainHeight: 88,
+                    intensity: 70,
+                    palette: 'Northern Lights',
+                    saturation: 95,
+                    speed: 1,
+                    starBrightness: 90,
+                    warpStrength: 20,
+                },
+                description:
+                    'Lay flat on frozen tundra and watch the entire sky exhale — vast emerald curtains unfurl between ten thousand stars',
+                name: 'Cathedral of Silence',
+            },
+            {
+                controls: {
+                    banding: 92,
+                    contrast: 135,
+                    curtainHeight: 35,
+                    intensity: 95,
+                    palette: 'Fire',
+                    saturation: 140,
+                    speed: 8,
+                    starBrightness: 5,
+                    warpStrength: 88,
+                },
+                description:
+                    'Magma bleeds through cracks in a volcanic sky — crimson and amber ribbons thrash like solar flares ripping across the stratosphere',
+                name: 'Volcanic Skybleed',
+            },
+            {
+                controls: {
+                    banding: 55,
+                    contrast: 100,
+                    curtainHeight: 65,
+                    intensity: 75,
+                    palette: 'SilkCircuit',
+                    saturation: 130,
+                    speed: 4,
+                    starBrightness: 50,
+                    warpStrength: 55,
+                },
+                description:
+                    'Electric silk unfurls across the ionosphere — neon violet and cyan threads weave through starlight like code made visible',
+                name: 'SilkCircuit Skyline',
             },
         ],
     },

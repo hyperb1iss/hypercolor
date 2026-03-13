@@ -469,7 +469,8 @@ export default canvas.stateful(
         }
     },
     {
-        description: 'Geometric tunnel with solid walls, drifting vanishing point, and LED-friendly depth control',
+        description:
+            'Hurtle through an infinite geometric tunnel — solid walls rush past as the vanishing point drifts, bending space around you',
         presets: [
             {
                 controls: {
@@ -570,6 +571,46 @@ export default canvas.stateful(
                 description:
                     'Hovering at the threshold of nothingness — slow violet geometry drifts through absolute stillness',
                 name: 'Void Gate Meditation',
+            },
+            {
+                controls: {
+                    background: '#140700',
+                    color1: '#ff8800',
+                    color2: '#ff2200',
+                    color3: '#ffd700',
+                    contrast: 80,
+                    depth: 90,
+                    drift: 15,
+                    geometry: 'Pulse Ring',
+                    pulse: 100,
+                    speed: 8,
+                    theme: 'Solar Flare',
+                    thickness: 90,
+                    twist: 50,
+                },
+                description:
+                    'Plunge into the sun — concentric rings of white-hot plasma contract and explode, each pulse a coronal mass ejection tearing through the corona',
+                name: 'Solar Bore',
+            },
+            {
+                controls: {
+                    background: '#020210',
+                    color1: '#4444ff',
+                    color2: '#8800ff',
+                    color3: '#ff00aa',
+                    contrast: 50,
+                    depth: 100,
+                    drift: 50,
+                    geometry: 'Prism Rift',
+                    pulse: 60,
+                    speed: 4,
+                    theme: 'Spectral',
+                    thickness: 45,
+                    twist: 100,
+                },
+                description:
+                    'Fall through a kaleidoscope that never repeats — spectral prisms rotate and nest within each other, twisting all the way down to infinity',
+                name: 'Kaleidoscope Descent',
             },
         ],
     },

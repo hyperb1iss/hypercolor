@@ -18,7 +18,8 @@ export default effect(
         }),
     },
     {
-        description: 'Low-frequency demoscene plasma with fluid motion and saturated color drift',
+        description:
+            'Molten demoscene plasma churns in low-frequency waves — saturated color fields drift and collide in fluid perpetual motion',
         presets: [
             {
                 controls: {
@@ -65,7 +66,7 @@ export default effect(
                     theme: 'Oceanic',
                 },
                 description:
-                    'Mineral-laden plasma seeps from black smokers — oceanic chemicals glow with impossible deep-sea energy',
+                    'Mineral-laden plasma seeps from hydrothermal vents — bioluminescent chemicals pulse in the crushing dark',
                 name: 'Hadal Chemosynthesis',
             },
             {
@@ -99,6 +100,38 @@ export default effect(
                 description:
                     'The containment field pulses with retro-future energy — neon plasma oscillates between beautiful and catastrophic',
                 name: 'Synthwave Reactor Core',
+            },
+            {
+                controls: {
+                    bgColor: '#0b0802',
+                    bloom: 42,
+                    color1: '#ff6b00',
+                    color2: '#00e4a1',
+                    color3: '#ffe030',
+                    density: 38,
+                    speed: 5,
+                    spread: 60,
+                    theme: 'Tropical',
+                },
+                description:
+                    'Molten sunset pours through a jungle canopy — phosphorescent flora ignites where amber light meets emerald shadow',
+                name: 'Equatorial Meltdown',
+            },
+            {
+                controls: {
+                    bgColor: '#060008',
+                    bloom: 8,
+                    color1: '#ff2266',
+                    color2: '#2244ff',
+                    color3: '#ff0099',
+                    density: 95,
+                    speed: 1,
+                    spread: 12,
+                    theme: 'Arcade',
+                },
+                description:
+                    'Dense plasma crawls through an unpowered arcade cabinet — ghost images of forgotten high scores burn in the phosphors',
+                name: 'Dead Mall Attract Screen',
             },
         ],
     },

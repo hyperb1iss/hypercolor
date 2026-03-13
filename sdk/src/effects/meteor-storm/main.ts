@@ -357,7 +357,8 @@ export default canvas.stateful(
         }
     },
     {
-        description: 'Crisp falling stars with directional hyperspace trails over a gradient night sky',
+        description:
+            'Blazing meteors tear across a gradient night sky — directional trails streak and fade as the cosmos rains light',
         presets: [
             {
                 controls: {
@@ -422,6 +423,38 @@ export default canvas.stateful(
                 description:
                     'Warm amber meteors crawling across a velvet desert sky — campfire smoke blurring the constellations',
                 name: 'Perseid Campfire',
+            },
+            {
+                controls: {
+                    density: 72,
+                    path: 'Vertical',
+                    scene: 'Night',
+                    skyBottom: '#1a0828',
+                    skyTop: '#08030f',
+                    speed: 9,
+                    starColor: '#ff88dd',
+                    starSize: 6,
+                    trail: 55,
+                },
+                description:
+                    'A dying star sheds its atmosphere in vertical streaks of magenta fire — gravity pulls the light straight down into oblivion',
+                name: 'Supernova Curtain Call',
+            },
+            {
+                controls: {
+                    density: 18,
+                    path: 'Diagonal',
+                    scene: 'Aurora',
+                    skyBottom: '#0c2a3f',
+                    skyTop: '#061420',
+                    speed: 1,
+                    starColor: '#ffe8c0',
+                    starSize: 20,
+                    trail: 100,
+                },
+                description:
+                    'Ancient light arrives from the edge of the observable universe — colossal golden bolides drift through aurora fog in geological slow motion',
+                name: 'Deep Time Observatory',
             },
         ],
     },

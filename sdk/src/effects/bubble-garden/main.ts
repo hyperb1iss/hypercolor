@@ -418,7 +418,8 @@ export default canvas.stateful(
         }
     },
     {
-        description: 'Theme-rich bubble field with custom triads, colored rims, and glossy highlights',
+        description:
+            'Drift through a luminous bubble field — glossy spheres rise with colored rims catching light as they float, collide, and shimmer',
         presets: [
             {
                 controls: {
@@ -499,6 +500,38 @@ export default canvas.stateful(
                 description:
                     'Endosomes shuttle through cellular fluid — lipid bilayer spheres ferrying molecular cargo in warm biological pink',
                 name: 'Cytoplasmic Vesicle Transport',
+            },
+            {
+                controls: {
+                    bgColor: '#000810',
+                    color: '#46f1dc',
+                    color2: '#5da8ff',
+                    color3: '#1746ff',
+                    colorMode: 'Triad',
+                    count: 18,
+                    size: 10,
+                    speed: 3,
+                    theme: 'Lagoon',
+                },
+                description:
+                    'Ancient glass fishing floats drift in a midnight cove — massive teal orbs bob on black water, each one holding a trapped sunrise',
+                name: 'Moonlit Glass Floats',
+            },
+            {
+                controls: {
+                    bgColor: '#02050a',
+                    color: '#08f7fe',
+                    color2: '#ff06b5',
+                    color3: '#6f2dff',
+                    colorMode: 'Color Cycle',
+                    count: 100,
+                    size: 2,
+                    speed: 65,
+                    theme: 'Cyber Pop',
+                },
+                description:
+                    'Particle accelerator collision event — a hundred luminous fragments scatter from the impact point in cyan, magenta, and ultraviolet',
+                name: 'Hadron Splash',
             },
         ],
     },

@@ -71,7 +71,7 @@ export default effect(
     {
         author: 'Hypercolor',
         description:
-            'Port of the Lightscript Workshop kaleidoscopic tunnel with full symmetry, warp, and palette controls',
+            'Fall through an infinite kaleidoscope — mirrored symmetry folds around a warping tunnel of endlessly shifting light',
         presets: [
             {
                 controls: {
@@ -147,6 +147,36 @@ export default effect(
                 description:
                     'Stripped of color, pure geometry remains — clinical black and white spinning at the edge of sanity',
                 name: 'Monochrome Asylum',
+            },
+            {
+                controls: {
+                    intensity: 55,
+                    palette: 'Deep Sea',
+                    pulse: 95,
+                    segments: 4,
+                    speed: 1.5,
+                    style: 'Holo',
+                    twist: 20,
+                    warp: 80,
+                },
+                description:
+                    'Drift through a bioluminescent jellyfish bloom — holographic membranes pulse and warp in the abyssal current',
+                name: 'Jellyfish Cathedral',
+            },
+            {
+                controls: {
+                    intensity: 220,
+                    palette: 'Electric',
+                    pulse: 60,
+                    segments: 10,
+                    speed: 18,
+                    style: 'Glitch',
+                    twist: 100,
+                    warp: 90,
+                },
+                description:
+                    'Lightning strikes a hall of mirrors — ten electric facets shatter and reassemble at impossible velocity',
+                name: 'Tesla Coil Museum',
             },
         ],
     },

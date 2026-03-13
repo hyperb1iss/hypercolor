@@ -392,7 +392,8 @@ export default canvas.stateful(
         }
     },
     {
-        description: 'Fiberflies with breathing halo blooms, neon palette modes, and gentle drift',
+        description:
+            'Wander among luminous fiber-optic creatures — breathing neon halos bloom and drift through warm darkness on invisible currents',
         presets: [
             {
                 controls: {
@@ -473,6 +474,54 @@ export default canvas.stateful(
                 description:
                     'Fifty trapped lightning bugs on MDMA bouncing off the glass walls of a mason jar at a house party',
                 name: 'Rave in a Jar',
+            },
+            {
+                controls: {
+                    baseColor: '#ff6ac1',
+                    bgColor: '#0b0015',
+                    colorMode: 'Mint Orchid',
+                    count: 18,
+                    glow: 95,
+                    scene: 'Pulse',
+                    size: 8,
+                    speed: 2,
+                    wander: 20,
+                },
+                description:
+                    'Jellyfish the size of cathedral windows pulse through an alien ocean trench — vast, luminous, and silent',
+                name: 'Abyssal Cathedral',
+            },
+            {
+                controls: {
+                    baseColor: '#f1fa8c',
+                    bgColor: '#110e02',
+                    colorMode: 'Random',
+                    count: 55,
+                    glow: 50,
+                    scene: 'Swarm',
+                    size: 3,
+                    speed: 7,
+                    wander: 65,
+                },
+                description:
+                    'A thousand paper wish-lanterns scatter across a monsoon sky — gold sparks tumbling in every wild direction',
+                name: 'Monsoon Wishes',
+            },
+            {
+                controls: {
+                    baseColor: '#80ffea',
+                    bgColor: '#020a0d',
+                    colorMode: 'Twilight',
+                    count: 10,
+                    glow: 78,
+                    scene: 'Calm',
+                    size: 6,
+                    speed: 1,
+                    wander: 45,
+                },
+                description:
+                    'Ancient spirits materialize as orbs of twilight above a frozen lake — each one drifts with glacial intention',
+                name: 'Ghost Lake',
             },
         ],
     },

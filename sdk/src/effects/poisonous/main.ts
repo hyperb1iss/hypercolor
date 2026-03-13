@@ -250,7 +250,8 @@ export default canvas.stateful(
     },
     {
         author: 'Hypercolor',
-        description: 'Neon toxin rings drifting through a dark haze with theme and palette controls',
+        description:
+            'Neon toxin rings pulse through dark chemical haze — luminous venom drifting in slow vertical procession',
         presets: [
             {
                 controls: {
@@ -276,7 +277,7 @@ export default canvas.stateful(
                     speedRaw: 6,
                     theme: 'Nightshade',
                 },
-                description: 'Translucent deep-sea bells pulsing in slow vertical procession through a violet abyss',
+                description: 'Translucent deep-sea bells drift in slow vertical procession through a violet abyss',
                 name: 'Jellyfish Ballet',
             },
             {
@@ -320,6 +321,34 @@ export default canvas.stateful(
                 description:
                     'Blacklight rings expanding outward from invisible dancers — orange, cyan, and magenta halos in the dark',
                 name: 'UV Dance Floor',
+            },
+            {
+                controls: {
+                    bgColor: '#020200',
+                    color1: '#ff3300',
+                    color2: '#ff8800',
+                    color3: '#ffcc00',
+                    ringCount: 1,
+                    speedRaw: 90,
+                    theme: 'Custom',
+                },
+                description:
+                    'Molten iron droplets launch from a forge and streak upward through the furnace draft — single rings, maximum velocity',
+                name: 'Blacksmith Sparks',
+            },
+            {
+                controls: {
+                    bgColor: '#0a0012',
+                    color1: '#cc00ff',
+                    color2: '#4400ff',
+                    color3: '#0044ff',
+                    ringCount: 3,
+                    speedRaw: 28,
+                    theme: 'Custom',
+                },
+                description:
+                    'Spectral orbs ascend through a cathedral of black glass — indigo and ultraviolet halos marking each vanished soul',
+                name: 'Ghost Lantern Procession',
             },
         ],
     },

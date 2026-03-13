@@ -51,7 +51,7 @@ export default effect(
     },
     {
         description:
-            'High-voltage fractal lightning with chromatic cores, contrast-woven gradients, and a showcase house default',
+            'Unleash fractal lightning across a high-voltage field — white-hot cores split into chromatic tendrils that web and crackle through the dark',
         presets: [
             {
                 controls: {
@@ -122,6 +122,48 @@ export default effect(
                 description:
                     'A dead motherboard dreaming of electricity — faint spectral discharges tracing forgotten pathways through silicon that will never wake',
                 name: 'Phantom Circuit',
+            },
+            {
+                controls: {
+                    branches: 72,
+                    density: 60,
+                    flicker: 45,
+                    intensity: 50,
+                    palette: 'Rosewire',
+                    prismatic: 28,
+                    speed: 3.5,
+                },
+                description:
+                    'Voltage bleeds through rose quartz veins in a cathedral wall — pink lightning illuminates stained glass nerves that pulse with devotion',
+                name: 'Stained Glass Discharge',
+            },
+            {
+                controls: {
+                    branches: 15,
+                    density: 10,
+                    flicker: 8,
+                    intensity: 78,
+                    palette: 'Electric',
+                    prismatic: 70,
+                    speed: 1.5,
+                },
+                description:
+                    'A single arc hangs suspended in vacuum — prismatic halos bloom around its white-hot spine like light through a prism in zero gravity',
+                name: 'Lonely Filament',
+            },
+            {
+                controls: {
+                    branches: 65,
+                    density: 45,
+                    flicker: 80,
+                    intensity: 82,
+                    palette: 'Toxic',
+                    prismatic: 15,
+                    speed: 8,
+                },
+                description:
+                    'Radioactive discharge cascades through a ruptured cooling tower — acid-green arcs stutter and snap across contaminated steel',
+                name: 'Chernobyl Fireflies',
             },
         ],
     },

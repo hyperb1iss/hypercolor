@@ -360,7 +360,8 @@ export default canvas.stateful(
         }
     },
     {
-        description: 'Classic metaball blobs with smooth marching-squares contours and radial gradient fills',
+        description:
+            'Molten blobs rise and merge in slow convection — smooth organic contours glow with radiant gradient heat',
         presets: [
             {
                 controls: {
@@ -446,6 +447,40 @@ export default canvas.stateful(
                 description:
                     'Warm bubblegum globules rise through a candy-colored incubator — gentle, hypnotic, impossibly soft',
                 name: 'Thermal Nursery',
+            },
+            {
+                controls: {
+                    bCount: 3,
+                    bgColor: '#000000',
+                    bgCycle: false,
+                    color1: '#33f587',
+                    color2: '#3fdcff',
+                    color3: '#8c4bff',
+                    cycleSpeed: 10,
+                    rainbow: false,
+                    speed: 6,
+                    theme: 'Aurora',
+                },
+                description:
+                    'Three ancient glacial masses calve and collide in polar darkness — jade and sapphire light trapped inside the ice',
+                name: 'Glacial Convergence',
+            },
+            {
+                controls: {
+                    bCount: 14,
+                    bgColor: '#0f0305',
+                    bgCycle: true,
+                    color1: '#ffb347',
+                    color2: '#ff7a2f',
+                    color3: '#ff5778',
+                    cycleSpeed: 80,
+                    rainbow: false,
+                    speed: 45,
+                    theme: 'Citrus',
+                },
+                description:
+                    'A solar flare erupts across the chromosphere — tangerine plasma arcs and collapses in magnetic frenzy',
+                name: 'Chromosphere Eruption',
             },
         ],
     },

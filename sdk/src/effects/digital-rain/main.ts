@@ -485,7 +485,7 @@ export default canvas.stateful(
     },
     {
         description:
-            'Terminal-crisp digital rain with discrete stepped streaks, hard tail shading, and configurable white stream heads',
+            'Katakana glyphs cascade in phosphor-bright columns — discrete streaks step through darkness, each stream crowned in white heat',
         presets: [
             {
                 controls: {
@@ -571,6 +571,57 @@ export default canvas.stateful(
                 description:
                     'A rogue AI splintering across the network — SilkCircuit violet pulses tearing through corrupted data at impossible speed',
                 name: 'Ghost in the Wire',
+            },
+            {
+                controls: {
+                    bgColor: '#010401',
+                    charSize: 42,
+                    colorMode: 'Matrix',
+                    density: 55,
+                    glitch: false,
+                    headColor: '#7eff9a',
+                    leadWhite: 22,
+                    rainColor: '#12aa34',
+                    speed: 4,
+                    trailLength: 72,
+                },
+                description:
+                    'The original signal — unhurried green streams descending through perfect darkness, the Construct loading one column at a time',
+                name: 'Construct Bootstrap',
+            },
+            {
+                controls: {
+                    bgColor: '#000000',
+                    charSize: 18,
+                    colorMode: 'Custom',
+                    density: 100,
+                    glitch: true,
+                    headColor: '#ff3333',
+                    leadWhite: 95,
+                    rainColor: '#cc0000',
+                    speed: 10,
+                    trailLength: 12,
+                },
+                description:
+                    'Every firewall just failed at once — crimson micro-glyphs swarm the screen in a catastrophic cascade, the kill signal propagating everywhere',
+                name: 'Red Alert Cascade',
+            },
+            {
+                controls: {
+                    bgColor: '#080808',
+                    charSize: 90,
+                    colorMode: 'Custom',
+                    density: 18,
+                    glitch: false,
+                    headColor: '#ffffff',
+                    leadWhite: 60,
+                    rainColor: '#555555',
+                    speed: 1,
+                    trailLength: 100,
+                },
+                description:
+                    'Ancient kanji carved into a monolith — massive stone-grey glyphs descend with geological patience through monochrome silence',
+                name: 'Monument',
             },
         ],
     },

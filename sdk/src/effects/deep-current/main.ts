@@ -14,7 +14,8 @@ export default effect(
         splitMode: combo('Split Mode', ['Diagonal', 'Horizontal', 'Vertical'], { group: 'Scene' }),
     },
     {
-        description: 'Magenta-amber split-field with crisp ripples and floating particles',
+        description:
+            'Twin color fields collide across a rippling divide — particles drift through the current as luminous waves fold and break',
         presets: [
             {
                 controls: {
@@ -85,6 +86,48 @@ export default effect(
                 description:
                     'Amino acids crystallize in warm tidal pools — electric green catalysts spark against ferrous mineral haze',
                 name: 'Primordial Soup',
+            },
+            {
+                controls: {
+                    blend: 35,
+                    leftColor: '#e135ff',
+                    particleAmount: 70,
+                    rightColor: '#80ffea',
+                    rippleIntensity: 55,
+                    speed: 6,
+                    splitMode: 'Vertical',
+                },
+                description:
+                    'A portal tears open between two dimensions — electric violet and neon cyan crash against each other in a permanent shockwave',
+                name: 'Rift Gate',
+            },
+            {
+                controls: {
+                    blend: 95,
+                    leftColor: '#ffd700',
+                    particleAmount: 20,
+                    rightColor: '#ff4500',
+                    rippleIntensity: 15,
+                    speed: 1,
+                    splitMode: 'Horizontal',
+                },
+                description:
+                    'Liquid gold pours across a mesa at golden hour — the horizon line dissolves into molten amber and burnt sienna haze',
+                name: 'Saharan Goldmelt',
+            },
+            {
+                controls: {
+                    blend: 5,
+                    leftColor: '#0d0d0d',
+                    particleAmount: 85,
+                    rightColor: '#4a0080',
+                    rippleIntensity: 90,
+                    speed: 9,
+                    splitMode: 'Diagonal',
+                },
+                description:
+                    'Void-black ink collides with ultraviolet plasma — particles scatter like shrapnel from a collapsing star',
+                name: 'Event Horizon',
             },
         ],
     },
