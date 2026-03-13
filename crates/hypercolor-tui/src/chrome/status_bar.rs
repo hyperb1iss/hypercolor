@@ -49,19 +49,14 @@ fn build_left(state: &AppState) -> Vec<Span<'static>> {
 
     spans.push(Span::raw(" "));
 
-    // Current effect name.
+    // Current effect name — gradient brand style.
     let effect_name = state
         .daemon
         .as_ref()
         .and_then(|d| d.effect_name.clone())
         .unwrap_or_else(|| "No effect".to_string());
 
-    spans.push(Span::styled(
-        effect_name,
-        Style::default()
-            .fg(theme::accent_secondary())
-            .add_modifier(Modifier::BOLD),
-    ));
+    gradient_text(&mut spans, &effect_name);
 
     // Separator + device count.
     if let Some(ref daemon) = state.daemon {
@@ -104,4 +99,23 @@ fn build_right(state: &AppState) -> Vec<Span<'static>> {
 
     spans.push(Span::raw(" "));
     spans
+}
+
+/// Render text with a per-character gradient (Neon Cyan → Electric Purple).
+#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+fn gradient_text(spans: &mut Vec<Span<'static>>, text: &str) {
+    let len = text.chars().count();
+    for (i, ch) in text.chars().enumerate() {
+        let t = if len <= 1 {
+            0.0
+        } else {
+            i as f32 / (len - 1) as f32
+        };
+        spans.push(Span::styled(
+            ch.to_string(),
+            Style::default()
+                .fg(theme::gradient_color(t, &theme::EFFECT_GRADIENT))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
 }

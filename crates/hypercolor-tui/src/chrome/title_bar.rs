@@ -33,13 +33,8 @@ impl TitleBar {
 
         let mut spans = Vec::new();
 
-        // Brand
-        spans.push(Span::styled(
-            "HYPERCOLOR",
-            Style::default()
-                .fg(theme::accent_primary())
-                .add_modifier(Modifier::BOLD),
-        ));
+        // Gradient brand: Electric Purple → Neon Cyan
+        build_gradient_brand(&mut spans);
         spans.push(Span::styled(
             " \u{2502} ",
             Style::default().fg(theme::text_muted()),
@@ -164,4 +159,20 @@ fn build_status_spans(state: &AppState) -> Vec<Span<'static>> {
 
     spans.push(Span::raw(" "));
     spans
+}
+
+/// Render "HYPERCOLOR" with a per-character gradient (Electric Purple → Coral → Neon Cyan).
+#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+fn build_gradient_brand(spans: &mut Vec<Span<'static>>) {
+    const BRAND: &str = "HYPERCOLOR";
+    let len = BRAND.len();
+    for (i, ch) in BRAND.chars().enumerate() {
+        let t = i as f32 / (len - 1).max(1) as f32;
+        spans.push(Span::styled(
+            ch.to_string(),
+            Style::default()
+                .fg(theme::gradient_color(t, &theme::BRAND_GRADIENT))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
 }

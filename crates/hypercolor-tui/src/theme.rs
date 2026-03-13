@@ -126,3 +126,36 @@ pub fn title_style() -> Style {
         .fg(accent_primary())
         .add_modifier(Modifier::BOLD)
 }
+
+// ── Gradient utilities ─────────────────────────────────────────────────────
+
+/// Linearly interpolate through a sequence of RGB color stops at position `t` (0.0..1.0).
+#[must_use]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+pub fn gradient_color(t: f32, stops: &[(u8, u8, u8)]) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let segments = (stops.len() - 1).max(1);
+    let scaled = t * segments as f32;
+    let idx = (scaled as usize).min(segments - 1);
+    let frac = scaled - idx as f32;
+    let (r1, g1, b1) = stops[idx];
+    let (r2, g2, b2) = stops[(idx + 1).min(stops.len() - 1)];
+    let lerp =
+        |a: u8, b: u8, f: f32| -> u8 { (f32::from(a) + (f32::from(b) - f32::from(a)) * f) as u8 };
+    Color::Rgb(lerp(r1, r2, frac), lerp(g1, g2, frac), lerp(b1, b2, frac))
+}
+
+/// Brand gradient stops: Electric Purple → Coral → Neon Cyan.
+pub const BRAND_GRADIENT: [(u8, u8, u8); 3] = [(225, 53, 255), (255, 106, 193), (128, 255, 234)];
+
+/// Spectrum gradient stops: Coral (bass) → Electric Yellow (mid) → Neon Cyan (treble).
+pub const SPECTRUM_GRADIENT: [(u8, u8, u8); 3] =
+    [(255, 106, 193), (241, 250, 140), (128, 255, 234)];
+
+/// Effect name gradient stops: Neon Cyan → Electric Purple.
+pub const EFFECT_GRADIENT: [(u8, u8, u8); 2] = [(128, 255, 234), (225, 53, 255)];

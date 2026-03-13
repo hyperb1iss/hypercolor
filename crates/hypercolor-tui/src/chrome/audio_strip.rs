@@ -186,15 +186,9 @@ fn build_stats_line(snap: &SpectrumSnapshot) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Return a color for the given frequency position (0.0 = bass, 1.0 = treble).
+/// Return a smoothly interpolated color for the given frequency position.
 ///
-/// Bass (0.0..0.33) = coral, mid (0.33..0.66) = yellow, treble (0.66..1.0) = cyan.
+/// Gradient: Coral (bass) → Electric Yellow (mid) → Neon Cyan (treble).
 fn band_color(t: f32) -> ratatui::style::Color {
-    if t < 0.33 {
-        theme::spectrum_bass()
-    } else if t < 0.66 {
-        theme::spectrum_mid()
-    } else {
-        theme::spectrum_treble()
-    }
+    theme::gradient_color(t, &theme::SPECTRUM_GRADIENT)
 }
