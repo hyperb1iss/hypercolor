@@ -871,7 +871,7 @@ pub fn DeveloperSection(
 // ── About ──────────────────────────────────────────────────────────────────
 
 #[component]
-pub fn AboutSection(#[prop(into)] config_path: Signal<String>) -> impl IntoView {
+pub fn AboutSection() -> impl IntoView {
     let status = LocalResource::new(api::fetch_status);
 
     view! {
@@ -886,7 +886,7 @@ pub fn AboutSection(#[prop(into)] config_path: Signal<String>) -> impl IntoView 
                         <AboutRow label="Uptime" value=stat.as_ref().map(|s| format_uptime(s.uptime_seconds)).unwrap_or_else(|| "—".to_string()) />
                         <AboutRow label="Devices" value=stat.as_ref().map(|s| s.device_count.to_string()).unwrap_or_else(|| "—".to_string()) />
                         <AboutRow label="Effects" value=stat.as_ref().map(|s| s.effect_count.to_string()).unwrap_or_else(|| "—".to_string()) />
-                        <AboutRow label="Config" value=config_path.get() />
+                        <AboutRow label="Config" value=stat.as_ref().map(|s| s.config_path.clone()).unwrap_or_else(|| "—".to_string()) />
                     </div>
                 }
             }}

@@ -161,9 +161,6 @@ pub fn SettingsPage() -> impl IntoView {
         }
     });
 
-    // Derive config path for About section (comes from status, not config)
-    let config_path = Memo::new(move |_| String::new());
-
     // Audio device options for dropdown
     let audio_devices = Memo::new(move |_| {
         devices_resource
@@ -444,7 +441,7 @@ pub fn SettingsPage() -> impl IntoView {
                                 class="settings-card"
                                 style="animation: fade-in 0.4s ease-out 0.45s both"
                             >
-                                <AboutSection config_path=Signal::derive(move || config_path.get()) />
+                                <AboutSection />
                             </div>
                         </div>
                     })

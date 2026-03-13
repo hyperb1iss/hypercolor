@@ -77,6 +77,8 @@ pub struct EffectDetailResponse {
 pub struct SystemStatus {
     pub running: bool,
     pub version: String,
+    #[serde(default)]
+    pub config_path: String,
     pub uptime_seconds: u64,
     pub device_count: usize,
     pub effect_count: usize,
