@@ -7,6 +7,10 @@ use wasm_bindgen::JsCast;
 
 use hypercolor_types::effect::{ControlValue, PresetTemplate};
 
+use super::preset_matching::{
+    bundled_preset_matches_controls, bundled_preset_to_json, controls_to_json,
+    user_preset_matches_controls,
+};
 use crate::api;
 use crate::icons::*;
 use crate::toasts;
@@ -52,20 +56,10 @@ pub fn PresetToolbar(
         }
 
         set_selected_id.set(None);
-        let restore_id = active_preset_id_signal
-            .map(|s| s.get_untracked())
-            .unwrap_or_default();
         let fetch_eid = eid.clone();
         leptos::task::spawn_local(async move {
             match api::fetch_presets().await {
-                Ok(all) => {
-                    if let Some(ref preset_id) = restore_id {
-                        if all.iter().any(|p| p.id == *preset_id) {
-                            set_selected_id.set(Some(preset_id.clone()));
-                        }
-                    }
-                    set_presets.set(all);
-                }
+                Ok(all) => set_presets.set(all),
                 Err(_) => set_presets.set(Vec::new()),
             }
             // Fetch bundled presets from effect detail
@@ -79,6 +73,50 @@ pub fn PresetToolbar(
             }
         });
         eid
+    });
+
+    // Keep the UI selection aligned with whichever preset the current control
+    // values actually match. Built-in presets do not have engine-backed IDs,
+    // so restoring from control values is the only reliable source of truth.
+    Effect::new(move |_| {
+        let eid = effect_id.get();
+        let active_preset_id = active_preset_id_signal
+            .map(|signal| signal.get())
+            .unwrap_or_default();
+        let current_values = control_values.get();
+        let current_presets = presets.get();
+        let current_bundled = bundled_presets.get();
+
+        let next_selected = eid.as_ref().and_then(|active_effect_id| {
+            active_preset_id
+                .filter(|preset_id| {
+                    current_presets.iter().any(|preset| {
+                        preset.effect_id == *active_effect_id && preset.id == *preset_id
+                    })
+                })
+                .or_else(|| {
+                    current_presets
+                        .iter()
+                        .find(|preset| {
+                            preset.effect_id == *active_effect_id
+                                && user_preset_matches_controls(&current_values, &preset.controls)
+                        })
+                        .map(|preset| preset.id.clone())
+                })
+                .or_else(|| {
+                    current_bundled
+                        .iter()
+                        .enumerate()
+                        .find(|(_, preset)| {
+                            bundled_preset_matches_controls(&current_values, &preset.controls)
+                        })
+                        .map(|(index, _)| format!("bundled:{index}"))
+                })
+        });
+
+        if selected_id.get_untracked() != next_selected {
+            set_selected_id.set(next_selected);
+        }
     });
 
     // Filter presets to the active effect
@@ -96,7 +134,7 @@ pub fn PresetToolbar(
         effect_presets.get().into_iter().find(|p| p.id == sid)
     });
 
-    let has_selection = Memo::new(move |_| selected_id.get().is_some());
+    let has_editable_selection = Memo::new(move |_| selected_preset.get().is_some());
 
     // Refresh helper
     let refresh_presets = move || {
@@ -263,7 +301,7 @@ pub fn PresetToolbar(
                                 effect_presets=effect_presets
                                 bundled_presets=bundled_presets
                                 selected_id=selected_id
-                                has_selection=has_selection
+                                has_editable_selection=has_editable_selection
                                 on_select=on_select
                                 on_save=on_save
                                 on_new=move |_| set_mode.set(ToolbarMode::Creating)
@@ -317,7 +355,7 @@ fn PresetSelectorRow(
     effect_presets: Memo<Vec<api::PresetSummary>>,
     bundled_presets: ReadSignal<Vec<PresetTemplate>>,
     selected_id: ReadSignal<Option<String>>,
-    has_selection: Memo<bool>,
+    has_editable_selection: Memo<bool>,
     on_select: impl Fn(web_sys::Event) + Clone + 'static,
     on_save: impl Fn(leptos::ev::MouseEvent) + 'static,
     on_new: impl Fn(leptos::ev::MouseEvent) + 'static,
@@ -340,9 +378,8 @@ fn PresetSelectorRow(
                            focus:outline-none focus:border-accent-muted
                            transition-all duration-150"
                     on:change=on_select
-                    prop:value=move || selected_id.get().unwrap_or_default()
                 >
-                    <option value="">
+                    <option value="" selected=move || selected_id.get().is_none()>
                         "No preset"
                     </option>
                     // Bundled presets (effect-defined, read-only)
@@ -354,8 +391,16 @@ fn PresetSelectorRow(
                         let groups = show_optgroups.get();
                         let options = bp.into_iter().enumerate().map(|(idx, p)| {
                             let val = format!("bundled:{idx}");
+                            let option_value = val.clone();
                             let label = format!("\u{2726} {}", p.name);
-                            view! { <option value=val>{label}</option> }
+                            view! {
+                                <option
+                                    value=val
+                                    selected=move || selected_id.get().as_deref() == Some(option_value.as_str())
+                                >
+                                    {label}
+                                </option>
+                            }
                         }).collect_view();
                         if groups {
                             view! {
@@ -374,7 +419,15 @@ fn PresetSelectorRow(
                         let groups = show_optgroups.get();
                         let options = user.into_iter().map(|p| {
                             let id = p.id.clone();
-                            view! { <option value=id>{p.name}</option> }
+                            let option_value = id.clone();
+                            view! {
+                                <option
+                                    value=id
+                                    selected=move || selected_id.get().as_deref() == Some(option_value.as_str())
+                                >
+                                    {p.name}
+                                </option>
+                            }
                         }).collect_view();
                         if groups {
                             view! {
@@ -389,7 +442,7 @@ fn PresetSelectorRow(
 
             // Action buttons
             <PresetActionButtons
-                has_selection=has_selection
+                has_selection=has_editable_selection
                 on_save=on_save
                 on_new=on_new
                 on_edit=on_edit
@@ -540,43 +593,5 @@ fn InlineNameButtons(
         >
             <Icon icon=LuX width="14px" height="14px" />
         </button>
-    }
-}
-
-/// Convert `ControlValue` map to JSON for the API.
-fn controls_to_json(
-    values: &HashMap<String, ControlValue>,
-) -> serde_json::Map<String, serde_json::Value> {
-    values
-        .iter()
-        .map(|(k, v)| (k.clone(), control_value_to_json(v)))
-        .collect()
-}
-
-/// Convert a bundled preset's control map to a JSON value for the PATCH API.
-fn bundled_preset_to_json(controls: &HashMap<String, ControlValue>) -> serde_json::Value {
-    let map: serde_json::Map<String, serde_json::Value> = controls
-        .iter()
-        .map(|(k, v)| (k.clone(), control_value_to_json(v)))
-        .collect();
-    serde_json::Value::Object(map)
-}
-
-fn control_value_to_json(value: &ControlValue) -> serde_json::Value {
-    match value {
-        ControlValue::Float(v) => serde_json::json!(v),
-        ControlValue::Integer(v) => serde_json::json!(v),
-        ControlValue::Boolean(v) => serde_json::json!(v),
-        ControlValue::Text(v) => serde_json::json!(v),
-        ControlValue::Enum(v) => serde_json::json!(v),
-        ControlValue::Color(v) => {
-            serde_json::json!(format!(
-                "#{:02x}{:02x}{:02x}",
-                (v[0] * 255.0) as u8,
-                (v[1] * 255.0) as u8,
-                (v[2] * 255.0) as u8,
-            ))
-        }
-        ControlValue::Gradient(stops) => serde_json::json!(stops),
     }
 }
