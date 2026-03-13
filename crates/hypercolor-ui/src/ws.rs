@@ -2,6 +2,8 @@
 //!
 //! Handles both JSON events and binary canvas frames (0x03 header).
 
+use std::rc::Rc;
+
 use leptos::prelude::*;
 use serde::Deserialize;
 use wasm_bindgen::JsCast;
@@ -10,6 +12,10 @@ use web_sys::MessageEvent;
 
 pub const DEFAULT_PREVIEW_FPS_CAP: u32 = 30;
 const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
+
+/// Reconnection delay bounds (milliseconds).
+const RECONNECT_BASE_MS: i32 = 500;
+const RECONNECT_MAX_MS: i32 = 15_000;
 
 // ── Connection State ────────────────────────────────────────────────────────
 
@@ -246,41 +252,161 @@ impl WsManager {
         let (preview_transport_cap, set_preview_transport_cap) = signal(DEFAULT_PREVIEW_FPS_CAP);
         let (page_visible, set_page_visible) = signal(document_is_visible());
 
-        // Build WebSocket URL relative to page origin
-        let ws_url = build_ws_url();
-
-        set_connection_state.set(ConnectionState::Connecting);
-
         // Track authoritative canvas cadence from backend frame metadata.
         let last_frame_number = StoredValue::new(None::<u32>);
         let last_frame_timestamp = StoredValue::new(None::<u32>);
         let smoothed_fps = StoredValue::new(0.0_f64);
         let requested_preview_fps = StoredValue::new(0_u32);
 
-        // Create WebSocket
-        let ws = web_sys::WebSocket::new_with_str(&ws_url, "hypercolor-v1");
-        let ws = match ws {
-            Ok(ws) => ws,
-            Err(_) => {
+        // Shared WebSocket handle for preview subscription effect.
+        let ws_handle: StoredValue<Option<web_sys::WebSocket>> = StoredValue::new(None);
+
+        // Reconnection attempt counter for exponential backoff.
+        let reconnect_attempts = StoredValue::new(0_u32);
+
+        // Build WebSocket URL relative to page origin
+        let ws_url = build_ws_url();
+        let ws_url = StoredValue::new(ws_url);
+
+        // ── connect() ──────────────────────────────────────────────────────
+        // Callable multiple times: creates a fresh WebSocket and wires the
+        // same signal writers. Called once at startup and again on close/error
+        // after a backoff delay.
+
+        let connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage> =
+            StoredValue::new_local(None);
+
+        let connect_fn: Rc<dyn Fn()> = Rc::new(move || {
+            set_connection_state.set(ConnectionState::Connecting);
+
+            // Reset frame-tracking state so FPS doesn't glitch after reconnect
+            last_frame_number.set_value(None);
+            last_frame_timestamp.set_value(None);
+            smoothed_fps.set_value(0.0);
+            requested_preview_fps.set_value(0);
+            set_preview_fps.set(0.0);
+
+            let url = ws_url.get_value();
+            let ws = match web_sys::WebSocket::new_with_str(&url, "hypercolor-v1") {
+                Ok(ws) => ws,
+                Err(_) => {
+                    set_connection_state.set(ConnectionState::Error);
+                    schedule_reconnect(reconnect_attempts, connect);
+                    return;
+                }
+            };
+            ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
+            ws_handle.set_value(Some(ws.clone()));
+
+            // onopen — subscribe to events + metrics
+            let ws_clone = ws.clone();
+            let on_open = Closure::<dyn FnMut()>::new(move || {
+                set_connection_state.set(ConnectionState::Connected);
+                reconnect_attempts.set_value(0);
+
+                let subscribe_msg = serde_json::json!({
+                    "type": "subscribe",
+                    "channels": ["events", "metrics"],
+                    "config": {
+                        "metrics": { "interval_ms": 500 }
+                    }
+                });
+                let _ = ws_clone.send_with_str(&subscribe_msg.to_string());
+            });
+            ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+            on_open.forget();
+
+            // onclose — schedule reconnect with backoff
+            let on_close = Closure::<dyn FnMut()>::new(move || {
+                set_connection_state.set(ConnectionState::Disconnected);
+                set_canvas_frame.set(None);
+                schedule_reconnect(reconnect_attempts, connect);
+            });
+            ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+            on_close.forget();
+
+            // onerror (browser fires close after error, so reconnect triggers there)
+            let on_error = Closure::<dyn FnMut()>::new(move || {
                 set_connection_state.set(ConnectionState::Error);
-                return Self {
-                    canvas_frame,
-                    connection_state,
-                    preview_fps,
-                    metrics,
-                    backpressure_notice,
-                    active_effect,
-                    last_device_event,
-                    audio_level,
-                    preview_target_fps,
-                    set_preview_cap,
-                };
-            }
-        };
+            });
+            ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
+            on_error.forget();
 
-        ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
+            // onmessage — handle both JSON and binary frames
+            let on_message =
+                Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+                    // Binary frame (ArrayBuffer)
+                    if let Ok(buffer) = event.data().dyn_into::<js_sys::ArrayBuffer>() {
+                        if let Some(frame) = decode_canvas_frame(buffer) {
+                            let current_frame_number = frame.frame_number;
+                            let current_timestamp_ms = frame.timestamp_ms;
+                            set_canvas_frame.set(Some(frame));
 
-        let preview_ws = ws.clone();
+                            if let (Some(previous_frame_number), Some(previous_timestamp_ms)) = (
+                                last_frame_number.get_value(),
+                                last_frame_timestamp.get_value(),
+                            ) {
+                                let frame_delta =
+                                    current_frame_number.saturating_sub(previous_frame_number);
+                                let elapsed_ms =
+                                    current_timestamp_ms.saturating_sub(previous_timestamp_ms);
+
+                                if frame_delta > 0 && elapsed_ms > 0 {
+                                    let target_fps = preview_target_fps.get_untracked();
+                                    let mut instant_fps =
+                                        f64::from(frame_delta) * 1000.0 / f64::from(elapsed_ms);
+                                    if target_fps > 0 {
+                                        instant_fps =
+                                            instant_fps.clamp(0.0, f64::from(target_fps));
+                                    } else {
+                                        instant_fps = instant_fps.clamp(0.0, 120.0);
+                                    }
+
+                                    let previous = smoothed_fps.get_value();
+                                    let next = if previous <= 0.0 {
+                                        instant_fps
+                                    } else {
+                                        // Exponential moving average (0.82/0.18 weighting)
+                                        previous * 0.82 + instant_fps * 0.18
+                                    };
+                                    smoothed_fps.set_value(next);
+                                    #[allow(clippy::cast_possible_truncation)]
+                                    set_preview_fps.set(next as f32);
+                                }
+                            }
+
+                            last_frame_number.set_value(Some(current_frame_number));
+                            last_frame_timestamp.set_value(Some(current_timestamp_ms));
+                        }
+                        return;
+                    }
+
+                    // JSON message (String)
+                    if let Some(text) = event.data().as_string() {
+                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
+                            handle_json_message(
+                                &msg,
+                                &set_active_effect,
+                                metrics,
+                                &set_metrics,
+                                backpressure_notice,
+                                &set_backpressure_notice,
+                                &set_last_device_event,
+                                &set_audio_level,
+                                &set_engine_preview_target,
+                                &set_preview_target_fps,
+                                &set_preview_transport_cap,
+                            );
+                        }
+                    }
+                });
+            ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+            on_message.forget();
+        });
+
+        connect.set_value(Some(connect_fn));
+
+        // Preview subscription effect — reacts to FPS cap / visibility changes
         Effect::new(move |_| {
             let engine_target = engine_preview_target.get();
             let client_cap = preview_page_cap.get().min(preview_transport_cap.get());
@@ -289,51 +415,23 @@ impl WsManager {
                 return;
             }
 
-            request_preview_subscription(
-                &preview_ws,
-                requested_preview_fps,
-                set_preview_target_fps,
-                engine_target,
-                client_cap,
-                is_visible,
-            );
+            if let Some(ws) = ws_handle.get_value() {
+                request_preview_subscription(
+                    &ws,
+                    requested_preview_fps,
+                    set_preview_target_fps,
+                    engine_target,
+                    client_cap,
+                    is_visible,
+                );
+            }
         });
 
         Effect::new(move |_| {
             set_preview_transport_cap.set(preview_page_cap.get());
         });
 
-        // onopen — subscribe to events + metrics, then pace preview after hello.
-        let ws_clone = ws.clone();
-        let on_open = Closure::<dyn FnMut()>::new(move || {
-            set_connection_state.set(ConnectionState::Connected);
-
-            let subscribe_msg = serde_json::json!({
-                "type": "subscribe",
-                "channels": ["events", "metrics"],
-                "config": {
-                    "metrics": { "interval_ms": 500 }
-                }
-            });
-            let _ = ws_clone.send_with_str(&subscribe_msg.to_string());
-        });
-        ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-        on_open.forget();
-
-        // onclose
-        let on_close = Closure::<dyn FnMut()>::new(move || {
-            set_connection_state.set(ConnectionState::Disconnected);
-        });
-        ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-        on_close.forget();
-
-        // onerror
-        let on_error = Closure::<dyn FnMut()>::new(move || {
-            set_connection_state.set(ConnectionState::Error);
-        });
-        ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
-        on_error.forget();
-
+        // Visibility change listener
         if let Some(document) = web_sys::window().and_then(|window| window.document()) {
             let visibility_document = document.clone();
             let on_visibility_change = Closure::<dyn FnMut()>::new(move || {
@@ -343,72 +441,10 @@ impl WsManager {
             on_visibility_change.forget();
         }
 
-        // onmessage — handle both JSON and binary frames
-        let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
-            // Binary frame (ArrayBuffer)
-            if let Ok(buffer) = event.data().dyn_into::<js_sys::ArrayBuffer>() {
-                if let Some(frame) = decode_canvas_frame(buffer) {
-                    let current_frame_number = frame.frame_number;
-                    let current_timestamp_ms = frame.timestamp_ms;
-                    set_canvas_frame.set(Some(frame));
-
-                    if let (Some(previous_frame_number), Some(previous_timestamp_ms)) = (
-                        last_frame_number.get_value(),
-                        last_frame_timestamp.get_value(),
-                    ) {
-                        let frame_delta =
-                            current_frame_number.saturating_sub(previous_frame_number);
-                        let elapsed_ms = current_timestamp_ms.saturating_sub(previous_timestamp_ms);
-
-                        if frame_delta > 0 && elapsed_ms > 0 {
-                            let target_fps = preview_target_fps.get_untracked();
-                            let mut instant_fps =
-                                f64::from(frame_delta) * 1000.0 / f64::from(elapsed_ms);
-                            if target_fps > 0 {
-                                instant_fps = instant_fps.clamp(0.0, f64::from(target_fps));
-                            } else {
-                                instant_fps = instant_fps.clamp(0.0, 120.0);
-                            }
-
-                            let previous = smoothed_fps.get_value();
-                            let next = if previous <= 0.0 {
-                                instant_fps
-                            } else {
-                                previous * 0.82 + instant_fps * 0.18
-                            };
-                            smoothed_fps.set_value(next);
-                            #[allow(clippy::cast_possible_truncation)]
-                            set_preview_fps.set(next as f32);
-                        }
-                    }
-
-                    last_frame_number.set_value(Some(current_frame_number));
-                    last_frame_timestamp.set_value(Some(current_timestamp_ms));
-                }
-                return;
-            }
-
-            // JSON message (String)
-            if let Some(text) = event.data().as_string() {
-                if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
-                    handle_json_message(
-                        &msg,
-                        &set_active_effect,
-                        metrics,
-                        &set_metrics,
-                        backpressure_notice,
-                        &set_backpressure_notice,
-                        &set_last_device_event,
-                        &set_audio_level,
-                        &set_engine_preview_target,
-                        &set_preview_target_fps,
-                        &set_preview_transport_cap,
-                    );
-                }
-            }
-        });
-        ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
-        on_message.forget();
+        // Initial connection
+        if let Some(connect_fn) = connect.get_value() {
+            connect_fn();
+        }
 
         Self {
             canvas_frame,
@@ -425,6 +461,38 @@ impl WsManager {
     }
 }
 
+/// Schedule a reconnection attempt with exponential backoff + jitter.
+fn schedule_reconnect(
+    reconnect_attempts: StoredValue<u32>,
+    connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage>,
+) {
+    let attempt = reconnect_attempts.get_value();
+    reconnect_attempts.set_value(attempt.saturating_add(1));
+
+    // Exponential backoff: 500ms, 1s, 2s, 4s, 8s, capped at 15s
+    let base_delay = RECONNECT_BASE_MS.saturating_mul(1_i32.wrapping_shl(attempt.min(5)));
+    let delay = base_delay.min(RECONNECT_MAX_MS);
+
+    // Add jitter (±25%) to prevent thundering herd on daemon restart
+    let jitter = (js_sys::Math::random() * 0.5 - 0.25) * f64::from(delay);
+    #[allow(clippy::cast_possible_truncation)]
+    let final_delay = (f64::from(delay) + jitter).max(100.0) as i32;
+
+    let callback = Closure::<dyn FnMut()>::new(move || {
+        if let Some(connect_fn) = connect.get_value() {
+            connect_fn();
+        }
+    });
+
+    if let Some(window) = web_sys::window() {
+        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+            callback.as_ref().unchecked_ref(),
+            final_delay,
+        );
+    }
+    callback.forget();
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Build WS URL from current page origin.
@@ -439,9 +507,7 @@ fn build_ws_url() -> String {
     let hostname = location
         .hostname()
         .unwrap_or_else(|_| "127.0.0.1".to_string());
-    let port = location
-        .port()
-        .unwrap_or_default();
+    let port = location.port().unwrap_or_default();
 
     let ws_protocol = if protocol == "https:" { "wss:" } else { "ws:" };
 
