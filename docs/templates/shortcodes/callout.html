@@ -1,0 +1,4 @@
+<div class="callout callout--{{ type | default(value='info') }}">
+  {% if title %}<div class="callout__title">{{ title }}</div>{% endif %}
+  <div class="callout__content">{{ body | markdown | safe }}</div>
+</div>

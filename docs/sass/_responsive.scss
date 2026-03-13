@@ -1,0 +1,164 @@
+// ═══════════════════════════════════════════════════════════════
+// Responsive — layout shell + breakpoints
+// Mobile (< 768), Tablet (768–1024), Desktop (> 1024), Wide (> 1280)
+// ═══════════════════════════════════════════════════════════════
+
+// ---------------------------------------------------------------------------
+// Layout Shell
+// ---------------------------------------------------------------------------
+
+.site-layout {
+  display: flex;
+  min-height: calc(100vh - 64px); // viewport minus nav height
+}
+
+.site-main {
+  flex: 1;
+  min-width: 0; // prevent flex overflow
+}
+
+// ---------------------------------------------------------------------------
+// Mobile (< 768px) — single column, sidebar hidden, no TOC
+// ---------------------------------------------------------------------------
+
+@media (max-width: $bp-mobile - 1px) {
+  .site-sidebar {
+    display: none;
+
+    &.is-open {
+      display: block;
+    }
+  }
+
+  .site-toc {
+    display: none;
+  }
+
+  .site-main {
+    width: 100%;
+  }
+
+  .doc {
+    padding: 20px 16px;
+  }
+
+  .hero {
+    padding: 48px 16px 40px;
+
+    &::before {
+      width: 300px;
+      height: 200px;
+    }
+
+    &__title {
+      font-size: 1.75rem;
+    }
+
+    &__tagline {
+      font-size: 1rem;
+    }
+
+    &__actions {
+      flex-direction: column;
+      align-items: center;
+    }
+  }
+
+  .feature-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  // Nav layout adjustments
+  .nav-links {
+    display: none;
+  }
+
+  .nav-hamburger {
+    display: flex;
+  }
+
+  // Hamburger toggle button (fallback if nav-hamburger isn't used)
+  .nav-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    background: none;
+    border: 1px solid var(--border-subtle);
+    border-radius: $radius-sm;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition:
+      color var(--duration-normal) var(--ease-silk),
+      border-color var(--duration-normal) var(--ease-silk);
+
+    &:hover {
+      color: var(--accent);
+      border-color: var(--accent-muted);
+    }
+  }
+}
+
+// Show hamburger only on mobile
+@media (min-width: $bp-mobile) {
+  .nav-toggle {
+    display: none;
+  }
+
+  .nav-hamburger {
+    display: none;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tablet (768px — 1024px) — sidebar + content, no TOC
+// ---------------------------------------------------------------------------
+
+@media (min-width: $bp-mobile) and (max-width: $bp-tablet - 1px) {
+  .site-toc {
+    display: none;
+  }
+
+  .site-sidebar {
+    width: 240px;
+  }
+
+  .doc {
+    padding: 28px 20px;
+  }
+
+  .hero__title {
+    font-size: 2.5rem;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Desktop (> 1024px) — full three-column layout
+// ---------------------------------------------------------------------------
+
+@media (min-width: $bp-tablet) {
+  .site-sidebar {
+    width: 260px;
+  }
+
+  .site-toc {
+    display: block;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Wide Desktop (> 1280px) — breathing room
+// ---------------------------------------------------------------------------
+
+@media (min-width: $bp-desktop) {
+  .site-sidebar {
+    width: 280px;
+  }
+
+  .doc {
+    max-width: 860px;
+    padding: 40px 32px;
+  }
+}

@@ -1,0 +1,89 @@
+// ═══════════════════════════════════════════════════════════════
+// Luminary — Zola Theme for Hypercolor Docs
+// Ported from the Hypercolor app's Luminary design system.
+//
+// Glass morphism, glow-first interactivity, OKLCH color science.
+// Dark mode is the star. Light mode is clean and elegant.
+//
+// Import order matters — variables must load first so SCSS vars
+// ($bp-mobile, $radius-sm, etc.) are available to all partials.
+// ═══════════════════════════════════════════════════════════════
+
+// 1. Variables & design tokens (CSS custom properties + SCSS vars)
+@import 'variables';
+
+// 2. Reset, typography, noise overlay, scrollbars
+@import 'base';
+
+// 3. Keyframe animations & utility classes (before components that reference them)
+@import 'animations';
+
+// 4. Top navigation bar — glass morphism
+@import 'nav';
+
+// 5. Sidebar — glass panel, groups, links
+@import 'sidebar';
+
+// 6. Document content — headings, code, tables, quotes
+@import 'content';
+
+// 7. UI components — hero, features, callouts, search, buttons, TOC, kbd
+@import 'components';
+
+// 8. Responsive breakpoints & layout shell
+@import 'responsive';
+
+// ═══════════════════════════════════════════════════════════════
+// Footer — animated gradient divider + glass background
+// ═══════════════════════════════════════════════════════════════
+
+.site-footer {
+  text-align: center;
+  padding: 24px;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  background: var(--glass-bg);
+  @include glass;
+  border-top: 1px solid var(--border-subtle);
+
+  // Animated gradient divider — oracle flow
+  &::before {
+    content: '';
+    display: block;
+    height: 2px;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      oklch(0.65 0.30 320) 20%,
+      oklch(0.88 0.18 175) 50%,
+      oklch(0.65 0.30 320) 80%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: oracle-flow 8s ease infinite;
+    margin-bottom: 24px;
+    border-radius: 1px;
+  }
+
+  .footer-content {
+    max-width: 800px;
+    margin: 0 auto;
+  }
+
+  .footer__message,
+  .footer__copyright {
+    margin: 4px 0;
+  }
+
+  a {
+    color: oklch(0.88 0.18 175);
+    transition:
+      color var(--duration-medium) var(--ease-smooth),
+      text-shadow var(--duration-medium) var(--ease-smooth);
+
+    &:hover {
+      color: var(--accent);
+      text-shadow: 0 0 12px oklch(0.65 0.30 320 / 0.25);
+    }
+  }
+}

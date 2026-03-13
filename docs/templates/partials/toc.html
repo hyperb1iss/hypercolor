@@ -1,0 +1,13 @@
+{% if toc is defined and toc | length > 0 %}
+<aside class="site-toc" aria-label="Table of contents">
+  <div class="toc-title">On this page</div>
+  {% for h2 in toc %}
+    <a class="toc-link" href="#{{ h2.id }}" data-toc-id="{{ h2.id }}">{{ h2.title }}</a>
+    {% if h2.children %}
+      {% for h3 in h2.children %}
+        <a class="toc-link toc-link--nested" href="#{{ h3.id }}" data-toc-id="{{ h3.id }}">{{ h3.title }}</a>
+      {% endfor %}
+    {% endif %}
+  {% endfor %}
+</aside>
+{% endif %}

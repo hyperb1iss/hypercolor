@@ -1,0 +1,7 @@
+<div class="api-endpoint">
+  <div class="api-endpoint__header">
+    <span class="api-endpoint__method api-endpoint__method--{{ method | lower }}">{{ method }}</span>
+    <code class="api-endpoint__path">{{ path }}</code>
+  </div>
+  <div class="api-endpoint__body">{{ body | markdown | safe }}</div>
+</div>

@@ -1,0 +1,227 @@
+// ═══════════════════════════════════════════════════════════════
+// Content — document area styling under .doc
+// Headings, links, code, tables, blockquotes, lists, images
+// ═══════════════════════════════════════════════════════════════
+
+.doc {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 32px 24px;
+  line-height: 1.5;
+
+  // ── Paragraphs ──────────────────────────────────────────────
+
+  p {
+    margin: 0 0 16px;
+  }
+
+  // ── H1 — gradient text, accent → cyan ──────────────────────
+
+  h1 {
+    font-size: 2rem;
+    font-weight: 800;
+    margin-bottom: 16px;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, var(--accent), oklch(0.88 0.18 175));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  // ── H2 — ◆ prefix, top border separator ───────────────────
+
+  h2 {
+    font-size: 1.5rem;
+    margin-top: 48px;
+    margin-bottom: 16px;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 24px;
+    color: var(--text-primary);
+
+    &::before {
+      content: '\25C6\00A0'; // ◆ + space
+      color: var(--accent);
+    }
+  }
+
+  // ── H3 — code inside gets glass treatment ─────────────────
+
+  h3 {
+    font-size: 1.25rem;
+    margin-top: 32px;
+    margin-bottom: 12px;
+    color: var(--text-primary);
+
+    code {
+      background: var(--glass-bg);
+      border: 1px solid var(--accent-muted);
+      padding: 4px 10px;
+      border-radius: $radius-sm;
+      font-size: 1rem;
+    }
+  }
+
+  h4, h5, h6 {
+    margin-top: 24px;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+  }
+
+  // ── Links — cyan, hover → accent purple ────────────────────
+
+  a {
+    color: oklch(0.88 0.18 175); // cyan
+    text-decoration: none;
+    background-image: linear-gradient(var(--accent), var(--accent));
+    background-size: 0% 1px;
+    background-position: 0% 100%;
+    background-repeat: no-repeat;
+    transition:
+      color var(--duration-medium) var(--ease-smooth),
+      background-size var(--duration-medium) var(--ease-smooth),
+      text-shadow var(--duration-medium) var(--ease-smooth);
+
+    &:hover {
+      color: var(--accent);
+      background-size: 100% 1px;
+      text-shadow: 0 0 12px oklch(0.65 0.30 320 / 0.20);
+    }
+  }
+
+  // ── Inline Code — sunken bg, coral text ────────────────────
+
+  :not(pre) > code {
+    background: var(--surface-sunken);
+    color: oklch(0.72 0.22 350); // coral
+    border-radius: $radius-sm;
+    padding: 2px 6px;
+    font-size: 0.9em;
+  }
+
+  // ── Code Blocks — sunken surface, subtle border, glow ─────
+
+  pre {
+    background: var(--surface-sunken);
+    border: 1px solid var(--border-subtle);
+    border-radius: $radius-md;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    margin: 16px 0;
+    box-shadow: 0 0 1px var(--border-subtle),
+                inset 0 1px 0 oklch(1 0 0 / 0.03);
+    transition:
+      border-color var(--duration-medium) var(--ease-smooth),
+      box-shadow var(--duration-medium) var(--ease-smooth);
+
+    &:hover {
+      border-color: var(--border-default);
+      box-shadow: 0 0 12px oklch(0.65 0.30 320 / 0.06),
+                  0 0 1px var(--border-default),
+                  inset 0 1px 0 oklch(1 0 0 / 0.04);
+    }
+
+    code {
+      background: none;
+      color: inherit;
+      padding: 0;
+      border-radius: 0;
+      font-size: inherit;
+    }
+  }
+
+  // ── Tables — accent headers, subtle row hover ─────────────
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+
+  th {
+    background: var(--surface-raised);
+    color: var(--accent);
+    font-weight: 600;
+    border-bottom: 2px solid var(--accent);
+    padding: 10px 14px;
+    text-align: left;
+    font-size: 0.9rem;
+  }
+
+  td {
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 10px 14px;
+    transition: background var(--duration-medium) var(--ease-smooth);
+  }
+
+  tr:hover td {
+    background: var(--accent-subtle);
+  }
+
+  // ── Blockquotes — accent left bar, subtle bg ──────────────
+
+  blockquote {
+    border-left: 4px solid var(--accent);
+    background: var(--accent-subtle);
+    color: var(--text-secondary);
+    margin: 16px 0;
+    padding: 12px 20px;
+    border-radius: 0 $radius-md $radius-md 0;
+    transition:
+      border-left-color var(--duration-medium) var(--ease-smooth),
+      box-shadow var(--duration-medium) var(--ease-smooth);
+
+    &:hover {
+      border-left-color: oklch(0.88 0.18 175);
+      box-shadow: -2px 0 12px oklch(0.88 0.18 175 / 0.10);
+    }
+
+    p {
+      margin: 0;
+    }
+  }
+
+  // ── Horizontal Rules — gradient fade ──────────────────────
+
+  hr {
+    border: none;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--border-subtle) 20%,
+      var(--border-subtle) 80%,
+      transparent 100%
+    );
+    margin: 32px 0;
+  }
+
+  // ── Lists ──────────────────────────────────────────────────
+
+  ul, ol {
+    padding-left: 24px;
+    margin: 12px 0;
+  }
+
+  li + li {
+    margin-top: 4px;
+  }
+
+  li > ul,
+  li > ol {
+    margin: 4px 0;
+  }
+
+  // ── Images ─────────────────────────────────────────────────
+
+  img {
+    border-radius: $radius-md;
+    margin: 16px 0;
+    transition: box-shadow var(--duration-medium) var(--ease-smooth);
+
+    &:hover {
+      box-shadow: 0 0 24px oklch(0.65 0.30 320 / 0.10);
+    }
+  }
+}

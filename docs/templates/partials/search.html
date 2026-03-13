@@ -1,0 +1,28 @@
+<div class="search-modal" id="search-modal" role="dialog" aria-modal="true" aria-label="Search documentation" hidden>
+  <div class="search-modal__backdrop" id="search-backdrop" aria-hidden="true"></div>
+  <div class="search-modal__dialog">
+    <div class="search-modal__header">
+      <svg class="search-modal__icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="8"></circle>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      </svg>
+      <input
+        class="search-input"
+        id="search-input"
+        type="search"
+        placeholder="Search docs..."
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        aria-label="Search documentation"
+      >
+      <kbd class="search-modal__esc">Esc</kbd>
+    </div>
+    <div class="search-results" id="search-results" role="listbox" aria-label="Search results">
+      <div class="search-results__empty">
+        Type to search the documentation
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block title %}{{ section.title }} | {{ config.title }}{% endblock title %}
+{% block description %}{{ section.description | default(value=config.description) }}{% endblock description %}
+{% block og_title %}{{ section.title }} | {{ config.title }}{% endblock og_title %}
+{% block og_description %}{{ section.description | default(value=config.description) }}{% endblock og_description %}
+{% block og_path %}{{ section.path }}{% endblock og_path %}
+{% block twitter_title %}{{ section.title }} | {{ config.title }}{% endblock twitter_title %}
+{% block twitter_description %}{{ section.description | default(value=config.description) }}{% endblock twitter_description %}
+
+{% block content %}
+<div class="site-layout">
+  {% set current_path = section.path %}
+  {% set section_data = section %}
+  {% include "partials/sidebar.html" %}
+
+  <main class="site-main" id="main-content">
+    <article class="doc">
+      <header class="doc__header">
+        <h1 class="doc__title">{{ section.title }}</h1>
+        {% if section.description %}
+          <p class="doc__description">{{ section.description }}</p>
+        {% endif %}
+      </header>
+
+      {% if section.content %}
+        {{ section.content | safe }}
+      {% endif %}
+
+      {% if section.pages %}
+      <div class="section-pages">
+        <h2 class="section-pages__heading">In this section</h2>
+        <div class="section-pages__grid">
+          {% for page in section.pages %}
+          <a class="section-page-card" href="{{ page.permalink }}">
+            <h3 class="section-page-card__title">{{ page.title }}</h3>
+            {% if page.description %}
+              <p class="section-page-card__desc">{{ page.description }}</p>
+            {% endif %}
+          </a>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      {% if section.subsections %}
+      <div class="section-pages">
+        <h2 class="section-pages__heading">Subsections</h2>
+        <div class="section-pages__grid">
+          {% for subsection_path in section.subsections %}
+            {% set subsection = get_section(path=subsection_path) %}
+            <a class="section-page-card" href="{{ subsection.permalink }}">
+              <h3 class="section-page-card__title">{{ subsection.title }}</h3>
+              {% if subsection.description %}
+                <p class="section-page-card__desc">{{ subsection.description }}</p>
+              {% endif %}
+            </a>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </article>
+  </main>
+
+  {% set toc = section.toc %}
+  {% include "partials/toc.html" %}
+</div>
+{% endblock content %}

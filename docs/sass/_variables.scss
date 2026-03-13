@@ -1,0 +1,197 @@
+// ═══════════════════════════════════════════════════════════════
+// Luminary Design Tokens
+// Complete token system ported from Hypercolor's Luminary UI.
+// Dark mode on :root, light mode via [data-theme="light"].
+// OKLCH primaries, glass tokens, glow tokens, noise, scrollbar.
+// ═══════════════════════════════════════════════════════════════
+
+// ---------------------------------------------------------------------------
+// Font Stacks (SCSS variables — referenced in mixins/partials)
+// ---------------------------------------------------------------------------
+
+$font-sans:    'Inter', system-ui, -apple-system, sans-serif;
+$font-mono:    'JetBrains Mono', 'Fira Code', 'SF Mono', ui-monospace, monospace;
+$font-display: 'Inter', system-ui, sans-serif;
+
+// NOTE: The app uses Satoshi as primary. It's not on Google Fonts — self-host
+// later. Inter serves as the stand-in and is visually close.
+
+// ---------------------------------------------------------------------------
+// Breakpoints
+// ---------------------------------------------------------------------------
+
+$bp-mobile:   768px;
+$bp-tablet:  1024px;
+$bp-desktop: 1280px;
+
+// ---------------------------------------------------------------------------
+// Radii
+// ---------------------------------------------------------------------------
+
+$radius-sm:  6px;
+$radius-md: 10px;
+$radius-lg: 14px;
+$radius-xl: 20px;
+
+// ---------------------------------------------------------------------------
+// Motion (SCSS vars for shorthand use — also declared as CSS custom props)
+// ---------------------------------------------------------------------------
+
+$ease-silk:   cubic-bezier(0.4, 0, 0.2, 1);
+$ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+$ease-out:    cubic-bezier(0, 0, 0.2, 1);
+$ease-smooth: cubic-bezier(0.25, 0.1, 0.25, 1);
+
+$duration-fast:   120ms;
+$duration-normal: 200ms;
+$duration-medium: 300ms;
+$duration-slow:   400ms;
+
+// ---------------------------------------------------------------------------
+// Glass Mixin — workaround for grass SCSS compiler treating saturate() as
+// a Sass function. We use unquote() to emit raw CSS.
+// ---------------------------------------------------------------------------
+
+@mixin glass($blur: 12px, $saturate: 1.15) {
+  backdrop-filter: unquote('blur(#{$blur}) saturate(#{$saturate})');
+  -webkit-backdrop-filter: unquote('blur(#{$blur}) saturate(#{$saturate})');
+}
+
+@mixin glass-dense($blur: 20px, $saturate: 1.15) {
+  backdrop-filter: unquote('blur(#{$blur}) saturate(#{$saturate})');
+  -webkit-backdrop-filter: unquote('blur(#{$blur}) saturate(#{$saturate})');
+}
+
+// ---------------------------------------------------------------------------
+// CSS Custom Properties — Dark Mode (Default)
+// ---------------------------------------------------------------------------
+
+:root {
+  color-scheme: dark;
+
+  // ── Typography ──────────────────────────────────────────────
+  --font-sans:    #{$font-sans};
+  --font-mono:    #{$font-mono};
+  --font-display: #{$font-display};
+
+  // ── Motion ──────────────────────────────────────────────────
+  --ease-silk:       #{$ease-silk};
+  --ease-spring:     #{$ease-spring};
+  --ease-out:        #{$ease-out};
+  --ease-smooth:     #{$ease-smooth};
+  --duration-fast:   #{$duration-fast};
+  --duration-normal: #{$duration-normal};
+  --duration-medium: #{$duration-medium};
+  --duration-slow:   #{$duration-slow};
+
+  // ── Radii ───────────────────────────────────────────────────
+  --radius-sm: #{$radius-sm};
+  --radius-md: #{$radius-md};
+  --radius-lg: #{$radius-lg};
+  --radius-xl: #{$radius-xl};
+
+  // ── Surfaces ────────────────────────────────────────────────
+  --surface-base:    oklch(0.110 0.020 280);
+  --surface-raised:  oklch(0.130 0.018 280);
+  --surface-overlay: oklch(0.155 0.016 280);
+  --surface-sunken:  oklch(0.185 0.014 280);
+  --surface-hover:   oklch(0.220 0.012 280);
+  --surface-active:  oklch(0.280 0.010 280);
+
+  // ── Glass (Prism) ──────────────────────────────────────────
+  --glass-bg:        oklch(0.13 0.02 280 / 0.70);
+  --glass-bg-dense:  oklch(0.13 0.02 280 / 0.85);
+  --glass-blur:      12px;
+  --glass-saturate:  1.15;
+  --glass-border:    oklch(1 0 0 / 0.06);
+
+  // ── Text ────────────────────────────────────────────────────
+  --text-primary:    oklch(0.96 0.01 280);
+  --text-secondary:  oklch(0.68 0.03 280);
+  --text-tertiary:   oklch(0.52 0.04 280);
+
+  // ── Borders ─────────────────────────────────────────────────
+  --border-subtle:   oklch(1 0 0 / 0.06);
+  --border-default:  oklch(1 0 0 / 0.10);
+  --border-strong:   oklch(1 0 0 / 0.16);
+  --border-focus:    oklch(0.88 0.18 175 / 0.40);
+
+  // ── Accent ──────────────────────────────────────────────────
+  --accent:          oklch(0.65 0.30 320);
+  --accent-hover:    oklch(0.70 0.30 320);
+  --accent-muted:    oklch(0.65 0.30 320 / 0.12);
+  --accent-subtle:   oklch(0.65 0.30 320 / 0.06);
+
+  // ── SilkCircuit Palette ─────────────────────────────────────
+  --color-purple:    oklch(0.65 0.30 320);
+  --color-cyan:      oklch(0.88 0.18 175);
+  --color-coral:     oklch(0.72 0.22 350);
+  --color-yellow:    oklch(0.93 0.15 105);
+  --color-green:     oklch(0.85 0.22 155);
+  --color-red:       oklch(0.68 0.22 25);
+  --color-blue:      oklch(0.72 0.12 260);
+
+  // ── Status ──────────────────────────────────────────────────
+  --status-success:  oklch(0.85 0.22 155);
+  --status-error:    oklch(0.68 0.22 25);
+  --status-warning:  oklch(0.93 0.15 105);
+  --status-info:     oklch(0.72 0.12 260);
+
+  // ── Scrollbar ───────────────────────────────────────────────
+  --scrollbar-thumb: oklch(0.65 0.30 320 / 0.15);
+  --scrollbar-hover: oklch(0.65 0.30 320 / 0.30);
+
+  // ── Interactive Glows ───────────────────────────────────────
+  --glow-accent:     oklch(0.65 0.30 320);
+  --glow-focus:      oklch(0.88 0.18 175 / 0.30);
+  --glow-focus-soft: oklch(0.88 0.18 175 / 0.15);
+  --selection-bg:    oklch(0.65 0.30 320 / 0.25);
+
+  // ── Noise ───────────────────────────────────────────────────
+  --noise-opacity:   0.014;
+}
+
+// ---------------------------------------------------------------------------
+// Light Mode
+// ---------------------------------------------------------------------------
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  // Surfaces
+  --surface-base:    oklch(0.985 0.005 280);
+  --surface-raised:  oklch(0.960 0.008 280);
+  --surface-overlay: white;
+  --surface-sunken:  oklch(0.930 0.010 280);
+  --surface-hover:   oklch(0.890 0.012 280);
+  --surface-active:  oklch(0.840 0.014 280);
+
+  // Glass
+  --glass-bg:        oklch(0.98 0.005 280 / 0.70);
+  --glass-bg-dense:  oklch(0.98 0.005 280 / 0.85);
+  --glass-border:    oklch(0 0 0 / 0.08);
+
+  // Text
+  --text-primary:    oklch(0.18 0.02 280);
+  --text-secondary:  oklch(0.42 0.03 280);
+  --text-tertiary:   oklch(0.58 0.02 280);
+
+  // Borders
+  --border-subtle:   oklch(0 0 0 / 0.06);
+  --border-default:  oklch(0 0 0 / 0.10);
+  --border-strong:   oklch(0 0 0 / 0.18);
+  --border-focus:    oklch(0.65 0.30 320 / 0.50);
+
+  // Accent (desaturated for light backgrounds)
+  --accent:          oklch(0.58 0.28 320);
+  --accent-hover:    oklch(0.52 0.28 320);
+  --accent-muted:    oklch(0.58 0.28 320 / 0.10);
+  --accent-subtle:   oklch(0.58 0.28 320 / 0.05);
+
+  // Scrollbar
+  --scrollbar-thumb: oklch(0 0 0 / 0.12);
+  --scrollbar-hover: oklch(0 0 0 / 0.24);
+
+  // Noise
+  --noise-opacity:   0.006;
+}

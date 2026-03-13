@@ -1,0 +1,226 @@
+// ═══════════════════════════════════════════════════════════════
+// Navigation — glass nav bar, title, links, search trigger, theme toggle
+// ═══════════════════════════════════════════════════════════════
+
+.site-nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  height: 64px;
+  background: var(--glass-bg);
+  @include glass;
+  border-bottom: 1px solid var(--glass-border);
+  box-shadow: inset 0 -1px 0 var(--border-subtle);
+  transition: background var(--duration-slow) var(--ease-silk);
+}
+
+// ── Nav Container (flex wrapper inside .site-nav) ────────────
+
+.nav-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 100%;
+  padding: 0 24px;
+  max-width: 100%;
+}
+
+// ── Nav Title — gradient text, purple → cyan ─────────────────
+
+.nav-title {
+  background: linear-gradient(135deg, var(--accent), oklch(0.88 0.18 175));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  font-weight: 700;
+  font-size: 1.1rem;
+  letter-spacing: -0.01em;
+}
+
+// ── Nav Links ────────────────────────────────────────────────
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nav-link {
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 0.875rem;
+  padding: 6px 12px;
+  border-radius: $radius-sm;
+  position: relative;
+  transition:
+    color var(--duration-medium) var(--ease-smooth),
+    background var(--duration-medium) var(--ease-smooth),
+    text-shadow var(--duration-medium) var(--ease-smooth),
+    box-shadow var(--duration-medium) var(--ease-smooth);
+
+  &:hover {
+    color: var(--text-primary);
+    background: oklch(0.88 0.18 175 / 0.06);
+    text-shadow: 0 0 16px oklch(0.88 0.18 175 / 0.25);
+    box-shadow: 0 0 12px oklch(0.88 0.18 175 / 0.06);
+  }
+
+  &--active {
+    color: var(--accent);
+
+    &::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 12px;
+      right: 12px;
+      height: 2px;
+      background: var(--accent);
+      border-radius: 1px;
+      box-shadow: 0 0 8px oklch(0.65 0.30 320 / 0.40);
+    }
+  }
+}
+
+// ── Nav Actions (search + theme toggle) ──────────────────────
+
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+// ── Search Trigger ───────────────────────────────────────────
+
+.search-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-md;
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-medium) var(--ease-smooth),
+    color var(--duration-medium) var(--ease-smooth),
+    box-shadow var(--duration-medium) var(--ease-smooth),
+    background var(--duration-medium) var(--ease-smooth);
+
+  &:hover {
+    border-color: var(--border-default);
+    color: var(--text-secondary);
+    box-shadow: 0 0 10px oklch(0.65 0.30 320 / 0.06);
+    background: oklch(0.65 0.30 320 / 0.04);
+  }
+
+  kbd {
+    display: inline-block;
+    background: var(--surface-raised);
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: var(--font-mono);
+    font-size: 0.75em;
+    color: var(--text-tertiary);
+    line-height: 1.4;
+  }
+}
+
+// ── Theme Toggle ─────────────────────────────────────────────
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-sm;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    color var(--duration-medium) var(--ease-smooth),
+    background var(--duration-medium) var(--ease-smooth),
+    border-color var(--duration-medium) var(--ease-smooth),
+    box-shadow var(--duration-medium) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-spring);
+
+  &:hover {
+    color: var(--accent);
+    background: var(--accent-subtle);
+    border-color: var(--accent-muted);
+    box-shadow: 0 0 14px oklch(0.65 0.30 320 / 0.18);
+  }
+
+  &:active {
+    transform: scale(0.92);
+  }
+
+  // Show sun icon in dark mode, moon in light mode
+  .theme-toggle__sun  { display: block; }
+  .theme-toggle__moon { display: none; }
+}
+
+[data-theme="light"] .theme-toggle {
+  .theme-toggle__sun  { display: none; }
+  .theme-toggle__moon { display: block; }
+}
+
+// ── Nav Logo ─────────────────────────────────────────────────
+
+.nav-logo {
+  height: 36px;
+  width: auto;
+
+  @media (min-width: $bp-mobile) {
+    height: 42px;
+  }
+}
+
+// ── Mobile Hamburger ─────────────────────────────────────────
+
+.nav-hamburger {
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  width: 36px;
+  height: 36px;
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: $radius-sm;
+  padding: 8px;
+  cursor: pointer;
+  transition:
+    border-color var(--duration-medium) var(--ease-smooth),
+    box-shadow var(--duration-medium) var(--ease-smooth);
+
+  &:hover {
+    border-color: var(--border-default);
+    box-shadow: 0 0 10px oklch(0.65 0.30 320 / 0.08);
+  }
+
+  span {
+    display: block;
+    height: 2px;
+    background: var(--text-secondary);
+    border-radius: 1px;
+    transition: transform var(--duration-medium) var(--ease-spring),
+                opacity var(--duration-fast) ease;
+  }
+
+  &.is-active {
+    span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+    span:nth-child(2) { opacity: 0; }
+    span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+  }
+
+  @media (max-width: $bp-mobile - 1px) {
+    display: flex;
+  }
+}

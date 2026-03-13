@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}{{ config.title }}{% endblock title %}</title>
+  <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
+  <meta name="theme-color" content="#e135ff">
+  <meta name="author" content="{{ config.extra.author }}">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="{% block og_title %}{{ config.title }}{% endblock og_title %}">
+  <meta property="og:description" content="{% block og_description %}{{ config.description }}{% endblock og_description %}">
+  <meta property="og:url" content="{{ config.base_url }}{% block og_path %}/{% endblock og_path %}">
+  <meta property="og:site_name" content="{{ config.title }}">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{% block twitter_title %}{{ config.title }}{% endblock twitter_title %}">
+  <meta name="twitter:description" content="{% block twitter_description %}{{ config.description }}{% endblock twitter_description %}">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="{{ get_url(path='silkcircuit.css') }}">
+
+  {% block head_extra %}{% endblock head_extra %}
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
+  {% include "partials/nav.html" %}
+
+  {% block content %}{% endblock content %}
+
+  {% include "partials/footer.html" %}
+  {% include "partials/search.html" %}
+
+  <script defer src="{{ get_url(path='js/theme-toggle.js') }}"></script>
+  <script defer src="{{ get_url(path='js/search.js') }}"></script>
+  <script defer src="{{ get_url(path='js/mermaid-loader.js') }}"></script>
+
+  {% block body_extra %}{% endblock body_extra %}
+</body>
+</html>

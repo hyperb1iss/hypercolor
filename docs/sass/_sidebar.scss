@@ -1,0 +1,117 @@
+// ═══════════════════════════════════════════════════════════════
+// Sidebar — glass panel, group titles, links, active states
+// ═══════════════════════════════════════════════════════════════
+
+.site-sidebar {
+  width: 260px;
+  min-height: calc(100vh - 64px);
+  padding: 24px 16px;
+  overflow-y: auto;
+  background: var(--glass-bg);
+  @include glass;
+  border-right: 1px solid var(--border-subtle);
+  transition: background var(--duration-slow) var(--ease-silk);
+}
+
+// ── Group Titles — uppercase, accented ───────────────────────
+
+.sidebar-group__title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  padding: 8px 0 4px 0;
+  display: block;
+  transition: color var(--duration-medium) var(--ease-smooth);
+
+  &::before {
+    content: '\203A'; // ›
+    margin-right: 6px;
+    color: oklch(0.88 0.18 175); // cyan
+    font-weight: 400;
+    transition: margin-right var(--duration-medium) var(--ease-spring);
+  }
+
+  &:hover::before {
+    margin-right: 8px;
+  }
+}
+
+// ── Section Dividers ─────────────────────────────────────────
+
+.sidebar-group + .sidebar-group {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+// ── Sidebar Links ────────────────────────────────────────────
+
+.sidebar-link {
+  display: block;
+  color: var(--text-secondary);
+  font-weight: 400;
+  font-size: 0.9rem;
+  padding: 4px 0 4px 12px;
+  border-radius: $radius-sm;
+  transition:
+    color var(--duration-medium) var(--ease-smooth),
+    background var(--duration-medium) var(--ease-smooth),
+    box-shadow var(--duration-medium) var(--ease-smooth),
+    padding-left var(--duration-medium) var(--ease-smooth),
+    border-left-color var(--duration-medium) var(--ease-smooth);
+
+  &:hover {
+    color: var(--text-primary);
+    background: oklch(0.88 0.18 175 / 0.04);
+  }
+
+  // Active state — accent color + left bar with glow
+  &--active {
+    color: var(--accent);
+    font-weight: 600;
+    border-left: 3px solid var(--accent);
+    padding-left: 9px; // compensate for border width
+    background: var(--accent-subtle);
+    box-shadow: -2px 0 12px oklch(0.65 0.30 320 / 0.20);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Mobile Sidebar — slide in from left with overlay
+// ═══════════════════════════════════════════════════════════════
+
+@media (max-width: $bp-mobile - 1px) {
+  .site-sidebar {
+    position: fixed;
+    top: 64px;
+    left: 0;
+    bottom: 0;
+    z-index: 90;
+    width: 280px;
+    background: var(--glass-bg-dense);
+    transform: translateX(-100%);
+    transition: transform var(--duration-slow) var(--ease-silk);
+
+    &.is-open {
+      transform: translateX(0);
+    }
+  }
+
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    background: oklch(0 0 0 / 0.50);
+    backdrop-filter: blur(4px);
+    z-index: 89;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--duration-slow) var(--ease-silk);
+
+    &.is-visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+}

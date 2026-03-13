@@ -1,0 +1,25 @@
+title = "Hypercolor"
+description = "Open-source RGB lighting orchestration engine for Linux"
+base_url = "https://hyperb1iss.github.io/hypercolor"
+compile_sass = true
+build_search_index = true
+generate_feeds = false
+minify_html = true
+
+[search]
+include_title = true
+include_description = true
+include_path = true
+include_content = true
+
+[markdown]
+smart_punctuation = true
+
+[markdown.highlighting]
+enabled = true
+theme = "one-dark-pro"
+
+[extra]
+github_url = "https://github.com/hyperb1iss/hypercolor"
+license = "Apache-2.0"
+author = "Stefanie Jane"

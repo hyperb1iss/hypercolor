@@ -1,0 +1,29 @@
+<aside class="site-sidebar" id="site-sidebar" aria-label="Section navigation">
+  {% if section_data is defined %}
+    <div class="sidebar-group">
+      <div class="sidebar-group__title">{{ section_data.title }}</div>
+
+      {% for page in section_data.pages %}
+        {% set is_active = current_path is defined and page.path == current_path %}
+        <a class="sidebar-link{% if is_active %} sidebar-link--active{% endif %}" href="{{ page.permalink }}"{% if is_active %} aria-current="page"{% endif %}>
+          {{ page.title }}
+        </a>
+      {% endfor %}
+
+      {% if section_data.subsections is defined %}
+        {% for subsection_path in section_data.subsections %}
+          {% set subsection = get_section(path=subsection_path) %}
+          <div class="sidebar-group sidebar-group--nested">
+            <div class="sidebar-group__title">{{ subsection.title }}</div>
+            {% for page in subsection.pages %}
+              {% set is_active = current_path is defined and page.path == current_path %}
+              <a class="sidebar-link{% if is_active %} sidebar-link--active{% endif %}" href="{{ page.permalink }}"{% if is_active %} aria-current="page"{% endif %}>
+                {{ page.title }}
+              </a>
+            {% endfor %}
+          </div>
+        {% endfor %}
+      {% endif %}
+    </div>
+  {% endif %}
+</aside>

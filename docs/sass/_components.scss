@@ -1,0 +1,621 @@
+// ═══════════════════════════════════════════════════════════════
+// Components — hero, buttons, feature cards, callouts, search,
+//              TOC, kbd, API endpoints, section pages
+// ═══════════════════════════════════════════════════════════════
+
+// ---------------------------------------------------------------------------
+// Hero
+// ---------------------------------------------------------------------------
+
+.hero {
+  text-align: center;
+  padding: 100px 24px 72px;
+  position: relative;
+  overflow: hidden;
+
+  // Large radial glow behind the title
+  &::before {
+    content: '';
+    position: absolute;
+    width: 800px;
+    height: 500px;
+    background: radial-gradient(
+      ellipse,
+      oklch(0.65 0.30 320 / 0.12) 0%,
+      oklch(0.88 0.18 175 / 0.06) 40%,
+      transparent 70%
+    );
+    top: 40%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 0;
+    animation: breathe 6s ease-in-out infinite;
+  }
+
+  // Secondary cyan glow offset
+  &::after {
+    content: '';
+    position: absolute;
+    width: 400px;
+    height: 400px;
+    background: radial-gradient(
+      circle,
+      oklch(0.88 0.18 175 / 0.08),
+      transparent 60%
+    );
+    top: 30%;
+    right: 15%;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  &__title {
+    font-size: 4rem;
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    margin-bottom: 20px;
+    position: relative;
+    z-index: 1;
+    background: linear-gradient(135deg, oklch(0.70 0.30 320) 0%, oklch(0.88 0.18 175) 50%, oklch(0.65 0.30 320) 100%);
+    background-size: 200% 200%;
+    animation: oracle-flow 8s ease infinite;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 0 30px oklch(0.65 0.30 320 / 0.30));
+
+    @media (max-width: $bp-mobile - 1px) {
+      font-size: 2.5rem;
+    }
+  }
+
+  &__tagline {
+    color: var(--text-secondary);
+    font-size: 1.25rem;
+    max-width: 560px;
+    margin: 0 auto 36px;
+    line-height: 1.6;
+    position: relative;
+    z-index: 1;
+
+    @media (max-width: $bp-mobile - 1px) {
+      font-size: 1.1rem;
+    }
+  }
+
+  &__actions {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    position: relative;
+    z-index: 1;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Buttons
+// ---------------------------------------------------------------------------
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 24px;
+  border-radius: $radius-md;
+  font-weight: 600;
+  font-size: 0.95rem;
+  cursor: pointer;
+  border: 2px solid transparent;
+  text-decoration: none;
+  transition:
+    transform var(--duration-fast) var(--ease-spring),
+    box-shadow var(--duration-medium) var(--ease-smooth),
+    filter var(--duration-medium) var(--ease-smooth),
+    border-color var(--duration-medium) var(--ease-smooth),
+    background var(--duration-medium) var(--ease-smooth);
+
+  &--primary {
+    background: linear-gradient(135deg, oklch(0.65 0.30 320), oklch(0.72 0.22 350));
+    color: #fff;
+    border: none;
+    box-shadow: 0 0 20px oklch(0.65 0.30 320 / 0.30);
+
+    &:hover {
+      transform: scale(1.03);
+      filter: brightness(1.15);
+      box-shadow: 0 0 32px oklch(0.65 0.30 320 / 0.50),
+                  0 0 8px oklch(0.65 0.30 320 / 0.30);
+    }
+
+    &:active {
+      transform: scale(0.95);
+      box-shadow: 0 0 16px oklch(0.65 0.30 320 / 0.50);
+    }
+  }
+
+  &--secondary {
+    background: transparent;
+    border-color: oklch(0.88 0.18 175); // cyan
+    color: oklch(0.88 0.18 175);
+
+    &:hover {
+      transform: scale(1.03);
+      border-color: oklch(0.88 0.18 175);
+      background: oklch(0.88 0.18 175 / 0.08);
+      box-shadow: 0 0 20px oklch(0.88 0.18 175 / 0.18),
+                  inset 0 0 12px oklch(0.88 0.18 175 / 0.04);
+    }
+
+    &:active {
+      transform: scale(0.95);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Features container
+// ---------------------------------------------------------------------------
+
+.features {
+  padding: 0 24px 64px;
+  max-width: 1100px;
+  margin: 0 auto;
+  position: relative;
+
+  // Gradient separator above features
+  &::before {
+    content: '';
+    display: block;
+    height: 1px;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      oklch(0.65 0.30 320 / 0.20) 30%,
+      oklch(0.88 0.18 175 / 0.30) 50%,
+      oklch(0.65 0.30 320 / 0.20) 70%,
+      transparent 100%
+    );
+    margin-bottom: 48px;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Feature Grid
+// ---------------------------------------------------------------------------
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin: 32px 0;
+
+  @media (min-width: $bp-mobile) and (max-width: $bp-tablet - 1px) {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  @media (max-width: $bp-mobile - 1px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Feature Cards — glow-first hover, staggered entrance
+// ---------------------------------------------------------------------------
+
+.feature-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: $radius-lg;
+  padding: 24px;
+  opacity: 0;
+  animation: fadeInUp 0.4s var(--ease-silk) both;
+  transition:
+    border-color var(--duration-medium) var(--ease-smooth),
+    box-shadow 0.4s var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-spring),
+    background var(--duration-medium) var(--ease-smooth);
+
+  // Staggered entrance — 0.06s delay per card
+  @for $i from 1 through 12 {
+    &:nth-child(#{$i}) {
+      animation-delay: #{($i - 1) * 0.06}s;
+    }
+  }
+
+  // Hover: border brightens, glow emanates, inner rim. NO translateY lift.
+  &:hover {
+    border-color: oklch(0.65 0.30 320 / 0.20);
+    background: oklch(0.13 0.018 280 / 0.90);
+    box-shadow:
+      0 0 28px oklch(0.65 0.30 320 / 0.12),
+      0 0 2px oklch(0.65 0.30 320 / 0.20),
+      inset 0 1px 0 oklch(1 0 0 / 0.04);
+
+    .feature-card__icon {
+      filter: drop-shadow(0 0 16px oklch(0.88 0.18 175 / 0.65));
+    }
+
+    .feature-card__title {
+      text-shadow: 0 0 16px oklch(0.88 0.18 175 / 0.30);
+    }
+  }
+
+  // Active: squish + intensify
+  &:active {
+    transform: scale(0.97);
+    box-shadow:
+      0 0 16px oklch(0.65 0.30 320 / 0.22),
+      inset 0 0 12px oklch(0.65 0.30 320 / 0.06);
+  }
+
+  &__icon {
+    font-size: 2.5rem;
+    margin-bottom: 16px;
+    filter: drop-shadow(0 0 12px oklch(0.88 0.18 175 / 0.50));
+    line-height: 1;
+    transition: filter var(--duration-medium) var(--ease-smooth);
+  }
+
+  &__title {
+    color: oklch(0.88 0.18 175); // cyan
+    font-weight: 600;
+    font-size: 1.05rem;
+    margin-bottom: 8px;
+    transition: text-shadow var(--duration-medium) var(--ease-smooth);
+  }
+
+  &__desc {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    line-height: 1.6;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Section Page Cards
+// ---------------------------------------------------------------------------
+
+.section-pages {
+  margin: 32px 0;
+}
+
+.section-pages__heading {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-bottom: 16px;
+  color: var(--text-primary);
+}
+
+.section-pages__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.section-page-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-radius: $radius-lg;
+  padding: 20px;
+  color: var(--text-primary);
+  transition:
+    border-color var(--duration-medium) var(--ease-smooth),
+    box-shadow 0.4s var(--ease-smooth),
+    background var(--duration-medium) var(--ease-smooth),
+    transform var(--duration-fast) var(--ease-spring);
+
+  &:hover {
+    border-color: oklch(0.65 0.30 320 / 0.18);
+    background: oklch(0.13 0.018 280 / 0.90);
+    box-shadow:
+      0 0 24px oklch(0.65 0.30 320 / 0.10),
+      0 0 2px oklch(0.65 0.30 320 / 0.16),
+      inset 0 1px 0 oklch(1 0 0 / 0.04);
+  }
+
+  &:active {
+    transform: scale(0.98);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Callout Boxes — semantic borders, OKLCH alpha backgrounds
+// ---------------------------------------------------------------------------
+
+%callout-base {
+  border-left: 3px solid;
+  border-radius: 0 $radius-md $radius-md 0;
+  padding: 12px 20px;
+  margin: 16px 0;
+  font-size: 0.95rem;
+  transition:
+    box-shadow var(--duration-medium) var(--ease-smooth),
+    border-left-color var(--duration-medium) var(--ease-smooth);
+
+  &:hover {
+    box-shadow: -2px 0 16px oklch(0.65 0.30 320 / 0.08);
+  }
+
+  .callout__title {
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  .callout__content {
+    line-height: 1.6;
+  }
+}
+
+.callout--tip {
+  @extend %callout-base;
+  border-color: oklch(0.88 0.18 175); // cyan
+  background: oklch(0.88 0.18 175 / 0.06);
+
+  .callout__title {
+    color: oklch(0.88 0.18 175);
+  }
+}
+
+.callout--warning {
+  @extend %callout-base;
+  border-color: oklch(0.93 0.15 105); // yellow
+  background: oklch(0.93 0.15 105 / 0.06);
+
+  .callout__title {
+    color: oklch(0.93 0.15 105);
+  }
+}
+
+.callout--danger {
+  @extend %callout-base;
+  border-color: oklch(0.68 0.22 25); // red
+  background: oklch(0.68 0.22 25 / 0.06);
+
+  .callout__title {
+    color: oklch(0.68 0.22 25);
+  }
+}
+
+.callout--info {
+  @extend %callout-base;
+  border-color: oklch(0.72 0.12 260); // blue
+  background: oklch(0.72 0.12 260 / 0.06);
+
+  .callout__title {
+    color: oklch(0.72 0.12 260);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Search Modal — glass overlay + glass dialog
+// ---------------------------------------------------------------------------
+
+.search-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: oklch(0 0 0 / 0.60);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 15vh;
+}
+
+.search-modal__dialog {
+  width: 90%;
+  max-width: 560px;
+  background: var(--glass-bg-dense);
+  @include glass-dense;
+  border: 1px solid var(--glass-border);
+  border-radius: $radius-lg;
+  box-shadow: 0 0 80px oklch(0.65 0.30 320 / 0.08),
+              0 0 2px oklch(0.65 0.30 320 / 0.12);
+  overflow: hidden;
+  animation: scaleIn 0.2s var(--ease-spring) both;
+}
+
+// Legacy class support (templates may use .search-modal directly)
+.search-modal {
+  @extend .search-modal__dialog;
+}
+
+.search-input {
+  width: 100%;
+  padding: 14px 20px;
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  border: none;
+  outline: none;
+  background: var(--surface-overlay);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-subtle);
+  transition: border-color var(--duration-normal) var(--ease-silk),
+              box-shadow var(--duration-normal) var(--ease-silk);
+
+  &::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  &:focus {
+    border-bottom-color: var(--accent);
+    box-shadow: inset 0 -2px 0 0 oklch(0.65 0.30 320 / 0.20);
+  }
+}
+
+.search-results {
+  max-height: 400px;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.search-result {
+  padding: 10px 16px;
+  border-radius: $radius-sm;
+  cursor: pointer;
+  transition:
+    background var(--duration-medium) var(--ease-smooth),
+    box-shadow var(--duration-medium) var(--ease-smooth);
+
+  &:hover {
+    background: var(--surface-hover);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  &__title {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  &__preview {
+    font-size: 0.85rem;
+    color: var(--text-tertiary);
+    margin-top: 2px;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Table of Contents — sticky right sidebar
+// ---------------------------------------------------------------------------
+
+.site-toc {
+  width: 220px;
+  flex-shrink: 0;
+  padding: 24px 16px;
+  position: sticky;
+  top: 64px;
+  align-self: flex-start;
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+}
+
+.toc-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  margin-bottom: 12px;
+}
+
+.toc-link {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--text-tertiary);
+  padding: 4px 12px;
+  border-left: 3px solid transparent;
+  transition:
+    color var(--duration-medium) var(--ease-smooth),
+    border-left-color var(--duration-medium) var(--ease-smooth),
+    box-shadow var(--duration-medium) var(--ease-smooth),
+    background var(--duration-medium) var(--ease-smooth);
+
+  &:hover {
+    color: var(--text-primary);
+    background: oklch(0.88 0.18 175 / 0.04);
+    border-left-color: oklch(0.88 0.18 175 / 0.15);
+  }
+
+  &--active {
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
+    padding-left: 9px;
+    margin-left: -3px;
+    box-shadow: -2px 0 10px oklch(0.65 0.30 320 / 0.15);
+  }
+
+  &--nested {
+    padding-left: 24px;
+
+    &.toc-link--active {
+      padding-left: 21px; // compensate for border
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard Keys — glass + accent
+// ---------------------------------------------------------------------------
+
+kbd {
+  display: inline-block;
+  background: var(--glass-bg);
+  border: 1px solid var(--accent-muted);
+  border-radius: $radius-sm;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: var(--accent);
+  line-height: 1.4;
+  transition:
+    border-color var(--duration-medium) var(--ease-smooth),
+    box-shadow var(--duration-medium) var(--ease-smooth);
+
+  &:hover {
+    border-color: var(--accent);
+    box-shadow: 0 0 8px oklch(0.65 0.30 320 / 0.15);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// API Endpoint Cards — glass bg, colored method badges
+// ---------------------------------------------------------------------------
+
+.api-endpoint {
+  background: var(--glass-bg);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border-default);
+  border-radius: $radius-md;
+  padding: 16px 20px;
+  margin: 12px 0;
+  transition:
+    border-color var(--duration-medium) var(--ease-smooth),
+    box-shadow 0.4s var(--ease-smooth),
+    background var(--duration-medium) var(--ease-smooth);
+
+  &:hover {
+    border-color: oklch(0.65 0.30 320 / 0.16);
+    box-shadow: 0 0 20px oklch(0.65 0.30 320 / 0.10),
+                inset 0 1px 0 oklch(1 0 0 / 0.03);
+    background: oklch(0.13 0.02 280 / 0.80);
+  }
+
+  &__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  &__method {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: $radius-sm;
+
+    // Method colors from the SilkCircuit palette
+    &--get    { background: oklch(0.88 0.18 175 / 0.12); color: oklch(0.88 0.18 175); }
+    &--post   { background: oklch(0.85 0.22 155 / 0.12); color: oklch(0.85 0.22 155); }
+    &--put    { background: oklch(0.93 0.15 105 / 0.12); color: oklch(0.93 0.15 105); }
+    &--delete { background: oklch(0.68 0.22 25 / 0.12);  color: oklch(0.68 0.22 25);  }
+  }
+
+  &__path {
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    color: var(--text-primary);
+  }
+
+  &__body {
+    margin-top: 12px;
+    font-size: 0.85rem;
+    color: var(--text-tertiary);
+    line-height: 1.6;
+  }
+}

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} | {{ config.title }}{% endblock title %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock description %}
+{% block og_title %}{{ page.title }} | {{ config.title }}{% endblock og_title %}
+{% block og_description %}{{ page.description | default(value=config.description) }}{% endblock og_description %}
+{% block og_path %}{{ page.path }}{% endblock og_path %}
+{% block twitter_title %}{{ page.title }} | {{ config.title }}{% endblock twitter_title %}
+{% block twitter_description %}{{ page.description | default(value=config.description) }}{% endblock twitter_description %}
+
+{% block content %}
+<div class="site-layout">
+  {% set current_path = page.path %}
+  {% set current_section = page.ancestors | last %}
+  {% if current_section %}
+    {% set section_data = get_section(path=current_section) %}
+    {% include "partials/sidebar.html" %}
+  {% endif %}
+
+  <main class="site-main" id="main-content">
+    <article class="doc">
+      <header class="doc__header">
+        <h1 class="doc__title">{{ page.title }}</h1>
+        {% if page.description %}
+          <p class="doc__description">{{ page.description }}</p>
+        {% endif %}
+      </header>
+      {{ page.content | safe }}
+    </article>
+
+    {% if page.lower or page.higher %}
+    <nav class="doc__pagination" aria-label="Page navigation">
+      {% if page.lower %}
+        <a class="doc__pagination-link doc__pagination-link--prev" href="{{ page.lower.permalink }}" rel="prev">
+          <span class="doc__pagination-label">Previous</span>
+          <span class="doc__pagination-title">{{ page.lower.title }}</span>
+        </a>
+      {% else %}
+        <span></span>
+      {% endif %}
+      {% if page.higher %}
+        <a class="doc__pagination-link doc__pagination-link--next" href="{{ page.higher.permalink }}" rel="next">
+          <span class="doc__pagination-label">Next</span>
+          <span class="doc__pagination-title">{{ page.higher.title }}</span>
+        </a>
+      {% endif %}
+    </nav>
+    {% endif %}
+  </main>
+
+  {% set toc = page.toc %}
+  {% include "partials/toc.html" %}
+</div>
+{% endblock content %}
