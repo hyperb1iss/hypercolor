@@ -16,6 +16,8 @@ pub struct ParamSlider<'a> {
     min_label: Option<&'a str>,
     max_label: Option<&'a str>,
     accent_color: Color,
+    /// Optional gradient stops (start, end) for per-cell color interpolation.
+    gradient: Option<[(u8, u8, u8); 2]>,
 }
 
 /// Dim gray used for the unfilled portion of the slider track.
@@ -34,6 +36,7 @@ impl<'a> ParamSlider<'a> {
             min_label: None,
             max_label: None,
             accent_color: Color::Rgb(0, 200, 255),
+            gradient: None,
         }
     }
 
@@ -52,6 +55,15 @@ impl<'a> ParamSlider<'a> {
     #[must_use]
     pub fn accent_color(mut self, color: Color) -> Self {
         self.accent_color = color;
+        self
+    }
+
+    /// Set a gradient fill for the bar. Each cell interpolates between the
+    /// two RGB stops based on its position. Overrides `accent_color` for
+    /// the filled portion.
+    #[must_use]
+    pub fn gradient_fill(mut self, from: (u8, u8, u8), to: (u8, u8, u8)) -> Self {
+        self.gradient = Some([from, to]);
         self
     }
 }
@@ -132,11 +144,23 @@ impl Widget for ParamSlider<'_> {
             let filled = ((self.value * f32::from(bar_width)).round() as u16).min(bar_width);
             let empty = bar_width - filled;
 
-            let filled_style = Style::default().fg(self.accent_color);
-            for _ in 0..filled {
+            for fi in 0..filled {
+                let fg = if let Some([from, to]) = self.gradient {
+                    let t = if filled <= 1 {
+                        0.0
+                    } else {
+                        f32::from(fi) / f32::from((filled - 1).max(1))
+                    };
+                    let lerp = |a: u8, b: u8| -> u8 {
+                        (f32::from(a) + (f32::from(b) - f32::from(a)) * t) as u8
+                    };
+                    Color::Rgb(lerp(from.0, to.0), lerp(from.1, to.1), lerp(from.2, to.2))
+                } else {
+                    self.accent_color
+                };
                 let cell = &mut buf[(x, y)];
                 cell.set_char('\u{2593}'); // ▓
-                cell.set_style(filled_style);
+                cell.set_style(Style::default().fg(fg));
                 x += 1;
             }
 

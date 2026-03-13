@@ -14,7 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::action::Action;
 use crate::component::Component;
 use crate::state::{ControlDefinition, ControlValue, EffectSummary};
-use crate::widgets::ParamSlider;
+use crate::widgets::{ColorPickerPopup, ParamSlider, hsl_to_rgb, rgb_to_hsl};
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
 
@@ -30,6 +30,16 @@ const BORDER_DIM: Color = Color::Rgb(90, 21, 102);
 const DEFAULT_STEP: f32 = 0.05;
 
 // ── Effect Control View ────────────────────────────────────────────────
+
+/// Color picker popup state.
+struct ColorPickerState {
+    /// Index of the control being edited.
+    ctrl_idx: usize,
+    /// HSL channels: [hue 0-360, saturation 0-1, lightness 0-1].
+    hsl: [f32; 3],
+    /// Currently selected channel (0=H, 1=S, 2=L).
+    selected_channel: usize,
+}
 
 /// Focused parameter editing view for the active effect.
 pub struct EffectControlView {
@@ -48,6 +58,9 @@ pub struct EffectControlView {
 
     // Navigation
     selected_control: usize,
+
+    // Color picker popup
+    color_picker: Option<ColorPickerState>,
 }
 
 impl Default for EffectControlView {
@@ -69,6 +82,7 @@ impl EffectControlView {
             controls: Vec::new(),
             control_values: HashMap::new(),
             selected_control: 0,
+            color_picker: None,
         }
     }
 
@@ -200,9 +214,21 @@ impl EffectControlView {
         content_y
     }
 
+    /// Compute the maximum label width across all controls for alignment.
+    fn max_label_width(&self) -> usize {
+        self.controls
+            .iter()
+            .map(|c| c.name.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(4) // minimum 4 chars
+    }
+
     /// Render all controls starting from the given y position.
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     fn render_controls(&self, frame: &mut Frame, inner: Rect, start_y: u16) {
         let ctrl_width = inner.width.saturating_sub(4);
+        let label_w = self.max_label_width();
         let mut content_y = start_y;
 
         for (i, ctrl) in self.controls.iter().enumerate() {
@@ -211,32 +237,26 @@ impl EffectControlView {
             }
 
             let is_selected = i == self.selected_control;
-            let ctrl_type = ctrl.control_type.as_str();
-
-            let row_height: u16 = match ctrl_type {
-                "slider" => 3,
-                "dropdown" => 2,
-                _ => 1,
-            };
 
             let available = (inner.y + inner.height).saturating_sub(content_y);
             if available < 1 {
                 break;
             }
 
-            let actual_height = row_height.min(available);
-            let ctrl_area = Rect::new(inner.x + 2, content_y, ctrl_width, actual_height);
+            let ctrl_area = Rect::new(inner.x + 2, content_y, ctrl_width, available.min(2));
 
-            // Selection indicator
+            // Selection indicator — glowing bar
             if is_selected {
                 frame.render_widget(
-                    Paragraph::new(Span::styled("\u{25B8}", Style::default().fg(NEON_CYAN))),
-                    Rect::new(inner.x, content_y, 2, 1),
+                    Paragraph::new(Span::styled("\u{2503}", Style::default().fg(NEON_CYAN))),
+                    Rect::new(inner.x + 1, content_y, 1, 1),
                 );
             }
 
-            self.render_single_control(frame, ctrl, ctrl_area, is_selected);
-            content_y += row_height + 1;
+            self.render_single_control(frame, ctrl, ctrl_area, is_selected, label_w);
+
+            // Spacing: 2 rows per control (1 content + 1 gap)
+            content_y += 2;
         }
 
         // Key hints at the bottom
@@ -248,8 +268,8 @@ impl EffectControlView {
                     Span::styled(" navigate  ", Style::default().fg(DIM_GRAY)),
                     Span::styled("h/l", Style::default().fg(ELECTRIC_YELLOW)),
                     Span::styled(" adjust  ", Style::default().fg(DIM_GRAY)),
-                    Span::styled("Space", Style::default().fg(ELECTRIC_YELLOW)),
-                    Span::styled(" toggle", Style::default().fg(DIM_GRAY)),
+                    Span::styled("Enter", Style::default().fg(ELECTRIC_YELLOW)),
+                    Span::styled(" edit color", Style::default().fg(DIM_GRAY)),
                 ])),
                 Rect::new(inner.x + 2, hint_y, inner.width.saturating_sub(4), 1),
             );
@@ -257,92 +277,104 @@ impl EffectControlView {
     }
 
     /// Dispatch rendering for a single control by type.
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     fn render_single_control(
         &self,
         frame: &mut Frame,
         ctrl: &ControlDefinition,
         area: Rect,
         is_selected: bool,
+        label_w: usize,
     ) {
         match ctrl.control_type.as_str() {
-            "slider" => self.render_slider_control(frame, ctrl, area, is_selected),
-            "toggle" => self.render_toggle_control(frame, ctrl, area, is_selected),
-            "dropdown" => self.render_dropdown_control(frame, ctrl, area, is_selected),
-            "color" => self.render_color_control(frame, ctrl, area, is_selected),
-            _ => Self::render_unknown_control(frame, ctrl, area),
+            "slider" => self.render_slider_control(frame, ctrl, area, is_selected, label_w),
+            "toggle" => self.render_toggle_control(frame, ctrl, area, is_selected, label_w),
+            "dropdown" => self.render_dropdown_control(frame, ctrl, area, is_selected, label_w),
+            "color" => self.render_color_control(frame, ctrl, area, is_selected, label_w),
+            _ => Self::render_unknown_control(frame, ctrl, area, label_w),
         }
     }
 
-    /// Render a slider control row.
+    /// Render a slider — single-line with label, gradient bar, and value.
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     fn render_slider_control(
         &self,
         frame: &mut Frame,
         ctrl: &ControlDefinition,
         area: Rect,
         is_selected: bool,
+        label_w: usize,
     ) {
-        if area.height < 2 || area.width < 10 {
+        if area.width < 10 {
             return;
         }
 
-        let name_style = selected_style(is_selected);
-
-        // Control name
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(&ctrl.name, name_style))),
-            Rect::new(area.x, area.y, area.width, 1),
-        );
-
-        // Slider bar
         let norm = self.normalized_value(ctrl);
-        let accent = if is_selected {
-            NEON_CYAN
+
+        // Per-type gradient colors: different control vibes
+        let (grad_from, grad_to) = if is_selected {
+            ((128, 255, 234), (225, 53, 255)) // Neon Cyan → Electric Purple
         } else {
-            Color::Rgb(255, 106, 193)
+            ((255, 106, 193), (225, 53, 255)) // Coral → Electric Purple
         };
-        let arrow_prefix = if is_selected { "\u{25C0} " } else { "  " };
-        let slider = ParamSlider::new(arrow_prefix, norm).accent_color(accent);
-        frame.render_widget(slider, Rect::new(area.x, area.y + 1, area.width, 1));
+
+        let padded_label = format!("{:<width$}", ctrl.name, width = label_w + 1);
+        let slider = ParamSlider::new(&padded_label, norm)
+            .gradient_fill(grad_from, grad_to)
+            .accent_color(NEON_CYAN);
+        frame.render_widget(slider, Rect::new(area.x, area.y, area.width, 1));
     }
 
-    /// Render a toggle control row.
+    /// Render a toggle — inline label + styled switch.
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     fn render_toggle_control(
         &self,
         frame: &mut Frame,
         ctrl: &ControlDefinition,
         area: Rect,
         is_selected: bool,
+        label_w: usize,
     ) {
-        if area.height < 1 || area.width < 10 {
+        if area.width < 10 {
             return;
         }
 
         let on = self.current_value(ctrl).as_bool().unwrap_or(false);
         let name_style = selected_style(is_selected);
-        let (toggle_text, toggle_color) = if on {
-            ("[\u{25CF}] On", SUCCESS_GREEN)
+
+        let (indicator, state_text, state_color) = if on {
+            ("\u{25C9}", "On", SUCCESS_GREEN) // ◉
         } else {
-            ("[ ] Off", DIM_GRAY)
+            ("\u{25CB}", "Off", DIM_GRAY) // ○
         };
 
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(format!("{:<20}", ctrl.name), name_style),
-                Span::styled(toggle_text, Style::default().fg(toggle_color)),
+                Span::styled(
+                    format!("{:<width$}", ctrl.name, width = label_w + 1),
+                    name_style,
+                ),
+                Span::styled(
+                    format!("{indicator} "),
+                    Style::default().fg(state_color),
+                ),
+                Span::styled(state_text, Style::default().fg(state_color)),
             ])),
             Rect::new(area.x, area.y, area.width, 1),
         );
     }
 
-    /// Render a dropdown control row.
+    /// Render a dropdown — label + current value with arrows.
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     fn render_dropdown_control(
         &self,
         frame: &mut Frame,
         ctrl: &ControlDefinition,
         area: Rect,
         is_selected: bool,
+        label_w: usize,
     ) {
-        if area.height < 1 || area.width < 10 {
+        if area.width < 10 {
             return;
         }
 
@@ -352,47 +384,45 @@ impl EffectControlView {
         };
 
         let name_style = selected_style(is_selected);
-        let value_style = if is_selected {
-            Style::default().fg(NEON_CYAN)
+        let value_color = if is_selected {
+            NEON_CYAN
         } else {
-            Style::default().fg(ELECTRIC_YELLOW)
+            ELECTRIC_YELLOW
         };
 
-        let arrows = if is_selected { "\u{25C0} \u{25B6}" } else { "" };
+        let arrows = if is_selected {
+            "\u{25C0} \u{25B6}"
+        } else {
+            ""
+        };
 
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(format!("{:<20}", ctrl.name), name_style),
-                Span::styled(format!("[\u{25B8} {current_text}]"), value_style),
+                Span::styled(
+                    format!("{:<width$}", ctrl.name, width = label_w + 1),
+                    name_style,
+                ),
+                Span::styled(
+                    format!("\u{25B8} {current_text}"),
+                    Style::default().fg(value_color),
+                ),
                 Span::styled(format!("  {arrows}"), Style::default().fg(DIM_GRAY)),
             ])),
             Rect::new(area.x, area.y, area.width, 1),
         );
-
-        // Labels on second line if space permits
-        if area.height >= 2 {
-            let labels_text = ctrl.labels.join(" \u{00B7} ");
-            if !labels_text.is_empty() {
-                frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(
-                        format!("{:>20}{labels_text}", ""),
-                        Style::default().fg(DIM_GRAY),
-                    ))),
-                    Rect::new(area.x, area.y + 1, area.width, 1),
-                );
-            }
-        }
     }
 
-    /// Render a color swatch control row.
+    /// Render a color swatch — label + swatch blocks + hex + edit hint.
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     fn render_color_control(
         &self,
         frame: &mut Frame,
         ctrl: &ControlDefinition,
         area: Rect,
         is_selected: bool,
+        label_w: usize,
     ) {
-        if area.height < 1 || area.width < 10 {
+        if area.width < 10 {
             return;
         }
 
@@ -408,35 +438,146 @@ impl EffectControlView {
         let b = float_to_u8(color_arr[2]);
         let swatch_color = Color::Rgb(r, g, b);
 
+        let mut spans = vec![
+            Span::styled(
+                format!("{:<width$}", ctrl.name, width = label_w + 1),
+                name_style,
+            ),
+            Span::styled(
+                "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}",
+                Style::default().fg(swatch_color),
+            ),
+            Span::styled(
+                format!("  #{r:02x}{g:02x}{b:02x}"),
+                Style::default()
+                    .fg(BASE_WHITE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ];
+
+        if is_selected {
+            spans.push(Span::styled(
+                "  \u{25C8}Enter",
+                Style::default().fg(ELECTRIC_PURPLE),
+            ));
+        }
+
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(format!("{:<20}", ctrl.name), name_style),
-                Span::styled(
-                    "\u{2588}\u{2588}\u{2588}\u{2588}",
-                    Style::default().fg(swatch_color),
-                ),
-                Span::styled(
-                    format!("  #{r:02x}{g:02x}{b:02x}"),
-                    Style::default().fg(DIM_GRAY),
-                ),
-            ])),
+            Paragraph::new(Line::from(spans)),
             Rect::new(area.x, area.y, area.width, 1),
         );
     }
 
     /// Render an unknown control type as plain text.
-    fn render_unknown_control(frame: &mut Frame, ctrl: &ControlDefinition, area: Rect) {
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+    fn render_unknown_control(
+        frame: &mut Frame,
+        ctrl: &ControlDefinition,
+        area: Rect,
+        label_w: usize,
+    ) {
         let ctrl_type = &ctrl.control_type;
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    format!("{:<20}", ctrl.name),
+                    format!("{:<width$}", ctrl.name, width = label_w + 1),
                     Style::default().fg(BASE_WHITE),
                 ),
                 Span::styled(format!("({ctrl_type})"), Style::default().fg(DIM_GRAY)),
             ])),
             Rect::new(area.x, area.y, area.width, 1),
         );
+    }
+
+    /// Open the color picker for the currently selected control.
+    fn open_color_picker(&mut self) {
+        let idx = self.selected_control;
+        if let Some(ctrl) = self.controls.get(idx)
+            && ctrl.control_type == "color"
+        {
+            let color_arr = match self.current_value(ctrl) {
+                ControlValue::Color(c) => c,
+                _ => [0.5, 0.5, 0.5, 1.0],
+            };
+            let (h, s, l) = rgb_to_hsl(color_arr[0], color_arr[1], color_arr[2]);
+            self.color_picker = Some(ColorPickerState {
+                ctrl_idx: idx,
+                hsl: [h, s, l],
+                selected_channel: 0,
+            });
+        }
+    }
+
+    /// Confirm the color picker and apply the selected color.
+    fn confirm_color_picker(&mut self) -> Option<Action> {
+        let picker = self.color_picker.take()?;
+        let ctrl = self.controls.get(picker.ctrl_idx)?;
+        let (r, g, b) = hsl_to_rgb(picker.hsl[0], picker.hsl[1], picker.hsl[2]);
+        let old = match self.current_value(ctrl) {
+            ControlValue::Color(c) => c[3],
+            _ => 1.0,
+        };
+        let new_cv = ControlValue::Color([r, g, b, old]);
+        self.control_values.insert(ctrl.id.clone(), new_cv.clone());
+        Some(Action::UpdateControl(ctrl.id.clone(), new_cv))
+    }
+
+    /// Handle key events while the color picker is open.
+    fn handle_picker_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let picker = self.color_picker.as_mut()?;
+
+        match key.code {
+            KeyCode::Esc => {
+                self.color_picker = None;
+                None
+            }
+            KeyCode::Enter => self.confirm_color_picker(),
+            KeyCode::Char('j') | KeyCode::Down => {
+                picker.selected_channel = (picker.selected_channel + 1).min(2);
+                None
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                picker.selected_channel = picker.selected_channel.saturating_sub(1);
+                None
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                let step = match picker.selected_channel {
+                    0 => -5.0,
+                    _ => -0.02,
+                };
+                adjust_hsl_channel(&mut picker.hsl, picker.selected_channel, step);
+                None
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                let step = match picker.selected_channel {
+                    0 => 5.0,
+                    _ => 0.02,
+                };
+                adjust_hsl_channel(&mut picker.hsl, picker.selected_channel, step);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Render the color picker popup overlay.
+    fn render_color_picker(&self, frame: &mut Frame, area: Rect) {
+        if let Some(ref picker) = self.color_picker {
+            let ctrl_name = self
+                .controls
+                .get(picker.ctrl_idx)
+                .map_or("Color", |c| &c.name);
+
+            // Center popup: 40 wide, 9 tall
+            let popup_w = 40.min(area.width.saturating_sub(4));
+            let popup_h = 9.min(area.height.saturating_sub(2));
+            let popup_x = area.x + (area.width.saturating_sub(popup_w)) / 2;
+            let popup_y = area.y + (area.height.saturating_sub(popup_h)) / 2;
+            let popup_area = Rect::new(popup_x, popup_y, popup_w, popup_h);
+
+            let widget = ColorPickerPopup::new(ctrl_name, picker.hsl, picker.selected_channel);
+            frame.render_widget(widget, popup_area);
+        }
     }
 }
 
@@ -468,6 +609,15 @@ fn selected_style(is_selected: bool) -> Style {
     }
 }
 
+/// Adjust an HSL channel in-place, clamping to valid ranges.
+fn adjust_hsl_channel(hsl: &mut [f32; 3], channel: usize, delta: f32) {
+    match channel {
+        0 => hsl[0] = (hsl[0] + delta).rem_euclid(360.0),
+        1 => hsl[1] = (hsl[1] + delta).clamp(0.0, 1.0),
+        _ => hsl[2] = (hsl[2] + delta).clamp(0.0, 1.0),
+    }
+}
+
 impl Component for EffectControlView {
     fn init(&mut self, action_tx: UnboundedSender<Action>) -> Result<()> {
         self.action_tx = Some(action_tx);
@@ -475,6 +625,11 @@ impl Component for EffectControlView {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) -> Result<Option<Action>> {
+        // Color picker intercepts all keys when open
+        if self.color_picker.is_some() {
+            return Ok(self.handle_picker_key(key));
+        }
+
         if self.controls.is_empty() {
             return Ok(None);
         }
@@ -515,13 +670,17 @@ impl Component for EffectControlView {
                 Ok(action)
             }
 
-            // Toggle / activate
+            // Toggle / activate / open color picker
             KeyCode::Char(' ') | KeyCode::Enter => {
                 let idx = self.selected_control;
                 let ctrl_type = self.controls.get(idx).map(|c| c.control_type.clone());
                 let action = match ctrl_type.as_deref() {
                     Some("toggle") => self.toggle_bool(idx),
                     Some("dropdown") => self.cycle_dropdown(idx, true),
+                    Some("color") => {
+                        self.open_color_picker();
+                        None
+                    }
                     _ => None,
                 };
                 Ok(action)
@@ -618,6 +777,11 @@ impl Component for EffectControlView {
 
         let content_y = self.render_description(frame, inner);
         self.render_controls(frame, inner, content_y);
+
+        // Color picker overlay (rendered last, on top)
+        if self.color_picker.is_some() {
+            self.render_color_picker(frame, area);
+        }
     }
 
     fn focused(&self) -> bool {

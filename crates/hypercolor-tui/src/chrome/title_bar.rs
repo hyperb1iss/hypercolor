@@ -12,10 +12,33 @@ use crate::screen::ScreenId;
 use crate::state::{AppState, ConnectionStatus};
 use crate::theme;
 
-/// Stateless title bar renderer.
-pub struct TitleBar;
+/// Animated title bar renderer with sine-wave shimmer on the brand text.
+pub struct TitleBar {
+    /// Animation phase in radians, advanced on each Tick.
+    phase: f32,
+}
+
+impl Default for TitleBar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TitleBar {
+    /// Create a new title bar with initial phase.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { phase: 0.0 }
+    }
+
+    /// Advance the shimmer animation by one tick (~16ms at 60fps).
+    pub fn tick(&mut self) {
+        self.phase += 0.08;
+        if self.phase > std::f32::consts::TAU * 100.0 {
+            self.phase -= std::f32::consts::TAU * 100.0;
+        }
+    }
+
     /// Render the title bar into the given area.
     #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     pub fn render(
@@ -32,9 +55,9 @@ impl TitleBar {
 
         let mut spans = Vec::new();
 
-        // Spaced gradient brand
+        // Animated gradient brand
         spans.push(Span::raw(" "));
-        build_gradient_brand(&mut spans);
+        build_gradient_brand(&mut spans, self.phase);
 
         // Separator + active screen name
         spans.push(Span::styled(
@@ -120,20 +143,25 @@ fn build_status_spans(state: &AppState) -> Vec<Span<'static>> {
     spans
 }
 
-/// Render `H Y P E R C O L O R` with per-character gradient and letter-spacing.
+/// Render `H Y P E R C O L O R` with animated per-character gradient shimmer.
+///
+/// Each character's gradient position is offset by a sine wave, creating a
+/// rippling color effect that flows across the brand text.
 #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
-fn build_gradient_brand(spans: &mut Vec<Span<'static>>) {
+fn build_gradient_brand(spans: &mut Vec<Span<'static>>, phase: f32) {
     const BRAND: &str = "HYPERCOLOR";
     let len = BRAND.len();
     for (i, ch) in BRAND.chars().enumerate() {
-        let t = i as f32 / (len - 1).max(1) as f32;
+        let base_t = i as f32 / (len - 1).max(1) as f32;
+        // Sine-wave shimmer: each character oscillates its gradient position
+        let wave = (phase + i as f32 * 0.6).sin() * 0.15;
+        let t = (base_t + wave).clamp(0.0, 1.0);
         spans.push(Span::styled(
             ch.to_string(),
             Style::default()
                 .fg(theme::gradient_color(t, &theme::BRAND_GRADIENT))
                 .add_modifier(Modifier::BOLD),
         ));
-        // Letter-spacing (skip after last char)
         if i < len - 1 {
             spans.push(Span::raw(" "));
         }

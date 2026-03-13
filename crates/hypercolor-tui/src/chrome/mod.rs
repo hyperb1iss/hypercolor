@@ -31,18 +31,17 @@ impl Chrome {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            title_bar: TitleBar,
+            title_bar: TitleBar::new(),
             audio_strip: AudioStrip,
             status_bar: StatusBar,
         }
     }
 
     /// Forward an action to all chrome sub-components that care about it.
-    pub fn update(&mut self, _action: &Action) {
-        // Chrome components are stateless renderers today — they pull
-        // everything they need from `AppState` at render time. This hook
-        // exists so future animation state (e.g. beat pulse timers) can
-        // be driven by the action loop without refactoring callers.
+    pub fn update(&mut self, action: &Action) {
+        if matches!(action, Action::Tick) {
+            self.title_bar.tick();
+        }
     }
 
     /// Render all chrome regions and return the `Rect` for the main content area.
