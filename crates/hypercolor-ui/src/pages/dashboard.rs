@@ -17,6 +17,7 @@ pub fn DashboardPage() -> impl IntoView {
 
     view! {
         <div class="space-y-5 max-w-6xl animate-fade-in">
+            <h1 class="text-lg font-medium text-fg-primary">"Dashboard"</h1>
             // Top row: preview + favorites side by side
             <div class="grid grid-cols-1 lg:grid-cols-5 gap-5">
                 // Live preview — takes 3/5 width

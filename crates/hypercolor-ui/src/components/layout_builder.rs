@@ -449,8 +449,8 @@ pub fn LayoutBuilder() -> impl IntoView {
             // Toolbar — glass background with edge glow
             <div class="shrink-0 px-5 py-2.5 flex items-center gap-3 glass-subtle border-b border-edge-subtle">
                 // Layout selector
-                <div class="flex items-center gap-2">
-                    <span class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Layout"</span>
+                <div class="flex items-center gap-3">
+                    <h1 class="text-lg font-medium text-fg-primary">"Layout"</h1>
                     <Suspense fallback=|| ()>
                         {move || {
                             ctx.layouts_resource.get().map(|result| {

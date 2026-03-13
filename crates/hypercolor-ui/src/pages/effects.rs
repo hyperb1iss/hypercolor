@@ -76,7 +76,6 @@ pub fn EffectsPage() -> impl IntoView {
             })
             .unwrap_or_else(std::collections::BTreeSet::<String>::new)
     });
-    let (author_dropdown_open, set_author_dropdown_open) = signal(false);
     let (favorites_only, set_favorites_only) =
         signal(stored("hc-fx-favorites").as_deref() == Some("true"));
     let (audio_reactive_only, set_audio_reactive_only) =
@@ -154,7 +153,8 @@ pub fn EffectsPage() -> impl IntoView {
     let favorites_count = Memo::new(move |_| fx.favorite_ids.get().len());
 
     let controls: Signal<Vec<ControlDefinition>> = fx.active_controls.into();
-    let control_values: Signal<std::collections::HashMap<String, ControlValue>> = fx.active_control_values.into();
+    let control_values: Signal<std::collections::HashMap<String, ControlValue>> =
+        fx.active_control_values.into();
     let accent_rgb =
         Signal::derive(move || category_accent_rgb(&fx.active_effect_category.get()).to_string());
 
@@ -203,8 +203,6 @@ pub fn EffectsPage() -> impl IntoView {
                 .collect::<Vec<_>>()
         })
     });
-
-    let effect_count = Memo::new(move |_| filtered_effects.get().len());
 
     // Apply effect handler — delegates to shared context
     let on_apply = Callback::new(move |id: String| {
@@ -290,174 +288,204 @@ pub fn EffectsPage() -> impl IntoView {
         );
     });
 
+    // Track which filter dropdown section is expanded (if any)
+    let (filter_dropdown_open, set_filter_dropdown_open) = signal(false);
+
+    // Count active filters for badge
+    let active_filter_count = Memo::new(move |_| {
+        let mut count = 0usize;
+        if category_filter.get() != "all" {
+            count += 1;
+        }
+        if favorites_only.get() {
+            count += 1;
+        }
+        if audio_reactive_only.get() {
+            count += 1;
+        }
+        count += selected_authors.get().len();
+        count
+    });
+
     view! {
         <div class="flex flex-col h-full -m-6 animate-fade-in">
-            // Fixed header — title + search + categories + capability filters
-            <div class="shrink-0 px-6 pt-6 pb-4 space-y-4 bg-surface-base z-10">
-                // Title row
-                <div class="flex items-baseline justify-between">
-                    <h1 class="text-lg font-medium text-fg-primary">"Effects"</h1>
-                    <span class="text-[11px] font-mono text-fg-tertiary tabular-nums">
-                        {move || effect_count.get()} " effects"
-                    </span>
-                </div>
+            // Fixed header — title + search + filters on one line
+            <div class="shrink-0 px-6 pt-5 pb-3 bg-surface-base z-10">
+                <div class="flex items-center gap-3">
+                    <h1 class="text-lg font-medium text-fg-primary shrink-0">"Effects"</h1>
 
-                // Search bar
-                <div class="relative">
-                    <span class="absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
-                        <Icon icon=LuSearch width="14px" height="14px" />
-                    </span>
-                    <input
-                        type="text"
-                        placeholder="Search effects..."
-                        class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg pl-9 pr-10 py-2 text-sm text-fg-primary
-                               placeholder-fg-tertiary focus:outline-none focus:border-accent-muted
-                               search-glow glow-ring transition-all duration-300"
-                        prop:value=move || search.get()
-                        on:input=move |ev| {
-                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                            if let Some(el) = target {
-                                set_search.set(el.value());
+                    // Search bar — fills available space
+                    <div class="relative flex-1 min-w-0">
+                        <span class="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
+                            <Icon icon=LuSearch width="14px" height="14px" />
+                        </span>
+                        <input
+                            type="text"
+                            placeholder="Search effects..."
+                            class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg pl-9 pr-10 py-1.5 text-sm text-fg-primary
+                                   placeholder-fg-tertiary focus:outline-none focus:border-accent-muted
+                                   search-glow glow-ring transition-all duration-300"
+                            prop:value=move || search.get()
+                            on:input=move |ev| {
+                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                if let Some(el) = target {
+                                    set_search.set(el.value());
+                                }
                             }
-                        }
-                    />
-                    <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-edge-subtle">"/"</kbd>
-                </div>
-
-                // Category + capability filter bar
-                <div class="flex items-center gap-3 flex-wrap">
-                    // Category chips
-                    <div class="flex gap-1.5 flex-wrap">
-                        {CATEGORIES.iter().map(|cat| {
-                            let cat = cat.to_string();
-                            let cat_clone = cat.clone();
-                            let rgb = if cat == "all" { "225, 53, 255" } else { category_accent_rgb(&cat) }.to_string();
-                            let is_active = {
-                                let cat = cat.clone();
-                                Memo::new(move |_| category_filter.get() == cat)
-                            };
-                            let active_style = format!(
-                                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 12px rgba({rgb}, 0.2), inset 0 0 8px rgba({rgb}, 0.05)"
-                            );
-                            let inactive_style = format!(
-                                "color: rgba({rgb}, 0.6); border-color: rgba({rgb}, 0.1); background: rgba({rgb}, 0.03)"
-                            );
-                            view! {
-                                <button
-                                    class="px-2.5 py-1 rounded-full text-xs font-medium capitalize border chip-interactive"
-                                    style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
-                                    on:click=move |_| set_category_filter.set(cat_clone.clone())
-                                >
-                                    {cat.clone()}
-                                </button>
-                            }
-                        }).collect_view()}
+                        />
+                        <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-edge-subtle">"/"</kbd>
                     </div>
 
-                    // Divider
-                    <div class="w-px h-5 bg-border-subtle" />
-
-                    // Favorites toggle chip
-                    <button
-                        class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border chip-interactive transition-all duration-200"
-                        style=move || if favorites_only.get() {
-                            "background: rgba(255, 106, 193, 0.15); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.3); \
-                             box-shadow: 0 0 12px rgba(255, 106, 193, 0.2), inset 0 0 8px rgba(255, 106, 193, 0.05)"
-                        } else {
-                            "color: rgba(255, 106, 193, 0.5); border-color: rgba(255, 106, 193, 0.1); background: rgba(255, 106, 193, 0.03)"
-                        }
-                        on:click=move |_| set_favorites_only.update(|v| *v = !*v)
-                    >
-                        {move || {
-                            let fav_style = if favorites_only.get() { "fill: currentColor" } else { "" };
-                            view! { <Icon icon=LuHeart width="11px" height="11px" style=fav_style /> }
-                        }}
-                        "Favorites"
-                        {move || {
-                            let count = favorites_count.get();
-                            (count > 0).then(|| view! {
-                                <span class="text-[9px] font-mono opacity-70">{count}</span>
-                            })
-                        }}
-                    </button>
-
-                    // Audio reactive filter chip
-                    <button
-                        class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border chip-interactive transition-all duration-200"
-                        style=move || if audio_reactive_only.get() {
-                            "background: rgba(255, 106, 193, 0.15); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.3); \
-                             box-shadow: 0 0 12px rgba(255, 106, 193, 0.2), inset 0 0 8px rgba(255, 106, 193, 0.05)"
-                        } else {
-                            "color: rgba(139, 133, 160, 0.5); border-color: rgba(139, 133, 160, 0.1); background: rgba(139, 133, 160, 0.03)"
-                        }
-                        on:click=move |_| set_audio_reactive_only.update(|v| *v = !*v)
-                    >
-                        <Icon icon=LuAudioLines width="11px" height="11px" />
-                        "Audio"
-                    </button>
-
-                    // Author multiselect dropdown
-                    {move || {
-                        let author_list = authors.get();
-                        (author_list.len() > 1).then(move || {
-                            let sel = selected_authors.get();
-                            let count = sel.len();
-                            let label = if count == 0 {
-                                "All authors".to_string()
-                            } else if count == 1 {
-                                sel.iter().next().unwrap_or(&String::new()).clone()
-                            } else {
-                                format!("{count} authors")
-                            };
-
-                            view! {
-                                <div class="relative">
-                                    // Trigger button
-                                    <button
-                                        class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200"
-                                        style=move || if selected_authors.get().is_empty() {
-                                            "color: rgba(255, 106, 193, 0.6); border-color: rgba(255, 106, 193, 0.1); background: rgba(255, 106, 193, 0.03)"
-                                        } else {
-                                            "background: rgba(255, 106, 193, 0.12); color: rgb(255, 106, 193); border-color: rgba(255, 106, 193, 0.25); box-shadow: 0 0 10px rgba(255, 106, 193, 0.15)"
-                                        }
-                                        on:click=move |_| set_author_dropdown_open.update(|v| *v = !*v)
+                    // Filters dropdown trigger
+                    <div class="relative shrink-0">
+                        <button
+                            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200"
+                            style=move || {
+                                if active_filter_count.get() > 0 {
+                                    "background: rgba(225, 53, 255, 0.12); color: rgb(225, 53, 255); border-color: rgba(225, 53, 255, 0.25); box-shadow: 0 0 10px rgba(225, 53, 255, 0.15)"
+                                } else {
+                                    "color: rgba(139, 133, 160, 0.6); border-color: rgba(139, 133, 160, 0.12); background: rgba(139, 133, 160, 0.03)"
+                                }
+                            }
+                            on:click=move |_| set_filter_dropdown_open.update(|v| *v = !*v)
+                        >
+                            <Icon icon=LuSlidersHorizontal width="13px" height="13px" />
+                            "Filters"
+                            {move || {
+                                let count = active_filter_count.get();
+                                (count > 0).then(|| view! {
+                                    <span
+                                        class="min-w-[16px] h-4 flex items-center justify-center rounded-full text-[9px] font-mono"
+                                        style="background: rgba(225, 53, 255, 0.3); color: rgb(225, 53, 255)"
                                     >
-                                        <Icon icon=LuUser width="12px" height="12px" />
-                                        <span>{label.clone()}</span>
-                                        <span
-                                            class="w-3 h-3 flex items-center justify-center transition-transform duration-200"
-                                            class:rotate-180=move || author_dropdown_open.get()
-                                        >
-                                            <Icon icon=LuChevronDown width="12px" height="12px" />
-                                        </span>
-                                    </button>
+                                        {count}
+                                    </span>
+                                })
+                            }}
+                            <span
+                                class="w-3 h-3 flex items-center justify-center transition-transform duration-200"
+                                class:rotate-180=move || filter_dropdown_open.get()
+                            >
+                                <Icon icon=LuChevronDown width="11px" height="11px" />
+                            </span>
+                        </button>
 
-                                    // Dropdown panel
-                                    {move || author_dropdown_open.get().then(|| {
-                                        let list = authors.get();
-                                        view! {
-                                            // Invisible backdrop to close on outside click
+                        // Filter dropdown panel
+                        {move || filter_dropdown_open.get().then(|| {
+                            let author_list = authors.get();
+                            view! {
+                                // Backdrop
+                                <div
+                                    class="fixed inset-0 z-20"
+                                    on:click=move |_| set_filter_dropdown_open.set(false)
+                                />
+                                <div
+                                    class="absolute top-full right-0 mt-1 z-30 w-[260px] max-h-[400px] overflow-y-auto
+                                           rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
+                                           py-1.5 animate-fade-in animate-glow-reveal scrollbar-none"
+                                >
+                                    // ── Category section ──
+                                    <div class="px-3 pt-1 pb-1.5">
+                                        <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1.5">"Category"</div>
+                                        <div class="flex gap-1 flex-wrap">
+                                            {CATEGORIES.iter().map(|cat| {
+                                                let cat = cat.to_string();
+                                                let cat_clone = cat.clone();
+                                                let rgb = if cat == "all" { "225, 53, 255" } else { category_accent_rgb(&cat) }.to_string();
+                                                let is_active = {
+                                                    let cat = cat.clone();
+                                                    Memo::new(move |_| category_filter.get() == cat)
+                                                };
+                                                let active_style = format!(
+                                                    "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 8px rgba({rgb}, 0.15)"
+                                                );
+                                                let inactive_style = format!(
+                                                    "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
+                                                );
+                                                view! {
+                                                    <button
+                                                        class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
+                                                        style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
+                                                        on:click=move |_| set_category_filter.set(cat_clone.clone())
+                                                    >
+                                                        {cat.clone()}
+                                                    </button>
+                                                }
+                                            }).collect_view()}
+                                        </div>
+                                    </div>
+
+                                    <div class="h-px bg-border-subtle/30 mx-2 my-1" />
+
+                                    // ── Toggles section ──
+                                    <div class="px-3 py-1">
+                                        // Favorites toggle
+                                        <button
+                                            class="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs hover:bg-surface-hover/40 transition-colors group"
+                                            on:click=move |_| set_favorites_only.update(|v| *v = !*v)
+                                        >
                                             <div
-                                                class="fixed inset-0 z-20"
-                                                on:click=move |_| set_author_dropdown_open.set(false)
-                                            />
-                                            <div
-                                                class="absolute top-full left-0 mt-1 z-30 min-w-[200px] max-h-[280px] overflow-y-auto
-                                                       rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
-                                                       py-1 animate-fade-in animate-glow-reveal scrollbar-none"
-                                            >
-                                                // Clear all option
-                                                <button
-                                                    class="w-full text-left px-3 py-1.5 text-xs text-fg-tertiary hover:bg-surface-hover/40 transition-colors"
-                                                    on:click=move |_| {
-                                                        set_selected_authors.set(std::collections::BTreeSet::new());
-                                                        set_author_dropdown_open.set(false);
+                                                class="w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all duration-150"
+                                                style=move || {
+                                                    if favorites_only.get() {
+                                                        "background: rgba(255, 106, 193, 0.8); border-color: rgb(255, 106, 193)"
+                                                    } else {
+                                                        "border-color: rgba(255, 255, 255, 0.1); background: transparent"
                                                     }
+                                                }
+                                            >
+                                                {move || favorites_only.get().then(|| view! {
+                                                    <Icon icon=LuCheck width="10px" height="10px" style="color: white" />
+                                                })}
+                                            </div>
+                                            <Icon icon=LuHeart width="11px" height="11px" style="color: rgba(255, 106, 193, 0.6)" />
+                                            <span class="text-fg-secondary group-hover:text-fg-primary transition-colors">"Favorites"</span>
+                                            {move || {
+                                                let count = favorites_count.get();
+                                                (count > 0).then(|| view! {
+                                                    <span class="text-[9px] font-mono text-fg-tertiary ml-auto">{count}</span>
+                                                })
+                                            }}
+                                        </button>
+
+                                        // Audio reactive toggle
+                                        <button
+                                            class="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg text-xs hover:bg-surface-hover/40 transition-colors group"
+                                            on:click=move |_| set_audio_reactive_only.update(|v| *v = !*v)
+                                        >
+                                            <div
+                                                class="w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all duration-150"
+                                                style=move || {
+                                                    if audio_reactive_only.get() {
+                                                        "background: rgba(128, 255, 234, 0.8); border-color: rgb(128, 255, 234)"
+                                                    } else {
+                                                        "border-color: rgba(255, 255, 255, 0.1); background: transparent"
+                                                    }
+                                                }
+                                            >
+                                                {move || audio_reactive_only.get().then(|| view! {
+                                                    <Icon icon=LuCheck width="10px" height="10px" style="color: white" />
+                                                })}
+                                            </div>
+                                            <Icon icon=LuAudioLines width="11px" height="11px" style="color: rgba(128, 255, 234, 0.6)" />
+                                            <span class="text-fg-secondary group-hover:text-fg-primary transition-colors">"Audio reactive"</span>
+                                        </button>
+                                    </div>
+
+                                    // ── Authors section ──
+                                    {(author_list.len() > 1).then(|| {
+                                        let list = author_list.clone();
+                                        view! {
+                                            <div class="h-px bg-border-subtle/30 mx-2 my-1" />
+                                            <div class="px-3 pt-1 pb-1">
+                                                <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1">"Author"</div>
+                                                // Clear all
+                                                <button
+                                                    class="w-full flex items-center gap-2.5 px-2 py-1 rounded-lg text-[11px] text-fg-tertiary hover:bg-surface-hover/40 transition-colors"
+                                                    on:click=move |_| set_selected_authors.set(std::collections::BTreeSet::new())
                                                 >
                                                     "All authors"
                                                 </button>
-                                                <div class="h-px bg-border-subtle mx-2 my-0.5" />
-                                                // Author checkboxes
                                                 {list.into_iter().map(|author| {
                                                     let author_toggle = author.clone();
                                                     let author_check = author.clone();
@@ -465,7 +493,7 @@ pub fn EffectsPage() -> impl IntoView {
                                                     let author_label = author.clone();
                                                     view! {
                                                         <button
-                                                            class="w-full text-left px-3 py-1.5 flex items-center gap-2.5 text-xs hover:bg-surface-hover/40 transition-colors group"
+                                                            class="w-full flex items-center gap-2.5 px-2 py-1 rounded-lg text-xs hover:bg-surface-hover/40 transition-colors group"
                                                             on:click=move |_| {
                                                                 let a = author_toggle.clone();
                                                                 set_selected_authors.update(move |set| {
@@ -475,7 +503,6 @@ pub fn EffectsPage() -> impl IntoView {
                                                                 });
                                                             }
                                                         >
-                                                            // Checkbox indicator
                                                             <div
                                                                 class="w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 transition-all duration-150"
                                                                 style=move || {
@@ -499,10 +526,26 @@ pub fn EffectsPage() -> impl IntoView {
                                             </div>
                                         }
                                     })}
+
+                                    // ── Clear all filters ──
+                                    {move || (active_filter_count.get() > 0).then(|| view! {
+                                        <div class="h-px bg-border-subtle/30 mx-2 my-1" />
+                                        <button
+                                            class="w-full text-left px-5 py-1.5 text-[11px] text-fg-tertiary hover:text-fg-secondary hover:bg-surface-hover/40 transition-colors"
+                                            on:click=move |_| {
+                                                set_category_filter.set("all".to_string());
+                                                set_favorites_only.set(false);
+                                                set_audio_reactive_only.set(false);
+                                                set_selected_authors.set(std::collections::BTreeSet::new());
+                                            }
+                                        >
+                                            "Clear all filters"
+                                        </button>
+                                    })}
                                 </div>
                             }
-                        })
-                    }}
+                        })}
+                    </div>
                 </div>
             </div>
 

@@ -76,8 +76,6 @@ pub fn DevicesPage() -> impl IntoView {
             .collect::<Vec<_>>()
     });
 
-    let device_count = Memo::new(move |_| filtered_devices.get().len());
-
     let on_select_device = Callback::new(move |id: String| {
         let current = selected_device.get();
         if current.as_deref() == Some(&id) {
@@ -87,20 +85,182 @@ pub fn DevicesPage() -> impl IntoView {
         }
     });
 
+    let (filter_dropdown_open, set_filter_dropdown_open) = signal(false);
+
+    let active_filter_count = Memo::new(move |_| {
+        let mut count = 0usize;
+        if status_filter.get() != "all" {
+            count += 1;
+        }
+        if backend_filter.get() != "all" {
+            count += 1;
+        }
+        count
+    });
+
     view! {
         <div class="flex flex-col h-full -m-6 animate-fade-in">
-            // Header
-            <div class="shrink-0 px-6 pt-6 pb-3 space-y-2.5 bg-surface-base z-10">
-                // Title + scan
-                <div class="flex items-center justify-between">
-                    <div class="flex items-baseline gap-2.5">
-                        <h1 class="text-lg font-medium text-fg-primary">"Devices"</h1>
-                        <span class="text-[10px] font-mono text-fg-tertiary/50 tabular-nums">
-                            {move || device_count.get()}
+            // Header — title + search + filters on one line
+            <div class="shrink-0 px-6 pt-5 pb-3 bg-surface-base z-10">
+                <div class="flex items-center gap-3">
+                    <h1 class="text-lg font-medium text-fg-primary shrink-0">"Devices"</h1>
+
+                    // Search bar — fills available space
+                    <div class="relative flex-1 min-w-0">
+                        <span class="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
+                            <Icon icon=LuSearch width="14px" height="14px" />
                         </span>
+                        <input
+                            type="text"
+                            placeholder="Search devices..."
+                            class="w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg pl-9 pr-10 py-1.5 text-sm text-fg-primary
+                                   placeholder-fg-tertiary focus:outline-none focus:border-accent-muted
+                                   search-glow glow-ring transition-all duration-300"
+                            prop:value=move || search.get()
+                            on:input=move |ev| {
+                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                if let Some(el) = target { set_search.set(el.value()); }
+                            }
+                        />
+                        <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-edge-subtle">"/"</kbd>
                     </div>
+
+                    // Filters dropdown
+                    <div class="relative shrink-0">
+                        <button
+                            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200"
+                            style=move || {
+                                if active_filter_count.get() > 0 {
+                                    "background: rgba(225, 53, 255, 0.12); color: rgb(225, 53, 255); border-color: rgba(225, 53, 255, 0.25); box-shadow: 0 0 10px rgba(225, 53, 255, 0.15)"
+                                } else {
+                                    "color: rgba(139, 133, 160, 0.6); border-color: rgba(139, 133, 160, 0.12); background: rgba(139, 133, 160, 0.03)"
+                                }
+                            }
+                            on:click=move |_| set_filter_dropdown_open.update(|v| *v = !*v)
+                        >
+                            <Icon icon=LuSlidersHorizontal width="13px" height="13px" />
+                            "Filters"
+                            {move || {
+                                let count = active_filter_count.get();
+                                (count > 0).then(|| view! {
+                                    <span
+                                        class="min-w-[16px] h-4 flex items-center justify-center rounded-full text-[9px] font-mono"
+                                        style="background: rgba(225, 53, 255, 0.3); color: rgb(225, 53, 255)"
+                                    >
+                                        {count}
+                                    </span>
+                                })
+                            }}
+                            <span
+                                class="w-3 h-3 flex items-center justify-center transition-transform duration-200"
+                                class:rotate-180=move || filter_dropdown_open.get()
+                            >
+                                <Icon icon=LuChevronDown width="11px" height="11px" />
+                            </span>
+                        </button>
+
+                        {move || filter_dropdown_open.get().then(|| view! {
+                            // Backdrop
+                            <div
+                                class="fixed inset-0 z-20"
+                                on:click=move |_| set_filter_dropdown_open.set(false)
+                            />
+                            <div
+                                class="absolute top-full right-0 mt-1 z-30 w-[220px] max-h-[320px] overflow-y-auto
+                                       rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
+                                       py-1.5 animate-fade-in animate-glow-reveal scrollbar-none"
+                            >
+                                // ── Status section ──
+                                <div class="px-3 pt-1 pb-1.5">
+                                    <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1.5">"Status"</div>
+                                    <div class="flex gap-1 flex-wrap">
+                                        {STATUSES.iter().map(|s| {
+                                            let s = s.to_string();
+                                            let s_clone = s.clone();
+                                            let rgb = if s == "all" { "225, 53, 255" } else { status_accent_rgb(&s) }.to_string();
+                                            let is_active = {
+                                                let s = s.clone();
+                                                Memo::new(move |_| status_filter.get() == s)
+                                            };
+                                            let active_style = format!(
+                                                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 8px rgba({rgb}, 0.15)"
+                                            );
+                                            let inactive_style = format!(
+                                                "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
+                                            );
+                                            view! {
+                                                <button
+                                                    class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
+                                                    style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
+                                                    on:click=move |_| set_status_filter.set(s_clone.clone())
+                                                >
+                                                    {s.clone()}
+                                                </button>
+                                            }
+                                        }).collect_view()}
+                                    </div>
+                                </div>
+
+                                <div class="h-px bg-border-subtle/30 mx-2 my-1" />
+
+                                // ── Backend section ──
+                                <div class="px-3 pt-1 pb-1.5">
+                                    <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1.5">"Backend"</div>
+                                    <div class="flex gap-1 flex-wrap">
+                                        {BACKENDS.iter().map(|b| {
+                                            let b = b.to_string();
+                                            let b_clone = b.clone();
+                                            let rgb = if b == "all" { "225, 53, 255" } else { backend_chip_rgb(&b) }.to_string();
+                                            let is_active = {
+                                                let b = b.clone();
+                                                Memo::new(move |_| backend_filter.get() == b)
+                                            };
+                                            let active_style = format!(
+                                                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 8px rgba({rgb}, 0.15)"
+                                            );
+                                            let inactive_style = format!(
+                                                "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
+                                            );
+                                            view! {
+                                                <button
+                                                    class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
+                                                    style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
+                                                    on:click=move |_| {
+                                                        let current = backend_filter.get();
+                                                        if b_clone == "all" || current == b_clone {
+                                                            set_backend_filter.set("all".to_string());
+                                                        } else {
+                                                            set_backend_filter.set(b_clone.clone());
+                                                        }
+                                                    }
+                                                >
+                                                    {b.clone()}
+                                                </button>
+                                            }
+                                        }).collect_view()}
+                                    </div>
+                                </div>
+
+                                // ── Clear all ──
+                                {move || (active_filter_count.get() > 0).then(|| view! {
+                                    <div class="h-px bg-border-subtle/30 mx-2 my-1" />
+                                    <button
+                                        class="w-full text-left px-5 py-1.5 text-[11px] text-fg-tertiary hover:text-fg-secondary hover:bg-surface-hover/40 transition-colors"
+                                        on:click=move |_| {
+                                            set_status_filter.set("all".to_string());
+                                            set_backend_filter.set("all".to_string());
+                                        }
+                                    >
+                                        "Clear all filters"
+                                    </button>
+                                })}
+                            </div>
+                        })}
+                    </div>
+
+                    // Scan button
                     <button
-                        class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all btn-press"
+                        class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press shrink-0"
                         style="background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.1); color: rgba(128, 255, 234, 0.8)"
                         on:click=move |_| {
                             let devices_resource = ctx.devices_resource;
@@ -114,94 +274,6 @@ pub fn DevicesPage() -> impl IntoView {
                         <Icon icon=LuRefreshCw width="12px" height="12px" />
                         "Scan"
                     </button>
-                </div>
-
-                // Search
-                <div class="relative">
-                    <span class="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary/40">
-                        <Icon icon=LuSearch width="13px" height="13px" />
-                    </span>
-                    <input
-                        type="text"
-                        placeholder="Search devices..."
-                        class="w-full bg-surface-overlay/50 border border-edge-subtle rounded-lg pl-8 pr-8 py-1.5 text-[12px] text-fg-primary
-                               placeholder-fg-tertiary/40 focus:outline-none focus:border-accent-muted
-                               search-glow glow-ring transition-all duration-300"
-                        prop:value=move || search.get()
-                        on:input=move |ev| {
-                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                            if let Some(el) = target { set_search.set(el.value()); }
-                        }
-                    />
-                    <kbd class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[8px] font-mono text-fg-tertiary/30 bg-surface-overlay/20 px-1 py-0.5 rounded border border-edge-subtle/50">"/"</kbd>
-                </div>
-
-                // Filters: status + backends
-                <div class="flex items-center gap-1 flex-wrap">
-                    {STATUSES.iter().map(|s| {
-                        let s = s.to_string();
-                        let s_clone = s.clone();
-                        let rgb = if s == "all" { "225, 53, 255" } else { status_accent_rgb(&s) }.to_string();
-                        let is_active = {
-                            let s = s.clone();
-                            Memo::new(move |_| status_filter.get() == s)
-                        };
-                        let active_style = format!(
-                            "background: rgba({rgb}, 0.12); color: rgb({rgb}); border-color: rgba({rgb}, 0.25)"
-                        );
-                        let inactive_style = format!(
-                            "color: rgba({rgb}, 0.35); border-color: transparent; background: transparent"
-                        );
-                        view! {
-                            <button
-                                class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
-                                style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
-                                on:click=move |_| set_status_filter.set(s_clone.clone())
-                            >
-                                {s.clone()}
-                            </button>
-                        }
-                    }).collect_view()}
-
-                    <div class="w-px h-3 bg-border-subtle/30 mx-0.5" />
-
-                    {BACKENDS.iter().skip(1).map(|b| {
-                        let b = b.to_string();
-                        let b_clone = b.clone();
-                        let rgb = backend_chip_rgb(&b).to_string();
-                        let is_active = {
-                            let b = b.clone();
-                            Memo::new(move |_| backend_filter.get() == b)
-                        };
-                        let active_style = format!(
-                            "background: rgba({rgb}, 0.12); color: rgb({rgb}); border-color: rgba({rgb}, 0.25)"
-                        );
-                        let inactive_style = format!(
-                            "color: rgba({rgb}, 0.3); border-color: transparent; background: transparent"
-                        );
-                        view! {
-                            <button
-                                class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
-                                style=move || {
-                                    if is_active.get() {
-                                        active_style.clone()
-                                    } else {
-                                        inactive_style.clone()
-                                    }
-                                }
-                                on:click=move |_| {
-                                    let current = backend_filter.get();
-                                    if current == b_clone {
-                                        set_backend_filter.set("all".to_string());
-                                    } else {
-                                        set_backend_filter.set(b_clone.clone());
-                                    }
-                                }
-                            >
-                                {b.clone()}
-                            </button>
-                        }
-                    }).collect_view()}
                 </div>
             </div>
 

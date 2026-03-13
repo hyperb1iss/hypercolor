@@ -296,7 +296,7 @@ pub fn SettingsPage() -> impl IntoView {
             // Sticky header with title + tab bar
             <div class="sticky top-0 z-10 shrink-0 glass-dense">
                 <div class="flex items-center justify-between px-6 pt-5 pb-3">
-                    <h1 class="text-base font-medium text-fg-primary tracking-wide">"Settings"</h1>
+                    <h1 class="text-lg font-medium text-fg-primary">"Settings"</h1>
                     <div
                         class="flex items-center gap-1.5 text-xs"
                         style="color: rgba(128, 255, 234, 0.4)"
