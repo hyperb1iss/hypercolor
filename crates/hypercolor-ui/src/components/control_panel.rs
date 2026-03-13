@@ -19,6 +19,16 @@ const QUICK_COLOR_SWATCHES: [&str; 10] = [
     "#ff8c42", "#0a0910",
 ];
 
+/// Per-section accent colors from the SilkCircuit palette (RGB triplets for `rgba()`).
+const SECTION_COLORS: &[&str] = &[
+    "128, 255, 234", // neon cyan
+    "255, 106, 193", // coral
+    "130, 170, 255", // info blue
+    "80, 250, 123",  // success green
+    "241, 250, 140", // electric yellow
+    "225, 53, 255",  // electric purple
+];
+
 /// Map a control's semantic kind to a Lucide icon.
 fn control_icon(kind: &ControlKind, control_type: &ControlType) -> icondata::Icon {
     match kind {
@@ -62,13 +72,27 @@ pub fn ControlPanel(
     // This prevents the entire widget tree from being torn down on every value change.
     let grouped = Memo::new(move |_| {
         let defs = controls.get();
-        let rgb = accent_rgb.get();
-        let mut groups: BTreeMap<String, Vec<(ControlDefinition, String)>> = BTreeMap::new();
+        let fallback = accent_rgb.get();
+        let mut groups: BTreeMap<String, Vec<ControlDefinition>> = BTreeMap::new();
         for def in defs {
             let group = def.group.clone().unwrap_or_else(|| "General".to_string());
-            groups.entry(group).or_default().push((def, rgb.clone()));
+            groups.entry(group).or_default().push(def);
         }
+        let count = groups.len();
         groups
+            .into_iter()
+            .enumerate()
+            .map(|(i, (group, defs))| {
+                let rgb = if count <= 1 {
+                    fallback.clone()
+                } else {
+                    SECTION_COLORS[i % SECTION_COLORS.len()].to_string()
+                };
+                let items: Vec<(ControlDefinition, String)> =
+                    defs.into_iter().map(|d| (d, rgb.clone())).collect();
+                (group, rgb, items)
+            })
+            .collect::<Vec<_>>()
     });
 
     view! {
@@ -83,18 +107,26 @@ pub fn ControlPanel(
                     }.into_any()
                 } else {
                     let total_groups = groups.len();
-                    groups.into_iter().map(|(group, items)| {
+                    groups.into_iter().map(|(group, section_rgb, items)| {
                         let show_header = total_groups > 1 && group != "General";
                         view! {
                             <div class="animate-fade-in-up">
-                                {show_header.then(|| view! {
-                                    <div class="flex items-center gap-2.5 mt-3 mb-1.5 px-1">
-                                        <div class="h-px flex-1 bg-gradient-to-r from-transparent via-border-subtle to-transparent" />
-                                        <h4 class="text-[9px] font-mono uppercase tracking-[0.15em] text-fg-tertiary/60 shrink-0">
-                                            {group.clone()}
-                                        </h4>
-                                        <div class="h-px flex-1 bg-gradient-to-r from-transparent via-border-subtle to-transparent" />
-                                    </div>
+                                {show_header.then({
+                                    let line_style = format!(
+                                        "background: linear-gradient(to right, transparent, rgba({}, 0.25), transparent)",
+                                        section_rgb
+                                    );
+                                    let label_style = format!("color: rgba({}, 0.5)", section_rgb);
+                                    move || view! {
+                                        <div class="flex items-center gap-2.5 mt-3 mb-1.5 px-1">
+                                            <div class="h-px flex-1" style=line_style.clone() />
+                                            <h4 class="text-[9px] font-mono uppercase tracking-[0.15em] shrink-0"
+                                                style=label_style>
+                                                {group.clone()}
+                                            </h4>
+                                            <div class="h-px flex-1" style=line_style />
+                                        </div>
+                                    }
                                 })}
                                 {items.into_iter().enumerate().map(|(i, (def, rgb))| {
                                     let control_id = def.control_id().to_owned();
@@ -173,6 +205,24 @@ fn install_control_dropdown_outside_handler(
     handler.forget();
 }
 
+/// Close a dropdown when any ancestor scrolls (fixed-position panels don't
+/// track scroll, so dismissing is the correct UX).
+fn install_scroll_close_handler(set_open: WriteSignal<bool>) {
+    let handler = Closure::<dyn Fn(web_sys::Event)>::new(move |_: web_sys::Event| {
+        set_open.set(false);
+    });
+
+    if let Some(win) = web_sys::window() {
+        // Use capture phase to catch scroll events from any descendant
+        let _ = win.add_event_listener_with_callback_and_bool(
+            "scroll",
+            handler.as_ref().unchecked_ref(),
+            true,
+        );
+    }
+    handler.forget();
+}
+
 /// A single control widget, dispatched by ControlType.
 #[component]
 fn ControlWidget(
@@ -187,7 +237,10 @@ fn ControlWidget(
     let control_id = def.control_id().to_owned();
     let tooltip = def.tooltip.clone();
     let icon = control_icon(&def.kind, &def.control_type);
-    let icon_style = format!("color: rgba({}, 0.55)", accent_rgb);
+    let icon_style = format!(
+        "color: rgba({}, 0.6); overflow: visible; flex-shrink: 0",
+        accent_rgb
+    );
 
     match def.control_type {
         ControlType::Slider => {
@@ -223,7 +276,7 @@ fn ControlWidget(
                 <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-200 group"
                      title=tooltip.unwrap_or_default()
                      style=move || format!("--glow-rgb: {}", accent_rgb)>
-                    <Icon icon=icon width="13px" height="13px" style=icon_style.clone() />
+                    <Icon icon=icon width="15px" height="15px" style=icon_style.clone() />
                     <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] max-w-[120px] truncate">{name.clone()}</label>
                     <input
                         type="range"
@@ -269,7 +322,7 @@ fn ControlWidget(
             view! {
                 <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-200 group"
                      title=tooltip.unwrap_or_default()>
-                    <Icon icon=icon width="13px" height="13px" style=icon_style.clone() />
+                    <Icon icon=icon width="15px" height="15px" style=icon_style.clone() />
                     <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] truncate">{name.clone()}</label>
                     <div class="flex-1" />
                     <button
@@ -478,6 +531,7 @@ fn ControlWidget(
             let control_name = control_id.clone();
             let dropdown_id = format!("ctrl-dropdown-{}", control_name);
             let dropdown_class = format!("control-dropdown-{}", control_name);
+            let trigger_ref = NodeRef::<leptos::html::Button>::new();
 
             Effect::new(move |_| {
                 let next = match value.get() {
@@ -495,14 +549,22 @@ fn ControlWidget(
                 install_control_dropdown_outside_handler(dropdown_class, set_dropdown_open);
             }
 
+            // Close dropdown on scroll (fixed-position panel won't track)
+            install_scroll_close_handler(set_dropdown_open);
+
             view! {
-                <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-200 group"
-                     title=tooltip.unwrap_or_default()>
-                    <Icon icon=icon width="13px" height="13px" style=icon_style.clone() />
+                <div
+                    class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-200 group"
+                    class=("relative", move || dropdown_open.get())
+                    class=("z-[100]", move || dropdown_open.get())
+                    title=tooltip.unwrap_or_default()
+                >
+                    <Icon icon=icon width="15px" height="15px" style=icon_style.clone() />
                     <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] max-w-[120px] truncate">{name.clone()}</label>
                     <div class=format!("relative flex-1 min-w-0 {dropdown_class}")>
                         <button
                             type="button"
+                            node_ref=trigger_ref
                             id=dropdown_id
                             class="w-full flex items-center gap-1.5 bg-surface-sunken border px-2.5 py-1.5
                                    text-xs cursor-pointer select-silk-trigger"
@@ -537,13 +599,21 @@ fn ControlWidget(
 
                         <Show when=move || dropdown_open.get()>
                             <div
-                                class="absolute left-0 right-0 top-full z-50
+                                class="fixed z-[9999]
                                        rounded-b-xl overflow-hidden
                                        bg-surface-overlay/98 backdrop-blur-xl
                                        border border-t-0 border-edge-subtle
                                        dropdown-glow animate-slide-down
                                        max-h-[200px] overflow-y-auto scrollbar-none"
-                                style="margin-top: -1px"
+                                style=move || {
+                                    trigger_ref.get().map(|el| {
+                                        let rect = el.get_bounding_client_rect();
+                                        format!(
+                                            "top: {}px; left: {}px; width: {}px",
+                                            rect.bottom() - 1.0, rect.left(), rect.width()
+                                        )
+                                    }).unwrap_or_default()
+                                }
                                 on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
                             >
                                 {labels.iter().map(|label| {
@@ -603,7 +673,7 @@ fn ControlWidget(
             view! {
                 <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 hover:bg-surface-hover/20 transition-colors duration-200 group"
                      title=tooltip.unwrap_or_default()>
-                    <Icon icon=icon width="13px" height="13px" style=icon_style.clone() />
+                    <Icon icon=icon width="15px" height="15px" style=icon_style.clone() />
                     <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] max-w-[120px] truncate">{name.clone()}</label>
                     <input
                         type="text"
@@ -627,7 +697,7 @@ fn ControlWidget(
         ControlType::GradientEditor => {
             view! {
                 <div class="flex items-center gap-2.5 rounded-lg px-3 py-2 opacity-40">
-                    <Icon icon=icon width="13px" height="13px" style=icon_style.clone() />
+                    <Icon icon=icon width="15px" height="15px" style=icon_style.clone() />
                     <label class="text-xs text-fg-secondary font-medium shrink-0 min-w-[80px] max-w-[120px] truncate">{name.clone()}</label>
                     <div class="flex-1 h-5 rounded-lg bg-gradient-to-r from-electric-purple via-neon-cyan to-coral opacity-30" />
                 </div>
