@@ -1,5 +1,8 @@
 //! Shared layout geometry helpers for default footprints and proportional resizing.
-#![allow(dead_code, reason = "Some helpers are pre-built for upcoming editor features.")]
+#![allow(
+    dead_code,
+    reason = "Some helpers are pre-built for upcoming editor features."
+)]
 
 use std::f32::consts::FRAC_PI_2;
 

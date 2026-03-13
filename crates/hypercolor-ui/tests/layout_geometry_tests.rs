@@ -117,10 +117,12 @@ fn seeded_push2_layout_creates_grouped_device_footprint() {
     assert_eq!(seeded.group_name, "Ableton Push 2");
     assert_eq!(seeded.group_color, "#80ffea");
     assert_eq!(seeded.zones.len(), 8);
-    assert!(seeded
-        .zones
-        .iter()
-        .all(|zone| zone.group_id.as_deref() == Some(seeded.group_id.as_str())));
+    assert!(
+        seeded
+            .zones
+            .iter()
+            .all(|zone| zone.group_id.as_deref() == Some(seeded.group_id.as_str()))
+    );
 
     let pads = seeded
         .zones

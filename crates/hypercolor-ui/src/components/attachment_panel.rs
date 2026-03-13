@@ -136,9 +136,7 @@ pub fn AttachmentPanel(
                 Ok((count, layout_name)) => {
                     layouts_resource.refetch();
                     let noun = if count == 1 { "zone" } else { "zones" };
-                    toasts::toast_success(&format!(
-                        "Imported {count} {noun} into {layout_name}"
-                    ));
+                    toasts::toast_success(&format!("Imported {count} {noun} into {layout_name}"));
                 }
                 Err(error) => {
                     toasts::toast_error(&format!("Import failed: {error}"));

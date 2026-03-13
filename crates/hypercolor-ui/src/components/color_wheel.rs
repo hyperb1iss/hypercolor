@@ -5,8 +5,8 @@
 //! A transparent drag overlay captures mouse events outside the canvas bounds.
 
 use leptos::prelude::*;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::Clamped;
+use wasm_bindgen::prelude::*;
 
 // ── Canvas geometry ──────────────────────────────────────────────────────────
 
@@ -72,7 +72,11 @@ impl Hsv {
             let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255);
             Self::from_rgb(r, g, b)
         } else {
-            Self { h: 0.0, s: 1.0, v: 1.0 }
+            Self {
+                h: 0.0,
+                s: 1.0,
+                v: 1.0,
+            }
         }
     }
 
@@ -129,10 +133,7 @@ fn hit_test(x: f64, y: f64) -> Option<DragRegion> {
 
 // ── Canvas rendering ─────────────────────────────────────────────────────────
 
-fn render_wheel(
-    ctx: &web_sys::CanvasRenderingContext2d,
-    hsv: Hsv,
-) -> Result<(), JsValue> {
+fn render_wheel(ctx: &web_sys::CanvasRenderingContext2d, hsv: Hsv) -> Result<(), JsValue> {
     let size = CANVAS_SIZE as usize;
     let mut pixels = vec![0u8; size * size * 4];
 
@@ -148,7 +149,12 @@ fn render_wheel(
             if (RING_INNER..=RING_OUTER).contains(&dist) {
                 let angle = y.atan2(x).to_degrees();
                 let hue = (angle + 360.0) % 360.0;
-                let (r, g, b) = (Hsv { h: hue, s: 1.0, v: 1.0 }).to_rgb();
+                let (r, g, b) = (Hsv {
+                    h: hue,
+                    s: 1.0,
+                    v: 1.0,
+                })
+                .to_rgb();
                 pixels[idx] = r;
                 pixels[idx + 1] = g;
                 pixels[idx + 2] = b;
@@ -176,7 +182,17 @@ fn render_wheel(
     let hue_rad = hsv.h.to_radians();
     let hue_x = CENTER + RING_MID * hue_rad.cos();
     let hue_y = CENTER + RING_MID * hue_rad.sin();
-    draw_thumb(ctx, hue_x, hue_y, &(Hsv { h: hsv.h, s: 1.0, v: 1.0 }).to_hex());
+    draw_thumb(
+        ctx,
+        hue_x,
+        hue_y,
+        &(Hsv {
+            h: hsv.h,
+            s: 1.0,
+            v: 1.0,
+        })
+        .to_hex(),
+    );
 
     // SV square thumb
     let sq_x = CENTER - SQ_HALF + hsv.s * SQ_HALF * 2.0;

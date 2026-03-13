@@ -1122,7 +1122,11 @@ fn add_all_device_zones(
             let selected_zone_id = seed.zones.first().map(|zone| zone.id.clone());
             set_layout.update(|l| {
                 if let Some(current_layout) = l {
-                    if !current_layout.groups.iter().any(|group| group.id == seed.group_id) {
+                    if !current_layout
+                        .groups
+                        .iter()
+                        .any(|group| group.id == seed.group_id)
+                    {
                         current_layout.groups.push(ZoneGroup {
                             id: seed.group_id.clone(),
                             name: seed.group_name.clone(),

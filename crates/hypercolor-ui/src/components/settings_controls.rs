@@ -158,7 +158,7 @@ pub fn SettingDropdown(
 ) -> impl IntoView {
     let key_owned = key.to_string();
     view! {
-        <div class="flex items-start justify-between gap-4 py-3 setting-row">
+        <div class="flex flex-col gap-3 py-3 setting-row md:flex-row md:items-start md:justify-between">
             <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                     <span class="text-sm text-fg-primary font-medium">{label}</span>
@@ -166,30 +166,32 @@ pub fn SettingDropdown(
                 </div>
                 <div class="text-xs text-fg-tertiary/70 mt-0.5">{description}</div>
             </div>
-            <select
-                class="bg-surface-overlay/60 border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
-                       focus:outline-none focus:border-accent-muted cursor-pointer shrink-0 min-w-[120px]"
-                prop:value=move || value.get()
-                on:change=move |ev| {
-                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
-                    if let Some(el) = target {
-                        let str_val = el.value();
-                        let json_val = if numeric {
-                            str_val.parse::<i64>()
-                                .map(|n| serde_json::json!(n))
-                                .unwrap_or_else(|_| serde_json::json!(str_val))
-                        } else {
-                            serde_json::json!(str_val)
-                        };
-                        on_change.run((key_owned.clone(), json_val));
+            <div class="w-full md:w-auto md:min-w-[16rem] md:max-w-[30rem] md:shrink-0">
+                <select
+                    class="select-silk w-full max-w-full bg-surface-overlay/60 border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
+                           focus:outline-none focus:border-accent-muted cursor-pointer truncate"
+                    prop:value=move || value.get()
+                    on:change=move |ev| {
+                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
+                        if let Some(el) = target {
+                            let str_val = el.value();
+                            let json_val = if numeric {
+                                str_val.parse::<i64>()
+                                    .map(|n| serde_json::json!(n))
+                                    .unwrap_or_else(|_| serde_json::json!(str_val))
+                            } else {
+                                serde_json::json!(str_val)
+                            };
+                            on_change.run((key_owned.clone(), json_val));
+                        }
                     }
-                }
-            >
-                {move || options.get().into_iter().map(|(val, label)| {
-                    let is_selected = value.get() == val;
-                    view! { <option value=val selected=is_selected>{label}</option> }
-                }).collect_view()}
-            </select>
+                >
+                    {move || options.get().into_iter().map(|(val, label)| {
+                        let is_selected = value.get() == val;
+                        view! { <option value=val selected=is_selected>{label}</option> }
+                    }).collect_view()}
+                </select>
+            </div>
         </div>
     }
 }

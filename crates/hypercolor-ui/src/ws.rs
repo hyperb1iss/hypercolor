@@ -273,8 +273,7 @@ impl WsManager {
         // same signal writers. Called once at startup and again on close/error
         // after a backoff delay.
 
-        let connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage> =
-            StoredValue::new_local(None);
+        let connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage> = StoredValue::new_local(None);
 
         let connect_fn: Rc<dyn Fn()> = Rc::new(move || {
             set_connection_state.set(ConnectionState::Connecting);
@@ -333,73 +332,71 @@ impl WsManager {
             on_error.forget();
 
             // onmessage — handle both JSON and binary frames
-            let on_message =
-                Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
-                    // Binary frame (ArrayBuffer)
-                    if let Ok(buffer) = event.data().dyn_into::<js_sys::ArrayBuffer>() {
-                        if let Some(frame) = decode_canvas_frame(buffer) {
-                            let current_frame_number = frame.frame_number;
-                            let current_timestamp_ms = frame.timestamp_ms;
-                            set_canvas_frame.set(Some(frame));
+            let on_message = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+                // Binary frame (ArrayBuffer)
+                if let Ok(buffer) = event.data().dyn_into::<js_sys::ArrayBuffer>() {
+                    if let Some(frame) = decode_canvas_frame(buffer) {
+                        let current_frame_number = frame.frame_number;
+                        let current_timestamp_ms = frame.timestamp_ms;
+                        set_canvas_frame.set(Some(frame));
 
-                            if let (Some(previous_frame_number), Some(previous_timestamp_ms)) = (
-                                last_frame_number.get_value(),
-                                last_frame_timestamp.get_value(),
-                            ) {
-                                let frame_delta =
-                                    current_frame_number.saturating_sub(previous_frame_number);
-                                let elapsed_ms =
-                                    current_timestamp_ms.saturating_sub(previous_timestamp_ms);
+                        if let (Some(previous_frame_number), Some(previous_timestamp_ms)) = (
+                            last_frame_number.get_value(),
+                            last_frame_timestamp.get_value(),
+                        ) {
+                            let frame_delta =
+                                current_frame_number.saturating_sub(previous_frame_number);
+                            let elapsed_ms =
+                                current_timestamp_ms.saturating_sub(previous_timestamp_ms);
 
-                                if frame_delta > 0 && elapsed_ms > 0 {
-                                    let target_fps = preview_target_fps.get_untracked();
-                                    let mut instant_fps =
-                                        f64::from(frame_delta) * 1000.0 / f64::from(elapsed_ms);
-                                    if target_fps > 0 {
-                                        instant_fps =
-                                            instant_fps.clamp(0.0, f64::from(target_fps));
-                                    } else {
-                                        instant_fps = instant_fps.clamp(0.0, 120.0);
-                                    }
-
-                                    let previous = smoothed_fps.get_value();
-                                    let next = if previous <= 0.0 {
-                                        instant_fps
-                                    } else {
-                                        // Exponential moving average (0.82/0.18 weighting)
-                                        previous * 0.82 + instant_fps * 0.18
-                                    };
-                                    smoothed_fps.set_value(next);
-                                    #[allow(clippy::cast_possible_truncation)]
-                                    set_preview_fps.set(next as f32);
+                            if frame_delta > 0 && elapsed_ms > 0 {
+                                let target_fps = preview_target_fps.get_untracked();
+                                let mut instant_fps =
+                                    f64::from(frame_delta) * 1000.0 / f64::from(elapsed_ms);
+                                if target_fps > 0 {
+                                    instant_fps = instant_fps.clamp(0.0, f64::from(target_fps));
+                                } else {
+                                    instant_fps = instant_fps.clamp(0.0, 120.0);
                                 }
+
+                                let previous = smoothed_fps.get_value();
+                                let next = if previous <= 0.0 {
+                                    instant_fps
+                                } else {
+                                    // Exponential moving average (0.82/0.18 weighting)
+                                    previous * 0.82 + instant_fps * 0.18
+                                };
+                                smoothed_fps.set_value(next);
+                                #[allow(clippy::cast_possible_truncation)]
+                                set_preview_fps.set(next as f32);
                             }
-
-                            last_frame_number.set_value(Some(current_frame_number));
-                            last_frame_timestamp.set_value(Some(current_timestamp_ms));
                         }
-                        return;
-                    }
 
-                    // JSON message (String)
-                    if let Some(text) = event.data().as_string() {
-                        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
-                            handle_json_message(
-                                &msg,
-                                &set_active_effect,
-                                metrics,
-                                &set_metrics,
-                                backpressure_notice,
-                                &set_backpressure_notice,
-                                &set_last_device_event,
-                                &set_audio_level,
-                                &set_engine_preview_target,
-                                &set_preview_target_fps,
-                                &set_preview_transport_cap,
-                            );
-                        }
+                        last_frame_number.set_value(Some(current_frame_number));
+                        last_frame_timestamp.set_value(Some(current_timestamp_ms));
                     }
-                });
+                    return;
+                }
+
+                // JSON message (String)
+                if let Some(text) = event.data().as_string() {
+                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
+                        handle_json_message(
+                            &msg,
+                            &set_active_effect,
+                            metrics,
+                            &set_metrics,
+                            backpressure_notice,
+                            &set_backpressure_notice,
+                            &set_last_device_event,
+                            &set_audio_level,
+                            &set_engine_preview_target,
+                            &set_preview_target_fps,
+                            &set_preview_transport_cap,
+                        );
+                    }
+                }
+            });
             ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
             on_message.forget();
         });

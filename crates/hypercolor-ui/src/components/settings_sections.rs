@@ -321,102 +321,6 @@ pub fn CaptureSection(
     }
 }
 
-// ── Effect Engine ──────────────────────────────────────────────────────────
-
-#[component]
-pub fn EngineSection(
-    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
-    on_change: Callback<(String, serde_json::Value)>,
-    on_reset: Callback<String>,
-) -> impl IntoView {
-    let renderer = Signal::derive(move || {
-        read_config(config, |cfg| cfg.effect_engine.preferred_renderer.clone())
-    });
-    let servo = Signal::derive(move || read_config(config, |cfg| cfg.effect_engine.servo_enabled));
-    let wgpu =
-        Signal::derive(move || read_config(config, |cfg| cfg.effect_engine.wgpu_backend.clone()));
-    let extra_dirs = Signal::derive(move || {
-        read_config(config, |cfg| {
-            cfg.effect_engine
-                .extra_effect_dirs
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-        })
-    });
-    let watch_effects =
-        Signal::derive(move || read_config(config, |cfg| cfg.effect_engine.watch_effects));
-    let watch_config =
-        Signal::derive(move || read_config(config, |cfg| cfg.effect_engine.watch_config));
-
-    let renderer_options = vec![
-        ("auto".to_string(), "Auto".to_string()),
-        ("servo".to_string(), "Servo".to_string()),
-        ("wgpu".to_string(), "wgpu".to_string()),
-    ];
-    let wgpu_options = vec![
-        ("auto".to_string(), "Auto".to_string()),
-        ("vulkan".to_string(), "Vulkan".to_string()),
-        ("gl".to_string(), "OpenGL".to_string()),
-    ];
-
-    view! {
-        <section id="section-engine" class="pt-5 pb-3 space-y-0">
-            <SectionHeader title="Effect Engine" icon=LuZap />
-            <SettingDropdown
-                label="Preferred Renderer"
-                description="Rendering backend for effects"
-                key="effect_engine.preferred_renderer"
-                value=renderer
-                options=Signal::stored(renderer_options)
-                on_change=on_change
-                restart_required=true
-            />
-            <SettingToggle
-                label="Servo Enabled"
-                description="Enable the Servo browser engine for HTML effects"
-                key="effect_engine.servo_enabled"
-                value=servo
-                on_change=on_change
-                restart_required=true
-            />
-            <SettingDropdown
-                label="wgpu Backend"
-                description="GPU backend for shader-based effects"
-                key="effect_engine.wgpu_backend"
-                value=wgpu
-                options=Signal::stored(wgpu_options)
-                on_change=on_change
-                restart_required=true
-            />
-            <SettingPathList
-                label="Extra Effect Directories"
-                description="Additional directories to scan for custom effects"
-                key="effect_engine.extra_effect_dirs"
-                paths=extra_dirs
-                on_change=on_change
-            />
-            <SettingToggle
-                label="Watch Effects"
-                description="Auto-reload effects when source files change"
-                key="effect_engine.watch_effects"
-                value=watch_effects
-                on_change=on_change
-                restart_required=true
-            />
-            <SettingToggle
-                label="Watch Config"
-                description="Auto-reload when hypercolor.toml changes on disk"
-                key="effect_engine.watch_config"
-                value=watch_config
-                on_change=on_change
-                restart_required=true
-            />
-            <SectionReset section_label="Effect Engine" on_reset=Callback::new(move |()| on_reset.run("effect_engine".to_string())) />
-        </section>
-    }
-}
-
 // ── Network ────────────────────────────────────────────────────────────────
 
 #[component]
@@ -428,11 +332,8 @@ pub fn NetworkSection(
     let listen_addr =
         Signal::derive(move || read_config(config, |cfg| cfg.daemon.listen_address.clone()));
     let port = Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.port)));
-    let target_fps =
-        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.target_fps)));
-    let ws_fps =
-        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.web.websocket_fps)));
     let open_browser = Signal::derive(move || read_config(config, |cfg| cfg.web.open_browser));
+    let mcp_enabled = Signal::derive(move || read_config(config, |cfg| cfg.mcp.enabled));
 
     view! {
         <section id="section-network" class="pt-5 pb-3 space-y-0">
@@ -455,26 +356,6 @@ pub fn NetworkSection(
                 min=1024.0 max=65535.0 step=1.0
                 restart_required=true
             />
-            <SettingSlider
-                label="Target FPS"
-                description="Render loop frame rate for the lighting engine"
-                key="daemon.target_fps"
-                value=target_fps
-                on_change=on_change
-                min=1.0 max=120.0 step=1.0
-                decimals=0
-                integer=true
-            />
-            <SettingSlider
-                label="WebSocket FPS"
-                description="Frame rate for the live preview stream"
-                key="web.websocket_fps"
-                value=ws_fps
-                on_change=on_change
-                min=1.0 max=60.0 step=1.0
-                decimals=0
-                integer=true
-            />
             <SettingToggle
                 label="Open Browser on Start"
                 description="Automatically open the web UI when the daemon starts"
@@ -482,81 +363,22 @@ pub fn NetworkSection(
                 value=open_browser
                 on_change=on_change
             />
+            <SettingToggle
+                label="MCP Server"
+                description="Expose Model Context Protocol server for AI agent integration"
+                key="mcp.enabled"
+                value=mcp_enabled
+                on_change=on_change
+                restart_required=true
+            />
             <SectionReset section_label="Network" on_reset=Callback::new(move |()| {
-                // Reset only the keys owned by this section — avoid nuking the
-                // entire "daemon" section which would wipe developer settings too.
                 for key in &[
-                    "daemon.listen_address", "daemon.port", "daemon.target_fps",
-                    "web.websocket_fps", "web.open_browser",
+                    "daemon.listen_address", "daemon.port",
+                    "web.open_browser", "mcp.enabled",
                 ] {
                     on_reset.run(key.to_string());
                 }
             }) />
-        </section>
-    }
-}
-
-// ── MCP ────────────────────────────────────────────────────────────────────
-
-#[component]
-pub fn McpSection(
-    #[prop(into)] config: Signal<Option<HypercolorConfig>>,
-    on_change: Callback<(String, serde_json::Value)>,
-    on_reset: Callback<String>,
-) -> impl IntoView {
-    let enabled = Signal::derive(move || read_config(config, |cfg| cfg.mcp.enabled));
-    let base_path = Signal::derive(move || read_config(config, |cfg| cfg.mcp.base_path.clone()));
-    let stateful_mode = Signal::derive(move || read_config(config, |cfg| cfg.mcp.stateful_mode));
-    let json_response = Signal::derive(move || read_config(config, |cfg| cfg.mcp.json_response));
-    let sse_keep_alive_secs =
-        Signal::derive(move || read_config(config, |cfg| cfg.mcp.sse_keep_alive_secs as f64));
-
-    view! {
-        <section id="section-mcp" class="pt-5 pb-3 space-y-0">
-            <SectionHeader title="MCP" icon=LuCable />
-            <SettingToggle
-                label="Enabled"
-                description="Expose Hypercolor's Model Context Protocol server on the main HTTP listener"
-                key="mcp.enabled"
-                value=enabled
-                on_change=on_change
-                restart_required=true
-            />
-            <SettingTextInput
-                label="Base Path"
-                description="HTTP mount path for the MCP endpoint on the existing server"
-                key="mcp.base_path"
-                value=base_path
-                on_change=on_change
-                restart_required=true
-                placeholder="/mcp"
-            />
-            <SettingToggle
-                label="Stateful Sessions"
-                description="Use MCP session headers and SSE streams for multi-request conversations"
-                key="mcp.stateful_mode"
-                value=stateful_mode
-                on_change=on_change
-                restart_required=true
-            />
-            <SettingToggle
-                label="JSON Responses"
-                description="Return plain JSON instead of SSE for stateless requests; ignored when stateful sessions are enabled"
-                key="mcp.json_response"
-                value=json_response
-                on_change=on_change
-                restart_required=true
-            />
-            <SettingNumberInput
-                label="SSE Keep Alive"
-                description="Seconds between SSE keep-alive pings in stateful mode (0 disables keep-alives)"
-                key="mcp.sse_keep_alive_secs"
-                value=sse_keep_alive_secs
-                on_change=on_change
-                min=0.0 max=300.0 step=1.0
-                restart_required=true
-            />
-            <SectionReset section_label="MCP" on_reset=Callback::new(move |()| on_reset.run("mcp".to_string())) />
         </section>
     }
 }
@@ -583,17 +405,9 @@ pub fn SessionSection(
     let screen_lock_brightness = Signal::derive(move || {
         read_config(config, |cfg| f64::from(cfg.session.screen_lock_brightness))
     });
-    let screen_lock_fade =
-        Signal::derive(move || read_config(config, |cfg| cfg.session.screen_lock_fade_ms as f64));
-    let screen_unlock_fade =
-        Signal::derive(move || read_config(config, |cfg| cfg.session.screen_unlock_fade_ms as f64));
     let suspend_behavior = Signal::derive(move || {
         read_config(config, |cfg| sleep_behavior_value(cfg.session.on_suspend))
     });
-    let suspend_fade =
-        Signal::derive(move || read_config(config, |cfg| cfg.session.suspend_fade_ms as f64));
-    let resume_fade =
-        Signal::derive(move || read_config(config, |cfg| cfg.session.resume_fade_ms as f64));
 
     let screen_behavior_options = Signal::stored(vec![
         ("ignore".to_string(), "Ignore".to_string()),
@@ -634,45 +448,13 @@ pub fn SessionSection(
                     min=0.0 max=1.0 step=0.05
                 />
             </Show>
-            <SettingNumberInput
-                label="Screen Lock Fade"
-                description="Milliseconds to fade into the screen-lock state"
-                key="session.screen_lock_fade_ms"
-                value=screen_lock_fade
-                on_change=on_change
-                min=0.0 max=10000.0 step=50.0
-            />
-            <SettingNumberInput
-                label="Unlock Fade"
-                description="Milliseconds to restore output after the session unlocks"
-                key="session.screen_unlock_fade_ms"
-                value=screen_unlock_fade
-                on_change=on_change
-                min=0.0 max=10000.0 step=50.0
-            />
             <SettingDropdown
                 label="Suspend Behavior"
-                description="Choose what happens when the OS is actually preparing to suspend"
+                description="What happens when the system suspends"
                 key="session.on_suspend"
                 value=suspend_behavior
                 options=suspend_behavior_options
                 on_change=on_change
-            />
-            <SettingNumberInput
-                label="Suspend Fade"
-                description="Milliseconds to fade before the kernel suspends"
-                key="session.suspend_fade_ms"
-                value=suspend_fade
-                on_change=on_change
-                min=0.0 max=5000.0 step=25.0
-            />
-            <SettingNumberInput
-                label="Resume Fade"
-                description="Milliseconds to restore output after resume"
-                key="session.resume_fade_ms"
-                value=resume_fade
-                on_change=on_change
-                min=0.0 max=5000.0 step=25.0
             />
             <SettingToggle
                 label="Idle Detection"
@@ -766,16 +548,21 @@ pub fn DeveloperSection(
             format!("{:?}", cfg.daemon.log_level).to_lowercase()
         })
     });
+    let target_fps =
+        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.target_fps)));
     let canvas_width =
         Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.canvas_width)));
     let canvas_height =
         Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.canvas_height)));
-    let max_devices =
-        Signal::derive(move || read_config(config, |cfg| f64::from(cfg.daemon.max_devices)));
-    let wasm_plugins = Signal::derive(move || read_config(config, |cfg| cfg.features.wasm_plugins));
-    let hue_entertainment =
-        Signal::derive(move || read_config(config, |cfg| cfg.features.hue_entertainment));
-    let midi_input = Signal::derive(move || read_config(config, |cfg| cfg.features.midi_input));
+    let extra_dirs = Signal::derive(move || {
+        read_config(config, |cfg| {
+            cfg.effect_engine
+                .extra_effect_dirs
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+        })
+    });
 
     let log_options = vec![
         ("trace".to_string(), "Trace".to_string()),
@@ -797,6 +584,16 @@ pub fn DeveloperSection(
                 options=Signal::stored(log_options)
                 on_change=on_change
             />
+            <SettingSlider
+                label="Target FPS"
+                description="Render loop frame rate for the lighting engine"
+                key="daemon.target_fps"
+                value=target_fps
+                on_change=on_change
+                min=1.0 max=120.0 step=1.0
+                decimals=0
+                integer=true
+            />
             <SettingNumberInput
                 label="Canvas Width"
                 description="Internal render canvas width in pixels"
@@ -815,51 +612,18 @@ pub fn DeveloperSection(
                 min=32.0 max=1080.0 step=16.0
                 restart_required=true
             />
-            <SettingNumberInput
-                label="Max Devices"
-                description="Maximum number of connected devices"
-                key="daemon.max_devices"
-                value=max_devices
+            <SettingPathList
+                label="Extra Effect Directories"
+                description="Additional directories to scan for custom effects"
+                key="effect_engine.extra_effect_dirs"
+                paths=extra_dirs
                 on_change=on_change
-                min=1.0 max=128.0 step=1.0
-            />
-
-            // Feature flags
-            <div class="flex items-center gap-2 mt-4 mb-3 pt-3 border-t border-edge-subtle/10">
-                <Icon icon=LuFlaskConical width="14px" height="14px" style="color: rgba(241, 250, 140, 0.5)" />
-                <span class="text-xs font-mono uppercase tracking-[0.08em] text-fg-tertiary/60">"Experimental Features"</span>
-            </div>
-            <SettingToggle
-                label="WASM Plugins"
-                description="Enable WebAssembly plugin runtime"
-                key="features.wasm_plugins"
-                value=wasm_plugins
-                on_change=on_change
-                restart_required=true
-            />
-            <SettingToggle
-                label="Hue Entertainment"
-                description="Enable Philips Hue Entertainment API for low-latency streaming"
-                key="features.hue_entertainment"
-                value=hue_entertainment
-                on_change=on_change
-                restart_required=true
-            />
-            <SettingToggle
-                label="MIDI Input"
-                description="Enable MIDI device input for effect control"
-                key="features.midi_input"
-                value=midi_input
-                on_change=on_change
-                restart_required=true
             />
             <SectionReset section_label="Developer" on_reset=Callback::new(move |()| {
-                // Developer section spans multiple config keys — reset individually
                 for key in &[
-                    "daemon.log_level", "daemon.log_file",
+                    "daemon.log_level", "daemon.target_fps",
                     "daemon.canvas_width", "daemon.canvas_height",
-                    "daemon.max_devices", "daemon.shutdown_behavior",
-                    "daemon.shutdown_color", "features",
+                    "effect_engine.extra_effect_dirs",
                 ] {
                     on_reset.run(key.to_string());
                 }

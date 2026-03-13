@@ -88,12 +88,24 @@ fn device_class_icon(class: &DeviceClass) -> icondata_core::Icon {
 /// Device class → subtle accent tint for card identity (overlays on backend color).
 fn device_class_pattern(class: &DeviceClass) -> &'static str {
     match class {
-        DeviceClass::Keyboard => "repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0px, rgba(255,255,255,0.02) 2px, transparent 2px, transparent 6px)",
-        DeviceClass::Mouse => "radial-gradient(ellipse at 60% 30%, rgba(255,255,255,0.03), transparent 70%)",
-        DeviceClass::FanController => "conic-gradient(from 0deg, rgba(255,255,255,0.02), transparent 30%, rgba(255,255,255,0.02) 50%, transparent 80%)",
-        DeviceClass::LedController | DeviceClass::WledController => "repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 4px)",
-        DeviceClass::Headset => "radial-gradient(circle at 30% 50%, rgba(255,255,255,0.03), transparent 60%)",
-        DeviceClass::Display => "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, transparent 40%)",
+        DeviceClass::Keyboard => {
+            "repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0px, rgba(255,255,255,0.02) 2px, transparent 2px, transparent 6px)"
+        }
+        DeviceClass::Mouse => {
+            "radial-gradient(ellipse at 60% 30%, rgba(255,255,255,0.03), transparent 70%)"
+        }
+        DeviceClass::FanController => {
+            "conic-gradient(from 0deg, rgba(255,255,255,0.02), transparent 30%, rgba(255,255,255,0.02) 50%, transparent 80%)"
+        }
+        DeviceClass::LedController | DeviceClass::WledController => {
+            "repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 4px)"
+        }
+        DeviceClass::Headset => {
+            "radial-gradient(circle at 30% 50%, rgba(255,255,255,0.03), transparent 60%)"
+        }
+        DeviceClass::Display => {
+            "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, transparent 40%)"
+        }
         DeviceClass::Other => "none",
     }
 }
@@ -113,11 +125,19 @@ fn compact_label(device: &DeviceSummary) -> Option<String> {
 /// Zone topology → inline SVG shape hint for zone display.
 pub fn topology_shape_svg(topology: &str) -> &'static str {
     match topology {
-        "strip" => r#"<rect x="1" y="5" width="14" height="6" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>"#,
-        "ring" | "concentric_rings" => r#"<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>"#,
-        "matrix" | "perimeter_loop" => r#"<rect x="2" y="2" width="12" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>"#,
+        "strip" => {
+            r#"<rect x="1" y="5" width="14" height="6" rx="2" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>"#
+        }
+        "ring" | "concentric_rings" => {
+            r#"<circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>"#
+        }
+        "matrix" | "perimeter_loop" => {
+            r#"<rect x="2" y="2" width="12" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6"/>"#
+        }
         "point" => r#"<circle cx="8" cy="8" r="3" fill="currentColor" opacity="0.4"/>"#,
-        _ => r#"<rect x="3" y="3" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1" opacity="0.4"/>"#,
+        _ => {
+            r#"<rect x="3" y="3" width="10" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1" opacity="0.4"/>"#
+        }
     }
 }
 
@@ -148,9 +168,8 @@ pub fn DeviceCard(
     let icon_bg = format!(
         "background: rgba({rgb}, 0.08); border: 1px solid rgba({rgb}, 0.12); color: rgba({rgb}, 0.7)"
     );
-    let dot_style = format!(
-        "background: rgb({status_rgb}); box-shadow: 0 0 6px rgba({status_rgb}, 0.5)"
-    );
+    let dot_style =
+        format!("background: rgb({status_rgb}); box-shadow: 0 0 6px rgba({status_rgb}, 0.5)");
 
     let stagger = (index.min(12) + 1).to_string();
 

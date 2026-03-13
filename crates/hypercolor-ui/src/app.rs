@@ -219,12 +219,14 @@ fn apply_active_effect_snapshot(
         .map(|effect| effect.category)
         .unwrap_or_default();
 
-    ctx.set_active_effect_id.set(Some(id));
     ctx.set_active_effect_name.set(Some(name));
     ctx.set_active_effect_category.set(category);
     ctx.set_active_controls.set(controls);
     ctx.set_active_control_values.set(control_values);
     ctx.set_active_preset_id.set(active_preset_id);
+    if ctx.active_effect_id.get_untracked().as_deref() != Some(id.as_str()) {
+        ctx.set_active_effect_id.set(Some(id));
+    }
 }
 
 fn clear_active_effect_state(ctx: &EffectsContext) {

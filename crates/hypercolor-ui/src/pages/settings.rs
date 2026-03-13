@@ -15,9 +15,7 @@ use crate::icons::*;
 const SECTION_IDS: &[&str] = &[
     "audio",
     "capture",
-    "engine",
     "network",
-    "mcp",
     "session",
     "discovery",
     "developer",
@@ -171,9 +169,11 @@ pub fn SettingsPage() -> impl IntoView {
                     .into_iter()
                     .map(|d| {
                         let label = if d.description.is_empty() || d.description == d.name {
-                            d.name
+                            d.name.clone()
+                        } else if d.description.to_ascii_lowercase().contains("unavailable") {
+                            format!("{} (Unavailable)", d.name)
                         } else {
-                            format!("{} - {}", d.name, d.description)
+                            d.name.clone()
                         };
                         (d.id, label)
                     })
@@ -246,21 +246,9 @@ pub fn SettingsPage() -> impl IntoView {
             separator_before: false,
         },
         TabEntry {
-            id: "engine",
-            label: "Engine",
-            icon: LuZap,
-            separator_before: false,
-        },
-        TabEntry {
             id: "network",
             label: "Network",
             icon: LuGlobe,
-            separator_before: false,
-        },
-        TabEntry {
-            id: "mcp",
-            label: "MCP",
-            icon: LuCable,
             separator_before: false,
         },
         TabEntry {
@@ -405,41 +393,29 @@ pub fn SettingsPage() -> impl IntoView {
                                 class="settings-card"
                                 style="animation: fade-in 0.4s ease-out 0.15s both"
                             >
-                                <EngineSection config=config on_change=on_change on_reset=on_reset />
+                                <NetworkSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
                                 style="animation: fade-in 0.4s ease-out 0.2s both"
                             >
-                                <NetworkSection config=config on_change=on_change on_reset=on_reset />
+                                <SessionSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
                                 style="animation: fade-in 0.4s ease-out 0.25s both"
                             >
-                                <McpSection config=config on_change=on_change on_reset=on_reset />
+                                <DiscoverySection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
                                 style="animation: fade-in 0.4s ease-out 0.3s both"
                             >
-                                <SessionSection config=config on_change=on_change on_reset=on_reset />
-                            </div>
-                            <div
-                                class="settings-card"
-                                style="animation: fade-in 0.4s ease-out 0.35s both"
-                            >
-                                <DiscoverySection config=config on_change=on_change on_reset=on_reset />
-                            </div>
-                            <div
-                                class="settings-card"
-                                style="animation: fade-in 0.4s ease-out 0.4s both"
-                            >
                                 <DeveloperSection config=config on_change=on_change on_reset=on_reset />
                             </div>
                             <div
                                 class="settings-card"
-                                style="animation: fade-in 0.4s ease-out 0.45s both"
+                                style="animation: fade-in 0.4s ease-out 0.35s both"
                             >
                                 <AboutSection />
                             </div>
