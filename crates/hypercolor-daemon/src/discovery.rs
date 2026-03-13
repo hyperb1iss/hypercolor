@@ -13,9 +13,9 @@ use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::wled::{WledKnownTarget, WledScanner};
 use hypercolor_core::device::{
-    AsyncWriteFailure, BackendIo, BackendManager, DeviceLifecycleManager, DeviceRegistry,
-    DiscoveryConnectBehavior, DiscoveryOrchestrator, DiscoveryProgress, LifecycleAction,
-    ScannerScanReport, SmBusScanner, UsbProtocolConfigStore, UsbScanner,
+    AsyncWriteFailure, BackendIo, BackendManager, BlocksScanner, DeviceLifecycleManager,
+    DeviceRegistry, DiscoveryConnectBehavior, DiscoveryOrchestrator, DiscoveryProgress,
+    LifecycleAction, ScannerScanReport, SmBusScanner, UsbProtocolConfigStore, UsbScanner,
 };
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
 use hypercolor_types::config::HypercolorConfig;
@@ -152,6 +152,7 @@ pub enum DiscoveryBackend {
     Wled,
     Usb,
     SmBus,
+    Blocks,
 }
 
 impl DiscoveryBackend {
@@ -162,6 +163,7 @@ impl DiscoveryBackend {
             Self::Wled => "wled",
             Self::Usb => "usb",
             Self::SmBus => "smbus",
+            Self::Blocks => "blocks",
         }
     }
 
@@ -170,9 +172,13 @@ impl DiscoveryBackend {
             "wled" => Some(Self::Wled),
             "usb" => Some(Self::Usb),
             "smbus" => Some(Self::SmBus),
+            "blocks" => Some(Self::Blocks),
             _ => None,
         }
     }
+
+    /// All known backend identifiers for default discovery and error messages.
+    const ALL: &[Self] = &[Self::Wled, Self::Usb, Self::SmBus, Self::Blocks];
 }
 
 /// Default timeout used when callers do not provide one.
@@ -300,16 +306,20 @@ pub fn resolve_backends(
             .any(|item| item.trim().eq_ignore_ascii_case("all"))
     });
     let explicit_request = requested.is_some_and(|raw| !raw.is_empty()) && !includes_all;
+    let all_backends: Vec<String> = DiscoveryBackend::ALL
+        .iter()
+        .map(|b| b.as_str().to_owned())
+        .collect();
     let mut candidates: Vec<String> = match requested {
         Some(raw) if !raw.is_empty() => raw.to_vec(),
-        _ => vec!["wled".to_owned(), "usb".to_owned(), "smbus".to_owned()],
+        _ => all_backends.clone(),
     };
 
     if candidates
         .iter()
         .any(|item| item.trim().eq_ignore_ascii_case("all"))
     {
-        candidates = vec!["wled".to_owned(), "usb".to_owned(), "smbus".to_owned()];
+        candidates = all_backends;
     }
 
     let mut out = Vec::new();
@@ -317,8 +327,12 @@ pub fn resolve_backends(
 
     for candidate in candidates {
         let normalized = candidate.trim().to_ascii_lowercase();
+        let supported: Vec<&str> = DiscoveryBackend::ALL.iter().map(|b| b.as_str()).collect();
         let backend = DiscoveryBackend::parse(&normalized).ok_or_else(|| {
-            format!("Unknown discovery backend '{candidate}'. Supported backends: wled, usb, smbus")
+            format!(
+                "Unknown discovery backend '{candidate}'. Supported backends: {}",
+                supported.join(", ")
+            )
         })?;
 
         if !seen.insert(backend) {
@@ -331,6 +345,17 @@ pub fn resolve_backends(
                     if explicit_request {
                         return Err(
                             "Discovery backend 'wled' is disabled by config (discovery.wled_scan=false)"
+                                .to_owned(),
+                        );
+                    }
+                    continue;
+                }
+            }
+            DiscoveryBackend::Blocks => {
+                if !config.discovery.blocks_scan {
+                    if explicit_request {
+                        return Err(
+                            "Discovery backend 'blocks' is disabled by config (discovery.blocks_scan=false)"
                                 .to_owned(),
                         );
                     }
@@ -424,6 +449,17 @@ pub async fn execute_discovery_scan(
             }
             DiscoveryBackend::SmBus => {
                 orchestrator.add_scanner(Box::new(SmBusScanner::new()));
+            }
+            DiscoveryBackend::Blocks => {
+                let socket_path = config
+                    .discovery
+                    .blocks_socket_path
+                    .as_ref()
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(
+                        hypercolor_core::device::BlocksBackend::default_socket_path,
+                    );
+                orchestrator.add_scanner(Box::new(BlocksScanner::new(socket_path)));
             }
         }
     }
@@ -2308,7 +2344,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_backends_defaults_to_wled_usb_and_smbus() {
+    fn resolve_backends_defaults_to_all() {
         let cfg = HypercolorConfig::default();
         let resolved = resolve_backends(None, &cfg).expect("default backends should resolve");
         assert_eq!(
@@ -2317,6 +2353,7 @@ mod tests {
                 DiscoveryBackend::Wled,
                 DiscoveryBackend::Usb,
                 DiscoveryBackend::SmBus,
+                DiscoveryBackend::Blocks,
             ]
         );
     }
@@ -2350,6 +2387,7 @@ mod tests {
                 DiscoveryBackend::Wled,
                 DiscoveryBackend::Usb,
                 DiscoveryBackend::SmBus,
+                DiscoveryBackend::Blocks,
             ]
         );
     }

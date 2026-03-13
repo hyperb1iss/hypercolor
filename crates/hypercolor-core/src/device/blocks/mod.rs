@@ -7,7 +7,9 @@
 mod backend;
 #[allow(dead_code)] // Phase 3 methods (subscribe, read_event) not yet used
 mod connection;
+mod scanner;
 mod types;
 
 pub use backend::BlocksBackend;
+pub use scanner::BlocksScanner;
 pub use types::RoliBlockType;

@@ -20,7 +20,7 @@ pub mod usb_hotplug;
 pub mod usb_scanner;
 pub mod wled;
 
-pub use blocks::BlocksBackend;
+pub use blocks::{BlocksBackend, BlocksScanner};
 pub use discovery::{
     DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryOrchestrator, DiscoveryProgress,
     DiscoveryReport, ScannerScanReport, TransportScanner,
