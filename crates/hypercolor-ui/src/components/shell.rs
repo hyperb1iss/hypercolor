@@ -215,12 +215,19 @@ pub fn Shell(children: Children) -> impl IntoView {
 fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
     let fx = expect_context::<EffectsContext>();
     let (query, set_query) = signal(String::new());
+    let (selected_idx, set_selected_idx) = signal(0_usize);
     let input_ref = NodeRef::<leptos::html::Input>::new();
 
     Effect::new(move |_| {
         if let Some(input) = input_ref.get() {
             let _ = input.focus();
         }
+    });
+
+    // Reset selection when query changes
+    Effect::new(move |_| {
+        query.track();
+        set_selected_idx.set(0);
     });
 
     let filtered = Memo::new(move |_| {
@@ -259,8 +266,12 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
             />
 
             // Palette panel
-            <div class="relative w-full max-w-lg mx-4 rounded-xl glass border border-edge-subtle
-                        modal-glow overflow-hidden animate-scale-in">
+            <div
+                class="relative w-full max-w-lg mx-4 rounded-xl glass border border-edge-subtle
+                        modal-glow overflow-hidden animate-scale-in"
+                role="dialog"
+                aria-label="Command palette"
+            >
                 // Search input
                 <div class="flex items-center gap-3 px-4 py-3.5 border-b border-edge-subtle">
                     <Icon icon=LuSearch width="16px" height="16px" style="color: rgba(225, 53, 255, 0.6); flex-shrink: 0" />
@@ -269,6 +280,9 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                         type="text"
                         placeholder="Search effects..."
                         class="flex-1 bg-transparent text-sm text-fg-primary placeholder-fg-tertiary outline-none"
+                        role="combobox"
+                        aria-expanded="true"
+                        aria-autocomplete="list"
                         prop:value=move || query.get()
                         on:input=move |ev| {
                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -277,8 +291,34 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                             }
                         }
                         on:keydown=move |ev| {
-                            if ev.key() == "Escape" {
-                                on_close.run(());
+                            let key = ev.key();
+                            match key.as_str() {
+                                "Escape" => on_close.run(()),
+                                "ArrowDown" => {
+                                    ev.prevent_default();
+                                    let count = filtered.get().len();
+                                    if count > 0 {
+                                        set_selected_idx.update(|i| *i = (*i + 1) % count);
+                                    }
+                                }
+                                "ArrowUp" => {
+                                    ev.prevent_default();
+                                    let count = filtered.get().len();
+                                    if count > 0 {
+                                        set_selected_idx.update(|i| {
+                                            *i = if *i == 0 { count - 1 } else { *i - 1 };
+                                        });
+                                    }
+                                }
+                                "Enter" => {
+                                    let items = filtered.get();
+                                    let idx = selected_idx.get();
+                                    if let Some(effect) = items.get(idx) {
+                                        fx.apply_effect(effect.id.clone());
+                                        on_close.run(());
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                     />
@@ -286,7 +326,7 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                 </div>
 
                 // Results
-                <div class="max-h-[320px] overflow-y-auto py-1">
+                <div class="max-h-[320px] overflow-y-auto py-1" role="listbox">
                     {move || {
                         let items = filtered.get();
                         if items.is_empty() {
@@ -305,13 +345,20 @@ fn CommandPalette(#[prop(into)] on_close: Callback<()>) -> impl IntoView {
                                         let desc = effect.description.clone();
                                         let category = effect.category.clone();
                                         let on_close = close_cb;
-                                        let delay = format!("animation-delay: {}ms", i * 30);
+                                        let is_selected = move || selected_idx.get() == i;
 
                                         view! {
                                             <button
                                                 class="w-full flex items-center gap-3 px-4 py-2.5 text-left
                                                        hover:bg-electric-purple/[0.05] btn-press group animate-fade-in-up"
-                                                style=delay
+                                                style=move || if is_selected() {
+                                                    format!("animation-delay: {delay_ms}ms; background: rgba(225, 53, 255, 0.10)", delay_ms = i * 30)
+                                                } else {
+                                                    format!("animation-delay: {}ms", i * 30)
+                                                }
+                                                role="option"
+                                                aria-selected=move || is_selected().to_string()
+                                                on:mouseenter=move |_| set_selected_idx.set(i)
                                                 on:click=move |_| {
                                                     fx.apply_effect(id.clone());
                                                     on_close.run(());
