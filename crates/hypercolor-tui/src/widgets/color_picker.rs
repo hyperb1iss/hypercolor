@@ -21,7 +21,11 @@ pub struct ColorPickerPopup<'a> {
 impl<'a> ColorPickerPopup<'a> {
     #[must_use]
     pub fn new(name: &'a str, hsl: [f32; 3], selected: usize) -> Self {
-        Self { name, hsl, selected }
+        Self {
+            name,
+            hsl,
+            selected,
+        }
     }
 }
 
@@ -74,9 +78,7 @@ impl Widget for ColorPickerPopup<'_> {
             inner.x + 2 + swatch_w,
             inner.y,
             format!("#{r8:02x}{g8:02x}{b8:02x}"),
-            Style::default()
-                .fg(BASE_WHITE)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(BASE_WHITE).add_modifier(Modifier::BOLD),
         );
 
         // Rows 2-4: H, S, L channel sliders with contextual gradients
@@ -127,8 +129,7 @@ impl Widget for ColorPickerPopup<'_> {
                             Color::Rgb(f32_to_u8(hr), f32_to_u8(hg), f32_to_u8(hb))
                         }
                         1 => {
-                            let (sr, sg, sb) =
-                                hsl_to_rgb(self.hsl[0], t, 0.5_f32.max(self.hsl[2]));
+                            let (sr, sg, sb) = hsl_to_rgb(self.hsl[0], t, 0.5_f32.max(self.hsl[2]));
                             Color::Rgb(f32_to_u8(sr), f32_to_u8(sg), f32_to_u8(sb))
                         }
                         _ => {

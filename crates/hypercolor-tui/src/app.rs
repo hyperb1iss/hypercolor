@@ -83,10 +83,7 @@ impl App {
     pub async fn run(&mut self) -> Result<()> {
         // Initialize terminal
         let mut terminal = ratatui::init();
-        crossterm::execute!(
-            std::io::stdout(),
-            crossterm::event::EnableMouseCapture
-        )?;
+        crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
 
         // Initialize all screens
         for screen in self.screens.values_mut() {
@@ -155,10 +152,7 @@ impl App {
         // Cleanup
         self.data_cancel.cancel();
         events.stop();
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::event::DisableMouseCapture
-        );
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
         ratatui::restore();
         tracing::info!("TUI event loop ended");
         Ok(())
@@ -257,8 +251,7 @@ impl App {
 
             // ── Connection state ────────────────────────────
             Action::DaemonConnected(daemon_state) => {
-                let was_disconnected =
-                    self.state.connection_status != ConnectionStatus::Connected;
+                let was_disconnected = self.state.connection_status != ConnectionStatus::Connected;
                 self.state.daemon = Some(daemon_state.as_ref().clone());
                 self.state.connection_status = ConnectionStatus::Connected;
                 self.state.disconnect_reason = None;
@@ -274,8 +267,7 @@ impl App {
                 }
             }
             Action::DaemonDisconnected(reason) => {
-                let was_connected =
-                    self.state.connection_status == ConnectionStatus::Connected;
+                let was_connected = self.state.connection_status == ConnectionStatus::Connected;
                 self.state.connection_status = ConnectionStatus::Disconnected;
                 self.state.disconnect_reason = Some(reason.clone());
                 if was_connected {
@@ -611,7 +603,10 @@ impl App {
         }));
         bindings.extend([
             (String::new(), String::new()),
-            ("\u{2191}/\u{2193}".to_string(), "Navigate up/down".to_string()),
+            (
+                "\u{2191}/\u{2193}".to_string(),
+                "Navigate up/down".to_string(),
+            ),
             ("\u{2190}/\u{2192}".to_string(), "Adjust value".to_string()),
             ("Enter".to_string(), "Apply / confirm".to_string()),
             ("f".to_string(), "Toggle favorite".to_string()),
@@ -696,10 +691,7 @@ impl App {
                 msg,
                 Style::default().fg(Color::Rgb(100, 100, 120)),
             )));
-            frame.render_widget(
-                text,
-                Rect::new(msg_x, msg_y, msg_width, 1),
-            );
+            frame.render_widget(text, Rect::new(msg_x, msg_y, msg_width, 1));
         }
 
         // Info bar: effect name + hint to exit
@@ -710,11 +702,7 @@ impl App {
             .and_then(|d| d.effect_name.as_deref())
             .unwrap_or("—");
 
-        let fps = self
-            .state
-            .daemon
-            .as_ref()
-            .map_or(0.0, |d| d.fps_actual);
+        let fps = self.state.daemon.as_ref().map_or(0.0, |d| d.fps_actual);
 
         let left_preview = " PREVIEW ";
         let left_name = format!(" {effect_name} ");
@@ -745,8 +733,7 @@ impl App {
             Span::styled(right_hint, muted),
         ]);
 
-        let info = Paragraph::new(info_line)
-            .style(Style::default().bg(Color::Rgb(20, 20, 30)));
+        let info = Paragraph::new(info_line).style(Style::default().bg(Color::Rgb(20, 20, 30)));
         frame.render_widget(info, info_area);
     }
 }

@@ -81,8 +81,8 @@ impl TitleBar {
         spans.extend(right_spans);
 
         let line = Line::from(spans);
-        let paragraph = ratatui::widgets::Paragraph::new(line)
-            .style(Style::default().bg(theme::bg_panel()));
+        let paragraph =
+            ratatui::widgets::Paragraph::new(line).style(Style::default().bg(theme::bg_panel()));
 
         frame.render_widget(paragraph, area);
     }
@@ -189,9 +189,7 @@ fn build_gradient_brand(spans: &mut Vec<Span<'static>>, phase: f32) {
 
         spans.push(Span::styled(
             ch.to_string(),
-            Style::default()
-                .fg(color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
         ));
         if i < len - 1 {
             spans.push(Span::raw(" "));

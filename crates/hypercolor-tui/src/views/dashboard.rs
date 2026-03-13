@@ -1,9 +1,9 @@
 //! Dashboard view — single-glance overview of the lighting system.
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
@@ -12,7 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::action::Action;
 use crate::component::Component;
 use crate::state::{CanvasFrame, ConnectionStatus, DaemonState, DeviceSummary, EffectSummary};
-use crate::widgets::{HalfBlockCanvas, ParamSlider};
+use crate::widgets::{HalfBlockCanvas, ParamSlider, Split, SplitDirection};
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
 
@@ -32,6 +32,12 @@ const BORDER_DIM: Color = Color::Rgb(90, 21, 102);
 pub struct DashboardView {
     focused: bool,
     action_tx: Option<UnboundedSender<Action>>,
+
+    // Resizable panel splits
+    /// Vertical: top section / devices table (quick actions stays fixed at bottom)
+    v_split: Split,
+    /// Horizontal: effect panel / preview panel (within top section)
+    h_split: Split,
 
     // Data
     daemon_state: Option<DaemonState>,
@@ -56,6 +62,8 @@ impl DashboardView {
         Self {
             focused: false,
             action_tx: None,
+            v_split: Split::new(SplitDirection::Vertical, 0.4).min_sizes(6, 5),
+            h_split: Split::new(SplitDirection::Horizontal, 0.4).min_sizes(15, 15),
             daemon_state: None,
             devices: Vec::new(),
             effects: Vec::new(),
@@ -121,7 +129,11 @@ impl DashboardView {
     }
 
     /// Render effect name, description, author/category, and separator.
-    #[allow(clippy::too_many_arguments, clippy::as_conversions, clippy::cast_possible_truncation)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::as_conversions,
+        clippy::cast_possible_truncation
+    )]
     fn render_effect_info(
         frame: &mut Frame,
         effect: &EffectSummary,
@@ -137,9 +149,7 @@ impl DashboardView {
                     Span::styled("\u{25B6} ", Style::default().fg(SUCCESS_GREEN)),
                     Span::styled(
                         truncate_str(&effect.name, w.saturating_sub(2).into()),
-                        Style::default()
-                            .fg(BASE_WHITE)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(BASE_WHITE).add_modifier(Modifier::BOLD),
                     ),
                 ])),
                 Rect::new(x, y, w, 1),
@@ -152,10 +162,7 @@ impl DashboardView {
             let desc_lines = if effect.description.len() > w as usize && y + 1 < max_y {
                 let line1 = truncate_str(&effect.description, w.into());
                 let rest_start = line1.len().min(effect.description.len());
-                let line2 = truncate_str(
-                    effect.description[rest_start..].trim_start(),
-                    w.into(),
-                );
+                let line2 = truncate_str(effect.description[rest_start..].trim_start(), w.into());
                 vec![
                     Line::from(Span::styled(line1, Style::default().fg(DIM_GRAY))),
                     Line::from(Span::styled(line2, Style::default().fg(DIM_GRAY))),
@@ -187,10 +194,7 @@ impl DashboardView {
                 ));
             }
             if !meta.is_empty() {
-                frame.render_widget(
-                    Paragraph::new(Line::from(meta)),
-                    Rect::new(x, y, w, 1),
-                );
+                frame.render_widget(Paragraph::new(Line::from(meta)), Rect::new(x, y, w, 1));
                 y += 1;
             }
         }
@@ -199,7 +203,10 @@ impl DashboardView {
         if y < max_y {
             let sep: String = "\u{2500}".repeat(w as usize);
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(sep, Style::default().fg(BORDER_DIM)))),
+                Paragraph::new(Line::from(Span::styled(
+                    sep,
+                    Style::default().fg(BORDER_DIM),
+                ))),
                 Rect::new(x, y, w, 1),
             );
             y += 1;
@@ -222,7 +229,10 @@ impl DashboardView {
         }
         let mut badges: Vec<Span<'_>> = Vec::new();
         if effect.audio_reactive {
-            badges.push(Span::styled("\u{266B} Audio", Style::default().fg(NEON_CYAN)));
+            badges.push(Span::styled(
+                "\u{266B} Audio",
+                Style::default().fg(NEON_CYAN),
+            ));
         }
         if !effect.controls.is_empty() {
             if !badges.is_empty() {
@@ -246,7 +256,13 @@ impl DashboardView {
             if !badges.is_empty() {
                 badges.push(Span::styled(" \u{2502} ", Style::default().fg(BORDER_DIM)));
             }
-            let tag_str = effect.tags.iter().take(3).map(String::as_str).collect::<Vec<_>>().join(" ");
+            let tag_str = effect
+                .tags
+                .iter()
+                .take(3)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(" ");
             badges.push(Span::styled(tag_str, Style::default().fg(DIM_GRAY)));
         }
         if !badges.is_empty() {
@@ -573,6 +589,14 @@ impl Component for DashboardView {
         }
     }
 
+    fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
+        // Resizable splits take priority
+        if self.v_split.handle_mouse(&mouse) || self.h_split.handle_mouse(&mouse) {
+            return Ok(None);
+        }
+        Ok(None)
+    }
+
     fn update(&mut self, action: &Action) -> Result<Option<Action>> {
         match action {
             Action::DaemonStateUpdated(state) | Action::DaemonConnected(state) => {
@@ -617,21 +641,30 @@ impl Component for DashboardView {
             return;
         }
 
-        // Layout: 2-column top (effect info + canvas preview), devices table, quick actions
-        let vertical = Layout::vertical([
-            Constraint::Min(8),
-            Constraint::Fill(1),
-            Constraint::Length(3),
-        ])
-        .split(area);
+        // Quick actions bar stays fixed at 3 rows; rest is resizable
+        let actions_h = 3u16.min(area.height);
+        let main_area = Rect::new(
+            area.x,
+            area.y,
+            area.width,
+            area.height.saturating_sub(actions_h),
+        );
+        let actions_area = Rect::new(area.x, area.y + main_area.height, area.width, actions_h);
 
-        let top_cols = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(vertical[0]);
+        // Vertical split: top section / devices table
+        let [top_area, devices_area] = self.v_split.layout(main_area);
 
-        self.render_effect_panel(frame, top_cols[0]);
-        self.render_preview_panel(frame, top_cols[1]);
-        self.render_devices_table(frame, vertical[1]);
-        self.render_quick_actions(frame, vertical[2]);
+        // Horizontal split: effect panel / preview panel
+        let [effect_area, preview_area] = self.h_split.layout(top_area);
+
+        self.render_effect_panel(frame, effect_area);
+        self.render_preview_panel(frame, preview_area);
+        self.render_devices_table(frame, devices_area);
+        self.render_quick_actions(frame, actions_area);
+
+        // Split divider overlays
+        self.v_split.render_divider(frame);
+        self.h_split.render_divider(frame);
     }
 
     fn focused(&self) -> bool {

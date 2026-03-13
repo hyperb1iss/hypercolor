@@ -8,7 +8,7 @@ use std::time::Instant;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
@@ -17,7 +17,9 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::action::Action;
 use crate::component::Component;
 use crate::state::{ControlDefinition, ControlValue, EffectSummary};
-use crate::widgets::{ColorPickerPopup, HalfBlockCanvas, ParamSlider, hsl_to_rgb, rgb_to_hsl};
+use crate::widgets::{
+    ColorPickerPopup, HalfBlockCanvas, ParamSlider, Split, SplitDirection, hsl_to_rgb, rgb_to_hsl,
+};
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
 
@@ -79,6 +81,10 @@ pub struct EffectBrowserView {
     last_slider_adjust: Instant,
     slider_accel: f32,
 
+    // Resizable panel splits
+    h_split: Split,
+    v_split: Split,
+
     // Layout cache for mouse hit-testing (populated during render)
     list_rect: Cell<Rect>,
     preview_rect: Cell<Rect>,
@@ -116,6 +122,8 @@ impl EffectBrowserView {
             color_picker: None,
             last_slider_adjust: Instant::now(),
             slider_accel: 1.0,
+            h_split: Split::new(SplitDirection::Horizontal, 0.35).min_sizes(15, 25),
+            v_split: Split::new(SplitDirection::Vertical, 0.45).min_sizes(5, 5),
             list_rect: Cell::new(Rect::default()),
             preview_rect: Cell::new(Rect::default()),
             controls_rect: Cell::new(Rect::default()),
@@ -187,8 +195,15 @@ impl EffectBrowserView {
     // ── Control value helpers ────────────────────────────────────────
 
     fn adjust_slider(&mut self, ctrl_idx: usize, direction: f32) -> Option<Action> {
-        let ctrl = self.effects.get(self.selected_index)?.controls.get(ctrl_idx)?.clone();
-        let current = current_value(&self.control_values, &ctrl).as_f32().unwrap_or(0.0);
+        let ctrl = self
+            .effects
+            .get(self.selected_index)?
+            .controls
+            .get(ctrl_idx)?
+            .clone();
+        let current = current_value(&self.control_values, &ctrl)
+            .as_f32()
+            .unwrap_or(0.0);
         let step = ctrl.step.unwrap_or(DEFAULT_STEP);
         let min = ctrl.min.unwrap_or(0.0);
         let max = ctrl.max.unwrap_or(1.0);
@@ -216,15 +231,27 @@ impl EffectBrowserView {
     }
 
     fn toggle_bool(&mut self, ctrl_idx: usize) -> Option<Action> {
-        let ctrl = self.effects.get(self.selected_index)?.controls.get(ctrl_idx)?.clone();
-        let current = current_value(&self.control_values, &ctrl).as_bool().unwrap_or(false);
+        let ctrl = self
+            .effects
+            .get(self.selected_index)?
+            .controls
+            .get(ctrl_idx)?
+            .clone();
+        let current = current_value(&self.control_values, &ctrl)
+            .as_bool()
+            .unwrap_or(false);
         let new_cv = ControlValue::Boolean(!current);
         self.control_values.insert(ctrl.id.clone(), new_cv.clone());
         Some(Action::UpdateControl(ctrl.id, new_cv))
     }
 
     fn cycle_dropdown(&mut self, ctrl_idx: usize, forward: bool) -> Option<Action> {
-        let ctrl = self.effects.get(self.selected_index)?.controls.get(ctrl_idx)?.clone();
+        let ctrl = self
+            .effects
+            .get(self.selected_index)?
+            .controls
+            .get(ctrl_idx)?
+            .clone();
         if ctrl.labels.is_empty() {
             return None;
         }
@@ -298,9 +325,7 @@ impl EffectBrowserView {
         }
         let offset = usize::from(row - start_y);
         let ctrl_idx = offset / 2; // 2 rows per control (content + padding)
-        let ctrl_count = self
-            .selected_effect()
-            .map_or(0, |e| e.controls.len());
+        let ctrl_count = self.selected_effect().map_or(0, |e| e.controls.len());
         if ctrl_idx < ctrl_count {
             self.selected_control = ctrl_idx;
         }
@@ -459,8 +484,7 @@ impl EffectBrowserView {
         match key.code {
             KeyCode::Down => {
                 if !self.effects.is_empty() {
-                    let new = (self.selected_index + 1)
-                        .min(self.effects.len().saturating_sub(1));
+                    let new = (self.selected_index + 1).min(self.effects.len().saturating_sub(1));
                     if new != self.selected_index {
                         self.selected_index = new;
                         self.selected_preset = 0;
@@ -495,8 +519,8 @@ impl EffectBrowserView {
             }
             KeyCode::PageDown => {
                 if !self.effects.is_empty() {
-                    self.selected_index = (self.selected_index + 10)
-                        .min(self.effects.len().saturating_sub(1));
+                    self.selected_index =
+                        (self.selected_index + 10).min(self.effects.len().saturating_sub(1));
                     self.selected_preset = 0;
                     self.sync_controls_to_selection();
                 }
@@ -525,12 +549,9 @@ impl EffectBrowserView {
     fn handle_preview_key(&mut self, key: KeyEvent) -> Option<Action> {
         match key.code {
             KeyCode::Down => {
-                let count = self
-                    .selected_effect()
-                    .map_or(0, |e| e.presets.len());
+                let count = self.selected_effect().map_or(0, |e| e.presets.len());
                 if count > 0 {
-                    self.selected_preset =
-                        (self.selected_preset + 1).min(count.saturating_sub(1));
+                    self.selected_preset = (self.selected_preset + 1).min(count.saturating_sub(1));
                 }
                 None
             }
@@ -565,9 +586,7 @@ impl EffectBrowserView {
                 None
             }
             KeyCode::End => {
-                let count = self
-                    .selected_effect()
-                    .map_or(0, |e| e.presets.len());
+                let count = self.selected_effect().map_or(0, |e| e.presets.len());
                 if count > 0 {
                     self.selected_preset = count.saturating_sub(1);
                 }
@@ -578,9 +597,7 @@ impl EffectBrowserView {
     }
 
     fn handle_controls_key(&mut self, key: KeyEvent) -> Option<Action> {
-        let ctrl_count = self
-            .selected_effect()
-            .map_or(0, |e| e.controls.len());
+        let ctrl_count = self.selected_effect().map_or(0, |e| e.controls.len());
 
         if ctrl_count == 0 {
             return None;
@@ -841,9 +858,7 @@ impl EffectBrowserView {
                     Span::styled(" ", Style::default()),
                     Span::styled(
                         &effect.name,
-                        Style::default()
-                            .fg(NEON_CYAN)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(fav, Style::default().fg(ELECTRIC_YELLOW)),
                     Span::styled(
@@ -918,9 +933,7 @@ impl EffectBrowserView {
             Style::default().fg(DIM_GRAY)
         };
         let name_style = if is_focused {
-            Style::default()
-                .fg(NEON_CYAN)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(BASE_WHITE)
         };
@@ -956,9 +969,7 @@ impl EffectBrowserView {
         let is_focused = self.focus_pane == FocusPane::Controls;
         let border_color = if is_focused { NEON_CYAN } else { BORDER_DIM };
 
-        let effect_name = self
-            .selected_effect()
-            .map_or("Controls", |e| &e.name);
+        let effect_name = self.selected_effect().map_or("Controls", |e| &e.name);
 
         let block = Block::default()
             .title(Line::from(vec![
@@ -1011,12 +1022,7 @@ impl EffectBrowserView {
                 Paragraph::new(effect_ref.description.as_str())
                     .style(Style::default().fg(DIM_GRAY))
                     .wrap(Wrap { trim: true }),
-                Rect::new(
-                    inner.x + 1,
-                    content_y,
-                    inner.width.saturating_sub(2),
-                    1,
-                ),
+                Rect::new(inner.x + 1, content_y, inner.width.saturating_sub(2), 1),
             );
             content_y += 2;
         }
@@ -1043,10 +1049,7 @@ impl EffectBrowserView {
             // Selection bar
             if is_selected {
                 frame.render_widget(
-                    Paragraph::new(Span::styled(
-                        "\u{2503}",
-                        Style::default().fg(NEON_CYAN),
-                    )),
+                    Paragraph::new(Span::styled("\u{2503}", Style::default().fg(NEON_CYAN))),
                     Rect::new(inner.x, content_y, 1, 1),
                 );
             }
@@ -1115,7 +1118,9 @@ impl EffectBrowserView {
                 frame.render_widget(slider, area);
             }
             "toggle" => {
-                let on = current_value(&self.control_values, ctrl).as_bool().unwrap_or(false);
+                let on = current_value(&self.control_values, ctrl)
+                    .as_bool()
+                    .unwrap_or(false);
                 let name_style = selected_style(is_selected);
                 let (indicator, state_text, color) = if on {
                     ("\u{25C9}", "On", SUCCESS_GREEN)
@@ -1142,7 +1147,11 @@ impl EffectBrowserView {
                     _ => String::new(),
                 };
                 let name_style = selected_style(is_selected);
-                let val_color = if is_selected { NEON_CYAN } else { ELECTRIC_YELLOW };
+                let val_color = if is_selected {
+                    NEON_CYAN
+                } else {
+                    ELECTRIC_YELLOW
+                };
                 let arrows = if is_selected { " \u{25C0}\u{25B6}" } else { "" };
                 frame.render_widget(
                     Paragraph::new(Line::from(vec![
@@ -1180,9 +1189,7 @@ impl EffectBrowserView {
                     ),
                     Span::styled(
                         format!("  #{r:02x}{g:02x}{b:02x}"),
-                        Style::default()
-                            .fg(BASE_WHITE)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(BASE_WHITE).add_modifier(Modifier::BOLD),
                     ),
                 ];
                 if is_selected {
@@ -1201,10 +1208,7 @@ impl EffectBrowserView {
                             format!("{:<width$}", ctrl.name, width = label_w + 1),
                             Style::default().fg(BASE_WHITE),
                         ),
-                        Span::styled(
-                            format!("({ctrl_type})"),
-                            Style::default().fg(DIM_GRAY),
-                        ),
+                        Span::styled(format!("({ctrl_type})"), Style::default().fg(DIM_GRAY)),
                     ])),
                     area,
                 );
@@ -1243,10 +1247,7 @@ fn current_value(values: &HashMap<String, ControlValue>, ctrl: &ControlDefinitio
 }
 
 /// Normalize a control's current value to `[0, 1]`.
-fn normalized_value(
-    values: &HashMap<String, ControlValue>,
-    ctrl: &ControlDefinition,
-) -> f32 {
+fn normalized_value(values: &HashMap<String, ControlValue>, ctrl: &ControlDefinition) -> f32 {
     normalize(
         current_value(values, ctrl).as_f32().unwrap_or(0.0),
         ctrl.min.unwrap_or(0.0),
@@ -1380,6 +1381,11 @@ impl Component for EffectBrowserView {
     }
 
     fn handle_mouse_event(&mut self, mouse: MouseEvent) -> Result<Option<Action>> {
+        // Resizable splits take priority — consume drag events on dividers
+        if self.h_split.handle_mouse(&mouse) || self.v_split.handle_mouse(&mouse) {
+            return Ok(None);
+        }
+
         let col = mouse.column;
         let row = mouse.row;
         let list_r = self.list_rect.get();
@@ -1413,8 +1419,8 @@ impl Component for EffectBrowserView {
             MouseEventKind::ScrollDown => {
                 if rect_contains(list_r, col, row) {
                     if !self.effects.is_empty() {
-                        let new = (self.selected_index + 1)
-                            .min(self.effects.len().saturating_sub(1));
+                        let new =
+                            (self.selected_index + 1).min(self.effects.len().saturating_sub(1));
                         if new != self.selected_index {
                             self.selected_index = new;
                             self.selected_preset = 0;
@@ -1422,9 +1428,7 @@ impl Component for EffectBrowserView {
                         }
                     }
                 } else if rect_contains(controls_r, col, row) {
-                    let ctrl_count = self
-                        .selected_effect()
-                        .map_or(0, |e| e.controls.len());
+                    let ctrl_count = self.selected_effect().map_or(0, |e| e.controls.len());
                     if ctrl_count > 0 {
                         self.selected_control =
                             (self.selected_control + 1).min(ctrl_count.saturating_sub(1));
@@ -1480,37 +1484,29 @@ impl Component for EffectBrowserView {
             return;
         }
 
-        // 3-pane: list (left 35%) | preview + controls (right 65%)
-        let cols = Layout::horizontal([
-            Constraint::Percentage(35),
-            Constraint::Percentage(65),
-        ])
-        .split(area);
+        // Resizable 3-pane: list | preview / controls
+        let [list_area, right_area] = self.h_split.layout(area);
+        let [preview_area, controls_area] = self.v_split.layout(right_area);
 
         // Cache rects for mouse hit-testing
-        self.list_rect.set(cols[0]);
+        self.list_rect.set(list_area);
+        self.preview_rect.set(preview_area);
+        self.controls_rect.set(controls_area);
 
-        // Right side: preview (top) + controls (bottom)
-        let right = Layout::vertical([
-            Constraint::Percentage(45),
-            Constraint::Percentage(55),
-        ])
-        .split(cols[1]);
+        self.render_list_pane(frame, list_area);
+        self.render_preview_pane(frame, preview_area);
+        self.render_controls_pane(frame, controls_area);
 
-        self.preview_rect.set(right[0]);
-        self.controls_rect.set(right[1]);
-
-        self.render_list_pane(frame, cols[0]);
-        self.render_preview_pane(frame, right[0]);
-        self.render_controls_pane(frame, right[1]);
+        // Split divider overlays (highlight on hover/drag)
+        self.h_split.render_divider(frame);
+        self.v_split.render_divider(frame);
 
         // Preset indicator overlays the bottom-right border of the controls pane
-        let ctrl_area = right[1];
-        if ctrl_area.height > 0 {
+        if controls_area.height > 0 {
             let bottom_row = Rect::new(
-                ctrl_area.x + 1,
-                ctrl_area.y + ctrl_area.height.saturating_sub(1),
-                ctrl_area.width.saturating_sub(2),
+                controls_area.x + 1,
+                controls_area.y + controls_area.height.saturating_sub(1),
+                controls_area.width.saturating_sub(2),
                 1,
             );
             self.render_preset_indicator(frame, bottom_row);

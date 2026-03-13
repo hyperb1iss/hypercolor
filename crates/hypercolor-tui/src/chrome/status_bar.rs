@@ -122,7 +122,10 @@ fn build_nav_hints(active: ScreenId, screens: &[ScreenId]) -> Vec<Span<'static>>
                     first.to_string(),
                     Style::default().fg(theme::warning()),
                 ));
-                spans.push(Span::styled(chars.collect::<String>(), Style::default().fg(muted)));
+                spans.push(Span::styled(
+                    chars.collect::<String>(),
+                    Style::default().fg(muted),
+                ));
             }
         }
     }
