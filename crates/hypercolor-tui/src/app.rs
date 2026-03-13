@@ -369,13 +369,14 @@ impl App {
                 self.notification = None;
             }
 
-            // ── Tick: auto-dismiss notifications ─────────────
+            // ── Tick: auto-dismiss notifications + animate chrome ──
             Action::Tick => {
                 if let Some((_, created)) = &self.notification
                     && created.elapsed() > Duration::from_secs(5)
                 {
                     self.notification = None;
                 }
+                self.chrome.update(action);
             }
 
             _ => {}
