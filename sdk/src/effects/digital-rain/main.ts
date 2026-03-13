@@ -1,4 +1,4 @@
-import { canvas, color, combo } from '@hypercolor/sdk'
+import { canvas, color, combo, num, toggle } from '@hypercolor/sdk'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -228,16 +228,16 @@ function mutateColumnGlyphs(column: ColumnState, rows: number, trailLength: numb
 export default canvas.stateful(
     'Digital Rain',
     {
-        colorMode: combo('Color Mode', [...COLOR_MODES], { default: 'Matrix' }),
-        bgColor: color('Custom Background', '#010401'),
-        rainColor: color('Custom Rain', '#12aa34'),
-        headColor: color('Custom Head', '#7eff9a'),
-        speed: [1, 10, 5],
-        density: [10, 100, 62],
-        trailLength: [5, 100, 58],
-        charSize: [0, 100, 54],
-        leadWhite: [0, 100, 14],
-        glitch: false,
+        colorMode: combo('Color Mode', [...COLOR_MODES], { default: 'Matrix', group: 'Color' }),
+        bgColor: color('Custom Background', '#010401', { group: 'Color' }),
+        rainColor: color('Custom Rain', '#12aa34', { group: 'Color' }),
+        headColor: color('Custom Head', '#7eff9a', { group: 'Color' }),
+        speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
+        density: num('Density', [10, 100], 62, { group: 'Motion' }),
+        trailLength: num('Trail Length', [5, 100], 58, { group: 'Motion' }),
+        charSize: num('Char Size', [0, 100], 54, { group: 'Texture' }),
+        leadWhite: num('Lead White', [0, 100], 14, { group: 'Texture' }),
+        glitch: toggle('Glitch', false, { group: 'Texture' }),
     },
     () => {
         let columns: ColumnState[] = []

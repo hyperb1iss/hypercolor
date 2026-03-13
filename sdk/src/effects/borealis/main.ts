@@ -1,16 +1,16 @@
-import { effect } from '@hypercolor/sdk'
+import { effect, num, combo } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Borealis', shader, {
-    speed:          [1, 10, 5],
-    intensity:      [0, 100, 82],
-    warpStrength:   [0, 100, 62],
-    starBrightness: [0, 100, 40],
-    curtainHeight:  [20, 90, 55],
-    saturation:     [60, 150, 118],
-    contrast:       [70, 140, 104],
-    banding:        [0, 100, 34],
-    palette:        ['Cyberpunk', 'Fire', 'Ice', 'Northern Lights', 'Phosphor', 'SilkCircuit', 'Sunset', 'Vaporwave'],
+    speed:          num('Speed', [1, 10], 5, { group: 'Motion' }),
+    warpStrength:   num('Warp Strength', [0, 100], 62, { group: 'Motion' }),
+    intensity:      num('Intensity', [0, 100], 82, { group: 'Atmosphere' }),
+    starBrightness: num('Star Brightness', [0, 100], 40, { group: 'Atmosphere' }),
+    curtainHeight:  num('Curtain Height', [20, 90], 55, { group: 'Atmosphere' }),
+    palette:        combo('Palette', ['Cyberpunk', 'Fire', 'Ice', 'Northern Lights', 'Phosphor', 'SilkCircuit', 'Sunset', 'Vaporwave'], { group: 'Color' }),
+    saturation:     num('Saturation', [60, 150], 118, { group: 'Color' }),
+    contrast:       num('Contrast', [70, 140], 104, { group: 'Color' }),
+    banding:        num('Banding', [0, 100], 34, { group: 'Color' }),
 }, {
     description: 'Aurora borealis — layered curtains of light with richer palette grading and tonal control',
     presets: [

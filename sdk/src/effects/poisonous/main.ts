@@ -144,13 +144,13 @@ function createParticle(
 }
 
 export default canvas.stateful('Poisonous', {
-    theme:   combo('Theme', [...THEMES], { default: 'Poison' }),
-    bgColor:  color('Background Color', '#130032'),
-    color1:   color('Color 1', '#6000fc'),
-    color2:   color('Color 2', '#b300ff'),
-    color3:   color('Color 3', '#8a42ff'),
-    speedRaw: num('Speed', [0, 100], 14),
-    ringCount: num('Rings', [1, 6], 2),
+    theme:     combo('Theme', [...THEMES], { default: 'Poison', group: 'Color' }),
+    bgColor:   color('Background Color', '#130032', { group: 'Color' }),
+    color1:    color('Color 1', '#6000fc', { group: 'Color' }),
+    color2:    color('Color 2', '#b300ff', { group: 'Color' }),
+    color3:    color('Color 3', '#8a42ff', { group: 'Color' }),
+    speedRaw:  num('Speed', [0, 100], 14, { group: 'Physics' }),
+    ringCount: num('Rings', [1, 6], 2, { group: 'Physics' }),
 }, () => {
     let particles: RingParticle[] = []
     let lastWidth = 0

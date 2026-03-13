@@ -95,26 +95,32 @@ export default effect(
         colorScheme: combo('Colors', ['Aurora', 'Cyberpunk', 'Lava', 'Prism', 'Toxic', 'Vaporwave'], {
             default: 'Cyberpunk',
             tooltip: 'Color scheme',
+            group: 'Color',
         }),
         colorSpeed: num('Color Speed', [0, 200], 50, {
             normalize: 'none',
             tooltip: 'Color cycling speed',
+            group: 'Color',
         }),
         flow: num('Flow', [-100, 100], 30, {
             normalize: 'none',
             tooltip: 'Travel direction and speed',
+            group: 'Motion',
         }),
         glowIntensity: num('Glow', [10, 200], 100, {
             normalize: 'none',
             tooltip: 'Overall brightness',
+            group: 'Color',
         }),
         sensitivity: num('Sensitivity', [10, 200], 50, {
             normalize: 'none',
             tooltip: 'Audio reactivity',
+            group: 'Audio',
         }),
         visualStyle: combo('Style', ['Grid', 'Pulse Field', 'Vortex', 'Waveform'], {
             default: 'Pulse Field',
             tooltip: 'Visualization style',
+            group: 'Scene',
         }),
     },
     {

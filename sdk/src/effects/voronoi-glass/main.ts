@@ -228,18 +228,18 @@ function resolvePalette(
 }
 
 export default canvas.stateful('Voronoi Glass', {
-    speed:      [1, 10, 4],
-    density:    [10, 100, 42],
-    drift:      num('Drift', [0, 100], 44),
-    refraction: [0, 100, 58],
-    contrast:   num('Contrast', [0, 100], 56),
-    edgeGlow:   [0, 100, 66],
-    glaze:      num('Glaze', [0, 100], 18),
-    palette:    combo('Palette', PALETTE_NAMES, { default: 'Prism' }),
-    color1:     color('Color 1', DEFAULT_COLOR_1),
-    color2:     color('Color 2', DEFAULT_COLOR_2),
-    color3:     color('Color 3', DEFAULT_COLOR_3),
-    background: color('Backdrop', DEFAULT_BACKGROUND),
+    speed:      num('Speed', [1, 10], 4, { group: 'Motion' }),
+    density:    num('Density', [10, 100], 42, { group: 'Geometry' }),
+    drift:      num('Drift', [0, 100], 44, { group: 'Motion' }),
+    refraction: num('Refraction', [0, 100], 58, { group: 'Geometry' }),
+    contrast:   num('Contrast', [0, 100], 56, { group: 'Geometry' }),
+    edgeGlow:   num('Edge Glow', [0, 100], 66, { group: 'Geometry' }),
+    glaze:      num('Glaze', [0, 100], 18, { group: 'Geometry' }),
+    palette:    combo('Palette', PALETTE_NAMES, { default: 'Prism', group: 'Color' }),
+    color1:     color('Color 1', DEFAULT_COLOR_1, { group: 'Color' }),
+    color2:     color('Color 2', DEFAULT_COLOR_2, { group: 'Color' }),
+    color3:     color('Color 3', DEFAULT_COLOR_3, { group: 'Color' }),
+    background: color('Backdrop', DEFAULT_BACKGROUND, { group: 'Color' }),
 }, () => {
     const seeds: GlassSeed[] = []
     let seedCount = 0

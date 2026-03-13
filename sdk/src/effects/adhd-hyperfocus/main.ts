@@ -7,34 +7,44 @@ export default effect(
     {
         focusRadius: num('Focus Radius', [5, 100], 28, {
             tooltip: 'Radius of the sharp center region',
+            group: 'Focus',
         }),
         focusStrength: num('Focus Strength', [0, 200], 120, {
             tooltip: 'Center boost/magnification',
+            group: 'Focus',
         }),
         peripheralBlur: num('Peripheral Blur', [0, 200], 60, {
             tooltip: 'How much the periphery fades/softens',
+            group: 'Focus',
         }),
         saturation: num('Saturation', [0, 200], 120, {
             tooltip: 'Color saturation',
+            group: 'Color',
         }),
         energy: num('Energy', [10, 200], 120, {
             tooltip: 'Brightness/energy of the effect',
+            group: 'Color',
         }),
         sparkDensity: num('Spark Density', [0, 200], 80, {
             tooltip: 'Amount of dopamine sparks',
+            group: 'Motion',
         }),
         tunnelSpeed: num('Tunnel Speed', [0, 200], 70, {
             tooltip: 'Motion speed of the tunnel rings',
+            group: 'Motion',
         }),
         paralysis: num('Paralysis', [0, 100], 25, {
             tooltip: 'Executive dysfunction; reduces motion and spark speed',
+            group: 'Motion',
         }),
         noise: num('Noise', [0, 200], 40, {
             tooltip: 'Film/noise amount, stronger in periphery',
+            group: 'Motion',
         }),
         colorMode: combo('Color Mode', ['Dopamine', 'Mono', 'Neon'], {
             default: 'Dopamine',
             tooltip: 'Color palette',
+            group: 'Color',
         }),
     },
     {

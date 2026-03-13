@@ -1,14 +1,14 @@
-import { effect, combo } from '@hypercolor/sdk'
+import { combo, effect, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Synth Horizon', shader, {
-    scene:      ['Arcade Carpet', 'Laser Lanes', 'Roller Grid'],
-    speed:      [1, 10, 5],
-    gridDensity: [10, 100, 62],
-    glow:       [10, 100, 58],
-    palette:    combo('Palette', ['Arcade Heat', 'Ice Neon', 'Midnight', 'Rink Pop', 'SilkCircuit'], { default: 'SilkCircuit' }),
-    colorMode:  combo('Color Mode', ['Color Cycle', 'Mono Neon', 'Static'], { default: 'Static' }),
-    cycleSpeed: [0, 100, 36],
+    scene: combo('Scene', ['Arcade Carpet', 'Laser Lanes', 'Roller Grid'], { group: 'Scene' }),
+    palette: combo('Palette', ['Arcade Heat', 'Ice Neon', 'Midnight', 'Rink Pop', 'SilkCircuit'], { default: 'SilkCircuit', group: 'Scene' }),
+    colorMode: combo('Color Mode', ['Color Cycle', 'Mono Neon', 'Static'], { default: 'Static', group: 'Color' }),
+    cycleSpeed: num('Cycle Speed', [0, 100], 36, { group: 'Color' }),
+    speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
+    gridDensity: num('Grid Density', [10, 100], 62, { group: 'Geometry' }),
+    glow: num('Glow', [10, 100], 58, { group: 'Geometry' }),
 }, {
     description: 'Crisp retro roller-rink geometry with arcade carpet motifs and neon horizon scenes',
     presets: [

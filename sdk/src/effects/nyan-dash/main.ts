@@ -1,4 +1,4 @@
-import { canvas, normalizeSpeed } from '@hypercolor/sdk'
+import { canvas, combo, normalizeSpeed, num, toggle } from '@hypercolor/sdk'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -364,14 +364,14 @@ function drawCat(
 // ── Effect ──────────────────────────────────────────────────────────────
 
 canvas('Nyan Dash', {
-    animationSpeed: [1, 10, 6],
-    scale: [40, 180, 100],
-    positionX: [-100, 100, 0],
-    positionY: [-100, 100, 0],
-    trailMode: TRAIL_MODES,
-    colorCycle: true,
-    cycleSpeed: [0, 100, 34],
-    starDensity: [0, 100, 44],
+    animationSpeed: num('Speed', [1, 10], 6, { group: 'Motion' }),
+    trailMode: combo('Trail Mode', TRAIL_MODES, { group: 'Motion' }),
+    scale: num('Scale', [40, 180], 100, { group: 'Layout' }),
+    positionX: num('Position X', [-100, 100], 0, { group: 'Layout' }),
+    positionY: num('Position Y', [-100, 100], 0, { group: 'Layout' }),
+    colorCycle: toggle('Color Cycle', true, { group: 'Color' }),
+    cycleSpeed: num('Cycle Speed', [0, 100], 34, { group: 'Color' }),
+    starDensity: num('Star Density', [0, 100], 44, { group: 'Atmosphere' }),
 }, () => {
     // Persistent state across frames
     let stars: DashStar[] = []

@@ -276,19 +276,19 @@ function drawClosedPath(ctx: CanvasRenderingContext2D, points: Point[]): void {
 }
 
 export default canvas.stateful('Wormhole', {
-    theme:      combo('Theme', THEME_NAMES, { default: 'Event Horizon' }),
-    geometry:   combo('Geometry', GEOMETRY_NAMES, { default: 'Hex Gate' }),
-    speed:      num('Speed', [1, 10], 5),
-    depth:      num('Depth', [0, 100], 66),
-    twist:      num('Twist', [0, 100], 58),
-    drift:      num('Drift', [0, 100], 42),
-    pulse:      num('Pulse', [0, 100], 34),
-    thickness:  num('Wall Thickness', [0, 100], 56),
-    contrast:   num('Contrast', [0, 100], 60),
-    color1:     color('Color 1', DEFAULT_COLOR_1),
-    color2:     color('Color 2', DEFAULT_COLOR_2),
-    color3:     color('Color 3', DEFAULT_COLOR_3),
-    background: color('Backdrop', DEFAULT_BACKGROUND),
+    theme:      combo('Theme', THEME_NAMES, { default: 'Event Horizon', group: 'Scene' }),
+    geometry:   combo('Geometry', GEOMETRY_NAMES, { default: 'Hex Gate', group: 'Scene' }),
+    speed:      num('Speed', [1, 10], 5, { group: 'Motion' }),
+    depth:      num('Depth', [0, 100], 66, { group: 'Motion' }),
+    twist:      num('Twist', [0, 100], 58, { group: 'Motion' }),
+    drift:      num('Drift', [0, 100], 42, { group: 'Motion' }),
+    pulse:      num('Pulse', [0, 100], 34, { group: 'Atmosphere' }),
+    thickness:  num('Wall Thickness', [0, 100], 56, { group: 'Atmosphere' }),
+    contrast:   num('Contrast', [0, 100], 60, { group: 'Atmosphere' }),
+    color1:     color('Color 1', DEFAULT_COLOR_1, { group: 'Color' }),
+    color2:     color('Color 2', DEFAULT_COLOR_2, { group: 'Color' }),
+    color3:     color('Color 3', DEFAULT_COLOR_3, { group: 'Color' }),
+    background: color('Backdrop', DEFAULT_BACKGROUND, { group: 'Color' }),
 }, () => {
     return (ctx, time, controls) => {
         const width = ctx.canvas.width

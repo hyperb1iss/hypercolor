@@ -811,17 +811,17 @@ function drawPatternThree(
 }
 
 export default canvas.stateful('Roller Rink', {
-    theme:           combo('Palette', THEMES, { default: 'Blacklight' }),
-    scene:           combo('Layout', SCENES, { default: 'Pattern 3' }),
-    colorMode:       combo('Palette Motion', COLOR_MODES, { default: 'Static' }),
-    moveSpeed:       num('Motion', [0, 100], 24),
-    cycleSpeed:      num('Color Drift', [0, 100], 22),
-    density:         num('Decor Density', [0, 100], 42),
-    glow:            num('Glow', [0, 100], 34),
-    frontColor:      color('Primary Color', '#ff52c8'),
-    squiggleColor:   color('Line Color', '#25e7ff'),
-    accentColor:     color('Accent Color', '#ffb347'),
-    backgroundColor: color('Backdrop Color', '#05050b'),
+    theme:           combo('Palette', THEMES, { default: 'Blacklight', group: 'Scene' }),
+    scene:           combo('Layout', SCENES, { default: 'Pattern 3', group: 'Scene' }),
+    density:         num('Decor Density', [0, 100], 42, { group: 'Scene' }),
+    colorMode:       combo('Palette Motion', COLOR_MODES, { default: 'Static', group: 'Color' }),
+    cycleSpeed:      num('Color Drift', [0, 100], 22, { group: 'Color' }),
+    frontColor:      color('Primary Color', '#ff52c8', { group: 'Color' }),
+    squiggleColor:   color('Line Color', '#25e7ff', { group: 'Color' }),
+    accentColor:     color('Accent Color', '#ffb347', { group: 'Color' }),
+    backgroundColor: color('Backdrop Color', '#05050b', { group: 'Color' }),
+    moveSpeed:       num('Motion', [0, 100], 24, { group: 'Motion' }),
+    glow:            num('Glow', [0, 100], 34, { group: 'Motion' }),
 }, () => {
     let flecks: Fleck[] = []
     let ornaments: Ornament[] = []

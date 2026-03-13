@@ -1,12 +1,14 @@
-import { effect } from '@hypercolor/sdk'
+import { combo, effect, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Vortex', shader, {
-    palette: ['Aurora', 'Cyberpunk', 'Fire', 'Ice', 'Neon Flux', 'Ocean', 'SilkCircuit', 'Synthwave'],
-    speed:   [1, 10, 4],
-    arms:    [2, 6, 3],
-    twist:   [0, 100, 50],
-    depth:   [0, 100, 40],
+    palette: combo('Palette', ['Aurora', 'Cyberpunk', 'Fire', 'Ice', 'Neon Flux', 'Ocean', 'SilkCircuit', 'Synthwave'], {
+        group: 'Color',
+    }),
+    speed:   num('Speed', [1, 10], 4, { group: 'Motion' }),
+    arms:    num('Arms', [2, 6], 3, { group: 'Geometry' }),
+    twist:   num('Twist', [0, 100], 50, { group: 'Motion' }),
+    depth:   num('Depth', [0, 100], 40, { group: 'Geometry' }),
 }, {
     description: 'Mesmerizing logarithmic spiral with differential rotation and vivid color drift',
     presets: [

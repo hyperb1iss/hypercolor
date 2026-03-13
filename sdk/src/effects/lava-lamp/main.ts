@@ -1,4 +1,4 @@
-import { canvas } from '@hypercolor/sdk'
+import { canvas, color, combo, num, toggle } from '@hypercolor/sdk'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -250,16 +250,16 @@ function renderMetaballs(
 export default canvas.stateful(
     'Lava Lamp',
     {
-        bCount:     [1, 18, 7],
-        bgColor:    '#0b0312',
-        bgCycle:    false,
-        color1:     '#16d1d9',
-        color2:     '#ff4fb4',
-        color3:     '#7d49ff',
-        cycleSpeed: [1, 100, 22],
-        rainbow:    false,
-        speed:      [1, 100, 22],
-        theme:      THEMES,
+        bCount:     num('Blob Count', [1, 18], 7, { group: 'Scene' }),
+        bgColor:    color('Background', '#0b0312', { group: 'Scene' }),
+        bgCycle:    toggle('BG Cycle', false, { group: 'Scene' }),
+        color1:     color('Color 1', '#16d1d9', { group: 'Color' }),
+        color2:     color('Color 2', '#ff4fb4', { group: 'Color' }),
+        color3:     color('Color 3', '#7d49ff', { group: 'Color' }),
+        cycleSpeed: num('Cycle Speed', [1, 100], 22, { group: 'Motion' }),
+        rainbow:    toggle('Rainbow', false, { group: 'Color' }),
+        speed:      num('Speed', [1, 100], 22, { group: 'Motion' }),
+        theme:      combo('Theme', THEMES, { group: 'Color' }),
     },
     () => {
         let balls: Ball[] = []

@@ -1,14 +1,14 @@
-import { effect } from '@hypercolor/sdk'
+import { color, combo, effect, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Deep Current', shader, {
-    leftColor:       '#ff4fb4',
-    rightColor:      '#ff9a3d',
-    speed:           [1, 10, 4],
-    rippleIntensity: [0, 100, 68],
-    particleAmount:  [0, 100, 56],
-    blend:           [0, 100, 26],
-    splitMode:       ['Diagonal', 'Horizontal', 'Vertical'],
+    leftColor:       color('Left Color', '#ff4fb4', { group: 'Color' }),
+    rightColor:      color('Right Color', '#ff9a3d', { group: 'Color' }),
+    speed:           num('Speed', [1, 10], 4, { group: 'Motion' }),
+    rippleIntensity: num('Ripple Intensity', [0, 100], 68, { group: 'Motion' }),
+    particleAmount:  num('Particle Amount', [0, 100], 56, { group: 'Scene' }),
+    blend:           num('Blend', [0, 100], 26, { group: 'Color' }),
+    splitMode:       combo('Split Mode', ['Diagonal', 'Horizontal', 'Vertical'], { group: 'Scene' }),
 }, {
     description: 'Magenta-amber split-field with crisp ripples and floating particles',
     presets: [

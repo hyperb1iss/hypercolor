@@ -1,14 +1,14 @@
-import { effect } from '@hypercolor/sdk'
+import { effect, num, combo } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Nebula Drift', shader, {
-    speed:        [1, 10, 6],
-    cloudDensity: [10, 100, 72],
-    warpStrength: [0, 100, 78],
-    starField:    [0, 100, 28],
-    saturation:   [60, 160, 120],
-    contrast:     [70, 150, 106],
-    palette:      ['Aurora', 'Cyberpunk', 'Fire', 'SilkCircuit', 'Vaporwave'],
+    speed:        num('Speed', [1, 10], 6, { group: 'Motion' }),
+    warpStrength: num('Warp Strength', [0, 100], 78, { group: 'Motion' }),
+    cloudDensity: num('Cloud Density', [10, 100], 72, { group: 'Atmosphere' }),
+    starField:    num('Star Field', [0, 100], 28, { group: 'Atmosphere' }),
+    palette:      combo('Palette', ['Aurora', 'Cyberpunk', 'Fire', 'SilkCircuit', 'Vaporwave'], { group: 'Color' }),
+    saturation:   num('Saturation', [60, 160], 120, { group: 'Color' }),
+    contrast:     num('Contrast', [70, 150], 106, { group: 'Color' }),
 }, {
     description: 'Layered nebula ribbons with richer palette grading, visible parallax drift, and twinkling stars',
     presets: [

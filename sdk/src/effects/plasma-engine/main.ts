@@ -1,16 +1,16 @@
-import { color, effect } from '@hypercolor/sdk'
+import { color, combo, effect, num } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Plasma Engine', shader, {
-    theme:   ['Arcade', 'Aurora', 'Custom', 'Cyberpunk', 'Inferno', 'Oceanic', 'Poison', 'Tropical'],
-    bgColor: color('Background Color', '#03020c', { uniform: 'iBackgroundColor' }),
-    color1:  '#16d1d9',
-    color2:  '#ff4fb4',
-    color3:  '#7d49ff',
-    speed:   [1, 10, 4],
-    bloom:   [0, 100, 16],
-    spread:  [0, 100, 34],
-    density: [10, 100, 32],
+    theme:   combo('Theme', ['Arcade', 'Aurora', 'Custom', 'Cyberpunk', 'Inferno', 'Oceanic', 'Poison', 'Tropical'], { group: 'Color' }),
+    bgColor: color('Background Color', '#03020c', { uniform: 'iBackgroundColor', group: 'Scene' }),
+    color1:  color('Color 1', '#16d1d9', { group: 'Color' }),
+    color2:  color('Color 2', '#ff4fb4', { group: 'Color' }),
+    color3:  color('Color 3', '#7d49ff', { group: 'Color' }),
+    speed:   num('Speed', [1, 10], 4, { group: 'Motion' }),
+    bloom:   num('Bloom', [0, 100], 16, { group: 'Scene' }),
+    spread:  num('Spread', [0, 100], 34, { group: 'Scene' }),
+    density: num('Density', [10, 100], 32, { group: 'Scene' }),
 }, {
     description: 'Low-frequency demoscene plasma with fluid motion and saturated color drift',
     presets: [

@@ -1,4 +1,4 @@
-import { canvas } from '@hypercolor/sdk'
+import { canvas, color, combo, num } from '@hypercolor/sdk'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -101,15 +101,15 @@ function computeMeteorSpawnRate(density: number, speed: number): number {
 // ── Effect ───────────────────────────────────────────────────────────────
 
 export default canvas.stateful('Meteor Storm', {
-    path:      PATHS,
-    speed:     [1, 10, 5],
-    starSize:  [1, 20, 8],
-    density:   [10, 100, 52],
-    trail:     [10, 100, 72],
-    skyTop:    '#0b1233',
-    skyBottom: '#1a3f89',
-    starColor: '#8dd6ff',
-    scene:     SCENES,
+    scene:     combo('Scene', SCENES, { group: 'Scene' }),
+    path:      combo('Path', PATHS, { group: 'Scene' }),
+    speed:     num('Speed', [1, 10], 5, { group: 'Motion' }),
+    trail:     num('Trail', [10, 100], 72, { group: 'Motion' }),
+    starSize:  num('Star Size', [1, 20], 8, { group: 'Stars' }),
+    density:   num('Density', [10, 100], 52, { group: 'Stars' }),
+    skyTop:    color('Sky Top', '#0b1233', { group: 'Color' }),
+    skyBottom: color('Sky Bottom', '#1a3f89', { group: 'Color' }),
+    starColor: color('Star Color', '#8dd6ff', { group: 'Color' }),
 }, () => {
     let stars: Star[] = []
     let meteors: Meteor[] = []

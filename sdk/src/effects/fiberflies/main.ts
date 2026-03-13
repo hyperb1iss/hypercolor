@@ -1,4 +1,4 @@
-import { canvas, combo } from '@hypercolor/sdk'
+import { canvas, color, combo, num } from '@hypercolor/sdk'
 
 interface Firefly {
     x: number
@@ -197,15 +197,15 @@ function resetFirefly(firefly: Firefly, w: number, h: number): void {
 export default canvas.stateful(
     'Fiberflies',
     {
-        baseColor: '#84ff5e',
-        bgColor: '#14071f',
-        colorMode: COLOR_MODES,
-        count: [8, 80, 30],
-        glow: [0, 100, 56],
-        scene: combo('Scene', ['Calm', 'Pulse', 'Swarm'], { default: 'Swarm' }),
-        size: [1, 8, 2],
-        speed: [1, 10, 5],
-        wander: [0, 100, 42],
+        scene: combo('Scene', ['Calm', 'Pulse', 'Swarm'], { default: 'Swarm', group: 'Scene' }),
+        colorMode: combo('Color Mode', COLOR_MODES, { group: 'Color' }),
+        baseColor: color('Base Color', '#84ff5e', { group: 'Color' }),
+        bgColor: color('Background', '#14071f', { group: 'Color' }),
+        speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
+        wander: num('Wander', [0, 100], 42, { group: 'Motion' }),
+        count: num('Count', [8, 80], 30, { group: 'Particles' }),
+        size: num('Size', [1, 8], 2, { group: 'Particles' }),
+        glow: num('Glow', [0, 100], 56, { group: 'Particles' }),
     },
     () => {
         const fireflies: Firefly[] = []

@@ -1,14 +1,14 @@
-import { effect } from '@hypercolor/sdk'
+import { effect, num, combo } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Spectral Fire', shader, {
-    speed:       [1, 10, 6],
-    flameHeight: [20, 100, 78],
-    turbulence:  [0, 100, 62],
-    intensity:   [20, 100, 84],
-    palette:     ['Ashfall', 'Bonfire', 'Forge', 'Spellfire', 'Sulfur'],
-    emberAmount: [0, 100, 60],
-    scene:       ['Classic', 'Inferno', 'Torch', 'Wildfire'],
+    speed:       num('Speed', [1, 10], 6, { group: 'Motion' }),
+    turbulence:  num('Turbulence', [0, 100], 62, { group: 'Motion' }),
+    flameHeight: num('Flame Height', [20, 100], 78, { group: 'Scene' }),
+    emberAmount: num('Ember Amount', [0, 100], 60, { group: 'Scene' }),
+    scene:       combo('Scene', ['Classic', 'Inferno', 'Torch', 'Wildfire'], { group: 'Scene' }),
+    intensity:   num('Intensity', [20, 100], 84, { group: 'Color' }),
+    palette:     combo('Palette', ['Ashfall', 'Bonfire', 'Forge', 'Spellfire', 'Sulfur'], { group: 'Color' }),
 }, {
     description: 'Layered fire tongues with embers and optional audio lift',
     audio: true,

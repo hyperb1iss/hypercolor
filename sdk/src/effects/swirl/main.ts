@@ -39,23 +39,23 @@ function hexToHSL(hex: string): [number, number, number] {
 export default canvas(
     'Swirl Reactor',
     {
-        backColor: color('Background Color', '#050505'),
-        color1: color('Color 1', '#f100ff'),
-        color2: color('Color 2', '#00ffd2'),
-        color3: color('Color 3', '#0000ff'),
         colorMode: combo('Color Mode', ['Color Cycle', 'Custom', 'Rainbow'], {
-            default: 'Custom',
+            default: 'Custom', group: 'Color',
         }),
-        cycleSpeed: num('Color Cycle Speed', [0, 100], 50),
-        effectRotate: num('Rotation Speed', [0, 100], 50),
-        particleGrowth: num('Particle Growth', [-100, 100], 100),
-        particleSize: num('Particle Size', [0, 100], 10),
-        particleSpawn: num('Particle Amount', [0, 100], 50),
-        particleSpeed: num('Particle Speed', [0, 100], 50),
+        color1: color('Color 1', '#f100ff', { group: 'Color' }),
+        color2: color('Color 2', '#00ffd2', { group: 'Color' }),
+        color3: color('Color 3', '#0000ff', { group: 'Color' }),
+        backColor: color('Background Color', '#050505', { group: 'Color' }),
+        cycleSpeed: num('Color Cycle Speed', [0, 100], 50, { group: 'Color' }),
         rotationMode: combo('Rotation Mode', ['Pulse', 'Regular', 'Reverse'], {
-            default: 'Regular',
+            default: 'Regular', group: 'Motion',
         }),
-        spiralAmount: num('Spiral Amount', [1, 3], 3),
+        effectRotate: num('Rotation Speed', [0, 100], 50, { group: 'Motion' }),
+        particleSpeed: num('Particle Speed', [0, 100], 50, { group: 'Motion' }),
+        particleSize: num('Particle Size', [0, 100], 10, { group: 'Particles' }),
+        particleGrowth: num('Particle Growth', [-100, 100], 100, { group: 'Particles' }),
+        particleSpawn: num('Particle Amount', [0, 100], 50, { group: 'Particles' }),
+        spiralAmount: num('Spiral Amount', [1, 3], 3, { group: 'Particles' }),
     },
     (ctx, time, controls) => {
         const W = ctx.canvas.width

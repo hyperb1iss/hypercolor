@@ -1,4 +1,4 @@
-import { canvas, audio } from '@hypercolor/sdk'
+import { canvas, audio, combo, num } from '@hypercolor/sdk'
 import type { AudioData } from '@hypercolor/sdk'
 
 type SceneName = (typeof SCENES)[number]
@@ -468,12 +468,12 @@ function drawEmitterCore(
 }
 
 export default canvas.stateful('Shockwave', {
-    speed:     [1, 10, 6],
-    intensity: [0, 100, 78],
-    ringCount: [2, 12, 6],
-    decay:     [0, 100, 52],
-    palette:   ['Aurora', 'Cyberpunk', 'Fire', 'Ice', 'SilkCircuit'],
-    scene:     SCENES,
+    speed:     num('Speed', [1, 10], 6, { group: 'Motion' }),
+    intensity: num('Intensity', [0, 100], 78, { group: 'Motion' }),
+    ringCount: num('Ring Count', [2, 12], 6, { group: 'Geometry' }),
+    decay:     num('Decay', [0, 100], 52, { group: 'Motion' }),
+    palette:   combo('Palette', ['Aurora', 'Cyberpunk', 'Fire', 'Ice', 'SilkCircuit'], { default: 'SilkCircuit', group: 'Scene' }),
+    scene:     combo('Scene', [...SCENES], { default: 'Cascade', group: 'Scene' }),
 }, () => {
     let waves: Wavefront[] = []
     let accents: Accent[] = []

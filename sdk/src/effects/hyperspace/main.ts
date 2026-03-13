@@ -5,22 +5,27 @@ export default effect('Hyperspace', shader, {
     palette: combo('Theme', ['Classic', 'Cyberpunk', 'Phantom Gate', 'Solar Wind', 'Void', 'Warp Core'], {
         default: 'Cyberpunk',
         tooltip: 'Choose the tunnel tint. Cyberpunk gives the strongest first-run contrast.',
+        group: 'Color',
     }),
     speed: num('Velocity', [1, 10], 6, {
         step: 0.5,
         tooltip: 'Forward travel speed through the tunnel.',
+        group: 'Motion',
     }),
     density: num('Star Density', [0, 160], 74, {
         step: 1,
         tooltip: 'How many star lanes fill the hyperspace corridor. Push past 100 for a denser overdrive field.',
+        group: 'Density',
     }),
     streak: num('Trail Length', [0, 160], 84, {
         step: 1,
         tooltip: 'Length and visual weight of the speed lines. Push past 100 for extended overdrive trails.',
+        group: 'Density',
     }),
     warp: num('Tunnel Twist', [0, 100], 62, {
         step: 1,
         tooltip: 'Amount of spiral distortion around the center.',
+        group: 'Motion',
     }),
 }, {
     description: 'Dense layered star lanes with longer trails and stronger tunnel twist for a bolder hyperspace jump',

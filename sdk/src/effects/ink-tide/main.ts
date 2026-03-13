@@ -5,22 +5,27 @@ export default effect('Ink Tide', shader, {
     palette: combo('Theme', ['Abyss', 'Arctic', 'Molten', 'Phantom', 'Poison', 'Sakura'], {
         default: 'Sakura',
         tooltip: 'Choose the ink palette. Sakura lifts the default into a brighter bloom.',
+        group: 'Color',
     }),
     speed: num('Current Speed', [1, 10], 5, {
         step: 0.5,
         tooltip: 'Overall drift speed of the liquid field.',
+        group: 'Motion',
     }),
     flow: num('Fold Depth', [0, 100], 78, {
         step: 1,
         tooltip: 'Strength of the large folding motion and exposure lift.',
+        group: 'Motion',
     }),
     turbulence: num('Detail', [0, 100], 64, {
         step: 1,
         tooltip: 'Amount of fine swirling structure in the ink.',
+        group: 'Motion',
     }),
     saturation: num('Color Lift', [0, 100], 92, {
         step: 1,
         tooltip: 'How vivid the ink stays before drifting toward grayscale.',
+        group: 'Color',
     }),
 }, {
     description: 'Liquid neon ink blooms with deeper folds, brighter defaults, and a richer color lift',

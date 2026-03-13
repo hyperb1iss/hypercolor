@@ -1,12 +1,12 @@
-import { effect } from '@hypercolor/sdk'
+import { effect, num, combo } from '@hypercolor/sdk'
 import shader from './fragment.glsl'
 
 export default effect('Starfall', shader, {
-    palette:  ['Aurora Rain', 'Celestial', 'Cosmic', 'Ember Fall', 'Frozen Tears', 'Neon Rain'],
-    speed:    [1, 10, 5],
-    density:  [0, 100, 50],
-    trails:   [0, 100, 60],
-    sparkle:  [0, 100, 30],
+    speed:   num('Speed', [1, 10], 5, { group: 'Motion' }),
+    density: num('Density', [0, 100], 50, { group: 'Atmosphere' }),
+    trails:  num('Trails', [0, 100], 60, { group: 'Atmosphere' }),
+    palette: combo('Palette', ['Aurora Rain', 'Celestial', 'Cosmic', 'Ember Fall', 'Frozen Tears', 'Neon Rain'], { group: 'Color' }),
+    sparkle: num('Sparkle', [0, 100], 30, { group: 'Color' }),
 }, {
     description: 'Luminous particles cascading through darkness with glowing comet trails',
     presets: [

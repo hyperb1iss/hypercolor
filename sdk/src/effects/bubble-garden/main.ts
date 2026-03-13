@@ -1,4 +1,4 @@
-import { canvas, combo } from '@hypercolor/sdk'
+import { canvas, color, combo, num, toggle } from '@hypercolor/sdk'
 
 interface Bubble {
     x: number
@@ -302,15 +302,15 @@ function drawBackdrop(
 }
 
 export default canvas.stateful('Bubble Garden', {
-    colorMode: combo('Color Mode', ['Color Cycle', 'Palette Blend', 'Single Color', 'Triad'], { default: 'Palette Blend' }),
-    theme:     combo('Theme', ['Bubblegum', 'Citrus Pop', 'Custom', 'Cyber Pop', 'Jellyfish', 'Lagoon', 'Lavender Fizz', 'Neon Soda'], { default: 'Cyber Pop' }),
-    bgColor:   '#05040a',
-    color:     '#ff4f9a',
-    color2:    '#80ffea',
-    color3:    '#6f2dff',
-    speed:     [0, 100, 10],
-    size:      [1, 10, 5],
-    count:     [10, 120, 30],
+    colorMode: combo('Color Mode', ['Color Cycle', 'Palette Blend', 'Single Color', 'Triad'], { default: 'Palette Blend', group: 'Color' }),
+    theme:     combo('Theme', ['Bubblegum', 'Citrus Pop', 'Custom', 'Cyber Pop', 'Jellyfish', 'Lagoon', 'Lavender Fizz', 'Neon Soda'], { default: 'Cyber Pop', group: 'Color' }),
+    bgColor:   color('Background', '#05040a', { group: 'Scene' }),
+    color:     color('Color', '#ff4f9a', { group: 'Color' }),
+    color2:    color('Color 2', '#80ffea', { group: 'Color' }),
+    color3:    color('Color 3', '#6f2dff', { group: 'Color' }),
+    speed:     num('Speed', [0, 100], 10, { group: 'Motion' }),
+    size:      num('Size', [1, 10], 5, { group: 'Scene' }),
+    count:     num('Count', [10, 120], 30, { group: 'Scene' }),
 }, () => {
     let bubbles = createBubbles(30, 320, 200)
     let prevCount = 30

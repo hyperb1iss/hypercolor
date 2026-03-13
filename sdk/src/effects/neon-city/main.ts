@@ -1,4 +1,4 @@
-import { canvas, combo } from '@hypercolor/sdk'
+import { canvas, combo, num, toggle } from '@hypercolor/sdk'
 
 interface Building {
     x: number
@@ -155,14 +155,14 @@ function sceneBloomAnchors(sceneIndex: number): number[] {
 }
 
 export default canvas.stateful('Neon City', {
-    speed: [1, 10, 4],
-    windowDensity: [10, 100, 56],
-    trafficFlow: [0, 100, 58],
-    haze: [0, 100, 42],
-    beacons: true,
-    glow: [0, 100, 62],
-    colorMode: combo('Palette', [...COLOR_MODES], { default: 'Dark Matter' }),
-    scene: combo('Scene', [...SCENES], { default: 'Skyline' }),
+    colorMode: combo('Palette', [...COLOR_MODES], { default: 'Dark Matter', group: 'Scene' }),
+    scene: combo('Scene', [...SCENES], { default: 'Skyline', group: 'Scene' }),
+    speed: num('Speed', [1, 10], 4, { group: 'Motion' }),
+    trafficFlow: num('Traffic Flow', [0, 100], 58, { group: 'Motion' }),
+    windowDensity: num('Window Density', [10, 100], 56, { group: 'Geometry' }),
+    beacons: toggle('Beacons', true, { group: 'Geometry' }),
+    haze: num('Haze', [0, 100], 42, { group: 'Atmosphere' }),
+    glow: num('Glow', [0, 100], 62, { group: 'Atmosphere' }),
 }, () => {
     let buildings: Building[] = []
     let lanes: TransitLane[] = []

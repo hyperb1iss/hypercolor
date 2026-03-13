@@ -103,74 +103,89 @@ let lastTime = 0
 const COLOR_SCHEMES = ['Aurora', 'Cyberpunk', 'Gold & Blue', 'Harmonic', 'Ice', 'Lava', 'Midnight Flux', 'Neon Flux', 'Phosphor', 'Solar Storm', 'Synesthesia', 'Vaporwave'] as const
 
 const controls = {
-    // Style
+    // Color
     colorScheme: combo('Colors', COLOR_SCHEMES, {
         default: 'Harmonic',
         tooltip: 'Color scheme (Harmonic uses Circle of Fifths)',
+        group: 'Color',
     }),
     harmonicColor: num('Harmonic Mix', [0, 100], 50, {
         tooltip: 'Blend harmonic colors with base palette',
+        group: 'Color',
+    }),
+    glowIntensity: num('Glow', [0, 100], 70, {
+        tooltip: 'Center glow intensity',
+        group: 'Color',
+    }),
+    colorAccent: num('Accent', [0, 100], 65, {
+        tooltip: 'Boost palette saturation',
+        group: 'Color',
+    }),
+    colorContrast: num('Contrast', [0, 100], 60, {
+        tooltip: 'Control overall contrast curve',
+        group: 'Color',
     }),
 
-    // Animation
+    // Motion
     timeSpeed: num('Time Speed', [0, 100], 50, {
         tooltip: 'Control animation speed',
+        group: 'Motion',
     }),
     rotationSpeed: num('Rotation', [0, 100], 0, {
         tooltip: 'Pattern rotation speed',
+        group: 'Motion',
     }),
     flowDrive: num('Flow', [0, 100], 50, {
         tooltip: 'Continuous outward flow strength',
+        group: 'Motion',
     }),
 
     // Audio
     wanderSpeed: num('Wander', [0, 100], 30, {
         tooltip: 'View wandering with audio',
+        group: 'Audio',
     }),
     timeSensitivity: num('Time Warp', [0, 100], 50, {
         tooltip: 'Audio influence on speed',
+        group: 'Audio',
     }),
     bassPull: num('Bass Pull', [0, 100], 60, {
         tooltip: 'Bass influence on movement',
+        group: 'Audio',
     }),
     treblePull: num('Treble Pull', [0, 100], 60, {
         tooltip: 'Treble influence on movement',
+        group: 'Audio',
     }),
 
     // Pattern
     scale: num('Scale', [20, 200], 80, {
         tooltip: 'Zoom level',
+        group: 'Pattern',
     }),
     irisStrength: num('Iris', [0, 100], 65, {
         tooltip: 'Iris/radial pattern strength',
+        group: 'Pattern',
     }),
     corePulse: num('Core Pulse', [0, 100], 60, {
         tooltip: 'Energy in the center column',
+        group: 'Pattern',
     }),
     bandSharpness: num('Bands', [0, 100], 50, {
         tooltip: 'Sharpen or soften band edges',
+        group: 'Pattern',
     }),
-
-    // Color
-    glowIntensity: num('Glow', [0, 100], 70, {
-        tooltip: 'Center glow intensity',
-    }),
-    colorAccent: num('Accent', [0, 100], 65, {
-        tooltip: 'Boost palette saturation',
-    }),
-    colorContrast: num('Contrast', [0, 100], 60, {
-        tooltip: 'Control overall contrast curve',
-    }),
-
-    // Texture
     particleDensity: num('Texture Strength', [0, 100], 60, {
         tooltip: 'Glitch texture intensity',
+        group: 'Pattern',
     }),
     particleSize: num('Texture Scale', [0, 100], 50, {
         tooltip: 'Texture size',
+        group: 'Pattern',
     }),
     particleColorMix: num('Texture Hue', [0, 100], 50, {
         tooltip: 'Texture color mixing',
+        group: 'Pattern',
     }),
 }
 

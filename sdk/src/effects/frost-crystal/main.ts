@@ -132,15 +132,16 @@ function hexCenter(col: number, row: number, size: number): [number, number] {
 // ── Effect ───────────────────────────────────────────────────────────────
 
 export default canvas.stateful('Frost Crystal', {
-    speed:    [1, 10, 5],
-    scale:    [10, 100, 46],
-    edgeGlow: [0, 100, 68],
-    growth:   [0, 100, 68],
+    speed:    num('Speed', [1, 10], 5, { group: 'Motion' }),
+    scale:    num('Scale', [10, 100], 46, { group: 'Geometry' }),
+    edgeGlow: num('Edge Glow', [0, 100], 68, { group: 'Geometry' }),
+    growth:   num('Growth', [0, 100], 68, { group: 'Geometry' }),
     rotation: num('Rotation', [-100, 100], 0, {
         tooltip: 'Spin the crystal field. Negative values reverse the direction.',
+        group: 'Motion',
     }),
-    palette:  combo('Palette', ['Aurora', 'Cyberpunk', 'Frost', 'Ice', 'SilkCircuit'], { default: 'Ice' }),
-    scene:    SCENES,
+    palette:  combo('Palette', ['Aurora', 'Cyberpunk', 'Frost', 'Ice', 'SilkCircuit'], { default: 'Ice', group: 'Scene' }),
+    scene:    combo('Scene', SCENES, { default: 'Lattice', group: 'Scene' }),
 }, () => {
     let cells: Cell[] = []
     let lastCellKey = ''
