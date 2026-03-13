@@ -122,8 +122,56 @@ run-servo-release-bin *args='':
 
 # ─── TUI ─────────────────────────────────────────────────
 
-# Run the TUI (connects to daemon on default host:port)
+# Run the TUI. Attaches to an existing daemon, or starts a local one if needed.
 tui *args='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="${HYPERCOLOR_HOST:-127.0.0.1}"
+    port="${HYPERCOLOR_PORT:-9420}"
+    daemon_pid=""
+    started_daemon=0
+
+    cleanup() {
+        if [[ "$started_daemon" -eq 1 && -n "$daemon_pid" ]]; then
+            kill "$daemon_pid" 2>/dev/null || true
+            wait "$daemon_pid" 2>/dev/null || true
+        fi
+    }
+
+    trap cleanup EXIT
+
+    health_url="http://${host}:${port}/health"
+    can_autostart=0
+    bind_host="$host"
+    if [[ "$host" == "127.0.0.1" || "$host" == "localhost" ]]; then
+        can_autostart=1
+        bind_host="127.0.0.1"
+    fi
+
+    if ! curl --silent --fail --max-time 1 "$health_url" >/dev/null; then
+        if [[ "$can_autostart" -ne 1 ]]; then
+            echo "No daemon reachable at ${host}:${port}; start it first or point HYPERCOLOR_HOST at a live daemon." >&2
+            exit 1
+        fi
+
+        echo "→ starting local daemon on ${bind_host}:${port}"
+        ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --profile preview --features servo -- --log-level debug --bind "${bind_host}:${port}" &
+        daemon_pid=$!
+        started_daemon=1
+
+        for _ in {1..40}; do
+            if curl --silent --fail --max-time 1 "$health_url" >/dev/null; then
+                break
+            fi
+            sleep 0.5
+        done
+
+        if ! curl --silent --fail --max-time 1 "$health_url" >/dev/null; then
+            echo "Daemon failed to become ready at ${bind_host}:${port}" >&2
+            exit 1
+        fi
+    fi
+
     ./scripts/cargo-cache-build.sh cargo run -p hypercolor-tui -- {{ args }}
 
 # Run daemon + TUI together

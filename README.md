@@ -223,6 +223,7 @@ service, installs the launcher desktop entry, reloads udev rules, and persists
 ```bash
 just build           # Debug build
 just daemon          # Run daemon with preview profile
+just tui             # Run the TUI, auto-starting a local daemon if needed
 just verify          # fmt + lint + test
 just ui-dev          # Leptos UI dev server with hot reload on :9430
 just sdk-dev         # SDK dev server with HMR
