@@ -4,11 +4,7 @@
  */
 
 /** Base controls common to most effects. */
-export interface BaseControls {
-    speed: number
-    colorIntensity: number
-    colorSaturation: number
-}
+export type { BaseControls } from './definitions'
 
 /** Read a control value from the window object. */
 export function getControlValue<T>(propertyName: string, defaultValue: T): T {

@@ -132,7 +132,7 @@ impl DeviceBackend for SmBusBackend {
             "attempting SMBus connect"
         );
 
-        let device = connect_pending_device(&pending, self.transport_factory.as_ref()).await?;
+        let device = connect_pending_device(&pending, &self.transport_factory).await?;
         self.connected.insert(*id, device);
 
         Ok(())
@@ -182,7 +182,7 @@ impl DeviceBackend for SmBusBackend {
                 "SMBus frame write failed; attempting one-shot transport reinitialize"
             );
 
-            reinitialize_connected_device(device, transport_factory.as_ref())
+            reinitialize_connected_device(device, &transport_factory)
                 .await
                 .with_context(|| {
                     format!(
@@ -246,7 +246,7 @@ fn pending_from_discovered(discovered: &DiscoveredDevice) -> Option<PendingSmBus
 
 async fn connect_pending_device(
     pending: &PendingSmBusDevice,
-    transport_factory: &(dyn Fn(&str, u16) -> Result<Box<dyn Transport>> + Send + Sync),
+    transport_factory: &SmBusTransportFactory,
 ) -> Result<ConnectedSmBusDevice> {
     let transport = transport_factory(&pending.bus_path, pending.address)?;
     let protocol: Box<dyn Protocol> = Box::new(AuraSmBusProtocol::new());
@@ -273,7 +273,7 @@ async fn connect_pending_device(
 
 async fn reinitialize_connected_device(
     device: &mut ConnectedSmBusDevice,
-    transport_factory: &(dyn Fn(&str, u16) -> Result<Box<dyn Transport>> + Send + Sync),
+    transport_factory: &SmBusTransportFactory,
 ) -> Result<()> {
     let replacement = transport_factory(&device.bus_path, device.address)?;
     if let Err(error) = run_init_sequence(

@@ -1,4 +1,4 @@
-#[path = "../src/api.rs"]
+#[path = "../src/api/mod.rs"]
 mod api;
 #[path = "../src/components/attachment_editor.rs"]
 mod attachment_editor;

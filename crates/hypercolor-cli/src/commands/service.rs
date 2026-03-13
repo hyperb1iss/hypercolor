@@ -354,6 +354,10 @@ async fn execute_logs(args: &LogsArgs, ctx: &OutputContext) -> Result<()> {
     let _ = ctx; // logs stream directly to stdout
     let log_path = macos_log_path()?;
 
+    if args.since.is_some() {
+        bail!("--since is not supported on macOS; use --lines or --follow");
+    }
+
     if !std::path::Path::new(&log_path).exists() {
         bail!("Log file not found at {log_path}. Has the daemon been started?");
     }

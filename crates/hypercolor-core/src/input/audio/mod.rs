@@ -396,6 +396,7 @@ impl AudioInput {
                     );
                 }
             }
+            #[cfg(target_os = "linux")]
             Some(CaptureHandle::LinuxPulse(_)) => {
                 if let Some(CaptureHandle::LinuxPulse(capture)) = self.capture.take() {
                     drop(capture);
@@ -460,6 +461,7 @@ impl AudioInput {
                     );
                     return Ok(());
                 }
+                #[cfg(target_os = "linux")]
                 CaptureHandle::LinuxPulse(pulse_capture) => {
                     let _ = pulse_capture;
                     self.degraded_to_silence = false;

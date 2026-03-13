@@ -32,7 +32,7 @@ LAUNCHD_LABEL="tech.hyperbliss.hypercolor"
 LAUNCHD_PLIST="${LAUNCHD_DIR}/${LAUNCHD_LABEL}.plist"
 LOG_DIR="${HOME}/Library/Logs/hypercolor"
 
-UDEV_RULES_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/packaging/udev/99-hypercolor.rules"
+UDEV_RULES_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/udev/99-hypercolor.rules"
 UDEV_RULES_PATH="/etc/udev/rules.d/99-hypercolor.rules"
 
 VERSION=""

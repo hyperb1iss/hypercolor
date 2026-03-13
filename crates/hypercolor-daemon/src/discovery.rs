@@ -451,14 +451,10 @@ pub async fn execute_discovery_scan(
                 orchestrator.add_scanner(Box::new(SmBusScanner::new()));
             }
             DiscoveryBackend::Blocks => {
-                let socket_path = config
-                    .discovery
-                    .blocks_socket_path
-                    .as_ref()
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(
-                        hypercolor_core::device::BlocksBackend::default_socket_path,
-                    );
+                let socket_path = config.discovery.blocks_socket_path.as_ref().map_or_else(
+                    hypercolor_core::device::BlocksBackend::default_socket_path,
+                    std::path::PathBuf::from,
+                );
                 orchestrator.add_scanner(Box::new(BlocksScanner::new(socket_path)));
             }
         }

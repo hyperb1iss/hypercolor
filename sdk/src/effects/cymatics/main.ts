@@ -125,7 +125,8 @@ export default effect(
     },
     {
         audio: true,
-        description: 'Sound made visible — cinematic audio visualizer with spring-physics camera, frequency-reactive geometry, and motion-led response',
+        description:
+            'Sound made visible — cinematic audio visualizer with spring-physics camera, frequency-reactive geometry, and motion-led response',
 
         frame: (ctx, time) => {
             const dt = Math.min(lastTime > 0 ? time - lastTime : 0.016, 0.05)
@@ -191,7 +192,7 @@ export default effect(
             )
             state.motionPulse = smoothAsymmetric(state.motionPulse, motionPulseTarget, 11, 2.8, dt)
 
-            const wanderRate = 0.20 + Math.abs(flow) * 0.28 + state.cameraEnergy * 0.22 + state.motionPulse * 0.14
+            const wanderRate = 0.2 + Math.abs(flow) * 0.28 + state.cameraEnergy * 0.22 + state.motionPulse * 0.14
             const wanderAmplitude = 0.22 + state.cameraEnergy * 0.38 + state.motionPulse * 0.28
             const wanderTime = time * wanderRate + state.drift * 0.12
             const driftX = smoothNoise(wanderTime * 0.82, 1.3)
@@ -201,7 +202,7 @@ export default effect(
             const bassPull =
                 (state.smoothBass - 0.12) * (0.52 + state.cameraEnergy * 0.32) + state.smoothMomentum * 0.28
             const treblePull =
-                (state.smoothTreble - 0.10) * (0.38 + state.cameraEnergy * 0.22) - state.smoothMomentum * 0.14
+                (state.smoothTreble - 0.1) * (0.38 + state.cameraEnergy * 0.22) - state.smoothMomentum * 0.14
             const lateralLead = flow * (0.08 + state.motionPulse * 0.22 + state.cameraEnergy * 0.14)
             const verticalLift = state.anticipation * (0.08 + state.cameraEnergy * 0.06) - state.smoothSwell * 0.14
 

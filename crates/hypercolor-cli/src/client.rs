@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use serde::Serialize;
+use std::time::Duration;
 
 /// HTTP client for the Hypercolor daemon REST API.
 #[derive(Debug, Clone)]
@@ -23,7 +24,11 @@ impl DaemonClient {
     #[must_use]
     pub fn new(host: &str, port: u16, api_key: Option<&str>) -> Self {
         let base_url = format!("http://{host}:{port}");
-        let http = reqwest::Client::new();
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("CLI HTTP client should build");
         Self {
             base_url,
             api_key: api_key.map(ToOwned::to_owned),

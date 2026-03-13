@@ -41,7 +41,7 @@ impl BlocksScanner {
 
 #[async_trait::async_trait]
 impl TransportScanner for BlocksScanner {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ROLI Blocks (blocksd)"
     }
 

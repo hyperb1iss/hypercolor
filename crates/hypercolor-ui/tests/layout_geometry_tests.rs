@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-#[path = "../src/api.rs"]
+#[path = "../src/api/mod.rs"]
 mod api;
 #[path = "../src/layout_geometry.rs"]
 mod layout_geometry;

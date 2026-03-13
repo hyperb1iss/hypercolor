@@ -12,6 +12,9 @@ rust-version.workspace = true
 name = "hypercolor-desktop"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 tauri = { version = "2", features = ["devtools"] }
 serde.workspace = true

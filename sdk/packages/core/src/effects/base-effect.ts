@@ -26,6 +26,9 @@ export abstract class BaseEffect<T> {
 
     private fpsCapLastFrameTime = 0
     private lastControlPollTime = Number.NEGATIVE_INFINITY
+    private readonly animationFrameCallback = (timestamp: number): void => {
+        this.animationFrame(timestamp)
+    }
 
     constructor(config: EffectConfig) {
         this.id = config.id
@@ -63,7 +66,7 @@ export abstract class BaseEffect<T> {
     }
 
     protected startAnimation(): void {
-        this.animationId = requestAnimationFrame(this.animationFrame.bind(this))
+        this.animationId = requestAnimationFrame(this.animationFrameCallback)
         window.currentAnimationFrame = this.animationId
         window.effectInstance = this
     }
@@ -71,7 +74,7 @@ export abstract class BaseEffect<T> {
     protected animationFrame(timestamp: number): void {
         if (this.animationId === null) return
 
-        this.animationId = requestAnimationFrame(this.animationFrame.bind(this))
+        this.animationId = requestAnimationFrame(this.animationFrameCallback)
         window.currentAnimationFrame = this.animationId
 
         // FPS cap support

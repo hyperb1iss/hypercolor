@@ -13,7 +13,8 @@ export default effect(
         density: num('Arc Density', [0, 100], 50, {
             group: 'Geometry',
             step: 1,
-            tooltip: 'How much of the electric field resolves into visible arcs. Sparse clean bolts → dense crackling web.',
+            tooltip:
+                'How much of the electric field resolves into visible arcs. Sparse clean bolts → dense crackling web.',
         }),
         flicker: num('Instability', [0, 100], 30, {
             group: 'Motion',
@@ -39,7 +40,8 @@ export default effect(
         prismatic: num('Prismatic', [0, 100], 12, {
             group: 'Atmosphere',
             step: 1,
-            tooltip: 'Chromatic refraction splitting along the arcs — rainbow fringing that slowly drifts around the tendrils.',
+            tooltip:
+                'Chromatic refraction splitting along the arcs — rainbow fringing that slowly drifts around the tendrils.',
         }),
         speed: num('Charge Rate', [1, 10], 5, {
             group: 'Motion',

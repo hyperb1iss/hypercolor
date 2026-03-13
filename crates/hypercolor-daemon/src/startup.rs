@@ -301,12 +301,10 @@ impl DaemonState {
                 .register_backend(Box::new(build_wled_backend(config, &runtime_state_path)));
         }
         if config.discovery.blocks_scan {
-            let socket_path = config
-                .discovery
-                .blocks_socket_path
-                .as_ref()
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(hypercolor_core::device::BlocksBackend::default_socket_path);
+            let socket_path = config.discovery.blocks_socket_path.as_ref().map_or_else(
+                hypercolor_core::device::BlocksBackend::default_socket_path,
+                std::path::PathBuf::from,
+            );
             backend_manager_inner.register_backend(Box::new(
                 hypercolor_core::device::BlocksBackend::new(socket_path),
             ));

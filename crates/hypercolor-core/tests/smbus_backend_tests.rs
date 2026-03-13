@@ -33,7 +33,7 @@ impl StaticScanner {
 
 #[async_trait::async_trait]
 impl TransportScanner for StaticScanner {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "static-smbus-test"
     }
 
