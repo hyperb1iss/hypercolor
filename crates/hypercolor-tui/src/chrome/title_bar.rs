@@ -31,9 +31,9 @@ impl TitleBar {
         Self { phase: 0.0 }
     }
 
-    /// Advance the shimmer animation by one tick (~16ms at 60fps).
+    /// Advance the shimmer animation by one tick (~66ms at 15fps render).
     pub fn tick(&mut self) {
-        self.phase += 0.08;
+        self.phase += 0.12;
         if self.phase > std::f32::consts::TAU * 100.0 {
             self.phase -= std::f32::consts::TAU * 100.0;
         }
@@ -143,27 +143,76 @@ fn build_status_spans(state: &AppState) -> Vec<Span<'static>> {
     spans
 }
 
-/// Render `H Y P E R C O L O R` with animated per-character gradient shimmer.
+/// Render `H Y P E R C O L O R` with layered animated gradient effects.
 ///
-/// Each character's gradient position is offset by a sine wave, creating a
-/// rippling color effect that flows across the brand text.
-#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
+/// Combines multiple animation layers for a dynamic, organic shimmer:
+/// 1. Primary traveling wave — fast ripple across the gradient
+/// 2. Secondary slow wave — different frequency adds depth
+/// 3. Global color drift — the whole gradient breathes over time
+/// 4. Traveling spark — a bright highlight rolls across periodically
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn build_gradient_brand(spans: &mut Vec<Span<'static>>, phase: f32) {
     const BRAND: &str = "HYPERCOLOR";
     let len = BRAND.len();
+    let len_f = (len - 1).max(1) as f32;
+
+    // Spark: a bright pulse traveling left-to-right (~5s period)
+    let spark_pos = (phase * 1.8) % (len_f + 6.0) - 3.0;
+
     for (i, ch) in BRAND.chars().enumerate() {
-        let base_t = i as f32 / (len - 1).max(1) as f32;
-        // Sine-wave shimmer: each character oscillates its gradient position
-        let wave = (phase + i as f32 * 0.4).sin() * 0.35;
-        let t = (base_t + wave).clamp(0.0, 1.0);
+        let i_f = i as f32;
+        let base_t = i_f / len_f;
+
+        // Layer 1: Primary traveling wave — fast, tight spacing
+        let wave1 = (phase + i_f * 0.4).sin() * 0.25;
+        // Layer 2: Secondary slow wave — different frequency, wider spacing
+        let wave2 = (phase * 0.6 + i_f * 0.7).sin() * 0.15;
+        // Layer 3: Global color drift — the whole gradient shifts slowly
+        let drift = (phase * 0.03).sin() * 0.2;
+
+        let t = (base_t + wave1 + wave2 + drift).clamp(0.0, 1.0);
+        let base_color = theme::gradient_color(t, &theme::BRAND_GRADIENT);
+
+        // Layer 4: Traveling spark — gaussian highlight bloom
+        let spark_d = i_f - spark_pos;
+        let spark = (-spark_d * spark_d * 0.5).exp();
+        let color = if spark > 0.05 {
+            brighten(base_color, spark * 0.7)
+        } else {
+            base_color
+        };
+
         spans.push(Span::styled(
             ch.to_string(),
             Style::default()
-                .fg(theme::gradient_color(t, &theme::BRAND_GRADIENT))
+                .fg(color)
                 .add_modifier(Modifier::BOLD),
         ));
         if i < len - 1 {
             spans.push(Span::raw(" "));
         }
+    }
+}
+
+/// Blend an RGB color toward white by `amount` (0.0 = unchanged, 1.0 = pure white).
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn brighten(color: ratatui::style::Color, amount: f32) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    match color {
+        Color::Rgb(r, g, b) => {
+            let a = amount.clamp(0.0, 1.0);
+            let lerp = |from: u8| (f32::from(from) + (255.0 - f32::from(from)) * a) as u8;
+            Color::Rgb(lerp(r), lerp(g), lerp(b))
+        }
+        other => other,
     }
 }
