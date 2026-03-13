@@ -338,7 +338,7 @@ fn control_definition_from_html(raw: &HtmlControlMetadata) -> Option<ControlDefi
         max: raw.max,
         step: raw.step,
         labels,
-        group: None,
+        group: raw.group.clone(),
         tooltip: raw
             .tooltip
             .as_ref()

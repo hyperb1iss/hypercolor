@@ -76,6 +76,7 @@ interface NewApiDef {
             label: string
             defaultValue: unknown
             tooltip?: string
+            group?: string
             meta: Record<string, unknown>
         }
         uniformName?: string
@@ -94,6 +95,7 @@ function newApiToControls(def: NewApiDef): ControlDef[] {
             label: ctrl.spec.label,
             default: ctrl.spec.defaultValue as any,
             tooltip: ctrl.spec.tooltip,
+            group: ctrl.spec.group,
         }
         if (ctrl.spec.meta.min != null) base.min = ctrl.spec.meta.min as number
         if (ctrl.spec.meta.max != null) base.max = ctrl.spec.meta.max as number
@@ -200,6 +202,7 @@ interface ControlDef {
     type: string
     label?: string
     tooltip?: string
+    group?: string
     default?: any
     min?: number
     max?: number
@@ -219,6 +222,7 @@ function controlToMeta(ctrl: ControlDef): string {
     if (ctrl.default != null) attrs.push(`default="${escapeAttr(String(ctrl.default))}"`)
     if (ctrl.values?.length) attrs.push(`values="${ctrl.values.map(escapeAttr).join(',')}"`)
     if (ctrl.tooltip) attrs.push(`tooltip="${escapeAttr(ctrl.tooltip)}"`)
+    if (ctrl.group) attrs.push(`group="${escapeAttr(ctrl.group)}"`)
 
     return `  <meta ${attrs.join(' ')}/>`
 }

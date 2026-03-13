@@ -18,6 +18,7 @@ export interface ControlSpec<T extends ControlTypeName = ControlTypeName> {
     readonly label: string
     readonly defaultValue: unknown
     readonly tooltip?: string
+    readonly group?: string
     readonly uniform?: string
     readonly normalize?: NormalizeHint
     readonly meta: Readonly<Record<string, unknown>>
@@ -28,7 +29,7 @@ function spec<T extends ControlTypeName>(
     label: string,
     defaultValue: unknown,
     meta: Record<string, unknown>,
-    opts?: { tooltip?: string; uniform?: string; normalize?: NormalizeHint },
+    opts?: { tooltip?: string; group?: string; uniform?: string; normalize?: NormalizeHint },
 ): ControlSpec<T> {
     return {
         __brand: 'ControlSpec',
@@ -36,6 +37,7 @@ function spec<T extends ControlTypeName>(
         label,
         defaultValue,
         tooltip: opts?.tooltip,
+        group: opts?.group,
         uniform: opts?.uniform,
         normalize: opts?.normalize,
         meta,
@@ -56,6 +58,7 @@ export function isControlSpec(value: unknown): value is ControlSpec {
 export interface NumOptions {
     step?: number
     tooltip?: string
+    group?: string
     normalize?: NormalizeHint
     uniform?: string
 }
@@ -77,6 +80,7 @@ export function num(
 export interface ComboOptions {
     default?: string
     tooltip?: string
+    group?: string
     uniform?: string
 }
 
@@ -94,6 +98,7 @@ export function combo(
 
 export interface ToggleOptions {
     tooltip?: string
+    group?: string
     uniform?: string
 }
 
@@ -108,6 +113,7 @@ export function toggle(
 
 export interface ColorOptions {
     tooltip?: string
+    group?: string
     uniform?: string
 }
 
@@ -122,6 +128,7 @@ export function color(
 
 export interface HueOptions {
     tooltip?: string
+    group?: string
     uniform?: string
 }
 
@@ -140,6 +147,7 @@ export function hue(
 
 export interface TextOptions {
     tooltip?: string
+    group?: string
     uniform?: string
 }
 

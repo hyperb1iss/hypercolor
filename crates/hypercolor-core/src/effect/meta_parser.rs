@@ -51,6 +51,7 @@ pub struct HtmlControlMetadata {
     pub step: Option<f32>,
     pub values: Vec<String>,
     pub tooltip: Option<String>,
+    pub group: Option<String>,
 }
 
 /// Parsed preset from a `<meta preset="..." ...>` tag.
@@ -359,6 +360,7 @@ fn parse_control_metadata(attrs: &HashMap<String, String>) -> Option<HtmlControl
         step: parse_f32_attr(attrs, "step"),
         values: parse_csv_attr(attrs, "values"),
         tooltip: attr_value(attrs, "tooltip").map(ToOwned::to_owned),
+        group: attr_value(attrs, "group").map(ToOwned::to_owned),
     })
 }
 
