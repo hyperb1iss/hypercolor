@@ -10,32 +10,50 @@ use crate::components::device_detail::DeviceDetail;
 use crate::icons::*;
 use crate::toasts;
 
-/// Status filter options.
-const STATUSES: &[&str] = &["all", "active", "connected", "known", "disabled"];
+/// Filter chip definition: (label, accent RGB).
+const STATUS_CHIPS: &[(&str, &str)] = &[
+    ("all", "225, 53, 255"),
+    ("active", "80, 250, 123"),
+    ("connected", "130, 170, 255"),
+    ("known", "139, 133, 160"),
+    ("disabled", "255, 99, 99"),
+];
 
-/// Backend filter options.
-const BACKENDS: &[&str] = &["all", "razer", "wled", "corsair", "hue"];
+const BACKEND_CHIPS: &[(&str, &str)] = &[
+    ("all", "225, 53, 255"),
+    ("razer", "225, 53, 255"),
+    ("wled", "128, 255, 234"),
+    ("corsair", "255, 153, 255"),
+    ("hue", "255, 183, 77"),
+];
 
-/// Status → accent RGB for filter chips.
-fn status_accent_rgb(status: &str) -> &'static str {
-    match status {
-        "active" => "80, 250, 123",
-        "connected" => "130, 170, 255",
-        "known" => "139, 133, 160",
-        "disabled" => "255, 99, 99",
-        _ => "225, 53, 255",
-    }
-}
-
-/// Backend → accent RGB for filter chips.
-fn backend_chip_rgb(backend: &str) -> &'static str {
-    match backend {
-        "razer" => "225, 53, 255",
-        "wled" => "128, 255, 234",
-        "corsair" => "255, 153, 255",
-        "hue" => "255, 183, 77",
-        _ => "225, 53, 255",
-    }
+/// Render a row of filter chip buttons.
+fn filter_chips(
+    chips: &'static [(&'static str, &'static str)],
+    current: ReadSignal<String>,
+    set_current: WriteSignal<String>,
+) -> impl IntoView {
+    chips
+        .iter()
+        .map(|&(label, rgb)| {
+            let is_active = Memo::new(move |_| current.get() == label);
+            let active_style = format!(
+                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 8px rgba({rgb}, 0.15)"
+            );
+            let inactive_style = format!(
+                "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
+            );
+            view! {
+                <button
+                    class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
+                    style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
+                    on:click=move |_| set_current.set(label.to_string())
+                >
+                    {label}
+                </button>
+            }
+        })
+        .collect_view()
 }
 
 /// Devices page with filter chips, search, and device grid.
@@ -174,30 +192,7 @@ pub fn DevicesPage() -> impl IntoView {
                                 <div class="px-3 pt-1 pb-1.5">
                                     <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1.5">"Status"</div>
                                     <div class="flex gap-1 flex-wrap">
-                                        {STATUSES.iter().map(|s| {
-                                            let s = s.to_string();
-                                            let s_clone = s.clone();
-                                            let rgb = if s == "all" { "225, 53, 255" } else { status_accent_rgb(&s) }.to_string();
-                                            let is_active = {
-                                                let s = s.clone();
-                                                Memo::new(move |_| status_filter.get() == s)
-                                            };
-                                            let active_style = format!(
-                                                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 8px rgba({rgb}, 0.15)"
-                                            );
-                                            let inactive_style = format!(
-                                                "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
-                                            );
-                                            view! {
-                                                <button
-                                                    class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
-                                                    style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
-                                                    on:click=move |_| set_status_filter.set(s_clone.clone())
-                                                >
-                                                    {s.clone()}
-                                                </button>
-                                            }
-                                        }).collect_view()}
+                                        {filter_chips(STATUS_CHIPS, status_filter, set_status_filter)}
                                     </div>
                                 </div>
 
@@ -207,37 +202,7 @@ pub fn DevicesPage() -> impl IntoView {
                                 <div class="px-3 pt-1 pb-1.5">
                                     <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1.5">"Backend"</div>
                                     <div class="flex gap-1 flex-wrap">
-                                        {BACKENDS.iter().map(|b| {
-                                            let b = b.to_string();
-                                            let b_clone = b.clone();
-                                            let rgb = if b == "all" { "225, 53, 255" } else { backend_chip_rgb(&b) }.to_string();
-                                            let is_active = {
-                                                let b = b.clone();
-                                                Memo::new(move |_| backend_filter.get() == b)
-                                            };
-                                            let active_style = format!(
-                                                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 8px rgba({rgb}, 0.15)"
-                                            );
-                                            let inactive_style = format!(
-                                                "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
-                                            );
-                                            view! {
-                                                <button
-                                                    class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
-                                                    style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
-                                                    on:click=move |_| {
-                                                        let current = backend_filter.get();
-                                                        if b_clone == "all" || current == b_clone {
-                                                            set_backend_filter.set("all".to_string());
-                                                        } else {
-                                                            set_backend_filter.set(b_clone.clone());
-                                                        }
-                                                    }
-                                                >
-                                                    {b.clone()}
-                                                </button>
-                                            }
-                                        }).collect_view()}
+                                        {filter_chips(BACKEND_CHIPS, backend_filter, set_backend_filter)}
                                     </div>
                                 </div>
 
