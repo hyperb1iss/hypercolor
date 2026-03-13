@@ -712,6 +712,9 @@ fn audio_input_produces_audio_data_with_samples() {
     let config = manual_input_config();
     let mut input = AudioInput::new(&config);
     input.start().expect("start");
+    input
+        .set_capture_active(true)
+        .expect("enable manual capture");
 
     // Push enough samples for at least one FFT window.
     let samples = sine_wave(440.0, 48_000, 2048);
@@ -738,6 +741,9 @@ fn audio_input_silence_produces_near_zero() {
     };
     let mut input = AudioInput::new(&config);
     input.start().expect("start");
+    input
+        .set_capture_active(true)
+        .expect("enable manual capture");
 
     let samples = silence(2048);
     input.push_samples(&samples);
@@ -770,6 +776,9 @@ fn audio_input_multiple_frames() {
     let config = manual_input_config();
     let mut input = AudioInput::new(&config);
     input.start().expect("start");
+    input
+        .set_capture_active(true)
+        .expect("enable manual capture");
 
     // Feed samples across multiple frames.
     for _ in 0..10 {

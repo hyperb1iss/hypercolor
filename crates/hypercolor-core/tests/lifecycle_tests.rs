@@ -17,11 +17,69 @@ use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
     DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
+use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
 };
 use tokio::sync::Mutex;
+
+// ── LED color pipeline helpers (mirrors prepare_output_for_leds) ────────────
+
+const LED_PERCEPTUAL_COMPENSATION_STRENGTH: f32 = 0.22;
+const LED_NEUTRAL_COMPENSATION_WEIGHT: f32 = 0.25;
+const LED_HEADROOM_WEIGHT_FLOOR: f32 = 0.1;
+
+fn expected_led_color(color: [u8; 3]) -> [u8; 3] {
+    let compensated = apply_led_perceptual_compensation([
+        srgb_to_linear(f32::from(color[0]) / 255.0),
+        srgb_to_linear(f32::from(color[1]) / 255.0),
+        srgb_to_linear(f32::from(color[2]) / 255.0),
+    ]);
+
+    [
+        linear_to_output_u8(compensated[0]),
+        linear_to_output_u8(compensated[1]),
+        linear_to_output_u8(compensated[2]),
+    ]
+}
+
+#[allow(clippy::similar_names)]
+fn apply_led_perceptual_compensation(mut color: [f32; 3]) -> [f32; 3] {
+    let max_channel = color[0].max(color[1]).max(color[2]);
+    if max_channel <= f32::EPSILON {
+        return color;
+    }
+
+    let min_channel = color[0].min(color[1]).min(color[2]);
+    let luma = color[0].mul_add(0.2126, color[1].mul_add(0.7152, color[2] * 0.0722));
+    let headroom = 1.0 - max_channel;
+    if headroom <= f32::EPSILON {
+        return color;
+    }
+
+    let whiteness = min_channel / max_channel;
+    let colorfulness = LED_NEUTRAL_COMPENSATION_WEIGHT
+        + (1.0 - LED_NEUTRAL_COMPENSATION_WEIGHT) * (1.0 - whiteness);
+    let shadow_bias = 1.0 - luma;
+    let headroom_weight = LED_HEADROOM_WEIGHT_FLOOR + (1.0 - LED_HEADROOM_WEIGHT_FLOOR) * headroom;
+    let gain = 1.0
+        + LED_PERCEPTUAL_COMPENSATION_STRENGTH
+            * shadow_bias
+            * shadow_bias
+            * headroom_weight
+            * colorfulness;
+    let gain = gain.min(1.0 / max_channel);
+
+    if gain <= 1.0 {
+        return color;
+    }
+
+    color[0] = (color[0] * gain).min(1.0);
+    color[1] = (color[1] * gain).min(1.0);
+    color[2] = (color[2] * gain).min(1.0);
+    color
+}
 
 struct RecordingBackend {
     expected_device_id: DeviceId,
@@ -262,7 +320,8 @@ async fn lifecycle_discovery_connect_and_frame_write() {
     tokio::time::sleep(Duration::from_millis(40)).await;
     let writes = writes.lock().await.clone();
     assert_eq!(writes.len(), 1);
-    assert_eq!(writes[0], vec![[255, 0, 128]; 4]);
+    let expected = expected_led_color([255, 0, 128]);
+    assert_eq!(writes[0], vec![expected; 4]);
 }
 
 #[test]
@@ -503,8 +562,9 @@ async fn lifecycle_comm_error_reconnects_and_resumes_frames() {
         "expected writes before and after reconnect, got {}",
         writes.len()
     );
+    let expected = expected_led_color([220, 120, 20]);
     assert_eq!(
         writes.last().expect("expected last frame"),
-        &vec![[220, 120, 20]; 4]
+        &vec![expected; 4]
     );
 }

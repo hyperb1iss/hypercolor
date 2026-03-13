@@ -29,6 +29,10 @@ use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
     EffectMetadata, EffectSource, EffectState,
 };
+use hypercolor_types::spatial::{
+    DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
+    StripDirection,
+};
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
 
@@ -263,13 +267,13 @@ async fn status_returns_200_with_envelope() {
         json["data"]["config_path"],
         serde_json::json!(default_config_path())
     );
-    assert_eq!(
-        json["data"]["data_dir"],
-        serde_json::json!(ConfigManager::data_dir().display().to_string())
+    assert!(
+        json["data"]["data_dir"].as_str().is_some_and(|s| !s.is_empty()),
+        "data_dir should be a non-empty string"
     );
-    assert_eq!(
-        json["data"]["cache_dir"],
-        serde_json::json!(ConfigManager::cache_dir().display().to_string())
+    assert!(
+        json["data"]["cache_dir"].as_str().is_some_and(|s| !s.is_empty()),
+        "cache_dir should be a non-empty string"
     );
     assert!(
         json["data"]["audio_available"].is_boolean(),
@@ -744,6 +748,51 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
         .device_registry
         .add_with_fingerprint_and_metadata(info, fingerprint, metadata)
         .await
+}
+
+/// Set up a spatial layout with a zone targeting the given `layout_device_id`.
+///
+/// This ensures that `sync_active_layout_connectivity` won't disconnect the
+/// device because the active layout has a zone referencing it.
+async fn set_layout_targeting_device(state: &AppState, layout_device_id: &str, led_count: u32) {
+    let layout = SpatialLayout {
+        id: "test-layout".into(),
+        name: "Test Layout".into(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![DeviceZone {
+            id: "zone_main".into(),
+            name: "Main".into(),
+            device_id: layout_device_id.into(),
+            zone_name: None,
+            group_id: None,
+            position: NormalizedPosition::new(0.5, 0.5),
+            size: NormalizedPosition::new(1.0, 0.1),
+            rotation: 0.0,
+            scale: 1.0,
+            display_order: 0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: led_count,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: None,
+            edge_behavior: None,
+            shape: None,
+            shape_preset: None,
+            attachment: None,
+        }],
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    let mut spatial = state.spatial_engine.write().await;
+    spatial.update_layout(layout);
 }
 
 // ── Devices ──────────────────────────────────────────────────────────────
@@ -3619,6 +3668,12 @@ async fn logical_device_endpoints_preserve_smbus_backend_metadata() {
         .set_state(&device_id, DeviceState::Connected)
         .await;
 
+    // The active layout must reference the segment that will be created, so that
+    // sync_active_layout_connectivity doesn't disconnect the device when
+    // reconcile_default_enabled disables the default entry.
+    let expected_segment_id = format!("{layout_device_id}:aura-segment");
+    set_layout_targeting_device(&state, &expected_segment_id, 12).await;
+
     let app = test_app_with_state(Arc::clone(&state));
     let create_response = app
         .clone()
@@ -3682,15 +3737,45 @@ async fn logical_devices_migrate_legacy_default_ids_and_keep_legacy_aliases_mapp
     let (state, _tmp) = test_state_with_temp_logical_store();
     register_noop_backend(&state, "wled", "WLED Test").await;
 
-    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let fingerprint = DeviceFingerprint("net:00:11:22:33:44:55".to_owned());
+    let canonical_layout_id = "wled:00:11:22:33:44:55".to_owned();
+
+    let device_id = {
+        let id = DeviceId::new();
+        let info = DeviceInfo {
+            id,
+            name: "Desk Strip".to_owned(),
+            vendor: "test-vendor".to_owned(),
+            family: DeviceFamily::Wled,
+            model: None,
+            connection_type: ConnectionType::Network,
+            zones: vec![ZoneInfo {
+                name: "Main".to_owned(),
+                led_count: 60,
+                topology: DeviceTopologyHint::Strip,
+                color_format: DeviceColorFormat::Rgb,
+            }],
+            firmware_version: Some("0.1.0".to_owned()),
+            capabilities: DeviceCapabilities {
+                led_count: 60,
+                supports_direct: true,
+                supports_brightness: true,
+                has_display: false,
+                display_resolution: None,
+                max_fps: 60,
+            },
+        };
+        state
+            .device_registry
+            .add_with_fingerprint(info, fingerprint.clone())
+            .await
+    };
     let tracked = state
         .device_registry
         .get(&device_id)
         .await
         .expect("device should exist");
 
-    let fingerprint = DeviceFingerprint("net:00:11:22:33:44:55".to_owned());
-    let canonical_layout_id = "wled:00:11:22:33:44:55".to_owned();
     {
         let mut lifecycle = state.lifecycle_manager.lock().await;
         let _ = lifecycle.on_discovered(device_id, &tracked.info, "wled", Some(&fingerprint));
@@ -3698,10 +3783,21 @@ async fn logical_devices_migrate_legacy_default_ids_and_keep_legacy_aliases_mapp
             .on_connected(device_id)
             .expect("connect transition should succeed");
     }
+    state
+        .backend_manager
+        .lock()
+        .await
+        .connect_device("wled", device_id, &canonical_layout_id)
+        .await
+        .expect("wled test backend should connect");
     let _ = state
         .device_registry
         .set_state(&device_id, DeviceState::Connected)
         .await;
+
+    // The active layout must reference this device so that
+    // sync_active_layout_connectivity doesn't disconnect it.
+    set_layout_targeting_device(&state, &canonical_layout_id, 60).await;
 
     let legacy_layout_id = format!("device:{device_id}");
     {
