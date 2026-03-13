@@ -11,8 +11,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::action::Action;
 use crate::component::Component;
-use crate::state::{DaemonState, DeviceSummary, EffectSummary};
-use crate::widgets::ParamSlider;
+use crate::state::{CanvasFrame, DaemonState, DeviceSummary, EffectSummary};
+use crate::widgets::{HalfBlockCanvas, ParamSlider};
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
 
@@ -28,7 +28,7 @@ const BORDER_DIM: Color = Color::Rgb(90, 21, 102);
 
 // ── Dashboard View ─────────────────────────────────────────────────────
 
-/// The landing screen: current effect, system health, devices, quick actions.
+/// The landing screen: current effect info, live canvas preview, devices, quick actions.
 pub struct DashboardView {
     focused: bool,
     action_tx: Option<UnboundedSender<Action>>,
@@ -38,6 +38,7 @@ pub struct DashboardView {
     devices: Vec<DeviceSummary>,
     effects: Vec<EffectSummary>,
     favorites: Vec<String>,
+    canvas_frame: Option<CanvasFrame>,
     selected_device: usize,
 }
 
@@ -57,6 +58,7 @@ impl DashboardView {
             devices: Vec::new(),
             effects: Vec::new(),
             favorites: Vec::new(),
+            canvas_frame: None,
             selected_device: 0,
         }
     }
@@ -75,24 +77,14 @@ impl DashboardView {
         self.effects.iter().find(|e| e.id == id)
     }
 
-    /// Normalize a control value to `[0, 1]` for the slider widget.
-    fn normalized_control_value(ctrl: &crate::state::ControlDefinition) -> f32 {
-        let raw = ctrl.default_value.as_f32().unwrap_or(0.0);
-        let min = ctrl.min.unwrap_or(0.0);
-        let max = ctrl.max.unwrap_or(1.0);
-        if (max - min).abs() < f32::EPSILON {
-            return 0.0;
-        }
-        ((raw - min) / (max - min)).clamp(0.0, 1.0)
-    }
-
     // ── Panel renderers ─────────────────────────────────────────────
 
-    /// Render the "Current Effect" panel.
+    /// Render the "Now Playing" panel — effect info + daemon gauges.
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
     fn render_effect_panel(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .title(Span::styled(
-                " Current Effect ",
+                " Now Playing ",
                 Style::default()
                     .fg(ELECTRIC_PURPLE)
                     .add_modifier(Modifier::BOLD),
@@ -106,53 +98,240 @@ impl DashboardView {
             return;
         }
 
+        let content_w = inner.width.saturating_sub(2);
+        let x = inner.x + 1;
+        let max_y = inner.y + inner.height;
+
         let Some(effect) = self.active_effect() else {
-            let msg = Line::from(Span::styled(
-                "No effect active",
-                Style::default().fg(DIM_GRAY),
-            ));
-            frame.render_widget(
-                Paragraph::new(msg),
-                Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), 1),
+            self.render_idle_state(
+                frame,
+                Rect::new(x, inner.y, content_w, max_y.saturating_sub(inner.y)),
             );
             return;
         };
 
-        // Effect name
-        let name_line = Line::from(vec![
-            Span::styled("\u{2726} ", Style::default().fg(NEON_CYAN)),
-            Span::styled(
-                &effect.name,
-                Style::default().fg(BASE_WHITE).add_modifier(Modifier::BOLD),
-            ),
-        ]);
-        frame.render_widget(
-            Paragraph::new(name_line),
-            Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), 1),
-        );
+        let mut y = inner.y;
+        y = Self::render_effect_info(frame, effect, x, y, max_y, content_w);
+        y = Self::render_effect_badges(frame, effect, x, y, max_y, content_w);
+        self.render_daemon_gauges(frame, x, y, max_y, content_w);
+    }
 
-        // Render up to 4 key parameter sliders
-        let max_params = 4.min(effect.controls.len());
-        for (i, ctrl) in effect.controls.iter().take(max_params).enumerate() {
-            let Some(y_offset) = u16::try_from(i).ok().and_then(|v| v.checked_add(2)) else {
-                break;
+    /// Render effect name, description, author/category, and separator.
+    #[allow(clippy::too_many_arguments, clippy::as_conversions, clippy::cast_possible_truncation)]
+    fn render_effect_info(
+        frame: &mut Frame,
+        effect: &EffectSummary,
+        x: u16,
+        mut y: u16,
+        max_y: u16,
+        w: u16,
+    ) -> u16 {
+        // Effect name — bold, prominent
+        if y < max_y {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("\u{25B6} ", Style::default().fg(SUCCESS_GREEN)),
+                    Span::styled(
+                        truncate_str(&effect.name, w.saturating_sub(2).into()),
+                        Style::default()
+                            .fg(BASE_WHITE)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])),
+                Rect::new(x, y, w, 1),
+            );
+            y += 1;
+        }
+
+        // Description — up to 2 lines
+        if y < max_y && !effect.description.is_empty() {
+            let desc_lines = if effect.description.len() > w as usize && y + 1 < max_y {
+                let line1 = truncate_str(&effect.description, w.into());
+                let rest_start = line1.len().min(effect.description.len());
+                let line2 = truncate_str(
+                    effect.description[rest_start..].trim_start(),
+                    w.into(),
+                );
+                vec![
+                    Line::from(Span::styled(line1, Style::default().fg(DIM_GRAY))),
+                    Line::from(Span::styled(line2, Style::default().fg(DIM_GRAY))),
+                ]
+            } else {
+                vec![Line::from(Span::styled(
+                    truncate_str(&effect.description, w.into()),
+                    Style::default().fg(DIM_GRAY),
+                ))]
             };
-            let y = inner.y + y_offset;
-            if y >= inner.y + inner.height {
-                break;
+            let h = desc_lines.len() as u16;
+            frame.render_widget(Paragraph::new(desc_lines), Rect::new(x, y, w, h));
+            y += h;
+        }
+
+        // Author · category
+        if y < max_y {
+            let mut meta: Vec<Span<'_>> = Vec::new();
+            if !effect.author.is_empty() {
+                meta.push(Span::styled(&effect.author, Style::default().fg(CORAL)));
             }
-            let value = Self::normalized_control_value(ctrl);
-            let slider = ParamSlider::new(&ctrl.name, value).accent_color(NEON_CYAN);
-            let slider_area = Rect::new(inner.x + 1, y, inner.width.saturating_sub(2), 1);
-            frame.render_widget(slider, slider_area);
+            if !effect.category.is_empty() {
+                if !meta.is_empty() {
+                    meta.push(Span::styled(" \u{00B7} ", Style::default().fg(DIM_GRAY)));
+                }
+                meta.push(Span::styled(
+                    &effect.category,
+                    Style::default().fg(DIM_GRAY),
+                ));
+            }
+            if !meta.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(Line::from(meta)),
+                    Rect::new(x, y, w, 1),
+                );
+                y += 1;
+            }
+        }
+
+        // Separator
+        if y < max_y {
+            let sep: String = "\u{2500}".repeat(w as usize);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(sep, Style::default().fg(BORDER_DIM)))),
+                Rect::new(x, y, w, 1),
+            );
+            y += 1;
+        }
+
+        y
+    }
+
+    /// Render compact feature badges (audio, controls, presets, tags).
+    fn render_effect_badges(
+        frame: &mut Frame,
+        effect: &EffectSummary,
+        x: u16,
+        mut y: u16,
+        max_y: u16,
+        w: u16,
+    ) -> u16 {
+        if y >= max_y {
+            return y;
+        }
+        let mut badges: Vec<Span<'_>> = Vec::new();
+        if effect.audio_reactive {
+            badges.push(Span::styled("\u{266B} Audio", Style::default().fg(NEON_CYAN)));
+        }
+        if !effect.controls.is_empty() {
+            if !badges.is_empty() {
+                badges.push(Span::styled(" \u{2502} ", Style::default().fg(BORDER_DIM)));
+            }
+            badges.push(Span::styled(
+                format!("\u{2699} {} ctrl", effect.controls.len()),
+                Style::default().fg(ELECTRIC_YELLOW),
+            ));
+        }
+        if !effect.presets.is_empty() {
+            if !badges.is_empty() {
+                badges.push(Span::styled(" \u{2502} ", Style::default().fg(BORDER_DIM)));
+            }
+            badges.push(Span::styled(
+                format!("\u{2605} {} pre", effect.presets.len()),
+                Style::default().fg(CORAL),
+            ));
+        }
+        if !effect.tags.is_empty() {
+            if !badges.is_empty() {
+                badges.push(Span::styled(" \u{2502} ", Style::default().fg(BORDER_DIM)));
+            }
+            let tag_str = effect.tags.iter().take(3).map(String::as_str).collect::<Vec<_>>().join(" ");
+            badges.push(Span::styled(tag_str, Style::default().fg(DIM_GRAY)));
+        }
+        if !badges.is_empty() {
+            frame.render_widget(Paragraph::new(Line::from(badges)), Rect::new(x, y, w, 1));
+            y += 1;
+        }
+        y
+    }
+
+    /// Render brightness gauge and FPS indicator.
+    fn render_daemon_gauges(&self, frame: &mut Frame, x: u16, mut y: u16, max_y: u16, w: u16) {
+        let Some(ds) = &self.daemon_state else { return };
+
+        if y < max_y {
+            let bright_norm = f32::from(ds.brightness) / 100.0;
+            let slider = ParamSlider::new("Bright", bright_norm).accent_color(ELECTRIC_PURPLE);
+            frame.render_widget(slider, Rect::new(x, y, w, 1));
+            y += 1;
+        }
+
+        if y < max_y {
+            let fps_color = if ds.fps_actual >= ds.fps_target * 0.9 {
+                SUCCESS_GREEN
+            } else if ds.fps_actual >= ds.fps_target * 0.5 {
+                ELECTRIC_YELLOW
+            } else {
+                ERROR_RED
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("FPS   ", Style::default().fg(DIM_GRAY)),
+                    Span::styled(
+                        format!("{:.0}", ds.fps_actual),
+                        Style::default().fg(fps_color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(" / {:.0}", ds.fps_target),
+                        Style::default().fg(DIM_GRAY),
+                    ),
+                ])),
+                Rect::new(x, y, w, 1),
+            );
         }
     }
 
-    /// Render the "System Health" panel.
-    fn render_health_panel(&self, frame: &mut Frame, area: Rect) {
+    /// Render idle state when no effect is active.
+    fn render_idle_state(&self, frame: &mut Frame, area: Rect) {
+        let mut lines: Vec<Line<'_>> = Vec::new();
+
+        // Connection status
+        if let Some(ds) = &self.daemon_state {
+            let status_color = if ds.running { SUCCESS_GREEN } else { ERROR_RED };
+            let status_text = if ds.running { "running" } else { "stopped" };
+            lines.push(Line::from(vec![
+                Span::styled("\u{25CF} ", Style::default().fg(status_color)),
+                Span::styled(
+                    format!("Daemon {status_text}"),
+                    Style::default().fg(status_color),
+                ),
+            ]));
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "No effect active",
+                Style::default().fg(DIM_GRAY),
+            )));
+            lines.push(Line::from(Span::styled(
+                "Press [e] to browse effects",
+                Style::default().fg(DIM_GRAY),
+            )));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("\u{25CF} ", Style::default().fg(ERROR_RED)),
+                Span::styled("Disconnected", Style::default().fg(ERROR_RED)),
+            ]));
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "Waiting for daemon\u{2026}",
+                Style::default().fg(DIM_GRAY),
+            )));
+        }
+
+        frame.render_widget(Paragraph::new(lines), area);
+    }
+
+    /// Render the canvas preview panel.
+    fn render_preview_panel(&self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .title(Span::styled(
-                " System Health ",
+                " Preview ",
                 Style::default()
                     .fg(ELECTRIC_PURPLE)
                     .add_modifier(Modifier::BOLD),
@@ -162,68 +341,23 @@ impl DashboardView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        if inner.width < 4 || inner.height < 2 {
+        if inner.width < 2 || inner.height < 1 {
             return;
         }
 
-        let lines = self.build_health_lines();
-        frame.render_widget(
-            Paragraph::new(lines),
-            Rect::new(
-                inner.x + 1,
-                inner.y,
-                inner.width.saturating_sub(2),
-                inner.height,
-            ),
-        );
-    }
-
-    /// Build the health status lines.
-    fn build_health_lines(&self) -> Vec<Line<'_>> {
-        let Some(ref ds) = self.daemon_state else {
-            return vec![Line::from(Span::styled(
-                "Daemon    \u{25CF} disconnected",
-                Style::default().fg(ERROR_RED),
-            ))];
-        };
-
-        let status_style = if ds.running {
-            Style::default().fg(SUCCESS_GREEN)
+        if let Some(cf) = &self.canvas_frame {
+            let canvas = HalfBlockCanvas::new(&cf.pixels, cf.width, cf.height);
+            frame.render_widget(canvas, inner);
         } else {
-            Style::default().fg(ERROR_RED)
-        };
-        let status_text = if ds.running { "running" } else { "stopped" };
-
-        vec![
-            Line::from(vec![
-                Span::styled("Daemon    ", Style::default().fg(DIM_GRAY)),
-                Span::styled("\u{25CF} ", status_style),
-                Span::styled(status_text, status_style),
-            ]),
-            Line::from(vec![
-                Span::styled("Render    ", Style::default().fg(DIM_GRAY)),
-                Span::styled(
-                    format!("{:.1} fps", ds.fps_actual),
-                    Style::default().fg(CORAL),
-                ),
-                Span::styled(
-                    format!("  / {:.0} target", ds.fps_target),
-                    Style::default().fg(DIM_GRAY),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("Devices   ", Style::default().fg(DIM_GRAY)),
-                Span::styled(format!("{}", ds.device_count), Style::default().fg(CORAL)),
-                Span::styled(
-                    format!("  ({} LEDs)", ds.total_leds),
-                    Style::default().fg(DIM_GRAY),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("Bright    ", Style::default().fg(DIM_GRAY)),
-                Span::styled(format!("{}%", ds.brightness), Style::default().fg(CORAL)),
-            ]),
-        ]
+            // Dim placeholder
+            let placeholder = Paragraph::new(Line::from(Span::styled(
+                "No canvas data",
+                Style::default().fg(Color::Rgb(50, 50, 70)),
+            )));
+            let y = inner.y + inner.height / 2;
+            let x = inner.x + inner.width.saturating_sub(14) / 2;
+            frame.render_widget(placeholder, Rect::new(x, y, 14, 1));
+        }
     }
 
     /// Render the "Connected Devices" table.
@@ -386,7 +520,6 @@ impl Component for DashboardView {
         match key.code {
             // Number keys 1-5 for quick favorite effects
             KeyCode::Char(c @ '1'..='5') => {
-                // Safe: c is in '1'..='5', so the subtraction fits in usize.
                 #[allow(clippy::as_conversions)]
                 let idx = (u32::from(c) - u32::from('1')) as usize;
                 if let Some(fav_id) = self.favorites.get(idx) {
@@ -434,6 +567,9 @@ impl Component for DashboardView {
             Action::FavoritesUpdated(favs) => {
                 self.favorites.clone_from(favs);
             }
+            Action::CanvasFrameReceived(frame) => {
+                self.canvas_frame = Some(frame.as_ref().clone());
+            }
             Action::DaemonDisconnected(_) => {
                 self.daemon_state = None;
             }
@@ -447,7 +583,7 @@ impl Component for DashboardView {
             return;
         }
 
-        // Layout: 2-column top (effect + health), devices table, quick actions
+        // Layout: 2-column top (effect info + canvas preview), devices table, quick actions
         let vertical = Layout::vertical([
             Constraint::Min(8),
             Constraint::Fill(1),
@@ -455,11 +591,11 @@ impl Component for DashboardView {
         ])
         .split(area);
 
-        let top_cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+        let top_cols = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(vertical[0]);
 
         self.render_effect_panel(frame, top_cols[0]);
-        self.render_health_panel(frame, top_cols[1]);
+        self.render_preview_panel(frame, top_cols[1]);
         self.render_devices_table(frame, vertical[1]);
         self.render_quick_actions(frame, vertical[2]);
     }
@@ -474,5 +610,16 @@ impl Component for DashboardView {
 
     fn id(&self) -> &'static str {
         "dashboard"
+    }
+}
+
+/// Truncate a string to fit within `max_len` characters, appending `…` if needed.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else if max_len > 1 {
+        format!("{}\u{2026}", &s[..max_len - 1])
+    } else {
+        "\u{2026}".to_string()
     }
 }

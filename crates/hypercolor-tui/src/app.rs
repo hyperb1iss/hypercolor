@@ -34,6 +34,8 @@ pub struct App {
     running: bool,
     /// Help overlay visible.
     help_visible: bool,
+    /// Fullscreen canvas preview mode.
+    fullscreen_preview: bool,
     /// Current notification (auto-dismisses).
     notification: Option<(Notification, Instant)>,
     /// Action sender (cloned to components and bridge).
@@ -66,6 +68,7 @@ impl App {
             state: AppState::default(),
             running: true,
             help_visible: false,
+            fullscreen_preview: false,
             notification: None,
             action_tx,
             action_rx,
@@ -154,6 +157,14 @@ impl App {
 
     /// Handle a key event, returning an action to dispatch.
     fn handle_key_event(&mut self, key: KeyEvent) -> Option<Action> {
+        if self.fullscreen_preview {
+            return match key.code {
+                KeyCode::Esc | KeyCode::F(11) => Some(Action::ToggleFullscreenPreview),
+                KeyCode::Char('q') => Some(Action::Quit),
+                _ => None,
+            };
+        }
+
         if self.help_visible {
             return match key.code {
                 KeyCode::Esc | KeyCode::Char('?') => Some(Action::ToggleHelp),
@@ -165,6 +176,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Char('?') => return Some(Action::ToggleHelp),
+            KeyCode::F(11) => return Some(Action::ToggleFullscreenPreview),
             KeyCode::Char(c) if c.is_ascii_alphabetic() => {
                 if let Some(screen) = ScreenId::from_key(c)
                     && self.screens.contains_key(&screen)
@@ -229,6 +241,9 @@ impl App {
 
             Action::ToggleHelp => {
                 self.help_visible = !self.help_visible;
+            }
+            Action::ToggleFullscreenPreview => {
+                self.fullscreen_preview = !self.fullscreen_preview;
             }
 
             // ── Connection state ────────────────────────────
@@ -419,6 +434,12 @@ impl App {
 
         let area = frame.area();
 
+        // Fullscreen canvas preview — bypass all chrome
+        if self.fullscreen_preview {
+            self.render_fullscreen_preview(frame, area);
+            return;
+        }
+
         // Chrome renders the shell and returns the content area
         let content_area = self
             .chrome
@@ -477,6 +498,7 @@ impl App {
             ("q".to_string(), "Quit".to_string()),
             ("?".to_string(), "Toggle help".to_string()),
             ("Tab".to_string(), "Switch pane in browser".to_string()),
+            ("F11".to_string(), "Fullscreen preview".to_string()),
             ("Esc".to_string(), "Go back".to_string()),
         ];
         bindings.extend(self.available_screens().into_iter().map(|screen| {
@@ -536,6 +558,96 @@ impl App {
 
         let help = Paragraph::new(lines).block(block);
         frame.render_widget(help, help_area);
+    }
+
+    /// Render fullscreen canvas preview with a subtle status line.
+    #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
+    fn render_fullscreen_preview(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::layout::Rect;
+        use ratatui::style::{Color, Modifier, Style};
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::{Block, Paragraph};
+
+        if area.height < 2 || area.width == 0 {
+            return;
+        }
+
+        // Reserve bottom row for a minimal info bar
+        let canvas_area = Rect::new(area.x, area.y, area.width, area.height - 1);
+        let info_area = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
+
+        // Render canvas
+        if let Some(cf) = &self.state.canvas_frame {
+            let canvas = crate::widgets::HalfBlockCanvas::new(&cf.pixels, cf.width, cf.height);
+            frame.render_widget(canvas, canvas_area);
+        } else {
+            // No canvas — fill with dark background
+            let block = Block::default().style(Style::default().bg(Color::Rgb(20, 20, 30)));
+            frame.render_widget(block, canvas_area);
+
+            // Centered "no signal" text
+            let msg = "No canvas data — apply an effect to preview";
+            let msg_width = (msg.len() as u16).min(canvas_area.width);
+            let msg_x = canvas_area.x + (canvas_area.width.saturating_sub(msg_width)) / 2;
+            let msg_y = canvas_area.y + canvas_area.height / 2;
+            let text = Paragraph::new(Line::from(Span::styled(
+                msg,
+                Style::default().fg(Color::Rgb(100, 100, 120)),
+            )));
+            frame.render_widget(
+                text,
+                Rect::new(msg_x, msg_y, msg_width, 1),
+            );
+        }
+
+        // Info bar: effect name + hint to exit
+        let effect_name = self
+            .state
+            .daemon
+            .as_ref()
+            .and_then(|d| d.effect_name.as_deref())
+            .unwrap_or("—");
+
+        let fps = self
+            .state
+            .daemon
+            .as_ref()
+            .map_or(0.0, |d| d.fps_actual);
+
+        let info_line = Line::from(vec![
+            Span::styled(
+                " PREVIEW ",
+                Style::default()
+                    .fg(Color::Rgb(20, 20, 30))
+                    .bg(Color::Rgb(225, 53, 255))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {effect_name} "),
+                Style::default()
+                    .fg(Color::Rgb(128, 255, 234))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{fps:.0} fps"),
+                Style::default().fg(Color::Rgb(100, 100, 120)),
+            ),
+            Span::styled(
+                format!(
+                    "{}F11/Esc to exit ",
+                    " ".repeat(
+                        area.width
+                            .saturating_sub(30 + effect_name.len() as u16)
+                            .into()
+                    )
+                ),
+                Style::default().fg(Color::Rgb(100, 100, 120)),
+            ),
+        ]);
+
+        let info = Paragraph::new(info_line)
+            .style(Style::default().bg(Color::Rgb(20, 20, 30)));
+        frame.render_widget(info, info_area);
     }
 }
 

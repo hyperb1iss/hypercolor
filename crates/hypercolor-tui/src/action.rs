@@ -78,6 +78,8 @@ pub enum Action {
     // ── UI State ────────────────────────────────────────────
     /// Toggle the help overlay.
     ToggleHelp,
+    /// Toggle fullscreen canvas preview.
+    ToggleFullscreenPreview,
     /// Show a transient notification.
     Notify(Notification),
     /// Dismiss the current notification.
