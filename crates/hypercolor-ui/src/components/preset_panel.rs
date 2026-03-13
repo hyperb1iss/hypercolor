@@ -38,11 +38,15 @@ pub fn PresetToolbar(
     let (selected_id, set_selected_id) = signal(Option::<String>::None);
     let (mode, set_mode) = signal(ToolbarMode::Idle);
 
-    // Fetch user presets + bundled presets whenever effect_id changes
+    // Fetch user presets + bundled presets whenever effect_id changes.
+    // Read active_preset_id_signal untracked — we only restore the preset
+    // selection when the *effect* switches, not when the preset ID updates
+    // within the same effect (which would clear the dropdown mid-selection).
     Effect::new(move |_| {
         let eid = effect_id.get();
         set_selected_id.set(None);
-        let restore_id = active_preset_id_signal.map(|s| s.get()).unwrap_or_default();
+        let restore_id =
+            active_preset_id_signal.map(|s| s.get_untracked()).unwrap_or_default();
         leptos::task::spawn_local(async move {
             match api::fetch_presets().await {
                 Ok(all) => {
