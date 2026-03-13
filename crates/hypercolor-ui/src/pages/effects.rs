@@ -825,20 +825,23 @@ fn control_text_value(value: &ControlValue) -> Option<&str> {
     }
 }
 
-fn hex_to_rgba_json(hex: &str) -> Option<serde_json::Value> {
+fn parse_hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
     let hex = hex.strip_prefix('#').unwrap_or(hex);
     if hex.len() != 6 {
         return None;
     }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
+}
 
-    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
-    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
-
+fn hex_to_rgba_json(hex: &str) -> Option<serde_json::Value> {
+    let (r, g, b) = parse_hex_rgb(hex)?;
     Some(serde_json::json!([
-        f32::from(red) / 255.0,
-        f32::from(green) / 255.0,
-        f32::from(blue) / 255.0,
+        f32::from(r) / 255.0,
+        f32::from(g) / 255.0,
+        f32::from(b) / 255.0,
         1.0
     ]))
 }
@@ -940,19 +943,11 @@ fn parse_f32(value: f64) -> Option<f32> {
 }
 
 fn hex_to_color_value(hex: &str) -> Option<ControlValue> {
-    let hex = hex.strip_prefix('#').unwrap_or(hex);
-    if hex.len() != 6 {
-        return None;
-    }
-
-    let red = u8::from_str_radix(&hex[0..2], 16).ok()?;
-    let green = u8::from_str_radix(&hex[2..4], 16).ok()?;
-    let blue = u8::from_str_radix(&hex[4..6], 16).ok()?;
-
+    let (r, g, b) = parse_hex_rgb(hex)?;
     Some(ControlValue::Color([
-        f32::from(red) / 255.0,
-        f32::from(green) / 255.0,
-        f32::from(blue) / 255.0,
+        f32::from(r) / 255.0,
+        f32::from(g) / 255.0,
+        f32::from(b) / 255.0,
         1.0,
     ]))
 }

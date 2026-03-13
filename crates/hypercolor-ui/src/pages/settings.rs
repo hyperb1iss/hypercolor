@@ -38,9 +38,10 @@ fn apply_config_key(config: &mut HypercolorConfig, key: &str, value: &serde_json
     let (parents, leaf) = parts.split_at(parts.len() - 1);
     let mut cursor = &mut root;
     for &part in parents {
-        cursor = cursor
-            .as_object_mut()
-            .expect("config path should be an object")
+        let Some(obj) = cursor.as_object_mut() else {
+            return;
+        };
+        cursor = obj
             .entry(part.to_owned())
             .or_insert_with(|| serde_json::json!({}));
     }
