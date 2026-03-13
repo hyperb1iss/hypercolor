@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use hypercolor_hal::database::{DeviceDescriptor, ProtocolDatabase};
 use hypercolor_hal::protocol::{Protocol, ProtocolZone};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceIdentifier, DeviceInfo,
-    DeviceTopologyHint,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceIdentifier,
+    DeviceInfo, DeviceTopologyHint,
 };
 
 use super::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
@@ -51,6 +51,7 @@ impl UsbScanner {
                     has_display: false,
                     display_resolution: None,
                     max_fps: 60,
+                    features: DeviceFeatures::default(),
                 },
             )
         };

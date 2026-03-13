@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::Duration;
 
-use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+use hypercolor_types::device::{
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
+};
 use image::{ImageFormat, imageops::FilterType};
 use tracing::warn;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
@@ -604,6 +606,7 @@ impl Protocol for Push2Protocol {
             has_display: true,
             display_resolution: Some((960, 160)),
             max_fps: 60,
+            features: DeviceFeatures::default(),
         }
     }
 

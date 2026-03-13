@@ -3,7 +3,9 @@
 use std::sync::RwLock;
 use std::time::Duration;
 
-use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+use hypercolor_types::device::{
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
+};
 use tracing::warn;
 
 use crate::drivers::corsair::CORSAIR_KEEPALIVE_INTERVAL;
@@ -347,6 +349,7 @@ impl Protocol for CorsairLinkProtocol {
             has_display: false,
             display_resolution: None,
             max_fps: DEFAULT_TARGET_FPS,
+            features: DeviceFeatures::default(),
         }
     }
 

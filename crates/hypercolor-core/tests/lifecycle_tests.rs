@@ -13,11 +13,11 @@ use hypercolor_core::device::{
     BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DiscoveryConnectBehavior,
     LifecycleAction,
 };
-use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-    DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
-};
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
+use hypercolor_types::device::{
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -178,6 +178,7 @@ fn device_info(id: DeviceId, name: &str) -> DeviceInfo {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     }
 }

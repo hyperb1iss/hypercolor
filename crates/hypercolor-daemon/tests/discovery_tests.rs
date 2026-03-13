@@ -27,8 +27,8 @@ use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::runtime_state;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-    DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -119,6 +119,7 @@ fn usb_device_info() -> DeviceInfo {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     }
 }
@@ -145,6 +146,7 @@ fn wled_device_info(name: &str) -> DeviceInfo {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     }
 }
@@ -171,6 +173,7 @@ fn mock_device_info() -> DeviceInfo {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     }
 }

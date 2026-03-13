@@ -98,7 +98,25 @@ pub fn build_basilisk_v3_protocol() -> Box<dyn Protocol> {
             3,
         )
         .with_write_only_custom_effect_activation(Duration::ZERO)
+        .with_scroll_features()
         .with_write_only_frame_uploads(),
+    )
+}
+
+/// Build a Basilisk V3 X `HyperSpeed` protocol instance.
+pub fn build_basilisk_v3_x_hyperspeed_protocol() -> Box<dyn Protocol> {
+    Box::new(
+        RazerProtocol::new(
+            RazerProtocolVersion::Modern,
+            RazerLightingCommandSet::Extended,
+            RazerMatrixType::Extended,
+            (1, 1),
+            LED_ID_ZERO,
+        )
+        .without_device_mode_commands()
+        .with_write_only_frame_uploads()
+        .with_write_only_custom_effect_activation(Duration::ZERO)
+        .with_scroll_features(),
     )
 }
 
@@ -399,7 +417,8 @@ razer_matrix_builder!(
     RazerLightingCommandSet::Extended,
     RazerMatrixType::Extended,
     (1, 13),
-    LED_ID_ZERO
+    LED_ID_ZERO,
+    .with_scroll_features()
 );
 razer_matrix_builder!(
     build_matrix_extended_modern_1x14_zero_protocol,
@@ -1382,6 +1401,16 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
     );
     push_hidapi_group(
         &mut descriptors,
+        "razer/basilisk-v3-x-hyperspeed",
+        build_basilisk_v3_x_hyperspeed_protocol,
+        Some(0),
+        HID_REPORT_ID_DEFAULT,
+        Some(0x0001),
+        Some(0x0002),
+        &[(0x00B9, "Razer Basilisk V3 X HyperSpeed")],
+    );
+    push_hidapi_group(
+        &mut descriptors,
         "razer/matrix-extended-1f-1x1-zero",
         build_matrix_extended_modern_1x1_zero_protocol,
         Some(0),
@@ -1389,7 +1418,6 @@ static RAZER_DESCRIPTORS: LazyLock<Vec<DeviceDescriptor>> = LazyLock::new(|| {
         Some(0x0001),
         Some(0x0002),
         &[
-            (0x00B9, "Razer Basilisk V3 X HyperSpeed"),
             (0x008C, "Razer DeathAdder V2 Mini"),
             (0x0C06, "Razer Goliathus Chroma 3XL"),
         ],

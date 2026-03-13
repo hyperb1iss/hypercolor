@@ -12,8 +12,8 @@ use tower::ServiceExt;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-    DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
+    DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -90,6 +90,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     };
     let _ = state.device_registry.add(info).await;

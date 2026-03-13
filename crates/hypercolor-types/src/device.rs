@@ -120,6 +120,38 @@ impl DeviceInfo {
 ///
 /// These describe what the hardware can do, not what software supports.
 /// Backends populate this during discovery / connection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceFeatures {
+    /// Supports tactile/free-spin scroll wheel toggle.
+    pub scroll_mode: bool,
+
+    /// Supports Smart Reel auto-switching.
+    pub scroll_smart_reel: bool,
+
+    /// Supports scroll acceleration toggle.
+    pub scroll_acceleration: bool,
+}
+
+/// Generic scroll wheel operating mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollMode {
+    /// Ratcheted tactile scrolling.
+    Tactile = 0x00,
+
+    /// Free-spin scrolling.
+    FreeSpin = 0x01,
+}
+
+impl From<ScrollMode> for u8 {
+    fn from(value: ScrollMode) -> Self {
+        match value {
+            ScrollMode::Tactile => 0x00,
+            ScrollMode::FreeSpin => 0x01,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceCapabilities {
     /// Total addressable LEDs (may differ from zone sum if hardware
@@ -140,6 +172,10 @@ pub struct DeviceCapabilities {
 
     /// Maximum sustainable frame rate (0 = unknown / unlimited).
     pub max_fps: u32,
+
+    /// Optional non-lighting device features.
+    #[serde(default)]
+    pub features: DeviceFeatures,
 }
 
 impl Default for DeviceCapabilities {
@@ -151,6 +187,7 @@ impl Default for DeviceCapabilities {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         }
     }
 }

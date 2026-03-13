@@ -2,8 +2,8 @@
 
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
-    DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo, DeviceState,
-    DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
+    DeviceFeatures, DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo,
+    DeviceState, DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
 };
 use uuid::Uuid;
 
@@ -85,6 +85,7 @@ fn sample_device_info() -> DeviceInfo {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     }
 }
@@ -141,6 +142,7 @@ fn capabilities_serde_round_trip() {
         has_display: false,
         display_resolution: None,
         max_fps: 30,
+        features: DeviceFeatures::default(),
     };
     let json = serde_json::to_string(&caps).expect("serialize");
     let back: DeviceCapabilities = serde_json::from_str(&json).expect("deserialize");

@@ -14,8 +14,8 @@ use hypercolor_daemon::runtime_state::{self, RuntimeSessionSnapshot};
 use hypercolor_daemon::startup::{DaemonState, default_config, load_config};
 use hypercolor_types::config::CURRENT_SCHEMA_VERSION;
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-    DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
+    DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::EffectSource;
 use tempfile::NamedTempFile;
@@ -111,6 +111,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     }
 }

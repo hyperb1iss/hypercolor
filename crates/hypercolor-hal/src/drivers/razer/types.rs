@@ -1,5 +1,26 @@
 //! Shared Razer protocol types and constants.
 
+/// Device configuration command family used for non-lighting features.
+pub const COMMAND_CLASS_DEVICE: u8 = 0x02;
+
+/// Set tactile vs free-spin scroll mode.
+pub const COMMAND_SET_SCROLL_MODE: u8 = 0x14;
+
+/// Query the current scroll mode.
+pub const COMMAND_GET_SCROLL_MODE: u8 = 0x94;
+
+/// Set Smart Reel auto-switching.
+pub const COMMAND_SET_SCROLL_SMART_REEL: u8 = 0x17;
+
+/// Query Smart Reel state.
+pub const COMMAND_GET_SCROLL_SMART_REEL: u8 = 0x97;
+
+/// Set scroll acceleration.
+pub const COMMAND_SET_SCROLL_ACCELERATION: u8 = 0x16;
+
+/// Query scroll acceleration state.
+pub const COMMAND_GET_SCROLL_ACCELERATION: u8 = 0x96;
+
 /// Razer protocol generation selected by HID transaction ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RazerProtocolVersion {

@@ -11,7 +11,7 @@ use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig};
 use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, SegmentRange};
 use hypercolor_types::canvas::{linear_to_output_u8, srgb_to_linear};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
 };
 use hypercolor_types::device::{DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo};
 use hypercolor_types::event::ZoneColors;
@@ -175,6 +175,7 @@ impl DeviceBackend for DirectControlRecordingBackend {
                 has_display: false,
                 display_resolution: None,
                 max_fps: 60,
+                features: DeviceFeatures::default(),
             },
         }])
     }
@@ -262,6 +263,7 @@ impl MetadataRefreshingBackend {
                     has_display: false,
                     display_resolution: None,
                     max_fps: 30,
+                    features: DeviceFeatures::default(),
                 },
             },
         }
@@ -300,6 +302,7 @@ impl DeviceBackend for MetadataRefreshingBackend {
                 has_display: false,
                 display_resolution: None,
                 max_fps: 60,
+                features: DeviceFeatures::default(),
             },
         }])
     }
@@ -408,6 +411,7 @@ impl DeviceBackend for DiscoverRetryBackend {
                 has_display: false,
                 display_resolution: None,
                 max_fps: self.target_fps,
+                features: DeviceFeatures::default(),
             },
         }])
     }
@@ -487,6 +491,7 @@ impl DeviceBackend for DisplayRecordingBackend {
                 has_display: true,
                 display_resolution: Some((480, 480)),
                 max_fps: 30,
+                features: DeviceFeatures::default(),
             },
         }])
     }
@@ -1761,6 +1766,7 @@ async fn write_frame_routes_multi_zone_device_by_zone_name() {
                 has_display: false,
                 display_resolution: None,
                 max_fps: 10,
+                features: DeviceFeatures::default(),
             },
         }
     ));
@@ -1855,6 +1861,7 @@ async fn write_frame_pads_single_multi_zone_write_to_full_device_length() {
                 has_display: false,
                 display_resolution: None,
                 max_fps: 10,
+                features: DeviceFeatures::default(),
             },
         }
     ));

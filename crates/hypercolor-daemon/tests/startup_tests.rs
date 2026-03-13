@@ -20,8 +20,8 @@ use hypercolor_daemon::startup::{
 use hypercolor_daemon::{layout_store, runtime_state};
 use hypercolor_types::config::WledProtocolConfig;
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-    DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::EffectSource;
 use hypercolor_types::spatial::{
@@ -181,6 +181,7 @@ fn shutdown_cleanup_device_info(id: DeviceId) -> DeviceInfo {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     }
 }

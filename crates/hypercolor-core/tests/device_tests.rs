@@ -17,8 +17,8 @@ use hypercolor_core::device::{
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
-    DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo, DeviceState,
-    DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
+    DeviceFeatures, DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo,
+    DeviceState, DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
 };
 
 // ── Test Helpers ─────────────────────────────────────────────────────────
@@ -477,6 +477,7 @@ async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_r
             has_display: false,
             display_resolution: None,
             max_fps: 30,
+            features: DeviceFeatures::default(),
         },
     };
 
@@ -694,6 +695,7 @@ async fn registry_update_info_preserves_id_and_state() {
             has_display: false,
             display_resolution: None,
             max_fps: 30,
+            features: DeviceFeatures::default(),
         },
     };
 

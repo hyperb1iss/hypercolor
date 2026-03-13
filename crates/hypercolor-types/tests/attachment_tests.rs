@@ -3,8 +3,8 @@ use hypercolor_types::attachment::{
     AttachmentOrigin, AttachmentSlot, AttachmentTemplate, AttachmentTemplateManifest,
 };
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-    DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
+    DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::spatial::{Corner, LedTopology, NormalizedPosition};
 
@@ -69,6 +69,7 @@ fn sample_device() -> DeviceInfo {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     }
 }

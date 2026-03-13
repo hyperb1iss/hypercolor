@@ -4,7 +4,9 @@ use std::borrow::Cow;
 use std::cmp::min;
 use std::time::Duration;
 
-use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+use hypercolor_types::device::{
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
+};
 use tracing::warn;
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
@@ -611,6 +613,7 @@ impl Protocol for PrismRgbProtocol {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         }
     }
 

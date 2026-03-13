@@ -22,8 +22,8 @@ use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-    DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
@@ -268,11 +268,15 @@ async fn status_returns_200_with_envelope() {
         serde_json::json!(default_config_path())
     );
     assert!(
-        json["data"]["data_dir"].as_str().is_some_and(|s| !s.is_empty()),
+        json["data"]["data_dir"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
         "data_dir should be a non-empty string"
     );
     assert!(
-        json["data"]["cache_dir"].as_str().is_some_and(|s| !s.is_empty()),
+        json["data"]["cache_dir"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
         "cache_dir should be a non-empty string"
     );
     assert!(
@@ -710,6 +714,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     };
     let _ = state.device_registry.add(info).await;
@@ -738,6 +743,7 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     };
     let fingerprint = DeviceFingerprint("smbus:/dev/i2c-9:40".to_owned());
@@ -846,6 +852,7 @@ async fn list_devices_includes_structured_zone_topology_hints() {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     };
     let _ = state.device_registry.add(info).await;
@@ -3290,6 +3297,7 @@ async fn list_devices_includes_network_metadata_when_available() {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     };
     let mut metadata = std::collections::HashMap::new();
@@ -3763,6 +3771,7 @@ async fn logical_devices_migrate_legacy_default_ids_and_keep_legacy_aliases_mapp
                 has_display: false,
                 display_resolution: None,
                 max_fps: 60,
+                features: DeviceFeatures::default(),
             },
         };
         state

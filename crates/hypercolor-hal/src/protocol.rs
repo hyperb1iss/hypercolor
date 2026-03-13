@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+use hypercolor_types::device::{
+    DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint, ScrollMode,
+};
 
 /// Pure byte-level protocol encoder/decoder.
 ///
@@ -29,6 +31,24 @@ pub trait Protocol: Send + Sync {
     /// Encode a hardware brightness change, if the protocol supports it.
     #[must_use]
     fn encode_brightness(&self, _brightness: u8) -> Option<Vec<ProtocolCommand>> {
+        None
+    }
+
+    /// Encode a hardware scroll wheel mode change, if supported.
+    #[must_use]
+    fn encode_scroll_mode(&self, _mode: ScrollMode) -> Option<Vec<ProtocolCommand>> {
+        None
+    }
+
+    /// Encode a Smart Reel toggle, if supported.
+    #[must_use]
+    fn encode_scroll_smart_reel(&self, _enabled: bool) -> Option<Vec<ProtocolCommand>> {
+        None
+    }
+
+    /// Encode a scroll acceleration toggle, if supported.
+    #[must_use]
+    fn encode_scroll_acceleration(&self, _enabled: bool) -> Option<Vec<ProtocolCommand>> {
         None
     }
 

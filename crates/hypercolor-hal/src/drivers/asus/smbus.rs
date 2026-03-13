@@ -6,7 +6,9 @@ use std::time::Duration;
 use crate::transport::TransportError;
 use crate::transport::smbus::{SmBusOperation, decode_operations, encode_operations};
 
-use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+use hypercolor_types::device::{
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
+};
 
 use crate::protocol::{
     Protocol, ProtocolCommand, ProtocolError, ProtocolResponse, ProtocolZone, ResponseStatus,
@@ -514,6 +516,7 @@ impl Protocol for AuraSmBusProtocol {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         }
     }
 

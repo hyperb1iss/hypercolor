@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+use hypercolor_types::device::{
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
+};
 use zerocopy::{FromZeros, Immutable, IntoBytes, KnownLayout};
 
 use crate::protocol::{
@@ -196,6 +198,7 @@ impl Protocol for SeirenV3Protocol {
             has_display: false,
             display_resolution: None,
             max_fps: 500,
+            features: DeviceFeatures::default(),
         }
     }
 

@@ -11,8 +11,8 @@ use hypercolor_core::device::{BackendInfo, BackendManager, DeviceBackend, Device
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceId, DeviceInfo,
-    DeviceState, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
+    DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -144,6 +144,7 @@ fn display_device_info(
             has_display,
             display_resolution: has_display.then_some((width, height)),
             max_fps: 30,
+            features: DeviceFeatures::default(),
         },
     }
 }
@@ -328,6 +329,7 @@ fn mixed_led_display_device_info(device_id: DeviceId, width: u32, height: u32) -
             has_display: true,
             display_resolution: Some((width, height)),
             max_fps: 30,
+            features: DeviceFeatures::default(),
         },
     }
 }

@@ -15,8 +15,8 @@ use tracing::{debug, info, warn};
 
 use crate::device::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
 use crate::types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-    DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    DeviceFingerprint, DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 
 /// mDNS service type for WLED devices.
@@ -214,6 +214,7 @@ impl WledScanner {
                 display_resolution: None,
                 max_fps: wled_info
                     .map_or(60, super::backend::WledDeviceInfo::negotiated_target_fps),
+                features: DeviceFeatures::default(),
             },
         };
 
@@ -287,6 +288,7 @@ impl WledScanner {
                 has_display: false,
                 display_resolution: None,
                 max_fps: target.max_fps.unwrap_or(60),
+                features: DeviceFeatures::default(),
             },
         };
 

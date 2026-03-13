@@ -3,7 +3,9 @@
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+use hypercolor_types::device::{
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint,
+};
 
 use crate::drivers::corsair::framing::{
     LCD_DATA_PER_PACKET, append_lcd_display_packet, build_lcd_report, pad_to,
@@ -348,6 +350,7 @@ impl Protocol for CorsairLcdProtocol {
             has_display: true,
             display_resolution: Some((self.width, self.height)),
             max_fps: DEFAULT_TARGET_FPS,
+            features: DeviceFeatures::default(),
         }
     }
 

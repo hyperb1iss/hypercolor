@@ -27,8 +27,8 @@ use hypercolor_core::spatial::{sample_led, sample_zone};
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-    DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::{
     ControlValue, EffectCategory, EffectId, EffectMetadata, EffectSource, EffectState,
@@ -192,6 +192,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     }
 }
@@ -1432,6 +1433,7 @@ async fn multiple_scanners_aggregate_results() {
                 has_display: false,
                 display_resolution: None,
                 max_fps: 60,
+                features: DeviceFeatures::default(),
             },
         };
         DiscoveredDevice {

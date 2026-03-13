@@ -3,7 +3,9 @@
 use std::cmp::min;
 use std::time::Duration;
 
-use hypercolor_types::device::{DeviceCapabilities, DeviceColorFormat, DeviceTopologyHint};
+use hypercolor_types::device::{
+    DeviceCapabilities, DeviceColorFormat, DeviceFeatures, DeviceTopologyHint, ScrollMode,
+};
 use tracing::warn;
 
 use crate::protocol::{
@@ -15,8 +17,10 @@ use zerocopy::{FromBytes, FromZeros, IntoBytes};
 
 use super::crc::{RAZER_REPORT_LEN, RazerReport, razer_crc};
 use super::types::{
-    EFFECT_CUSTOM_FRAME, LED_ID_BACKLIGHT, LED_ID_LOGO, LED_ID_SCROLL_WHEEL, LED_ID_ZERO, NOSTORE,
-    RazerLightingCommandSet, RazerMatrixType, RazerProtocolVersion,
+    COMMAND_CLASS_DEVICE, COMMAND_SET_SCROLL_ACCELERATION, COMMAND_SET_SCROLL_MODE,
+    COMMAND_SET_SCROLL_SMART_REEL, EFFECT_CUSTOM_FRAME, LED_ID_BACKLIGHT, LED_ID_LOGO,
+    LED_ID_SCROLL_WHEEL, LED_ID_ZERO, NOSTORE, RazerLightingCommandSet, RazerMatrixType,
+    RazerProtocolVersion, VARSTORE,
 };
 
 /// Maximum argument payload size within a [`RazerReport`].
@@ -70,6 +74,7 @@ pub struct RazerProtocol {
     activation_expects_response: bool,
     activation_post_delay: Duration,
     supports_brightness: bool,
+    supports_scroll_features: bool,
 }
 
 impl RazerProtocol {
@@ -102,6 +107,7 @@ impl RazerProtocol {
             activation_expects_response: true,
             activation_post_delay: Duration::ZERO,
             supports_brightness: true,
+            supports_scroll_features: false,
         }
     }
 
@@ -237,6 +243,13 @@ impl RazerProtocol {
     #[must_use]
     pub const fn without_brightness(mut self) -> Self {
         self.supports_brightness = false;
+        self
+    }
+
+    /// Enable scroll wheel device configuration commands.
+    #[must_use]
+    pub const fn with_scroll_features(mut self) -> Self {
+        self.supports_scroll_features = true;
         self
     }
 
@@ -542,6 +555,21 @@ impl RazerProtocol {
         !self.activate_custom_effect_in_init
     }
 
+    fn encode_scroll_command(&self, command_id: u8, value: u8) -> Option<Vec<ProtocolCommand>> {
+        if !self.supports_scroll_features {
+            return None;
+        }
+
+        self.build_packet(
+            COMMAND_CLASS_DEVICE,
+            command_id,
+            &[VARSTORE, value],
+            true,
+            Duration::ZERO,
+        )
+        .map(|command| vec![command])
+    }
+
     fn encode_scalar(&self, color: [u8; 3]) -> Vec<ProtocolCommand> {
         let (command_class, command_id, args) = match self.command_set {
             RazerLightingCommandSet::Standard => (
@@ -795,6 +823,18 @@ impl Protocol for RazerProtocol {
         .map(|command| vec![command])
     }
 
+    fn encode_scroll_mode(&self, mode: ScrollMode) -> Option<Vec<ProtocolCommand>> {
+        self.encode_scroll_command(COMMAND_SET_SCROLL_MODE, u8::from(mode))
+    }
+
+    fn encode_scroll_smart_reel(&self, enabled: bool) -> Option<Vec<ProtocolCommand>> {
+        self.encode_scroll_command(COMMAND_SET_SCROLL_SMART_REEL, u8::from(enabled))
+    }
+
+    fn encode_scroll_acceleration(&self, enabled: bool) -> Option<Vec<ProtocolCommand>> {
+        self.encode_scroll_command(COMMAND_SET_SCROLL_ACCELERATION, u8::from(enabled))
+    }
+
     fn connection_diagnostics(&self) -> Vec<ProtocolCommand> {
         let init_has_response = self.activation_expects_response
             || (self.sends_device_mode_commands && self.mode_command_expects_response);
@@ -891,6 +931,11 @@ impl Protocol for RazerProtocol {
             has_display: false,
             display_resolution: None,
             max_fps,
+            features: DeviceFeatures {
+                scroll_mode: self.supports_scroll_features,
+                scroll_smart_reel: self.supports_scroll_features,
+                scroll_acceleration: self.supports_scroll_features,
+            },
         }
     }
 

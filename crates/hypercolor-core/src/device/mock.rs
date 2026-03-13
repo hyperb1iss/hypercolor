@@ -12,8 +12,8 @@ use anyhow::{Result, bail};
 
 use hypercolor_types::canvas::{Canvas, Rgba};
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-    DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 use hypercolor_types::spatial::LedTopology;
@@ -546,6 +546,7 @@ fn build_device_info(
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            features: DeviceFeatures::default(),
         },
     }
 }

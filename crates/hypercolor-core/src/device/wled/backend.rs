@@ -16,8 +16,8 @@ use tracing::{debug, info, warn};
 use crate::device::discovery::TransportScanner;
 use crate::device::traits::{BackendInfo, DeviceBackend};
 use crate::types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFingerprint,
-    DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
+    DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint, ZoneInfo,
 };
 
 use super::ddp::{DDP_DTYPE_RGB8, DDP_DTYPE_RGBW8, DDP_PORT, DdpSequence, build_ddp_frame};
@@ -510,6 +510,7 @@ fn build_device_info(device_id: DeviceId, wled_info: &WledDeviceInfo, _ip: IpAdd
             has_display: false,
             display_resolution: None,
             max_fps: wled_info.negotiated_target_fps(),
+            features: DeviceFeatures::default(),
         },
     }
 }
