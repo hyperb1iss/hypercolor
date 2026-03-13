@@ -83,9 +83,6 @@ pub fn EffectsPage() -> impl IntoView {
             .unwrap_or(320.0)
             .clamp(MIN_CONTROLS_WIDTH, MAX_CONTROLS_WIDTH),
     );
-    let detail_drag_start = StoredValue::new(0.0_f64);
-    let controls_drag_start = StoredValue::new(0.0_f64);
-
     let pending_control_updates =
         StoredValue::new(std::collections::HashMap::<String, serde_json::Value>::new());
     let flush_control_updates = use_debounce_fn(
@@ -239,41 +236,13 @@ pub fn EffectsPage() -> impl IntoView {
         flush_control_updates();
     });
 
-    // Detail panel resize callbacks
-    let on_detail_drag_start = Callback::new(move |()| {
-        detail_drag_start.set_value(detail_width.get_untracked());
-        toggle_body_resizing(true);
-    });
-    let on_detail_drag = Callback::new(move |delta_x: f64| {
-        let new_w =
-            (detail_drag_start.get_value() - delta_x).clamp(MIN_DETAIL_WIDTH, MAX_DETAIL_WIDTH);
-        set_detail_width.set(new_w);
-    });
-    let on_detail_drag_end = Callback::new(move |()| {
-        toggle_body_resizing(false);
-        persist_to_storage(
-            "hc-fx-detail-width",
-            &detail_width.get_untracked().to_string(),
-        );
-    });
-
-    // Controls panel resize callbacks (when detached)
-    let on_controls_drag_start = Callback::new(move |()| {
-        controls_drag_start.set_value(controls_width.get_untracked());
-        toggle_body_resizing(true);
-    });
-    let on_controls_drag = Callback::new(move |delta_x: f64| {
-        let new_w = (controls_drag_start.get_value() - delta_x)
-            .clamp(MIN_CONTROLS_WIDTH, MAX_CONTROLS_WIDTH);
-        set_controls_width.set(new_w);
-    });
-    let on_controls_drag_end = Callback::new(move |()| {
-        toggle_body_resizing(false);
-        persist_to_storage(
-            "hc-fx-controls-width",
-            &controls_width.get_untracked().to_string(),
-        );
-    });
+    // Resize callbacks for detail and controls panels
+    let (on_detail_drag_start, on_detail_drag, on_detail_drag_end) = drag_callbacks(
+        detail_width, set_detail_width, MIN_DETAIL_WIDTH, MAX_DETAIL_WIDTH, "hc-fx-detail-width",
+    );
+    let (on_controls_drag_start, on_controls_drag, on_controls_drag_end) = drag_callbacks(
+        controls_width, set_controls_width, MIN_CONTROLS_WIDTH, MAX_CONTROLS_WIDTH, "hc-fx-controls-width",
+    );
 
     // Track which filter dropdown section is expanded (if any)
     let (filter_dropdown_open, set_filter_dropdown_open) = signal(false);
@@ -963,6 +932,32 @@ fn toggle_body_resizing(active: bool) {
             let _ = body.class_list().remove_1("resizing");
         }
     }
+}
+
+/// Build the three drag callbacks (start, move, end) for a resizable panel.
+fn drag_callbacks(
+    width: ReadSignal<f64>,
+    set_width: WriteSignal<f64>,
+    min: f64,
+    max: f64,
+    storage_key: &'static str,
+) -> (Callback<()>, Callback<f64>, Callback<()>) {
+    let drag_start = StoredValue::new(0.0_f64);
+
+    let on_start = Callback::new(move |()| {
+        drag_start.set_value(width.get_untracked());
+        toggle_body_resizing(true);
+    });
+    let on_drag = Callback::new(move |delta_x: f64| {
+        let new_w = (drag_start.get_value() - delta_x).clamp(min, max);
+        set_width.set(new_w);
+    });
+    let on_end = Callback::new(move |()| {
+        toggle_body_resizing(false);
+        persist_to_storage(storage_key, &width.get_untracked().to_string());
+    });
+
+    (on_start, on_drag, on_end)
 }
 
 fn persist_to_storage(key: &str, value: &str) {
