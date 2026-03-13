@@ -793,13 +793,46 @@ impl EffectBrowserView {
         let is_focused = self.focus_pane == FocusPane::Preview;
         let border_color = if is_focused { NEON_CYAN } else { BORDER_DIM };
 
+        // Title shows the effect name (or "Preview" when nothing selected)
+        let title = self.selected_effect().map_or_else(
+            || {
+                vec![Span::styled(
+                    " Preview ",
+                    Style::default()
+                        .fg(ELECTRIC_PURPLE)
+                        .add_modifier(Modifier::BOLD),
+                )]
+            },
+            |effect| {
+                let fav = if self.is_favorite(&effect.id) {
+                    " \u{2605}"
+                } else {
+                    ""
+                };
+                let author_part = if effect.author.is_empty() {
+                    effect.source.clone()
+                } else {
+                    format!("{} \u{00B7} {}", effect.author, effect.source)
+                };
+                vec![
+                    Span::styled(" ", Style::default()),
+                    Span::styled(
+                        &effect.name,
+                        Style::default()
+                            .fg(NEON_CYAN)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(fav, Style::default().fg(ELECTRIC_YELLOW)),
+                    Span::styled(
+                        format!(" \u{2500} {author_part} "),
+                        Style::default().fg(DIM_GRAY),
+                    ),
+                ]
+            },
+        );
+
         let block = Block::default()
-            .title(Span::styled(
-                " Preview ",
-                Style::default()
-                    .fg(ELECTRIC_PURPLE)
-                    .add_modifier(Modifier::BOLD),
-            ))
+            .title(Line::from(title))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(area);
@@ -809,7 +842,7 @@ impl EffectBrowserView {
             return;
         }
 
-        let Some(effect) = self.selected_effect() else {
+        if self.selected_effect().is_none() {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     "No effect selected",
@@ -818,58 +851,10 @@ impl EffectBrowserView {
                 Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), 1),
             );
             return;
-        };
-
-        // Canvas takes most of the space, metadata at the bottom
-        let has_presets = !effect.presets.is_empty();
-        let meta_rows = if has_presets { 4 } else { 2 };
-        let canvas_h = inner.height.saturating_sub(meta_rows);
-
-        if canvas_h > 0 {
-            let canvas_area = Rect::new(inner.x, inner.y, inner.width, canvas_h);
-            self.render_canvas_preview(frame, canvas_area);
         }
 
-        // Compact metadata below canvas
-        let meta_y = inner.y + canvas_h;
-        let x = inner.x + 1;
-        let w = inner.width.saturating_sub(2);
-
-        // Effect name + author line
-        if meta_y < inner.y + inner.height {
-            let author_part = if effect.author.is_empty() {
-                effect.source.clone()
-            } else {
-                format!("{} \u{00B7} {}", effect.author, effect.source)
-            };
-            let fav = if self.is_favorite(&effect.id) {
-                " \u{2605}"
-            } else {
-                ""
-            };
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        &effect.name,
-                        Style::default()
-                            .fg(BASE_WHITE)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(fav, Style::default().fg(ELECTRIC_YELLOW)),
-                    Span::styled(
-                        format!("  {author_part}"),
-                        Style::default().fg(DIM_GRAY),
-                    ),
-                ])),
-                Rect::new(x, meta_y, w, 1),
-            );
-        }
-
-        // Presets (if any)
-        if has_presets {
-            let presets_y = meta_y + 1;
-            self.render_presets_compact(frame, x, presets_y, w, inner, effect);
-        }
+        // Canvas fills the entire preview area
+        self.render_canvas_preview(frame, inner);
     }
 
     fn render_canvas_preview(&self, frame: &mut Frame, area: Rect) {
@@ -886,57 +871,54 @@ impl EffectBrowserView {
         }
     }
 
-    /// Compact preset list for the preview pane.
-    #[allow(clippy::too_many_arguments)]
-    fn render_presets_compact(
-        &self,
-        frame: &mut Frame,
-        x: u16,
-        mut y: u16,
-        w: u16,
-        area: Rect,
-        effect: &EffectSummary,
-    ) {
-        let max_y = area.y + area.height;
-        if y >= max_y {
+    /// Render an inline preset selector at the given area (single row, right-aligned).
+    ///
+    /// Format: `◂ PresetName ▸` with ↑/↓ navigation hints when focused.
+    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
+    fn render_preset_indicator(&self, frame: &mut Frame, area: Rect) {
+        let Some(effect) = self.selected_effect() else {
+            return;
+        };
+        if effect.presets.is_empty() || area.width < 10 || area.height == 0 {
             return;
         }
 
+        let preset = &effect.presets[self.selected_preset];
+        let total = effect.presets.len();
         let is_focused = self.focus_pane == FocusPane::Preview;
 
-        for (i, preset) in effect.presets.iter().enumerate() {
-            if y >= max_y {
-                break;
-            }
+        let mut spans: Vec<Span<'static>> = Vec::new();
 
-            let is_selected = i == self.selected_preset && is_focused;
-            let pointer = if is_selected { "\u{25B8} " } else { "  " };
-            let name_style = if is_selected {
-                Style::default().fg(NEON_CYAN).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(BASE_WHITE)
-            };
+        let nav_style = if is_focused {
+            Style::default().fg(NEON_CYAN)
+        } else {
+            Style::default().fg(DIM_GRAY)
+        };
+        let name_style = if is_focused {
+            Style::default()
+                .fg(NEON_CYAN)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(BASE_WHITE)
+        };
 
-            let mut spans = vec![
-                Span::styled(pointer, name_style),
-                Span::styled(preset.name.as_str(), name_style),
-            ];
+        spans.push(Span::styled("Preset ", Style::default().fg(DIM_GRAY)));
+        spans.push(Span::styled("\u{25C2} ", nav_style));
+        spans.push(Span::styled(preset.name.clone(), name_style));
+        spans.push(Span::styled(" \u{25B8}", nav_style));
+        spans.push(Span::styled(
+            format!(" {}/{} ", self.selected_preset + 1, total),
+            Style::default().fg(DIM_GRAY),
+        ));
 
-            if let Some(ref desc) = preset.description
-                && !desc.is_empty()
-            {
-                spans.push(Span::styled(
-                    format!(" \u{00B7} {desc}"),
-                    Style::default().fg(DIM_GRAY),
-                ));
-            }
+        let content_width: u16 = spans.iter().map(|s| s.width() as u16).sum();
+        let x = area.x + area.width.saturating_sub(content_width);
+        let w = content_width.min(area.width);
 
-            frame.render_widget(
-                Paragraph::new(Line::from(spans)),
-                Rect::new(x, y, w, 1),
-            );
-            y += 1;
-        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect::new(x, area.y, w, 1),
+        );
     }
 
     // ── Controls pane rendering ──────────────────────────────────────
@@ -1498,6 +1480,18 @@ impl Component for EffectBrowserView {
         self.render_list_pane(frame, cols[0]);
         self.render_preview_pane(frame, right[0]);
         self.render_controls_pane(frame, right[1]);
+
+        // Preset indicator overlays the bottom-right border of the controls pane
+        let ctrl_area = right[1];
+        if ctrl_area.height > 0 {
+            let bottom_row = Rect::new(
+                ctrl_area.x + 1,
+                ctrl_area.y + ctrl_area.height.saturating_sub(1),
+                ctrl_area.width.saturating_sub(2),
+                1,
+            );
+            self.render_preset_indicator(frame, bottom_row);
+        }
 
         // Color picker overlay on top
         if self.color_picker.is_some() {

@@ -21,74 +21,97 @@ use crate::state::DaemonState;
 /// Fetches initial state via REST, then streams live data via WebSocket.
 /// Pushes `Action` variants to the provided sender. Shuts down when the
 /// cancellation token fires.
+///
+/// Connection errors are reported once per disconnection event — the bridge
+/// does NOT spam repeated `DaemonDisconnected` actions during reconnection.
 pub async fn spawn_data_bridge(
     host: String,
     port: u16,
     action_tx: mpsc::UnboundedSender<Action>,
     cancel: CancellationToken,
 ) {
+    let client = DaemonClient::new(&host, port);
+
+    // Track whether we've already notified the UI about the current
+    // disconnection. Prevents spamming DaemonDisconnected on every
+    // reconnection attempt.
+    let mut notified_disconnect = false;
+
     let _ = action_tx.send(Action::DaemonReconnecting);
 
-    // Phase 1: REST bootstrap
-    let client = DaemonClient::new(&host, port);
-    if let Err(e) = bootstrap_rest(&client, &action_tx).await {
-        tracing::warn!("REST bootstrap failed: {e}");
-        let _ = action_tx.send(Action::DaemonDisconnected(format!("{e}")));
-        // Still try WebSocket — daemon might be partially available
-    }
-
-    // Phase 2: WebSocket streaming with reconnection
     loop {
         if cancel.is_cancelled() {
             break;
         }
 
-        let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
-
-        let ws_host = host.clone();
-        let ws_cancel = cancel.clone();
-        let ws_handle = tokio::spawn(async move {
-            tokio::select! {
-                result = ws::connect(&ws_host, port, ws_tx) => {
-                    if let Err(e) = result {
-                        tracing::warn!("WebSocket connection error: {e}");
-                    }
-                }
-                () = ws_cancel.cancelled() => {}
+        // Phase 1: REST bootstrap — fetch effects, devices, favorites, status
+        let rest_ok = match bootstrap_rest(&client, &action_tx).await {
+            Ok(()) => {
+                notified_disconnect = false;
+                true
             }
-        });
-
-        // Forward WebSocket messages as Actions
-        loop {
-            tokio::select! {
-                () = cancel.cancelled() => {
-                    ws_handle.abort();
-                    return;
+            Err(e) => {
+                tracing::debug!("REST bootstrap failed: {e}");
+                if !notified_disconnect {
+                    let _ = action_tx.send(Action::DaemonDisconnected(format!("{e}")));
+                    notified_disconnect = true;
                 }
-                msg = ws_rx.recv() => {
-                    match msg {
-                        Some(WsMessage::Hello(state)) => {
-                            if let Some(daemon_state) = parse_hello_state(&state) {
-                                let _ = action_tx.send(Action::DaemonConnected(Box::new(daemon_state)));
+                false
+            }
+        };
+
+        // Phase 2: WebSocket streaming (only if REST succeeded)
+        if rest_ok {
+            let (ws_tx, mut ws_rx) = mpsc::unbounded_channel();
+
+            let ws_host = host.clone();
+            let ws_cancel = cancel.clone();
+            let ws_handle = tokio::spawn(async move {
+                tokio::select! {
+                    result = ws::connect(&ws_host, port, ws_tx) => {
+                        if let Err(e) = result {
+                            tracing::debug!("WebSocket connection error: {e}");
+                        }
+                    }
+                    () = ws_cancel.cancelled() => {}
+                }
+            });
+
+            // Forward WebSocket messages as Actions
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => {
+                        ws_handle.abort();
+                        return;
+                    }
+                    msg = ws_rx.recv() => {
+                        match msg {
+                            Some(WsMessage::Hello(state)) => {
+                                if let Some(daemon_state) = parse_hello_state(&state) {
+                                    let _ = action_tx.send(Action::DaemonConnected(Box::new(daemon_state)));
+                                }
                             }
-                        }
-                        Some(WsMessage::Canvas(frame)) => {
-                            let _ = action_tx.send(Action::CanvasFrameReceived(Arc::new(frame)));
-                        }
-                        Some(WsMessage::Spectrum(snapshot)) => {
-                            let _ = action_tx.send(Action::SpectrumUpdated(Arc::new(snapshot)));
-                        }
-                        Some(WsMessage::Event(event)) => {
-                            if let Err(error) = refresh_for_event(&client, &action_tx, &event).await {
-                                tracing::warn!(%error, "Failed to refresh TUI state after daemon event");
+                            Some(WsMessage::Canvas(frame)) => {
+                                let _ = action_tx.send(Action::CanvasFrameReceived(Arc::new(frame)));
                             }
-                        }
-                        Some(WsMessage::Metrics(_metrics)) => {
-                            // TODO: parse metrics and update state
-                        }
-                        Some(WsMessage::Closed) | None => {
-                            let _ = action_tx.send(Action::DaemonDisconnected("WebSocket closed".into()));
-                            break;
+                            Some(WsMessage::Spectrum(snapshot)) => {
+                                let _ = action_tx.send(Action::SpectrumUpdated(Arc::new(snapshot)));
+                            }
+                            Some(WsMessage::Event(event)) => {
+                                if let Err(error) = refresh_for_event(&client, &action_tx, &event).await {
+                                    tracing::debug!(%error, "Failed to refresh TUI state after daemon event");
+                                }
+                            }
+                            Some(WsMessage::Metrics(_metrics)) => {
+                                // TODO: parse metrics and update state
+                            }
+                            Some(WsMessage::Closed) | None => {
+                                if !notified_disconnect {
+                                    let _ = action_tx.send(Action::DaemonDisconnected("Connection lost".into()));
+                                    notified_disconnect = true;
+                                }
+                                break;
+                            }
                         }
                     }
                 }
@@ -101,7 +124,7 @@ pub async fn spawn_data_bridge(
 
         // Reconnect with backoff
         let _ = action_tx.send(Action::DaemonReconnecting);
-        tracing::info!("Reconnecting to daemon in 2s...");
+        tracing::debug!("Reconnecting to daemon in 2s...");
         tokio::select! {
             () = cancel.cancelled() => return,
             () = tokio::time::sleep(Duration::from_secs(2)) => {}
@@ -162,7 +185,7 @@ async fn refresh_effects(client: &DaemonClient, action_tx: &mpsc::UnboundedSende
             let _ = action_tx.send(Action::EffectsUpdated(Arc::new(effects)));
         }
         Err(error) => {
-            tracing::warn!(%error, "Failed to refresh effect list");
+            tracing::debug!(%error, "Failed to refresh effect list");
         }
     }
 }
@@ -173,7 +196,7 @@ async fn refresh_devices(client: &DaemonClient, action_tx: &mpsc::UnboundedSende
             let _ = action_tx.send(Action::DevicesUpdated(Arc::new(devices)));
         }
         Err(error) => {
-            tracing::warn!(%error, "Failed to refresh device list");
+            tracing::debug!(%error, "Failed to refresh device list");
         }
     }
 }
@@ -184,7 +207,7 @@ async fn refresh_favorites(client: &DaemonClient, action_tx: &mpsc::UnboundedSen
             let _ = action_tx.send(Action::FavoritesUpdated(Arc::new(favorites)));
         }
         Err(error) => {
-            tracing::warn!(%error, "Failed to refresh favorites");
+            tracing::debug!(%error, "Failed to refresh favorites");
         }
     }
 }

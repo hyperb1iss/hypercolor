@@ -11,7 +11,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::action::Action;
 use crate::component::Component;
-use crate::state::{CanvasFrame, DaemonState, DeviceSummary, EffectSummary};
+use crate::state::{CanvasFrame, ConnectionStatus, DaemonState, DeviceSummary, EffectSummary};
 use crate::widgets::{HalfBlockCanvas, ParamSlider};
 
 // ── SilkCircuit Neon palette ───────────────────────────────────────────
@@ -40,6 +40,8 @@ pub struct DashboardView {
     favorites: Vec<String>,
     canvas_frame: Option<CanvasFrame>,
     selected_device: usize,
+    connection_status: ConnectionStatus,
+    disconnect_reason: Option<String>,
 }
 
 impl Default for DashboardView {
@@ -60,6 +62,8 @@ impl DashboardView {
             favorites: Vec::new(),
             canvas_frame: None,
             selected_device: 0,
+            connection_status: ConnectionStatus::default(),
+            disconnect_reason: None,
         }
     }
 
@@ -292,8 +296,8 @@ impl DashboardView {
     fn render_idle_state(&self, frame: &mut Frame, area: Rect) {
         let mut lines: Vec<Line<'_>> = Vec::new();
 
-        // Connection status
         if let Some(ds) = &self.daemon_state {
+            // Has daemon state — running but no effect active
             let status_color = if ds.running { SUCCESS_GREEN } else { ERROR_RED };
             let status_text = if ds.running { "running" } else { "stopped" };
             lines.push(Line::from(vec![
@@ -313,15 +317,38 @@ impl DashboardView {
                 Style::default().fg(DIM_GRAY),
             )));
         } else {
-            lines.push(Line::from(vec![
-                Span::styled("\u{25CF} ", Style::default().fg(ERROR_RED)),
-                Span::styled("Disconnected", Style::default().fg(ERROR_RED)),
-            ]));
-            lines.push(Line::raw(""));
-            lines.push(Line::from(Span::styled(
-                "Waiting for daemon\u{2026}",
-                Style::default().fg(DIM_GRAY),
-            )));
+            // No daemon state — show connection status
+            match self.connection_status {
+                ConnectionStatus::Connecting | ConnectionStatus::Reconnecting => {
+                    lines.push(Line::from(vec![
+                        Span::styled("\u{25CF} ", Style::default().fg(ELECTRIC_YELLOW)),
+                        Span::styled("Connecting", Style::default().fg(ELECTRIC_YELLOW)),
+                    ]));
+                    lines.push(Line::raw(""));
+                    lines.push(Line::from(Span::styled(
+                        "Trying to reach daemon\u{2026}",
+                        Style::default().fg(DIM_GRAY),
+                    )));
+                }
+                _ => {
+                    lines.push(Line::from(vec![
+                        Span::styled("\u{25CF} ", Style::default().fg(ERROR_RED)),
+                        Span::styled("Disconnected", Style::default().fg(ERROR_RED)),
+                    ]));
+                    lines.push(Line::raw(""));
+                    if let Some(reason) = &self.disconnect_reason {
+                        lines.push(Line::from(Span::styled(
+                            truncate_str(reason, area.width.saturating_sub(2).into()),
+                            Style::default().fg(DIM_GRAY),
+                        )));
+                    } else {
+                        lines.push(Line::from(Span::styled(
+                            "Waiting for daemon\u{2026}",
+                            Style::default().fg(DIM_GRAY),
+                        )));
+                    }
+                }
+            }
         }
 
         frame.render_widget(Paragraph::new(lines), area);
@@ -550,6 +577,16 @@ impl Component for DashboardView {
         match action {
             Action::DaemonStateUpdated(state) | Action::DaemonConnected(state) => {
                 self.daemon_state = Some(*state.clone());
+                self.connection_status = ConnectionStatus::Connected;
+                self.disconnect_reason = None;
+            }
+            Action::DaemonDisconnected(reason) => {
+                self.daemon_state = None;
+                self.connection_status = ConnectionStatus::Disconnected;
+                self.disconnect_reason = Some(reason.clone());
+            }
+            Action::DaemonReconnecting => {
+                self.connection_status = ConnectionStatus::Reconnecting;
             }
             Action::DevicesUpdated(devices) => {
                 self.devices.clone_from(devices);
@@ -569,9 +606,6 @@ impl Component for DashboardView {
             }
             Action::CanvasFrameReceived(frame) => {
                 self.canvas_frame = Some(frame.as_ref().clone());
-            }
-            Action::DaemonDisconnected(_) => {
-                self.daemon_state = None;
             }
             _ => {}
         }

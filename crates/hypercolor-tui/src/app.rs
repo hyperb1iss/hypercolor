@@ -257,12 +257,36 @@ impl App {
 
             // ── Connection state ────────────────────────────
             Action::DaemonConnected(daemon_state) => {
+                let was_disconnected =
+                    self.state.connection_status != ConnectionStatus::Connected;
                 self.state.daemon = Some(daemon_state.as_ref().clone());
                 self.state.connection_status = ConnectionStatus::Connected;
+                self.state.disconnect_reason = None;
                 self.sync_daemon_device_summary();
+                if was_disconnected {
+                    self.notification = Some((
+                        Notification {
+                            message: "Connected to daemon".to_string(),
+                            level: NotificationLevel::Success,
+                        },
+                        Instant::now(),
+                    ));
+                }
             }
-            Action::DaemonDisconnected(_reason) => {
+            Action::DaemonDisconnected(reason) => {
+                let was_connected =
+                    self.state.connection_status == ConnectionStatus::Connected;
                 self.state.connection_status = ConnectionStatus::Disconnected;
+                self.state.disconnect_reason = Some(reason.clone());
+                if was_connected {
+                    self.notification = Some((
+                        Notification {
+                            message: format!("Connection lost: {reason}"),
+                            level: NotificationLevel::Warning,
+                        },
+                        Instant::now(),
+                    ));
+                }
             }
             Action::DaemonReconnecting => {
                 self.state.connection_status = ConnectionStatus::Reconnecting;
@@ -291,6 +315,19 @@ impl App {
             }
 
             // ── Commands → daemon API ─────────────────────────
+            Action::ApplyEffect(effect_id) if !self.is_connected() => {
+                self.notify_not_connected();
+                let _ = effect_id; // suppress unused warning
+            }
+            Action::ApplyEffectPreset(_, _)
+            | Action::ToggleFavorite(_)
+            | Action::UpdateControl(_, _)
+            | Action::ResetControls
+                if !self.is_connected() =>
+            {
+                self.notify_not_connected();
+            }
+
             Action::ApplyEffect(effect_id) => {
                 self.spawn_actions({
                     let client = self.client.clone();
@@ -397,6 +434,7 @@ impl App {
             Action::DaemonConnected(_)
                 | Action::DaemonStateUpdated(_)
                 | Action::DaemonDisconnected(_)
+                | Action::DaemonReconnecting
                 | Action::EffectsUpdated(_)
                 | Action::DevicesUpdated(_)
                 | Action::FavoritesUpdated(_)
@@ -438,6 +476,24 @@ impl App {
             .iter()
             .map(|device| device.led_count)
             .sum();
+    }
+
+    /// Whether the daemon connection is active.
+    fn is_connected(&self) -> bool {
+        self.state.connection_status == ConnectionStatus::Connected
+    }
+
+    /// Show a "not connected" notification (debounced — won't replace an existing one).
+    fn notify_not_connected(&mut self) {
+        if self.notification.is_none() {
+            self.notification = Some((
+                Notification {
+                    message: "Not connected to daemon".to_string(),
+                    level: NotificationLevel::Warning,
+                },
+                Instant::now(),
+            ));
+        }
     }
 
     /// Spawn async work that can emit multiple follow-up actions.

@@ -30,10 +30,17 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize tracing (logs to file so they don't clobber the TUI)
+    // Route tracing to a log file — stderr corrupts the ratatui alternate screen
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("hypercolor-tui.log"))
+        .expect("failed to create log file");
+
     tracing_subscriber::fmt()
         .with_env_filter(&args.log_level)
-        .with_writer(std::io::stderr)
+        .with_writer(std::sync::Mutex::new(log_file))
+        .with_ansi(false)
         .init();
 
     // Initialize theme

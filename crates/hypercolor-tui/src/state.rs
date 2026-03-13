@@ -29,6 +29,7 @@ pub struct AppState {
     pub spectrum: Option<SpectrumSnapshot>,
     pub active_screen: ScreenId,
     pub connection_status: ConnectionStatus,
+    pub disconnect_reason: Option<String>,
 }
 
 // ── Daemon State ────────────────────────────────────────────────────
