@@ -19,12 +19,22 @@
 pub mod beat;
 pub mod features;
 pub mod fft;
+#[cfg(target_os = "linux")]
+pub mod linux;
 
+#[cfg(target_os = "linux")]
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
+use std::thread;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig};
+#[cfg(target_os = "linux")]
+use libpulse_binding as pulse;
 
 use crate::input::traits::{InputData, InputSource};
 use crate::types::audio::{AudioData, AudioPipelineConfig, AudioSourceType};
@@ -36,6 +46,8 @@ use features::{
 };
 use fft::{FftPipeline, RingBuffer};
 
+#[cfg(target_os = "linux")]
+use self::linux as linux_audio;
 use crate::types::audio::{CHROMA_BINS, MEL_BANDS, SPECTRUM_BINS};
 
 const DEFAULT_AUDIO_FRAME_DT: f32 = 1.0 / 60.0;
@@ -251,7 +263,7 @@ pub struct AudioInput {
     capture_active: bool,
     config: AudioPipelineConfig,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
-    stream: Option<Stream>,
+    capture: Option<CaptureHandle>,
     parked_source: Option<AudioSourceType>,
     degraded_to_silence: bool,
 }
@@ -267,7 +279,7 @@ impl AudioInput {
             capture_active: false,
             config: config.clone(),
             analyzer: Arc::new(Mutex::new(AudioAnalyzer::new(config))),
-            stream: None,
+            capture: None,
             parked_source: None,
             degraded_to_silence: false,
         }
@@ -347,18 +359,15 @@ impl AudioInput {
     fn start_stream_for_config(
         &self,
         config: &AudioPipelineConfig,
-    ) -> anyhow::Result<(Arc<Mutex<AudioAnalyzer>>, Option<Stream>)> {
+    ) -> anyhow::Result<(Arc<Mutex<AudioAnalyzer>>, Option<CaptureHandle>)> {
         let analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(config)));
         if matches!(config.source, AudioSourceType::None) {
             return Ok((analyzer, None));
         }
 
-        let stream = build_capture_stream(&self.host, config, Arc::clone(&analyzer))?;
-        stream
-            .play()
-            .context("failed to start audio capture stream")?;
+        let capture = build_capture_stream(&self.host, config, Arc::clone(&analyzer))?;
 
-        Ok((analyzer, Some(stream)))
+        Ok((analyzer, Some(capture)))
     }
 
     fn reset_analyzer(&mut self) {
@@ -370,21 +379,34 @@ impl AudioInput {
     }
 
     fn pause_capture_stream(&mut self) {
-        if let Some(stream) = &self.stream {
-            if let Err(error) = stream.pause() {
-                tracing::warn!(
-                    input = %self.name,
-                    source = ?self.config.source,
-                    %error,
-                    "Failed to pause audio capture stream"
-                );
-            } else {
+        match self.capture.as_mut() {
+            Some(CaptureHandle::Cpal(stream)) => {
+                if let Err(error) = stream.pause() {
+                    tracing::warn!(
+                        input = %self.name,
+                        source = ?self.config.source,
+                        %error,
+                        "Failed to pause audio capture stream"
+                    );
+                } else {
+                    tracing::info!(
+                        input = %self.name,
+                        source = ?self.config.source,
+                        "Audio capture stream paused"
+                    );
+                }
+            }
+            Some(CaptureHandle::LinuxPulse(_)) => {
+                if let Some(CaptureHandle::LinuxPulse(capture)) = self.capture.take() {
+                    drop(capture);
+                }
                 tracing::info!(
                     input = %self.name,
                     source = ?self.config.source,
-                    "Audio capture stream paused"
+                    "Audio capture stream stopped while inactive"
                 );
             }
+            None => {}
         }
 
         self.degraded_to_silence = false;
@@ -396,10 +418,10 @@ impl AudioInput {
             .parked_source
             .clone()
             .unwrap_or_else(|| self.config.source.clone());
-        let previous_stream = self.stream.take();
+        let previous_capture = self.capture.take();
         self.parked_source = None;
 
-        if previous_stream.is_none() {
+        if previous_capture.is_none() {
             tracing::debug!(
                 input = %self.name,
                 source = ?stream_source,
@@ -409,7 +431,7 @@ impl AudioInput {
             return;
         }
 
-        drop(previous_stream);
+        drop(previous_capture);
         tracing::info!(
             input = %self.name,
             source = ?stream_source,
@@ -424,41 +446,37 @@ impl AudioInput {
             return Ok(());
         }
 
-        if let Some(stream) = &self.stream {
-            stream
-                .play()
-                .context("failed to resume audio capture stream")?;
-            self.degraded_to_silence = false;
-            tracing::info!(
-                input = %self.name,
-                source = ?self.config.source,
-                "Audio capture stream resumed"
-            );
-            return Ok(());
-        }
-
-        match build_capture_stream(&self.host, &self.config, Arc::clone(&self.analyzer)) {
-            Ok(stream) => {
-                if let Err(error) = stream
-                    .play()
-                    .context("failed to start audio capture stream")
-                {
-                    self.degraded_to_silence = true;
-                    tracing::warn!(
-                        input = %self.name,
-                        source = ?self.config.source,
-                        %error,
-                        "Audio capture could not start; LightScript audio input will fall back to silence"
-                    );
-                } else {
+        if let Some(capture) = &self.capture {
+            match capture {
+                CaptureHandle::Cpal(stream) => {
+                    stream
+                        .play()
+                        .context("failed to resume audio capture stream")?;
+                    self.degraded_to_silence = false;
                     tracing::info!(
                         input = %self.name,
                         source = ?self.config.source,
-                        "Audio capture stream started"
+                        "Audio capture stream resumed"
                     );
-                    self.degraded_to_silence = false;
-                    self.stream = Some(stream);
+                    return Ok(());
                 }
+                CaptureHandle::LinuxPulse(pulse_capture) => {
+                    let _ = pulse_capture;
+                    self.degraded_to_silence = false;
+                    return Ok(());
+                }
+            }
+        }
+
+        match build_capture_stream(&self.host, &self.config, Arc::clone(&self.analyzer)) {
+            Ok(capture) => {
+                tracing::info!(
+                    input = %self.name,
+                    source = ?self.config.source,
+                    "Audio capture stream started"
+                );
+                self.degraded_to_silence = false;
+                self.capture = Some(capture);
             }
             Err(error) => {
                 self.degraded_to_silence = true;
@@ -476,7 +494,7 @@ impl AudioInput {
 
     fn set_capture_active_state(&mut self, active: bool) -> anyhow::Result<()> {
         if self.capture_active == active {
-            if active && self.running && self.stream.is_none() {
+            if active && self.running && self.capture.is_none() {
                 self.start_capture_stream()?;
             }
             return Ok(());
@@ -536,7 +554,7 @@ impl AudioInput {
         }
 
         if matches!(config.source, AudioSourceType::None) {
-            if !matches!(previous_source, AudioSourceType::None) && self.stream.is_some() {
+            if !matches!(previous_source, AudioSourceType::None) && self.capture.is_some() {
                 self.parked_source = Some(previous_source.clone());
             }
             self.set_capture_active_state(false)?;
@@ -553,7 +571,7 @@ impl AudioInput {
         }
 
         if matches!(previous_source, AudioSourceType::None)
-            && self.stream.is_some()
+            && self.capture.is_some()
             && self.parked_source.as_ref() == Some(&config.source)
         {
             self.parked_source = None;
@@ -571,19 +589,19 @@ impl AudioInput {
         }
 
         if effective_capture_active {
-            let (next_analyzer, next_stream) = self.start_stream_for_config(config)?;
-            let previous_stream = self.stream.take();
+            let (next_analyzer, next_capture) = self.start_stream_for_config(config)?;
+            let previous_capture = self.capture.take();
             self.parked_source = None;
             self.analyzer = next_analyzer;
-            self.stream = next_stream;
+            self.capture = next_capture;
             self.degraded_to_silence = false;
-            drop(previous_stream);
+            drop(previous_capture);
         } else {
-            let previous_stream = self.stream.take();
+            let previous_capture = self.capture.take();
             self.parked_source = None;
             self.analyzer = Arc::new(Mutex::new(AudioAnalyzer::new(config)));
             self.degraded_to_silence = false;
-            drop(previous_stream);
+            drop(previous_capture);
         }
 
         self.set_capture_active_state(effective_capture_active)?;
@@ -612,7 +630,7 @@ impl InputSource for AudioInput {
 
         self.running = true;
         self.degraded_to_silence = false;
-        self.stream = None;
+        self.capture = None;
 
         if matches!(self.config.source, AudioSourceType::None) {
             return Ok(());
@@ -672,69 +690,88 @@ fn build_capture_stream(
     host: &cpal::Host,
     config: &AudioPipelineConfig,
     analyzer: Arc<Mutex<AudioAnalyzer>>,
-) -> anyhow::Result<Stream> {
-    let device = select_input_device(host, &config.source)?;
-    let device_name = device.description().map_or_else(
-        |_| "<unknown-audio-device>".to_owned(),
-        |description| description.name().to_owned(),
-    );
-    let supported_config = device
-        .default_input_config()
-        .with_context(|| format!("failed to get default input config for '{device_name}'"))?;
-    reconfigure_analyzer(&analyzer, config, &supported_config);
-    let stream_config: cpal::StreamConfig = supported_config.config();
-    let channels = usize::from(stream_config.channels.max(1));
-    let sample_format = supported_config.sample_format();
-    let stream = match sample_format {
-        SampleFormat::I8 => {
-            build_stream::<i8>(&device, &stream_config, channels, analyzer, &device_name)
-        }
-        SampleFormat::I16 => {
-            build_stream::<i16>(&device, &stream_config, channels, analyzer, &device_name)
-        }
-        SampleFormat::I24 => {
-            build_stream::<cpal::I24>(&device, &stream_config, channels, analyzer, &device_name)
-        }
-        SampleFormat::I32 => {
-            build_stream::<i32>(&device, &stream_config, channels, analyzer, &device_name)
-        }
-        SampleFormat::I64 => {
-            build_stream::<i64>(&device, &stream_config, channels, analyzer, &device_name)
-        }
-        SampleFormat::U8 => {
-            build_stream::<u8>(&device, &stream_config, channels, analyzer, &device_name)
-        }
-        SampleFormat::U16 => {
-            build_stream::<u16>(&device, &stream_config, channels, analyzer, &device_name)
-        }
-        SampleFormat::U24 => {
-            build_stream::<cpal::U24>(&device, &stream_config, channels, analyzer, &device_name)
-        }
-        SampleFormat::U32 => {
-            build_stream::<u32>(&device, &stream_config, channels, analyzer, &device_name)
-        }
-        SampleFormat::U64 => {
-            build_stream::<u64>(&device, &stream_config, channels, analyzer, &device_name)
-        }
-        SampleFormat::F32 => {
-            build_stream::<f32>(&device, &stream_config, channels, analyzer, &device_name)
-        }
-        SampleFormat::F64 => {
-            build_stream::<f64>(&device, &stream_config, channels, analyzer, &device_name)
-        }
-        sample_format => Err(anyhow!("unsupported audio sample format: {sample_format}")),
-    }?;
+) -> anyhow::Result<CaptureHandle> {
+    let selected = select_input_device(host, &config.source)?;
+    match selected {
+        SelectedInputDevice::Cpal {
+            device,
+            display_name,
+        } => {
+            let supported_config = device.default_input_config().with_context(|| {
+                format!("failed to get default input config for '{display_name}'")
+            })?;
+            reconfigure_analyzer(&analyzer, config, &supported_config);
+            let stream_config: cpal::StreamConfig = supported_config.config();
+            let channels = usize::from(stream_config.channels.max(1));
+            let sample_format = supported_config.sample_format();
+            let stream = match sample_format {
+                SampleFormat::I8 => {
+                    build_stream::<i8>(&device, &stream_config, channels, analyzer, &display_name)
+                }
+                SampleFormat::I16 => {
+                    build_stream::<i16>(&device, &stream_config, channels, analyzer, &display_name)
+                }
+                SampleFormat::I24 => build_stream::<cpal::I24>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    analyzer,
+                    &display_name,
+                ),
+                SampleFormat::I32 => {
+                    build_stream::<i32>(&device, &stream_config, channels, analyzer, &display_name)
+                }
+                SampleFormat::I64 => {
+                    build_stream::<i64>(&device, &stream_config, channels, analyzer, &display_name)
+                }
+                SampleFormat::U8 => {
+                    build_stream::<u8>(&device, &stream_config, channels, analyzer, &display_name)
+                }
+                SampleFormat::U16 => {
+                    build_stream::<u16>(&device, &stream_config, channels, analyzer, &display_name)
+                }
+                SampleFormat::U24 => build_stream::<cpal::U24>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    analyzer,
+                    &display_name,
+                ),
+                SampleFormat::U32 => {
+                    build_stream::<u32>(&device, &stream_config, channels, analyzer, &display_name)
+                }
+                SampleFormat::U64 => {
+                    build_stream::<u64>(&device, &stream_config, channels, analyzer, &display_name)
+                }
+                SampleFormat::F32 => {
+                    build_stream::<f32>(&device, &stream_config, channels, analyzer, &display_name)
+                }
+                SampleFormat::F64 => {
+                    build_stream::<f64>(&device, &stream_config, channels, analyzer, &display_name)
+                }
+                sample_format => Err(anyhow!("unsupported audio sample format: {sample_format}")),
+            }?;
+            stream
+                .play()
+                .context("failed to start audio capture stream")?;
 
-    tracing::info!(
-        source = ?config.source,
-        device = %device_name,
-        sample_rate_hz = supported_config.sample_rate(),
-        channels,
-        sample_format = ?sample_format,
-        "Audio capture stream configured"
-    );
+            tracing::info!(
+                source = ?config.source,
+                device = %display_name,
+                sample_rate_hz = supported_config.sample_rate(),
+                channels,
+                sample_format = ?sample_format,
+                "Audio capture stream configured"
+            );
 
-    Ok(stream)
+            Ok(CaptureHandle::Cpal(stream))
+        }
+        #[cfg(target_os = "linux")]
+        SelectedInputDevice::LinuxPulse {
+            source_name,
+            display_name,
+        } => build_linux_pulse_capture_stream(&source_name, &display_name, analyzer, config),
+    }
 }
 
 fn reconfigure_analyzer(
@@ -750,17 +787,36 @@ fn reconfigure_analyzer(
 fn select_input_device(
     host: &cpal::Host,
     source: &AudioSourceType,
-) -> anyhow::Result<cpal::Device> {
+) -> anyhow::Result<SelectedInputDevice> {
     match source {
         AudioSourceType::None => Err(anyhow!("audio source is disabled")),
-        AudioSourceType::Named(name) => find_named_input_device(host, name)?
-            .ok_or_else(|| anyhow!("audio input device '{name}' not found")),
-        AudioSourceType::SystemMonitor => find_monitor_input_device(host)?
-            .or_else(|| host.default_input_device())
-            .ok_or_else(|| anyhow!("no input device available for system monitor capture")),
-        AudioSourceType::Microphone => find_microphone_input_device(host)?
-            .or_else(|| host.default_input_device())
-            .ok_or_else(|| anyhow!("no microphone input device available")),
+        AudioSourceType::Named(name) => {
+            #[cfg(target_os = "linux")]
+            if linux_audio::pulse_source_exists(name)? {
+                return Ok(find_linux_pulse_capture_device(name));
+            }
+
+            let device = find_named_input_device(host, name)?
+                .ok_or_else(|| anyhow!("audio input device '{name}' not found"))?;
+            Ok(SelectedInputDevice::new(device))
+        }
+        AudioSourceType::SystemMonitor => {
+            #[cfg(target_os = "linux")]
+            if let Some(selected) = find_linux_system_monitor_input_device(host)? {
+                return Ok(selected);
+            }
+
+            let device = find_monitor_input_device(host)?
+                .or_else(|| host.default_input_device())
+                .ok_or_else(|| anyhow!("no input device available for system monitor capture"))?;
+            Ok(SelectedInputDevice::new(device))
+        }
+        AudioSourceType::Microphone => {
+            let device = find_microphone_input_device(host)?
+                .or_else(|| host.default_input_device())
+                .ok_or_else(|| anyhow!("no microphone input device available"))?;
+            Ok(SelectedInputDevice::new(device))
+        }
     }
 }
 
@@ -775,12 +831,30 @@ fn find_named_input_device(host: &cpal::Host, name: &str) -> anyhow::Result<Opti
         let Ok(description) = device.description() else {
             continue;
         };
-        let device_name = description.name();
-        let normalized = device_name.trim().to_ascii_lowercase();
-        if normalized == wanted {
+        let normalized = description.name().trim().to_ascii_lowercase();
+        let driver_name = description
+            .driver()
+            .map(|driver| driver.trim().to_ascii_lowercase());
+        let exact_match = normalized == wanted
+            || driver_name
+                .as_deref()
+                .is_some_and(|driver| driver == wanted)
+            || description
+                .extended()
+                .iter()
+                .any(|line| line.trim().eq_ignore_ascii_case(name));
+        if exact_match {
             return Ok(Some(device));
         }
-        if partial_match.is_none() && normalized.contains(&wanted) {
+        let partial_match_found = normalized.contains(&wanted)
+            || driver_name
+                .as_deref()
+                .is_some_and(|driver| driver.contains(&wanted))
+            || description
+                .extended()
+                .iter()
+                .any(|line| line.to_ascii_lowercase().contains(&wanted));
+        if partial_match.is_none() && partial_match_found {
             partial_match = Some(device);
         }
     }
@@ -793,7 +867,9 @@ fn find_monitor_input_device(host: &cpal::Host) -> anyhow::Result<Option<cpal::D
 }
 
 fn find_microphone_input_device(host: &cpal::Host) -> anyhow::Result<Option<cpal::Device>> {
-    find_input_device_matching(host, |name| !is_monitorish_device_name(name))
+    find_input_device_matching(host, |name| {
+        !is_monitorish_device_name(name) && !is_serverish_device_name(name)
+    })
 }
 
 fn find_input_device_matching(
@@ -821,6 +897,417 @@ fn is_monitorish_device_name(name: &str) -> bool {
     ["monitor", "loopback", "what u hear", "stereo mix"]
         .iter()
         .any(|needle| normalized.contains(needle))
+}
+
+fn is_serverish_device_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    [
+        "sound server",
+        "default audio device",
+        "discard all samples",
+        "rate converter plugin",
+        "plugin for channel",
+        "plugin using speex",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+enum SelectedInputDevice {
+    Cpal {
+        device: cpal::Device,
+        display_name: String,
+    },
+    #[cfg(target_os = "linux")]
+    LinuxPulse {
+        source_name: String,
+        display_name: String,
+    },
+}
+
+impl SelectedInputDevice {
+    fn new(device: cpal::Device) -> Self {
+        Self::Cpal {
+            display_name: device_display_name(&device),
+            device,
+        }
+    }
+}
+
+fn device_display_name(device: &cpal::Device) -> String {
+    device.description().map_or_else(
+        |_| "<unknown-audio-device>".to_owned(),
+        |description| description.name().trim().to_owned(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn find_linux_system_monitor_input_device(
+    _host: &cpal::Host,
+) -> anyhow::Result<Option<SelectedInputDevice>> {
+    let Some(source_name) = linux_audio::default_monitor_source_name()? else {
+        return Ok(None);
+    };
+    Ok(Some(find_linux_pulse_capture_device(&source_name)))
+}
+
+#[cfg(target_os = "linux")]
+fn find_linux_pulse_capture_device(source_name: &str) -> SelectedInputDevice {
+    SelectedInputDevice::LinuxPulse {
+        source_name: source_name.to_owned(),
+        display_name: format!("PulseAudio source {source_name}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxPulseCapture {
+    stop_tx: mpsc::Sender<()>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for LinuxPulseCapture {
+    fn drop(&mut self) {
+        let _ = self.stop_tx.send(());
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+enum CaptureHandle {
+    Cpal(Stream),
+    #[cfg(target_os = "linux")]
+    LinuxPulse(LinuxPulseCapture),
+}
+
+#[cfg(target_os = "linux")]
+fn build_linux_pulse_capture_stream(
+    source_name: &str,
+    display_name: &str,
+    analyzer: Arc<Mutex<AudioAnalyzer>>,
+    config: &AudioPipelineConfig,
+) -> anyhow::Result<CaptureHandle> {
+    const PULSE_CAPTURE_CHANNELS: usize = 2;
+    const PULSE_CAPTURE_RATE_HZ: u32 = 48_000;
+
+    if let Ok(mut guard) = analyzer.lock() {
+        *guard = AudioAnalyzer::with_sample_rate(config, PULSE_CAPTURE_RATE_HZ);
+    }
+
+    let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+    let (stop_tx, stop_rx) = mpsc::channel();
+    let worker_source = source_name.to_owned();
+    let worker_display = display_name.to_owned();
+    let worker = thread::Builder::new()
+        .name("hypercolor-pulse-capture".to_owned())
+        .spawn(move || {
+            run_linux_pulse_capture(
+                &worker_source,
+                &worker_display,
+                analyzer,
+                ready_tx,
+                stop_rx,
+                PULSE_CAPTURE_CHANNELS,
+                PULSE_CAPTURE_RATE_HZ,
+            );
+        })
+        .context("failed to spawn Linux PulseAudio capture worker")?;
+
+    match ready_rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(())) => {
+            tracing::info!(
+                source = %source_name,
+                device = %display_name,
+                sample_rate_hz = PULSE_CAPTURE_RATE_HZ,
+                channels = PULSE_CAPTURE_CHANNELS,
+                sample_format = "f32",
+                "Audio capture stream configured"
+            );
+            Ok(CaptureHandle::LinuxPulse(LinuxPulseCapture {
+                stop_tx,
+                worker: Some(worker),
+            }))
+        }
+        Ok(Err(error)) => {
+            let _ = worker.join();
+            Err(anyhow!(
+                "failed to start Linux PulseAudio capture worker: {error}"
+            ))
+        }
+        Err(error) => {
+            let _ = stop_tx.send(());
+            let _ = worker.join();
+            Err(anyhow!(
+                "timed out waiting for Linux PulseAudio capture worker to start: {error}"
+            ))
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "worker startup passes a fixed set of runtime parameters into the capture thread"
+)]
+fn run_linux_pulse_capture(
+    source_name: &str,
+    display_name: &str,
+    analyzer: Arc<Mutex<AudioAnalyzer>>,
+    ready_tx: mpsc::SyncSender<Result<(), String>>,
+    stop_rx: mpsc::Receiver<()>,
+    channels: usize,
+    sample_rate_hz: u32,
+) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let spec = pulse::sample::Spec {
+        format: pulse::sample::Format::FLOAT32NE,
+        channels: u8::try_from(channels).unwrap_or(2),
+        rate: sample_rate_hz,
+    };
+    if !spec.is_valid() {
+        let _ = ready_tx.send(Err("invalid PulseAudio sample spec".to_owned()));
+        return;
+    }
+
+    let Some(mut mainloop) = pulse::mainloop::standard::Mainloop::new() else {
+        let _ = ready_tx.send(Err("failed to create PulseAudio mainloop".to_owned()));
+        return;
+    };
+    let Some(mut context) = pulse::context::Context::new(&mainloop, "hypercolor-audio") else {
+        let _ = ready_tx.send(Err("failed to create PulseAudio context".to_owned()));
+        return;
+    };
+    if let Err(error) = context.connect(None, pulse::context::FlagSet::NOFLAGS, None) {
+        let _ = ready_tx.send(Err(format!(
+            "failed to connect to PulseAudio compatibility server: {error:?}"
+        )));
+        return;
+    }
+
+    if let Err(error) = wait_for_pulse_context(
+        &mut mainloop,
+        &context,
+        &stop_rx,
+        "before record stream setup",
+    ) {
+        let _ = ready_tx.send(Err(error));
+        return;
+    }
+
+    let Some(stream) =
+        pulse::stream::Stream::new(&mut context, "Hypercolor Audio Capture", &spec, None)
+    else {
+        let _ = ready_tx.send(Err("failed to create PulseAudio record stream".to_owned()));
+        return;
+    };
+    let stream = Rc::new(RefCell::new(stream));
+    let stream_for_callback = Rc::clone(&stream);
+    let callback_analyzer = Arc::clone(&analyzer);
+    let callback_source = source_name.to_owned();
+    stream
+        .borrow_mut()
+        .set_read_callback(Some(Box::new(move |_bytes_available| {
+            let mut guard = stream_for_callback.borrow_mut();
+            loop {
+                match guard.peek() {
+                    Ok(pulse::stream::PeekResult::Data(bytes)) => {
+                        let samples = bytes_to_f32_samples(bytes);
+                        push_input_samples(&samples, channels, &callback_analyzer);
+                        if let Err(error) = guard.discard() {
+                            tracing::warn!(
+                                source = %callback_source,
+                                %error,
+                                "Failed to discard PulseAudio record buffer"
+                            );
+                            break;
+                        }
+                    }
+                    Ok(pulse::stream::PeekResult::Hole(_)) => {
+                        if let Err(error) = guard.discard() {
+                            tracing::warn!(
+                                source = %callback_source,
+                                %error,
+                                "Failed to discard PulseAudio record hole"
+                            );
+                            break;
+                        }
+                    }
+                    Ok(pulse::stream::PeekResult::Empty) => break,
+                    Err(error) => {
+                        tracing::warn!(
+                            source = %callback_source,
+                            %error,
+                            "PulseAudio record stream peek failed"
+                        );
+                        break;
+                    }
+                }
+            }
+        })));
+
+    if let Err(error) =
+        stream
+            .borrow_mut()
+            .connect_record(Some(source_name), None, pulse::stream::FlagSet::NOFLAGS)
+    {
+        let _ = ready_tx.send(Err(format!(
+            "failed to connect PulseAudio record stream for {display_name}: {error:?}"
+        )));
+        return;
+    }
+
+    if let Err(error) = wait_for_pulse_stream(&mut mainloop, &stream, &stop_rx) {
+        let _ = ready_tx.send(Err(error));
+        return;
+    }
+
+    if ready_tx.send(Ok(())).is_err() {
+        let _ = stream.borrow_mut().disconnect();
+        context.disconnect();
+        return;
+    }
+
+    loop {
+        if stop_rx.try_recv().is_ok() {
+            break;
+        }
+
+        match mainloop.iterate(false) {
+            pulse::mainloop::standard::IterateResult::Success(_) => {}
+            pulse::mainloop::standard::IterateResult::Quit(retval) => {
+                tracing::warn!(
+                    source = %source_name,
+                    retval = retval.0,
+                    "PulseAudio mainloop quit unexpectedly"
+                );
+                break;
+            }
+            pulse::mainloop::standard::IterateResult::Err(error) => {
+                tracing::warn!(
+                    source = %source_name,
+                    %error,
+                    "PulseAudio mainloop iteration failed"
+                );
+                break;
+            }
+        }
+
+        match stream.borrow().get_state() {
+            pulse::stream::State::Failed | pulse::stream::State::Terminated => {
+                tracing::warn!(
+                    source = %source_name,
+                    state = ?stream.borrow().get_state(),
+                    "PulseAudio record stream stopped unexpectedly"
+                );
+                break;
+            }
+            _ => {}
+        }
+
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    let _ = stream.borrow_mut().disconnect();
+    context.disconnect();
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_pulse_context(
+    mainloop: &mut pulse::mainloop::standard::Mainloop,
+    context: &pulse::context::Context,
+    stop_rx: &mpsc::Receiver<()>,
+    phase: &str,
+) -> Result<(), String> {
+    loop {
+        if stop_rx.try_recv().is_ok() {
+            return Err(format!("PulseAudio capture stopped {phase}"));
+        }
+
+        match context.get_state() {
+            pulse::context::State::Ready => return Ok(()),
+            pulse::context::State::Failed | pulse::context::State::Terminated => {
+                return Err(format!(
+                    "PulseAudio context failed {phase}: {:?}",
+                    context.errno()
+                ));
+            }
+            _ => {}
+        }
+
+        match mainloop.iterate(false) {
+            pulse::mainloop::standard::IterateResult::Success(_) => {}
+            pulse::mainloop::standard::IterateResult::Quit(retval) => {
+                return Err(format!(
+                    "PulseAudio mainloop quit {phase} with status {}",
+                    retval.0
+                ));
+            }
+            pulse::mainloop::standard::IterateResult::Err(error) => {
+                return Err(format!(
+                    "PulseAudio mainloop iteration failed {phase}: {error:?}"
+                ));
+            }
+        }
+
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_pulse_stream(
+    mainloop: &mut pulse::mainloop::standard::Mainloop,
+    stream: &std::rc::Rc<std::cell::RefCell<pulse::stream::Stream>>,
+    stop_rx: &mpsc::Receiver<()>,
+) -> Result<(), String> {
+    loop {
+        if stop_rx.try_recv().is_ok() {
+            return Err("PulseAudio capture stopped before record stream became ready".to_owned());
+        }
+
+        match stream.borrow().get_state() {
+            pulse::stream::State::Ready => return Ok(()),
+            pulse::stream::State::Failed | pulse::stream::State::Terminated => {
+                return Err(format!(
+                    "PulseAudio record stream failed before becoming ready: {:?}",
+                    stream.borrow().get_state()
+                ));
+            }
+            _ => {}
+        }
+
+        match mainloop.iterate(false) {
+            pulse::mainloop::standard::IterateResult::Success(_) => {}
+            pulse::mainloop::standard::IterateResult::Quit(retval) => {
+                return Err(format!(
+                    "PulseAudio mainloop quit before record stream became ready: {}",
+                    retval.0
+                ));
+            }
+            pulse::mainloop::standard::IterateResult::Err(error) => {
+                return Err(format!(
+                    "PulseAudio mainloop iteration failed before record stream became ready: {error:?}"
+                ));
+            }
+        }
+
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn bytes_to_f32_samples(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(std::mem::size_of::<f32>())
+        .map(|chunk| {
+            let array: [u8; std::mem::size_of::<f32>()] = chunk
+                .try_into()
+                .unwrap_or([0_u8; std::mem::size_of::<f32>()]);
+            f32::from_ne_bytes(array)
+        })
+        .collect()
 }
 
 fn build_stream<T>(

@@ -469,6 +469,16 @@ fn audio_device_filter_hides_synthetic_outputs_from_named_input_list() {
             "Razer Seiren V3 Chroma, USB Audio",
         )
     );
+    assert!(
+        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+            "Rate Converter Plugin Using Speex Resampler",
+        )
+    );
+    assert!(
+        !hypercolor_daemon::api::settings::should_offer_named_audio_device(
+            "Discard all samples (playback) or generate zero samples (capture)",
+        )
+    );
 }
 
 #[tokio::test]

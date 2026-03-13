@@ -11,6 +11,8 @@ use axum::Json;
 use axum::extract::State;
 use axum::response::Response;
 use cpal::traits::{DeviceTrait, HostTrait};
+#[cfg(target_os = "linux")]
+use hypercolor_core::input::audio::linux;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -139,6 +141,29 @@ fn audio_device_options(current: &str) -> Vec<AudioDeviceInfo> {
 }
 
 fn enumerate_audio_input_devices() -> anyhow::Result<Vec<AudioDeviceInfo>> {
+    #[cfg(target_os = "linux")]
+    if let Ok(devices) = enumerate_linux_audio_input_devices() {
+        if !devices.is_empty() {
+            return Ok(devices);
+        }
+    }
+
+    enumerate_cpal_audio_input_devices()
+}
+
+#[cfg(target_os = "linux")]
+fn enumerate_linux_audio_input_devices() -> anyhow::Result<Vec<AudioDeviceInfo>> {
+    Ok(linux::enumerate_named_audio_sources()?
+        .into_iter()
+        .map(|source| AudioDeviceInfo {
+            id: source.id,
+            name: source.name,
+            description: source.description,
+        })
+        .collect())
+}
+
+fn enumerate_cpal_audio_input_devices() -> anyhow::Result<Vec<AudioDeviceInfo>> {
     let host = cpal::default_host();
     let mut devices = Vec::new();
     let mut filtered = Vec::new();
@@ -251,6 +276,10 @@ fn is_serverish_device_name(name: &str) -> bool {
         "pulseaudio",
         "default alsa output",
         "default output",
+        "discard all samples",
+        "rate converter plugin",
+        "plugin for channel",
+        "plugin using speex",
     ]
     .iter()
     .any(|needle| normalized.contains(needle))

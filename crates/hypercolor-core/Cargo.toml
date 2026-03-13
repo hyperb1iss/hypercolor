@@ -47,6 +47,9 @@ servo = { package = "libservo", git = "https://github.com/servo/servo", rev = "3
 mozjs-jit = { package = "mozjs", version = "=0.14.8", default-features = false, features = ["jit"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"], optional = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libpulse-binding = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
