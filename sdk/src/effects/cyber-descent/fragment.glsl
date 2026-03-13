@@ -108,13 +108,13 @@ void initializeColorPalette() {
         signColorB   = vec3(1.5, 1.8, 0.2);
     } else if (iColorPalette == 6) {
         // Synthwave
-        windowColorA = vec3(0.2, 1.8, 2.0);
-        windowColorB = vec3(2.0, 0.2, 1.2);
+        windowColorA = vec3(0.15, 1.2, 1.5);
+        windowColorB = vec3(1.5, 0.15, 0.9);
         fogColor     = vec3(0.12, 0.02, 0.18);
-        lightColorA  = vec3(1.0, 0.4, 1.5) * cLightInt;
-        lightColorB  = vec3(0.2, 1.2, 1.5) * cLightInt;
-        signColorA   = vec3(2.5, 1.5, 0.0);
-        signColorB   = vec3(0.0, 2.5, 2.0);
+        lightColorA  = vec3(0.8, 0.3, 1.2) * cLightInt;
+        lightColorB  = vec3(0.15, 0.9, 1.2) * cLightInt;
+        signColorA   = vec3(1.8, 1.0, 0.0);
+        signColorB   = vec3(0.0, 1.6, 1.3);
     } else if (iColorPalette == 4) {
         // Matrix
         windowColorA = vec3(0.0, 2.0, 0.4);
@@ -131,8 +131,8 @@ void initializeColorPalette() {
         fogColor     = vec3(0.1, 0.05, 0.08);
         lightColorA  = vec3(1.5, 0.4, 0.2) * cLightInt;
         lightColorB  = vec3(0.2, 0.8, 1.2) * cLightInt;
-        signColorA   = vec3(0.0, 1.8, 2.0);
-        signColorB   = vec3(2.5, 2.0, 0.0);
+        signColorA   = vec3(2.2, 0.4, 0.8);
+        signColorB   = vec3(2.0, 1.5, 0.2);
     } else if (iColorPalette == 3) {
         // Ice
         windowColorA = vec3(0.8, 1.8, 2.2);
@@ -153,13 +153,13 @@ void initializeColorPalette() {
         signColorB   = vec3(0.2, 2.5, 0.4);
     } else if (iColorPalette == 5) {
         // Noir
-        windowColorA = vec3(0.3, 0.4, 0.8);
-        windowColorB = vec3(0.5, 0.6, 0.7);
-        fogColor     = vec3(0.02, 0.02, 0.04);
-        lightColorA  = vec3(0.4, 0.45, 0.6) * cLightInt;
-        lightColorB  = vec3(1.2, 0.3, 0.2) * cLightInt;
-        signColorA   = vec3(1.8, 0.2, 0.2);
-        signColorB   = vec3(0.8, 0.9, 1.2);
+        windowColorA = vec3(0.5, 0.6, 1.1);
+        windowColorB = vec3(0.7, 0.8, 0.9);
+        fogColor     = vec3(0.03, 0.03, 0.06);
+        lightColorA  = vec3(0.6, 0.65, 0.85) * cLightInt;
+        lightColorB  = vec3(1.4, 0.4, 0.3) * cLightInt;
+        signColorA   = vec3(2.0, 0.3, 0.3);
+        signColorB   = vec3(1.0, 1.1, 1.5);
     } else {
         // Classic Cyber (default)
         windowColorA = vec3(0.0, 0.5, 2.0);
