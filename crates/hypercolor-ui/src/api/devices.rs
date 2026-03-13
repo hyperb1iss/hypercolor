@@ -1,0 +1,473 @@
+//! Device-related API types and fetch functions.
+
+use gloo_net::http::Request;
+use serde::{Deserialize, Serialize};
+
+use super::ApiEnvelope;
+
+// ── Types ───────────────────────────────────────────────────────────────────
+
+/// Device zone summary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ZoneSummary {
+    pub id: String,
+    pub name: String,
+    pub led_count: usize,
+    pub topology: String,
+    #[serde(default)]
+    pub topology_hint: Option<ZoneTopologySummary>,
+}
+
+/// Structured topology hint from `GET /api/v1/devices`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ZoneTopologySummary {
+    Strip,
+    Matrix {
+        rows: u32,
+        cols: u32,
+    },
+    Ring {
+        count: u32,
+    },
+    Point,
+    Display {
+        width: u32,
+        height: u32,
+        circular: bool,
+    },
+    Custom,
+}
+
+/// Device summary from `GET /api/v1/devices`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeviceSummary {
+    pub id: String,
+    pub layout_device_id: String,
+    pub name: String,
+    pub backend: String,
+    pub status: String,
+    pub brightness: u8,
+    #[serde(default)]
+    pub firmware_version: Option<String>,
+    #[serde(default)]
+    pub network_ip: Option<String>,
+    #[serde(default)]
+    pub network_hostname: Option<String>,
+    #[serde(default)]
+    pub connection_label: Option<String>,
+    pub total_leds: usize,
+    #[serde(default)]
+    pub zones: Vec<ZoneSummary>,
+}
+
+/// Paginated device list response.
+#[derive(Debug, Deserialize)]
+pub struct DeviceListResponse {
+    pub items: Vec<DeviceSummary>,
+}
+
+/// Request body for updating a device.
+#[derive(Debug, Serialize)]
+pub struct UpdateDeviceRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<u8>,
+}
+
+/// Global brightness payload from `/api/v1/settings/brightness`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BrightnessSettingsResponse {
+    pub brightness: u8,
+}
+
+// ── Logical Device Types ────────────────────────────────────────────────────
+
+/// Logical device summary from device segmentation APIs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LogicalDeviceSummary {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub enabled: bool,
+    pub led_start: u32,
+    pub led_count: u32,
+    pub led_end: u32,
+    pub physical_device_id: String,
+    pub physical_device_name: String,
+    pub backend: String,
+    pub physical_status: String,
+}
+
+/// Paginated logical device list response.
+#[derive(Debug, Deserialize)]
+pub struct LogicalDeviceListResponse {
+    pub items: Vec<LogicalDeviceSummary>,
+}
+
+/// Request body for creating a logical device segment.
+#[derive(Debug, Serialize)]
+pub struct CreateLogicalDeviceRequest {
+    pub name: String,
+    pub led_start: u32,
+    pub led_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+}
+
+// ── Attachment Types ────────────────────────────────────────────────────────
+
+/// Attachment binding summary from `GET /api/v1/devices/:id/attachments`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AttachmentBindingSummary {
+    pub slot_id: String,
+    pub template_id: String,
+    pub template_name: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    pub enabled: bool,
+    pub instances: u32,
+    pub led_offset: u32,
+    pub effective_led_count: u32,
+}
+
+/// Device attachment profile summary from `GET /api/v1/devices/:id/attachments`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeviceAttachmentsResponse {
+    pub device_id: String,
+    pub device_name: String,
+    #[serde(default)]
+    pub slots: Vec<hypercolor_types::attachment::AttachmentSlot>,
+    #[serde(default)]
+    pub bindings: Vec<AttachmentBindingSummary>,
+    #[serde(default)]
+    pub suggested_zones: Vec<hypercolor_types::attachment::AttachmentSuggestedZone>,
+}
+
+/// Template summary from `GET /api/v1/attachments/templates`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TemplateSummary {
+    pub id: String,
+    pub name: String,
+    pub vendor: String,
+    pub category: hypercolor_types::attachment::AttachmentCategory,
+    pub led_count: u32,
+    pub description: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Paginated template list response.
+#[derive(Debug, Deserialize)]
+pub struct TemplateListResponse {
+    pub items: Vec<TemplateSummary>,
+}
+
+/// Request body for `PUT /api/v1/devices/:id/attachments`.
+#[derive(Debug, Serialize)]
+pub struct UpdateAttachmentsRequest {
+    pub bindings: Vec<AttachmentBindingRequest>,
+}
+
+/// A single binding entry sent to the update endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct AttachmentBindingRequest {
+    pub slot_id: String,
+    pub template_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default = "bool_true")]
+    pub enabled: bool,
+    #[serde(default = "default_instances")]
+    pub instances: u32,
+    #[serde(default)]
+    pub led_offset: u32,
+}
+
+fn bool_true() -> bool {
+    true
+}
+
+fn default_instances() -> u32 {
+    1
+}
+
+// ── Fetch Functions ─────────────────────────────────────────────────────────
+
+/// Fetch all tracked devices.
+pub async fn fetch_devices() -> Result<Vec<DeviceSummary>, String> {
+    let resp = Request::get("/api/v1/devices")
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<DeviceListResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.items)
+}
+
+/// Trigger device discovery scan.
+pub async fn discover_devices() -> Result<(), String> {
+    let resp = Request::post("/api/v1/devices/discover")
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 && resp.status() != 202 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Fetch a single device by ID.
+pub async fn fetch_device(id: &str) -> Result<DeviceSummary, String> {
+    let url = format!("/api/v1/devices/{id}");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<DeviceSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Update a device (name, enabled, brightness).
+pub async fn update_device(id: &str, req: &UpdateDeviceRequest) -> Result<DeviceSummary, String> {
+    let url = format!("/api/v1/devices/{id}");
+    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::put(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<DeviceSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Identify a device by flashing its LEDs.
+pub async fn identify_device(id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/devices/{id}/identify");
+    let body = serde_json::json!({
+        "duration_ms": 2000,
+        "color": "FF06B5",
+    });
+
+    let resp = Request::post(&url)
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&body).map_err(|e| format!("Serialize error: {e}"))?)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Fetch logical devices for a physical device.
+pub async fn fetch_logical_devices(device_id: &str) -> Result<Vec<LogicalDeviceSummary>, String> {
+    let url = format!("/api/v1/devices/{device_id}/logical-devices");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<LogicalDeviceListResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.items)
+}
+
+/// Create a logical device segment on a physical device.
+pub async fn create_logical_device(
+    device_id: &str,
+    req: &CreateLogicalDeviceRequest,
+) -> Result<LogicalDeviceSummary, String> {
+    let url = format!("/api/v1/devices/{device_id}/logical-devices");
+    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::post(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 && resp.status() != 201 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<LogicalDeviceSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Delete a logical device segment.
+pub async fn delete_logical_device(id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/logical-devices/{id}");
+    let resp = Request::delete(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Fetch attachment bindings and import-ready zones for a physical device.
+pub async fn fetch_device_attachments(
+    device_id: &str,
+) -> Result<DeviceAttachmentsResponse, String> {
+    let url = format!("/api/v1/devices/{device_id}/attachments");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<DeviceAttachmentsResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Fetch attachment templates, optionally filtered by category.
+pub async fn fetch_attachment_templates(
+    category: Option<&str>,
+) -> Result<Vec<TemplateSummary>, String> {
+    let mut url = "/api/v1/attachments/templates?limit=200".to_string();
+    if let Some(cat) = category {
+        url.push_str(&format!("&category={cat}"));
+    }
+
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<TemplateListResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.items)
+}
+
+/// Update attachment bindings for a device.
+pub async fn update_device_attachments(
+    device_id: &str,
+    req: &UpdateAttachmentsRequest,
+) -> Result<DeviceAttachmentsResponse, String> {
+    let url = format!("/api/v1/devices/{device_id}/attachments");
+    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::put(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<DeviceAttachmentsResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Delete all attachment bindings for a device.
+pub async fn delete_device_attachments(device_id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/devices/{device_id}/attachments");
+
+    let resp = Request::delete(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    Ok(())
+}
+
+/// Update the global output brightness.
+pub async fn set_global_brightness(brightness: u8) -> Result<u8, String> {
+    let body = serde_json::json!({ "brightness": brightness });
+    let resp = Request::put("/api/v1/settings/brightness")
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&body).map_err(|e| format!("Serialize error: {e}"))?)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<BrightnessSettingsResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.brightness)
+}
+
+/// Fetch the current global brightness.
+pub async fn fetch_global_brightness() -> Result<u8, String> {
+    let resp = Request::get("/api/v1/settings/brightness")
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<BrightnessSettingsResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data.brightness)
+}
