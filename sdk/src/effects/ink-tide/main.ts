@@ -5,76 +5,76 @@ export default effect(
     'Ink Tide',
     shader,
     {
-        flow: num('Fold Depth', [0, 100], 78, {
+        flow: num('Fold Depth', [0, 100], 70, {
             group: 'Motion',
             step: 1,
-            tooltip: 'Strength of the large folding motion and exposure lift.',
+            tooltip: 'How far the ink spreads — low values leave more dark water visible.',
         }),
         palette: combo('Theme', ['Abyss', 'Arctic', 'Molten', 'Phantom', 'Poison', 'Sakura'], {
             default: 'Sakura',
             group: 'Color',
-            tooltip: 'Choose the ink palette. Sakura lifts the default into a brighter bloom.',
+            tooltip: 'Three independent ink colors per theme.',
         }),
-        saturation: num('Color Lift', [0, 100], 92, {
+        saturation: num('Color Lift', [0, 100], 85, {
             group: 'Color',
             step: 1,
-            tooltip: 'How vivid the ink stays before drifting toward grayscale.',
+            tooltip: 'Push ink colors toward full vividness.',
         }),
         speed: num('Current Speed', [1, 10], 5, {
             group: 'Motion',
             step: 0.5,
-            tooltip: 'Overall drift speed of the liquid field.',
+            tooltip: 'Drift speed of the ink fields.',
         }),
-        turbulence: num('Detail', [0, 100], 64, {
+        turbulence: num('Detail', [0, 100], 60, {
             group: 'Motion',
             step: 1,
-            tooltip: 'Amount of fine swirling structure in the ink.',
+            tooltip: 'Spatial complexity — higher values create finer ink structures.',
         }),
     },
     {
         description:
-            'Liquid neon ink unfurls in luminous blooms — turbulent folds swirl and merge, saturated color bleeding through dark water',
+            'Three independent ink drops bleed through dark water — each color spreads on its own warp field, meeting at luminous boundaries',
         presets: [
             {
-                controls: { flow: 42, palette: 'Abyss', saturation: 68, speed: 2.5, turbulence: 88 },
+                controls: { flow: 40, palette: 'Abyss', saturation: 75, speed: 2.5, turbulence: 80 },
                 description:
-                    'Cold ink plumes drift through crushing deep-sea pressure — faint living light pulses in the mariana dark',
+                    'Teal and cyan ink plumes drift apart in crushing deep-sea pressure — dark water dominates, punctuated by bioluminescent tendrils',
                 name: 'Abyssal Bioluminescence',
             },
             {
-                controls: { flow: 95, palette: 'Molten', saturation: 100, speed: 7.5, turbulence: 72 },
+                controls: { flow: 90, palette: 'Molten', saturation: 100, speed: 7, turbulence: 65 },
                 description:
-                    'Molten pigment sears across obsidian — each fold a brushstroke of liquid basalt cooling into glass',
+                    'Three rivers of molten pigment — red, orange, amber — collide and fold over volcanic black, overlaps burning white-hot',
                 name: 'Volcanic Calligraphy',
             },
             {
-                controls: { flow: 60, palette: 'Sakura', saturation: 85, speed: 4, turbulence: 45 },
+                controls: { flow: 55, palette: 'Sakura', saturation: 90, speed: 4, turbulence: 45 },
                 description:
-                    'Silk petals dissolve in warm rain, staining the current with delicate washes of living pink',
+                    'Pink, magenta, and rose ink dissolve in separate currents through dark plum water — petals of color drifting apart',
                 name: 'Cherry Blossom Monsoon',
             },
             {
-                controls: { flow: 85, palette: 'Arctic', saturation: 55, speed: 8, turbulence: 100 },
+                controls: { flow: 75, palette: 'Arctic', saturation: 65, speed: 8, turbulence: 95 },
                 description:
-                    'Chromatophores fire in nervous cascades — ink sacs rupture and bloom through ice-cold polar currents',
+                    'Blue, cyan, and ice-white inks fracture into turbulent filaments — chromatophore cascades through freezing polar currents',
                 name: 'Cephalopod Camouflage',
             },
             {
-                controls: { flow: 30, palette: 'Poison', saturation: 76, speed: 3, turbulence: 78 },
+                controls: { flow: 35, palette: 'Poison', saturation: 80, speed: 3, turbulence: 70 },
                 description:
-                    'Industrial runoff meets brackish tide — phosphorescent poison seeps through stagnant folds of dead water',
+                    'Acid green, chartreuse, and toxic yellow seep through stagnant black water — distinct poison streams barely touching',
                 name: 'Toxic Estuary',
             },
             {
-                controls: { flow: 100, palette: 'Phantom', saturation: 35, speed: 1, turbulence: 15 },
+                controls: { flow: 100, palette: 'Phantom', saturation: 40, speed: 1.5, turbulence: 20 },
                 description:
-                    'Smoke trapped under black ice — phantom silver exhales in slow motion, barely disturbing the frozen surface',
+                    'Violet and lavender inks exhale in slow motion through void — nearly merged but still shifting in desaturated phantom layers',
                 name: 'Séance Smoke',
             },
             {
-                controls: { flow: 70, palette: 'Sakura', saturation: 100, speed: 9.5, turbulence: 95 },
+                controls: { flow: 80, palette: 'Sakura', saturation: 100, speed: 9.5, turbulence: 90 },
                 description:
-                    'A paint factory detonates in a monsoon — every pigment collides at terminal velocity in a riot of saturated chaos',
+                    'All three sakura inks at terminal velocity — overlapping zones flare white-hot as the currents rip into turbulent chaos',
                 name: 'Dopamine Rush',
             },
         ],

@@ -11,7 +11,7 @@ uniform float iFlow;
 uniform float iTurbulence;
 uniform float iSaturation;
 
-// --- Hash & noise primitives ---
+// ─── Noise ──────────────────────────────────────────────────────────
 
 float hash21(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -23,146 +23,100 @@ float vnoise(vec2 p) {
     vec2 i = floor(p);
     vec2 f = fract(p);
     f = f * f * (3.0 - 2.0 * f);
-
     float a = hash21(i);
     float b = hash21(i + vec2(1.0, 0.0));
     float c = hash21(i + vec2(0.0, 1.0));
     float d = hash21(i + vec2(1.0, 1.0));
-
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
 mat2 rot(float a) {
-    float s = sin(a);
-    float c = cos(a);
+    float s = sin(a), c = cos(a);
     return mat2(c, -s, s, c);
 }
-
-// --- FBM with per-octave rotation (critical for fluid swirl quality) ---
 
 float fbm(vec2 p) {
     float sum = 0.0;
     float amp = 0.5;
-    float freq = 1.0;
-    for (int i = 0; i < 4; i++) {
-        sum += amp * vnoise(p * freq);
-        p = rot(0.5) * p * 2.0 + vec2(1.7, 9.2);
-        amp *= 0.5;
-        freq *= 2.0;
+    for (int i = 0; i < 5; i++) {
+        sum += amp * vnoise(p);
+        p = rot(0.55) * p * 2.05 + vec2(1.7, 9.2);
+        amp *= 0.48;
     }
     return sum;
 }
 
-// --- Palette system (4 colors: deep, mid, bright, accent) ---
+// Domain warp — fbm(fbm) for organic ink spreading
+float warpedField(vec2 st, float t, vec2 seed1, vec2 seed2, float warpStr) {
+    vec2 q = vec2(
+        fbm(st + seed1 + t * 0.7),
+        fbm(st + seed1 + vec2(5.2, 1.3) + t * 0.9)
+    );
+    vec2 r = vec2(
+        fbm(st + warpStr * q + seed2 + t * 0.5),
+        fbm(st + warpStr * q + seed2 + vec2(3.1, 7.4) + t * 0.6)
+    );
+    return fbm(st + warpStr * r);
+}
 
-struct InkPalette {
-    vec3 deep;
-    vec3 mid;
-    vec3 bright;
-    vec3 accent;
+// ─── Palettes — 3 inks + water per theme ────────────────────────────
+
+struct InkTheme {
+    vec3 water;
+    vec3 ink1;
+    vec3 ink2;
+    vec3 ink3;
 };
 
-InkPalette getPalette(int id) {
-    InkPalette pal;
+InkTheme getTheme(int id) {
+    InkTheme t;
     if (id == 1) {
-        // Sakura
-        pal.deep   = vec3(0.039, 0.000, 0.031);
-        pal.mid    = vec3(0.400, 0.000, 0.200);
-        pal.bright = vec3(1.000, 0.267, 0.533);
-        pal.accent = vec3(1.000, 0.667, 0.800);
+        // Sakura — hot pink, deep magenta, crimson rose over dark plum
+        t.water = vec3(0.02, 0.0, 0.025);
+        t.ink1  = vec3(1.0, 0.08, 0.45);
+        t.ink2  = vec3(0.75, 0.0, 0.5);
+        t.ink3  = vec3(0.9, 0.0, 0.25);
     } else if (id == 2) {
-        // Poison
-        pal.deep   = vec3(0.000, 0.031, 0.016);
-        pal.mid    = vec3(0.000, 0.200, 0.000);
-        pal.bright = vec3(0.000, 1.000, 0.267);
-        pal.accent = vec3(0.533, 1.000, 0.000);
+        // Poison — acid green, deep emerald, toxic chartreuse over swamp
+        t.water = vec3(0.0, 0.015, 0.0);
+        t.ink1  = vec3(0.0, 1.0, 0.2);
+        t.ink2  = vec3(0.0, 0.6, 0.1);
+        t.ink3  = vec3(0.5, 0.9, 0.0);
     } else if (id == 3) {
-        // Molten
-        pal.deep   = vec3(0.031, 0.008, 0.000);
-        pal.mid    = vec3(0.267, 0.000, 0.000);
-        pal.bright = vec3(1.000, 0.267, 0.000);
-        pal.accent = vec3(1.000, 0.667, 0.000);
+        // Molten — deep red, pure orange, dark amber over volcanic black
+        t.water = vec3(0.02, 0.005, 0.0);
+        t.ink1  = vec3(0.85, 0.04, 0.0);
+        t.ink2  = vec3(1.0, 0.35, 0.0);
+        t.ink3  = vec3(0.8, 0.55, 0.0);
     } else if (id == 4) {
-        // Arctic
-        pal.deep   = vec3(0.000, 0.016, 0.063);
-        pal.mid    = vec3(0.000, 0.102, 0.267);
-        pal.bright = vec3(0.267, 0.667, 1.000);
-        pal.accent = vec3(0.667, 0.867, 1.000);
+        // Arctic — deep blue, saturated cyan, teal over dark ocean
+        t.water = vec3(0.0, 0.008, 0.03);
+        t.ink1  = vec3(0.0, 0.25, 1.0);
+        t.ink2  = vec3(0.0, 0.8, 0.9);
+        t.ink3  = vec3(0.0, 0.5, 0.7);
     } else if (id == 5) {
-        // Phantom
-        pal.deep   = vec3(0.016, 0.000, 0.031);
-        pal.mid    = vec3(0.133, 0.000, 0.267);
-        pal.bright = vec3(0.533, 0.000, 1.000);
-        pal.accent = vec3(0.733, 0.533, 1.000);
+        // Phantom — deep violet, electric purple, dark orchid over void
+        t.water = vec3(0.01, 0.0, 0.02);
+        t.ink1  = vec3(0.45, 0.0, 1.0);
+        t.ink2  = vec3(0.7, 0.0, 0.85);
+        t.ink3  = vec3(0.35, 0.1, 0.8);
     } else {
-        // Abyss (default)
-        pal.deep   = vec3(0.004, 0.004, 0.031);
-        pal.mid    = vec3(0.000, 0.067, 0.267);
-        pal.bright = vec3(0.000, 0.667, 0.800);
-        pal.accent = vec3(0.133, 0.400, 1.000);
+        // Abyss — teal, deep blue, dark cyan over black water
+        t.water = vec3(0.0, 0.005, 0.02);
+        t.ink1  = vec3(0.0, 0.55, 0.7);
+        t.ink2  = vec3(0.05, 0.2, 0.9);
+        t.ink3  = vec3(0.0, 0.7, 0.5);
     }
-    return pal;
+    return t;
 }
 
-// --- Approximate Oklab mixing for perceptually smooth transitions ---
-
-vec3 srgbToLinear(vec3 c) {
-    vec3 s = max(c, 0.0);
-    return mix(s / 12.92, pow((s + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), s));
-}
-
-vec3 linearToSrgb(vec3 c) {
-    vec3 s = max(c, 0.0);
-    return mix(s * 12.92, 1.055 * pow(s, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), s));
-}
-
-vec3 linearToOklab(vec3 c) {
-    float l = 0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b;
-    float m = 0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b;
-    float s = 0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b;
-
-    float l_ = pow(max(l, 0.0), 1.0 / 3.0);
-    float m_ = pow(max(m, 0.0), 1.0 / 3.0);
-    float s_ = pow(max(s, 0.0), 1.0 / 3.0);
-
-    return vec3(
-        0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
-        1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
-        0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_
-    );
-}
-
-vec3 oklabToLinear(vec3 lab) {
-    float l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
-    float m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;
-    float s_ = lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z;
-
-    float l = l_ * l_ * l_;
-    float m = m_ * m_ * m_;
-    float s = s_ * s_ * s_;
-
-    return vec3(
-         4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
-        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
-        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
-    );
-}
-
-vec3 mixOklab(vec3 a, vec3 b, float t) {
-    vec3 labA = linearToOklab(srgbToLinear(a));
-    vec3 labB = linearToOklab(srgbToLinear(b));
-    vec3 blended = mix(labA, labB, clamp(t, 0.0, 1.0));
-    return linearToSrgb(oklabToLinear(blended));
-}
-
-// --- Main ---
+// ─── Main ───────────────────────────────────────────────────────────
 
 void main() {
     vec2 uv = gl_FragCoord.xy / iResolution.xy;
     vec2 p = uv * 2.0 - 1.0;
     p.x *= iResolution.x / iResolution.y;
 
-    // Normalize controls
     float speed = max(iSpeed, 0.2);
     float flow = clamp(iFlow * 0.01, 0.0, 1.0);
     float turb = clamp(iTurbulence * 0.01, 0.0, 1.0);
@@ -170,65 +124,77 @@ void main() {
 
     float time = iTime * (0.04 + speed * 0.025);
 
-    // Spatial scale — low frequency for large LED-spanning structures
-    float scale = mix(1.5, 2.5, turb);
+    float scale = mix(1.2, 2.8, turb);
     vec2 st = p * scale;
+    float warpStr = mix(1.5, 5.0, flow);
 
-    // Warp strength — how aggressively the fluid folds
-    float warpAmt = mix(2.0, 5.0, flow);
+    // ── Three independent ink fields ──
+    // Each has different spatial seeds and time offsets so they move independently
+    float fieldA = warpedField(st, time, vec2(0.0, 0.0), vec2(1.7, 9.2), warpStr);
+    float fieldB = warpedField(st, time * 1.15, vec2(3.8, 7.1), vec2(6.3, 2.8), warpStr);
+    float fieldC = warpedField(st, time * 0.85, vec2(8.5, 4.6), vec2(2.1, 5.7), warpStr);
 
-    // === Double-nested domain warping (iq technique) ===
+    // ── Ink concentration — threshold creates distinct fronts ──
+    // flow raises the threshold → more ink coverage
+    float thresh = mix(0.55, 0.3, flow);
+    float edge = mix(0.15, 0.25, turb); // softness of the ink edge
 
-    // First warp layer: establishes large flow structures
-    vec2 q = vec2(
-        fbm(st + vec2(0.0, 0.0) + time * 0.80),
-        fbm(st + vec2(5.2, 1.3) + time * 1.00)
-    );
+    float inkA = smoothstep(thresh, thresh + edge, fieldA);
+    float inkB = smoothstep(thresh + 0.04, thresh + 0.04 + edge, fieldB);
+    float inkC = smoothstep(thresh + 0.08, thresh + 0.08 + edge, fieldC);
 
-    // Second warp layer: nested on q — this is the magic
-    vec2 r = vec2(
-        fbm(st + warpAmt * q + vec2(1.7, 9.2) + time * 1.20),
-        fbm(st + warpAmt * q + vec2(8.3, 2.8) + time * 1.00)
-    );
+    // Tendrils at ink fronts — steeper gradient = sharper tendril
+    float tendrilA = smoothstep(thresh - 0.02, thresh + 0.04, fieldA)
+                   - smoothstep(thresh + 0.04, thresh + edge * 0.7, fieldA);
+    float tendrilB = smoothstep(thresh + 0.02, thresh + 0.08, fieldB)
+                   - smoothstep(thresh + 0.08, thresh + edge * 0.7 + 0.04, fieldB);
 
-    // Final pattern value
-    float f = fbm(st + warpAmt * r);
+    // ── Compose over dark water ──
+    InkTheme theme = getTheme(iPalette);
+    vec3 color = theme.water;
 
-    // === Color mapping using flow structure ===
+    // Layer inks — each paints over with its own concentration as alpha
+    color = mix(color, theme.ink1, inkA * 0.95);
+    color = mix(color, theme.ink2, inkB * 0.9);
+    color = mix(color, theme.ink3, inkC * 0.85);
 
-    InkPalette pal = getPalette(iPalette);
+    // Tendrils at ink fronts — mix, don't add
+    color = mix(color, theme.ink1, tendrilA * 0.5);
+    color = mix(color, theme.ink2, tendrilB * 0.4);
 
-    // Base color from final pattern density
-    float density = clamp(f * f * 4.0, 0.0, 1.0);
-    vec3 color = mixOklab(pal.deep, pal.mid, density);
+    // ── Overlap zones — subtractive ink mixing ──
+    // Real inks darken when they overlap — multiply the colors together
+    float overlapAB = inkA * inkB;
+    float overlapBC = inkB * inkC;
+    float overlapAC = inkA * inkC;
 
-    // q-vector adds flow-following color variation
-    float qInfluence = clamp(length(q), 0.0, 1.0);
-    color = mixOklab(color, pal.bright, qInfluence * 0.7);
+    // Subtractive: multiply inks together (darkens, shifts hue)
+    vec3 mixAB = theme.ink1 * theme.ink2 * 2.0; // *2 to keep it visible (pure multiply is too dark)
+    vec3 mixBC = theme.ink2 * theme.ink3 * 2.0;
+    vec3 mixAC = theme.ink1 * theme.ink3 * 2.0;
 
-    // r-vector adds accent tones at fold boundaries
-    float rInfluence = clamp(r.y * 0.5 + 0.25, 0.0, 1.0);
-    color = mixOklab(color, pal.accent, rInfluence * 0.4);
+    color = mix(color, mixAB, overlapAB * 0.4);
+    color = mix(color, mixBC, overlapBC * 0.35);
+    color = mix(color, mixAC, overlapAC * 0.3);
 
-    // Cross-flow luminance variation from q direction
-    float flowAngle = atan(q.y, q.x + 0.0001);
-    float flowShimmer = 0.5 + 0.5 * sin(flowAngle * 3.0 + time * 2.0);
-    color = mixOklab(color, pal.bright, flowShimmer * density * 0.2);
+    // Triple overlap — deepest, richest tone (NOT white)
+    float tripleOverlap = inkA * inkB * inkC;
+    vec3 deepMix = (theme.ink1 + theme.ink2 + theme.ink3) * 0.4;
+    color = mix(color, deepMix, tripleOverlap * 0.5);
 
-    // === Saturation control ===
-    float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    color = mix(vec3(luminance), color, 0.4 + sat * 0.9);
+    // ── Internal variation — subtle luminance ripple within ink bodies ──
+    float internal = vnoise(st * 3.0 + time * 2.0);
+    float inAnyInk = max(max(inkA, inkB), inkC);
+    color *= 0.92 + internal * 0.12 * inAnyInk;
 
-    // === Tone mapping (HDR-like) ===
-    float exposure = 1.4 + flow * 0.3;
-    color = 1.0 - exp(-color * exposure);
+    // ── Saturation — gentle push, never above 1.2x ──
+    float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    color = mix(vec3(lum), color, 0.7 + sat * 0.5);
 
-    // Subtle vignette for depth
-    float vignette = smoothstep(1.5, 0.2, length(p));
-    color *= 0.82 + 0.18 * vignette;
+    // ── Gentle vignette ──
+    float vignette = smoothstep(1.6, 0.2, length(p));
+    color *= 0.85 + 0.15 * vignette;
 
-    // Final gamma
-    color = pow(clamp(color, 0.0, 1.0), vec3(0.95));
-
-    fragColor = vec4(color, 1.0);
+    // ── Output ──
+    fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }
