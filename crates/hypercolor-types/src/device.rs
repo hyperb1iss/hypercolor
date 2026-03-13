@@ -341,6 +341,9 @@ pub enum DeviceFamily {
     /// QMK keyboards with per-key HID RGB control.
     Qmk,
 
+    /// ROLI Blocks (Lightpad, LUMI Keys, Seaboard) via blocksd bridge.
+    Roli,
+
     /// Unknown or user-defined device family.
     Custom(String),
 }
@@ -359,6 +362,7 @@ impl DeviceFamily {
             Self::PrismRgb => "PrismRGB",
             Self::Asus => "ASUS",
             Self::Qmk => "QMK",
+            Self::Roli => "ROLI",
             Self::Custom(name) => name.as_str(),
         }
     }
@@ -380,6 +384,7 @@ impl DeviceFamily {
             Self::PrismRgb => "prismrgb".into(),
             Self::Asus => "asus".into(),
             Self::Qmk => "qmk".into(),
+            Self::Roli => "roli".into(),
             Self::Custom(name) => Cow::Owned(
                 name.chars()
                     .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
@@ -398,6 +403,7 @@ impl DeviceFamily {
         match self {
             Self::Wled => "wled",
             Self::Hue => "hue",
+            Self::Roli => "blocks",
             Self::Custom(_) => "custom",
             _ => "usb",
         }

@@ -463,8 +463,9 @@ impl Default for CaptureConfig {
 
 // ─── Discovery ───────────────────────────────────────────────────────────────
 
-/// Network device discovery: mDNS, WLED, and Hue.
+/// Network device discovery: mDNS, WLED, Hue, and blocksd.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct DiscoveryConfig {
     #[serde(default = "defaults::bool_true")]
     pub mdns_enabled: bool,
@@ -477,6 +478,14 @@ pub struct DiscoveryConfig {
 
     #[serde(default = "defaults::bool_true")]
     pub hue_scan: bool,
+
+    /// Enable ROLI Blocks discovery via blocksd bridge.
+    #[serde(default = "defaults::bool_true")]
+    pub blocks_scan: bool,
+
+    /// Custom socket path for blocksd (empty = auto-detect).
+    #[serde(default)]
+    pub blocks_socket_path: Option<String>,
 }
 
 impl Default for DiscoveryConfig {
@@ -486,6 +495,8 @@ impl Default for DiscoveryConfig {
             scan_interval_secs: defaults::scan_interval(),
             wled_scan: defaults::bool_true(),
             hue_scan: defaults::bool_true(),
+            blocks_scan: defaults::bool_true(),
+            blocks_socket_path: None,
         }
     }
 }

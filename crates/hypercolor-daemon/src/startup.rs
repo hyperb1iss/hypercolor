@@ -300,6 +300,17 @@ impl DaemonState {
             backend_manager_inner
                 .register_backend(Box::new(build_wled_backend(config, &runtime_state_path)));
         }
+        if config.discovery.blocks_scan {
+            let socket_path = config
+                .discovery
+                .blocks_socket_path
+                .as_ref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(hypercolor_core::device::BlocksBackend::default_socket_path);
+            backend_manager_inner.register_backend(Box::new(
+                hypercolor_core::device::BlocksBackend::new(socket_path),
+            ));
+        }
         backend_manager_inner.register_backend(Box::new(SmBusBackend::new()));
         backend_manager_inner.register_backend(Box::new(UsbBackend::with_protocol_config_store(
             usb_protocol_configs.clone(),
