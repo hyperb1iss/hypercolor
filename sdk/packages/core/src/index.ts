@@ -21,22 +21,17 @@ import './runtime'
 
 // ── Declarative API ─────────────────────────────────────────────────────
 
-// Effect functions
-export { effect } from './effects'
-export type { EffectFnOptions, ShaderContext } from './effects'
-export { canvas } from './effects'
-export type { CanvasFnOptions, DrawFn, FactoryFn } from './effects'
-
-// Control factories
-export { num, combo, toggle, color, hue, text } from './controls'
-export type { ControlSpec, ControlMap, ControlShorthand } from './controls'
-
-// Palette runtime
-export { createPaletteFn, getPalette, paletteNames, samplePalette, samplePaletteCSS } from './palette'
-export type { PaletteEntry, PaletteFn } from './palette'
-
 // Audio (pull model for canvas effects)
 export { getAudioData as audio } from './audio'
+export type { ControlMap, ControlShorthand, ControlSpec } from './controls'
+// Control factories
+export { color, combo, hue, num, text, toggle } from './controls'
+export type { CanvasFnOptions, DrawFn, EffectFnOptions, FactoryFn, ShaderContext } from './effects'
+// Effect functions
+export { canvas, effect } from './effects'
+export type { PaletteEntry, PaletteFn } from './palette'
+// Palette runtime
+export { createPaletteFn, getPalette, paletteNames, samplePalette, samplePaletteCSS } from './palette'
 
 // ── Control helpers ─────────────────────────────────────────────────────
 
@@ -64,12 +59,8 @@ export {
 
 // ── Base Classes ────────────────────────────────────────────────────────
 
-export type { EffectConfig } from './effects'
-export { BaseEffect } from './effects'
-export type { CanvasEffectConfig } from './effects'
-export { CanvasEffect } from './effects'
-export type { UniformValue, WebGLEffectConfig } from './effects'
-export { WebGLEffect } from './effects'
+export type { CanvasEffectConfig, EffectConfig, UniformValue, WebGLEffectConfig } from './effects'
+export { BaseEffect, CanvasEffect, WebGLEffect } from './effects'
 
 // ── Audio ───────────────────────────────────────────────────────────────
 
@@ -101,10 +92,10 @@ export {
 
 // ── Utilities ───────────────────────────────────────────────────────────
 
-export { createDebugLogger, debug, printStartupBanner } from './utils'
 export type { HSLColor, RGBColor, UpdateFunction } from './utils'
+export { createDebugLogger, debug, printStartupBanner } from './utils'
 
 // ── Initialization ──────────────────────────────────────────────────────
 
-export { initializeEffect } from './init'
 export type { InitializationMode, InitOptions } from './init'
+export { initializeEffect } from './init'

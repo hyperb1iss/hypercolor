@@ -52,9 +52,10 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
         this.audioReactive = config.audioReactive ?? false
         this.preserveDrawingBuffer =
             config.preserveDrawingBuffer ??
-            ((typeof window !== 'undefined'
+            (typeof window !== 'undefined'
                 ? (window as { __hypercolorPreserveDrawingBuffer?: boolean }).__hypercolorPreserveDrawingBuffer
-                : undefined) ?? false)
+                : undefined) ??
+            false
     }
 
     protected async initializeRenderer(): Promise<void> {
@@ -123,7 +124,7 @@ export abstract class WebGLEffect<T> extends BaseEffect<T> {
 
     /** Register a uniform. Call in createUniforms(). */
     protected registerUniform(name: string, value: UniformValue): void {
-        this.uniforms.set(name, { location: null, value, isInt: false })
+        this.uniforms.set(name, { isInt: false, location: null, value })
     }
 
     /** Set a uniform value (will be pushed on next draw). */

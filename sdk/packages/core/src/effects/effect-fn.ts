@@ -20,12 +20,12 @@
 
 import type { AudioData } from '../audio'
 import { getAudioData } from '../audio'
+import { comboboxValueToIndex, getControlValue, normalizePercentage, normalizeSpeed } from '../controls/helpers'
 import type { ControlMap } from '../controls/infer'
 import { inferControl } from '../controls/infer'
 import { deriveLabel, hasMagicTransform, resolveControlNames } from '../controls/names'
 import type { ControlSpec } from '../controls/specs'
 import { isControlSpec } from '../controls/specs'
-import { comboboxValueToIndex, getControlValue, normalizePercentage, normalizeSpeed } from '../controls/helpers'
 import { initializeEffect } from '../init'
 import type { UniformValue } from './webgl-effect'
 import { WebGLEffect } from './webgl-effect'
@@ -78,19 +78,17 @@ function resolveControls(controls: ControlMap): ResolvedControl[] {
     const resolved: ResolvedControl[] = []
 
     for (const [key, value] of Object.entries(controls)) {
-        const spec = isControlSpec(value)
-            ? value
-            : inferControl(key, value, deriveLabel(key))
+        const spec = isControlSpec(value) ? value : inferControl(key, value, deriveLabel(key))
 
         const names = resolveControlNames(key, spec)
         const values = spec.meta.values as string[] | undefined
 
         resolved.push({
+            isMagicTransform: hasMagicTransform(key) && spec.__type === 'combobox',
             key,
+            normalize: names.normalize,
             spec,
             uniformName: names.uniformName,
-            normalize: names.normalize,
-            isMagicTransform: hasMagicTransform(key) && spec.__type === 'combobox',
             values,
         })
     }
@@ -105,19 +103,14 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
     private options: EffectFnOptions
     private shaderCtx: ShaderContext | null = null
 
-    constructor(
-        name: string,
-        shader: string,
-        resolvedControls: ResolvedControl[],
-        options: EffectFnOptions,
-    ) {
+    constructor(name: string, shader: string, resolvedControls: ResolvedControl[], options: EffectFnOptions) {
         super({
+            audioReactive: options.audio ?? false,
+            fragmentShader: shader,
             id: name.toLowerCase().replace(/\s+/g, '-'),
             name,
-            fragmentShader: shader,
-            vertexShader: options.vertexShader,
-            audioReactive: options.audio ?? false,
             preserveDrawingBuffer: options.preserveDrawingBuffer,
+            vertexShader: options.vertexShader,
         })
         this.resolvedControls = resolvedControls
         this.options = options
@@ -126,10 +119,7 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
     protected initializeControls(): void {
         for (const ctrl of this.resolvedControls) {
             // Read initial value from window
-            ;(this as unknown as Record<string, unknown>)[ctrl.key] = getControlValue(
-                ctrl.key,
-                ctrl.spec.defaultValue,
-            )
+            ;(this as unknown as Record<string, unknown>)[ctrl.key] = getControlValue(ctrl.key, ctrl.spec.defaultValue)
         }
     }
 
@@ -149,11 +139,7 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
 
             // Apply magic combobox → index transform
             if (ctrl.isMagicTransform && ctrl.values) {
-                val = comboboxValueToIndex(
-                    val as string | number,
-                    ctrl.values,
-                    0,
-                )
+                val = comboboxValueToIndex(val as string | number, ctrl.values, 0)
             }
 
             values[ctrl.key] = val
@@ -241,14 +227,22 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
         if (!gl || !program) throw new Error('GL context not initialized')
         const self = this
         return {
-            get controls() { return self.getControlValues() },
-            get audio() { return getAudioData() },
+            get audio() {
+                return getAudioData()
+            },
+            get controls() {
+                return self.getControlValues()
+            },
             gl,
+            get height() {
+                return self.canvas?.height ?? 200
+            },
             program,
-            get width() { return self.canvas?.width ?? 320 },
-            get height() { return self.canvas?.height ?? 200 },
             registerUniform: (name, value) => self.registerUniform(name, value),
             setUniform: (name, value) => self.setUniform(name, value),
+            get width() {
+                return self.canvas?.width ?? 320
+            },
         }
     }
 }
@@ -294,29 +288,21 @@ function storeMetadata(def: EffectDef): void {
  * @param controls - Control map (shorthand or explicit factories)
  * @param options - Optional: description, author, audio, setup/frame hooks
  */
-export function effect(
-    name: string,
-    shader: string,
-    controls: ControlMap,
-    options?: EffectFnOptions,
-): void {
+export function effect(name: string, shader: string, controls: ControlMap, options?: EffectFnOptions): void {
     const resolved = resolveControls(controls)
     const opts = options ?? {}
 
     // Metadata-only mode: store definition and bail
-    if (
-        typeof globalThis !== 'undefined' &&
-        (globalThis as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__
-    ) {
+    if (typeof globalThis !== 'undefined' && (globalThis as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__) {
         storeMetadata({
-            name,
-            shader,
-            controls,
-            resolvedControls: resolved,
-            description: opts.description,
-            author: opts.author,
             audio: opts.audio,
+            author: opts.author,
+            controls,
+            description: opts.description,
+            name,
             presets: opts.presets,
+            resolvedControls: resolved,
+            shader,
         })
         return
     }

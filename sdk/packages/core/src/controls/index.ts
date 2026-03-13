@@ -19,10 +19,9 @@ export {
     normalizePercentage,
     normalizeSpeed,
 } from './helpers'
-
-// ── Declarative control API ──────────────────────────────────────────
-export { num, combo, toggle, color, hue, text, isControlSpec } from './specs'
-export type { ControlSpec, ControlTypeName, NormalizeHint } from './specs'
-export { inferControl } from './infer'
 export type { ControlMap, ControlMapValue, ControlShorthand } from './infer'
+export { inferControl } from './infer'
 export { deriveLabel, deriveUniformName } from './names'
+export type { ControlSpec, ControlTypeName, NormalizeHint } from './specs'
+// ── Declarative control API ──────────────────────────────────────────
+export { color, combo, hue, isControlSpec, num, text, toggle } from './specs'

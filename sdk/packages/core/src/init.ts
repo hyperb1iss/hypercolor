@@ -20,10 +20,7 @@ function detectInitMode(): InitializationMode {
  * Initialize a Hypercolor effect with proper lifecycle handling.
  * In metadata-only mode, stores the effect instance for build-time extraction.
  */
-export function initializeEffect(
-    initFunction: () => void,
-    options: InitOptions = {},
-): void {
+export function initializeEffect(initFunction: () => void, options: InitOptions = {}): void {
     const mode = options.mode ?? detectInitMode()
     if (mode === 'metadata-only') {
         // Store instance for metadata extraction by build tools
@@ -39,9 +36,13 @@ export function initializeEffect(
         return
     }
 
-    window.addEventListener('DOMContentLoaded', () => {
-        if ((window as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__) return
-        initFunction()
-        options.onReady?.()
-    }, { once: true })
+    window.addEventListener(
+        'DOMContentLoaded',
+        () => {
+            if ((window as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__) return
+            initFunction()
+            options.onReady?.()
+        },
+        { once: true },
+    )
 }

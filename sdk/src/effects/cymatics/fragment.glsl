@@ -1,7 +1,7 @@
 #version 300 es
-// Audio Pulse — 3D Audio Visualizer
-// Based on "3D Audio Visualizer" by @kishimisu (CC BY-NC-SA 4.0)
-// https://www.shadertoy.com/view/dtl3Dr
+// Cymatics — Cinematic Audio Visualizer
+// Sound made visible. Four modes: Lattice, Pulse Field, Vortex, Resonance.
+// Inspired by "3D Audio Visualizer" by @kishimisu (CC BY-NC-SA 4.0)
 precision highp float;
 
 out vec4 fragColor;
@@ -90,29 +90,36 @@ vec3 satBoost(vec3 c, float b) {
 }
 
 // ─── Color Schemes ───────────────────────────────────────────
+// Three-color cycling for richer palettes. Each scheme has an anchor,
+// complement, and accent that cycle at different rates for organic
+// color diversity without monotone flatness.
 // Combo indices: Aurora(0), Cyberpunk(1), Lava(2), Prism(3), Toxic(4), Vaporwave(5)
 
 vec3 scheme(vec3 id, float t) {
-    vec3 a, b;
+    vec3 a, b, c;
     if (iColorScheme == 1) {         // Cyberpunk
-        a = vec3(0.98, 0.05, 0.78); b = vec3(0.05, 0.75, 1.2);
+        a = vec3(0.98, 0.05, 0.78); b = vec3(0.05, 0.82, 1.15); c = vec3(0.92, 0.48, 0.08);
     } else if (iColorScheme == 2) {  // Lava
-        a = vec3(1.2, 0.25, 0.05);  b = vec3(0.9, 0.55, 0.05);
+        a = vec3(1.2, 0.15, 0.03);  b = vec3(1.0, 0.55, 0.04);  c = vec3(0.85, 0.18, 0.65);
     } else if (iColorScheme == 0) {  // Aurora
-        a = vec3(0.1, 0.8, 0.7);    b = vec3(0.2, 0.4, 1.2);
+        a = vec3(0.1, 0.85, 0.6);   b = vec3(0.25, 0.35, 1.2);  c = vec3(0.72, 0.25, 0.92);
     } else if (iColorScheme == 5) {  // Vaporwave
-        a = vec3(1.1, 0.45, 0.8);   b = vec3(0.35, 0.9, 1.2);
+        a = vec3(1.1, 0.35, 0.85);  b = vec3(0.3, 0.85, 1.15);  c = vec3(0.85, 0.72, 0.2);
     } else if (iColorScheme == 4) {  // Toxic
-        a = vec3(0.35, 1.15, 0.2);  b = vec3(0.05, 0.65, 0.95);
-    } else {                         // Prism
+        a = vec3(0.3, 1.15, 0.15);  b = vec3(0.05, 0.6, 0.95);  c = vec3(0.88, 0.95, 0.08);
+    } else {                         // Prism (full rainbow)
         return satBoost(0.6 + 0.6 * cos(id * 0.8 + vec3(0.0, 2.0, 4.0) + t), 0.9);
     }
-    float wave = 0.5 + 0.5 * sin(t + dot(id, vec3(0.7, 0.3, 0.55)));
-    vec3 c = mix(a, b, wave) + 0.15 * sin(vec3(0.0, 2.0, 4.0) + t * 0.8 + id.yzx * 0.6);
-    return satBoost(c, 0.8);
+    // Three-phase cycling — a↔b at one rate, blend toward c at another
+    float phase1 = 0.5 + 0.5 * sin(t + dot(id, vec3(0.7, 0.3, 0.55)));
+    float phase2 = 0.5 + 0.5 * sin(t * 0.73 + dot(id, vec3(0.35, 0.6, 0.25)) + 2.1);
+    vec3 ab = mix(a, b, phase1);
+    vec3 col = mix(ab, c, phase2 * 0.45);
+    col += 0.12 * sin(vec3(0.0, 2.0, 4.0) + t * 0.65 + id.yzx * 0.7);
+    return satBoost(col, 0.85);
 }
 
-// ─── Style 1: Pulse Field ────────────────────────────────────
+// ─── Style 1: Particle Field ────────────────────────────────
 // Ethereal lattice of glowing cubes flowing through 3D space.
 // Audio drives cube size and camera movement — not brightness.
 
@@ -179,8 +186,8 @@ vec3 pulseFieldStyle(vec2 uv, float time) {
     return col;
 }
 
-// ─── Style 0: Grid ───────────────────────────────────────────
-// Infinite flying grid of reactive cubes with positional twist.
+// ─── Style 0: Lattice ────────────────────────────────────────
+// Infinite flying lattice of reactive cubes with positional twist.
 // Audio drives box size and flight speed — not glow intensity.
 
 vec3 gridStyle(vec2 uv, float time) {
@@ -239,15 +246,20 @@ vec3 gridStyle(vec2 uv, float time) {
     return col;
 }
 
-// ─── Style 3: Waveform ───────────────────────────────────────
-// Layered frequency ribbons scrolling horizontally.
-// Audio drives wave height and phase — not band brightness.
+// ─── Style 3: Resonance ─────────────────────────────────────
+// 8 frequency ribbons with multi-octave organic wave shapes,
+// bass impact ripples, variable ribbon width, and spatial audio
+// modulation. Each layer responds to a different frequency band
+// with depth parallax and multi-glow rendering.
 
 vec3 waveformStyle(vec2 uv, float time) {
     float energy = motionEnergy();
     float pulse = motionPulse();
     float swell = clamp(iAudioSwell * 0.7 + pulse * 0.18, 0.0, 1.0);
     float momentum = clamp(iAudioMomentum * 0.85, -1.0, 1.0);
+    float bass = bassEnv();
+    float mid = midEnv();
+    float treble = trebleEnv();
     float fl = flowN();
     float cs = cSpd();
     float g = glowN();
@@ -256,36 +268,65 @@ vec3 waveformStyle(vec2 uv, float time) {
     vec2 w = rot2(iMotionTwist * 0.18 + momentum * 0.08) * uv;
     w += iMotionPan * vec2(0.6, 0.42);
     w /= max(zoom * (1.0 - energy * 0.08), 0.7);
-    w.x += time * (fl * 0.55 + momentum * 0.32) * (1.0 + energy * 0.35 + pulse * 0.25) + iFlowDrift * 0.42;
+    float scrollX = time * (fl * 0.55 + momentum * 0.32) * (1.0 + energy * 0.35 + pulse * 0.25) + iFlowDrift * 0.42;
+    w.x += scrollX;
     w.y += sin(iWarpPhase * 0.35 + time * (0.25 + energy * 0.18)) * (0.06 + energy * 0.03);
 
     vec3 col = vec3(0.0);
 
-    for (int layer = 0; layer < 4; layer++) {
+    for (int layer = 0; layer < 8; layer++) {
         float fi = float(layer);
-        float layerDepth = 1.0 - fi * 0.22;
-        float layerTime = time * (0.78 + fi * 0.14) * (1.0 + energy * 0.18 + pulse * 0.12);
-        float freqIdx = fract((w.x * 0.35 + layerTime * 0.2) + fi * 0.17);
-        float amp = pitch(freqIdx, 1.0 + swell * 0.5 + fi * 0.2);
+        float depth = 1.0 - fi * 0.10;
+        float bandCenter = fi / 7.0;
+        float bandAmp = pitch(bandCenter, 1.0 + swell * 0.5 + fi * 0.15);
 
-        // Audio drives wave DISPLACEMENT
-        float crest = sin(w.x * (3.1 + fi * 0.7) + layerTime * (1.8 + momentum * 0.16 + energy * 0.2) + iWarpPhase * (0.9 + fi * 0.22));
-        float height = 0.2 + swell * 0.22 + fi * 0.1 + amp * 0.4 + pulse * 0.08 + energy * 0.06;
-        float y = crest * height - fi * 0.32;
-        y += sin(w.x * 1.3 + iWarpPhase * 0.7 + fi) * (momentum * 0.16 + energy * 0.04);
+        // Parallax-shifted x for depth separation
+        float wx = w.x * (0.85 + fi * 0.04) + fi * 1.7;
+        float lt = time * (0.6 + fi * 0.12) * (1.0 + energy * 0.2 + pulse * 0.15);
 
-        // Band glow — stable brightness, audio drives position
-        float band = exp(-abs(w.y - y) * (150.0 - energy * 20.0 - pulse * 15.0)) * 0.42;
-        float sharp = exp(-abs(w.y - y) * (300.0 - energy * 50.0 - pulse * 30.0)) * 0.18;
+        // Multi-octave organic wave — each harmonic responds to a different band
+        float wave = 0.0;
+        wave += sin(wx * 1.8 + lt * 1.2 + bass * 2.8) * (0.35 + bass * 0.25);       // Fundamental — bass swell
+        wave += sin(wx * 3.7 - lt * 0.9 + fi * 1.1 + mid * 1.5) * (0.22 + mid * 0.15); // Body — mid-range
+        wave += sin(wx * 7.3 + lt * 2.2 + fi * 2.5) * (0.08 + treble * 0.18);        // Shimmer — treble
+        wave += sin(wx * 0.9 - lt * 0.4 + iWarpPhase * 0.6) * (0.18 + swell * 0.12); // Sub-octave — slow rolling
+        wave += sin(wx * 13.0 + lt * 3.5 + fi * 4.2) * pulse * 0.12;                 // Jitter — onset energy
 
-        vec3 sc = scheme(vec3(fi * 1.5, freqIdx * 10.0, layerTime), time * cs * 0.5 + fi * 0.2);
-        col += sc * (band + sharp) * layerDepth * g * 0.7;
+        // Bass impact ripple — propagates outward from beat events
+        float impactPhase = wx * 2.5 - pulse * 8.0;
+        wave += sin(impactPhase) * exp(-abs(impactPhase) * 0.3) * pulse * 0.4;
+
+        // Vertical positioning — spread layers across the viewport
+        float yCenter = (fi - 3.5) * 0.28;
+        float y = wave * (0.12 + bandAmp * 0.18 + energy * 0.04) + yCenter;
+
+        float dist = abs(w.y - y);
+
+        // Dynamic ribbon width — bass layers wider, treble thinner
+        float ribbonWidth = (0.026 - fi * 0.002) + bandAmp * 0.018 + bass * 0.008 * (1.0 - bandCenter);
+
+        // Multi-glow: sharp core + medium bloom + soft atmosphere
+        float core = exp(-dist * dist / (ribbonWidth * ribbonWidth)) * 0.55;
+        float bloom = exp(-dist * (50.0 - energy * 12.0)) * 0.22;
+        float atmosphere = exp(-dist * (12.0 - energy * 3.0)) * 0.06;
+
+        // Audio energy modulates brightness spatially along the ribbon
+        float xEnergy = pitch(fract(wx * 0.08 + lt * 0.05), 0.8);
+        float energyMod = 0.7 + xEnergy * 0.45 + pulse * 0.15;
+
+        // Peak crests glow brighter — rewards big wave displacement
+        float crestBoost = smoothstep(0.0, 0.3, abs(wave)) * 0.25;
+
+        float totalGlow = (core + bloom + atmosphere) * energyMod * (1.0 + crestBoost);
+
+        vec3 sc = scheme(vec3(fi * 1.5, bandCenter * 8.0, lt * 0.3), time * cs * 0.5 + fi * 0.35);
+        col += sc * totalGlow * depth * g * 0.65;
     }
 
-    // Background gradient
+    // Subtle background gradient
     vec3 bgLow = scheme(vec3(-2.0, 0.0, 0.0), time * 0.1);
     vec3 bgHigh = scheme(vec3(4.0, 1.5, 0.0), time * -0.05);
-    col += mix(bgLow, bgHigh, smoothstep(-0.8, 0.9, w.y)) * 0.04;
+    col += mix(bgLow, bgHigh, smoothstep(-1.2, 1.2, w.y)) * 0.03;
 
     return col;
 }

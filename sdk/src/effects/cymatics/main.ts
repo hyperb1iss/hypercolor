@@ -89,17 +89,17 @@ const state = {
 let lastTime = 0
 
 export default effect(
-    'Audio Pulse',
+    'Cymatics',
     shader,
     {
-        visualStyle: combo('Style', ['Grid', 'Pulse Field', 'Vortex', 'Waveform'], {
-            default: 'Pulse Field',
-            tooltip: 'Visualization style',
+        visualStyle: combo('Style', ['Lattice', 'Particle Field', 'Vortex', 'Resonance'], {
+            default: 'Particle Field',
+            tooltip: 'Visualization mode — each renders sound as a different spatial phenomenon',
             group: 'Scene',
         }),
         colorScheme: combo('Colors', ['Aurora', 'Cyberpunk', 'Lava', 'Prism', 'Toxic', 'Vaporwave'], {
             default: 'Cyberpunk',
-            tooltip: 'Color scheme',
+            tooltip: 'Color palette with three-phase cycling for richer hue diversity',
             group: 'Color',
         }),
         colorSpeed: num('Color Speed', [0, 200], 50, {
@@ -125,7 +125,7 @@ export default effect(
     },
     {
         audio: true,
-        description: 'Cinematic audio visualizer with motion-led audio response instead of beat flashes',
+        description: 'Sound made visible — cinematic audio visualizer with spring-physics camera, frequency-reactive geometry, and motion-led response',
 
         frame: (ctx, time) => {
             const dt = Math.min(lastTime > 0 ? time - lastTime : 0.016, 0.05)
@@ -314,10 +314,10 @@ export default effect(
                     flow: 75,
                     glowIntensity: 130,
                     sensitivity: 90,
-                    visualStyle: 'Waveform',
+                    visualStyle: 'Resonance',
                 },
                 description:
-                    'Synthwave highway at 2am — chrome reflections streak through rain as the arpeggios cascade forward endlessly',
+                    'Eight frequency ribbons streaming through neon rain — bass swells roll the low bands while treble shimmer crackles across the top',
                 name: 'Neon Meridian',
             },
             {
@@ -327,10 +327,10 @@ export default effect(
                     flow: 10,
                     glowIntensity: 85,
                     sensitivity: 35,
-                    visualStyle: 'Pulse Field',
+                    visualStyle: 'Particle Field',
                 },
                 description:
-                    'Ambient drone through stained glass — prismatic light breathes with glacial patience, each harmonic a new color',
+                    'Ambient drone through stained glass — prismatic particles breathe with glacial patience, each harmonic a new color',
                 name: 'Glass Cathedral',
             },
             {
@@ -340,10 +340,10 @@ export default effect(
                     flow: -45,
                     glowIntensity: 150,
                     sensitivity: 145,
-                    visualStyle: 'Grid',
+                    visualStyle: 'Lattice',
                 },
                 description:
-                    'Industrial grid flickers under acid-green data streams — percussive hits tear holes in the matrix',
+                    'Industrial lattice pulses under acid-green data streams — percussive hits tear holes in the matrix',
                 name: 'Toxic Mainframe',
             },
             {
@@ -353,11 +353,24 @@ export default effect(
                     flow: 20,
                     glowIntensity: 70,
                     sensitivity: 55,
-                    visualStyle: 'Pulse Field',
+                    visualStyle: 'Particle Field',
                 },
                 description:
                     'Jazz club at closing time — warm aurora ripples respond to brushed cymbals and upright bass with velvet restraint',
                 name: 'Aurora Lounge',
+            },
+            {
+                controls: {
+                    colorScheme: 'Vaporwave',
+                    colorSpeed: 65,
+                    flow: 40,
+                    glowIntensity: 110,
+                    sensitivity: 70,
+                    visualStyle: 'Resonance',
+                },
+                description:
+                    'Frequency ribbons unfurl like magnetic tape in zero gravity — each band a living seismograph of its octave, bass ripples propagating through pastel shimmer',
+                name: 'Chladni Plate',
             },
         ],
 

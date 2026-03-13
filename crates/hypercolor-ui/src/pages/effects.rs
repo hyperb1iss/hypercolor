@@ -15,26 +15,13 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
+use crate::style_utils::category_accent_rgb;
+
 const EFFECTS_PREVIEW_FPS_CAP: u32 = 24;
 const MIN_DETAIL_WIDTH: f64 = 260.0;
 const MAX_DETAIL_WIDTH: f64 = 1200.0;
 const MIN_CONTROLS_WIDTH: f64 = 220.0;
 const MAX_CONTROLS_WIDTH: f64 = 800.0;
-
-/// Category -> accent RGB string for inline styles.
-fn category_accent_rgb(category: &str) -> &'static str {
-    match category {
-        "ambient" => "128, 255, 234",
-        "audio" => "255, 106, 193",
-        "gaming" => "225, 53, 255",
-        "reactive" => "241, 250, 140",
-        "generative" => "80, 250, 123",
-        "interactive" => "130, 170, 255",
-        "productivity" => "255, 153, 255",
-        "utility" => "139, 133, 160",
-        _ => "225, 53, 255",
-    }
-}
 
 /// Category filter options.
 const CATEGORIES: &[&str] = &[

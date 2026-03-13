@@ -12,6 +12,7 @@ use crate::api;
 use crate::app::{EffectsContext, WsContext};
 use crate::components::canvas_preview::CanvasPreview;
 use crate::icons::*;
+use crate::style_utils::category_accent_rgb;
 use crate::toasts;
 use crate::ws::ConnectionState;
 
@@ -21,21 +22,6 @@ use crate::ws::ConnectionState;
 pub struct SidebarState {
     pub collapsed: ReadSignal<bool>,
     pub set_collapsed: WriteSignal<bool>,
-}
-
-/// Category -> accent RGB string for inline styles (fallback when no canvas data).
-fn category_accent_rgb(category: &str) -> &'static str {
-    match category {
-        "ambient" => "128, 255, 234",
-        "audio" => "255, 106, 193",
-        "gaming" => "225, 53, 255",
-        "reactive" => "241, 250, 140",
-        "generative" => "80, 250, 123",
-        "interactive" => "130, 170, 255",
-        "productivity" => "255, 153, 255",
-        "utility" => "139, 133, 160",
-        _ => "225, 53, 255",
-    }
 }
 
 // ── Live Palette Extraction ────────────────────────────────────────────────

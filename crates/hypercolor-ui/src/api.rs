@@ -207,19 +207,6 @@ pub struct CreateLogicalDeviceRequest {
     pub enabled: Option<bool>,
 }
 
-/// Request body for updating a logical device segment.
-#[derive(Debug, Serialize)]
-pub struct UpdateLogicalDeviceRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub led_start: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub led_count: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-}
-
 /// Request body for updating a device.
 #[derive(Debug, Serialize)]
 pub struct UpdateDeviceRequest {
@@ -720,32 +707,6 @@ pub async fn create_logical_device(
         .map_err(|e| format!("Network error: {e}"))?;
 
     if resp.status() != 200 && resp.status() != 201 {
-        return Err(format!("HTTP {}", resp.status()));
-    }
-
-    let envelope: ApiEnvelope<LogicalDeviceSummary> =
-        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
-
-    Ok(envelope.data)
-}
-
-/// Update a logical device segment.
-pub async fn update_logical_device(
-    id: &str,
-    req: &UpdateLogicalDeviceRequest,
-) -> Result<LogicalDeviceSummary, String> {
-    let url = format!("/api/v1/logical-devices/{id}");
-    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
-
-    let resp = Request::put(&url)
-        .header("Content-Type", "application/json")
-        .body(body)
-        .map_err(|e| format!("Request error: {e}"))?
-        .send()
-        .await
-        .map_err(|e| format!("Network error: {e}"))?;
-
-    if resp.status() != 200 {
         return Err(format!("HTTP {}", resp.status()));
     }
 

@@ -15,10 +15,6 @@ pub(crate) struct AttachmentDraftRow {
 
 impl AttachmentDraftRow {
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "used by the interactive attachment panel, not every test target"
-    )]
     pub(crate) fn empty() -> Self {
         Self {
             template_id: String::new(),

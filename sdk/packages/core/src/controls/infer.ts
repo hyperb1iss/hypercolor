@@ -14,12 +14,12 @@ import type { ControlSpec, ControlTypeName } from './specs'
 
 /** All valid shorthand value shapes. */
 export type ControlShorthand =
-    | readonly [number, number, number]                 // slider [min, max, default]
-    | readonly [number, number, number, number]         // slider with step [min, max, default, step]
-    | readonly string[]                                 // combobox
-    | boolean                                           // toggle
-    | number                                            // simple slider (0-100, value = default)
-    | string                                            // color (#hex) or text (non-hex)
+    | readonly [number, number, number] // slider [min, max, default]
+    | readonly [number, number, number, number] // slider with step [min, max, default, step]
+    | readonly string[] // combobox
+    | boolean // toggle
+    | number // simple slider (0-100, value = default)
+    | string // color (#hex) or text (non-hex)
 
 /** A control map value is either a shorthand or an explicit ControlSpec. */
 export type ControlMapValue = ControlShorthand | ControlSpec
@@ -35,9 +35,9 @@ export function inferControl(key: string, value: ControlShorthand, label: string
         return {
             __brand: 'ControlSpec',
             __type: 'number' as ControlTypeName,
-            label,
             defaultValue,
-            meta: { min, max, step },
+            label,
+            meta: { max, min, step },
         }
     }
 
@@ -46,8 +46,8 @@ export function inferControl(key: string, value: ControlShorthand, label: string
         return {
             __brand: 'ControlSpec',
             __type: 'combobox' as ControlTypeName,
-            label,
             defaultValue: value[0],
+            label,
             meta: { values: [...value] },
         }
     }
@@ -57,8 +57,8 @@ export function inferControl(key: string, value: ControlShorthand, label: string
         return {
             __brand: 'ControlSpec',
             __type: 'boolean' as ControlTypeName,
-            label,
             defaultValue: value,
+            label,
             meta: {},
         }
     }
@@ -68,8 +68,8 @@ export function inferControl(key: string, value: ControlShorthand, label: string
         return {
             __brand: 'ControlSpec',
             __type: 'color' as ControlTypeName,
-            label,
             defaultValue: value,
+            label,
             meta: {},
         }
     }
@@ -79,8 +79,8 @@ export function inferControl(key: string, value: ControlShorthand, label: string
         return {
             __brand: 'ControlSpec',
             __type: 'textfield' as ControlTypeName,
-            label,
             defaultValue: value,
+            label,
             meta: {},
         }
     }
@@ -90,15 +90,15 @@ export function inferControl(key: string, value: ControlShorthand, label: string
         return {
             __brand: 'ControlSpec',
             __type: 'number' as ControlTypeName,
-            label,
             defaultValue: value,
-            meta: { min: 0, max: 100 },
+            label,
+            meta: { max: 100, min: 0 },
         }
     }
 
     throw new Error(
         `Cannot infer control type for "${key}". ` +
-        `Expected [min, max, default], string[], boolean, '#hex', string, or number. ` +
-        `Got: ${JSON.stringify(value)}`
+            `Expected [min, max, default], string[], boolean, '#hex', string, or number. ` +
+            `Got: ${JSON.stringify(value)}`,
     )
 }

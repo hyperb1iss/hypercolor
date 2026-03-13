@@ -16,20 +16,14 @@ uniform int iColorScheme;
 uniform float iCorePulse;
 uniform float iFlowDrive;
 uniform float iColorAccent;
-uniform float iColorContrast;
 uniform float iBandSharpness;
 uniform float iParticleDensity;
-uniform float iParticleSize;
-uniform float iParticleColorMix;
-uniform float iHarmonicColor;
 
 // Control uniforms (animation — consumed by JS frame hook, not used in shader)
 uniform float iTimeSpeed;
 uniform float iRotationSpeed;
 uniform float iWanderSpeed;
-uniform float iTimeSensitivity;
-uniform float iBassPull;
-uniform float iTreblePull;
+uniform float iBeatFlash;
 
 // Audio uniforms (auto-provided by SDK)
 uniform float iAudioLevel;
@@ -60,6 +54,7 @@ uniform float iCoreEnergy;
 uniform float iIrisEnergy;
 uniform vec2 iSubBassDisplace;
 uniform float iBeatAnticipation;
+uniform float iBeatFlashOnset;
 
 #define PI radians(180.0)
 #define TAU (PI * 2.0)
@@ -118,7 +113,7 @@ vec3 getCyberpunk(float g, float l, float t) {
     float glitch = sin(t * 0.6 + g * 7.0) * 0.5 + 0.5;
     col += vec3(0.05, 0.0, 0.1) * glitch;
 
-    float greenPulse = clamp(iAudioBass * 0.25 + iAudioBeatPulse * 0.2, 0.0, 0.35);
+    float greenPulse = clamp(iAudioBass * 0.25 + iBeatFlashOnset * 0.2, 0.0, 0.35);
     col += vec3(0.1, 0.75, 0.15) * greenPulse;
 
     float yellowPulse = clamp(iAudioTreble * 0.3 + iAudioMomentum * 0.2, 0.0, 0.4);
@@ -193,7 +188,7 @@ vec3 getPhosphor(float g, float l, float t) {
     vec3 blue = vec3(0.05, 0.2, 0.8);
     vec3 magenta = vec3(0.8, 0.1, 0.6);
     vec3 col = mix(green, blue, pow(1.0 - g, 2.0));
-    col += magenta * clamp(iAudioTreble * 0.25 + iAudioBeatPulse * 0.15, 0.0, 0.3);
+    col += magenta * clamp(iAudioTreble * 0.25 + iBeatFlashOnset * 0.15, 0.0, 0.3);
     col += blue * clamp(iAudioMid * 0.15, 0.0, 0.2);
     float scan = sin(g * PI * 4.0 + t) * 0.1 + 0.85;
     col *= scan;
@@ -271,13 +266,13 @@ vec3 getHarmonic(float g, float l, float t) {
     float hue = fract(baseHue + g * hueSpread);
 
     // Saturation: higher on beats, reduced during minor chords for moodiness
-    float sat = 0.6 + iAudioOnsetPulse * 0.25 + iAudioFluxBands.y * 0.15;
+    float sat = 0.6 + iBeatFlashOnset * 0.25 + iAudioFluxBands.y * 0.15;
     sat *= 0.85 + iAudioChordMood * 0.15;
     sat = clamp(sat, 0.3, 0.95);
 
     // Lightness: brighter core, modulated by spectral brightness
     float lit = 0.35 + l * 0.25 + iAudioBrightness * 0.15;
-    lit += iAudioOnsetPulse * 0.15;
+    lit += iBeatFlashOnset * 0.15;
     lit = clamp(lit, 0.2, 0.7);
 
     vec3 col = hsl2rgb(hue, sat, lit);
@@ -301,7 +296,7 @@ vec3 getSchemeColor(float g, float l, float t) {
     if (iColorScheme == 3) {
         vec3 base = getGoldBlue(g, l, t);
         vec3 harmonic = getHarmonic(g, l, t);
-        return mix(base, harmonic, iHarmonicColor);
+        return mix(base, harmonic, 0.92);
     }
     if (iColorScheme == 2) return getGoldBlue(g, l, t);
     if (iColorScheme == 1) return getCyberpunk(g, l, t);
@@ -397,7 +392,8 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
     uv = mix(uv, flowedUV, flowBlend);
 
     // Additional folding based on audio
-    float foldStrength = 0.15 + iAudioMomentum * 0.1 + iAudioOnsetPulse * 0.2;
+    float beatMix = pow(clamp(iBeatFlash * 0.01, 0.0, 1.0), 0.8);
+    float foldStrength = 0.12 + iAudioMomentum * 0.18 + iAudioOnsetPulse * (0.04 + beatMix * 0.4);
     mat2 foldMat = mat2(1.0, foldStrength, foldStrength * -0.6, 1.0);
     vec2 foldUV = foldMat * uv;
     float x = foldUV.x;
@@ -431,22 +427,23 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
 
     float irisStrength = clamp(iIrisStrength, 0.2, 4.0);
     float corePulse = clamp(iCorePulse, 0.1, 3.0);
-    float flowDrive = clamp(iFlowDrive, 0.2, 2.5);
+    float flowDrive = clamp(iFlowDrive, 0.0, 4.5);
+    float beatFlash = clamp(iBeatFlashOnset, 0.0, 1.6);
 
     // Use onset pulse for crisp beat response
-    float beatPush = (0.1 + iAudioOnsetPulse * 0.5 + iAudioBass * 0.15) * flowDrive;
+    float beatPush = (0.05 + iAudioOnsetPulse * (0.15 + beatMix * 0.95) + iAudioBass * 0.22) * (0.35 + flowDrive);
 
-    float paletteShift = iAudioOnsetPulse * 0.1 + iAudioMomentum * 0.05 + iAudioHarmonicHue * 0.02;
+    float paletteShift = iAudioOnsetPulse * (0.02 + beatMix * 0.12) + iAudioMomentum * 0.08 + iAudioHarmonicHue * 0.02;
     // Use gFlowed for streaming color bands
     vec3 rgb = getSchemeColor(fract(gFlowed + paletteShift), l * (1.0 + bassEnergy * 0.3), t + iAudioMid * 0.4);
 
     // Audio boost with onset pulse for punch and spectral brightness for shimmer
-    float audioBoost = 0.8 + iAudioLevel * 0.5 + iAudioOnsetPulse * 0.5 + energyMix * 0.25 + iAudioBrightness * 0.15;
+    float audioBoost = 0.65 + iAudioLevel * 0.75 + beatFlash * 0.6 + energyMix * 0.35 + iAudioBrightness * 0.2;
     rgb *= audioBoost;
 
-    float bandSharp = clamp(iBandSharpness, 0.4, 2.5);
-    float w = (0.06 + iAudioOnsetPulse * 0.08 + iAudioFluxBands.x * 0.06) * bandSharp;
-    float d = 0.25 + iAudioSwell * 0.25 + iAudioFluxBands.y * 0.25;
+    float bandSharp = clamp(iBandSharpness, 0.25, 3.6);
+    float w = (0.025 + iAudioOnsetPulse * (0.02 + beatMix * 0.14) + iAudioFluxBands.x * 0.08) * bandSharp;
+    float d = 0.18 + iAudioSwell * 0.35 + iAudioFluxBands.y * 0.35 + flowDrive * 0.06;
 
     vec3 c = vec3(0.0);
     c = max(c, gm(rgb, mc, -t, w, d, false));
@@ -457,42 +454,48 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
     c += rgb * ribbon * 0.08 * (trebleEnergy + iAudioFluxBands.z * 0.4);
 
     // Dots pulse with bass flux
-    float dotBeat = 0.8 + iBeatZoom * 0.6 + iAudioOnsetPulse * 0.6;
+    float dotBeat = 0.8 + iBeatZoom * 0.6 + iBeatFlashOnset * 0.6;
     float dotGuard = clamp(0.35 / (px + 1e-3), 0.8, 2.4);
     float dotSize = px * (1.5 + iAudioFluxBands.x * 3.0) * dotBeat * dotGuard;
     c += rgb * ds(uv, se, t / TAU, dotSize, 2.2, 0.0) * (0.7 + iAudioFluxBands.x);
     c += rgb * ds(uv, -se, t / TAU, dotSize, 2.2, PI) * (0.7 + iAudioFluxBands.z);
 
     // Particle system with spectral-flux-driven turbulence
-    vec2 particleUV = uv * (1.0 + flowDrive * 0.5);
+    float texture = clamp(iParticleDensity, 0.0, 1.25);
+    vec2 particleUV = uv * (1.0 + flowDrive * 0.45 + texture * 0.55);
     float particleAngle = atan(particleUV.y, particleUV.x);
     float particleRadius = length(particleUV);
     float streakPhase = fract(particleRadius - t * 0.5);
     float roughness = iAudioSpectralFlux * 0.7;
-    float turbulence = 8.0 + roughness * 4.0;
+    float turbulence = 7.0 + roughness * 5.0 + texture * 5.5;
     float particleNoise = sin(particleAngle * turbulence + t * 1.2 + particleRadius * 6.0);
-    float particleMask = smoothstep(0.08, 0.0, abs(fract(particleNoise) - 0.5));
+    float streakWidth = mix(0.42, 0.04, texture);
+    float particleMask = smoothstep(streakWidth, 0.0, abs(fract(particleNoise) - 0.5));
     particleMask *= smoothstep(0.0, 0.8, 1.0 - particleRadius);
-    float densityControl = clamp(iParticleDensity, 0.05, 3.0);
-    particleMask *= smoothstep(0.0, 1.0, densityControl);
-    particleMask *= smoothstep(0.0, 1.0, streakPhase);
-    float hueShift = clamp(iParticleColorMix, 0.05, 1.2);
-    vec3 particleColor = mix(rgb, getSchemeColor(fract(g * (0.2 + hueShift) - particleNoise * 0.05), l * 0.3, t + hueShift), hueShift);
-    float particleEnergy = (0.25 + iAudioOnsetPulse * 0.4 + iAudioFluxBands.z * 0.3) * densityControl;
-    particleMask *= clamp(iParticleSize, 0.2, 2.0);
+    particleMask *= mix(0.25, 1.1, texture);
+    particleMask *= smoothstep(0.0, 1.0, streakPhase * (0.4 + texture * 0.9));
+    float hueShift = 0.12 + texture * 1.15;
+    vec3 particleColor = mix(
+        rgb,
+        getSchemeColor(fract(g * (0.2 + hueShift) - particleNoise * 0.06), l * (0.25 + texture * 0.2), t + hueShift * 1.6),
+        0.15 + texture * 0.8
+    );
+    float particleEnergy = (0.04 + beatFlash * 0.55 + iAudioFluxBands.z * 0.4) * (0.15 + texture * 1.35);
+    float particleSize = mix(0.45, 2.7, texture);
+    particleMask *= particleSize;
     c += particleColor * particleMask * particleEnergy;
 
     // Outward beat rings triggered by onset detection
     float tempo = max(iAudioTempo / 60.0, 0.5);
     float ringPhase = fract(t * tempo * 0.1 + iAudioBeat * 0.5);
     float ringRadius = ringPhase * (1.2 + flowDrive * 0.4);
-    float ringWidth = 0.03 + iAudioOnsetPulse * 0.05;
+    float ringWidth = 0.018 + iAudioOnsetPulse * (0.015 + beatMix * 0.08);
     float ring = smoothstep(ringWidth, 0.0, abs(l - ringRadius));
     vec3 ringColor = mix(rgb, getSchemeColor(fract(g * 0.5 + ringPhase), l, t), 0.4);
-    c += ringColor * ring * (0.2 + iAudioOnsetPulse * 0.5);
+    c += ringColor * ring * (0.08 + beatFlash * 0.7);
 
     // Core pulse with asymmetric smoothing
-    float coreWidth = 0.12 + corePulse * 0.05;
+    float coreWidth = 0.08 + corePulse * 0.07;
     float core = exp(-pow(uv.x * corePulse, 2.0) / max(coreWidth, 0.05)) * exp(-l * 0.8);
     float coreBeat = iCoreEnergy;
     vec2 flowUv = uv * mat2(0.8, -0.6, 0.6, 0.8) + vec2(flowDrive * t * 0.2, t * (0.15 + beatPush * 0.05 + tempo * 0.02));
@@ -501,18 +504,18 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
     float vascularMask = smoothstep(-0.3, 0.6, vascular);
     vec3 coreColor = getSchemeColor(fract(0.5 + paletteShift * 0.5 + vascular * 0.05), l * 0.2, t * 0.7);
     vec3 coreTexture = mix(coreColor, rgb, 0.3);
-    c += coreTexture * (core * 0.6 + vascularMask * 0.2) * coreBeat * (0.25 + corePulse * 0.18);
+    c += coreTexture * (core * 0.85 + vascularMask * (0.12 + corePulse * 0.06)) * coreBeat * (0.1 + corePulse * 0.22);
 
     // Iris ripples driven by mid-frequency flux
-    float irisFrequency = 8.0 + irisStrength * 6.0 + iAudioFluxBands.x * 4.0;
+    float irisFrequency = 5.5 + irisStrength * 7.5 + iAudioFluxBands.x * 5.0;
     float irisFlowOffset = iRadialFlow * 0.8 + flowDrive * 0.6 + iBeatZoom * 0.2;
-    float irisTemporal = 0.5 + flowDrive * 0.4 + iAudioFluxBands.y * 0.6 + iAudioOnsetPulse * 0.3;
+    float irisTemporal = 0.35 + flowDrive * 0.6 + iAudioFluxBands.y * 0.8 + iAudioOnsetPulse * (0.04 + beatMix * 0.9);
     float irisAngleWarp = sin(angle * 3.0 + iRadialFlow * 0.4) * 0.15;
     float irisWave = sin((l + irisFlowOffset + irisAngleWarp + beatPush) * irisFrequency - t * irisTemporal - iBeatRotation * 0.35);
-    float irisMask = smoothstep(0.35, 0.95, abs(irisWave));
+    float irisMask = smoothstep(0.15, 0.96, abs(irisWave));
     float irisFeather = exp(-abs(irisWave) * (2.0 + irisStrength));
-    c += rgb * irisMask * 0.2 * iIrisEnergy;
-    c += rgb * irisFeather * 0.15 * iIrisEnergy;
+    c += rgb * irisMask * (0.08 + irisStrength * 0.05) * iIrisEnergy;
+    c += rgb * irisFeather * (0.05 + irisStrength * 0.035) * iIrisEnergy;
 
     c = max(c, 0.0);
 
@@ -529,11 +532,12 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
     vec3 aberrated = vec3(fringeR.r, c.g, fringeB.b);
     c = mix(c, aberrated, 0.25 + iAudioFluxBands.z * 0.3);
 
-    float contrast = clamp(iColorContrast, 0.6, 2.3);
+    float accent = clamp(iColorAccent, 0.45, 2.4);
+    float accentNorm = saturate((accent - 0.45) / 1.95);
+    float contrast = mix(0.85, 2.45, accentNorm);
     float pivot = dot(c, vec3(0.2126, 0.7152, 0.0722));
     c = max((c - vec3(pivot)) * contrast + vec3(pivot), 0.0);
-    float accent = clamp(iColorAccent, 0.5, 1.8);
-    c = mix(c, normalize(c + 1e-4) * accent * 0.7 + c * 0.3, 0.4);
+    c = mix(c, normalize(c + 1e-4) * accent * 0.82 + c * 0.18, 0.5 + accentNorm * 0.25);
 
     vec2 fabricUv = uv * (0.65 + iScale * 0.2);
     float weaveA = sin(dot(fabricUv, vec2(1.7, -1.2)) + t * (0.4 + midEnergy * 0.6));
@@ -542,28 +546,30 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
     float weaveAA = max(fwidth(weaveA), fwidth(weaveB));
     float weaveMask = smoothstep(-0.25 - weaveAA * 3.0, 0.25 + weaveAA * 3.0, weave);
     vec3 weaveColor = getSchemeColor(fract(g * 0.35 + weaveMask * 0.25 + paletteShift * 0.4), l * 0.5 + 0.2, t * 0.5);
-    c = mix(c, weaveColor * (0.8 + energyMix * 0.4), (0.15 + energyMix * 0.25) * weaveMask);
+    float weaveMix = texture * (0.1 + energyMix * 0.4);
+    c = mix(c, weaveColor * (0.6 + energyMix * 0.6), weaveMix * weaveMask);
 
     float microSheen = sin(dot(uv, vec2(3.2, -2.7)) - t * (0.6 + trebleEnergy * 0.4));
     float microAA = fwidth(microSheen);
     microSheen = smoothstep(-0.18 - microAA * 2.0, 0.18 + microAA * 2.0, microSheen) - 0.5;
-    c += rgb * microSheen * 0.08 * (0.5 + energyMix * 0.5);
+    c += rgb * microSheen * (0.03 + texture * 0.12) * (0.4 + energyMix * 0.6);
 
     // Glow with asymmetric smoothing - fast flash, slow fade
-    float glowGain = clamp(iGlowIntensity, 0.05, 0.8);
-    float glowFalloff = mix(7.0, 3.0, glowGain);
+    float glowGain = clamp(iGlowIntensity, 0.02, 1.35);
+    float glowNorm = saturate(glowGain / 1.35);
+    float glowFalloff = mix(9.0, 2.15, glowNorm);
     float glow = exp(-l * glowFalloff) * glowGain;
     glow *= iGlowEnergy;
-    c += rgb * glow * 0.9;
+    c += rgb * glow * (0.6 + glowNorm * 0.9);
 
-    c = preserveSaturation(c, saturate(fluxEnergy + iAudioMomentum * 0.5));
+    c = preserveSaturation(c, saturate(fluxEnergy + iAudioMomentum * 0.4 + accentNorm * 0.35));
     // Limit luminance and re-saturate for RGB hardware
     float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
-    float clampLuma = min(luma, 0.65 + iColorContrast * 0.08);
+    float clampLuma = min(luma, 0.55 + accentNorm * 0.35);
     if (luma > 0.0) {
         c *= clampLuma / luma;
     }
-    c = preserveSaturation(c, 0.5 + energyMix * 0.3);
+    c = preserveSaturation(c, 0.35 + accentNorm * 0.35 + energyMix * 0.25);
     float vignette = smoothstep(1.35, 0.2, length(uv));
     c *= mix(0.65, 1.0, vignette);
     c = acesToneMap(c);

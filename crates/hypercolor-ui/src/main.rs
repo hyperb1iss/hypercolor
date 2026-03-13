@@ -4,6 +4,7 @@ mod components;
 mod icons;
 mod layout_geometry;
 mod pages;
+mod style_utils;
 mod toasts;
 mod ws;
 

@@ -1,15 +1,12 @@
 //! Shared layout geometry helpers for default footprints and proportional resizing.
-#![allow(
-    dead_code,
-    reason = "The geometry layer is being integrated into the editor incrementally."
-)]
+#![allow(dead_code, reason = "Some helpers are pre-built for upcoming editor features.")]
 
 use std::f32::consts::FRAC_PI_2;
 
 use hypercolor_types::attachment::{AttachmentCategory, AttachmentSuggestedZone};
 use hypercolor_types::spatial::{
-    Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, Orientation,
-    SamplingMode, SpatialLayout, StripDirection, Winding, ZoneShape,
+    Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, Orientation, SamplingMode,
+    SpatialLayout, StripDirection, Winding, ZoneShape,
 };
 
 use crate::api::{ZoneSummary, ZoneTopologySummary};
@@ -380,7 +377,9 @@ pub(crate) fn drag_zone_to_position(
         .zones
         .iter()
         .enumerate()
-        .filter_map(|(index, zone)| (zone.group_id.as_deref() == Some(group_id.as_str())).then_some(index))
+        .filter_map(|(index, zone)| {
+            (zone.group_id.as_deref() == Some(group_id.as_str())).then_some(index)
+        })
         .collect::<Vec<_>>();
 
     if member_indices.len() <= 1 {
@@ -415,10 +414,8 @@ pub(crate) fn drag_zone_to_position(
 
     for index in member_indices {
         let zone = &mut layout.zones[index];
-        zone.position = NormalizedPosition::new(
-            zone.position.x + clamped_dx,
-            zone.position.y + clamped_dy,
-        );
+        zone.position =
+            NormalizedPosition::new(zone.position.x + clamped_dx, zone.position.y + clamped_dy);
     }
 
     true
@@ -638,12 +635,7 @@ fn push2_zone_geometry(
 fn push2_transport_positions() -> Vec<NormalizedPosition> {
     normalize_points_in_rect(
         PUSH2_TRANSPORT_RECT,
-        &[
-            (39.0, 1030.0),
-            (39.0, 965.0),
-            (47.0, 128.0),
-            (108.0, 128.0),
-        ],
+        &[(39.0, 1030.0), (39.0, 965.0), (47.0, 128.0), (108.0, 128.0)],
     )
 }
 
@@ -960,10 +952,7 @@ fn grid_points(points: &[(u32, u32)], grid: VisualUnits) -> Vec<NormalizedPositi
         .collect()
 }
 
-fn normalize_points_in_rect(
-    rect: FootprintRect,
-    points: &[(f32, f32)],
-) -> Vec<NormalizedPosition> {
+fn normalize_points_in_rect(rect: FootprintRect, points: &[(f32, f32)]) -> Vec<NormalizedPosition> {
     points
         .iter()
         .map(|&(x, y)| {
@@ -993,7 +982,10 @@ impl FootprintRect {
         }
     }
 
-    fn to_canvas(self, footprint_size: NormalizedPosition) -> (NormalizedPosition, NormalizedPosition) {
+    fn to_canvas(
+        self,
+        footprint_size: NormalizedPosition,
+    ) -> (NormalizedPosition, NormalizedPosition) {
         let size = NormalizedPosition::new(
             footprint_size.x * (self.width / PUSH2_FOOTPRINT_GRID.width),
             footprint_size.y * (self.height / PUSH2_FOOTPRINT_GRID.height),
@@ -1275,12 +1267,14 @@ fn clamp_strip_size(
 
 fn clamp_zone_center(position: NormalizedPosition, size: NormalizedPosition) -> NormalizedPosition {
     NormalizedPosition::new(
-        position
-            .x
-            .clamp(size.x.mul_add(0.5, 0.0).min(1.0), (1.0 - size.x * 0.5).max(0.0)),
-        position
-            .y
-            .clamp(size.y.mul_add(0.5, 0.0).min(1.0), (1.0 - size.y * 0.5).max(0.0)),
+        position.x.clamp(
+            size.x.mul_add(0.5, 0.0).min(1.0),
+            (1.0 - size.x * 0.5).max(0.0),
+        ),
+        position.y.clamp(
+            size.y.mul_add(0.5, 0.0).min(1.0),
+            (1.0 - size.y * 0.5).max(0.0),
+        ),
     )
 }
 

@@ -23,24 +23,20 @@
  * ```
  */
 
+import { comboboxValueToIndex, getControlValue, normalizePercentage, normalizeSpeed } from '../controls/helpers'
 import type { ControlMap } from '../controls/infer'
 import { inferControl } from '../controls/infer'
 import { deriveLabel, hasMagicTransform, resolveControlNames } from '../controls/names'
 import { isControlSpec } from '../controls/specs'
-import { comboboxValueToIndex, getControlValue, normalizePercentage, normalizeSpeed } from '../controls/helpers'
-import { createPaletteFn } from '../palette'
-import type { PaletteFn } from '../palette'
 import { initializeEffect } from '../init'
-import type { PresetDef } from './effect-fn'
+import type { PaletteFn } from '../palette'
+import { createPaletteFn } from '../palette'
 import { CanvasEffect } from './canvas-effect'
+import type { PresetDef } from './effect-fn'
 
 // ── Types ────────────────────────────────────────────────────────────────
 
-export type DrawFn = (
-    ctx: CanvasRenderingContext2D,
-    time: number,
-    controls: Record<string, unknown>,
-) => void
+export type DrawFn = (ctx: CanvasRenderingContext2D, time: number, controls: Record<string, unknown>) => void
 
 export type FactoryFn = () => DrawFn
 
@@ -70,22 +66,20 @@ function resolveCanvasControls(controls: ControlMap): ResolvedCanvasControl[] {
 
     for (const [key, value] of Object.entries(controls)) {
         const isExplicitSpec = isControlSpec(value)
-        const spec = isExplicitSpec
-            ? value
-            : inferControl(key, value, deriveLabel(key))
+        const spec = isExplicitSpec ? value : inferControl(key, value, deriveLabel(key))
 
         const names = resolveControlNames(key, spec)
         const isCombo = spec.__type === 'combobox'
         const values = spec.meta.values as string[] | undefined
 
         resolved.push({
-            key,
-            spec,
-            normalize: names.normalize,
             isMagicTransform: hasMagicTransform(key) && isCombo && !isExplicitSpec,
             // Preserve the legacy shorthand `palette: ['A', 'B']` -> palette function
             // while letting explicit `combo('Palette', ...)` controls stay string-valued.
             isPaletteFunction: key === 'palette' && isCombo && !isExplicitSpec,
+            key,
+            normalize: names.normalize,
+            spec,
             values,
         })
     }
@@ -113,9 +107,7 @@ function resolveValues(
 
         // Palette → function (canvas-specific behavior)
         if (ctrl.isPaletteFunction && ctrl.values) {
-            const paletteName = typeof val === 'string'
-                ? val
-                : (ctrl.values[0] ?? 'SilkCircuit')
+            const paletteName = typeof val === 'string' ? val : (ctrl.values[0] ?? 'SilkCircuit')
             let fn = paletteFnCache.get(paletteName)
             if (!fn) {
                 fn = createPaletteFn(paletteName)
@@ -159,10 +151,10 @@ class GeneratedCanvasEffect extends CanvasEffect<Record<string, unknown>> {
         options: CanvasFnOptions,
     ) {
         super({
+            canvasHeight: options.height,
+            canvasWidth: options.width,
             id: name.toLowerCase().replace(/\s+/g, '-'),
             name,
-            canvasWidth: options.width,
-            canvasHeight: options.height,
         })
         this.resolvedControls = resolvedControls
         if (isFactory) {
@@ -246,20 +238,17 @@ export function canvas(
     const opts = options ?? {}
     const isFactory = renderFn.length === 0
 
-    if (
-        typeof globalThis !== 'undefined' &&
-        (globalThis as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__
-    ) {
+    if (typeof globalThis !== 'undefined' && (globalThis as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__) {
         storeCanvasMetadata({
-            type: 'canvas',
-            name,
-            controls,
-            resolvedControls: resolved,
-            description: opts.description,
             author: opts.author,
-            width: opts.width,
+            controls,
+            description: opts.description,
             height: opts.height,
+            name,
             presets: opts.presets,
+            resolvedControls: resolved,
+            type: 'canvas',
+            width: opts.width,
         })
         return
     }
@@ -278,20 +267,17 @@ canvas.stateful = function stateful(
     const resolved = resolveCanvasControls(controls)
     const opts = options ?? {}
 
-    if (
-        typeof globalThis !== 'undefined' &&
-        (globalThis as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__
-    ) {
+    if (typeof globalThis !== 'undefined' && (globalThis as Record<string, unknown>).__HYPERCOLOR_METADATA_ONLY__) {
         storeCanvasMetadata({
-            type: 'canvas',
-            name,
-            controls,
-            resolvedControls: resolved,
-            description: opts.description,
             author: opts.author,
-            width: opts.width,
+            controls,
+            description: opts.description,
             height: opts.height,
+            name,
             presets: opts.presets,
+            resolvedControls: resolved,
+            type: 'canvas',
+            width: opts.width,
         })
         return
     }

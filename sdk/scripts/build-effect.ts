@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * Effect Build Script — compiles SDK TypeScript effects into standalone HTML.
  *
@@ -8,9 +9,9 @@
  *   bun scripts/build-effect.ts --out effects/hypercolor/ src/effects/borealis/main.ts
  */
 
-import * as esbuild from 'esbuild'
-import { basename, dirname, join, resolve } from 'node:path'
 import { existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
+import * as esbuild from 'esbuild'
 
 const SDK_ROOT = resolve(import.meta.dirname, '..')
 const DEFAULT_OUT = resolve(SDK_ROOT, '..', 'effects', 'hypercolor')
@@ -50,7 +51,7 @@ function parseArgs() {
         process.exit(1)
     }
 
-    return { outDir, entries }
+    return { entries, outDir }
 }
 
 // ── Metadata Extraction ────────────────────────────────────────────────
@@ -90,12 +91,12 @@ interface NewApiDef {
 function newApiToControls(def: NewApiDef): ControlDef[] {
     return def.resolvedControls.map((ctrl) => {
         const base: ControlDef = {
-            id: ctrl.key,
-            type: ctrl.spec.__type === 'textfield' ? 'textfield' : ctrl.spec.__type,
-            label: ctrl.spec.label,
             default: ctrl.spec.defaultValue as any,
-            tooltip: ctrl.spec.tooltip,
             group: ctrl.spec.group,
+            id: ctrl.key,
+            label: ctrl.spec.label,
+            tooltip: ctrl.spec.tooltip,
+            type: ctrl.spec.__type === 'textfield' ? 'textfield' : ctrl.spec.__type,
         }
         if (ctrl.spec.meta.min != null) base.min = ctrl.spec.meta.min as number
         if (ctrl.spec.meta.max != null) base.max = ctrl.spec.meta.max as number
@@ -123,7 +124,9 @@ function validateShaderBindings(entryPath: string, def: NewApiDef): void {
     if (shaderUniforms.size === 0) return
 
     const controlUniforms = new Set(
-        def.resolvedControls.map((ctrl) => ctrl.uniformName ?? `i${ctrl.key.charAt(0).toUpperCase()}${ctrl.key.slice(1)}`),
+        def.resolvedControls.map(
+            (ctrl) => ctrl.uniformName ?? `i${ctrl.key.charAt(0).toUpperCase()}${ctrl.key.slice(1)}`,
+        ),
     )
 
     const missing = Array.from(controlUniforms).filter((name) => !shaderUniforms.has(name))
@@ -135,7 +138,9 @@ function validateShaderBindings(entryPath: string, def: NewApiDef): void {
 
     const effectId = basename(dirname(entryPath))
     if (missing.length > 0) {
-        throw new Error(`Shader binding validation failed for ${effectId}: missing control uniforms ${missing.join(', ')}`)
+        throw new Error(
+            `Shader binding validation failed for ${effectId}: missing control uniforms ${missing.join(', ')}`,
+        )
     }
     if (extra.length > 0) {
         console.warn(`  Warning: ${effectId} shader exposes uniforms with no controls: ${extra.join(', ')}`)
@@ -151,9 +156,9 @@ async function extractMetadata(entryPath: string) {
         // Provide stubs for browser APIs the effect code references
         if (!(globalThis as any).document) {
             ;(globalThis as any).document = {
+                addEventListener: () => {},
                 getElementById: () => null,
                 readyState: 'complete',
-                addEventListener: () => {},
             }
         }
 
@@ -169,25 +174,25 @@ async function extractMetadata(entryPath: string) {
             const def = defs[defs.length - 1] // use last entry (single-effect files)
             validateShaderBindings(entryPath, def)
             return {
+                controls: newApiToControls(def),
                 effect: {
-                    name: def.name,
-                    description: def.description ?? '',
-                    author: def.author ?? 'Hypercolor',
                     audioReactive: def.audio ?? false,
+                    author: def.author ?? 'Hypercolor',
+                    description: def.description ?? '',
+                    name: def.name,
                     presets: def.presets ?? [],
                 },
-                controls: newApiToControls(def),
             }
         }
 
         console.warn(`  Warning: could not extract metadata from ${entryPath} (no __hypercolorEffectDefs__)`)
-        return { effect: null, controls: [] }
+        return { controls: [], effect: null }
     } catch (err) {
         if (err instanceof Error && err.message.startsWith('Shader binding validation failed')) {
             throw err
         }
         console.warn(`  Warning: metadata extraction failed: ${err}`)
-        return { effect: null, controls: [] }
+        return { controls: [], effect: null }
     } finally {
         delete (globalThis as any).__HYPERCOLOR_METADATA_ONLY__
         delete (globalThis as any).__hypercolorEffectInstance__
@@ -275,24 +280,21 @@ ${jsBundle}
 
 async function bundleEffect(entryPath: string): Promise<string> {
     const result = await esbuild.build({
-        entryPoints: [entryPath],
-        bundle: true,
-        format: 'iife',
-        target: 'es2024',
-        minify: false, // Servo needs readable JS
-        write: false,
-        loader: { '.glsl': 'text' },
         // Resolve @hypercolor/sdk to the local package source
         alias: {
             '@hypercolor/sdk': resolve(SDK_ROOT, 'packages', 'core', 'src', 'index.ts'),
         },
-        // Help esbuild find workspace packages' deps
-        nodePaths: [
-            resolve(SDK_ROOT, 'node_modules'),
-            resolve(SDK_ROOT, 'packages', 'core', 'node_modules'),
-        ],
+        bundle: true,
+        entryPoints: [entryPath],
         external: [],
+        format: 'iife',
+        loader: { '.glsl': 'text' },
         logLevel: 'warning',
+        minify: false, // Servo needs readable JS
+        // Help esbuild find workspace packages' deps
+        nodePaths: [resolve(SDK_ROOT, 'node_modules'), resolve(SDK_ROOT, 'packages', 'core', 'node_modules')],
+        target: 'es2024',
+        write: false,
     })
 
     if (result.outputFiles?.length) {
@@ -320,9 +322,7 @@ async function buildEffect(entryPath: string, outDir: string) {
     const controlMetas = (controls as ControlDef[]).map(controlToMeta)
 
     // 3. Generate preset meta tags
-    const presetMetas = (effect as any)?.presets
-        ? ((effect as any).presets as PresetDef[]).map(presetToMeta)
-        : []
+    const presetMetas = (effect as any)?.presets ? ((effect as any).presets as PresetDef[]).map(presetToMeta) : []
 
     // 4. Bundle JS
     const jsBundle = await bundleEffect(entryPath)

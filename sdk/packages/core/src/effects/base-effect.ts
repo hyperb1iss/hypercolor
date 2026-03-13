@@ -115,8 +115,14 @@ export abstract class BaseEffect<T> {
         if (!this.canvas) return
 
         const engine = (window as { engine?: { width?: unknown; height?: unknown } }).engine
-        const width = typeof engine?.width === 'number' && Number.isFinite(engine.width) ? Math.max(1, Math.round(engine.width)) : null
-        const height = typeof engine?.height === 'number' && Number.isFinite(engine.height) ? Math.max(1, Math.round(engine.height)) : null
+        const width =
+            typeof engine?.width === 'number' && Number.isFinite(engine.width)
+                ? Math.max(1, Math.round(engine.width))
+                : null
+        const height =
+            typeof engine?.height === 'number' && Number.isFinite(engine.height)
+                ? Math.max(1, Math.round(engine.height))
+                : null
 
         if (width == null || height == null) return
         if (this.canvas.width === width && this.canvas.height === height) return

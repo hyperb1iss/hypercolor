@@ -11,7 +11,6 @@ pub fn toast_success(msg: &str) {
     }
 }
 
-#[allow(dead_code)]
 pub fn toast_error(msg: &str) {
     if let Some(toaster) = use_context::<ToasterContext>() {
         toaster.error(msg);

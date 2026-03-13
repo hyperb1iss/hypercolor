@@ -63,9 +63,9 @@ function srgbToOklab(r: number, g: number, b: number): [number, number, number] 
     const s_ = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb)
 
     return [
-        0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_,
-        1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_,
-        0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_,
+        0.2104542553 * l_ + 0.793617785 * m_ - 0.0040720468 * s_,
+        1.9779984951 * l_ - 2.428592205 * m_ + 0.4505937099 * s_,
+        0.0259040371 * l_ + 0.7827717662 * m_ - 0.808675766 * s_,
     ]
 }
 
@@ -73,7 +73,7 @@ function srgbToOklab(r: number, g: number, b: number): [number, number, number] 
 function oklabToSrgb(L: number, a: number, b: number): [number, number, number] {
     const l_ = L + 0.3963377774 * a + 0.2158037573 * b
     const m_ = L - 0.1055613458 * a - 0.0638541728 * b
-    const s_ = L - 0.0894841775 * a - 1.2914855480 * b
+    const s_ = L - 0.0894841775 * a - 1.291485548 * b
 
     const l = l_ * l_ * l_
     const m = m_ * m_ * m_
@@ -81,18 +81,14 @@ function oklabToSrgb(L: number, a: number, b: number): [number, number, number] 
 
     let r = +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
     let g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
-    let bl = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+    let bl = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s
 
     // Gamma compress
-    r = r <= 0.0031308 ? 12.92 * r : 1.055 * (r ** (1 / 2.4)) - 0.055
-    g = g <= 0.0031308 ? 12.92 * g : 1.055 * (g ** (1 / 2.4)) - 0.055
-    bl = bl <= 0.0031308 ? 12.92 * bl : 1.055 * (bl ** (1 / 2.4)) - 0.055
+    r = r <= 0.0031308 ? 12.92 * r : 1.055 * r ** (1 / 2.4) - 0.055
+    g = g <= 0.0031308 ? 12.92 * g : 1.055 * g ** (1 / 2.4) - 0.055
+    bl = bl <= 0.0031308 ? 12.92 * bl : 1.055 * bl ** (1 / 2.4) - 0.055
 
-    return [
-        Math.max(0, Math.min(1, r)),
-        Math.max(0, Math.min(1, g)),
-        Math.max(0, Math.min(1, bl)),
-    ]
+    return [Math.max(0, Math.min(1, r)), Math.max(0, Math.min(1, g)), Math.max(0, Math.min(1, bl))]
 }
 
 // ── LUT Cache ────────────────────────────────────────────────────────────

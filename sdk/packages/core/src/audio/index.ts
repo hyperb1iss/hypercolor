@@ -1,7 +1,4 @@
-export type { AudioData, ScreenZoneData } from './types'
-
 export { FFT_SIZE, getAudioData, getScreenZoneData, MEL_BANDS, normalizeAudioLevel, PITCH_CLASSES } from './analysis'
-
 export {
     getBassLevel,
     getBeatAnticipation,
@@ -20,3 +17,4 @@ export {
     pitchClassToHue,
     smoothValue,
 } from './helpers'
+export type { AudioData, ScreenZoneData } from './types'

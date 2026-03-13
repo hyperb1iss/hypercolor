@@ -14,8 +14,8 @@ import type { ControlSpec, NormalizeHint } from './specs'
  */
 export function deriveLabel(key: string): string {
     return key
-        .replace(/([A-Z])/g, ' $1')      // insert space before uppercase
-        .replace(/^./, (c) => c.toUpperCase())  // capitalize first letter
+        .replace(/([A-Z])/g, ' $1') // insert space before uppercase
+        .replace(/^./, (c) => c.toUpperCase()) // capitalize first letter
         .trim()
 }
 
@@ -55,14 +55,17 @@ export function hasMagicTransform(key: string): boolean {
  * Resolve all naming and magic behavior for a control.
  * Returns the final label, uniform name, and normalization hint.
  */
-export function resolveControlNames(key: string, spec: ControlSpec): {
+export function resolveControlNames(
+    key: string,
+    spec: ControlSpec,
+): {
     label: string
     uniformName: string
     normalize: NormalizeHint
 } {
     return {
         label: spec.label,
-        uniformName: spec.uniform ?? deriveUniformName(key),
         normalize: spec.normalize ?? getMagicNormalize(key),
+        uniformName: spec.uniform ?? deriveUniformName(key),
     }
 }

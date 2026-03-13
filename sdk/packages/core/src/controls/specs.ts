@@ -34,23 +34,19 @@ function spec<T extends ControlTypeName>(
     return {
         __brand: 'ControlSpec',
         __type: type,
-        label,
         defaultValue,
-        tooltip: opts?.tooltip,
         group: opts?.group,
-        uniform: opts?.uniform,
-        normalize: opts?.normalize,
+        label,
         meta,
+        normalize: opts?.normalize,
+        tooltip: opts?.tooltip,
+        uniform: opts?.uniform,
     }
 }
 
 /** Check if a value is a ControlSpec (produced by a factory function). */
 export function isControlSpec(value: unknown): value is ControlSpec {
-    return (
-        value !== null &&
-        typeof value === 'object' &&
-        (value as Record<string, unknown>).__brand === 'ControlSpec'
-    )
+    return value !== null && typeof value === 'object' && (value as Record<string, unknown>).__brand === 'ControlSpec'
 }
 
 // ── Factory Functions ────────────────────────────────────────────────────
@@ -70,11 +66,17 @@ export function num(
     defaultValue: number,
     opts?: NumOptions,
 ): ControlSpec<'number'> {
-    return spec('number', label, defaultValue, {
-        min: range[0],
-        max: range[1],
-        step: opts?.step,
-    }, opts)
+    return spec(
+        'number',
+        label,
+        defaultValue,
+        {
+            max: range[1],
+            min: range[0],
+            step: opts?.step,
+        },
+        opts,
+    )
 }
 
 export interface ComboOptions {
@@ -85,15 +87,17 @@ export interface ComboOptions {
 }
 
 /** Combobox (dropdown) control. */
-export function combo(
-    label: string,
-    values: readonly string[],
-    opts?: ComboOptions,
-): ControlSpec<'combobox'> {
+export function combo(label: string, values: readonly string[], opts?: ComboOptions): ControlSpec<'combobox'> {
     const defaultValue = opts?.default ?? values[0]
-    return spec('combobox', label, defaultValue, {
-        values: [...values],
-    }, opts)
+    return spec(
+        'combobox',
+        label,
+        defaultValue,
+        {
+            values: [...values],
+        },
+        opts,
+    )
 }
 
 export interface ToggleOptions {
@@ -103,11 +107,7 @@ export interface ToggleOptions {
 }
 
 /** Boolean toggle control. */
-export function toggle(
-    label: string,
-    defaultValue: boolean,
-    opts?: ToggleOptions,
-): ControlSpec<'boolean'> {
+export function toggle(label: string, defaultValue: boolean, opts?: ToggleOptions): ControlSpec<'boolean'> {
     return spec('boolean', label, defaultValue, {}, opts)
 }
 
@@ -118,11 +118,7 @@ export interface ColorOptions {
 }
 
 /** Color picker control (hex string). */
-export function color(
-    label: string,
-    defaultValue: string,
-    opts?: ColorOptions,
-): ControlSpec<'color'> {
+export function color(label: string, defaultValue: string, opts?: ColorOptions): ControlSpec<'color'> {
     return spec('color', label, defaultValue, {}, opts)
 }
 
@@ -139,10 +135,16 @@ export function hue(
     defaultValue: number,
     opts?: HueOptions,
 ): ControlSpec<'hue'> {
-    return spec('hue', label, defaultValue, {
-        min: range[0],
-        max: range[1],
-    }, opts)
+    return spec(
+        'hue',
+        label,
+        defaultValue,
+        {
+            max: range[1],
+            min: range[0],
+        },
+        opts,
+    )
 }
 
 export interface TextOptions {
@@ -152,10 +154,6 @@ export interface TextOptions {
 }
 
 /** Text field control. */
-export function text(
-    label: string,
-    defaultValue: string,
-    opts?: TextOptions,
-): ControlSpec<'textfield'> {
+export function text(label: string, defaultValue: string, opts?: TextOptions): ControlSpec<'textfield'> {
     return spec('textfield', label, defaultValue, {}, opts)
 }
