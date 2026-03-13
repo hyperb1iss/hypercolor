@@ -1,8 +1,7 @@
-//! Title bar — the topmost chrome row with integrated navigation.
+//! Title bar — the topmost chrome row with stylized brand and status.
 //!
-//! Renders: `HYPERCOLOR  [D]ash [E]ffx [C]trl De[v]s [P]rof [S]ttg`
-//! on the left, with right-aligned daemon status indicators: FPS, audio
-//! status, and device count.
+//! Renders: `H Y P E R C O L O R` gradient brand on the left,
+//! active screen name centered, and daemon status indicators right-aligned.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -13,7 +12,7 @@ use crate::screen::ScreenId;
 use crate::state::{AppState, ConnectionStatus};
 use crate::theme;
 
-/// Stateless title bar renderer (includes inline nav tabs).
+/// Stateless title bar renderer.
 pub struct TitleBar;
 
 impl TitleBar {
@@ -25,7 +24,7 @@ impl TitleBar {
         area: Rect,
         state: &AppState,
         active_screen: ScreenId,
-        available_screens: &[ScreenId],
+        _available_screens: &[ScreenId],
     ) {
         if area.height == 0 || area.width == 0 {
             return;
@@ -33,20 +32,21 @@ impl TitleBar {
 
         let mut spans = Vec::new();
 
-        // Gradient brand: Electric Purple → Neon Cyan
+        // Spaced gradient brand
+        spans.push(Span::raw(" "));
         build_gradient_brand(&mut spans);
+
+        // Separator + active screen name
         spans.push(Span::styled(
             " \u{2502} ",
             Style::default().fg(theme::text_muted()),
         ));
-
-        // Inline nav tabs
-        for (i, &screen) in available_screens.iter().enumerate() {
-            if i > 0 {
-                spans.push(Span::raw(" "));
-            }
-            build_nav_tab(&mut spans, screen, screen == active_screen);
-        }
+        spans.push(Span::styled(
+            active_screen.full_name(),
+            Style::default()
+                .fg(theme::accent_secondary())
+                .add_modifier(Modifier::BOLD),
+        ));
 
         // Right-aligned status
         let right_spans = build_status_spans(state);
@@ -62,47 +62,6 @@ impl TitleBar {
             .style(Style::default().bg(theme::bg_panel()));
 
         frame.render_widget(paragraph, area);
-    }
-}
-
-/// Append spans for a single nav tab: `[D]ash` style.
-fn build_nav_tab(spans: &mut Vec<Span<'static>>, screen: ScreenId, is_active: bool) {
-    let key = screen.key_hint();
-    let label = screen.label();
-
-    let (key_style, label_style) = if is_active {
-        (
-            Style::default()
-                .fg(theme::accent_secondary())
-                .add_modifier(Modifier::BOLD),
-            Style::default()
-                .fg(theme::accent_primary())
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (
-            Style::default().fg(theme::warning()),
-            Style::default().fg(theme::text_muted()),
-        )
-    };
-
-    let key_lower = key.to_ascii_lowercase();
-    let key_upper = key.to_ascii_uppercase();
-    let bracket_style = Style::default().fg(theme::text_muted());
-
-    if let Some(pos) = label.find(key_upper).or_else(|| label.find(key_lower)) {
-        let before = &label[..pos];
-        let after = &label[pos + key.len_utf8()..];
-        spans.push(Span::styled(before.to_string(), label_style));
-        spans.push(Span::styled("[", bracket_style));
-        spans.push(Span::styled(key.to_string(), key_style));
-        spans.push(Span::styled("]", bracket_style));
-        spans.push(Span::styled(after.to_string(), label_style));
-    } else {
-        spans.push(Span::styled("[", bracket_style));
-        spans.push(Span::styled(key.to_string(), key_style));
-        spans.push(Span::styled("]", bracket_style));
-        spans.push(Span::styled(label.to_string(), label_style));
     }
 }
 
@@ -161,7 +120,7 @@ fn build_status_spans(state: &AppState) -> Vec<Span<'static>> {
     spans
 }
 
-/// Render "HYPERCOLOR" with a per-character gradient (Electric Purple → Coral → Neon Cyan).
+/// Render `H Y P E R C O L O R` with per-character gradient and letter-spacing.
 #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
 fn build_gradient_brand(spans: &mut Vec<Span<'static>>) {
     const BRAND: &str = "HYPERCOLOR";
@@ -174,5 +133,9 @@ fn build_gradient_brand(spans: &mut Vec<Span<'static>>) {
                 .fg(theme::gradient_color(t, &theme::BRAND_GRADIENT))
                 .add_modifier(Modifier::BOLD),
         ));
+        // Letter-spacing (skip after last char)
+        if i < len - 1 {
+            spans.push(Span::raw(" "));
+        }
     }
 }

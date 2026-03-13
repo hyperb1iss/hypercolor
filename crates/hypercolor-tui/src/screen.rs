@@ -30,7 +30,7 @@ impl ScreenId {
         }
     }
 
-    /// Short label for the nav sidebar.
+    /// Short label for compact nav.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -41,6 +41,20 @@ impl ScreenId {
             Self::Profiles => "Prof",
             Self::Settings => "Sttg",
             Self::Debug => "Dbug",
+        }
+    }
+
+    /// Full display name for the title bar.
+    #[must_use]
+    pub const fn full_name(self) -> &'static str {
+        match self {
+            Self::Dashboard => "Dashboard",
+            Self::EffectBrowser => "Effects",
+            Self::EffectControl => "Controls",
+            Self::DeviceManager => "Devices",
+            Self::Profiles => "Profiles",
+            Self::Settings => "Settings",
+            Self::Debug => "Debug",
         }
     }
 

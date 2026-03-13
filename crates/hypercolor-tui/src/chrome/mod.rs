@@ -86,7 +86,8 @@ impl Chrome {
         self.title_bar
             .render(frame, title_area, state, state.active_screen, available_screens);
         self.audio_strip.render(frame, audio_area, state);
-        self.status_bar.render(frame, status_area, state);
+        self.status_bar
+            .render(frame, status_area, state, state.active_screen, available_screens);
 
         content_area
     }

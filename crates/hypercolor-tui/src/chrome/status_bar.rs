@@ -9,6 +9,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::screen::ScreenId;
 use crate::state::AppState;
 use crate::theme;
 
@@ -18,13 +19,20 @@ pub struct StatusBar;
 impl StatusBar {
     /// Render the status bar into the given single-row area.
     #[allow(clippy::as_conversions)]
-    pub fn render(&self, frame: &mut Frame, area: Rect, state: &AppState) {
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &AppState,
+        active_screen: ScreenId,
+        available_screens: &[ScreenId],
+    ) {
         if area.height == 0 || area.width == 0 {
             return;
         }
 
         let left_spans = build_left(state);
-        let right_spans = build_right(state);
+        let right_spans = build_nav_hints(active_screen, available_screens);
 
         let left_len: usize = left_spans.iter().map(Span::width).sum();
         let right_len: usize = right_spans.iter().map(Span::width).sum();
@@ -77,26 +85,42 @@ fn build_left(state: &AppState) -> Vec<Span<'static>> {
     spans
 }
 
-/// Build the right-aligned profile spans.
-fn build_right(state: &AppState) -> Vec<Span<'static>> {
+/// Build right-aligned nav key hints: `[d]ash [e]ffx [c]trl [?]help`
+fn build_nav_hints(active: ScreenId, screens: &[ScreenId]) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
+    let muted = theme::text_muted();
 
-    if let Some(ref daemon) = state.daemon {
-        let profile = daemon
-            .profile_name
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
+    for &screen in screens {
+        if !spans.is_empty() {
+            spans.push(Span::raw(" "));
+        }
+        let key = screen.key_hint().to_ascii_lowercase();
+        let is_active = screen == active;
 
         spans.push(Span::styled(
-            "Profile: ",
-            Style::default().fg(theme::text_muted()),
+            format!("[{key}]"),
+            if is_active {
+                Style::default()
+                    .fg(theme::accent_secondary())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(muted)
+            },
         ));
         spans.push(Span::styled(
-            profile,
-            Style::default().fg(theme::accent_primary()),
+            screen.label().to_ascii_lowercase(),
+            if is_active {
+                Style::default().fg(theme::accent_primary())
+            } else {
+                Style::default().fg(muted)
+            },
         ));
     }
 
+    // Help hint
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled("[?]", Style::default().fg(muted)));
+    spans.push(Span::styled("help", Style::default().fg(muted)));
     spans.push(Span::raw(" "));
     spans
 }
