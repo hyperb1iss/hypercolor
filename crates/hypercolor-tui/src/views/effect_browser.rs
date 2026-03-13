@@ -29,7 +29,7 @@ const DIM_GRAY: Color = Color::Rgb(98, 114, 164);
 const BORDER_DIM: Color = Color::Rgb(90, 21, 102);
 
 /// Slider adjustment step when no `step` is defined on the control.
-const DEFAULT_STEP: f32 = 0.05;
+const DEFAULT_STEP: f32 = 0.1;
 
 /// Focus panel within the effect browser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,6 +80,8 @@ pub struct EffectBrowserView {
     controls_rect: Cell<Rect>,
     list_inner_rect: Cell<Rect>,
     controls_content_y: Cell<u16>,
+    controls_inner_rect: Cell<Rect>,
+    controls_label_w: Cell<usize>,
 }
 
 impl Default for EffectBrowserView {
@@ -112,6 +114,8 @@ impl EffectBrowserView {
             controls_rect: Cell::new(Rect::default()),
             list_inner_rect: Cell::new(Rect::default()),
             controls_content_y: Cell::new(0),
+            controls_inner_rect: Cell::new(Rect::default()),
+            controls_label_w: Cell::new(0),
         }
     }
 
@@ -277,6 +281,48 @@ impl EffectBrowserView {
         if ctrl_idx < ctrl_count {
             self.selected_control = ctrl_idx;
         }
+    }
+
+    /// Set a slider value by mapping mouse column to normalized [0, 1].
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+    fn set_slider_by_mouse(&mut self, col: u16, row: u16) -> Option<Action> {
+        let start_y = self.controls_content_y.get();
+        if row < start_y {
+            return None;
+        }
+        let offset = usize::from(row - start_y);
+        let ctrl_idx = offset / 2;
+        self.selected_control = ctrl_idx;
+
+        let ctrl = self
+            .effects
+            .get(self.selected_index)?
+            .controls
+            .get(ctrl_idx)?
+            .clone();
+        if ctrl.control_type != "slider" {
+            return None;
+        }
+
+        // The slider bar starts after: inner.x + 2 (selection bar pad) + label_w + 1
+        let inner = self.controls_inner_rect.get();
+        let label_w = self.controls_label_w.get();
+        #[allow(clippy::cast_possible_truncation)]
+        let bar_start = inner.x + 2 + label_w as u16 + 1;
+        let bar_end = inner.x + inner.width.saturating_sub(1);
+        let bar_width = bar_end.saturating_sub(bar_start);
+
+        if bar_width == 0 || col < bar_start {
+            return None;
+        }
+
+        let t = (f32::from(col - bar_start) / f32::from(bar_width)).clamp(0.0, 1.0);
+        let min = ctrl.min.unwrap_or(0.0);
+        let max = ctrl.max.unwrap_or(1.0);
+        let new_val = min + t * (max - min);
+        let new_cv = ControlValue::Float(new_val);
+        self.control_values.insert(ctrl.id.clone(), new_cv.clone());
+        Some(Action::UpdateControl(ctrl.id, new_cv))
     }
 
     // ── Color picker ─────────────────────────────────────────────────
@@ -924,6 +970,7 @@ impl EffectBrowserView {
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        self.controls_inner_rect.set(inner);
 
         if inner.width < 10 || inner.height < 2 {
             return;
@@ -979,6 +1026,7 @@ impl EffectBrowserView {
 
         // Cache for mouse hit-testing
         self.controls_content_y.set(content_y);
+        self.controls_label_w.set(label_w);
 
         for (i, ctrl) in controls.iter().enumerate() {
             if content_y >= inner.y + inner.height.saturating_sub(1) {
@@ -1343,6 +1391,18 @@ impl Component for EffectBrowserView {
                 } else if rect_contains(controls_r, col, row) {
                     self.focus_pane = FocusPane::Controls;
                     self.select_control_at_row(row);
+                    // Click-to-set slider value
+                    if let Some(action) = self.set_slider_by_mouse(col, row) {
+                        return Ok(Some(action));
+                    }
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if rect_contains(controls_r, col, row) {
+                    // Drag to adjust slider in real-time
+                    if let Some(action) = self.set_slider_by_mouse(col, row) {
+                        return Ok(Some(action));
+                    }
                 }
             }
             MouseEventKind::ScrollDown => {

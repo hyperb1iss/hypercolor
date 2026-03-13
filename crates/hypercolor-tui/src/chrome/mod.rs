@@ -11,7 +11,6 @@ mod title_bar;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-use crate::action::Action;
 use crate::screen::ScreenId;
 use crate::state::AppState;
 
@@ -34,13 +33,6 @@ impl Chrome {
             title_bar: TitleBar::new(),
             audio_strip: AudioStrip,
             status_bar: StatusBar,
-        }
-    }
-
-    /// Forward an action to all chrome sub-components that care about it.
-    pub fn update(&mut self, action: &Action) {
-        if matches!(action, Action::Tick) {
-            self.title_bar.tick();
         }
     }
 

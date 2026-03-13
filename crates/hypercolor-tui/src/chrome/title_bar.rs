@@ -154,7 +154,7 @@ fn build_gradient_brand(spans: &mut Vec<Span<'static>>, phase: f32) {
     for (i, ch) in BRAND.chars().enumerate() {
         let base_t = i as f32 / (len - 1).max(1) as f32;
         // Sine-wave shimmer: each character oscillates its gradient position
-        let wave = (phase + i as f32 * 0.6).sin() * 0.15;
+        let wave = (phase + i as f32 * 0.4).sin() * 0.35;
         let t = (base_t + wave).clamp(0.0, 1.0);
         spans.push(Span::styled(
             ch.to_string(),

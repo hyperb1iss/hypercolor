@@ -144,6 +144,7 @@ impl App {
             // Drain and process all queued actions
             while let Ok(action) = self.action_rx.try_recv() {
                 if let Action::Render = action {
+                    self.chrome.title_bar.tick();
                     terminal.draw(|frame| self.render(frame))?;
                 } else {
                     self.process_action(&action);
@@ -377,14 +378,13 @@ impl App {
                 self.notification = None;
             }
 
-            // ── Tick: auto-dismiss notifications + animate chrome ──
+            // ── Tick: auto-dismiss notifications ──
             Action::Tick => {
                 if let Some((_, created)) = &self.notification
                     && created.elapsed() > Duration::from_secs(5)
                 {
                     self.notification = None;
                 }
-                self.chrome.update(action);
             }
 
             _ => {}
