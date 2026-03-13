@@ -31,6 +31,9 @@ bun.lock
 # Trunk dev output
 crates/hypercolor-ui/.dist-dev/
 
+# Zola docs build output
+docs/public/
+
 # Next.js marketing site
 site/.next/
 site/out/

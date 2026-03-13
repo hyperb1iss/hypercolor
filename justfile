@@ -86,6 +86,14 @@ doc *args='':
 # Build and open docs in browser
 doc-open: (doc "--open")
 
+# Serve the Zola documentation site (hot reload on :9440)
+docs-dev:
+    cd docs && zola serve --port 9440
+
+# Build the Zola documentation site
+docs-build:
+    cd docs && zola build
+
 # ─── Running ──────────────────────────────────────────────
 
 # Run the daemon
