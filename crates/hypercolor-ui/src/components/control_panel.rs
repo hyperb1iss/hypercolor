@@ -2,8 +2,10 @@
 //! Each control resolves its initial value from live `control_values` (if present),
 //! falling back to the definition's `default_value`.
 
+use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 use wasm_bindgen::prelude::*;
@@ -155,72 +157,77 @@ pub fn ControlPanel(
     }
 }
 
-/// Install a one-time document-level mousedown listener that closes the color
-/// picker when clicking outside `.color-picker-popover` or `.swatch-glow`.
-/// ControlPanel is effectively a singleton so the leak from `forget()` is fine.
+/// Install a window-level mousedown listener that closes the color picker when
+/// clicking outside `.color-picker-popover` or `.swatch-glow`.
 fn install_click_outside_handler(set_expanded: WriteSignal<Option<String>>) {
-    let handler = Closure::<dyn Fn(web_sys::Event)>::new(move |ev: web_sys::Event| {
-        let inside = ev
-            .target()
-            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-            .map(|el| {
-                el.closest(".color-picker-popover").ok().flatten().is_some()
-                    || el.closest(".swatch-glow").ok().flatten().is_some()
-            })
-            .unwrap_or(false);
+    let Some(win) = web_sys::window() else {
+        return;
+    };
 
-        if !inside {
-            set_expanded.set(None);
-        }
-    });
+    let _ = use_event_listener_with_options(
+        win,
+        ev::mousedown,
+        move |ev: leptos::ev::MouseEvent| {
+            let inside = ev
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .map(|el| {
+                    el.closest(".color-picker-popover").ok().flatten().is_some()
+                        || el.closest(".swatch-glow").ok().flatten().is_some()
+                })
+                .unwrap_or(false);
 
-    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-        let _ = doc.add_event_listener_with_callback("mousedown", handler.as_ref().unchecked_ref());
-    }
-    handler.forget();
+            if !inside {
+                set_expanded.set(None);
+            }
+        },
+        UseEventListenerOptions::default().capture(true),
+    );
 }
 
 /// Install a one-time document-level mousedown listener that closes a specific
 /// control dropdown when clicking outside its container.
-fn install_control_dropdown_outside_handler(
-    class_name: String,
-    set_open: WriteSignal<bool>,
-) {
+fn install_control_dropdown_outside_handler(class_name: String, set_open: WriteSignal<bool>) {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
     let selector = format!(".{class_name}");
-    let handler = Closure::<dyn Fn(web_sys::Event)>::new(move |ev: web_sys::Event| {
-        let inside = ev
-            .target()
-            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-            .map(|el| el.closest(&selector).ok().flatten().is_some())
-            .unwrap_or(false);
+    let _ = use_event_listener_with_options(
+        doc,
+        ev::mousedown,
+        move |ev: leptos::ev::MouseEvent| {
+            let inside = ev
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .map(|el| el.closest(&selector).ok().flatten().is_some())
+                .unwrap_or(false);
 
-        if !inside {
-            set_open.set(false);
-        }
-    });
-
-    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-        let _ = doc.add_event_listener_with_callback("mousedown", handler.as_ref().unchecked_ref());
-    }
-    handler.forget();
+            if !inside {
+                set_open.set(false);
+            }
+        },
+        UseEventListenerOptions::default().capture(true),
+    );
 }
 
 /// Close a dropdown when any ancestor scrolls (fixed-position panels don't
 /// track scroll, so dismissing is the correct UX).
 fn install_scroll_close_handler(set_open: WriteSignal<bool>) {
-    let handler = Closure::<dyn Fn(web_sys::Event)>::new(move |_: web_sys::Event| {
-        set_open.set(false);
-    });
+    let Some(win) = web_sys::window() else {
+        return;
+    };
 
-    if let Some(win) = web_sys::window() {
-        // Use capture phase to catch scroll events from any descendant
-        let _ = win.add_event_listener_with_callback_and_bool(
-            "scroll",
-            handler.as_ref().unchecked_ref(),
-            true,
-        );
-    }
-    handler.forget();
+    // Use capture phase to catch scroll events from any descendant.
+    let _ = use_event_listener_with_options(
+        win,
+        ev::scroll,
+        move |_: web_sys::Event| {
+            set_open.set(false);
+        },
+        UseEventListenerOptions::default()
+            .capture(true)
+            .passive(true),
+    );
 }
 
 /// A single control widget, dispatched by ControlType.

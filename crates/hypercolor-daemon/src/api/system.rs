@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
+use hypercolor_core::engine::RenderLoopState;
 use serde::Serialize;
 
 use crate::api::AppState;
@@ -138,16 +139,27 @@ pub async fn get_server(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /health` — Lightweight health check (no envelope).
 pub async fn health_check(State(state): State<Arc<AppState>>) -> Response {
     let uptime_seconds = state.start_time.elapsed().as_secs();
+    let render_loop = {
+        let render_loop = state.render_loop.read().await;
+        render_loop_health(render_loop.stats().state).to_owned()
+    };
+    let device_backends = {
+        let backend_manager = state.backend_manager.lock().await;
+        let device_count = state.device_registry.len().await;
+        backend_health(backend_manager.backend_count(), device_count).to_owned()
+    };
+    let event_bus = event_bus_health(&state.event_bus).to_owned();
+    let checks = HealthChecks {
+        render_loop,
+        device_backends,
+        event_bus,
+    };
 
     let resp = HealthResponse {
-        status: "healthy".to_owned(),
+        status: overall_health(&checks).to_owned(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         uptime_seconds,
-        checks: HealthChecks {
-            render_loop: "ok".to_owned(),
-            device_backends: "ok".to_owned(),
-            event_bus: "ok".to_owned(),
-        },
+        checks,
     };
 
     (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
@@ -174,5 +186,48 @@ fn brightness_percent(brightness: f32) -> u8 {
         100
     } else {
         scaled as u8
+    }
+}
+
+fn render_loop_health(state: RenderLoopState) -> &'static str {
+    match state {
+        RenderLoopState::Running => "ok",
+        RenderLoopState::Created | RenderLoopState::Paused | RenderLoopState::Stopped => "idle",
+    }
+}
+
+fn backend_health(backend_count: usize, device_count: usize) -> &'static str {
+    if backend_count == 0 && device_count > 0 {
+        "degraded"
+    } else if backend_count == 0 {
+        "idle"
+    } else {
+        "ok"
+    }
+}
+
+fn event_bus_health(bus: &hypercolor_core::bus::HypercolorBus) -> &'static str {
+    if bus.subscriber_count() == 0
+        && bus.frame_receiver_count() == 0
+        && bus.spectrum_receiver_count() == 0
+        && bus.canvas_receiver_count() == 0
+    {
+        "idle"
+    } else {
+        "ok"
+    }
+}
+
+fn overall_health(checks: &HealthChecks) -> &'static str {
+    if [
+        checks.render_loop.as_str(),
+        checks.device_backends.as_str(),
+        checks.event_bus.as_str(),
+    ]
+    .contains(&"degraded")
+    {
+        "degraded"
+    } else {
+        "healthy"
     }
 }

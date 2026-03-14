@@ -3,10 +3,20 @@ mod preset_matching;
 
 use std::collections::HashMap;
 
+use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::ControlValue;
 use preset_matching::{
     bundled_preset_matches_controls, bundled_preset_to_json, user_preset_matches_controls,
 };
+
+fn color_from_hex(red: u8, green: u8, blue: u8) -> ControlValue {
+    ControlValue::Color([
+        srgb_to_linear(f32::from(red) / 255.0),
+        srgb_to_linear(f32::from(green) / 255.0),
+        srgb_to_linear(f32::from(blue) / 255.0),
+        1.0,
+    ])
+}
 
 #[test]
 fn bundled_presets_match_normalized_color_values() {
@@ -37,22 +47,10 @@ fn bundled_presets_match_normalized_color_values() {
         ("size".to_owned(), ControlValue::Float(7.0)),
     ]);
     let preset_controls = HashMap::from([
-        (
-            "color".to_owned(),
-            ControlValue::Color([0.25415218, 0.20155624, 1.0, 1.0]),
-        ),
-        (
-            "color2".to_owned(),
-            ControlValue::Color([1.0, 0.21223073, 0.62396044, 1.0]),
-        ),
-        (
-            "color3".to_owned(),
-            ControlValue::Color([0.18116423, 1.0, 0.87962234, 1.0]),
-        ),
-        (
-            "bgColor".to_owned(),
-            ControlValue::Color([0.000607054, 0.000303527, 0.002428216, 1.0]),
-        ),
+        ("color".to_owned(), color_from_hex(0x40, 0x33, 0xff)),
+        ("color2".to_owned(), color_from_hex(0xff, 0x36, 0x9f)),
+        ("color3".to_owned(), color_from_hex(0x2e, 0xff, 0xe0)),
+        ("bgColor".to_owned(), color_from_hex(0x00, 0x00, 0x00)),
         (
             "colorMode".to_owned(),
             ControlValue::Enum("Palette Blend".to_owned()),
@@ -82,10 +80,7 @@ fn bundled_presets_do_not_match_when_a_normalized_value_differs() {
         ),
     ]);
     let preset_controls = HashMap::from([
-        (
-            "color".to_owned(),
-            ControlValue::Color([0.25415218, 0.20155624, 1.0, 1.0]),
-        ),
+        ("color".to_owned(), color_from_hex(0x40, 0x33, 0xff)),
         (
             "theme".to_owned(),
             ControlValue::Enum("Jellyfish".to_owned()),
@@ -123,10 +118,7 @@ fn user_presets_match_saved_json_controls() {
 #[test]
 fn bundled_presets_serialize_colors_to_hex_for_patch_requests() {
     let preset_controls = HashMap::from([
-        (
-            "color".to_owned(),
-            ControlValue::Color([0.25415218, 0.20155624, 1.0, 1.0]),
-        ),
+        ("color".to_owned(), color_from_hex(0x40, 0x33, 0xff)),
         ("speed".to_owned(), ControlValue::Float(8.0)),
     ]);
 

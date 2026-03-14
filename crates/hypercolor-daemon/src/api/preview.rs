@@ -358,7 +358,7 @@ const PREVIEW_HTML: &str = r#"<!doctype html>
       const res = await fetch(`/api/v1/effects/${encodeURIComponent(effectId)}/apply`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...apiHeaders() },
-        body: JSON.stringify({ transition: { type: "crossfade", duration_ms: 250 } }),
+        body: JSON.stringify({}),
       });
       if (!res.ok) {
         let details = "";

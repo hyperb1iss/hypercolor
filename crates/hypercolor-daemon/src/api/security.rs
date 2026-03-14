@@ -24,7 +24,6 @@ use crate::api::envelope::ApiError;
 const RATE_WINDOW: Duration = Duration::from_secs(60);
 const READ_LIMIT_PER_MIN: u32 = 120;
 const WRITE_LIMIT_PER_MIN: u32 = 60;
-const BULK_LIMIT_PER_MIN: u32 = 10;
 const DISCOVERY_LIMIT_PER_MIN: u32 = 2;
 
 const HEADER_RATE_LIMIT_LIMIT: HeaderName = HeaderName::from_static("x-ratelimit-limit");
@@ -105,7 +104,6 @@ enum AccessTier {
 enum OperationClass {
     Read,
     Write,
-    Bulk,
     Discovery,
 }
 
@@ -119,7 +117,6 @@ struct ClientWindow {
     window_start: Instant,
     read_count: u32,
     write_count: u32,
-    bulk_count: u32,
 }
 
 struct RateDecision {
@@ -143,6 +140,9 @@ impl RateLimiter {
         let now = Instant::now();
         let now_epoch = unix_now_secs();
         let now_epoch_plus_window = now_epoch.saturating_add(RATE_WINDOW.as_secs());
+
+        self.clients
+            .retain(|_, window| now.saturating_duration_since(window.window_start) < RATE_WINDOW);
 
         if self.discovery_window_start.elapsed() >= RATE_WINDOW {
             self.discovery_window_start = now;
@@ -170,14 +170,12 @@ impl RateLimiter {
                 window_start: now,
                 read_count: 0,
                 write_count: 0,
-                bulk_count: 0,
             });
 
         if window.window_start.elapsed() >= RATE_WINDOW {
             window.window_start = now;
             window.read_count = 0;
             window.write_count = 0;
-            window.bulk_count = 0;
         }
 
         let (count_ref, limit) = match class {
@@ -185,7 +183,6 @@ impl RateLimiter {
             OperationClass::Write | OperationClass::Discovery => {
                 (&mut window.write_count, WRITE_LIMIT_PER_MIN)
             }
-            OperationClass::Bulk => (&mut window.bulk_count, BULK_LIMIT_PER_MIN),
         };
 
         let retry_after = remaining_window_secs(window.window_start, now);
@@ -317,8 +314,6 @@ fn tier_satisfies(granted: AccessTier, required: AccessTier) -> bool {
 fn classify_operation(method: &Method, path: &str) -> OperationClass {
     if *method == Method::POST && path == "/api/v1/devices/discover" {
         OperationClass::Discovery
-    } else if *method == Method::POST && path == "/api/v1/bulk" {
-        OperationClass::Bulk
     } else if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         OperationClass::Read
     } else {
@@ -330,7 +325,6 @@ fn rate_limit_message(class: OperationClass, retry_after: u64) -> String {
     let scope = match class {
         OperationClass::Read => "Read operation",
         OperationClass::Write => "Write operation",
-        OperationClass::Bulk => "Bulk operation",
         OperationClass::Discovery => "Discovery operation",
     };
     format!("{scope} rate limit exceeded. Retry in {retry_after} seconds.")
@@ -434,7 +428,7 @@ mod tests {
     use axum::http::header::AUTHORIZATION;
     use axum::routing::{get, post};
     use axum::{Router, body::Body};
-    use http::{Request, StatusCode};
+    use http::{Method, Request, StatusCode};
     use serde_json::Value;
     use tower::ServiceExt;
 
@@ -640,5 +634,34 @@ mod tests {
 
         let json = response_json(third).await;
         assert_eq!(json["error"]["code"], "rate_limited");
+    }
+
+    #[test]
+    fn rate_limiter_evicts_stale_clients() {
+        let mut limiter = super::RateLimiter::new();
+        limiter.clients.insert(
+            "stale".to_owned(),
+            super::ClientWindow {
+                window_start: std::time::Instant::now()
+                    - super::RATE_WINDOW
+                    - std::time::Duration::from_secs(1),
+                read_count: 1,
+                write_count: 0,
+            },
+        );
+
+        let decision = limiter.check_and_record("fresh", super::OperationClass::Read);
+
+        assert!(decision.allowed);
+        assert!(!limiter.clients.contains_key("stale"));
+        assert!(limiter.clients.contains_key("fresh"));
+    }
+
+    #[test]
+    fn nonexistent_bulk_route_is_treated_as_write() {
+        assert_eq!(
+            super::classify_operation(&Method::POST, "/api/v1/bulk"),
+            super::OperationClass::Write
+        );
     }
 }

@@ -35,6 +35,12 @@ pub struct TransitionRequest {
     pub duration_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AppliedTransition {
+    transition_type: &'static str,
+    duration_ms: u64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct EffectListResponse {
     pub items: Vec<EffectSummary>,
@@ -341,6 +347,10 @@ pub async fn apply_effect(
         source = source_kind(&metadata.source),
         "Applying effect via API"
     );
+    let applied_transition = match validate_transition_request(body.as_ref()) {
+        Ok(transition) => transition,
+        Err(error) => return ApiError::bad_request(error),
+    };
 
     let renderer = match create_renderer_for_metadata(&metadata) {
         Ok(renderer) => renderer,
@@ -396,7 +406,6 @@ pub async fn apply_effect(
         &dropped_controls,
     );
     let applied_layout = apply_associated_layout(&state, &metadata.id.to_string()).await;
-    let (transition_type, duration_ms) = extract_transition_request(body.as_ref());
     super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
@@ -407,8 +416,8 @@ pub async fn apply_effect(
         "applied_controls": controls,
         "layout": applied_layout,
         "transition": {
-            "type": transition_type,
-            "duration_ms": duration_ms,
+            "type": applied_transition.transition_type,
+            "duration_ms": applied_transition.duration_ms,
         },
     }))
 }
@@ -592,16 +601,41 @@ fn extract_request_controls(
         .unwrap_or_default()
 }
 
-fn extract_transition_request(body: Option<&Json<ApplyEffectRequest>>) -> (String, u64) {
-    let transition_type = body
-        .and_then(|payload| payload.transition.as_ref())
-        .and_then(|transition| transition.transition_type.clone())
-        .unwrap_or_else(|| "crossfade".to_owned());
-    let duration_ms = body
-        .and_then(|payload| payload.transition.as_ref())
-        .and_then(|transition| transition.duration_ms)
-        .unwrap_or(300);
-    (transition_type, duration_ms)
+fn validate_transition_request(
+    body: Option<&Json<ApplyEffectRequest>>,
+) -> Result<AppliedTransition, String> {
+    let Some(transition) = body.and_then(|payload| payload.transition.as_ref()) else {
+        return Ok(AppliedTransition {
+            transition_type: "cut",
+            duration_ms: 0,
+        });
+    };
+
+    let transition_type = transition
+        .transition_type
+        .as_deref()
+        .unwrap_or("cut")
+        .trim()
+        .to_ascii_lowercase();
+    let duration_ms = transition.duration_ms.unwrap_or(0);
+
+    if (transition_type.is_empty() || transition_type == "cut") && duration_ms == 0 {
+        return Ok(AppliedTransition {
+            transition_type: "cut",
+            duration_ms: 0,
+        });
+    }
+
+    if transition_type.is_empty() || transition_type == "cut" {
+        return Err(
+            "Effect transitions are not implemented yet; only immediate cut applies today."
+                .to_owned(),
+        );
+    }
+
+    Err(format!(
+        "Effect transition '{transition_type}' is not implemented yet; only immediate cut applies today."
+    ))
 }
 
 fn log_effect_apply_completion(

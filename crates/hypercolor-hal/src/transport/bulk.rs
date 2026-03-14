@@ -10,6 +10,7 @@ use nusb::MaybeFuture;
 use nusb::transfer::{
     Buffer, Bulk, ControlIn, ControlOut, ControlType, In, Out, Recipient, TransferError,
 };
+use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, trace};
 
 use crate::protocol::TransferType;
@@ -33,7 +34,7 @@ pub struct UsbBulkTransport {
     out_buffer: Arc<Mutex<Option<Buffer>>>,
     report_len: usize,
     closed: AtomicBool,
-    op_lock: Arc<Mutex<()>>,
+    op_lock: Arc<AsyncMutex<()>>,
 }
 
 impl UsbBulkTransport {
@@ -120,7 +121,7 @@ impl UsbBulkTransport {
             out_buffer: Arc::new(Mutex::new(Some(Buffer::new(out_max_packet_size)))),
             report_len: DEFAULT_REPORT_LEN,
             closed: AtomicBool::new(false),
-            op_lock: Arc::new(Mutex::new(())),
+            op_lock: Arc::new(AsyncMutex::new(())),
         })
     }
 
@@ -283,7 +284,7 @@ impl Transport for UsbBulkTransport {
     ) -> Result<(), TransportError> {
         self.check_open()?;
 
-        let _guard = lock_mutex(&self.op_lock, "operation lock")?;
+        let _guard = self.op_lock.lock().await;
         match transfer_type {
             TransferType::Primary | TransferType::Bulk => self.send_bulk_locked(data),
             TransferType::HidReport => self.send_report_locked(data),
@@ -297,7 +298,7 @@ impl Transport for UsbBulkTransport {
     ) -> Result<(), TransportError> {
         self.check_open()?;
 
-        let _guard = lock_mutex(&self.op_lock, "operation lock")?;
+        let _guard = self.op_lock.lock().await;
         match transfer_type {
             TransferType::Primary | TransferType::Bulk => self.send_bulk_owned_locked(data),
             TransferType::HidReport => self.send_report_locked(&data),
@@ -315,7 +316,7 @@ impl Transport for UsbBulkTransport {
     ) -> Result<Vec<u8>, TransportError> {
         self.check_open()?;
 
-        let _guard = lock_mutex(&self.op_lock, "operation lock")?;
+        let _guard = self.op_lock.lock().await;
         match transfer_type {
             TransferType::Primary | TransferType::Bulk => self.receive_bulk_locked(timeout),
             TransferType::HidReport => self.receive_report_locked(timeout),
@@ -339,7 +340,7 @@ impl Transport for UsbBulkTransport {
     ) -> Result<Vec<u8>, TransportError> {
         self.check_open()?;
 
-        let _guard = lock_mutex(&self.op_lock, "operation lock")?;
+        let _guard = self.op_lock.lock().await;
         match transfer_type {
             TransferType::Primary | TransferType::Bulk => {
                 self.send_bulk_locked(data)?;

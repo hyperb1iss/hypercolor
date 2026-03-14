@@ -197,8 +197,10 @@ async fn health_check_returns_200() {
 
     let json = body_json(response).await;
     assert_eq!(json["status"], "healthy");
+    assert_eq!(json["checks"]["render_loop"], "idle");
+    assert_eq!(json["checks"]["device_backends"], "idle");
+    assert_eq!(json["checks"]["event_bus"], "idle");
     assert!(json["version"].is_string());
-    assert!(json["checks"]["render_loop"].is_string());
 }
 
 #[tokio::test]
@@ -2946,6 +2948,37 @@ async fn applying_effect_auto_applies_associated_layout() {
     assert_eq!(active_layout_response.status(), StatusCode::OK);
     let active_layout_json = body_json(active_layout_response).await;
     assert_eq!(active_layout_json["data"]["id"], layout_b_id);
+}
+
+#[tokio::test]
+async fn apply_effect_rejects_unimplemented_transition_requests() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"transition":{"type":"crossfade","duration_ms":250}}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "bad_request");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("error message should be a string")
+            .contains("only immediate cut applies"),
+    );
 }
 
 // ── Error Envelope Format ────────────────────────────────────────────────

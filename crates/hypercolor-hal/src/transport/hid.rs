@@ -9,6 +9,7 @@ use nusb::MaybeFuture;
 use nusb::transfer::{
     Buffer, ControlIn, ControlOut, ControlType, In, Interrupt, Out, Recipient, TransferError,
 };
+use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, trace};
 
 use crate::protocol::TransferType;
@@ -33,7 +34,7 @@ pub struct UsbHidTransport {
     out_endpoint: Arc<Mutex<nusb::Endpoint<Interrupt, Out>>>,
     in_endpoint: Arc<Mutex<nusb::Endpoint<Interrupt, In>>>,
     closed: AtomicBool,
-    op_lock: Arc<Mutex<()>>,
+    op_lock: Arc<AsyncMutex<()>>,
 }
 
 impl UsbHidTransport {
@@ -113,7 +114,7 @@ impl UsbHidTransport {
             out_endpoint: Arc::new(Mutex::new(out_handle)),
             in_endpoint: Arc::new(Mutex::new(in_handle)),
             closed: AtomicBool::new(false),
-            op_lock: Arc::new(Mutex::new(())),
+            op_lock: Arc::new(AsyncMutex::new(())),
         })
     }
 
@@ -262,7 +263,7 @@ impl Transport for UsbHidTransport {
     ) -> Result<(), TransportError> {
         self.check_open()?;
 
-        let _guard = lock_mutex(&self.op_lock, "operation lock")?;
+        let _guard = self.op_lock.lock().await;
         match transfer_type {
             TransferType::Primary | TransferType::Bulk => self.send_locked(data),
             TransferType::HidReport => self.send_feature_report_locked(data),
@@ -276,7 +277,7 @@ impl Transport for UsbHidTransport {
     ) -> Result<Vec<u8>, TransportError> {
         self.check_open()?;
 
-        let _guard = lock_mutex(&self.op_lock, "operation lock")?;
+        let _guard = self.op_lock.lock().await;
         match transfer_type {
             TransferType::Primary | TransferType::Bulk => self.receive_locked(timeout),
             TransferType::HidReport => Err(TransportError::UnsupportedTransfer {
@@ -294,7 +295,7 @@ impl Transport for UsbHidTransport {
     ) -> Result<Vec<u8>, TransportError> {
         self.check_open()?;
 
-        let _guard = lock_mutex(&self.op_lock, "operation lock")?;
+        let _guard = self.op_lock.lock().await;
         match transfer_type {
             TransferType::Primary | TransferType::Bulk => {
                 self.send_locked(data)?;

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use hypercolor_types::canvas::linear_to_srgb;
 use hypercolor_types::effect::ControlValue;
 
 pub(crate) fn controls_to_json(
@@ -31,9 +32,9 @@ pub(crate) fn control_value_to_json(value: &ControlValue) -> serde_json::Value {
         ControlValue::Color(rgba) => {
             serde_json::json!(format!(
                 "#{:02x}{:02x}{:02x}",
-                (rgba[0] * 255.0) as u8,
-                (rgba[1] * 255.0) as u8,
-                (rgba[2] * 255.0) as u8,
+                color_channel_to_byte(rgba[0]),
+                color_channel_to_byte(rgba[1]),
+                color_channel_to_byte(rgba[2]),
             ))
         }
         ControlValue::Gradient(stops) => serde_json::json!(stops),
@@ -58,4 +59,13 @@ pub(crate) fn bundled_preset_matches_controls(
     preset_controls
         .iter()
         .all(|(key, expected)| current_json.get(key) == Some(&control_value_to_json(expected)))
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions
+)]
+fn color_channel_to_byte(channel: f32) -> u8 {
+    (linear_to_srgb(channel.clamp(0.0, 1.0)) * 255.0).round() as u8
 }
