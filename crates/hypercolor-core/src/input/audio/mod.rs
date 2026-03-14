@@ -145,6 +145,7 @@ impl AudioAnalyzer {
         }
 
         self.elapsed += f64::from(dt);
+        let sample_rate = self.fft.sample_rate();
 
         // Read the latest window from the ring buffer.
         self.ring.read_last(&mut self.time_buf);
@@ -180,20 +181,19 @@ impl AudioAnalyzer {
         let fft_result = self.fft.process(&self.time_buf)?;
 
         // Mel bands from raw linear magnitudes.
-        let raw_mel = self.mel.apply(&fft_result.raw_magnitudes);
+        let raw_mel = self.mel.apply(fft_result.raw_magnitudes);
 
         // Chromagram from raw linear magnitudes.
-        let raw_chroma =
-            compute_chromagram(&fft_result.raw_magnitudes, self.fft.sample_rate(), fft_size);
+        let raw_chroma = compute_chromagram(fft_result.raw_magnitudes, sample_rate, fft_size);
 
         // Band energies from the 200-bin log spectrum.
-        let (bass, mid, treble) = band_energies(&fft_result.spectrum);
+        let (bass, mid, treble) = band_energies(fft_result.spectrum);
 
         // Spectral centroid.
-        let raw_centroid = spectral_centroid(&fft_result.spectrum);
+        let raw_centroid = spectral_centroid(fft_result.spectrum);
 
         // Smoothing.
-        self.spectrum_smoother.update(&fft_result.spectrum);
+        self.spectrum_smoother.update(fft_result.spectrum);
         self.mel_smoother.update(&raw_mel);
         self.chroma_smoother.update(&raw_chroma);
         self.rms_smoother.update(raw_rms);

@@ -336,7 +336,7 @@ fn band_energy_bass_heavy_signal() {
     let mut pipeline = FftPipeline::new(fft_size, sample_rate);
     let result = pipeline.process(&samples).expect("FFT should succeed");
 
-    let (bass, _mid, treble) = band_energies(&result.spectrum);
+    let (bass, _mid, treble) = band_energies(result.spectrum);
     assert!(
         bass > treble,
         "80 Hz should have more bass than treble: bass={bass}, treble={treble}"
@@ -539,7 +539,7 @@ fn beat_detection_synthetic_kicks() {
         ring.read_last(&mut buf);
 
         if let Ok(result) = pipeline.process(&buf) {
-            let (bass, mid, treble) = band_energies(&result.spectrum);
+            let (bass, mid, treble) = band_energies(result.spectrum);
             let state = detector.update(&BeatFrame {
                 bass,
                 mid,

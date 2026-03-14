@@ -706,7 +706,7 @@ async fn relay_events(
                 let (event_name, event_data) = event_message_parts(&timestamped.event);
                 let msg = ServerMessage::Event {
                     event: event_name,
-                    timestamp: timestamped.timestamp.clone(),
+                    timestamp: timestamped.timestamp.to_string(),
                     data: event_data,
                 };
                 let Ok(json) = serde_json::to_string(&msg) else {

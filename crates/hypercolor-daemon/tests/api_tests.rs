@@ -2049,6 +2049,10 @@ async fn scene_crud_lifecycle() {
 // ── Profiles ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "profile lifecycle coverage is clearer as one end-to-end integration test"
+)]
 async fn profile_crud_lifecycle() {
     let state = Arc::new(isolated_state());
     insert_test_effect(&state, "solid_color").await;

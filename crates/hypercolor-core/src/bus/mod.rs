@@ -13,10 +13,11 @@ mod filter;
 
 pub use filter::{EventFilter, FilteredEventReceiver};
 
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
-use serde::{Deserialize, Serialize};
+use serde::{Serialize, Serializer};
 use tokio::sync::{broadcast, watch};
 
 use crate::types::canvas::Canvas;
@@ -38,10 +39,58 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 ///
 /// The bus adds timestamps at publish time so event producers
 /// don't need to worry about clocks.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EventTimestamp(u64);
+
+impl EventTimestamp {
+    #[must_use]
+    pub fn now() -> Self {
+        let duration = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
+
+        #[expect(clippy::cast_possible_truncation, clippy::as_conversions)]
+        let epoch_millis = duration.as_millis() as u64;
+        Self(epoch_millis)
+    }
+
+    #[must_use]
+    pub const fn from_epoch_millis(epoch_millis: u64) -> Self {
+        Self(epoch_millis)
+    }
+
+    #[must_use]
+    pub const fn epoch_millis(self) -> u64 {
+        self.0
+    }
+}
+
+impl fmt::Display for EventTimestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let total_secs = self.0 / 1_000;
+        let millis = self.0 % 1_000;
+        let (year, month, day, hour, minute, second) = epoch_to_utc(total_secs);
+
+        write!(
+            f,
+            "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z"
+        )
+    }
+}
+
+impl Serialize for EventTimestamp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct TimestampedEvent {
     /// ISO 8601 wall-clock timestamp with millisecond precision.
-    pub timestamp: String,
+    pub timestamp: EventTimestamp,
     /// Monotonic millis since the bus was created (for frame correlation).
     pub mono_ms: u64,
     /// The event payload.
@@ -160,7 +209,7 @@ impl HypercolorBus {
     /// Non-blocking -- if no subscribers exist, the event is silently dropped.
     pub fn publish(&self, event: HypercolorEvent) {
         let timestamped = TimestampedEvent {
-            timestamp: format_iso8601_now(),
+            timestamp: EventTimestamp::now(),
             mono_ms: self.mono_ms(),
             event,
         };
@@ -264,25 +313,6 @@ impl Default for HypercolorBus {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
-
-/// Format the current wall-clock time as ISO 8601 with millisecond precision.
-///
-/// Uses `SystemTime` to avoid pulling in `chrono`. The format is
-/// `YYYY-MM-DDTHH:MM:SS.mmmZ` (always UTC).
-fn format_iso8601_now() -> String {
-    let now = SystemTime::now();
-    let duration = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-
-    let total_secs = duration.as_secs();
-    let millis = duration.subsec_millis();
-
-    // Break epoch seconds into calendar components (UTC).
-    let (year, month, day, hour, minute, second) = epoch_to_utc(total_secs);
-
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
-}
 
 /// Convert Unix epoch seconds to (year, month, day, hour, minute, second) in UTC.
 ///

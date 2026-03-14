@@ -1,5 +1,6 @@
 //! Pure Razer protocol encoder/decoder.
 
+use std::borrow::Cow;
 use std::cmp::min;
 use std::time::Duration;
 
@@ -9,8 +10,8 @@ use hypercolor_types::device::{
 use tracing::warn;
 
 use crate::protocol::{
-    Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse, ProtocolZone,
-    ResponseStatus, TransferType,
+    CommandBuffer, Protocol, ProtocolCommand, ProtocolError, ProtocolKeepalive, ProtocolResponse,
+    ProtocolZone, ResponseStatus, TransferType,
 };
 
 use zerocopy::{FromBytes, FromZeros, IntoBytes};
@@ -335,14 +336,14 @@ impl RazerProtocol {
         }
     }
 
-    fn normalize_colors(&self, colors: &[[u8; 3]]) -> Vec<[u8; 3]> {
+    fn normalize_colors<'a>(&self, colors: &'a [[u8; 3]]) -> Cow<'a, [[u8; 3]]> {
         let expected = usize::try_from(self.total_leds()).unwrap_or(0);
         if expected == 0 {
-            return Vec::new();
+            return Cow::Borrowed(&[]);
         }
 
         if colors.len() == expected {
-            return colors.to_vec();
+            return Cow::Borrowed(colors);
         }
 
         let mut normalized = vec![[0_u8; 3]; expected];
@@ -357,7 +358,7 @@ impl RazerProtocol {
             );
         }
 
-        normalized
+        Cow::Owned(normalized)
     }
 
     fn frame_chunk_capacity(matrix_type: RazerMatrixType) -> usize {
@@ -380,26 +381,6 @@ impl RazerProtocol {
     ) -> Option<ProtocolCommand> {
         self.build_packet_with_options(
             self.version.transaction_id(),
-            command_class,
-            command_id,
-            args,
-            None,
-            expects_response,
-            post_delay,
-        )
-    }
-
-    fn build_packet_with_transaction(
-        &self,
-        transaction_id: u8,
-        command_class: u8,
-        command_id: u8,
-        args: &[u8],
-        expects_response: bool,
-        post_delay: Duration,
-    ) -> Option<ProtocolCommand> {
-        self.build_packet_with_options(
-            transaction_id,
             command_class,
             command_id,
             args,
@@ -440,6 +421,34 @@ impl RazerProtocol {
         expects_response: bool,
         post_delay: Duration,
     ) -> Option<ProtocolCommand> {
+        let report = Self::report_with_options(
+            transaction_id,
+            command_class,
+            command_id,
+            args,
+            declared_data_size,
+        )?;
+
+        Some(ProtocolCommand {
+            data: report.as_bytes().to_vec(),
+            expects_response,
+            response_delay: if expects_response {
+                self.response_delay
+            } else {
+                Duration::ZERO
+            },
+            post_delay,
+            transfer_type: TransferType::Primary,
+        })
+    }
+
+    fn report_with_options(
+        transaction_id: u8,
+        command_class: u8,
+        command_id: u8,
+        args: &[u8],
+        declared_data_size: Option<u8>,
+    ) -> Option<RazerReport> {
         if args.len() > ARGS_LEN {
             warn!(
                 args_len = args.len(),
@@ -473,17 +482,42 @@ impl RazerProtocol {
         report.args[..args.len()].copy_from_slice(args);
         report.crc = razer_crc(&report);
 
-        Some(ProtocolCommand {
-            data: report.as_bytes().to_vec(),
+        Some(report)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_packet_with_options(
+        &self,
+        encoder: &mut CommandBuffer<'_>,
+        transaction_id: u8,
+        command_class: u8,
+        command_id: u8,
+        args: &[u8],
+        declared_data_size: Option<u8>,
+        expects_response: bool,
+        post_delay: Duration,
+    ) {
+        let Some(report) = Self::report_with_options(
+            transaction_id,
+            command_class,
+            command_id,
+            args,
+            declared_data_size,
+        ) else {
+            return;
+        };
+
+        encoder.push_struct(
+            &report,
             expects_response,
-            response_delay: if expects_response {
+            if expects_response {
                 self.response_delay
             } else {
                 Duration::ZERO
             },
             post_delay,
-            transfer_type: TransferType::Primary,
-        })
+            TransferType::Primary,
+        );
     }
 
     fn get_device_mode_command(&self) -> Option<ProtocolCommand> {
@@ -570,23 +604,30 @@ impl RazerProtocol {
         .map(|command| vec![command])
     }
 
-    fn encode_scalar(&self, color: [u8; 3]) -> Vec<ProtocolCommand> {
-        let (command_class, command_id, args) = match self.command_set {
-            RazerLightingCommandSet::Standard => (
-                0x03,
-                0x01,
-                vec![
+    fn encode_scalar_into(&self, color: [u8; 3], commands: &mut Vec<ProtocolCommand>) {
+        let mut encoder = CommandBuffer::new(commands);
+        match self.command_set {
+            RazerLightingCommandSet::Standard => {
+                let args = [
                     self.standard_storage,
                     self.led_id,
                     color[0],
                     color[1],
                     color[2],
-                ],
-            ),
-            RazerLightingCommandSet::Extended => (
-                0x0F,
-                0x02,
-                vec![
+                ];
+                self.push_packet_with_options(
+                    &mut encoder,
+                    self.version.transaction_id(),
+                    0x03,
+                    0x01,
+                    &args,
+                    None,
+                    self.frame_commands_expect_response,
+                    Duration::ZERO,
+                );
+            }
+            RazerLightingCommandSet::Extended => {
+                let args = [
                     NOSTORE,
                     self.led_id,
                     0x01,
@@ -596,24 +637,24 @@ impl RazerProtocol {
                     color[0],
                     color[1],
                     color[2],
-                ],
-            ),
-        };
-
-        self.build_packet(command_class, command_id, &args, true, Duration::ZERO)
-            .map(|mut command| {
-                command.expects_response = self.frame_commands_expect_response;
-                if !self.frame_commands_expect_response {
-                    command.response_delay = Duration::ZERO;
-                }
-                command
-            })
-            .into_iter()
-            .collect()
+                ];
+                self.push_packet_with_options(
+                    &mut encoder,
+                    self.version.transaction_id(),
+                    0x0F,
+                    0x02,
+                    &args,
+                    None,
+                    self.frame_commands_expect_response,
+                    Duration::ZERO,
+                );
+            }
+        }
+        encoder.finish();
     }
 
-    fn encode_linear(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
-        let mut commands = Vec::new();
+    fn encode_linear_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+        let mut encoder = CommandBuffer::new(commands);
         let frame_transaction_id = self
             .frame_transaction_id
             .unwrap_or(self.version.transaction_id());
@@ -623,44 +664,41 @@ impl RazerProtocol {
             Self::frame_chunk_capacity(RazerMatrixType::Linear),
         );
         if led_count == 0 {
-            return commands;
+            encoder.finish();
+            return;
         }
 
         let stop_col = u8::try_from(led_count - 1).unwrap_or(0);
-        let mut args = Vec::with_capacity(50);
-        args.push(0x00);
-        args.push(stop_col);
+        let mut args = [0_u8; 50];
+        args[0] = 0x00;
+        args[1] = stop_col;
+        let mut offset = 2;
 
         for color in colors.iter().take(led_count) {
-            args.extend_from_slice(color);
+            args[offset..offset + color.len()].copy_from_slice(color);
+            offset += color.len();
         }
 
-        while args.len() < 50 {
-            args.push(0x00);
-        }
-
-        if let Some(packet) = self.build_packet_with_transaction(
+        self.push_packet_with_options(
+            &mut encoder,
             frame_transaction_id,
             0x03,
             0x0C,
             &args,
+            None,
             self.frame_commands_expect_response,
             Duration::from_millis(1),
-        ) {
-            commands.push(packet);
+        );
+
+        if self.should_append_frame_activation() {
+            self.push_activation_command(&mut encoder);
         }
 
-        if self.should_append_frame_activation()
-            && let Some(activation) = self.activation_command()
-        {
-            commands.push(activation);
-        }
-
-        commands
+        encoder.finish();
     }
 
-    fn encode_matrix(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
-        let mut commands = Vec::new();
+    fn encode_matrix_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
+        let mut encoder = CommandBuffer::new(commands);
         let frame_transaction_id = self
             .frame_transaction_id
             .unwrap_or(self.version.transaction_id());
@@ -668,7 +706,8 @@ impl RazerProtocol {
         let rows = usize::from(self.matrix_size.0);
         let cols = usize::from(self.matrix_size.1);
         if rows == 0 || cols == 0 {
-            return commands;
+            encoder.finish();
+            return;
         }
 
         let max_chunk = Self::frame_chunk_capacity(self.matrix_type);
@@ -684,60 +723,117 @@ impl RazerProtocol {
                     continue;
                 }
 
-                let mut args = Vec::with_capacity(ARGS_LEN);
+                let mut args = [0_u8; ARGS_LEN];
                 let row_u8 = u8::try_from(row).unwrap_or(0);
                 let start_col = u8::try_from(chunk_start).unwrap_or(0);
                 let stop_col = u8::try_from(chunk_end - 1).unwrap_or(0);
 
-                let (command_class, command_id) = match self.command_set {
-                    RazerLightingCommandSet::Standard => {
-                        args.extend_from_slice(&[0xFF, row_u8, start_col, stop_col]);
-                        (0x03, 0x0B)
-                    }
-                    RazerLightingCommandSet::Extended => {
-                        args.extend_from_slice(&[0x00, 0x00, row_u8, start_col, stop_col]);
-                        (0x0F, 0x03)
-                    }
-                };
+                let (command_class, command_id, mut args_len, declared_size) =
+                    match self.command_set {
+                        RazerLightingCommandSet::Standard => {
+                            args[..4].copy_from_slice(&[0xFF, row_u8, start_col, stop_col]);
+                            (0x03, 0x0B, 4, Some(STANDARD_MATRIX_FRAME_DATA_SIZE))
+                        }
+                        RazerLightingCommandSet::Extended => {
+                            args[..5].copy_from_slice(&[0x00, 0x00, row_u8, start_col, stop_col]);
+                            (0x0F, 0x03, 5, None)
+                        }
+                    };
 
                 for color in &row_colors[chunk_start..chunk_end] {
-                    args.extend_from_slice(color);
+                    args[args_len..args_len + color.len()].copy_from_slice(color);
+                    args_len += color.len();
                 }
 
-                let packet = match self.command_set {
-                    RazerLightingCommandSet::Standard => self.build_packet_with_options(
-                        frame_transaction_id,
-                        command_class,
-                        command_id,
-                        &args,
-                        Some(STANDARD_MATRIX_FRAME_DATA_SIZE),
-                        self.frame_commands_expect_response,
-                        Duration::from_millis(1),
-                    ),
-                    RazerLightingCommandSet::Extended => self.build_packet_with_options(
-                        frame_transaction_id,
-                        command_class,
-                        command_id,
-                        &args,
-                        None,
-                        self.frame_commands_expect_response,
-                        Duration::from_millis(1),
-                    ),
-                };
-
-                if let Some(packet) = packet {
-                    commands.push(packet);
-                }
+                self.push_packet_with_options(
+                    &mut encoder,
+                    frame_transaction_id,
+                    command_class,
+                    command_id,
+                    &args[..args_len],
+                    declared_size,
+                    self.frame_commands_expect_response,
+                    Duration::from_millis(1),
+                );
             }
         }
 
-        if self.should_append_frame_activation()
-            && let Some(activation) = self.activation_command()
-        {
-            commands.push(activation);
+        if self.should_append_frame_activation() {
+            self.push_activation_command(&mut encoder);
         }
 
-        commands
+        encoder.finish();
+    }
+
+    fn push_activation_command(&self, encoder: &mut CommandBuffer<'_>) {
+        match self.activation_style {
+            CustomEffectActivationStyle::LegacyStandard { storage } => self
+                .push_packet_with_options(
+                    encoder,
+                    self.version.transaction_id(),
+                    0x03,
+                    0x0A,
+                    &[0x05, storage],
+                    None,
+                    self.activation_expects_response,
+                    self.activation_post_delay,
+                ),
+            CustomEffectActivationStyle::StandardLedEffect {
+                storage,
+                led_id,
+                effect,
+            } => self.push_packet_with_options(
+                encoder,
+                self.version.transaction_id(),
+                0x03,
+                0x02,
+                &[storage, led_id, effect],
+                None,
+                self.activation_expects_response,
+                self.activation_post_delay,
+            ),
+            CustomEffectActivationStyle::ExtendedMatrix {
+                declared_data_size,
+                args,
+                args_len,
+            } => {
+                let args_len = min(usize::from(args_len), args.len());
+                self.push_packet_with_options(
+                    encoder,
+                    self.version.transaction_id(),
+                    0x0F,
+                    0x02,
+                    &args[..args_len],
+                    Some(declared_data_size),
+                    self.activation_expects_response,
+                    self.activation_post_delay,
+                );
+            }
+            CustomEffectActivationStyle::MatchCommandSet
+                if matches!(self.command_set, RazerLightingCommandSet::Standard) =>
+            {
+                self.push_packet_with_options(
+                    encoder,
+                    self.version.transaction_id(),
+                    0x03,
+                    0x0A,
+                    &[0x05, self.standard_storage],
+                    None,
+                    self.activation_expects_response,
+                    self.activation_post_delay,
+                );
+            }
+            CustomEffectActivationStyle::MatchCommandSet => self.push_packet_with_options(
+                encoder,
+                self.version.transaction_id(),
+                0x0F,
+                0x02,
+                &[NOSTORE, LED_ID_ZERO, EFFECT_CUSTOM_FRAME, 0x00, 0x01],
+                Some(EXTENDED_CUSTOM_EFFECT_DATA_SIZE),
+                self.activation_expects_response,
+                self.activation_post_delay,
+            ),
+        }
     }
 
     fn map_status(byte: u8) -> ResponseStatus {
@@ -785,16 +881,24 @@ impl Protocol for RazerProtocol {
     }
 
     fn encode_frame(&self, colors: &[[u8; 3]]) -> Vec<ProtocolCommand> {
+        let mut commands = Vec::new();
+        self.encode_frame_into(colors, &mut commands);
+        commands
+    }
+
+    fn encode_frame_into(&self, colors: &[[u8; 3]], commands: &mut Vec<ProtocolCommand>) {
         let normalized = self.normalize_colors(colors);
         match self.matrix_type {
             RazerMatrixType::None => {
                 let color = normalized.first().copied().unwrap_or([0, 0, 0]);
-                self.encode_scalar(color)
+                self.encode_scalar_into(color, commands);
             }
-            RazerMatrixType::Linear => self.encode_linear(&normalized),
+            RazerMatrixType::Linear => self.encode_linear_into(normalized.as_ref(), commands),
             RazerMatrixType::Standard
             | RazerMatrixType::Extended
-            | RazerMatrixType::ExtendedArgb => self.encode_matrix(&normalized),
+            | RazerMatrixType::ExtendedArgb => {
+                self.encode_matrix_into(normalized.as_ref(), commands);
+            }
         }
     }
 

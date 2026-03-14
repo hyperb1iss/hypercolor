@@ -643,8 +643,8 @@ mod tests {
             "stale".to_owned(),
             super::ClientWindow {
                 window_start: std::time::Instant::now()
-                    - super::RATE_WINDOW
-                    - std::time::Duration::from_secs(1),
+                    .checked_sub(super::RATE_WINDOW + std::time::Duration::from_secs(1))
+                    .expect("duration should be representable"),
                 read_count: 1,
                 write_count: 0,
             },

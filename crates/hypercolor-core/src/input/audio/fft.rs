@@ -158,6 +158,10 @@ pub struct FftPipeline {
     /// Pre-computed log-frequency bin mapping: for each of the 200 output bins,
     /// stores `(fft_bin_lo, fft_bin_hi)`.
     bin_map: Vec<(usize, usize)>,
+    /// Raw dB-normalized magnitudes for all FFT bins (reused each frame).
+    raw_magnitudes_buf: Vec<f32>,
+    /// Log-frequency resample buffer (reused each frame).
+    spectrum_bins_buf: Vec<f32>,
     /// Previous spectrum frame (for spectral flux computation).
     prev_magnitudes: Vec<f32>,
 }
@@ -186,6 +190,8 @@ impl FftPipeline {
             spectrum_buf,
             fft,
             bin_map,
+            raw_magnitudes_buf: vec![0.0; half + 1],
+            spectrum_bins_buf: vec![0.0; SPECTRUM_BINS],
             prev_magnitudes: vec![0.0; SPECTRUM_BINS],
         }
     }
@@ -213,7 +219,7 @@ impl FftPipeline {
     /// # Errors
     ///
     /// Returns an error if the FFT computation fails (buffer size mismatch).
-    pub fn process(&mut self, samples: &[f32]) -> anyhow::Result<FftResult> {
+    pub fn process(&mut self, samples: &[f32]) -> anyhow::Result<FftResult<'_>> {
         // Copy into work buffer.
         let n = samples.len().min(self.fft_size);
         self.time_buf[..n].copy_from_slice(&samples[..n]);
@@ -237,62 +243,63 @@ impl FftPipeline {
 
         // Compute magnitudes in dB, normalized to [0, 1].
         let half = self.fft_size / 2;
-        let raw_mags = self.compute_raw_magnitudes(half);
+        self.compute_raw_magnitudes(half);
 
         // Log-frequency resample to 200 bins.
-        let spectrum_200 = self.resample_log(&raw_mags);
+        self.resample_log();
 
         // Spectral flux (half-wave rectified difference from previous frame).
-        let flux = spectral_flux(&spectrum_200, &self.prev_magnitudes);
-        self.prev_magnitudes.copy_from_slice(&spectrum_200);
+        let flux = spectral_flux(&self.spectrum_bins_buf, &self.prev_magnitudes);
+        self.prev_magnitudes
+            .copy_from_slice(&self.spectrum_bins_buf);
 
         Ok(FftResult {
-            spectrum: spectrum_200,
-            raw_magnitudes: raw_mags,
+            spectrum: &self.spectrum_bins_buf,
+            raw_magnitudes: &self.raw_magnitudes_buf,
             spectral_flux: flux,
         })
     }
 
     /// Compute dB-normalized magnitudes from the complex spectrum.
-    fn compute_raw_magnitudes(&self, half: usize) -> Vec<f32> {
-        self.spectrum_buf[..=half]
-            .iter()
-            .map(|c| {
-                let mag = (c.re * c.re + c.im * c.im).sqrt();
-                let db = 20.0 * (mag + DB_EPSILON).log10();
-                db_to_normalized(db)
-            })
-            .collect()
+    fn compute_raw_magnitudes(&mut self, half: usize) {
+        for (slot, complex) in self
+            .raw_magnitudes_buf
+            .iter_mut()
+            .zip(self.spectrum_buf[..=half].iter())
+        {
+            let mag = (complex.re * complex.re + complex.im * complex.im).sqrt();
+            let db = 20.0 * (mag + DB_EPSILON).log10();
+            *slot = db_to_normalized(db);
+        }
     }
 
     /// Resample linearly-spaced FFT magnitudes into 200 log-spaced bins.
-    fn resample_log(&self, raw_mags: &[f32]) -> Vec<f32> {
-        self.bin_map
-            .iter()
-            .map(|&(lo, hi)| {
-                if lo >= raw_mags.len() {
-                    return 0.0;
-                }
-                let hi = hi.min(raw_mags.len());
-                let slice = &raw_mags[lo..hi];
-                if slice.is_empty() {
-                    0.0
-                } else {
-                    #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
-                    let count = slice.len() as f32;
-                    slice.iter().sum::<f32>() / count
-                }
-            })
-            .collect()
+    fn resample_log(&mut self) {
+        for (slot, &(lo, hi)) in self.spectrum_bins_buf.iter_mut().zip(&self.bin_map) {
+            if lo >= self.raw_magnitudes_buf.len() {
+                *slot = 0.0;
+                continue;
+            }
+
+            let hi = hi.min(self.raw_magnitudes_buf.len());
+            let slice = &self.raw_magnitudes_buf[lo..hi];
+            *slot = if slice.is_empty() {
+                0.0
+            } else {
+                #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
+                let count = slice.len() as f32;
+                slice.iter().sum::<f32>() / count
+            };
+        }
     }
 }
 
 /// Result from a single FFT frame.
-pub struct FftResult {
+pub struct FftResult<'a> {
     /// 200 log-frequency bins, normalized 0.0–1.0.
-    pub spectrum: Vec<f32>,
+    pub spectrum: &'a [f32],
     /// Raw dB-normalized magnitudes for all FFT bins (`fft_size/2 + 1` entries).
-    pub raw_magnitudes: Vec<f32>,
+    pub raw_magnitudes: &'a [f32],
     /// Spectral flux (half-wave rectified sum of positive changes).
     pub spectral_flux: f32,
 }

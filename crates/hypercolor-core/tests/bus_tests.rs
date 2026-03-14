@@ -1,6 +1,8 @@
 //! Comprehensive tests for the event bus.
 
-use hypercolor_core::bus::{CanvasFrame, EventFilter, HypercolorBus, TimestampedEvent};
+use hypercolor_core::bus::{
+    CanvasFrame, EventFilter, EventTimestamp, HypercolorBus, TimestampedEvent,
+};
 use hypercolor_core::types::canvas::{Canvas, Rgba};
 use hypercolor_core::types::event::{
     ChangeTrigger, DisconnectReason, EffectRef, EventCategory, EventPriority, FrameData,
@@ -79,7 +81,10 @@ async fn publish_receive_roundtrip() {
         matches!(received.event, HypercolorEvent::Paused),
         "event should be Paused"
     );
-    assert!(!received.timestamp.is_empty(), "timestamp should be set");
+    assert!(
+        received.timestamp.epoch_millis() > 0,
+        "timestamp should be set"
+    );
 }
 
 #[tokio::test]
@@ -119,6 +124,18 @@ async fn mono_ms_is_monotonic() {
         second.mono_ms >= first.mono_ms,
         "mono_ms should be monotonically increasing"
     );
+}
+
+#[test]
+fn timestamp_serializes_as_iso8601_string() {
+    let event = TimestampedEvent {
+        timestamp: EventTimestamp::from_epoch_millis(0),
+        mono_ms: 0,
+        event: HypercolorEvent::Paused,
+    };
+
+    let json = serde_json::to_string(&event).expect("serialize timestamped event");
+    assert!(json.contains("\"timestamp\":\"1970-01-01T00:00:00.000Z\""));
 }
 
 // ── Multiple Subscribers ─────────────────────────────────────────────────
@@ -602,20 +619,17 @@ async fn timestamp_is_iso8601() {
     bus.publish(paused_event());
 
     let event = recv_one(&mut rx).await.expect("should receive");
+    let timestamp = event.timestamp.to_string();
     // Basic ISO 8601 format: YYYY-MM-DDTHH:MM:SS.mmmZ
     assert!(
-        event.timestamp.ends_with('Z'),
+        timestamp.ends_with('Z'),
         "timestamp should end with Z (UTC)"
     );
     assert!(
-        event.timestamp.contains('T'),
+        timestamp.contains('T'),
         "timestamp should contain T separator"
     );
-    assert_eq!(
-        event.timestamp.len(),
-        24,
-        "should be 24 chars for ms precision"
-    );
+    assert_eq!(timestamp.len(), 24, "should be 24 chars for ms precision");
 }
 
 // ── Event Category / Priority Integration ────────────────────────────────

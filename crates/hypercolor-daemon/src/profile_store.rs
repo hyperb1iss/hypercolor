@@ -101,6 +101,10 @@ impl ProfileStore {
     }
 
     #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.profiles.is_empty()
+    }
+
     pub fn values(&self) -> impl Iterator<Item = &Profile> {
         self.profiles.values()
     }
