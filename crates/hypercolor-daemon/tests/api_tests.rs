@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
+use hypercolor_daemon::session::set_global_brightness;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -2050,16 +2051,68 @@ async fn scene_crud_lifecycle() {
 #[tokio::test]
 async fn profile_crud_lifecycle() {
     let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let profile_layout = SpatialLayout {
+        id: "layout_profile".to_owned(),
+        name: "Profile Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    let alternate_layout = SpatialLayout {
+        id: "layout_alternate".to_owned(),
+        name: "Alternate Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    {
+        let mut layouts = state.layouts.write().await;
+        layouts.insert(profile_layout.id.clone(), profile_layout.clone());
+        layouts.insert(alternate_layout.id.clone(), alternate_layout.clone());
+    }
+    {
+        let mut spatial = state.spatial_engine.write().await;
+        spatial.update_layout(profile_layout.clone());
+    }
+    set_global_brightness(&state.power_state, 0.72);
 
-    // Create profile
     let app = test_app_with_state(Arc::clone(&state));
     let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"controls":{"speed":12.5}}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Create profile
+    let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/profiles")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"name": "Gaming Mode", "brightness": 100}"#))
+                .body(Body::from(r#"{"name": "Gaming Mode"}"#))
                 .expect("failed to build request"),
         )
         .await
@@ -2068,14 +2121,17 @@ async fn profile_crud_lifecycle() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Gaming Mode");
+    assert_eq!(json["data"]["brightness"], 72);
+    assert_eq!(json["data"]["layout_id"], profile_layout.id);
+    assert_eq!(json["data"]["effect_name"], "solid_color");
     let profile_id = json["data"]["id"]
         .as_str()
         .expect("id should be a string")
         .to_owned();
 
     // Get profile
-    let app = test_app_with_state(Arc::clone(&state));
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri(format!("/api/v1/profiles/{profile_id}"))
@@ -2088,10 +2144,12 @@ async fn profile_crud_lifecycle() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Gaming Mode");
+    assert_eq!(json["data"]["effect_name"], "solid_color");
+    assert_eq!(json["data"]["layout_id"], profile_layout.id);
 
     // List profiles
-    let app = test_app_with_state(Arc::clone(&state));
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/v1/profiles")
@@ -2106,8 +2164,8 @@ async fn profile_crud_lifecycle() {
     assert_eq!(json["data"]["pagination"]["total"], 1);
 
     // Update profile
-    let app = test_app_with_state(Arc::clone(&state));
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("PUT")
@@ -2122,10 +2180,29 @@ async fn profile_crud_lifecycle() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Chill Mode");
+    assert_eq!(json["data"]["brightness"], 50);
+
+    {
+        let mut spatial = state.spatial_engine.write().await;
+        spatial.update_layout(alternate_layout);
+    }
+    set_global_brightness(&state.power_state, 0.05);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
 
     // Apply profile
-    let app = test_app_with_state(Arc::clone(&state));
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -2139,10 +2216,54 @@ async fn profile_crud_lifecycle() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["applied"], true);
+    assert_eq!(json["data"]["profile"]["effect_name"], "solid_color");
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/effects/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["name"], "solid_color");
+    assert_eq!(json["data"]["control_values"]["speed"]["float"], 12.5);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/layouts/active")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["id"], profile_layout.id);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/settings/brightness")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["brightness"], 50);
 
     // Delete profile
-    let app = test_app_with_state(Arc::clone(&state));
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("DELETE")
@@ -2158,7 +2279,6 @@ async fn profile_crud_lifecycle() {
     assert_eq!(json["data"]["deleted"], true);
 
     // Verify deletion
-    let app = test_app_with_state(Arc::clone(&state));
     let response = app
         .oneshot(
             Request::builder()

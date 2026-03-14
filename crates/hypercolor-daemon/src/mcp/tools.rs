@@ -1485,6 +1485,9 @@ async fn handle_set_profile_with_state(
         }));
     };
 
+    crate::api::profiles::apply_profile_snapshot(state, &profile)
+        .await
+        .map_err(ToolError::Internal)?;
     state.event_bus.publish(HypercolorEvent::ProfileLoaded {
         profile_id: profile.id.clone(),
         profile_name: profile.name.clone(),
@@ -1495,7 +1498,9 @@ async fn handle_set_profile_with_state(
         "profile": {
             "id": profile.id,
             "name": profile.name,
-            "description": profile.description
+            "description": profile.description,
+            "effect_id": profile.effect_id,
+            "layout_id": profile.layout_id
         },
         "applied": true
     }))

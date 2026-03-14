@@ -405,7 +405,7 @@ pub async fn update_device(
     };
 
     let enabled_handled_by_lifecycle = if let Some(enabled) = body.enabled {
-        let runtime = discovery_runtime(&state);
+        let runtime = super::discovery_runtime(&state);
         match discovery::apply_user_enabled_state(&runtime, device_id, enabled).await {
             Ok(discovery::UserEnabledStateResult::Applied) => true,
             Ok(discovery::UserEnabledStateResult::MissingLifecycle) => false,
@@ -1042,7 +1042,7 @@ pub async fn create_logical_device(
         return ApiError::internal(format!("Failed to persist logical devices: {error}"));
     }
 
-    let runtime = discovery_runtime(&state);
+    let runtime = super::discovery_runtime(&state);
     let connected_only = HashSet::from([physical_id]);
     discovery::sync_active_layout_connectivity(&runtime, Some(&connected_only)).await;
     sync_live_logical_mappings_for_device(&state, physical_id).await;
@@ -1168,7 +1168,7 @@ pub async fn update_logical_device(
         return ApiError::internal(format!("Failed to persist logical devices: {error}"));
     }
 
-    let runtime = discovery_runtime(&state);
+    let runtime = super::discovery_runtime(&state);
     let connected_only = HashSet::from([existing.physical_device_id]);
     discovery::sync_active_layout_connectivity(&runtime, Some(&connected_only)).await;
     sync_live_logical_mappings_for_device(&state, existing.physical_device_id).await;
@@ -1214,7 +1214,7 @@ pub async fn delete_logical_device(
         return ApiError::internal(format!("Failed to persist logical devices: {error}"));
     }
 
-    let runtime = discovery_runtime(&state);
+    let runtime = super::discovery_runtime(&state);
     let connected_only = HashSet::from([existing.physical_device_id]);
     discovery::sync_active_layout_connectivity(&runtime, Some(&connected_only)).await;
     sync_live_logical_mappings_for_device(&state, existing.physical_device_id).await;
@@ -2195,26 +2195,4 @@ fn parse_hex_rgb(raw: &str) -> Option<[u8; 3]> {
     let green = u8::from_str_radix(&color[2..4], 16).ok()?;
     let blue = u8::from_str_radix(&color[4..6], 16).ok()?;
     Some([red, green, blue])
-}
-
-fn discovery_runtime(state: &Arc<AppState>) -> discovery::DiscoveryRuntime {
-    discovery::DiscoveryRuntime {
-        device_registry: state.device_registry.clone(),
-        backend_manager: Arc::clone(&state.backend_manager),
-        lifecycle_manager: Arc::clone(&state.lifecycle_manager),
-        reconnect_tasks: Arc::clone(&state.reconnect_tasks),
-        event_bus: Arc::clone(&state.event_bus),
-        spatial_engine: Arc::clone(&state.spatial_engine),
-        layouts: Arc::clone(&state.layouts),
-        layouts_path: state.layouts_path.clone(),
-        layout_auto_exclusions: Arc::clone(&state.layout_auto_exclusions),
-        logical_devices: Arc::clone(&state.logical_devices),
-        attachment_registry: Arc::clone(&state.attachment_registry),
-        attachment_profiles: Arc::clone(&state.attachment_profiles),
-        device_settings: Arc::clone(&state.device_settings),
-        runtime_state_path: state.runtime_state_path.clone(),
-        usb_protocol_configs: state.usb_protocol_configs.clone(),
-        in_progress: Arc::clone(&state.discovery_in_progress),
-        task_spawner: tokio::runtime::Handle::current(),
-    }
 }

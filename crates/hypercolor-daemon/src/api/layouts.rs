@@ -309,7 +309,7 @@ pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<Str
         let mut spatial = state.spatial_engine.write().await;
         spatial.update_layout(layout.clone());
     }
-    let runtime = discovery_runtime(&state);
+    let runtime = super::discovery_runtime(&state);
     discovery::sync_active_layout_connectivity(&runtime, None).await;
     persist_runtime_session(&state).await;
 
@@ -332,7 +332,7 @@ pub async fn preview_layout(
         let mut spatial = state.spatial_engine.write().await;
         spatial.update_layout(layout);
     }
-    let runtime = discovery_runtime(&state);
+    let runtime = super::discovery_runtime(&state);
     discovery::sync_active_layout_connectivity(&runtime, None).await;
 
     ApiResponse::ok(serde_json::json!({ "previewing": true }))
@@ -377,7 +377,7 @@ pub async fn delete_layout(State(state): State<Arc<AppState>>, Path(id): Path<St
             let mut spatial = state.spatial_engine.write().await;
             spatial.update_layout(layout);
         }
-        let runtime = discovery_runtime(&state);
+        let runtime = super::discovery_runtime(&state);
         discovery::sync_active_layout_connectivity(&runtime, None).await;
         persist_runtime_session(&state).await;
     }
@@ -474,28 +474,6 @@ fn validate_canvas_dimensions(width: u32, height: u32) -> Result<(), String> {
         return Err("canvas_width and canvas_height must be greater than 0".to_owned());
     }
     Ok(())
-}
-
-fn discovery_runtime(state: &Arc<AppState>) -> discovery::DiscoveryRuntime {
-    discovery::DiscoveryRuntime {
-        device_registry: state.device_registry.clone(),
-        backend_manager: Arc::clone(&state.backend_manager),
-        lifecycle_manager: Arc::clone(&state.lifecycle_manager),
-        reconnect_tasks: Arc::clone(&state.reconnect_tasks),
-        event_bus: Arc::clone(&state.event_bus),
-        spatial_engine: Arc::clone(&state.spatial_engine),
-        layouts: Arc::clone(&state.layouts),
-        layouts_path: state.layouts_path.clone(),
-        layout_auto_exclusions: Arc::clone(&state.layout_auto_exclusions),
-        logical_devices: Arc::clone(&state.logical_devices),
-        attachment_registry: Arc::clone(&state.attachment_registry),
-        attachment_profiles: Arc::clone(&state.attachment_profiles),
-        device_settings: Arc::clone(&state.device_settings),
-        runtime_state_path: state.runtime_state_path.clone(),
-        usb_protocol_configs: state.usb_protocol_configs.clone(),
-        in_progress: Arc::clone(&state.discovery_in_progress),
-        task_spawner: tokio::runtime::Handle::current(),
-    }
 }
 
 fn sanitize_group_membership(groups: &[ZoneGroup], zones: &mut [DeviceZone]) {

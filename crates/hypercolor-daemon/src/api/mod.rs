@@ -59,6 +59,7 @@ use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
 use crate::performance::PerformanceTracker;
 use crate::playlist_runtime::PlaylistRuntimeState;
+use crate::profile_store::ProfileStore;
 use crate::runtime_state;
 use crate::session::{OutputPowerState, current_global_brightness};
 
@@ -124,8 +125,8 @@ pub struct AppState {
     /// Global discovery scan lock flag shared across startup/API entrypoints.
     pub discovery_in_progress: Arc<AtomicBool>,
 
-    /// In-memory profile store.
-    pub profiles: RwLock<HashMap<String, profiles::Profile>>,
+    /// Persistent lighting profile store.
+    pub profiles: Arc<RwLock<ProfileStore>>,
 
     /// Attachment template registry (built-in plus user templates).
     pub attachment_registry: Arc<RwLock<AttachmentRegistry>>,
@@ -226,6 +227,15 @@ impl AppState {
                 );
                 AttachmentProfileStore::new(attachment_profiles_path)
             });
+        let profiles_path = ConfigManager::data_dir().join("profiles.json");
+        let profiles = ProfileStore::load(&profiles_path).unwrap_or_else(|error| {
+            warn!(
+                path = %profiles_path.display(),
+                %error,
+                "Failed to load profiles; starting with empty store"
+            );
+            ProfileStore::new(profiles_path)
+        });
         let device_settings_path = ConfigManager::data_dir().join("device-settings.json");
         let device_settings =
             DeviceSettingsStore::load(&device_settings_path).unwrap_or_else(|error| {
@@ -258,7 +268,7 @@ impl AppState {
             config_manager: None,
             input_manager: Arc::new(Mutex::new(InputManager::new())),
             discovery_in_progress: Arc::new(AtomicBool::new(false)),
-            profiles: RwLock::new(HashMap::new()),
+            profiles: Arc::new(RwLock::new(profiles)),
             attachment_registry: Arc::new(RwLock::new(attachment_registry)),
             attachment_profiles: Arc::new(RwLock::new(attachment_profiles)),
             device_settings: Arc::new(RwLock::new(device_settings)),
@@ -304,6 +314,15 @@ impl AppState {
                     Arc::new(InMemoryLibraryStore::new())
                 }
             };
+        let profiles_path = ConfigManager::data_dir().join("profiles.json");
+        let profiles = ProfileStore::load(&profiles_path).unwrap_or_else(|error| {
+            warn!(
+                path = %profiles_path.display(),
+                %error,
+                "Failed to load profiles; starting with empty store"
+            );
+            ProfileStore::new(profiles_path)
+        });
 
         Self {
             device_registry: daemon.device_registry.clone(),
@@ -321,7 +340,7 @@ impl AppState {
             config_manager: Some(Arc::clone(&daemon.config_manager)),
             input_manager: Arc::clone(&daemon.input_manager),
             discovery_in_progress: Arc::clone(&daemon.discovery_in_progress),
-            profiles: RwLock::new(HashMap::new()),
+            profiles: Arc::new(RwLock::new(profiles)),
             attachment_registry: Arc::clone(&daemon.attachment_registry),
             attachment_profiles: Arc::clone(&daemon.attachment_profiles),
             device_settings: Arc::clone(&daemon.device_settings),
@@ -398,6 +417,28 @@ pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
             %error,
             "Failed to persist runtime session snapshot"
         );
+    }
+}
+
+pub(crate) fn discovery_runtime(state: &AppState) -> crate::discovery::DiscoveryRuntime {
+    crate::discovery::DiscoveryRuntime {
+        device_registry: state.device_registry.clone(),
+        backend_manager: Arc::clone(&state.backend_manager),
+        lifecycle_manager: Arc::clone(&state.lifecycle_manager),
+        reconnect_tasks: Arc::clone(&state.reconnect_tasks),
+        event_bus: Arc::clone(&state.event_bus),
+        spatial_engine: Arc::clone(&state.spatial_engine),
+        layouts: Arc::clone(&state.layouts),
+        layouts_path: state.layouts_path.clone(),
+        layout_auto_exclusions: Arc::clone(&state.layout_auto_exclusions),
+        logical_devices: Arc::clone(&state.logical_devices),
+        attachment_registry: Arc::clone(&state.attachment_registry),
+        attachment_profiles: Arc::clone(&state.attachment_profiles),
+        device_settings: Arc::clone(&state.device_settings),
+        runtime_state_path: state.runtime_state_path.clone(),
+        usb_protocol_configs: state.usb_protocol_configs.clone(),
+        in_progress: Arc::clone(&state.discovery_in_progress),
+        task_spawner: tokio::runtime::Handle::current(),
     }
 }
 

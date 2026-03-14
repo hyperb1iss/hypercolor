@@ -321,7 +321,10 @@ async fn read_profiles_with_state(state: &AppState) -> Value {
                 "id": profile.id,
                 "name": profile.name,
                 "description": profile.description,
-                "brightness": profile.brightness
+                "brightness": profile.brightness,
+                "effect_id": profile.effect_id,
+                "effect_name": profile.effect_name,
+                "layout_id": profile.layout_id
             })
         })
         .collect::<Vec<_>>();
