@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use hypercolor_core::effect::builtin::{
-    AudioPulseRenderer, BreathingRenderer, ColorWaveRenderer, GradientRenderer, RainbowRenderer,
-    SolidColorRenderer, create_builtin_renderer, register_builtin_effects,
+    AudioPulseRenderer, BreathingRenderer, ColorWaveRenderer, ColorZonesRenderer, GradientRenderer,
+    RainbowRenderer, SolidColorRenderer, create_builtin_renderer, register_builtin_effects,
 };
 use hypercolor_core::effect::{EffectRegistry, EffectRenderer, FrameInput};
 use hypercolor_core::input::InteractionData;
@@ -789,6 +789,7 @@ fn factory_creates_all_builtins() {
         "breathing",
         "audio_pulse",
         "color_wave",
+        "color_zones",
     ];
 
     for name in &names {
@@ -813,11 +814,11 @@ fn register_builtin_effects_populates_registry() {
     let mut registry = EffectRegistry::default();
     register_builtin_effects(&mut registry);
 
-    assert_eq!(registry.len(), 6, "should register all 6 built-in effects");
+    assert_eq!(registry.len(), 7, "should register all 7 built-in effects");
 
     // Verify category filtering works
     let ambient = registry.by_category(EffectCategory::Ambient);
-    assert_eq!(ambient.len(), 5, "5 ambient effects expected");
+    assert_eq!(ambient.len(), 6, "6 ambient effects expected");
 
     let audio = registry.by_category(EffectCategory::Audio);
     assert_eq!(audio.len(), 1, "1 audio effect expected");
@@ -835,6 +836,7 @@ fn registered_builtins_use_human_readable_names_and_stable_native_keys() {
         ("Breathing", "breathing"),
         ("Audio Pulse", "audio_pulse"),
         ("Color Wave", "color_wave"),
+        ("Color Zones", "color_zones"),
     ];
 
     for (display_name, source_key) in expected {
@@ -949,4 +951,293 @@ fn registered_effects_searchable_by_tag() {
     let results = registry.search("reactive");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].metadata.name, "Audio Pulse");
+}
+
+// ── Color Zones Tests ───────────────────────────────────────────────────────
+
+#[test]
+fn color_zones_initializes() {
+    let mut r = ColorZonesRenderer::new();
+    r.init(&make_metadata("color_zones"))
+        .expect("init should succeed");
+}
+
+#[test]
+fn color_zones_produces_non_black() {
+    let mut r = ColorZonesRenderer::new();
+    r.init(&make_metadata("color_zones")).expect("init");
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    assert!(has_non_black_pixels(&canvas));
+}
+
+#[test]
+fn color_zones_has_spatial_variation() {
+    let mut r = ColorZonesRenderer::new();
+    r.init(&make_metadata("color_zones")).expect("init");
+    // Default: 3 columns
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let left = canvas.get_pixel(0, 0);
+    let right = canvas.get_pixel(W - 1, 0);
+    assert_ne!(
+        left, right,
+        "left and right columns should be different colors"
+    );
+}
+
+#[test]
+fn color_zones_responds_to_zone_count() {
+    let mut r = ColorZonesRenderer::new();
+    r.init(&make_metadata("color_zones")).expect("init");
+
+    // With 2 zones, far-left and far-right should be different, middle should match one of them.
+    r.set_control("zone_count", &ControlValue::Enum("2".to_owned()));
+    r.set_control("blend", &ControlValue::Float(0.0));
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let left = canvas.get_pixel(0, 0);
+    let right = canvas.get_pixel(W - 1, 0);
+    assert_ne!(left, right, "two zones should produce two colors");
+}
+
+#[test]
+fn color_zones_layout_rows_varies_vertically() {
+    let mut r = ColorZonesRenderer::new();
+    r.init(&make_metadata("color_zones")).expect("init");
+    r.set_control("layout", &ControlValue::Enum("Rows".to_owned()));
+    r.set_control("blend", &ControlValue::Float(0.0));
+
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let top = canvas.get_pixel(0, 0);
+    let bottom = canvas.get_pixel(0, H - 1);
+    assert_ne!(top, bottom, "row layout should vary vertically");
+}
+
+#[test]
+fn color_zones_blend_produces_intermediate_colors() {
+    let mut r = ColorZonesRenderer::new();
+    r.init(&make_metadata("color_zones")).expect("init");
+    r.set_control("zone_count", &ControlValue::Enum("2".to_owned()));
+    r.set_control("zone_1", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    r.set_control("zone_2", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
+
+    // Hard boundary: mid pixel should be one of the two zone colors.
+    r.set_control("blend", &ControlValue::Float(0.0));
+    let canvas_hard = r.tick(&frame(0.0, 0)).expect("tick");
+    let mid_hard = canvas_hard.get_pixel(W / 2, 0);
+
+    // Soft boundary: mid pixel should be an interpolated color.
+    r.set_control("blend", &ControlValue::Float(1.0));
+    let canvas_soft = r.tick(&frame(0.0, 0)).expect("tick");
+    let mid_soft = canvas_soft.get_pixel(W / 2, 0);
+
+    assert_ne!(
+        mid_hard, mid_soft,
+        "blending should produce intermediate colors at boundary"
+    );
+}
+
+#[test]
+fn color_zones_zone_color_control_updates() {
+    let mut r = ColorZonesRenderer::new();
+    r.init(&make_metadata("color_zones")).expect("init");
+    r.set_control("zone_count", &ControlValue::Enum("2".to_owned()));
+    r.set_control("blend", &ControlValue::Float(0.0));
+
+    // Set zone 1 to pure white.
+    r.set_control("zone_1", &ControlValue::Color([1.0, 1.0, 1.0, 1.0]));
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    let left = canvas.get_pixel(0, 0);
+    assert_eq!(
+        left,
+        Rgba::new(255, 255, 255, 255),
+        "zone 1 should be white"
+    );
+}
+
+#[test]
+fn color_zones_brightness_dims_output() {
+    let mut r = ColorZonesRenderer::new();
+    r.init(&make_metadata("color_zones")).expect("init");
+    r.set_control("zone_1", &ControlValue::Color([1.0, 1.0, 1.0, 1.0]));
+
+    let canvas_full = r.tick(&frame(0.0, 0)).expect("tick");
+    let pixel_full = canvas_full.get_pixel(0, 0);
+
+    r.set_control("brightness", &ControlValue::Float(0.5));
+    let canvas_dim = r.tick(&frame(0.0, 0)).expect("tick");
+    let pixel_dim = canvas_dim.get_pixel(0, 0);
+
+    assert!(
+        pixel_dim.r < pixel_full.r,
+        "brightness 0.5 should dim output: full={}, dim={}",
+        pixel_full.r,
+        pixel_dim.r
+    );
+}
+
+#[test]
+fn color_zones_full_lifecycle() {
+    let mut r = ColorZonesRenderer::new();
+    r.init(&make_metadata("color_zones")).expect("init");
+    r.set_control("zone_count", &ControlValue::Enum("4".to_owned()));
+    r.set_control("layout", &ControlValue::Enum("Grid".to_owned()));
+    r.set_control("blend", &ControlValue::Float(0.2));
+    let canvas = r.tick(&frame(0.0, 0)).expect("tick");
+    assert!(has_non_black_pixels(&canvas));
+    r.destroy();
+}
+
+// ── Gradient New Feature Tests ──────────────────────────────────────────────
+
+#[test]
+fn gradient_vivid_interpolation_preserves_chroma() {
+    let mut r = GradientRenderer::new();
+    r.init(&make_metadata("gradient")).expect("init");
+
+    // Red to blue — Oklch should keep chroma high through the midpoint.
+    r.set_control("color_start", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    r.set_control("color_end", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
+    r.set_control("interpolation", &ControlValue::Enum("Vivid".to_owned()));
+
+    let canvas_vivid = r.tick(&frame(0.0, 0)).expect("tick");
+    let mid_vivid = canvas_vivid.get_pixel(W / 2, 0);
+
+    // Same gradient but with Smooth (Oklab) — midpoint should be more desaturated.
+    r.set_control("interpolation", &ControlValue::Enum("Smooth".to_owned()));
+    let canvas_smooth = r.tick(&frame(0.0, 0)).expect("tick");
+    let mid_smooth = canvas_smooth.get_pixel(W / 2, 0);
+
+    // Vivid midpoint should be more chromatic (less gray) than Smooth.
+    let vivid_max = mid_vivid.r.max(mid_vivid.g).max(mid_vivid.b);
+    let smooth_max = mid_smooth.r.max(mid_smooth.g).max(mid_smooth.b);
+
+    assert_ne!(
+        mid_vivid, mid_smooth,
+        "Vivid and Smooth interpolation should produce different midpoints"
+    );
+    assert!(
+        vivid_max >= smooth_max,
+        "Vivid midpoint should have stronger color channel: vivid={vivid_max}, smooth={smooth_max}"
+    );
+}
+
+#[test]
+fn gradient_saturation_boost_increases_chroma() {
+    let mut r = GradientRenderer::new();
+    r.init(&make_metadata("gradient")).expect("init");
+    r.set_control("color_start", &ControlValue::Color([0.5, 0.2, 0.8, 1.0]));
+    r.set_control("color_end", &ControlValue::Color([0.2, 0.7, 0.5, 1.0]));
+
+    // Normal saturation.
+    r.set_control("saturation", &ControlValue::Float(1.0));
+    let canvas_normal = r.tick(&frame(0.0, 0)).expect("tick");
+    let mid_normal = canvas_normal.get_pixel(W / 2, 0);
+
+    // Boosted saturation.
+    r.set_control("saturation", &ControlValue::Float(1.5));
+    let canvas_boosted = r.tick(&frame(0.0, 0)).expect("tick");
+    let mid_boosted = canvas_boosted.get_pixel(W / 2, 0);
+
+    assert_ne!(
+        mid_normal, mid_boosted,
+        "saturation boost should change the output"
+    );
+}
+
+#[test]
+fn gradient_easing_redistributes_colors() {
+    let mut r = GradientRenderer::new();
+    r.init(&make_metadata("gradient")).expect("init");
+    r.set_control("color_start", &ControlValue::Color([0.0, 0.0, 0.0, 1.0]));
+    r.set_control("color_end", &ControlValue::Color([1.0, 1.0, 1.0, 1.0]));
+
+    // Linear easing: mid should be ~50% gray.
+    r.set_control("easing", &ControlValue::Enum("Linear".to_owned()));
+    let canvas_linear = r.tick(&frame(0.0, 0)).expect("tick");
+    let mid_linear = canvas_linear.get_pixel(W / 2, 0);
+
+    // Ease In: mid should be darker (t^2 < t for t<1).
+    r.set_control("easing", &ControlValue::Enum("Ease In".to_owned()));
+    let canvas_ease_in = r.tick(&frame(0.0, 0)).expect("tick");
+    let mid_ease_in = canvas_ease_in.get_pixel(W / 2, 0);
+
+    assert!(
+        mid_ease_in.r < mid_linear.r,
+        "Ease In should darken the midpoint: ease_in={}, linear={}",
+        mid_ease_in.r,
+        mid_linear.r
+    );
+}
+
+#[test]
+fn gradient_direct_interpolation_differs_from_vivid() {
+    let mut r = GradientRenderer::new();
+    r.init(&make_metadata("gradient")).expect("init");
+    r.set_control("color_start", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    r.set_control("color_end", &ControlValue::Color([0.0, 1.0, 0.0, 1.0]));
+
+    r.set_control("interpolation", &ControlValue::Enum("Vivid".to_owned()));
+    let canvas_vivid = r.tick(&frame(0.0, 0)).expect("tick");
+    let mid_vivid = canvas_vivid.get_pixel(W / 2, 0);
+
+    r.set_control("interpolation", &ControlValue::Enum("Direct".to_owned()));
+    let canvas_direct = r.tick(&frame(0.0, 0)).expect("tick");
+    let mid_direct = canvas_direct.get_pixel(W / 2, 0);
+
+    assert_ne!(
+        mid_vivid, mid_direct,
+        "Vivid (Oklch) and Direct (linear sRGB) should produce different midpoints"
+    );
+}
+
+#[test]
+fn gradient_metadata_includes_new_color_science_controls() {
+    let mut registry = EffectRegistry::default();
+    register_builtin_effects(&mut registry);
+
+    let (_, entry) = registry
+        .iter()
+        .find(|(_, entry)| entry.metadata.source.source_stem() == Some("gradient"))
+        .expect("Gradient should be registered");
+    let ids: Vec<&str> = entry
+        .metadata
+        .controls
+        .iter()
+        .map(hypercolor_types::effect::ControlDefinition::control_id)
+        .collect();
+
+    assert!(
+        ids.contains(&"interpolation"),
+        "should have interpolation control"
+    );
+    assert!(
+        ids.contains(&"saturation"),
+        "should have saturation control"
+    );
+    assert!(ids.contains(&"easing"), "should have easing control");
+}
+
+#[test]
+fn color_zones_metadata_includes_zone_controls() {
+    let mut registry = EffectRegistry::default();
+    register_builtin_effects(&mut registry);
+
+    let (_, entry) = registry
+        .iter()
+        .find(|(_, entry)| entry.metadata.source.source_stem() == Some("color_zones"))
+        .expect("Color Zones should be registered");
+    let ids: Vec<&str> = entry
+        .metadata
+        .controls
+        .iter()
+        .map(hypercolor_types::effect::ControlDefinition::control_id)
+        .collect();
+
+    assert!(
+        ids.contains(&"zone_count"),
+        "should have zone_count control"
+    );
+    assert!(ids.contains(&"layout"), "should have layout control");
+    assert!(ids.contains(&"blend"), "should have blend control");
+    assert!(ids.contains(&"zone_1"), "should have zone_1 control");
+    assert!(ids.contains(&"zone_9"), "should have zone_9 control");
 }

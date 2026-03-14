@@ -6,18 +6,20 @@
 //!
 //! # Available Effects
 //!
-//! | Name            | Category       | Description                                   |
-//! |-----------------|----------------|-----------------------------------------------|
-//! | `solid_color`   | Ambient        | Solid fills plus split and checker diagnostics |
-//! | `gradient`      | Ambient        | Configurable linear/radial gradient utility    |
-//! | `rainbow`       | Ambient        | Cycling rainbow hue sweep                      |
-//! | `breathing`     | Ambient        | Sinusoidal brightness pulsation                |
-//! | `audio_pulse`   | Audio          | RMS + beat-reactive color modulation           |
-//! | `color_wave`    | Ambient        | Traveling wavefront bands with fade trails     |
+//! | Name            | Category       | Description                                     |
+//! |-----------------|----------------|-------------------------------------------------|
+//! | `solid_color`   | Ambient        | Solid fills plus split and checker diagnostics   |
+//! | `gradient`      | Ambient        | Vivid gradient with Oklch blending and saturation |
+//! | `rainbow`       | Ambient        | Cycling rainbow hue sweep                        |
+//! | `breathing`     | Ambient        | Sinusoidal brightness pulsation                  |
+//! | `audio_pulse`   | Audio          | RMS + beat-reactive color modulation             |
+//! | `color_wave`    | Ambient        | Traveling wavefront bands with fade trails       |
+//! | `color_zones`   | Ambient        | Multi-zone color grid with per-zone control      |
 
 mod audio_pulse;
 mod breathing;
 mod color_wave;
+mod color_zones;
 mod gradient;
 mod rainbow;
 mod solid_color;
@@ -30,6 +32,7 @@ use uuid::Uuid;
 pub use self::audio_pulse::AudioPulseRenderer;
 pub use self::breathing::BreathingRenderer;
 pub use self::color_wave::ColorWaveRenderer;
+pub use self::color_zones::ColorZonesRenderer;
 pub use self::gradient::GradientRenderer;
 pub use self::rainbow::RainbowRenderer;
 pub use self::solid_color::SolidColorRenderer;
@@ -220,7 +223,7 @@ fn gradient_controls() -> Vec<ControlDefinition> {
         color_control(
             "color_start",
             "Color A",
-            [0.88, 0.21, 1.0, 1.0],
+            [0.88, 0.08, 1.0, 1.0],
             "Colors",
             "Start color for the gradient.",
         ),
@@ -234,7 +237,7 @@ fn gradient_controls() -> Vec<ControlDefinition> {
         color_control(
             "color_mid",
             "Color B",
-            [1.0, 0.42, 0.76, 1.0],
+            [1.0, 0.25, 0.55, 1.0],
             "Colors",
             "Optional middle color stop for three-color gradients.",
         ),
@@ -251,9 +254,27 @@ fn gradient_controls() -> Vec<ControlDefinition> {
         color_control(
             "color_end",
             "Color C",
-            [0.5, 1.0, 0.92, 1.0],
+            [0.0, 1.0, 0.85, 1.0],
             "Colors",
             "End color for the gradient.",
+        ),
+        dropdown_control(
+            "interpolation",
+            "Color Blend",
+            "Vivid",
+            &["Vivid", "Smooth", "Direct"],
+            "Colors",
+            "Vivid (Oklch) keeps hues vibrant; Smooth (Oklab) blends evenly; Direct mixes RGB.",
+        ),
+        slider_control(
+            "saturation",
+            "Saturation",
+            1.0,
+            0.5,
+            1.5,
+            0.01,
+            "Colors",
+            "Boost or reduce color intensity. Values above 1.0 push chroma for vivid output.",
         ),
         dropdown_control(
             "mode",
@@ -302,6 +323,14 @@ fn gradient_controls() -> Vec<ControlDefinition> {
             0.01,
             "Shape",
             "Tighten or spread the gradient without changing the colors.",
+        ),
+        dropdown_control(
+            "easing",
+            "Distribution",
+            "Linear",
+            &["Linear", "Ease In", "Ease Out", "Smooth"],
+            "Shape",
+            "Curve that controls how colors are distributed along the gradient.",
         ),
         dropdown_control(
             "repeat_mode",
@@ -647,6 +676,19 @@ fn breathing_presets() -> Vec<PresetTemplate> {
 fn gradient_presets() -> Vec<PresetTemplate> {
     vec![
         preset_with_desc(
+            "Neon Blaze",
+            "Electric SilkCircuit palette with vivid hue sweep",
+            &[
+                ("color_start", ControlValue::Color([0.88, 0.08, 1.0, 1.0])),
+                ("color_end", ControlValue::Color([0.0, 1.0, 0.85, 1.0])),
+                ("use_mid_color", ControlValue::Boolean(true)),
+                ("color_mid", ControlValue::Color([1.0, 0.25, 0.55, 1.0])),
+                ("interpolation", ControlValue::Enum("Vivid".to_owned())),
+                ("speed", ControlValue::Float(0.2)),
+                ("repeat_mode", ControlValue::Enum("Mirror".to_owned())),
+            ],
+        ),
+        preset_with_desc(
             "Sunset",
             "Warm horizon gradient",
             &[
@@ -654,6 +696,7 @@ fn gradient_presets() -> Vec<PresetTemplate> {
                 ("color_end", ControlValue::Color([0.4, 0.0, 0.6, 1.0])),
                 ("use_mid_color", ControlValue::Boolean(true)),
                 ("color_mid", ControlValue::Color([1.0, 0.6, 0.2, 1.0])),
+                ("interpolation", ControlValue::Enum("Vivid".to_owned())),
                 ("angle", ControlValue::Float(0.0)),
             ],
         ),
@@ -665,8 +708,46 @@ fn gradient_presets() -> Vec<PresetTemplate> {
                 ("color_end", ControlValue::Color([0.3, 0.0, 1.0, 1.0])),
                 ("use_mid_color", ControlValue::Boolean(true)),
                 ("color_mid", ControlValue::Color([0.0, 0.8, 1.0, 1.0])),
+                ("interpolation", ControlValue::Enum("Vivid".to_owned())),
                 ("speed", ControlValue::Float(0.15)),
                 ("repeat_mode", ControlValue::Enum("Mirror".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Molten Core",
+            "Deep orange through red to dark, smooth interpolation",
+            &[
+                ("color_start", ControlValue::Color([1.0, 0.7, 0.0, 1.0])),
+                ("color_end", ControlValue::Color([0.3, 0.0, 0.0, 1.0])),
+                ("use_mid_color", ControlValue::Boolean(true)),
+                ("color_mid", ControlValue::Color([1.0, 0.15, 0.0, 1.0])),
+                ("interpolation", ControlValue::Enum("Smooth".to_owned())),
+                ("saturation", ControlValue::Float(1.2)),
+                ("easing", ControlValue::Enum("Ease Out".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Cyberpunk Skyline",
+            "Deep blue to magenta to electric pink",
+            &[
+                ("color_start", ControlValue::Color([0.0, 0.02, 0.2, 1.0])),
+                ("color_end", ControlValue::Color([1.0, 0.08, 0.58, 1.0])),
+                ("use_mid_color", ControlValue::Boolean(true)),
+                ("color_mid", ControlValue::Color([0.5, 0.0, 0.8, 1.0])),
+                ("interpolation", ControlValue::Enum("Vivid".to_owned())),
+                ("angle", ControlValue::Float(90.0)),
+            ],
+        ),
+        preset_with_desc(
+            "Forest Canopy",
+            "Dark green through emerald to golden light",
+            &[
+                ("color_start", ControlValue::Color([0.0, 0.15, 0.05, 1.0])),
+                ("color_end", ControlValue::Color([0.95, 0.85, 0.2, 1.0])),
+                ("use_mid_color", ControlValue::Boolean(true)),
+                ("color_mid", ControlValue::Color([0.0, 0.7, 0.3, 1.0])),
+                ("interpolation", ControlValue::Enum("Vivid".to_owned())),
+                ("saturation", ControlValue::Float(1.1)),
             ],
         ),
         preset(
@@ -675,6 +756,7 @@ fn gradient_presets() -> Vec<PresetTemplate> {
                 ("color_start", ControlValue::Color([0.0, 0.02, 0.15, 1.0])),
                 ("color_end", ControlValue::Color([0.0, 0.2, 0.5, 1.0])),
                 ("mode", ControlValue::Enum("Radial".to_owned())),
+                ("interpolation", ControlValue::Enum("Smooth".to_owned())),
                 ("speed", ControlValue::Float(0.08)),
             ],
         ),
@@ -742,6 +824,177 @@ fn audio_pulse_presets() -> Vec<PresetTemplate> {
     ]
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "zone control list is intentionally authored inline for readability"
+)]
+fn color_zones_controls() -> Vec<ControlDefinition> {
+    vec![
+        dropdown_control(
+            "zone_count",
+            "Zone Count",
+            "3",
+            &["2", "3", "4", "5", "6", "7", "8", "9"],
+            "Layout",
+            "Number of active color zones.",
+        ),
+        dropdown_control(
+            "layout",
+            "Layout",
+            "Columns",
+            &["Columns", "Rows", "Grid"],
+            "Layout",
+            "Arrange zones as vertical columns, horizontal rows, or a 2D grid.",
+        ),
+        slider_control(
+            "blend",
+            "Blend Softness",
+            0.15,
+            0.0,
+            1.0,
+            0.01,
+            "Layout",
+            "Smoothness of transitions between adjacent zones. 0 = hard edges.",
+        ),
+        color_control(
+            "zone_1",
+            "Zone 1",
+            [0.88, 0.08, 1.0, 1.0],
+            "Zone Colors",
+            "Color for zone 1.",
+        ),
+        color_control(
+            "zone_2",
+            "Zone 2",
+            [0.0, 1.0, 0.85, 1.0],
+            "Zone Colors",
+            "Color for zone 2.",
+        ),
+        color_control(
+            "zone_3",
+            "Zone 3",
+            [1.0, 0.25, 0.55, 1.0],
+            "Zone Colors",
+            "Color for zone 3.",
+        ),
+        color_control(
+            "zone_4",
+            "Zone 4",
+            [0.31, 0.98, 0.48, 1.0],
+            "Zone Colors",
+            "Color for zone 4.",
+        ),
+        color_control(
+            "zone_5",
+            "Zone 5",
+            [0.95, 0.98, 0.55, 1.0],
+            "Zone Colors",
+            "Color for zone 5.",
+        ),
+        color_control(
+            "zone_6",
+            "Zone 6",
+            [1.0, 0.39, 0.39, 1.0],
+            "Zone Colors",
+            "Color for zone 6.",
+        ),
+        color_control(
+            "zone_7",
+            "Zone 7",
+            [0.0, 0.4, 1.0, 1.0],
+            "Zone Colors",
+            "Color for zone 7.",
+        ),
+        color_control(
+            "zone_8",
+            "Zone 8",
+            [1.0, 0.6, 0.0, 1.0],
+            "Zone Colors",
+            "Color for zone 8.",
+        ),
+        color_control(
+            "zone_9",
+            "Zone 9",
+            [0.6, 0.0, 1.0, 1.0],
+            "Zone Colors",
+            "Color for zone 9.",
+        ),
+        slider_control(
+            "brightness",
+            "Brightness",
+            1.0,
+            0.0,
+            1.0,
+            0.01,
+            "Output",
+            "Master output brightness.",
+        ),
+    ]
+}
+
+fn color_zones_presets() -> Vec<PresetTemplate> {
+    vec![
+        preset_with_desc(
+            "SilkCircuit",
+            "Electric purple, neon cyan, and coral",
+            &[
+                ("zone_count", ControlValue::Enum("3".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([0.88, 0.08, 1.0, 1.0])),
+                ("zone_2", ControlValue::Color([0.0, 1.0, 0.85, 1.0])),
+                ("zone_3", ControlValue::Color([1.0, 0.25, 0.55, 1.0])),
+                ("blend", ControlValue::Float(0.1)),
+            ],
+        ),
+        preset_with_desc(
+            "Fire & Ice",
+            "Warm and cool contrast across the system",
+            &[
+                ("zone_count", ControlValue::Enum("3".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([1.0, 0.15, 0.0, 1.0])),
+                ("zone_2", ControlValue::Color([1.0, 0.6, 0.0, 1.0])),
+                ("zone_3", ControlValue::Color([0.0, 0.3, 1.0, 1.0])),
+                ("blend", ControlValue::Float(0.2)),
+            ],
+        ),
+        preset_with_desc(
+            "RGB Diagnostic",
+            "Pure red, green, blue columns",
+            &[
+                ("zone_count", ControlValue::Enum("3".to_owned())),
+                ("layout", ControlValue::Enum("Columns".to_owned())),
+                ("zone_1", ControlValue::Color([1.0, 0.0, 0.0, 1.0])),
+                ("zone_2", ControlValue::Color([0.0, 1.0, 0.0, 1.0])),
+                ("zone_3", ControlValue::Color([0.0, 0.0, 1.0, 1.0])),
+                ("blend", ControlValue::Float(0.0)),
+            ],
+        ),
+        preset_with_desc(
+            "Ocean Layers",
+            "Horizontal depth bands from surface to deep",
+            &[
+                ("zone_count", ControlValue::Enum("4".to_owned())),
+                ("layout", ControlValue::Enum("Rows".to_owned())),
+                ("zone_1", ControlValue::Color([0.4, 0.85, 1.0, 1.0])),
+                ("zone_2", ControlValue::Color([0.1, 0.5, 0.9, 1.0])),
+                ("zone_3", ControlValue::Color([0.0, 0.2, 0.6, 1.0])),
+                ("zone_4", ControlValue::Color([0.0, 0.05, 0.2, 1.0])),
+                ("blend", ControlValue::Float(0.3)),
+            ],
+        ),
+        preset_with_desc(
+            "Neon Matrix",
+            "9-zone grid with vibrant neon palette",
+            &[
+                ("zone_count", ControlValue::Enum("9".to_owned())),
+                ("layout", ControlValue::Enum("Grid".to_owned())),
+                ("blend", ControlValue::Float(0.25)),
+            ],
+        ),
+    ]
+}
+
 /// Metadata definitions for all built-in effects.
 ///
 /// Each entry carries a human-readable display name while the stable factory
@@ -779,7 +1032,7 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             author: "Hypercolor".into(),
             version: "0.1.0".into(),
             description:
-                "Configurable linear or radial gradient with motion, tiling, and output controls"
+                "Rich configurable gradient with vivid Oklch blending, saturation boost, and motion"
                     .into(),
             category: EffectCategory::Ambient,
             tags: vec![
@@ -867,6 +1120,29 @@ fn builtin_metadata() -> Vec<EffectMetadata> {
             },
             license: Some("Apache-2.0".into()),
         },
+        EffectMetadata {
+            id: builtin_effect_id("color_zones"),
+            name: "Color Zones".into(),
+            author: "Hypercolor".into(),
+            version: "0.1.0".into(),
+            description:
+                "Multi-zone color grid with per-zone colors, flexible layouts, and smooth blending"
+                    .into(),
+            category: EffectCategory::Ambient,
+            tags: vec![
+                "zones".into(),
+                "grid".into(),
+                "static".into(),
+                "scene".into(),
+            ],
+            controls: color_zones_controls(),
+            presets: color_zones_presets(),
+            audio_reactive: false,
+            source: EffectSource::Native {
+                path: PathBuf::from("builtin/color_zones"),
+            },
+            license: Some("Apache-2.0".into()),
+        },
     ]
 }
 
@@ -920,6 +1196,7 @@ pub fn create_builtin_renderer(name: &str) -> Option<Box<dyn EffectRenderer>> {
         "breathing" => Some(Box::new(BreathingRenderer::new())),
         "audio_pulse" => Some(Box::new(AudioPulseRenderer::new())),
         "color_wave" => Some(Box::new(ColorWaveRenderer::new())),
+        "color_zones" => Some(Box::new(ColorZonesRenderer::new())),
         _ => None,
     }
 }

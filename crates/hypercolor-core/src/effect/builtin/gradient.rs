@@ -1,9 +1,10 @@
 //! Gradient renderer — configurable linear and radial gradients.
 //!
-//! Interpolates between colors in Oklab perceptual space for smooth transitions.
-//! Supports an optional middle stop, geometry controls, and simple motion modes.
+//! Interpolates between colors in Oklch (vivid) or Oklab (smooth) perceptual
+//! space for rich transitions. Supports an optional middle stop, geometry
+//! controls, motion animation, and post-process saturation and easing.
 
-use hypercolor_types::canvas::{Canvas, Oklab, RgbaF32};
+use hypercolor_types::canvas::{Canvas, Oklab, Oklch, RgbaF32};
 use hypercolor_types::effect::{ControlValue, EffectMetadata};
 
 use crate::effect::traits::{EffectRenderer, FrameInput};
@@ -42,13 +43,63 @@ impl RepeatMode {
     }
 }
 
+/// Color space used for interpolation between stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InterpolationMode {
+    /// Oklch (polar) — preserves hue and chroma for vivid transitions.
+    Vivid,
+    /// Oklab (cartesian) — smooth but may desaturate between distant hues.
+    Smooth,
+    /// Linear sRGB — direct channel mixing, basic but predictable.
+    Direct,
+}
+
+impl InterpolationMode {
+    fn from_str(value: &str) -> Self {
+        match normalize_choice(value).as_str() {
+            "smooth" => Self::Smooth,
+            "direct" => Self::Direct,
+            _ => Self::Vivid,
+        }
+    }
+}
+
+/// Easing curve applied to the gradient distribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EasingMode {
+    Linear,
+    EaseIn,
+    EaseOut,
+    SmoothStep,
+}
+
+impl EasingMode {
+    fn from_str(value: &str) -> Self {
+        match normalize_choice(value).as_str() {
+            "ease_in" => Self::EaseIn,
+            "ease_out" => Self::EaseOut,
+            "smooth" => Self::SmoothStep,
+            _ => Self::Linear,
+        }
+    }
+
+    fn apply(self, t: f32) -> f32 {
+        match self {
+            Self::Linear => t,
+            Self::EaseIn => t * t,
+            Self::EaseOut => 1.0 - (1.0 - t) * (1.0 - t),
+            Self::SmoothStep => t * t * (3.0 - 2.0 * t),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct GradientStop {
     position: f32,
-    color: Oklab,
+    color: [f32; 4],
 }
 
-/// Animated multi-stop gradient with configurable geometry and motion.
+/// Animated multi-stop gradient with configurable geometry, motion, and color science.
 pub struct GradientRenderer {
     color_start: [f32; 4],
     color_mid: [f32; 4],
@@ -65,16 +116,20 @@ pub struct GradientRenderer {
     /// Animation speed in cycles per second.
     speed: f32,
     brightness: f32,
+    interpolation: InterpolationMode,
+    /// Chroma multiplier applied in Oklch space (1.0 = neutral).
+    saturation: f32,
+    easing: EasingMode,
 }
 
 impl GradientRenderer {
-    /// Create a configurable neon gradient with animation disabled by default.
+    /// Create a vivid neon gradient with Oklch interpolation and animation disabled.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            color_start: [0.88, 0.21, 1.0, 1.0],
-            color_mid: [1.0, 0.42, 0.76, 1.0],
-            color_end: [0.5, 1.0, 0.92, 1.0],
+            color_start: [0.88, 0.08, 1.0, 1.0],
+            color_mid: [1.0, 0.25, 0.55, 1.0],
+            color_end: [0.0, 1.0, 0.85, 1.0],
             use_mid_color: false,
             midpoint: 0.5,
             mode: GradientMode::Linear,
@@ -86,28 +141,91 @@ impl GradientRenderer {
             offset: 0.0,
             speed: 0.0,
             brightness: 1.0,
+            interpolation: InterpolationMode::Vivid,
+            saturation: 1.0,
+            easing: EasingMode::Linear,
         }
     }
 
     fn gradient_stops(&self) -> Vec<GradientStop> {
         let mut stops = vec![GradientStop {
             position: 0.0,
-            color: rgba_to_oklab(self.color_start),
+            color: self.color_start,
         }];
 
         if self.use_mid_color {
             stops.push(GradientStop {
                 position: self.midpoint.clamp(0.05, 0.95),
-                color: rgba_to_oklab(self.color_mid),
+                color: self.color_mid,
             });
         }
 
         stops.push(GradientStop {
             position: 1.0,
-            color: rgba_to_oklab(self.color_end),
+            color: self.color_end,
         });
 
         stops
+    }
+
+    /// Interpolate between two colors using the active color space.
+    fn interpolate(&self, left: [f32; 4], right: [f32; 4], t: f32) -> RgbaF32 {
+        match self.interpolation {
+            InterpolationMode::Vivid => {
+                let a = rgba_to_oklch(left);
+                let b = rgba_to_oklch(right);
+                RgbaF32::from_oklch(a.lerp(b, t))
+            }
+            InterpolationMode::Smooth => {
+                let a = rgba_to_oklab(left);
+                let b = rgba_to_oklab(right);
+                RgbaF32::from_oklab(Oklab::lerp(a, b, t))
+            }
+            InterpolationMode::Direct => {
+                let a = RgbaF32::new(left[0], left[1], left[2], left[3]);
+                let b = RgbaF32::new(right[0], right[1], right[2], right[3]);
+                RgbaF32::lerp(&a, &b, t)
+            }
+        }
+    }
+
+    /// Sample the gradient at position `raw_t`, applying easing.
+    fn sample(&self, stops: &[GradientStop], raw_t: f32) -> RgbaF32 {
+        if stops.len() == 1 {
+            return color_to_rgba(stops[0].color);
+        }
+
+        let t = self.easing.apply(raw_t);
+
+        if t <= stops[0].position {
+            return color_to_rgba(stops[0].color);
+        }
+
+        for pair in stops.windows(2) {
+            let left = pair[0];
+            let right = pair[1];
+            if t <= right.position {
+                let span = (right.position - left.position).max(f32::EPSILON);
+                let local_t = ((t - left.position) / span).clamp(0.0, 1.0);
+                return self.interpolate(left.color, right.color, local_t);
+            }
+        }
+
+        let last = stops.last().copied().unwrap_or(GradientStop {
+            position: 1.0,
+            color: [0.0, 0.0, 0.0, 1.0],
+        });
+        color_to_rgba(last.color)
+    }
+
+    /// Post-process: boost or reduce chroma in Oklch space.
+    fn apply_saturation(&self, mut rgba: RgbaF32) -> RgbaF32 {
+        if (self.saturation - 1.0).abs() > f32::EPSILON {
+            let mut lch = rgba.to_oklch();
+            lch.c *= self.saturation;
+            rgba = RgbaF32::from_oklch(lch);
+        }
+        rgba
     }
 }
 
@@ -148,7 +266,8 @@ impl EffectRenderer for GradientRenderer {
                 };
                 let t = apply_repeat_mode(transformed, self.repeat_mode);
 
-                let mut rgba = sample_gradient(&stops, t);
+                let mut rgba = self.sample(&stops, t);
+                rgba = self.apply_saturation(rgba);
                 rgba.r *= self.brightness;
                 rgba.g *= self.brightness;
                 rgba.b *= self.brightness;
@@ -241,6 +360,21 @@ impl EffectRenderer for GradientRenderer {
                     self.brightness = v.clamp(0.0, 1.0);
                 }
             }
+            "interpolation" => {
+                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
+                    self.interpolation = InterpolationMode::from_str(choice);
+                }
+            }
+            "saturation" => {
+                if let Some(v) = value.as_f32() {
+                    self.saturation = v.clamp(0.5, 1.5);
+                }
+            }
+            "easing" => {
+                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
+                    self.easing = EasingMode::from_str(choice);
+                }
+            }
             _ => {}
         }
     }
@@ -248,35 +382,21 @@ impl EffectRenderer for GradientRenderer {
     fn destroy(&mut self) {}
 }
 
+// ── Color Conversion Helpers ─────────────────────────────────────────────────
+
+fn color_to_rgba(color: [f32; 4]) -> RgbaF32 {
+    RgbaF32::new(color[0], color[1], color[2], color[3])
+}
+
 fn rgba_to_oklab(color: [f32; 4]) -> Oklab {
     RgbaF32::new(color[0], color[1], color[2], color[3]).to_oklab()
 }
 
-fn sample_gradient(stops: &[GradientStop], t: f32) -> RgbaF32 {
-    if stops.len() == 1 {
-        return RgbaF32::from_oklab(stops[0].color);
-    }
-
-    if t <= stops[0].position {
-        return RgbaF32::from_oklab(stops[0].color);
-    }
-
-    for pair in stops.windows(2) {
-        let left = pair[0];
-        let right = pair[1];
-        if t <= right.position {
-            let span = (right.position - left.position).max(f32::EPSILON);
-            let local_t = ((t - left.position) / span).clamp(0.0, 1.0);
-            return RgbaF32::from_oklab(Oklab::lerp(left.color, right.color, local_t));
-        }
-    }
-
-    let last = stops.last().copied().unwrap_or(GradientStop {
-        position: 1.0,
-        color: Oklab::new(0.0, 0.0, 0.0, 1.0),
-    });
-    RgbaF32::from_oklab(last.color)
+fn rgba_to_oklch(color: [f32; 4]) -> Oklch {
+    RgbaF32::new(color[0], color[1], color[2], color[3]).to_oklch()
 }
+
+// ── Geometry Helpers ─────────────────────────────────────────────────────────
 
 fn linear_position(nx: f32, ny: f32, center_x: f32, center_y: f32, angle_degrees: f32) -> f32 {
     let angle = angle_degrees.to_radians();
