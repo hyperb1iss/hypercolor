@@ -59,21 +59,86 @@ jobs:
       - run: bun run check
       - run: bun run build
 
+  # ── UI (Leptos / Trunk) ────────────────────────────────────
+  ui:
+    name: UI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/hypercolor-ui
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/hypercolor-ui -> target
+      - name: Install Trunk
+        run: cargo install trunk --locked
+      - run: npm ci
+      - run: trunk build --release
+
   # ── Build Artifacts ──────────────────────────────────────────
   build-artifacts:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [rust, sdk]
-    uses: hyperb1iss/shared-workflows/.github/workflows/rust-build-artifacts.yml@main
-    with:
-      binaries: 'hypercolor hyper'
-      system-deps: >-
-        libudev-dev libdbus-1-dev libasound2-dev
-        cmake nasm pkg-config lld
-        libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
-      targets: 'linux-amd64 linux-arm64 macos-arm64'
+    needs: [rust, sdk, ui]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            os: ubuntu-latest
+            rust-target: x86_64-unknown-linux-gnu
+            suffix: ''
+            system-deps: >-
+              libudev-dev libdbus-1-dev libasound2-dev
+              cmake nasm pkg-config lld
+              libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+            rust-target: aarch64-unknown-linux-gnu
+            suffix: ''
+            system-deps: >-
+              libudev-dev libdbus-1-dev libasound2-dev
+              cmake nasm pkg-config lld
+              libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+          - target: macos-arm64
+            os: macos-latest
+            rust-target: aarch64-apple-darwin
+            suffix: ''
+            system-deps: ''
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
-    secrets: inherit
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install system dependencies (Linux)
+        if: matrix.system-deps != '' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.system-deps }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build release binaries
+        run: cargo build --release --locked --target ${{ matrix.rust-target }}
+      - name: Stage binaries
+        shell: bash
+        run: |
+          mkdir -p staging
+          for binary in hypercolor hyper; do
+            cp "target/${{ matrix.rust-target }}/release/${binary}${{ matrix.suffix }}" "staging/"
+          done
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: staging/
+          if-no-files-found: error
 
   # ── Create GitHub Release ────────────────────────────────────
   create-release:
