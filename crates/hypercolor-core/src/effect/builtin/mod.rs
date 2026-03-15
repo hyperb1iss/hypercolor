@@ -960,7 +960,7 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
                 ("zone_1", ControlValue::Color([1.0, 0.15, 0.0, 1.0])),
                 ("zone_2", ControlValue::Color([1.0, 0.6, 0.0, 1.0])),
                 ("zone_3", ControlValue::Color([0.0, 0.3, 1.0, 1.0])),
-                ("blend", ControlValue::Float(0.2)),
+                ("blend", ControlValue::Float(0.1)),
             ],
         ),
         preset_with_desc(
@@ -985,7 +985,7 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
                 ("zone_2", ControlValue::Color([0.1, 0.5, 0.9, 1.0])),
                 ("zone_3", ControlValue::Color([0.0, 0.2, 0.6, 1.0])),
                 ("zone_4", ControlValue::Color([0.0, 0.05, 0.2, 1.0])),
-                ("blend", ControlValue::Float(0.3)),
+                ("blend", ControlValue::Float(0.15)),
             ],
         ),
         preset_with_desc(
@@ -994,7 +994,7 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
             &[
                 ("zone_count", ControlValue::Enum("9".to_owned())),
                 ("layout", ControlValue::Enum("Grid".to_owned())),
-                ("blend", ControlValue::Float(0.25)),
+                ("blend", ControlValue::Float(0.1)),
             ],
         ),
         // ── Nature & Atmosphere ──────────────────────────────────────────
@@ -1008,7 +1008,7 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
                 ("zone_2", ControlValue::Color([1.0, 0.4, 0.0, 1.0])),
                 ("zone_3", ControlValue::Color([0.9, 0.1, 0.0, 1.0])),
                 ("zone_4", ControlValue::Color([0.3, 0.0, 0.4, 1.0])),
-                ("blend", ControlValue::Float(0.4)),
+                ("blend", ControlValue::Float(0.2)),
             ],
         ),
         preset_with_desc(
@@ -1022,7 +1022,7 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
                 ("zone_3", ControlValue::Color([0.0, 0.3, 0.9, 1.0])),
                 ("zone_4", ControlValue::Color([0.4, 0.0, 0.8, 1.0])),
                 ("zone_5", ControlValue::Color([0.8, 0.1, 0.5, 1.0])),
-                ("blend", ControlValue::Float(0.35)),
+                ("blend", ControlValue::Float(0.15)),
             ],
         ),
         preset_with_desc(
@@ -1034,7 +1034,7 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
                 ("zone_1", ControlValue::Color([1.0, 0.4, 0.55, 1.0])),
                 ("zone_2", ControlValue::Color([1.0, 0.7, 0.75, 1.0])),
                 ("zone_3", ControlValue::Color([0.85, 0.15, 0.4, 1.0])),
-                ("blend", ControlValue::Float(0.35)),
+                ("blend", ControlValue::Float(0.15)),
             ],
         ),
         preset_with_desc(
@@ -1059,7 +1059,7 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
                 ("zone_1", ControlValue::Color([1.0, 0.5, 0.0, 1.0])),
                 ("zone_2", ControlValue::Color([0.8, 0.1, 0.0, 1.0])),
                 ("zone_3", ControlValue::Color([0.3, 0.02, 0.0, 1.0])),
-                ("blend", ControlValue::Float(0.35)),
+                ("blend", ControlValue::Float(0.15)),
             ],
         ),
         preset_with_desc(
@@ -1074,30 +1074,7 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
                 ("zone_4", ControlValue::Color([0.2, 0.0, 0.15, 1.0])),
                 ("zone_5", ControlValue::Color([0.0, 0.05, 0.25, 1.0])),
                 ("zone_6", ControlValue::Color([0.1, 0.0, 0.2, 1.0])),
-                ("blend", ControlValue::Float(0.4)),
-            ],
-        ),
-        preset_with_desc(
-            "Golden Hour",
-            "Warm amber through peach to rose gold",
-            &[
-                ("zone_count", ControlValue::Enum("3".to_owned())),
-                ("layout", ControlValue::Enum("Rows".to_owned())),
-                ("zone_1", ControlValue::Color([1.0, 0.7, 0.1, 1.0])),
-                ("zone_2", ControlValue::Color([1.0, 0.55, 0.3, 1.0])),
-                ("zone_3", ControlValue::Color([0.9, 0.4, 0.4, 1.0])),
-                ("blend", ControlValue::Float(0.35)),
-            ],
-        ),
-        preset_with_desc(
-            "Blood Moon",
-            "Deep crimson split",
-            &[
-                ("zone_count", ControlValue::Enum("2".to_owned())),
-                ("layout", ControlValue::Enum("Columns".to_owned())),
-                ("zone_1", ControlValue::Color([0.7, 0.0, 0.0, 1.0])),
-                ("zone_2", ControlValue::Color([0.3, 0.0, 0.02, 1.0])),
-                ("blend", ControlValue::Float(0.3)),
+                ("blend", ControlValue::Float(0.2)),
             ],
         ),
         preset_with_desc(
@@ -1159,7 +1136,7 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
                 ("zone_2", ControlValue::Color([0.35, 0.0, 0.6, 1.0])),
                 ("zone_3", ControlValue::Color([0.85, 0.7, 0.0, 1.0])),
                 ("zone_4", ControlValue::Color([1.0, 0.9, 0.7, 1.0])),
-                ("blend", ControlValue::Float(0.2)),
+                ("blend", ControlValue::Float(0.1)),
             ],
         ),
         preset_with_desc(
@@ -1170,7 +1147,7 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
                 ("layout", ControlValue::Enum("Columns".to_owned())),
                 ("zone_1", ControlValue::Color([0.0, 0.02, 0.12, 1.0])),
                 ("zone_2", ControlValue::Color([0.05, 0.0, 0.1, 1.0])),
-                ("blend", ControlValue::Float(0.4)),
+                ("blend", ControlValue::Float(0.2)),
                 ("brightness", ControlValue::Float(0.5)),
             ],
         ),
@@ -1200,7 +1177,7 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
                 ("zone_2", ControlValue::Color([0.5, 0.15, 0.85, 1.0])),
                 ("zone_3", ControlValue::Color([0.9, 0.3, 0.6, 1.0])),
                 ("zone_4", ControlValue::Color([0.75, 0.45, 0.95, 1.0])),
-                ("blend", ControlValue::Float(0.35)),
+                ("blend", ControlValue::Float(0.15)),
             ],
         ),
         // ── Pride Flags ──────────────────────────────────────────────────
@@ -1210,11 +1187,11 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
             &[
                 ("zone_count", ControlValue::Enum("5".to_owned())),
                 ("layout", ControlValue::Enum("Columns".to_owned())),
-                ("zone_1", ControlValue::Color([0.35, 0.7, 0.95, 1.0])),
-                ("zone_2", ControlValue::Color([0.95, 0.5, 0.65, 1.0])),
-                ("zone_3", ControlValue::Color([0.95, 0.95, 0.95, 1.0])),
-                ("zone_4", ControlValue::Color([0.95, 0.5, 0.65, 1.0])),
-                ("zone_5", ControlValue::Color([0.35, 0.7, 0.95, 1.0])),
+                ("zone_1", ControlValue::Color([0.357, 0.808, 0.98, 1.0])), // #5BCEFA
+                ("zone_2", ControlValue::Color([0.961, 0.663, 0.722, 1.0])), // #F5A9B8
+                ("zone_3", ControlValue::Color([1.0, 1.0, 1.0, 1.0])),      // #FFFFFF
+                ("zone_4", ControlValue::Color([0.961, 0.663, 0.722, 1.0])), // #F5A9B8
+                ("zone_5", ControlValue::Color([0.357, 0.808, 0.98, 1.0])), // #5BCEFA
                 ("blend", ControlValue::Float(0.05)),
             ],
         ),
@@ -1224,9 +1201,9 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
             &[
                 ("zone_count", ControlValue::Enum("3".to_owned())),
                 ("layout", ControlValue::Enum("Columns".to_owned())),
-                ("zone_1", ControlValue::Color([0.85, 0.0, 0.45, 1.0])),
-                ("zone_2", ControlValue::Color([0.6, 0.0, 0.6, 1.0])),
-                ("zone_3", ControlValue::Color([0.0, 0.2, 0.85, 1.0])),
+                ("zone_1", ControlValue::Color([0.839, 0.008, 0.439, 1.0])), // #D60270
+                ("zone_2", ControlValue::Color([0.608, 0.31, 0.588, 1.0])),  // #9B4F96
+                ("zone_3", ControlValue::Color([0.0, 0.22, 0.659, 1.0])),    // #0038A8
                 ("blend", ControlValue::Float(0.05)),
             ],
         ),
@@ -1236,11 +1213,11 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
             &[
                 ("zone_count", ControlValue::Enum("5".to_owned())),
                 ("layout", ControlValue::Enum("Columns".to_owned())),
-                ("zone_1", ControlValue::Color([0.85, 0.35, 0.0, 1.0])),
-                ("zone_2", ControlValue::Color([1.0, 0.6, 0.35, 1.0])),
-                ("zone_3", ControlValue::Color([0.95, 0.95, 0.95, 1.0])),
-                ("zone_4", ControlValue::Color([0.9, 0.4, 0.55, 1.0])),
-                ("zone_5", ControlValue::Color([0.65, 0.0, 0.2, 1.0])),
+                ("zone_1", ControlValue::Color([0.839, 0.161, 0.0, 1.0])), // #D62900
+                ("zone_2", ControlValue::Color([1.0, 0.608, 0.333, 1.0])), // #FF9B55
+                ("zone_3", ControlValue::Color([1.0, 1.0, 1.0, 1.0])),     // #FFFFFF
+                ("zone_4", ControlValue::Color([0.831, 0.38, 0.651, 1.0])), // #D461A6
+                ("zone_5", ControlValue::Color([0.647, 0.0, 0.384, 1.0])), // #A50062
                 ("blend", ControlValue::Float(0.05)),
             ],
         ),
@@ -1250,10 +1227,10 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
             &[
                 ("zone_count", ControlValue::Enum("4".to_owned())),
                 ("layout", ControlValue::Enum("Columns".to_owned())),
-                ("zone_1", ControlValue::Color([0.98, 0.95, 0.15, 1.0])),
-                ("zone_2", ControlValue::Color([0.95, 0.95, 0.95, 1.0])),
-                ("zone_3", ControlValue::Color([0.6, 0.2, 0.85, 1.0])),
-                ("zone_4", ControlValue::Color([0.08, 0.08, 0.08, 1.0])),
+                ("zone_1", ControlValue::Color([0.988, 0.957, 0.204, 1.0])), // #FCF434
+                ("zone_2", ControlValue::Color([1.0, 1.0, 1.0, 1.0])),       // #FFFFFF
+                ("zone_3", ControlValue::Color([0.612, 0.349, 0.82, 1.0])),  // #9C59D1
+                ("zone_4", ControlValue::Color([0.0, 0.0, 0.0, 1.0])),       // #000000
                 ("blend", ControlValue::Float(0.05)),
             ],
         ),
@@ -1263,12 +1240,12 @@ fn color_zones_presets() -> Vec<PresetTemplate> {
             &[
                 ("zone_count", ControlValue::Enum("6".to_owned())),
                 ("layout", ControlValue::Enum("Columns".to_owned())),
-                ("zone_1", ControlValue::Color([0.9, 0.05, 0.05, 1.0])),
-                ("zone_2", ControlValue::Color([1.0, 0.5, 0.0, 1.0])),
-                ("zone_3", ControlValue::Color([1.0, 0.9, 0.0, 1.0])),
-                ("zone_4", ControlValue::Color([0.0, 0.75, 0.15, 1.0])),
-                ("zone_5", ControlValue::Color([0.0, 0.25, 0.85, 1.0])),
-                ("zone_6", ControlValue::Color([0.55, 0.0, 0.55, 1.0])),
+                ("zone_1", ControlValue::Color([0.894, 0.012, 0.012, 1.0])), // #E40303
+                ("zone_2", ControlValue::Color([1.0, 0.549, 0.0, 1.0])),     // #FF8C00
+                ("zone_3", ControlValue::Color([1.0, 0.929, 0.0, 1.0])),     // #FFED00
+                ("zone_4", ControlValue::Color([0.0, 0.502, 0.149, 1.0])),   // #008026
+                ("zone_5", ControlValue::Color([0.0, 0.302, 1.0, 1.0])),     // #004DFF
+                ("zone_6", ControlValue::Color([0.459, 0.027, 0.529, 1.0])), // #750787
                 ("blend", ControlValue::Float(0.05)),
             ],
         ),
