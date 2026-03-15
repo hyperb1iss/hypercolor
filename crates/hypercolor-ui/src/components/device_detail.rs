@@ -10,7 +10,7 @@ use crate::app::DevicesContext;
 use crate::components::attachment_panel::WiringPanel;
 use crate::components::device_card::{
     backend_accent_rgb, classify_device, device_class_icon, device_class_label,
-    save_category_override, topology_shape_svg, DeviceClass, ALL_DEVICE_CLASSES,
+    save_category_override, topology_shape_svg, ALL_DEVICE_CLASSES,
 };
 use crate::icons::*;
 use crate::toasts;
