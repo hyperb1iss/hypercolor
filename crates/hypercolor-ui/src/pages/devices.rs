@@ -415,7 +415,14 @@ pub fn DevicesPage() -> impl IntoView {
                     <DevicePairingModal
                         device=dev
                         on_close=Callback::new(move |()| set_pairing_device.set(None))
-                        on_paired=Callback::new(move |()| set_pairing_device.set(None))
+                        on_paired=Callback::new(move |paired_id: String| {
+                            // Guard: only dismiss if the modal still belongs to this device.
+                            // A stale async response from a previously-closed modal must not
+                            // dismiss a modal the user opened for a different device.
+                            if pairing_device.get().as_ref().is_some_and(|d| d.id == paired_id) {
+                                set_pairing_device.set(None);
+                            }
+                        })
                     />
                 }
             })}
@@ -426,6 +433,11 @@ pub fn DevicesPage() -> impl IntoView {
                     <ForgetCredentialsModal
                         device=dev
                         on_close=Callback::new(move |()| set_forget_device.set(None))
+                        on_forgot=Callback::new(move |forgot_id: String| {
+                            if forget_device.get().as_ref().is_some_and(|d| d.id == forgot_id) {
+                                set_forget_device.set(None);
+                            }
+                        })
                     />
                 }
             })}

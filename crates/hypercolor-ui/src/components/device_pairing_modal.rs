@@ -37,7 +37,11 @@ enum PairingStage {
 pub fn DevicePairingModal(
     device: DeviceSummary,
     #[prop(into)] on_close: Callback<()>,
-    #[prop(into)] on_paired: Callback<()>,
+    /// Fires with the device ID on successful pairing. The parent should
+    /// only dismiss the modal if the ID matches the currently-shown device,
+    /// to avoid a stale async response dismissing a modal opened for a
+    /// different device.
+    #[prop(into)] on_paired: Callback<String>,
 ) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
     let device_id = device.id.clone();
@@ -89,7 +93,8 @@ pub fn DevicePairingModal(
                                     );
                             });
                             let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
-                            on_paired.run(());
+                            // Pass device_id so parent can guard against stale dismissal
+                            on_paired.run(device_id);
                         }
                         PairDeviceStatus::ActionRequired => {
                             set_stage.set(PairingStage::ActionRequired(resp.message));
@@ -324,6 +329,10 @@ pub fn DevicePairingModal(
 pub fn ForgetCredentialsModal(
     device: DeviceSummary,
     #[prop(into)] on_close: Callback<()>,
+    /// Fires with the device ID after credentials are successfully removed.
+    /// The parent should only dismiss the modal if the ID matches the
+    /// currently-shown device, to guard against stale async responses.
+    #[prop(into)] on_forgot: Callback<String>,
 ) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
     let device_id = device.id.clone();
@@ -341,7 +350,7 @@ pub fn ForgetCredentialsModal(
                     Ok(resp) => {
                         toasts::toast_success(&resp.message);
                         devices_resource.refetch();
-                        on_close.run(());
+                        on_forgot.run(device_id);
                     }
                     Err(error) => {
                         toasts::toast_error(&error);
