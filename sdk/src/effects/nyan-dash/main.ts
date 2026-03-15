@@ -1,513 +1,963 @@
-import { canvas, combo, normalizeSpeed, num, toggle } from '@hypercolor/sdk'
+import { canvas, combo, normalizeSpeed, num } from '@hypercolor/sdk'
 
-// ── Types ────────────────────────────────────────────────────────────────
+type MotionMode = 'Original' | 'Dash' | 'Hyper'
+type RainbowMode = 'Original' | 'Wavy' | 'Party'
+type CatTheme = 'Classic' | 'Blueberry' | 'Mint' | 'Midnight'
 
-interface DashStar {
+interface Star {
+    drift: number
+    phase: number
+    size: number
+    speed: number
+    twinkle: number
     x: number
     y: number
-    size: number
-    twinkle: number
-    drift: number
-    seed: number
-    hueOffset: number
 }
 
-// ── Constants ────────────────────────────────────────────────────────────
+interface CatPalette {
+    blush: string
+    fur: string
+    furDark: string
+    frosting: string
+    nose: string
+    outline: string
+    pastry: string
+    pupil: string
+    sprinkle: string
+    white: string
+}
 
-const TRAIL_MODES = ['Classic', 'Comet', 'Pulse']
+interface CatFrame {
+    bodyDy: number
+    headDx: number
+    headDy: number
+    pawFrame: number
+    tailFrame: number
+}
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+type RectSpec = readonly [number, number, number, number]
+
+const MOTION_MODES = ['Original', 'Dash', 'Hyper'] as const
+const RAINBOW_MODES = ['Original', 'Wavy', 'Party'] as const
+const CAT_THEMES = ['Classic', 'Blueberry', 'Mint', 'Midnight'] as const
+
+const CLASSIC_RAINBOW = ['#ff2d2d', '#ff9d17', '#ffe94d', '#36ff2a', '#1ea7ff', '#6d50ff'] as const
+
+const CAT_THEMES_PALETTE: Record<CatTheme, CatPalette> = {
+    Blueberry: {
+        blush: '#ffb0d8',
+        frosting: '#8ed8ff',
+        fur: '#a2a7c7',
+        furDark: '#70759b',
+        nose: '#ff7ac8',
+        outline: '#000000',
+        pastry: '#dfc6a7',
+        pupil: '#2f3554',
+        sprinkle: '#f7f2ff',
+        white: '#ffffff',
+    },
+    Classic: {
+        blush: '#ff9fb8',
+        frosting: '#ff99cc',
+        fur: '#999999',
+        furDark: '#686868',
+        nose: '#ff3399',
+        outline: '#000000',
+        pastry: '#ffcc99',
+        pupil: '#333333',
+        sprinkle: '#ff4fa0',
+        white: '#ffffff',
+    },
+    Midnight: {
+        blush: '#ff7db0',
+        frosting: '#9a78ff',
+        fur: '#70707f',
+        furDark: '#49495a',
+        nose: '#ff6ac1',
+        outline: '#000000',
+        pastry: '#bca2d8',
+        pupil: '#0f1020',
+        sprinkle: '#ffe073',
+        white: '#ffffff',
+    },
+    Mint: {
+        blush: '#ffb1c7',
+        frosting: '#92ffd7',
+        fur: '#a9ada4',
+        furDark: '#73786d',
+        nose: '#ff6eb5',
+        outline: '#000000',
+        pastry: '#f3d7a8',
+        pupil: '#2d352e',
+        sprinkle: '#42dca3',
+        white: '#ffffff',
+    },
+}
+
+const CAT_FRAMES: readonly CatFrame[] = [
+    { bodyDy: 1, headDx: 0, headDy: 0, pawFrame: 0, tailFrame: 0 },
+    { bodyDy: 1, headDx: 1, headDy: 0, pawFrame: 1, tailFrame: 1 },
+    { bodyDy: 0, headDx: 1, headDy: 0, pawFrame: 2, tailFrame: 2 },
+    { bodyDy: 0, headDx: 1, headDy: 0, pawFrame: 1, tailFrame: 3 },
+    { bodyDy: 0, headDx: 0, headDy: 0, pawFrame: 3, tailFrame: 4 },
+    { bodyDy: 0, headDx: 0, headDy: 1, pawFrame: 4, tailFrame: 1 },
+]
+
+const BODY_SPRINKLES: readonly RectSpec[] = [
+    [64, 18, 6, 6],
+    [92, 12, 6, 6],
+    [110, 12, 6, 6],
+    [87, 35, 6, 6],
+    [132, 24, 6, 6],
+    [70, 46, 6, 6],
+    [92, 52, 6, 6],
+    [58, 58, 6, 6],
+    [81, 69, 6, 6],
+]
+
+const BODY_PASTRY_TRIM: readonly RectSpec[] = [
+    [52, 6, 12, 6],
+    [137, 6, 12, 6],
+    [52, 80, 12, 6],
+    [137, 80, 12, 6],
+    [52, 6, 6, 12],
+    [143, 6, 6, 12],
+    [52, 74, 6, 12],
+    [143, 74, 6, 12],
+]
+
+const EAR_OUTLINE_RECTS: readonly RectSpec[] = [
+    [0, 6, 6, 24],
+    [6, 0, 12, 6],
+    [30, 18, 12, 6],
+    [18, 6, 6, 6],
+    [24, 12, 6, 6],
+]
+
+const EAR_FILL_RECTS: readonly RectSpec[] = [
+    [6, 6, 12, 30],
+    [18, 18, 12, 12],
+    [30, 24, 12, 6],
+    [18, 12, 6, 6],
+]
+
+const FACE_OUTLINE_RECTS: readonly RectSpec[] = [
+    [23, 6, 12, 12],
+    [62, 6, 12, 12],
+    [48, 12, 6, 6],
+    [29, 24, 6, 6],
+    [46, 24, 6, 6],
+    [62, 24, 6, 6],
+]
+
+const FACE_HIGHLIGHTS: readonly RectSpec[] = [
+    [23, 6, 6, 6],
+    [62, 6, 6, 6],
+]
+
+const FACE_BLUSH_RECTS: readonly RectSpec[] = [
+    [11, 18, 12, 12],
+    [74, 18, 12, 12],
+]
+
+const CHIN_OUTLINE_RECTS: readonly RectSpec[] = [
+    [6, 30, 6, 6],
+    [12, 36, 6, 6],
+    [80, 30, 6, 6],
+    [74, 36, 6, 6],
+    [18, 42, 56, 6],
+    [29, 30, 39, 6],
+]
+
+const CHIN_FILL_RECTS: readonly RectSpec[] = [
+    [12, 30, 68, 6],
+    [18, 36, 56, 6],
+]
+
+const TAIL_OUTLINES: readonly (readonly RectSpec[])[] = [
+    [
+        [6, 0, 23, 18],
+        [11, 6, 23, 18],
+        [17, 11, 23, 18],
+        [23, 17, 23, 18],
+        [34, 23, 6, 18],
+    ],
+    [
+        [12, 6, 11, 23],
+        [18, 12, 11, 23],
+        [29, 17, 11, 23],
+        [6, 12, 6, 11],
+    ],
+    [
+        [16, 24, 24, 12],
+        [4, 30, 24, 12],
+        [10, 36, 24, 12],
+        [34, 18, 6, 24],
+    ],
+    [
+        [28, 18, 12, 24],
+        [16, 24, 12, 24],
+        [10, 30, 12, 24],
+        [4, 36, 6, 12],
+    ],
+    [
+        [6, 6, 24, 18],
+        [12, 12, 24, 18],
+        [0, 12, 6, 12],
+        [36, 12, 6, 12],
+        [28, 30, 12, 6],
+    ],
+]
+
+const TAIL_FILLS: readonly (readonly RectSpec[])[] = [
+    [
+        [11, 6, 11, 6],
+        [17, 12, 11, 6],
+        [23, 18, 11, 6],
+        [29, 24, 11, 6],
+        [35, 30, 5, 6],
+    ],
+    [
+        [12, 12, 11, 6],
+        [12, 17, 11, 6],
+        [18, 23, 11, 6],
+        [29, 23, 11, 6],
+        [29, 29, 11, 6],
+    ],
+    [
+        [16, 30, 24, 6],
+        [10, 36, 18, 6],
+    ],
+    [
+        [28, 24, 12, 12],
+        [10, 36, 12, 12],
+        [16, 30, 12, 6],
+    ],
+    [
+        [6, 12, 18, 6],
+        [12, 18, 22, 6],
+        [34, 24, 6, 6],
+    ],
+]
+
+const PAW_OUTLINES: readonly (readonly RectSpec[])[] = [
+    [
+        [28, 98, 18, 18],
+        [34, 92, 18, 18],
+        [58, 92, 18, 18],
+        [64, 98, 18, 18],
+        [118, 92, 18, 18],
+        [125, 98, 18, 18],
+        [149, 92, 18, 18],
+        [155, 98, 18, 18],
+    ],
+    [
+        [34, 98, 18, 18],
+        [40, 92, 18, 18],
+        [64, 92, 18, 18],
+        [70, 98, 18, 18],
+        [119, 92, 18, 18],
+        [125, 98, 18, 18],
+        [149, 92, 18, 18],
+        [155, 98, 18, 18],
+    ],
+    [
+        [40, 98, 18, 18],
+        [46, 92, 18, 18],
+        [70, 92, 18, 18],
+        [76, 98, 18, 18],
+        [124, 92, 18, 18],
+        [130, 98, 18, 18],
+        [155, 92, 18, 18],
+        [161, 98, 18, 18],
+    ],
+    [
+        [28, 98, 18, 18],
+        [34, 92, 18, 18],
+        [64, 92, 18, 18],
+        [58, 98, 18, 18],
+        [125, 92, 18, 18],
+        [119, 98, 18, 18],
+        [149, 92, 18, 18],
+        [155, 98, 18, 18],
+    ],
+    [
+        [28, 98, 18, 18],
+        [34, 92, 18, 18],
+        [58, 92, 18, 18],
+        [64, 98, 18, 18],
+        [118, 92, 18, 18],
+        [125, 98, 18, 18],
+        [149, 92, 18, 18],
+        [155, 98, 18, 18],
+    ],
+]
+
+const PAW_FILLS: readonly (readonly RectSpec[])[] = [
+    [
+        [34, 98, 12, 12],
+        [64, 98, 12, 12],
+        [125, 98, 12, 12],
+        [155, 98, 12, 12],
+        [46, 98, 6, 6],
+    ],
+    [
+        [40, 98, 12, 12],
+        [70, 98, 12, 12],
+        [125, 98, 12, 12],
+        [155, 98, 12, 12],
+    ],
+    [
+        [46, 98, 12, 12],
+        [76, 98, 12, 12],
+        [130, 98, 12, 12],
+        [161, 98, 12, 12],
+    ],
+    [
+        [34, 98, 12, 12],
+        [40, 92, 12, 12],
+        [64, 98, 12, 12],
+        [125, 98, 12, 12],
+        [155, 98, 12, 12],
+    ],
+    [
+        [34, 98, 12, 12],
+        [40, 92, 12, 12],
+        [64, 98, 12, 12],
+        [125, 98, 12, 12],
+        [155, 98, 12, 12],
+    ],
+]
+
+const STAR_OFFSETS: readonly [number, number][] = [
+    [20, 28],
+    [170, 68],
+    [320, 118],
+    [200, 168],
+]
+
+const CSS_SPARK_BASES: readonly [number, number, number][] = [
+    [20, 0, 0],
+    [170, 40, 0.2],
+    [320, 100, 0.4],
+    [200, 150, 0.6],
+]
+
+const CSS_SPARK_PHASES: readonly (readonly RectSpec[])[] = [
+    [[17, 17, 6, 6]],
+    [
+        [17, 0, 6, 6],
+        [34, 17, 6, 6],
+        [17, 34, 6, 6],
+        [0, 17, 6, 6],
+    ],
+    [
+        [17, 0, 6, 6],
+        [34, 17, 6, 6],
+        [17, 34, 6, 6],
+        [0, 17, 6, 6],
+        [6, 6, 5, 5],
+        [29, 6, 5, 5],
+        [29, 29, 5, 5],
+        [6, 29, 5, 5],
+    ],
+    [
+        [17, 0, 6, 11],
+        [17, 29, 6, 11],
+        [0, 17, 11, 6],
+        [29, 17, 11, 6],
+    ],
+    [
+        [17, 6, 6, 11],
+        [17, 23, 6, 11],
+        [6, 17, 6, 6],
+        [23, 17, 6, 6],
+    ],
+    [
+        [17, 12, 5, 5],
+        [17, 22, 5, 5],
+        [11, 17, 5, 5],
+        [22, 17, 5, 5],
+    ],
+]
+
+const CAT_FRAME_RATE = 1 / 0.07
+const RAINBOW_STEP_RATE = 1 / 0.35
+const CSS_CAT_WIDTH = 194
+const CSS_CAT_HEIGHT = 122
+const SPRITE_SCALE_BASE = 0.55
 
 function clamp(value: number, min: number, max: number): number {
+    if (Number.isNaN(value)) return min
     return Math.max(min, Math.min(max, value))
 }
 
-function snap(value: number): number {
-    return Math.round(value)
-}
-
 function hash(value: number): number {
-    const seeded = Math.sin(value * 127.1 + 311.7) * 43758.5453123
-    return seeded - Math.floor(seeded)
+    const hashed = Math.sin(value * 127.1 + 311.7) * 43758.5453123
+    return hashed - Math.floor(hashed)
 }
 
-function hslToHex(h: number, s: number, l: number): string {
-    const hNorm = ((h % 360) + 360) % 360
-    const sNorm = clamp(s, 0, 100) / 100
-    const lNorm = clamp(l, 0, 100) / 100
-
-    const c = (1 - Math.abs(2 * lNorm - 1)) * sNorm
-    const x = c * (1 - Math.abs(((hNorm / 60) % 2) - 1))
-    const m = lNorm - c / 2
-
-    let r = 0
-    let g = 0
-    let b = 0
-
-    if (hNorm < 60) [r, g, b] = [c, x, 0]
-    else if (hNorm < 120) [r, g, b] = [x, c, 0]
-    else if (hNorm < 180) [r, g, b] = [0, c, x]
-    else if (hNorm < 240) [r, g, b] = [0, x, c]
-    else if (hNorm < 300) [r, g, b] = [x, 0, c]
-    else [r, g, b] = [c, 0, x]
-
-    const toHex = (value: number) =>
-        Math.round((value + m) * 255)
-            .toString(16)
-            .padStart(2, '0')
-    return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+function hsl(hue: number, saturation: number, lightness: number): string {
+    const wrappedHue = ((hue % 360) + 360) % 360
+    return `hsl(${wrappedHue}, ${clamp(saturation, 0, 100)}%, ${clamp(lightness, 0, 100)}%)`
 }
 
-function fillRect(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    width: number,
-    height: number,
-    color: string,
-): void {
-    if (width <= 0 || height <= 0) return
-    ctx.fillStyle = color
-    ctx.fillRect(snap(x), snap(y), Math.max(1, Math.round(width)), Math.max(1, Math.round(height)))
-}
+function buildStars(count: number): Star[] {
+    const stars: Star[] = []
 
-// ── Star Management ─────────────────────────────────────────────────────
-
-function buildStars(targetCount: number): DashStar[] {
-    const stars: DashStar[] = []
-
-    for (let i = 0; i < targetCount; i++) {
-        const s1 = hash(i * 1.87 + 2.17)
-        const s2 = hash(i * 2.93 + 6.11)
-        const s3 = hash(i * 4.77 + 9.41)
-        const s4 = hash(i * 8.13 + 1.29)
-        const s5 = hash(i * 12.41 + 4.83)
-        const s6 = hash(i * 16.53 + 5.09)
-
+    for (let index = 0; index < count; index++) {
         stars.push({
-            drift: 4 + s5 * 28,
-            hueOffset: s4 * 360,
-            seed: s6,
-            size: 1 + s3 * 2.3,
-            twinkle: 1.1 + s4 * 2.6,
-            x: s1,
-            y: s2,
+            drift: hash(index * 6.17 + 2.3) * Math.PI * 2,
+            phase: hash(index * 3.19 + 1.2) * Math.PI * 2,
+            size: 1 + Math.floor(hash(index * 4.01 + 7.7) * 2),
+            speed: 24 + hash(index * 5.27 + 1.4) * 34,
+            twinkle: 0.8 + hash(index * 2.91 + 4.8) * 2.4,
+            x: hash(index * 1.87 + 9.1),
+            y: hash(index * 2.47 + 5.4),
         })
     }
 
     return stars
 }
 
-// ── Drawing Functions ───────────────────────────────────────────────────
-
-function drawBackdrop(
-    ctx: CanvasRenderingContext2D,
-    width: number,
-    height: number,
-    cycleHue: number,
-    colorCycle: boolean,
-): void {
-    const top = colorCycle ? hslToHex(cycleHue + 234, 72, 10) : '#080b24'
-    const bottom = colorCycle ? hslToHex(cycleHue + 272, 68, 6) : '#03040e'
-
-    const bg = ctx.createLinearGradient(0, 0, 0, height)
-    bg.addColorStop(0, top)
-    bg.addColorStop(1, bottom)
-    ctx.fillStyle = bg
-    ctx.fillRect(0, 0, width, height)
-
-    const haze = ctx.createLinearGradient(0, height * 0.4, 0, height)
-    haze.addColorStop(0, 'rgba(128, 255, 234, 0.01)')
-    haze.addColorStop(1, 'rgba(225, 53, 255, 0.06)')
-    ctx.fillStyle = haze
-    ctx.fillRect(0, 0, width, height)
+function pickMotionMode(value: string): MotionMode {
+    return MOTION_MODES.includes(value as MotionMode) ? (value as MotionMode) : 'Original'
 }
 
-function drawStars(
-    ctx: CanvasRenderingContext2D,
-    stars: DashStar[],
-    width: number,
-    height: number,
-    time: number,
-    speed: number,
-    cycleHue: number,
-    colorCycle: boolean,
-): void {
-    const driftScale = 0.35 + speed * 0.16
-
-    for (let i = 0; i < stars.length; i++) {
-        const star = stars[i]
-        const x = (star.x * width + time * star.drift * driftScale) % width
-        const y = star.y * height + Math.sin(time * (0.7 + star.seed) + star.seed * 11.3) * (2 + star.size)
-        const twinkle = 0.5 + 0.5 * Math.sin(time * star.twinkle + star.seed * 23.4)
-        const alpha = 0.16 + twinkle * 0.82
-        const size = Math.max(1, Math.round(star.size + twinkle * 0.8))
-
-        const color = colorCycle ? hslToHex(cycleHue + star.hueOffset, 96, 66) : '#ecf2ff'
-
-        ctx.globalAlpha = alpha
-        ctx.fillStyle = color
-        ctx.fillRect(snap(x), snap(y), size, size)
-
-        if (twinkle > 0.72) {
-            const arm = Math.max(2, Math.round(size * 1.6))
-            ctx.fillRect(snap(x - arm), snap(y), arm * 2 + 1, 1)
-            ctx.fillRect(snap(x), snap(y - arm), 1, arm * 2 + 1)
-        }
-
-        if (twinkle > 0.93) {
-            const pop = Math.max(2, Math.round(size * 2.2))
-            ctx.globalAlpha = 0.25 + alpha * 0.42
-            ctx.fillRect(snap(x - pop), snap(y - pop), pop * 2 + 1, 1)
-            ctx.fillRect(snap(x - pop), snap(y + pop), pop * 2 + 1, 1)
-            ctx.fillRect(snap(x - pop), snap(y - pop), 1, pop * 2 + 1)
-            ctx.fillRect(snap(x + pop), snap(y - pop), 1, pop * 2 + 1)
-        }
-    }
-
-    ctx.globalAlpha = 1
+function pickRainbowMode(value: string): RainbowMode {
+    return RAINBOW_MODES.includes(value as RainbowMode) ? (value as RainbowMode) : 'Original'
 }
 
-function drawTrail(
-    ctx: CanvasRenderingContext2D,
-    width: number,
-    catLeft: number,
-    catCenterY: number,
-    time: number,
-    unit: number,
-    cycleHue: number,
-    colorCycle: boolean,
-    trailMode: string,
-    animationSpeed: number,
-): void {
-    const trailLength = Math.max(0, catLeft + 4 * unit)
-    if (trailLength <= 0) return
+function pickCatTheme(value: string): CatTheme {
+    return CAT_THEMES.includes(value as CatTheme) ? (value as CatTheme) : 'Classic'
+}
 
-    const baseBands = ['#ff3f8e', '#ff8656', '#ffb347', '#74f2a8', '#5dc9ff', '#9380ff']
-    const bandHeight = Math.max(1, Math.round(unit * 2.35))
-    const top = catCenterY - bandHeight * 3
-    const segment = Math.max(2, Math.round(unit * 3.4))
-    const mode = trailMode
-    const pulseClock = time * (6 + animationSpeed * 0.7)
-    const dt = 1 / 60
-
-    for (let bandIndex = 0; bandIndex < baseBands.length; bandIndex++) {
-        const color = colorCycle ? hslToHex(cycleHue + bandIndex * 42, 96, 58) : baseBands[bandIndex]
-        const yBase = top + bandIndex * bandHeight
-
-        for (let x = -segment * 2; x < trailLength + segment; x += segment) {
-            const wave = Math.sin(time * 4.2 + x * 0.048 + bandIndex * 0.72) * bandHeight * 0.2
-            let modeWave = wave
-            let stretch = 1
-
-            if (mode === 'Pulse') {
-                stretch = 0.7 + 0.32 * (0.5 + 0.5 * Math.sin(pulseClock + x * 0.035 + bandIndex))
-            } else if (mode === 'Comet') {
-                modeWave += Math.sin(time * 8.2 + x * 0.11 + bandIndex * 1.4) * bandHeight * 0.42
-                stretch = 0.84 + 0.18 * (0.5 + 0.5 * Math.sin(pulseClock + x * 0.04 + bandIndex * 0.6))
-            }
-
-            const h = Math.max(1, Math.round(bandHeight * stretch))
-            const y = yBase + modeWave + (bandHeight - h) * 0.5
-            const alpha = mode === 'Comet' ? 0.78 + 0.2 * (0.5 + 0.5 * Math.sin(pulseClock + x * 0.06)) : 0.92
-
-            ctx.globalAlpha = alpha
-            ctx.fillStyle = color
-            ctx.fillRect(snap(x), snap(y), segment + 1, h)
-
-            if (mode === 'Comet' && (bandIndex === 0 || bandIndex === 5)) {
-                const marker = Math.floor(x / segment) + Math.floor((time + dt) * 15)
-                if (marker % 8 === 0) {
-                    ctx.globalAlpha = 0.6
-                    const sparkleX = snap(x + segment * 0.5)
-                    const sparkleY = snap(y + h * 0.5)
-                    ctx.fillStyle = hslToHex(cycleHue + bandIndex * 42, 96, 64)
-                    ctx.fillRect(sparkleX - 1, sparkleY, 3, 1)
-                    ctx.fillRect(sparkleX, sparkleY - 1, 1, 3)
-                }
-            }
-        }
+function rainbowColor(index: number, mode: RainbowMode, time: number): string {
+    if (mode === 'Party') {
+        return hsl(time * 55 + index * 44, 95, 58)
     }
 
-    ctx.globalAlpha = 1
+    return CLASSIC_RAINBOW[index] ?? CLASSIC_RAINBOW[0]
+}
 
-    // Fade trail edge into the horizon for cleaner loops.
-    const fade = ctx.createLinearGradient(Math.min(width, trailLength), 0, 0, 0)
-    fade.addColorStop(0, 'rgba(0, 0, 0, 0)')
-    fade.addColorStop(1, 'rgba(0, 0, 0, 0.22)')
-    ctx.fillStyle = fade
-    ctx.fillRect(0, top - bandHeight, trailLength, bandHeight * 8)
+function drawScaledRect(
+    ctx: CanvasRenderingContext2D,
+    originX: number,
+    originY: number,
+    scale: number,
+    [x, y, width, height]: RectSpec,
+    color: string,
+): void {
+    ctx.fillStyle = color
+    ctx.fillRect(
+        Math.round(originX + x * scale),
+        Math.round(originY + y * scale),
+        Math.max(1, Math.round(width * scale)),
+        Math.max(1, Math.round(height * scale)),
+    )
+}
+
+function drawScaledRects(
+    ctx: CanvasRenderingContext2D,
+    originX: number,
+    originY: number,
+    scale: number,
+    rects: readonly RectSpec[],
+    color: string,
+): void {
+    for (const rect of rects) {
+        drawScaledRect(ctx, originX, originY, scale, rect, color)
+    }
+}
+
+function drawMirroredRects(
+    ctx: CanvasRenderingContext2D,
+    originX: number,
+    originY: number,
+    scale: number,
+    mirrorWidth: number,
+    rects: readonly RectSpec[],
+    color: string,
+): void {
+    for (const [x, y, width, height] of rects) {
+        drawScaledRect(ctx, originX, originY, scale, [mirrorWidth - x - width, y, width, height], color)
+    }
+}
+
+function drawExactBody(
+    ctx: CanvasRenderingContext2D,
+    originX: number,
+    originY: number,
+    scale: number,
+    palette: CatPalette,
+): void {
+    drawScaledRect(ctx, originX, originY, scale, [46, 0, 109, 92], palette.pastry)
+    drawScaledRect(ctx, originX, originY, scale, [40, 6, 6, 80], palette.outline)
+    drawScaledRect(ctx, originX, originY, scale, [149, 6, 6, 80], palette.outline)
+    drawScaledRect(ctx, originX, originY, scale, [52, 0, 97, 6], palette.outline)
+    drawScaledRect(ctx, originX, originY, scale, [52, 86, 97, 6], palette.outline)
+    drawScaledRects(
+        ctx,
+        originX,
+        originY,
+        scale,
+        [
+            [46, 0, 6, 6],
+            [149, 0, 6, 6],
+            [46, 86, 6, 6],
+            [149, 86, 6, 6],
+        ],
+        palette.outline,
+    )
+
+    drawScaledRect(ctx, originX, originY, scale, [52, 6, 97, 80], palette.frosting)
+    drawScaledRects(ctx, originX, originY, scale, BODY_PASTRY_TRIM, palette.pastry)
+    drawScaledRects(ctx, originX, originY, scale, BODY_SPRINKLES, palette.sprinkle)
+}
+
+function drawExactHead(
+    ctx: CanvasRenderingContext2D,
+    originX: number,
+    originY: number,
+    scale: number,
+    frame: CatFrame,
+    palette: CatPalette,
+): void {
+    const headX = originX + (102 + frame.headDx * 6) * scale
+    const headY = originY + (56 + frame.headDy * 6) * scale
+
+    drawScaledRects(ctx, headX, headY - 30 * scale, scale, EAR_OUTLINE_RECTS, palette.outline)
+    drawScaledRects(ctx, headX, headY - 30 * scale, scale, EAR_FILL_RECTS, palette.fur)
+    drawMirroredRects(ctx, headX + 52 * scale, headY - 30 * scale, scale, 42, EAR_OUTLINE_RECTS, palette.outline)
+    drawMirroredRects(ctx, headX + 52 * scale, headY - 30 * scale, scale, 42, EAR_FILL_RECTS, palette.fur)
+
+    drawScaledRect(ctx, headX, headY, scale, [0, 0, 6, 30], palette.outline)
+    drawScaledRect(ctx, headX, headY, scale, [6, 0, 80, 30], palette.fur)
+    drawScaledRect(ctx, headX, headY, scale, [86, 0, 6, 30], palette.outline)
+
+    drawScaledRects(ctx, headX, headY, scale, FACE_OUTLINE_RECTS, palette.outline)
+    drawScaledRects(ctx, headX, headY, scale, FACE_HIGHLIGHTS, palette.white)
+    drawScaledRects(ctx, headX, headY, scale, FACE_BLUSH_RECTS, palette.blush)
+    drawScaledRects(ctx, headX, headY, scale, CHIN_OUTLINE_RECTS, palette.outline)
+    drawScaledRects(ctx, headX, headY, scale, CHIN_FILL_RECTS, palette.fur)
+}
+
+function drawExactTail(
+    ctx: CanvasRenderingContext2D,
+    originX: number,
+    originY: number,
+    scale: number,
+    frameIndex: number,
+    palette: CatPalette,
+): void {
+    const outlineRects = TAIL_OUTLINES[frameIndex] ?? TAIL_OUTLINES[0]
+    const fillRects = TAIL_FILLS[frameIndex] ?? TAIL_FILLS[0]
+    drawScaledRects(ctx, originX, originY, scale, outlineRects, palette.outline)
+    drawScaledRects(ctx, originX, originY, scale, fillRects, palette.fur)
+}
+
+function drawExactPaws(
+    ctx: CanvasRenderingContext2D,
+    originX: number,
+    originY: number,
+    scale: number,
+    frameIndex: number,
+    palette: CatPalette,
+): void {
+    const outlineRects = PAW_OUTLINES[frameIndex] ?? PAW_OUTLINES[0]
+    const fillRects = PAW_FILLS[frameIndex] ?? PAW_FILLS[0]
+    drawScaledRects(ctx, originX, originY, scale, outlineRects, palette.outline)
+    drawScaledRects(ctx, originX, originY, scale, fillRects, palette.fur)
 }
 
 function drawCat(
     ctx: CanvasRenderingContext2D,
     centerX: number,
     centerY: number,
-    unit: number,
-    time: number,
-    cycleHue: number,
-    colorCycle: boolean,
-    animationSpeed: number,
+    scale: number,
+    frameIndex: number,
+    palette: CatPalette,
 ): void {
-    const outline = '#1e1636'
-    const headColor = '#d6dcf8'
-    const bodyColor = '#f4d0a3'
-    const frosting = colorCycle ? hslToHex(cycleHue + 332, 88, 70) : '#ff8ed4'
-    const frostingShade = colorCycle ? hslToHex(cycleHue + 320, 84, 62) : '#ff6ec4'
+    const frame = CAT_FRAMES[frameIndex] ?? CAT_FRAMES[0]
+    const originX = centerX - (CSS_CAT_WIDTH * scale) / 2
+    const originY = centerY - (CSS_CAT_HEIGHT * scale) / 2 + frame.bodyDy * 6 * scale
 
-    const bodyW = 20 * unit
-    const bodyH = 13 * unit
-    const headSize = 10 * unit
-
-    const bodyX = snap(centerX - bodyW * 0.5)
-    const bodyY = snap(centerY - bodyH * 0.5)
-
-    const tailWag = snap(Math.sin(time * (7 + animationSpeed * 0.45)) * unit)
-
-    // Tail (stepped silhouette keeps visibility high on LED grids).
-    fillRect(ctx, bodyX - 7 * unit, bodyY + 4 * unit + tailWag, 6 * unit, 3 * unit, outline)
-    fillRect(ctx, bodyX - 6 * unit, bodyY + 5 * unit + tailWag, 4 * unit, unit, '#bcc2da')
-
-    // Legs
-    const stride = Math.sin(time * (8 + animationSpeed)) * unit * 0.8
-    const legYs = [
-        snap(bodyY + bodyH - unit + stride * 0.3),
-        snap(bodyY + bodyH - unit - stride * 0.2),
-        snap(bodyY + bodyH - unit + stride * 0.15),
-        snap(bodyY + bodyH - unit - stride * 0.25),
-    ]
-    const legXs = [bodyX + 2 * unit, bodyX + 7 * unit, bodyX + 12 * unit, bodyX + 17 * unit]
-
-    for (let i = 0; i < legXs.length; i++) {
-        fillRect(ctx, legXs[i] - unit, legYs[i] - unit, 2 * unit + 1, 3 * unit, outline)
-        fillRect(ctx, legXs[i], legYs[i], unit, 2 * unit, '#c8cde0')
-    }
-
-    // Body pastry
-    fillRect(ctx, bodyX - unit, bodyY - unit, bodyW + 2 * unit, bodyH + 2 * unit, outline)
-    fillRect(ctx, bodyX, bodyY, bodyW, bodyH, bodyColor)
-
-    // Frosting slab + inner fill for depth.
-    fillRect(ctx, bodyX + 2 * unit, bodyY + unit, bodyW - 4 * unit, bodyH - 4 * unit, frosting)
-    fillRect(ctx, bodyX + 3 * unit, bodyY + 2 * unit, bodyW - 7 * unit, bodyH - 6 * unit, frostingShade)
-
-    const sprinklePalette = colorCycle
-        ? [
-              hslToHex(cycleHue + 22, 96, 64),
-              hslToHex(cycleHue + 120, 94, 70),
-              hslToHex(cycleHue + 190, 96, 72),
-              hslToHex(cycleHue + 276, 92, 74),
-              hslToHex(cycleHue + 340, 94, 72),
-          ]
-        : ['#ffb347', '#74f3ff', '#7eff9a', '#b7a8ff', '#ffb4d9']
-
-    const sprinkles: Array<[number, number, number]> = [
-        [4, 3, 0],
-        [8, 2, 1],
-        [12, 4, 2],
-        [6, 6, 3],
-        [10, 7, 4],
-        [14, 6, 0],
-        [16, 3, 2],
-        [5, 8, 1],
-    ]
-
-    for (let i = 0; i < sprinkles.length; i++) {
-        const [sx, sy, colorIndex] = sprinkles[i]
-        fillRect(ctx, bodyX + sx * unit, bodyY + sy * unit, 2 * unit, Math.max(1, unit), sprinklePalette[colorIndex])
-    }
-
-    // Head
-    const headX = bodyX + bodyW - 2 * unit
-    const headY = bodyY - unit
-    fillRect(ctx, headX - unit, headY - unit, headSize + 2 * unit, headSize + 2 * unit, outline)
-    fillRect(ctx, headX, headY, headSize, headSize, headColor)
-
-    // Ears (blocky stepped ears for a custom silhouette).
-    fillRect(ctx, headX + unit, headY - 4 * unit, 3 * unit, 3 * unit, outline)
-    fillRect(ctx, headX + 2 * unit, headY - 3 * unit, unit, unit, '#ffc0da')
-
-    fillRect(ctx, headX + 6 * unit, headY - 4 * unit, 3 * unit, 3 * unit, outline)
-    fillRect(ctx, headX + 7 * unit, headY - 3 * unit, unit, unit, '#ffc0da')
-
-    // Face details
-    const blink = Math.sin(time * 2.8 + centerX * 0.01) > 0.94
-    const eyeColor = '#1a1830'
-
-    if (blink) {
-        fillRect(ctx, headX + 2 * unit, headY + 4 * unit, 2 * unit, 1, eyeColor)
-        fillRect(ctx, headX + 6 * unit, headY + 4 * unit, 2 * unit, 1, eyeColor)
-    } else {
-        fillRect(ctx, headX + 2 * unit, headY + 3 * unit, unit, 2 * unit, eyeColor)
-        fillRect(ctx, headX + 7 * unit, headY + 3 * unit, unit, 2 * unit, eyeColor)
-    }
-
-    fillRect(ctx, headX + 4 * unit, headY + 5 * unit, 2 * unit, unit, '#ff7bb4')
-    fillRect(ctx, headX + 3 * unit, headY + 6 * unit, unit, 1, eyeColor)
-    fillRect(ctx, headX + 6 * unit, headY + 6 * unit, unit, 1, eyeColor)
-
-    // Whiskers
-    fillRect(ctx, headX - unit, headY + 4 * unit, 2 * unit, 1, outline)
-    fillRect(ctx, headX - unit, headY + 6 * unit, 2 * unit, 1, outline)
-    fillRect(ctx, headX + headSize - 1, headY + 4 * unit, 2 * unit, 1, outline)
-    fillRect(ctx, headX + headSize - 1, headY + 6 * unit, 2 * unit, 1, outline)
+    drawExactTail(ctx, originX, originY + 40 * scale, scale, frame.tailFrame, palette)
+    drawExactPaws(ctx, originX, originY, scale, frame.pawFrame, palette)
+    drawExactBody(ctx, originX, originY, scale, palette)
+    drawExactHead(ctx, originX, originY, scale, frame, palette)
 }
 
-// ── Effect ──────────────────────────────────────────────────────────────
+function drawBackground(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    motionMode: MotionMode,
+    time: number,
+): void {
+    if (motionMode === 'Hyper') {
+        const gradient = ctx.createLinearGradient(0, 0, 0, height)
+        gradient.addColorStop(0, '#072859')
+        gradient.addColorStop(1, '#001a3d')
+        ctx.fillStyle = gradient
+    } else {
+        ctx.fillStyle = '#003366'
+    }
+
+    ctx.fillRect(0, 0, width, height)
+
+    if (motionMode === 'Hyper') {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.04)'
+        for (let line = 0; line < height; line += 12) {
+            ctx.fillRect(0, line, width, 2)
+        }
+
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
+        for (let x = -40; x < width + 40; x += 36) {
+            const skew = Math.sin(time * 2.4 + x * 0.03) * 8
+            ctx.fillRect(x, height * 0.2 + skew, 12, height * 0.6)
+        }
+    }
+}
+
+function drawTwinkle(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    unit: number,
+    frame: number,
+    size: number,
+    color: string,
+): void {
+    ctx.fillStyle = color
+
+    if (frame === 0) {
+        ctx.fillRect(
+            Math.round(x),
+            Math.round(y),
+            Math.max(1, Math.round(unit * size)),
+            Math.max(1, Math.round(unit * size)),
+        )
+        return
+    }
+
+    const arm = Math.max(1, Math.round(unit * size))
+    const center = Math.max(1, Math.round(unit * size))
+
+    ctx.fillRect(Math.round(x), Math.round(y + arm), center * 3, center)
+    ctx.fillRect(Math.round(x + arm), Math.round(y), center, center * 3)
+
+    if (frame >= 2) {
+        ctx.fillRect(Math.round(x + arm), Math.round(y + arm), center, center)
+    }
+
+    if (frame >= 3) {
+        ctx.fillRect(Math.round(x), Math.round(y), center, center)
+        ctx.fillRect(Math.round(x + arm * 2), Math.round(y), center, center)
+        ctx.fillRect(Math.round(x), Math.round(y + arm * 2), center, center)
+        ctx.fillRect(Math.round(x + arm * 2), Math.round(y + arm * 2), center, center)
+    }
+}
+
+function drawStars(
+    ctx: CanvasRenderingContext2D,
+    stars: Star[],
+    width: number,
+    height: number,
+    time: number,
+    speed: number,
+    motionMode: MotionMode,
+    rainbowMode: RainbowMode,
+    starDensity: number,
+    cssScale: number,
+): void {
+    if (motionMode !== 'Hyper') {
+        const cycle = ((time * speed) / 0.7) % 1
+        const scroll = ((time * speed * 400) / 0.7) * cssScale
+        const loopWidth = 400 * cssScale
+        const sparkWidth = 40 * cssScale
+        const travelWidth = width + loopWidth + sparkWidth
+        const rowHeight = 300 * cssScale
+        const opacity = clamp(starDensity / 60, 0, 1)
+
+        ctx.save()
+        ctx.globalAlpha = opacity
+
+        for (let row = -rowHeight; row < height + rowHeight; row += rowHeight) {
+            for (const [baseX, baseY, phaseOffset] of CSS_SPARK_BASES) {
+                const phase = (cycle + phaseOffset) % 1
+                const phaseIndex =
+                    phase < 0.16 ? 0 : phase < 0.33 ? 1 : phase < 0.5 ? 2 : phase < 0.66 ? 3 : phase < 0.83 ? 4 : 5
+                const sparkX =
+                    ((((width + baseX * cssScale - scroll) % travelWidth) + travelWidth) % travelWidth) - sparkWidth
+                const sparkY = row + baseY * cssScale
+                const color = rainbowMode === 'Party' ? hsl(time * 80 + baseX * 0.2, 92, 84) : '#ffffff'
+                drawScaledRects(
+                    ctx,
+                    sparkX,
+                    sparkY,
+                    cssScale,
+                    CSS_SPARK_PHASES[phaseIndex] ?? CSS_SPARK_PHASES[0],
+                    color,
+                )
+            }
+        }
+
+        ctx.restore()
+        return
+    }
+
+    const worldSpeed = motionMode === 'Hyper' ? 2.4 : 1.0
+    const loopWidth = width + 80
+
+    for (const [index, seed] of stars.entries()) {
+        const scroll = time * seed.speed * speed * worldSpeed
+        const x = ((((seed.x * loopWidth - scroll) % loopWidth) + loopWidth) % loopWidth) - 20
+        const y = 12 + seed.y * (height - 24) + Math.sin(time * 0.9 + seed.drift) * 3
+        const frame = Math.floor(time * seed.twinkle * 2 + seed.phase) % 4
+        const color = rainbowMode === 'Party' ? hsl(time * 80 + index * 23, 92, 84) : '#ffffff'
+
+        drawTwinkle(ctx, x, y, seed.size, frame, seed.size, color)
+    }
+
+    if (motionMode === 'Hyper') {
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)'
+        ctx.lineWidth = 1.5
+
+        for (const [index, base] of STAR_OFFSETS.entries()) {
+            const offset = ((time * 220 * speed + base[0]) % (width + 120)) - 60
+            const y = 28 + base[1] * (height / 220)
+            ctx.beginPath()
+            ctx.moveTo(width - offset, y)
+            ctx.lineTo(width - offset - 42 - index * 8, y)
+            ctx.stroke()
+        }
+    }
+}
+
+function drawRainbow(
+    ctx: CanvasRenderingContext2D,
+    trailRight: number,
+    centerY: number,
+    cssScale: number,
+    time: number,
+    speed: number,
+    rainbowMode: RainbowMode,
+): void {
+    if (trailRight <= 0) return
+
+    const bandHeight = 17 * cssScale
+    const tileWidth = 95 * cssScale
+    const fillWidth = 49 * cssScale
+    const secondWaveOffset = 46 * cssScale
+    const frameStep = Math.floor(time * RAINBOW_STEP_RATE * speed) % 2
+    const waveATop = centerY + (frameStep === 0 ? -54 : -60) * cssScale
+    const waveBTop = centerY + (frameStep === 0 ? -60 : -54) * cssScale
+    const rippleStrength = rainbowMode === 'Wavy' || rainbowMode === 'Party' ? 3 * cssScale : 0
+
+    for (let bandIndex = 0; bandIndex < CLASSIC_RAINBOW.length; bandIndex++) {
+        const color = rainbowColor(bandIndex, rainbowMode, time)
+        const yA = waveATop + bandIndex * bandHeight
+        const yB = waveBTop + bandIndex * bandHeight
+
+        ctx.fillStyle = color
+
+        for (let x = -tileWidth; x < trailRight + tileWidth; x += tileWidth) {
+            const waveA = rippleStrength === 0 ? 0 : Math.sin(time * 4 + bandIndex * 0.4) * rippleStrength
+            const waveB = rippleStrength === 0 ? 0 : Math.sin(time * 4 + bandIndex * 0.4 + Math.PI / 2) * rippleStrength
+
+            if (x < trailRight) {
+                const widthA = Math.min(fillWidth, trailRight - x)
+                if (widthA > 0) {
+                    ctx.fillRect(Math.round(x), Math.round(yA + waveA), Math.round(widthA), Math.round(bandHeight))
+                }
+            }
+
+            const secondX = x + secondWaveOffset
+            if (secondX < trailRight) {
+                const widthB = Math.min(fillWidth, trailRight - secondX)
+                if (widthB > 0) {
+                    ctx.fillRect(
+                        Math.round(secondX),
+                        Math.round(yB + waveB),
+                        Math.round(widthB),
+                        Math.round(bandHeight),
+                    )
+                }
+            }
+        }
+    }
+}
 
 canvas(
     'Nyan Dash',
     {
-        trailMode: combo('Trail Mode', TRAIL_MODES, { group: 'Motion' }),
-        animationSpeed: num('Speed', [1, 10], 6, { group: 'Motion' }),
-        cycleSpeed: num('Cycle Speed', [0, 100], 34, { group: 'Color' }),
-        colorCycle: toggle('Color Cycle', true, { group: 'Color' }),
-        scale: num('Scale', [40, 180], 100, { group: 'Layout' }),
+        motionMode: combo('Motion', [...MOTION_MODES], { group: 'Motion' }),
+        rainbowMode: combo('Rainbow', [...RAINBOW_MODES], { group: 'Style' }),
+        catTheme: combo('Cat Theme', [...CAT_THEMES], { group: 'Style' }),
+        animationSpeed: num('Speed', [1, 10], 5, { group: 'Motion' }),
+        scale: num('Scale', [50, 180], 100, { group: 'Layout' }),
         positionX: num('Position X', [-100, 100], 0, { group: 'Layout' }),
         positionY: num('Position Y', [-100, 100], 0, { group: 'Layout' }),
-        starDensity: num('Star Density', [0, 100], 44, { group: 'Atmosphere' }),
+        starDensity: num('Star Density', [0, 100], 50, { group: 'Atmosphere' }),
     },
     () => {
-        // Persistent state across frames
-        let stars: DashStar[] = []
-        let starCount = 0
-        let canvasWidth = 0
-        let canvasHeight = 0
-
-        function syncStars(width: number, height: number, targetCount: number, force = false): void {
-            const sizeChanged = canvasWidth !== width || canvasHeight !== height
-
-            if (!force && !sizeChanged && targetCount === starCount) return
-
-            canvasWidth = width
-            canvasHeight = height
-            starCount = targetCount
-            stars = buildStars(targetCount)
-        }
-
-        // Initial sync
-        syncStars(320, 200, Math.max(0, Math.floor(44 * 1.25)), true)
+        let stars: Star[] = []
+        let starCount = -1
 
         return (ctx, time, controls) => {
             const width = ctx.canvas.width
             const height = ctx.canvas.height
-
-            const rawAnimationSpeed = controls.animationSpeed as number
-            const speed = normalizeSpeed(rawAnimationSpeed)
-            const rawScale = clamp(controls.scale as number, 40, 180)
+            const speed = normalizeSpeed(controls.animationSpeed as number)
+            const scaleControl = clamp(controls.scale as number, 50, 180)
             const positionX = clamp(controls.positionX as number, -100, 100)
             const positionY = clamp(controls.positionY as number, -100, 100)
-            const trailMode = TRAIL_MODES.includes(controls.trailMode as string)
-                ? (controls.trailMode as string)
-                : 'Classic'
-            const colorCycle = controls.colorCycle as boolean
-            const cycleSpeed = clamp(controls.cycleSpeed as number, 0, 100)
             const starDensity = clamp(controls.starDensity as number, 0, 100)
+            const motionMode = pickMotionMode(String(controls.motionMode))
+            const rainbowMode = pickRainbowMode(String(controls.rainbowMode))
+            const catTheme = pickCatTheme(String(controls.catTheme))
 
-            const targetStarCount = Math.max(0, Math.floor(starDensity * 1.25))
-            syncStars(width, height, targetStarCount)
+            const nextStarCount = Math.floor(starDensity * 1.4)
+            if (nextStarCount !== starCount) {
+                starCount = nextStarCount
+                stars = buildStars(starCount)
+            }
 
-            const scale = clamp(rawScale / 100, 0.4, 1.8)
-            const unit = Math.max(1, Math.round(2 * scale))
-            const cycleHue = colorCycle ? time * cycleSpeed * 0.9 : 0
+            const cssScale = SPRITE_SCALE_BASE * (scaleControl / 100)
+            const unit = Math.max(1, Math.round(6 * cssScale))
+            const catWidth = CSS_CAT_WIDTH * cssScale
+            const catHeight = CSS_CAT_HEIGHT * cssScale
+            const frameIndex = Math.floor(time * CAT_FRAME_RATE * speed) % CAT_FRAMES.length
 
-            drawBackdrop(ctx, width, height, cycleHue, colorCycle)
-            drawStars(ctx, stars, width, height, time, speed, cycleHue, colorCycle)
-
-            const travelPadding = 70 * scale
-            const travel = (time * speed * 0.14) % 1
-            const loopX = travel * (width + travelPadding * 2) - travelPadding
+            drawBackground(ctx, width, height, motionMode, time)
+            drawStars(ctx, stars, width, height, time, speed, motionMode, rainbowMode, starDensity, cssScale)
 
             const offsetX = (positionX / 100) * width * 0.36
-            const offsetY = (positionY / 100) * height * 0.36
-            const bob = Math.sin(time * (2.6 + speed * 0.5)) * 4 * scale
+            const offsetY = (positionY / 100) * height * 0.34
 
-            const catX = loopX + offsetX
-            const catY = clamp(height * 0.55 + offsetY + bob, 18 * scale, height - 18 * scale)
+            let centerX = width * 0.5 + offsetX
+            if (motionMode === 'Dash') {
+                const travel = ((time * speed * 42) % (width + catWidth * 1.6)) - catWidth * 0.8
+                centerX = width - travel + offsetX
+            } else if (motionMode === 'Hyper') {
+                centerX += Math.sin(time * speed * 1.5) * unit * 1.2
+            }
 
-            const bodyWidth = 20 * unit
-            const catLeft = catX - bodyWidth * 0.5 - 2 * unit
+            const centerY = clamp(height * 0.52 + offsetY, catHeight * 0.25, height - catHeight * 0.2)
+            const trailEnd = centerX - catWidth / 2 + 52 * cssScale
 
-            drawTrail(ctx, width, catLeft, catY, time, unit, cycleHue, colorCycle, trailMode, speed)
-            drawCat(ctx, catX, catY, unit, time, cycleHue, colorCycle, speed)
+            drawRainbow(ctx, trailEnd, centerY, cssScale, time, speed, rainbowMode)
+            drawCat(ctx, centerX, centerY, cssScale, frameIndex, CAT_THEMES_PALETTE[catTheme])
         }
     },
     {
-        description: 'Playful stylized cat dash with rainbow trail variants, star pops, and smooth looping motion',
+        description:
+            'A faithful Nyan Cat pass driven by the classic CSS timing: stepped rainbow bands, chunky pixel stars, original-space bobbing, plus a few remix controls that stay out of the default look.',
         presets: [
             {
-                controls: {
-                    animationSpeed: 8,
-                    colorCycle: true,
-                    cycleSpeed: 52,
-                    positionX: 0,
-                    positionY: -15,
-                    scale: 120,
-                    starDensity: 80,
-                    trailMode: 'Classic',
-                },
+                name: 'Original Loop',
                 description:
-                    'CRT static, cereal milk puddles, and a cat zooming across the screen at maximum Nickelodeon energy',
-                name: 'Saturday Morning 1994',
-            },
-            {
-                controls: {
-                    animationSpeed: 2,
-                    colorCycle: true,
-                    cycleSpeed: 12,
-                    positionX: 20,
-                    positionY: 10,
-                    scale: 160,
-                    starDensity: 25,
-                    trailMode: 'Pulse',
-                },
-                description:
-                    'Slowed-down, dreamy, pastel — the cat floats through a lo-fi aesthetic void of cotton candy nebulae',
-                name: 'Vaporwave Poptart',
-            },
-            {
-                controls: {
-                    animationSpeed: 10,
-                    colorCycle: true,
-                    cycleSpeed: 78,
-                    positionX: -30,
-                    positionY: 0,
-                    scale: 55,
-                    starDensity: 60,
-                    trailMode: 'Comet',
-                },
-                description: 'Tiny pixel cat blazing across the void like a burning meteorite trailing sparkle debris',
-                name: 'Comet Kitty',
-            },
-            {
+                    'Stationary cat, classic colors, and the stepped rainbow cadence that feels closest to the original loop.',
                 controls: {
                     animationSpeed: 5,
-                    colorCycle: false,
-                    cycleSpeed: 0,
+                    catTheme: 'Classic',
+                    motionMode: 'Original',
                     positionX: 0,
-                    positionY: 30,
+                    positionY: 0,
+                    rainbowMode: 'Original',
                     scale: 100,
-                    starDensity: 8,
-                    trailMode: 'Classic',
+                    starDensity: 52,
                 },
-                description:
-                    'Minimal stars, no color cycle — monochrome cat dashing through the quiet dark toward the fridge',
-                name: 'Midnight Snack Run',
             },
             {
+                name: 'CSS Cat Sprint',
+                description:
+                    'The cat actually dashes across the canvas while the old-school rainbow bands keep marching behind it.',
                 controls: {
                     animationSpeed: 7,
-                    colorCycle: true,
-                    cycleSpeed: 100,
+                    catTheme: 'Classic',
+                    motionMode: 'Dash',
                     positionX: 0,
-                    positionY: -20,
-                    scale: 180,
-                    starDensity: 95,
-                    trailMode: 'Pulse',
+                    positionY: -8,
+                    rainbowMode: 'Original',
+                    scale: 92,
+                    starDensity: 48,
                 },
+            },
+            {
+                name: 'Saturday Morning CRT',
                 description:
-                    'Maximum color cycle on a big chunky cat under a mirror ball — Studio 54 energy with sprinkles',
-                name: 'Disco Inferno 1977',
+                    'Chunky scale, centered framing, and just enough stars to feel like an old browser tab you never wanted to close.',
+                controls: {
+                    animationSpeed: 5,
+                    catTheme: 'Classic',
+                    motionMode: 'Original',
+                    positionX: 0,
+                    positionY: -6,
+                    rainbowMode: 'Original',
+                    scale: 128,
+                    starDensity: 36,
+                },
+            },
+            {
+                name: 'Blueberry Breakfast',
+                description:
+                    'Same animation grammar, but the pastry look shifts into a bright cereal-box blueberry palette.',
+                controls: {
+                    animationSpeed: 4,
+                    catTheme: 'Blueberry',
+                    motionMode: 'Original',
+                    positionX: 8,
+                    positionY: 4,
+                    rainbowMode: 'Wavy',
+                    scale: 118,
+                    starDensity: 42,
+                },
+            },
+            {
+                name: 'Mint Cartridge',
+                description:
+                    'A softer remix with mint frosting, slower bobbing, and a little extra ribbon wobble in the trail.',
+                controls: {
+                    animationSpeed: 3,
+                    catTheme: 'Mint',
+                    motionMode: 'Original',
+                    positionX: 16,
+                    positionY: 10,
+                    rainbowMode: 'Wavy',
+                    scale: 130,
+                    starDensity: 38,
+                },
+            },
+            {
+                name: 'Pocket Meme',
+                description:
+                    'A tiny fast cat for keyboard layouts that only need a quick streak of chaos instead of the full mural.',
+                controls: {
+                    animationSpeed: 7,
+                    catTheme: 'Classic',
+                    motionMode: 'Dash',
+                    positionX: -12,
+                    positionY: 10,
+                    rainbowMode: 'Wavy',
+                    scale: 72,
+                    starDensity: 62,
+                },
+            },
+            {
+                name: 'Hyper Tunnel',
+                description:
+                    'The faithful cat drops into a louder synth tunnel with party rainbow hues and faster star streaks.',
+                controls: {
+                    animationSpeed: 8,
+                    catTheme: 'Midnight',
+                    motionMode: 'Hyper',
+                    positionX: 0,
+                    positionY: -10,
+                    rainbowMode: 'Party',
+                    scale: 110,
+                    starDensity: 76,
+                },
             },
         ],
     },
