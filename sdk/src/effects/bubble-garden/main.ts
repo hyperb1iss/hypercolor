@@ -1,4 +1,4 @@
-import { canvas, color, combo, num, toggle } from '@hypercolor/sdk'
+import { canvas, color, combo, num } from '@hypercolor/sdk'
 
 interface Bubble {
     x: number

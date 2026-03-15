@@ -122,7 +122,7 @@ pub fn register_html_effects(
             };
 
             let parsed = parse_html_effect_metadata(&raw_html);
-            let source_path = derive_source_path(root, &file);
+            let source_path = normalize_path(&file);
             let effect_name = if parsed.title == "Unnamed Effect" {
                 fallback_effect_name(&file)
             } else {
@@ -165,7 +165,7 @@ pub fn register_html_effects(
 
             let entry = EffectEntry {
                 metadata,
-                source_path: file.clone(),
+                source_path: source_path.clone(),
                 modified,
                 state: EffectState::Loading,
             };
@@ -222,16 +222,6 @@ fn is_html_file(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case(HTML_EXTENSION))
 }
 
-fn derive_source_path(root: &Path, file: &Path) -> PathBuf {
-    if is_bundled_effects_root(root) {
-        return file
-            .strip_prefix(root)
-            .map_or_else(|_| file.to_path_buf(), Path::to_path_buf);
-    }
-
-    file.to_path_buf()
-}
-
 fn fallback_effect_name(file: &Path) -> String {
     file.file_stem()
         .and_then(OsStr::to_str)
@@ -256,10 +246,6 @@ fn deterministic_html_effect_id(source_path: &Path) -> EffectId {
 
 fn normalize_path(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn is_bundled_effects_root(root: &Path) -> bool {
-    normalize_path(root) == normalize_path(&bundled_effects_root())
 }
 
 fn control_definition_from_html(raw: &HtmlControlMetadata) -> Option<ControlDefinition> {

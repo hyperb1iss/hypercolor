@@ -91,7 +91,7 @@ pub enum EffectSource {
     },
     /// HTML/Canvas/WebGL effect rendered by `ServoRenderer`.
     Html {
-        /// Path to the `.html` file, relative to the effects root.
+        /// Path to the `.html` file on disk.
         path: PathBuf,
     },
     /// GPU compute or fragment shader in raw SPIR-V or WGSL.

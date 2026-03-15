@@ -23,6 +23,7 @@ export abstract class BaseEffect<T> {
     protected canvasWidth: number
     protected canvasHeight: number
     protected canvas: HTMLCanvasElement | null = null
+    protected stage: HTMLDivElement | null = null
 
     private fpsCapLastFrameTime = 0
     private lastControlPollTime = Number.NEGATIVE_INFINITY
@@ -44,15 +45,20 @@ export abstract class BaseEffect<T> {
         this.debug('info', 'Initializing...')
 
         try {
+            this.stage = this.ensureStage()
             this.canvas = document.getElementById('exCanvas') as HTMLCanvasElement
             if (!this.canvas) {
                 this.canvas = document.createElement('canvas')
                 this.canvas.id = 'exCanvas'
                 this.canvas.width = this.canvasWidth
                 this.canvas.height = this.canvasHeight
-                document.body.appendChild(this.canvas)
+                const canvasParent = this.stage ?? document.body
+                canvasParent.appendChild(this.canvas)
+            } else if (this.stage && this.canvas.parentElement !== this.stage) {
+                this.stage.appendChild(this.canvas)
             }
 
+            this.syncSurfacePresentation(this.canvasWidth, this.canvasHeight)
             this.syncCanvasSizeFromEngine()
             await this.initializeRenderer()
             this.initializeControls()
@@ -112,28 +118,79 @@ export abstract class BaseEffect<T> {
         if (force) this.debug('debug', 'Controls updated', controls)
     }
 
+    protected getStageElement(): HTMLDivElement | null {
+        return this.stage
+    }
+
     protected onCanvasResize(_width: number, _height: number): void {}
+
+    private ensureStage(): HTMLDivElement | null {
+        if (typeof document === 'undefined') return null
+
+        let stage = document.getElementById('exStage') as HTMLDivElement | null
+        if (!stage) {
+            stage = document.createElement('div')
+            stage.id = 'exStage'
+            document.body.appendChild(stage)
+        }
+
+        stage.style.position = 'relative'
+        stage.style.overflow = 'hidden'
+        stage.style.background = '#000'
+        return stage
+    }
+
+    private syncSurfacePresentation(width: number, height: number): void {
+        if (typeof document !== 'undefined') {
+            document.documentElement.style.margin = '0'
+            document.documentElement.style.overflow = 'hidden'
+            document.body.style.margin = '0'
+            document.body.style.overflow = 'hidden'
+            document.body.style.background = '#000'
+        }
+
+        if (this.stage) {
+            this.stage.style.width = `${width}px`
+            this.stage.style.height = `${height}px`
+        }
+
+        if (this.canvas) {
+            this.canvas.style.display = 'block'
+            this.canvas.style.width = '100%'
+            this.canvas.style.height = '100%'
+        }
+    }
 
     private syncCanvasSizeFromEngine(): void {
         if (!this.canvas) return
 
         const engine = (window as { engine?: { width?: unknown; height?: unknown } }).engine
-        const width =
+        let width: number | null =
             typeof engine?.width === 'number' && Number.isFinite(engine.width)
                 ? Math.max(1, Math.round(engine.width))
                 : null
-        const height =
+        let height: number | null =
             typeof engine?.height === 'number' && Number.isFinite(engine.height)
                 ? Math.max(1, Math.round(engine.height))
                 : null
 
-        if (width == null || height == null) return
+        // Standalone preview: fill the viewport when no engine is driving dimensions
+        if (width == null || height == null) {
+            if (typeof window !== 'undefined' && window.innerWidth > 0 && window.innerHeight > 0) {
+                width = window.innerWidth
+                height = window.innerHeight
+            } else {
+                return
+            }
+        }
+
         if (this.canvas.width === width && this.canvas.height === height) return
 
         this.canvas.width = width
         this.canvas.height = height
         this.canvasWidth = width
         this.canvasHeight = height
+        this.syncSurfacePresentation(width, height)
         this.onCanvasResize(width, height)
     }
 

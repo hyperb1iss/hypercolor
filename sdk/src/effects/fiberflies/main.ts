@@ -520,8 +520,7 @@ export default canvas.stateful(
                     speed: 3,
                     wander: 35,
                 },
-                description:
-                    'Purple and cyan spirits dance through twilight — a garden where neon meets the occult',
+                description: 'Purple and cyan spirits dance through twilight — a garden where neon meets the occult',
                 name: 'Violet Hour',
             },
         ],

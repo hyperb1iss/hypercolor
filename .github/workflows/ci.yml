@@ -68,6 +68,7 @@ jobs:
         working-directory: crates/hypercolor-ui
     steps:
       - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -76,7 +77,7 @@ jobs:
           workspaces: crates/hypercolor-ui -> target
       - name: Install Trunk
         run: cargo install trunk --locked
-      - run: npm ci
+      - run: bun install
       - run: trunk build --release
 
   # ── Build Artifacts ──────────────────────────────────────────

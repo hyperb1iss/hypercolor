@@ -267,7 +267,9 @@ function generateHTML(
 ${controlMetas.join('\n')}${presetBlock}
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
-  <canvas id="exCanvas" width="320" height="200"></canvas>
+  <div id="exStage" style="position:relative;overflow:hidden;background:#000;width:100vw;height:100vh">
+    <canvas id="exCanvas" style="display:block;width:100%;height:100%"></canvas>
+  </div>
   <script>
 ${jsBundle}
   </script>
