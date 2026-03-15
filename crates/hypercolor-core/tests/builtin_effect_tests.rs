@@ -989,13 +989,22 @@ fn color_zones_responds_to_zone_count() {
     let mut r = ColorZonesRenderer::new();
     r.init(&make_metadata("color_zones")).expect("init");
 
-    // With 2 zones, far-left and far-right should be different, middle should match one of them.
+    r.set_control("zone_1", &ControlValue::Color([1.0, 0.0, 0.0, 1.0]));
+    r.set_control("zone_2", &ControlValue::Color([0.0, 1.0, 0.0, 1.0]));
+    r.set_control("zone_3", &ControlValue::Color([0.0, 0.0, 1.0, 1.0]));
+
+    // With 2 zones, the midpoint must collapse into one of the two active zones.
     r.set_control("zone_count", &ControlValue::Enum("2".to_owned()));
     r.set_control("blend", &ControlValue::Float(0.0));
     let canvas = r.tick(&frame(0.0, 0)).expect("tick");
     let left = canvas.get_pixel(0, 0);
+    let middle = canvas.get_pixel(W / 2, 0);
     let right = canvas.get_pixel(W - 1, 0);
     assert_ne!(left, right, "two zones should produce two colors");
+    assert_eq!(
+        middle, right,
+        "zone_count=2 should remove the third column instead of leaving the default 3-zone layout"
+    );
 }
 
 #[test]

@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString};
 use uuid::Uuid;
 
+use crate::canvas::srgb_to_linear;
+
 // ── EffectId ──────────────────────────────────────────────────────────────────
 
 /// Unique identifier for an effect, wrapping a UUID v7.
@@ -325,6 +327,24 @@ fn control_value_kind(value: &ControlValue) -> &'static str {
     }
 }
 
+fn parse_hex_color(text: &str) -> Option<[f32; 4]> {
+    let hex = text.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        return None;
+    }
+
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+
+    Some([
+        srgb_to_linear(f32::from(r) / 255.0),
+        srgb_to_linear(f32::from(g) / 255.0),
+        srgb_to_linear(f32::from(b) / 255.0),
+        1.0,
+    ])
+}
+
 // ── ControlDefinition ─────────────────────────────────────────────────────────
 
 /// A single user-facing parameter declared by an effect.
@@ -439,7 +459,14 @@ impl ControlDefinition {
             }
             ControlKind::Color => match value {
                 ControlValue::Color(color) => Ok(ControlValue::Color(*color)),
-                ControlValue::Text(hex) => Ok(ControlValue::Text(hex.clone())),
+                ControlValue::Text(text) | ControlValue::Enum(text) => {
+                    if matches!(self.control_type, ControlType::ColorPicker)
+                        && let Some(color) = parse_hex_color(text)
+                    {
+                        return Ok(ControlValue::Color(color));
+                    }
+                    Ok(ControlValue::Text(text.clone()))
+                }
                 _ => Err(ControlValidationError::ExpectedColorLike {
                     control,
                     got: control_value_kind(value),

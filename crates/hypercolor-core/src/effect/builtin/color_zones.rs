@@ -184,6 +184,15 @@ impl EffectRenderer for ColorZonesRenderer {
     }
 
     fn set_control(&mut self, name: &str, value: &ControlValue) {
+        if name == "zone_count" {
+            if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value
+                && let Ok(n) = choice.parse::<u8>()
+            {
+                self.zone_count = n.clamp(2, 9);
+            }
+            return;
+        }
+
         // Handle zone_1 through zone_9.
         if let Some(idx) = name.strip_prefix("zone_") {
             if let Ok(n) = idx.parse::<usize>()
@@ -196,13 +205,6 @@ impl EffectRenderer for ColorZonesRenderer {
         }
 
         match name {
-            "zone_count" => {
-                if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value
-                    && let Ok(n) = choice.parse::<u8>()
-                {
-                    self.zone_count = n.clamp(2, 9);
-                }
-            }
             "layout" => {
                 if let ControlValue::Enum(choice) | ControlValue::Text(choice) = value {
                     self.layout = ZoneLayout::from_str(choice);

@@ -536,6 +536,22 @@ fn sample_dropdown_control() -> ControlDefinition {
     }
 }
 
+fn sample_color_picker_control() -> ControlDefinition {
+    ControlDefinition {
+        id: "zone_1".into(),
+        name: "Zone 1".into(),
+        kind: ControlKind::Color,
+        control_type: ControlType::ColorPicker,
+        default_value: ControlValue::Color([1.0, 1.0, 1.0, 1.0]),
+        min: None,
+        max: None,
+        step: None,
+        labels: vec![],
+        group: Some("Colors".into()),
+        tooltip: None,
+    }
+}
+
 #[test]
 fn control_definition_slider() {
     let ctrl = sample_slider_control();
@@ -574,6 +590,36 @@ fn control_definition_serde_round_trip() {
     assert_eq!(back.max, ctrl.max);
     assert_eq!(back.step, ctrl.step);
     assert_eq!(back.tooltip, ctrl.tooltip);
+}
+
+#[test]
+fn color_picker_validation_normalizes_hex_text_to_color() {
+    let control = sample_color_picker_control();
+    let validated = control
+        .validate_value(&ControlValue::Text("#80ffea".into()))
+        .expect("hex text should validate");
+
+    match validated {
+        ControlValue::Color([r, g, b, a]) => {
+            assert!(r > 0.2, "red should be converted from hex");
+            assert!(g > 0.9, "green should be converted from hex");
+            assert!(b > 0.8, "blue should be converted from hex");
+            assert!((a - 1.0).abs() < f32::EPSILON);
+        }
+        other => panic!("expected normalized color, got {other:?}"),
+    }
+}
+
+#[test]
+fn non_color_picker_color_control_preserves_text_values() {
+    let mut control = sample_color_picker_control();
+    control.control_type = ControlType::TextInput;
+
+    let validated = control
+        .validate_value(&ControlValue::Text("brand-accent".into()))
+        .expect("text color token should validate");
+
+    assert_eq!(validated, ControlValue::Text("brand-accent".into()));
 }
 
 // ── EffectMetadata ────────────────────────────────────────────────────────
