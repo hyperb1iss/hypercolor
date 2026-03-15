@@ -232,6 +232,70 @@ fn install_scroll_close_handler(set_open: WriteSignal<bool>) {
     );
 }
 
+/// Compute fixed-position style for the color picker popover, anchored above the
+/// swatch trigger button. Falls back to centered if the trigger ref isn't mounted yet.
+fn color_picker_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
+    let Some(el) = trigger else {
+        return String::new();
+    };
+    let rect = el.get_bounding_client_rect();
+    let Some(window) = web_sys::window() else {
+        return String::new();
+    };
+
+    let viewport_width = window
+        .inner_width()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1024.0);
+    let viewport_height = window
+        .inner_height()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(768.0);
+
+    let popover_width = 252.0;
+    let margin = 8.0;
+
+    // Center horizontally on the swatch, clamped to viewport
+    let ideal_left = rect.left() + rect.width() / 2.0 - popover_width / 2.0;
+    let left = ideal_left.clamp(margin, (viewport_width - popover_width - margin).max(margin));
+
+    // Prefer opening above the trigger; fall back to below if not enough room
+    let space_above = rect.top() - margin;
+    let space_below = viewport_height - rect.bottom() - margin;
+    let open_above = space_above >= 280.0 || space_above > space_below;
+
+    if open_above {
+        let bottom = viewport_height - rect.top() + margin;
+        format!("left: {left}px; bottom: {bottom}px; width: {popover_width}px")
+    } else {
+        let top = rect.bottom() + margin;
+        format!("left: {left}px; top: {top}px; width: {popover_width}px")
+    }
+}
+
+/// Close the color picker popover on any ancestor scroll (same rationale as
+/// `install_scroll_close_handler` but targets the expanded-picker signal).
+fn install_scroll_close_handler_for_picker(
+    set_expanded: WriteSignal<Option<String>>,
+) {
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+
+    let _ = use_event_listener_with_options(
+        win,
+        ev::scroll,
+        move |_: web_sys::Event| {
+            set_expanded.set(None);
+        },
+        UseEventListenerOptions::default()
+            .capture(true)
+            .passive(true),
+    );
+}
+
 fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
     trigger
         .map(|el| {
@@ -415,7 +479,8 @@ fn ControlWidget(
                 let picker_id = picker_id.clone();
                 move |_| expanded_picker_id.get().as_deref() == Some(picker_id.as_str())
             });
-            let control_name = control_id.clone();
+            let control_name = StoredValue::new(control_id.clone());
+            let swatch_ref = NodeRef::<leptos::html::Button>::new();
 
             Effect::new(move |_| {
                 let next = control_value_to_hex(&value.get());
@@ -425,16 +490,17 @@ fn ControlWidget(
                 }
             });
 
+            // Close on scroll — the popover is portaled with fixed positioning,
+            // so scrolling would leave it visually detached from the swatch.
+            install_scroll_close_handler_for_picker(set_expanded_picker_id);
+
             // Wheel callback — receives hex from ColorWheel, propagates to engine
-            let on_wheel_change = Callback::new({
-                let control_name = control_name.clone();
-                move |hex: String| {
-                    if let Some(normalized) = normalize_hex(&hex) {
-                        set_color.set(normalized.clone());
-                        set_hex_input.set(normalized.clone());
-                        if let Some(rgba) = hex_to_rgba(&normalized) {
-                            on_change.run((control_name.clone(), json!(rgba)));
-                        }
+            let on_wheel_change = Callback::new(move |hex: String| {
+                if let Some(normalized) = normalize_hex(&hex) {
+                    set_color.set(normalized.clone());
+                    set_hex_input.set(normalized.clone());
+                    if let Some(rgba) = hex_to_rgba(&normalized) {
+                        on_change.run((control_name.get_value(), json!(rgba)));
                     }
                 }
             });
@@ -446,6 +512,7 @@ fn ControlWidget(
                     <div class="flex items-center gap-2.5">
                         <button
                             type="button"
+                            node_ref=swatch_ref
                             class="h-7 w-7 shrink-0 rounded-lg border border-edge-default swatch-glow
                                    transition-all duration-200 hover:border-edge-strong hover:scale-105"
                             style=move || format!(
@@ -472,46 +539,45 @@ fn ControlWidget(
                         </span>
                     </div>
 
-                    // Popover color picker — floats above the control
+                    // Popover color picker — portaled to escape overflow clipping
                     <Show when=move || is_open.get()>
-                        <div
-                            class="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-50
-                                   w-[252px] rounded-2xl
-                                   bg-[#0d0b16]/98 backdrop-blur-xl
-                                   border border-white/[0.06]
-                                   p-3.5 space-y-2.5
-                                   color-picker-popover animate-picker-in"
-                            on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
-                        >
-                            // Color wheel canvas
-                            <div class="flex justify-center">
-                                <ColorWheel
-                                    color=Signal::derive(move || color.get())
-                                    on_change=on_wheel_change
-                                />
-                            </div>
+                        <Portal>
+                            <div
+                                class="fixed z-[9999] rounded-2xl
+                                       bg-[#0d0b16]/98 backdrop-blur-xl
+                                       border border-white/[0.06]
+                                       p-3.5 space-y-2.5
+                                       color-picker-popover animate-picker-in"
+                                style=move || color_picker_panel_style(swatch_ref.get())
+                                on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
+                            >
+                                // Color wheel canvas
+                                <div class="flex justify-center">
+                                    <ColorWheel
+                                        color=Signal::derive(move || color.get())
+                                        on_change=on_wheel_change
+                                    />
+                                </div>
 
-                            // Hex input + preview swatch
-                            <div class="flex items-center gap-2">
-                                <div
-                                    class="h-7 w-7 shrink-0 rounded-lg border border-white/[0.08]"
-                                    style=move || format!(
-                                        "background: {}; box-shadow: 0 0 12px {}55",
-                                        color.get(), color.get()
-                                    )
-                                />
-                                <input
-                                    type="text"
-                                    class="flex-1 min-w-0 rounded-lg border border-white/[0.06] bg-white/[0.04]
-                                           px-2.5 py-1.5 text-xs font-mono uppercase text-fg-primary
-                                           placeholder-fg-tertiary/30 focus:outline-none
-                                           focus:border-accent-muted/50 transition-all duration-150"
-                                    maxlength="7"
-                                    placeholder="#E135FF"
-                                    prop:value=move || hex_input.get()
-                                    on:input={
-                                        let control_name = control_name.clone();
-                                        move |ev| {
+                                // Hex input + preview swatch
+                                <div class="flex items-center gap-2">
+                                    <div
+                                        class="h-7 w-7 shrink-0 rounded-lg border border-white/[0.08]"
+                                        style=move || format!(
+                                            "background: {}; box-shadow: 0 0 12px {}55",
+                                            color.get(), color.get()
+                                        )
+                                    />
+                                    <input
+                                        type="text"
+                                        class="flex-1 min-w-0 rounded-lg border border-white/[0.06] bg-white/[0.04]
+                                               px-2.5 py-1.5 text-xs font-mono uppercase text-fg-primary
+                                               placeholder-fg-tertiary/30 focus:outline-none
+                                               focus:border-accent-muted/50 transition-all duration-150"
+                                        maxlength="7"
+                                        placeholder="#E135FF"
+                                        prop:value=move || hex_input.get()
+                                        on:input=move |ev| {
                                             use wasm_bindgen::JsCast;
                                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
                                             if let Some(el) = target {
@@ -520,59 +586,58 @@ fn ControlWidget(
                                                 if let Some(normalized) = normalize_hex(&next) {
                                                     set_color.set(normalized.clone());
                                                     if let Some(rgba) = hex_to_rgba(&normalized) {
-                                                        on_change.run((control_name.clone(), json!(rgba)));
+                                                        on_change.run((control_name.get_value(), json!(rgba)));
                                                     }
                                                 }
                                             }
                                         }
-                                    }
-                                    on:blur=move |_| {
-                                        let next = hex_input.get();
-                                        if let Some(n) = normalize_hex(&next) {
-                                            set_hex_input.set(n);
-                                        } else {
-                                            set_hex_input.set(color.get());
+                                        on:blur=move |_| {
+                                            let next = hex_input.get();
+                                            if let Some(n) = normalize_hex(&next) {
+                                                set_hex_input.set(n);
+                                            } else {
+                                                set_hex_input.set(color.get());
+                                            }
                                         }
-                                    }
-                                />
-                            </div>
+                                    />
+                                </div>
 
-                            // Quick pick swatches
-                            <div class="grid grid-cols-10 gap-1.5">
-                                {QUICK_COLOR_SWATCHES.into_iter().map(|swatch| {
-                                    let swatch_hex = swatch.to_string();
-                                    let is_active = {
-                                        let swatch_hex = swatch_hex.clone();
-                                        Memo::new(move |_| color.get() == swatch_hex)
-                                    };
-                                    view! {
-                                        <button
-                                            type="button"
-                                            class=move || {
-                                                if is_active.get() {
-                                                    "aspect-square rounded-lg border transition-all duration-150 hover:scale-110 border-white/30 edge-glow-accent"
-                                                } else {
-                                                    "aspect-square rounded-lg border transition-all duration-150 hover:scale-110 border-edge-subtle"
-                                                }
-                                            }
-                                            style=format!("background: {swatch_hex}")
-                                            on:click={
-                                                let control_name = control_name.clone();
-                                                let swatch_hex = swatch_hex.clone();
-                                                move |_| {
-                                                    let normalized = normalize_hex(&swatch_hex).expect("hardcoded swatches are valid");
-                                                    set_color.set(normalized.clone());
-                                                    set_hex_input.set(normalized.clone());
-                                                    if let Some(rgba) = hex_to_rgba(&normalized) {
-                                                        on_change.run((control_name.clone(), json!(rgba)));
+                                // Quick pick swatches
+                                <div class="grid grid-cols-10 gap-1.5">
+                                    {QUICK_COLOR_SWATCHES.into_iter().map(|swatch| {
+                                        let swatch_hex = swatch.to_string();
+                                        let is_active = {
+                                            let swatch_hex = swatch_hex.clone();
+                                            Memo::new(move |_| color.get() == swatch_hex)
+                                        };
+                                        view! {
+                                            <button
+                                                type="button"
+                                                class=move || {
+                                                    if is_active.get() {
+                                                        "aspect-square rounded-lg border transition-all duration-150 hover:scale-110 border-white/30 edge-glow-accent"
+                                                    } else {
+                                                        "aspect-square rounded-lg border transition-all duration-150 hover:scale-110 border-edge-subtle"
                                                     }
                                                 }
-                                            }
-                                        />
-                                    }
-                                }).collect_view()}
+                                                style=format!("background: {swatch_hex}")
+                                                on:click={
+                                                    let swatch_hex = swatch_hex.clone();
+                                                    move |_| {
+                                                        let normalized = normalize_hex(&swatch_hex).expect("hardcoded swatches are valid");
+                                                        set_color.set(normalized.clone());
+                                                        set_hex_input.set(normalized.clone());
+                                                        if let Some(rgba) = hex_to_rgba(&normalized) {
+                                                            on_change.run((control_name.get_value(), json!(rgba)));
+                                                        }
+                                                    }
+                                                }
+                                            />
+                                        }
+                                    }).collect_view()}
+                                </div>
                             </div>
-                        </div>
+                        </Portal>
                     </Show>
                 </div>
             }.into_any()
