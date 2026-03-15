@@ -38,14 +38,18 @@ vec3 hueShift(vec3 color, float shift) {
 
 float lineGrid(float value, float width) {
     float g = abs(fract(value) - 0.5);
-    float aa = fwidth(value) * 0.7;
-    return 1.0 - smoothstep(width, width + aa, g);
+    float aa = fwidth(value) * 1.0;
+    float core = 1.0 - smoothstep(width, width + aa, g);
+    float halo = (1.0 - smoothstep(width * 0.2, width * 3.5 + aa, g)) * 0.28;
+    return core + halo;
 }
 
 float diamondMask(vec2 p, float radius) {
     float d = abs(p.x) + abs(p.y);
     float aa = fwidth(d) * 1.4;
-    return 1.0 - smoothstep(radius, radius + aa, d);
+    float core = 1.0 - smoothstep(radius, radius + aa, d);
+    float halo = (1.0 - smoothstep(radius * 0.3, radius * 2.8 + aa, d)) * 0.22;
+    return core + halo;
 }
 
 vec3 paletteColor(int id, int slot) {
@@ -107,16 +111,18 @@ vec4 sceneRollerGrid(vec2 p, float t, float density) {
     float floorY = max(0.0, horizon - p.y);
     float depth = 1.0 / (0.09 + floorY);
 
+    float fog = smoothstep(0.0, 2.8, floorY) * 0.16;
+
     float laneScale = mix(3.0, 8.5, density);
-    float lane = lineGrid(p.x * depth * laneScale, 0.055);
-    float cross = lineGrid((depth + t * 1.3) * (0.75 + density * 2.6), 0.050);
-    float primary = max(lane, cross) * floorMask * smoothstep(0.0, 0.85, floorY);
+    float lane = lineGrid(p.x * depth * laneScale, 0.075);
+    float cross = lineGrid((depth + t * 1.3) * (0.75 + density * 2.6), 0.068);
+    float primary = max(lane, cross) * floorMask * smoothstep(0.0, 0.85, floorY) + fog * floorMask;
 
-    float side = lineGrid((p.x * depth + sin(depth * 1.7 + t * 1.8) * 0.35) * (1.1 + density * 3.8), 0.030);
-    float accent = side * floorMask * (0.35 + 0.65 * smoothstep(0.02, 0.55, floorY));
+    float side = lineGrid((p.x * depth + sin(depth * 1.7 + t * 1.8) * 0.35) * (1.1 + density * 3.8), 0.045);
+    float accent = side * floorMask * (0.40 + 0.60 * smoothstep(0.02, 0.55, floorY));
 
-    float horizonStripe = 1.0 - smoothstep(0.0, 0.012, abs(p.y - horizon));
-    float arches = lineGrid(length(vec2(p.x, max(0.0, p.y - horizon) * 1.25)) * (2.8 + density * 6.0) - t * 0.35, 0.046)
+    float horizonStripe = 1.0 - smoothstep(0.0, 0.020, abs(p.y - horizon));
+    float arches = lineGrid(length(vec2(p.x, max(0.0, p.y - horizon) * 1.25)) * (2.8 + density * 6.0) - t * 0.35, 0.060)
         * step(horizon, p.y);
 
     vec2 tile = vec2(
@@ -124,12 +130,12 @@ vec4 sceneRollerGrid(vec2 p, float t, float density) {
         (p.y - horizon) * (3.4 + density * 5.6) + t * 0.25
     );
     vec2 gv = fract(tile) - 0.5;
-    float skyDiamond = diamondMask(gv, 0.19) * (1.0 - smoothstep(0.42, 0.95, p.y - horizon));
+    float skyDiamond = diamondMask(gv, 0.22) * (1.0 - smoothstep(0.42, 0.95, p.y - horizon));
 
-    float highlight = max(horizonStripe * 1.2, arches * 0.9) + skyDiamond * 0.55;
-    float fill = step(horizon, p.y) * (0.18 + 0.22 * lineGrid((p.y - horizon) * (2.5 + density * 4.0), 0.16));
+    float highlight = max(horizonStripe * 1.4, arches * 1.0) + skyDiamond * 0.6;
+    float fill = step(horizon, p.y) * (0.22 + 0.26 * lineGrid((p.y - horizon) * (2.5 + density * 4.0), 0.20));
 
-    return vec4(primary, accent + skyDiamond * 0.3, highlight, fill);
+    return vec4(primary, accent + skyDiamond * 0.35, highlight, fill);
 }
 
 vec4 sceneArcadeCarpet(vec2 p, float t, float density) {
@@ -139,20 +145,22 @@ vec4 sceneArcadeCarpet(vec2 p, float t, float density) {
     vec2 gv = fract(q) - 0.5;
 
     float checker = mod(id.x + id.y, 2.0);
-    float diamondRing = smoothstep(0.34, 0.31, abs(gv.x) + abs(gv.y)) - smoothstep(0.20, 0.17, abs(gv.x) + abs(gv.y));
-    float boxRing = smoothstep(0.46, 0.43, max(abs(gv.x), abs(gv.y))) - smoothstep(0.28, 0.25, max(abs(gv.x), abs(gv.y)));
-    float cross = max(1.0 - smoothstep(0.04, 0.05, abs(gv.x)), 1.0 - smoothstep(0.04, 0.05, abs(gv.y)));
+    float diamondRing = smoothstep(0.36, 0.32, abs(gv.x) + abs(gv.y)) - smoothstep(0.18, 0.14, abs(gv.x) + abs(gv.y));
+    float boxRing = smoothstep(0.48, 0.44, max(abs(gv.x), abs(gv.y))) - smoothstep(0.26, 0.22, max(abs(gv.x), abs(gv.y)));
+    float cross = max(1.0 - smoothstep(0.055, 0.065, abs(gv.x)), 1.0 - smoothstep(0.055, 0.065, abs(gv.y)));
 
     mat2 rot = mat2(0.70710678, -0.70710678, 0.70710678, 0.70710678);
     vec2 rg = rot * gv;
-    float stripeA = lineGrid(rg.x * (4.8 + density * 6.4) + t * 0.45, 0.10);
-    float stripeB = lineGrid(rg.y * (4.8 + density * 6.4) - t * 0.45, 0.10);
+    float stripeA = lineGrid(rg.x * (4.8 + density * 6.4) + t * 0.45, 0.13);
+    float stripeB = lineGrid(rg.y * (4.8 + density * 6.4) - t * 0.45, 0.13);
 
-    float sparkle = diamondMask(gv + vec2(0.0, sin((id.x + id.y) * 0.8 + t) * 0.12), 0.08);
+    float sparkle = diamondMask(gv + vec2(0.0, sin((id.x + id.y) * 0.8 + t) * 0.12), 0.11);
 
-    float primary = mix(diamondRing, boxRing, checker);
-    float accent = cross * (0.6 + 0.4 * (1.0 - checker)) + (stripeA * stripeB) * 0.35;
-    float highlight = max(stripeA, stripeB) * 0.35 + sparkle * 0.7;
+    float ambient = 0.08 + checker * 0.06;
+
+    float primary = mix(diamondRing, boxRing, checker) + ambient;
+    float accent = cross * (0.6 + 0.4 * (1.0 - checker)) + (stripeA * stripeB) * 0.40;
+    float highlight = max(stripeA, stripeB) * 0.40 + sparkle * 0.75;
 
     return vec4(primary, accent, highlight, checker);
 }
@@ -163,22 +171,24 @@ vec4 sceneLaserLanes(vec2 p, float t, float density) {
     float floorY = max(0.0, horizon - p.y);
     float depth = 1.0 / (0.10 + floorY);
 
-    float laneWarp = sin(depth * 1.6 + t * 0.8) * 0.28;
-    float lanesA = lineGrid((p.x * depth + laneWarp) * (1.4 + density * 5.2), 0.040);
-    float lanesB = lineGrid((p.x * depth * 0.72 - t * 0.9) * (1.0 + density * 3.6), 0.036);
-    float zBeats = lineGrid((depth + t * 1.4) * (0.6 + density * 2.4), 0.050);
+    float fog = smoothstep(0.0, 2.5, floorY) * 0.14;
 
-    float primary = max(lanesA, zBeats) * floorMask;
-    float accent = max(lanesB, (1.0 - smoothstep(0.0, 0.02, abs(p.x))) * zBeats) * floorMask * 0.95;
+    float laneWarp = sin(depth * 1.6 + t * 0.8) * 0.28;
+    float lanesA = lineGrid((p.x * depth + laneWarp) * (1.4 + density * 5.2), 0.058);
+    float lanesB = lineGrid((p.x * depth * 0.72 - t * 0.9) * (1.0 + density * 3.6), 0.050);
+    float zBeats = lineGrid((depth + t * 1.4) * (0.6 + density * 2.4), 0.068);
+
+    float primary = max(lanesA, zBeats) * floorMask + fog * floorMask;
+    float accent = max(lanesB, (1.0 - smoothstep(0.0, 0.025, abs(p.x))) * zBeats) * floorMask * 0.95;
 
     float skyMask = step(horizon, p.y);
-    float skyBands = lineGrid((p.y - horizon) * (6.0 + density * 9.0) + t * 0.75, 0.070);
-    float skyColumns = lineGrid((p.x + sin((p.y - horizon) * 7.0 + t) * 0.15) * (2.0 + density * 3.4), 0.046);
-    float arch = lineGrid(length(vec2(p.x, max(0.0, p.y - horizon) * 1.05)) * (3.0 + density * 5.2) - t * 0.32, 0.042)
+    float skyBands = lineGrid((p.y - horizon) * (6.0 + density * 9.0) + t * 0.75, 0.090);
+    float skyColumns = lineGrid((p.x + sin((p.y - horizon) * 7.0 + t) * 0.15) * (2.0 + density * 3.4), 0.060);
+    float arch = lineGrid(length(vec2(p.x, max(0.0, p.y - horizon) * 1.05)) * (3.0 + density * 5.2) - t * 0.32, 0.058)
         * skyMask;
 
-    float highlight = max(arch, skyBands * 0.45 + skyColumns * 0.5);
-    float fill = skyMask * (0.15 + 0.35 * skyBands);
+    float highlight = max(arch, skyBands * 0.50 + skyColumns * 0.55);
+    float fill = skyMask * (0.18 + 0.40 * skyBands);
 
     return vec4(primary, accent, highlight, fill);
 }
@@ -215,18 +225,22 @@ void main() {
     float accentMask = clamp(scene.y, 0.0, 1.2);
     float highlightMask = clamp(scene.z, 0.0, 1.4);
 
-    color += primary * primaryMask * (0.58 + glow * 0.84);
-    color += accent * accentMask * (0.56 + glow * 0.88);
-    color += highlight * highlightMask * (0.58 + glow * 0.96);
+    color += primary * primaryMask * (0.65 + glow * 0.85);
+    color += accent * accentMask * (0.62 + glow * 0.90);
+    color += highlight * highlightMask * (0.64 + glow * 0.98);
 
     float bloom = (
-        primaryMask * primaryMask * 0.55 +
-        accentMask * accentMask * 0.60 +
-        highlightMask * highlightMask * 0.80
+        primaryMask * primaryMask * 0.50 +
+        accentMask * accentMask * 0.55 +
+        highlightMask * highlightMask * 0.72
     ) * glow;
-    color += highlight * bloom * 0.34;
+    vec3 bloomColor = mix(highlight, (primary + accent + highlight) / 3.0, 0.35);
+    color += bloomColor * bloom * 0.42;
 
-    float scan = 0.92 + 0.08 * step(0.5, fract(gl_FragCoord.y * 0.5));
+    float vignette = 1.0 - dot(uv - 0.5, uv - 0.5) * 0.8;
+    color *= vignette;
+
+    float scan = 0.94 + 0.06 * step(0.5, fract(gl_FragCoord.y * 0.5));
     color *= scan;
 
     fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);

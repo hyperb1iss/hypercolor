@@ -19,7 +19,7 @@ export default effect(
     },
     {
         description:
-            'Molten demoscene plasma churns in low-frequency waves — saturated color fields drift and collide in fluid perpetual motion',
+            'Layered demoscene plasma warps through interference fields — depth-separated sine waves drift, spiral, and collide with dark contrast valleys carving structure through saturated color',
         presets: [
             {
                 controls: {

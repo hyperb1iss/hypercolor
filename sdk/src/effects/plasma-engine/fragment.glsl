@@ -16,21 +16,55 @@ uniform float iBloom;
 uniform float iSpread;
 uniform float iDensity;
 
-vec3 plasmaPalette(float t, vec3 c1, vec3 c2, vec3 c3) {
-    vec3 color = mix(c1, c2, smoothstep(0.04, 0.52, t));
-    color = mix(color, c3, smoothstep(0.48, 0.96, t));
+// IQ cosine palette — phase-separated channels never converge to white
+vec3 cosPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
+    return clamp(a + b * cos(6.283185 * (c * t + d)), 0.0, 1.0);
+}
+
+// Smooth cyclic interpolation for custom user colors
+vec3 cyclicPalette(float t, vec3 c1, vec3 c2, vec3 c3) {
+    float t3 = fract(t) * 3.0;
+    vec3 color = mix(c1, c2, smoothstep(0.0, 1.0, t3));
+    color = mix(color, c3, smoothstep(1.0, 2.0, t3));
+    color = mix(color, c1, smoothstep(2.0, 3.0, t3));
     return color;
 }
 
 vec3 themedPalette(float t) {
-    if (iTheme == 6) return plasmaPalette(t, vec3(0.14, 0.92, 0.64), vec3(0.10, 0.86, 0.86), vec3(0.42, 0.20, 0.98));
-    if (iTheme == 3) return plasmaPalette(t, vec3(0.10, 0.88, 0.84), vec3(0.98, 0.22, 0.76), vec3(0.40, 0.18, 0.96));
-    if (iTheme == 4) return plasmaPalette(t, vec3(0.94, 0.22, 0.08), vec3(1.00, 0.52, 0.08), vec3(0.92, 0.32, 0.62));
-    if (iTheme == 1) return plasmaPalette(t, vec3(0.14, 0.94, 0.54), vec3(0.20, 0.78, 1.00), vec3(0.56, 0.26, 0.98));
-    if (iTheme == 0) return plasmaPalette(t, vec3(1.00, 0.28, 0.70), vec3(0.18, 0.74, 1.00), vec3(1.00, 0.56, 0.12));
-    if (iTheme == 7) return plasmaPalette(t, vec3(0.18, 0.94, 0.74), vec3(0.10, 0.92, 0.84), vec3(1.00, 0.40, 0.32));
-    if (iTheme == 5) return plasmaPalette(t, vec3(0.14, 0.90, 0.92), vec3(0.16, 0.48, 1.00), vec3(0.06, 0.14, 0.54));
-    return plasmaPalette(t, iColor1, iColor2, iColor3);
+    // Arcade: neon pink / electric blue / hot orange
+    if (iTheme == 0) return cosPalette(t,
+        vec3(0.45, 0.28, 0.38), vec3(0.55, 0.52, 0.58),
+        vec3(1.0, 1.0, 1.0), vec3(0.00, 0.38, 0.68));
+    // Aurora: emerald / sky blue / deep violet
+    if (iTheme == 1) return cosPalette(t,
+        vec3(0.28, 0.48, 0.48), vec3(0.42, 0.52, 0.52),
+        vec3(1.0, 1.0, 1.0), vec3(0.58, 0.18, 0.42));
+    // Custom: cyclic through user's 3 colors
+    if (iTheme == 2) return cyclicPalette(t, iColor1, iColor2, iColor3);
+    // Cyberpunk: hot magenta / electric cyan / deep purple
+    if (iTheme == 3) return cosPalette(t,
+        vec3(0.48, 0.28, 0.52), vec3(0.52, 0.48, 0.48),
+        vec3(1.0, 1.0, 1.0), vec3(0.82, 0.18, 0.52));
+    // Inferno: crimson / orange / deep magenta
+    if (iTheme == 4) return cosPalette(t,
+        vec3(0.52, 0.25, 0.18), vec3(0.48, 0.35, 0.42),
+        vec3(1.0, 0.8, 0.6), vec3(0.00, 0.12, 0.32));
+    // Oceanic: teal / blue / dark navy
+    if (iTheme == 5) return cosPalette(t,
+        vec3(0.12, 0.38, 0.52), vec3(0.18, 0.42, 0.48),
+        vec3(1.0, 1.0, 0.8), vec3(0.58, 0.38, 0.18));
+    // Poison: toxic green / jade / electric violet
+    if (iTheme == 6) return cosPalette(t,
+        vec3(0.22, 0.48, 0.35), vec3(0.38, 0.52, 0.55),
+        vec3(1.0, 1.0, 1.0), vec3(0.65, 0.12, 0.48));
+    // Tropical: amber / emerald / coral
+    if (iTheme == 7) return cosPalette(t,
+        vec3(0.48, 0.45, 0.28), vec3(0.52, 0.45, 0.42),
+        vec3(1.0, 1.0, 0.8), vec3(0.00, 0.28, 0.58));
+    // Fallback: classic rainbow
+    return cosPalette(t,
+        vec3(0.50, 0.50, 0.50), vec3(0.50, 0.50, 0.50),
+        vec3(1.0, 1.0, 1.0), vec3(0.00, 0.33, 0.67));
 }
 
 void main() {
@@ -39,45 +73,69 @@ void main() {
     float glow = clamp(iBloom * 0.01, 0.0, 1.0);
     float spread = clamp(iSpread * 0.01, 0.0, 1.0);
     float density = clamp(iDensity * 0.01, 0.10, 1.0);
-    float time = iTime * (0.18 + speed * 0.22);
+    float time = iTime * (0.20 + speed * 0.25);
 
     vec2 p = uv * 2.0 - 1.0;
     p.x *= iResolution.x / iResolution.y;
 
-    vec2 q = p * mix(1.6, 4.2, density);
-    vec2 drift = vec2(
-        sin(p.y * 1.9 + time * 0.61) + cos(p.y * 0.7 - time * 0.29),
-        cos(p.x * 1.7 - time * 0.57) + sin(p.x * 0.9 + time * 0.23)
+    // === DOMAIN WARP: two-pass feedback for organic flow ===
+    vec2 warp1 = vec2(
+        sin(p.y * 2.1 + time * 0.37) + cos(p.y * 0.8 - time * 0.23),
+        cos(p.x * 1.9 - time * 0.31) + sin(p.x * 1.1 + time * 0.19)
     );
-    q += drift * (0.08 + spread * 0.22);
+    vec2 warp2 = vec2(
+        sin((p.y + warp1.y * 0.12) * 3.4 - time * 0.53),
+        cos((p.x + warp1.x * 0.12) * 2.8 + time * 0.41)
+    );
+    float warpAmt = 0.15 + spread * 0.55;
+    vec2 q = p * mix(1.8, 5.0, density) + (warp1 * 0.7 + warp2 * 0.3) * warpAmt;
 
-    float plasma = 0.0;
-    plasma += sin(q.x + time * 0.81);
-    plasma += sin(q.y - time * 0.63);
-    plasma += sin((q.x + q.y) * 0.75 + time * 0.41);
-    plasma += sin(length(q - vec2(
-        cos(time * 0.11) * 2.0,
-        sin(time * 0.19) * 1.5
-    )) * 1.4 + time * 0.37);
-    plasma += sin(length(q + vec2(
-        sin(time * 0.17) * 1.8,
-        cos(time * 0.13) * 1.6
-    )) * 1.9 - time * 0.49);
-    plasma = plasma / 5.0;
-    plasma = 0.5 + 0.5 * plasma;
+    // === LAYER 1: Background swell — slow, large-scale structure ===
+    float bg = sin(q.x * 0.6 + time * 0.19)
+             + sin(q.y * 0.5 - time * 0.15)
+             + sin((q.x - q.y) * 0.4 + time * 0.11);
 
-    float paletteShift = time * (0.015 + speed * 0.010);
-    vec3 palette = themedPalette(fract(plasma + paletteShift));
-    float body = smoothstep(0.08, 0.92, plasma);
-    float highlight = pow(body, mix(2.4, 1.4, glow));
+    // === LAYER 2: Midground — radial + diagonal interference ===
+    vec2 c1 = vec2(cos(time * 0.11) * 2.2, sin(time * 0.19) * 1.7);
+    float mid = sin(length(q - c1) * 1.3 + time * 0.41)
+              + sin((q.x + q.y) * 0.85 + time * 0.33)
+              + sin(q.x * 1.3 - q.y * 0.7 + time * 0.47);
 
-    vec3 color = mix(iBackgroundColor * 0.92, palette, 0.24 + body * 0.76);
-    color *= 0.62 + body * 0.48;
-    color += palette * highlight * (0.03 + glow * 0.09);
+    // === LAYER 3: Foreground — fast shimmer with spiral arms ===
+    vec2 c2 = vec2(sin(time * 0.23) * 1.6, cos(time * 0.29) * 1.9);
+    float fg = sin(length(q + c2) * 2.1 - time * 0.61)
+             + sin((q.x * 1.7 + q.y * 1.3) + time * 0.79);
+    // Spiral term: rotational bands from orbiting center
+    float angle = atan(q.y - c1.y, q.x - c1.x);
+    fg += sin(angle * 3.0 + length(q - c1) * 1.2 + time * 0.53) * 0.7;
 
-    float vignette = smoothstep(1.42, 0.18, length(p));
-    color *= 0.84 + 0.16 * vignette;
+    // === COMBINE with depth-weighted layering ===
+    float plasma = bg * 0.45 + mid * 0.35 + fg * 0.20;
 
+    // === MULTIPLICATIVE CONTRAST: dark band zero-crossings ===
+    float band = cos(q.x * 0.65 - q.y * 0.85 + time * 0.13);
+    plasma *= 0.55 + 0.45 * band;
+
+    // === SIN WRAP normalization — reveals interference structure ===
+    plasma = 0.5 + 0.5 * sin(plasma * (1.5 + density * 1.0));
+
+    // === PALETTE with cycling ===
+    float shift = time * (0.02 + speed * 0.015);
+    vec3 color = themedPalette(fract(plasma + shift));
+
+    // === GLOW on peaks ===
+    float peak = smoothstep(0.6, 0.95, plasma);
+    color += color * peak * glow * 0.3;
+
+    // === BACKGROUND in dark valleys only ===
+    float dark = smoothstep(0.25, 0.0, plasma);
+    color = mix(color, iBackgroundColor * 0.5, dark * 0.35);
+
+    // === VIGNETTE ===
+    float vig = smoothstep(1.5, 0.2, length(p));
+    color *= 0.82 + 0.18 * vig;
+
+    // === GAMMA for LED output ===
     color = pow(clamp(color, 0.0, 1.0), vec3(0.94));
 
     fragColor = vec4(color, 1.0);
