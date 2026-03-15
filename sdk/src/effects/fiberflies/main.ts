@@ -33,7 +33,7 @@ interface SceneTuning {
     twinkle: number
 }
 
-const COLOR_MODES = ['Ember', 'Mint Orchid', 'Rainbow', 'Random', 'SilkCircuit', 'Single', 'Twilight']
+const COLOR_MODES = ['Custom', 'Ember', 'Mint Orchid', 'Rainbow', 'Random', 'SilkCircuit', 'Twilight']
 
 const TAU = Math.PI * 2
 
@@ -172,13 +172,14 @@ function spawnFirefly(w: number, h: number): Firefly {
     const y = Math.random() * h
     const angle = Math.random() * TAU
     const speed = 0.08 + Math.random() * 0.36
+    const life = 90 + Math.random() * 160
 
     return {
         driftBias: 0.76 + Math.random() * 0.52,
         hueOffset: Math.random() * 2 - 1,
-        life: 60 + Math.random() * 120,
+        life,
         lightOffset: Math.random() * 2 - 1,
-        maxLife: 60 + Math.random() * 120,
+        maxLife: life,
         phase: Math.random() * TAU,
         satOffset: Math.random() * 2 - 1,
         sizeJitter: 0.78 + Math.random() * 0.48,
@@ -198,19 +199,19 @@ export default canvas.stateful(
     'Fiberflies',
     {
         scene: combo('Scene', ['Calm', 'Pulse', 'Swarm'], { default: 'Swarm', group: 'Scene' }),
-        colorMode: combo('Color Mode', COLOR_MODES, { group: 'Color' }),
-        baseColor: color('Base Color', '#84ff5e', { group: 'Color' }),
-        bgColor: color('Background', '#14071f', { group: 'Color' }),
+        colorMode: combo('Color Mode', COLOR_MODES, { default: 'Custom', group: 'Color' }),
+        baseColor: color('Base Color', '#39ff14', { group: 'Color' }),
+        bgColor: color('Background', '#1a0a2e', { group: 'Color' }),
         speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
         wander: num('Wander', [0, 100], 42, { group: 'Motion' }),
-        count: num('Count', [8, 80], 30, { group: 'Particles' }),
-        size: num('Size', [1, 8], 2, { group: 'Particles' }),
-        glow: num('Glow', [0, 100], 56, { group: 'Particles' }),
+        count: num('Count', [8, 80], 25, { group: 'Particles' }),
+        size: num('Size', [1, 8], 5, { group: 'Particles' }),
+        glow: num('Glow', [0, 100], 25, { group: 'Particles' }),
     },
     () => {
         const fireflies: Firefly[] = []
-        let cachedBaseColor = '#84ff5e'
-        let cachedBaseHsl: HSL = { h: 106, l: 0.68, s: 1 }
+        let cachedBaseColor = '#39ff14'
+        let cachedBaseHsl: HSL = { h: 111, l: 0.54, s: 1 }
         let lastTime = -1
 
         function updateBaseColorCache(color: string): void {
@@ -276,7 +277,7 @@ export default canvas.stateful(
             wanderMix: number,
             sceneName: string,
         ): void {
-            const speedScale = (0.3 + speed * 0.075) * scene.speed
+            const speedScale = (0.15 + speed * 0.14) * scene.speed
             const driftScale = (0.08 + wanderMix * 0.36) * scene.drift * firefly.driftBias
 
             const breezeX =
@@ -291,7 +292,7 @@ export default canvas.stateful(
 
             firefly.x += (firefly.vx * speedScale + breezeX + swarmNudge) * dt * 5.4
             firefly.y += (firefly.vy * speedScale + breezeY - pulseLift) * dt * 5.4
-            firefly.life -= dt * (0.62 + speed * 0.13)
+            firefly.life -= dt * (0.7 + speed * 0.05)
 
             const outOfBounds = firefly.x < -18 || firefly.x > w + 18 || firefly.y < -18 || firefly.y > h + 18
 
@@ -398,8 +399,24 @@ export default canvas.stateful(
             {
                 controls: {
                     baseColor: '#39ff14',
+                    bgColor: '#1a0a2e',
+                    colorMode: 'Custom',
+                    count: 25,
+                    glow: 30,
+                    scene: 'Calm',
+                    size: 5,
+                    speed: 3,
+                    wander: 50,
+                },
+                description:
+                    'Classic fireflies in a summer meadow at dusk — neon green sparks drifting through warm violet darkness',
+                name: 'Firefly Glen',
+            },
+            {
+                controls: {
+                    baseColor: '#39ff14',
                     bgColor: '#060d08',
-                    colorMode: 'Single',
+                    colorMode: 'Custom',
                     count: 22,
                     glow: 88,
                     scene: 'Calm',
@@ -409,109 +426,45 @@ export default canvas.stateful(
                 },
                 description:
                     'Bioluminescent spores drifting through a humid glass conservatory at 2am — slow, verdant, hypnotic',
-                name: "Witch's Greenhouse",
+                name: "Witch's Garden",
             },
             {
                 controls: {
-                    baseColor: '#ff2d6b',
-                    bgColor: '#0a0412',
-                    colorMode: 'SilkCircuit',
-                    count: 72,
-                    glow: 42,
-                    scene: 'Swarm',
-                    size: 3,
-                    speed: 9,
-                    wander: 90,
+                    baseColor: '#ff2d95',
+                    bgColor: '#120a22',
+                    colorMode: 'Custom',
+                    count: 20,
+                    glow: 45,
+                    scene: 'Pulse',
+                    size: 5,
+                    speed: 3,
+                    wander: 40,
                 },
                 description:
-                    'Neon confetti sparks whipping through a fairground after dark — chaotic, electric, and slightly feral',
-                name: 'Midnight Carnival',
+                    'Hot magenta blooms pulse in deep indigo shadow — neon flowers opening and closing in slow rhythm',
+                name: 'Neon Bloom',
             },
             {
                 controls: {
                     baseColor: '#ffb347',
-                    bgColor: '#14071f',
-                    colorMode: 'Ember',
-                    count: 40,
-                    glow: 72,
-                    scene: 'Pulse',
-                    size: 5,
-                    speed: 3,
+                    bgColor: '#1a0812',
+                    colorMode: 'Custom',
+                    count: 18,
+                    glow: 55,
+                    scene: 'Calm',
+                    size: 4,
+                    speed: 2,
                     wander: 55,
                 },
                 description:
-                    'A dying summer field at dusk — amber pulses fade in and out like the last warm breath of the season',
-                name: 'Firefly Requiem',
-            },
-            {
-                controls: {
-                    baseColor: '#00d4ff',
-                    bgColor: '#020408',
-                    colorMode: 'Twilight',
-                    count: 14,
-                    glow: 100,
-                    scene: 'Calm',
-                    size: 7,
-                    speed: 1,
-                    wander: 30,
-                },
-                description:
-                    'Abyssal creatures luring prey with cold alien light — sparse, eerie, impossibly deep blue-black void',
-                name: 'Deep Sea Angler',
-            },
-            {
-                controls: {
-                    baseColor: '#e135ff',
-                    bgColor: '#0d0018',
-                    colorMode: 'Rainbow',
-                    count: 80,
-                    glow: 34,
-                    scene: 'Swarm',
-                    size: 2,
-                    speed: 10,
-                    wander: 100,
-                },
-                description:
-                    'Fifty trapped lightning bugs on MDMA bouncing off the glass walls of a mason jar at a house party',
-                name: 'Rave in a Jar',
-            },
-            {
-                controls: {
-                    baseColor: '#ff6ac1',
-                    bgColor: '#0b0015',
-                    colorMode: 'Mint Orchid',
-                    count: 18,
-                    glow: 95,
-                    scene: 'Pulse',
-                    size: 8,
-                    speed: 2,
-                    wander: 20,
-                },
-                description:
-                    'Jellyfish the size of cathedral windows pulse through an alien ocean trench — vast, luminous, and silent',
-                name: 'Abyssal Cathedral',
-            },
-            {
-                controls: {
-                    baseColor: '#f1fa8c',
-                    bgColor: '#110e02',
-                    colorMode: 'Random',
-                    count: 55,
-                    glow: 50,
-                    scene: 'Swarm',
-                    size: 3,
-                    speed: 7,
-                    wander: 65,
-                },
-                description:
-                    'A thousand paper wish-lanterns scatter across a monsoon sky — gold sparks tumbling in every wild direction',
-                name: 'Monsoon Wishes',
+                    'A dying summer field at dusk — amber sparks fade in and out like the last warm breath of the season',
+                name: 'Amber Drift',
             },
             {
                 controls: {
                     baseColor: '#80ffea',
-                    bgColor: '#020a0d',
-                    colorMode: 'Twilight',
+                    bgColor: '#081214',
+                    colorMode: 'Custom',
                     count: 10,
                     glow: 78,
                     scene: 'Calm',
@@ -520,8 +473,56 @@ export default canvas.stateful(
                     wander: 45,
                 },
                 description:
-                    'Ancient spirits materialize as orbs of twilight above a frozen lake — each one drifts with glacial intention',
+                    'Ancient spirits materialize as orbs of ice above a frozen lake — each one drifts with glacial intention',
                 name: 'Ghost Lake',
+            },
+            {
+                controls: {
+                    baseColor: '#50fa7b',
+                    bgColor: '#0a140d',
+                    colorMode: 'Custom',
+                    count: 45,
+                    glow: 28,
+                    scene: 'Swarm',
+                    size: 3,
+                    speed: 7,
+                    wander: 70,
+                },
+                description:
+                    'A dense cloud of electric fireflies surging through dark forest undergrowth — alive, wild, luminous',
+                name: 'Electric Swarm',
+            },
+            {
+                controls: {
+                    baseColor: '#00d4ff',
+                    bgColor: '#040810',
+                    colorMode: 'Custom',
+                    count: 12,
+                    glow: 92,
+                    scene: 'Calm',
+                    size: 7,
+                    speed: 1,
+                    wander: 25,
+                },
+                description:
+                    'Bioluminescent creatures luring prey in the hadal zone — sparse, eerie, impossibly deep blue-black void',
+                name: 'Deep Abyss',
+            },
+            {
+                controls: {
+                    baseColor: '#e135ff',
+                    bgColor: '#0d0a1f',
+                    colorMode: 'SilkCircuit',
+                    count: 22,
+                    glow: 60,
+                    scene: 'Pulse',
+                    size: 5,
+                    speed: 3,
+                    wander: 35,
+                },
+                description:
+                    'Purple and cyan spirits dance through twilight — a garden where neon meets the occult',
+                name: 'Violet Hour',
             },
         ],
     },
