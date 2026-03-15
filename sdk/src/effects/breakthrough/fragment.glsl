@@ -124,14 +124,26 @@ void main() {
     if (peak > 1.0) color /= peak;
 
     if (iStyle == 0) {
-        float line = step(0.98, fract(gl_FragCoord.y * 0.03 + sin(time) * 0.1));
-        color.rb += line * 0.2;
-    } else if (iStyle == 2) {
-        float scan = 0.7 + 0.3 * sin(gl_FragCoord.y * 0.6 + time * 10.0);
-        color *= vec3(0.8, 1.0, 1.1) * scan;
+        // Glitch — radial corruption bands with channel rotation per depth ring
+        float sweep = sin(radius * 16.0 - time * 4.5);
+        float band = smoothstep(0.5, 0.9, sweep);
+        float rotation = mod(floor(radius * 8.0 + time * 2.0), 3.0);
+        vec3 shifted = rotation < 1.0 ? color.gbr : rotation < 2.0 ? color.brg : color.rgb;
+        color = mix(color, shifted * 1.1, band);
+        float edge = smoothstep(0.8, 0.95, sweep) - smoothstep(0.95, 1.0, sweep);
+        color += edge * 0.2;
     } else if (iStyle == 1) {
+        // Grain — crystalline texture, heavy at segment edges
         float grain = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
-        color += (grain - 0.5) * 0.06;
+        float segEdge = 1.0 - abs(sin(twistedAngle * segments * 0.5));
+        float depthFade = smoothstep(0.0, 0.8, radius);
+        float grainStrength = 0.04 + 0.10 * pow(segEdge, 3.0) + 0.04 * depthFade;
+        color += (grain - 0.5) * grainStrength;
+    } else if (iStyle == 2) {
+        // Holo — prismatic diffraction following tunnel geometry
+        float holo = twistedAngle * 2.0 + radius * 5.0 + time * 2.5;
+        vec3 prism = 0.5 + 0.5 * cos(holo + vec3(0.0, 2.094, 4.189));
+        color += color * prism * 0.25;
     }
 
     float aberration = BASE_ABERRATION * 0.003;
