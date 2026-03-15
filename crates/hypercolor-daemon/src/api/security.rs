@@ -25,6 +25,7 @@ const RATE_WINDOW: Duration = Duration::from_secs(60);
 const READ_LIMIT_PER_MIN: u32 = 120;
 const WRITE_LIMIT_PER_MIN: u32 = 60;
 const DISCOVERY_LIMIT_PER_MIN: u32 = 2;
+const PAIRING_LIMIT_PER_MIN: u32 = 6;
 
 const HEADER_RATE_LIMIT_LIMIT: HeaderName = HeaderName::from_static("x-ratelimit-limit");
 const HEADER_RATE_LIMIT_REMAINING: HeaderName = HeaderName::from_static("x-ratelimit-remaining");
@@ -105,6 +106,7 @@ enum OperationClass {
     Read,
     Write,
     Discovery,
+    Pairing,
 }
 
 struct RateLimiter {
@@ -117,6 +119,7 @@ struct ClientWindow {
     window_start: Instant,
     read_count: u32,
     write_count: u32,
+    pairing_count: u32,
 }
 
 struct RateDecision {
@@ -170,12 +173,14 @@ impl RateLimiter {
                 window_start: now,
                 read_count: 0,
                 write_count: 0,
+                pairing_count: 0,
             });
 
         if window.window_start.elapsed() >= RATE_WINDOW {
             window.window_start = now;
             window.read_count = 0;
             window.write_count = 0;
+            window.pairing_count = 0;
         }
 
         let (count_ref, limit) = match class {
@@ -183,6 +188,7 @@ impl RateLimiter {
             OperationClass::Write | OperationClass::Discovery => {
                 (&mut window.write_count, WRITE_LIMIT_PER_MIN)
             }
+            OperationClass::Pairing => (&mut window.pairing_count, PAIRING_LIMIT_PER_MIN),
         };
 
         let retry_after = remaining_window_secs(window.window_start, now);
@@ -314,6 +320,8 @@ fn tier_satisfies(granted: AccessTier, required: AccessTier) -> bool {
 fn classify_operation(method: &Method, path: &str) -> OperationClass {
     if *method == Method::POST && path == "/api/v1/devices/discover" {
         OperationClass::Discovery
+    } else if is_pairing_path(path) && matches!(*method, Method::POST | Method::DELETE) {
+        OperationClass::Pairing
     } else if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         OperationClass::Read
     } else {
@@ -321,11 +329,41 @@ fn classify_operation(method: &Method, path: &str) -> OperationClass {
     }
 }
 
+fn is_pairing_path(path: &str) -> bool {
+    if matches!(
+        path,
+        "/api/v1/devices/pair/hue" | "/api/v1/devices/pair/nanoleaf"
+    ) {
+        return true;
+    }
+
+    let mut segments = path.trim_matches('/').split('/');
+    matches!(
+        (
+            segments.next(),
+            segments.next(),
+            segments.next(),
+            segments.next(),
+            segments.next(),
+            segments.next(),
+        ),
+        (
+            Some("api"),
+            Some("v1"),
+            Some("devices"),
+            Some(_),
+            Some("pair"),
+            None,
+        )
+    )
+}
+
 fn rate_limit_message(class: OperationClass, retry_after: u64) -> String {
     let scope = match class {
         OperationClass::Read => "Read operation",
         OperationClass::Write => "Write operation",
         OperationClass::Discovery => "Discovery operation",
+        OperationClass::Pairing => "Pairing operation",
     };
     format!("{scope} rate limit exceeded. Retry in {retry_after} seconds.")
 }
@@ -447,6 +485,18 @@ mod tests {
             .route(
                 "/api/v1/devices/discover",
                 post(|| async { StatusCode::ACCEPTED }),
+            )
+            .route(
+                "/api/v1/devices/device-1/pair",
+                post(|| async { StatusCode::OK }).delete(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route(
+                "/api/v1/devices/pair/hue",
+                post(|| async { StatusCode::OK }),
+            )
+            .route(
+                "/api/v1/devices/pair/nanoleaf",
+                post(|| async { StatusCode::OK }),
             )
             .layer(axum::middleware::from_fn_with_state(
                 state,
@@ -636,6 +686,87 @@ mod tests {
         assert_eq!(json["error"]["code"], "rate_limited");
     }
 
+    #[tokio::test]
+    async fn pairing_rate_limit_is_scoped_per_client() {
+        let app = secured_test_router();
+
+        for _ in 0..super::PAIRING_LIMIT_PER_MIN {
+            let response = app
+                .clone()
+                .oneshot(
+                    with_bearer(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/api/v1/devices/device-1/pair")
+                            .header("x-forwarded-for", "10.0.0.10"),
+                        CONTROL_KEY,
+                    )
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+                )
+                .await
+                .expect("pairing request failed");
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let limited = app
+            .oneshot(
+                with_bearer(
+                    Request::builder()
+                        .method("DELETE")
+                        .uri("/api/v1/devices/device-1/pair")
+                        .header("x-forwarded-for", "10.0.0.10"),
+                    CONTROL_KEY,
+                )
+                .body(Body::empty())
+                .expect("failed to build request"),
+            )
+            .await
+            .expect("limited pairing request failed");
+
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(limited.headers()["x-ratelimit-limit"], "6");
+        assert_eq!(limited.headers()["x-ratelimit-remaining"], "0");
+    }
+
+    #[tokio::test]
+    async fn legacy_pairing_routes_share_pairing_bucket() {
+        let app = secured_test_router();
+
+        let hue = app
+            .clone()
+            .oneshot(
+                with_bearer(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/devices/pair/hue"),
+                    CONTROL_KEY,
+                )
+                .body(Body::empty())
+                .expect("failed to build hue request"),
+            )
+            .await
+            .expect("hue request failed");
+        let nanoleaf = app
+            .oneshot(
+                with_bearer(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/devices/pair/nanoleaf"),
+                    CONTROL_KEY,
+                )
+                .body(Body::empty())
+                .expect("failed to build nanoleaf request"),
+            )
+            .await
+            .expect("nanoleaf request failed");
+
+        assert_eq!(hue.status(), StatusCode::OK);
+        assert_eq!(nanoleaf.status(), StatusCode::OK);
+        assert_eq!(nanoleaf.headers()["x-ratelimit-limit"], "6");
+        assert_eq!(nanoleaf.headers()["x-ratelimit-remaining"], "4");
+    }
+
     #[test]
     fn rate_limiter_evicts_stale_clients() {
         let mut limiter = super::RateLimiter::new();
@@ -647,6 +778,7 @@ mod tests {
                     .expect("duration should be representable"),
                 read_count: 1,
                 write_count: 0,
+                pairing_count: 0,
             },
         );
 
@@ -662,6 +794,18 @@ mod tests {
         assert_eq!(
             super::classify_operation(&Method::POST, "/api/v1/bulk"),
             super::OperationClass::Write
+        );
+    }
+
+    #[test]
+    fn generic_pair_route_is_classified_as_pairing() {
+        assert_eq!(
+            super::classify_operation(&Method::POST, "/api/v1/devices/abc123/pair"),
+            super::OperationClass::Pairing
+        );
+        assert_eq!(
+            super::classify_operation(&Method::DELETE, "/api/v1/devices/abc123/pair"),
+            super::OperationClass::Pairing
         );
     }
 }

@@ -513,6 +513,10 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(devices::identify_device),
         )
         .route(
+            "/devices/{id}/pair",
+            axum::routing::post(devices::pair_device).delete(devices::delete_pairing),
+        )
+        .route(
             "/logical-devices",
             axum::routing::get(devices::list_logical_devices),
         )

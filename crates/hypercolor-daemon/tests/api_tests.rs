@@ -742,6 +742,98 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
     id
 }
 
+#[cfg(feature = "hue")]
+async fn insert_test_hue_bridge_device(
+    state: &Arc<AppState>,
+    name: &str,
+    bridge_id: &str,
+    ip: &str,
+    api_port: u16,
+) -> DeviceId {
+    let id = DeviceId::new();
+    let info = DeviceInfo {
+        id,
+        name: name.to_owned(),
+        vendor: "Philips Hue".to_owned(),
+        family: DeviceFamily::Hue,
+        model: Some("Bridge".to_owned()),
+        connection_type: ConnectionType::Network,
+        zones: vec![ZoneInfo {
+            name: "Bridge".to_owned(),
+            led_count: 1,
+            topology: DeviceTopologyHint::Point,
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: Some("1.0.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 1,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+    let fingerprint = DeviceFingerprint(format!("hue:{bridge_id}"));
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("backend_id".to_owned(), "hue".to_owned());
+    metadata.insert("bridge_id".to_owned(), bridge_id.to_owned());
+    metadata.insert("ip".to_owned(), ip.to_owned());
+    metadata.insert("api_port".to_owned(), api_port.to_string());
+    state
+        .device_registry
+        .add_with_fingerprint_and_metadata(info, fingerprint, metadata)
+        .await
+}
+
+#[cfg(feature = "nanoleaf")]
+async fn insert_test_nanoleaf_device(
+    state: &Arc<AppState>,
+    name: &str,
+    device_key: &str,
+    ip: &str,
+    api_port: u16,
+) -> DeviceId {
+    let id = DeviceId::new();
+    let info = DeviceInfo {
+        id,
+        name: name.to_owned(),
+        vendor: "Nanoleaf".to_owned(),
+        family: DeviceFamily::Nanoleaf,
+        model: Some("Shapes".to_owned()),
+        connection_type: ConnectionType::Network,
+        zones: vec![ZoneInfo {
+            name: "Panel".to_owned(),
+            led_count: 12,
+            topology: DeviceTopologyHint::Matrix { rows: 3, cols: 4 },
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: Some("12.0.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 12,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+    let fingerprint = DeviceFingerprint(format!("nanoleaf:{device_key}"));
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("backend_id".to_owned(), "nanoleaf".to_owned());
+    metadata.insert("device_key".to_owned(), device_key.to_owned());
+    metadata.insert("ip".to_owned(), ip.to_owned());
+    metadata.insert("api_port".to_owned(), api_port.to_string());
+    state
+        .device_registry
+        .add_with_fingerprint_and_metadata(info, fingerprint, metadata)
+        .await
+}
+
 async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> DeviceId {
     let info = DeviceInfo {
         id: DeviceId::new(),
@@ -3507,6 +3599,68 @@ async fn list_devices_includes_network_metadata_when_available() {
     assert_eq!(json["data"]["items"][0]["network_hostname"], "wled-desk");
 }
 
+#[cfg(feature = "hue")]
+#[tokio::test]
+async fn list_devices_includes_hue_auth_summary_when_pairing_required() {
+    let state = Arc::new(isolated_state());
+    let _device_id =
+        insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "10.0.0.5", 80).await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/devices")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    let auth = &json["data"]["items"][0]["auth"];
+    assert_eq!(auth["state"], "required");
+    assert_eq!(auth["can_pair"], true);
+    assert_eq!(auth["descriptor"]["kind"], "physical_action");
+    assert_eq!(auth["descriptor"]["action_label"], "Pair Bridge");
+}
+
+#[cfg(feature = "hue")]
+#[tokio::test]
+async fn list_devices_includes_hue_auth_summary_when_configured() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let _device_id =
+        insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "10.0.0.5", 80).await;
+    state
+        .credential_store
+        .store(
+            "hue:test-bridge",
+            Credentials::HueBridge {
+                api_key: "api-key".to_owned(),
+                client_key: "client-key".to_owned(),
+            },
+        )
+        .await
+        .expect("store credentials");
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/devices")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["items"][0]["auth"]["state"], "configured");
+}
+
 #[tokio::test]
 async fn list_devices_rejects_invalid_status_filter() {
     let app = test_app();
@@ -4156,6 +4310,124 @@ async fn pair_hue_device_persists_credentials() {
     server_task.await.expect("Hue mock task should finish");
 }
 
+#[cfg(feature = "hue")]
+#[tokio::test]
+async fn pair_device_route_pairs_hue_by_device_id() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind Hue mock server");
+    let port = listener.local_addr().expect("local addr").port();
+    let device_id =
+        insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "127.0.0.1", port)
+            .await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let server_task = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let request = read_pairing_http_request(&mut stream)
+                .await
+                .expect("read HTTP request");
+            let response = if request.starts_with("POST /api HTTP/1.1") {
+                pairing_json_response(
+                    r#"[{"success":{"username":"test-api-key","clientkey":"00112233445566778899aabbccddeeff"}}]"#,
+                )
+            } else if request.starts_with("GET /api/config HTTP/1.1") {
+                pairing_json_response(
+                    r#"{"bridgeid":"test-bridge","name":"Studio Bridge","modelid":"BSB002","swversion":"1968096020"}"#,
+                )
+            } else {
+                pairing_not_found_response()
+            };
+            stream
+                .write_all(response.as_slice())
+                .await
+                .expect("write HTTP response");
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/devices/{device_id}/pair"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"activate_after_pair":true}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("execute request");
+    let status = response.status();
+    let json = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["status"], "paired");
+    assert_eq!(json["data"]["activated"], false);
+    assert_eq!(json["data"]["device"]["auth"]["state"], "configured");
+
+    assert_eq!(
+        state.credential_store.get("hue:test-bridge").await,
+        Some(Credentials::HueBridge {
+            api_key: "test-api-key".to_owned(),
+            client_key: "00112233445566778899aabbccddeeff".to_owned(),
+        })
+    );
+
+    server_task.await.expect("Hue mock task should finish");
+}
+
+#[cfg(feature = "hue")]
+#[tokio::test]
+async fn pair_device_route_returns_action_required_for_hue_without_button() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind Hue mock server");
+    let port = listener.local_addr().expect("local addr").port();
+    let device_id =
+        insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "127.0.0.1", port)
+            .await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let server_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept request");
+        let _request = read_pairing_http_request(&mut stream)
+            .await
+            .expect("read HTTP request");
+        stream
+            .write_all(
+                pairing_json_response(
+                    r#"[{"error":{"type":101,"description":"link button not pressed"}}]"#,
+                )
+                .as_slice(),
+            )
+            .await
+            .expect("write HTTP response");
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/devices/{device_id}/pair"))
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .expect("build request"),
+        )
+        .await
+        .expect("execute request");
+    let status = response.status();
+    let json = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["status"], "action_required");
+    assert_eq!(json["data"]["activated"], false);
+    assert_eq!(json["data"]["device"]["auth"]["state"], "required");
+
+    server_task.await.expect("Hue mock task should finish");
+}
+
 #[tokio::test]
 async fn pair_nanoleaf_device_persists_credentials() {
     let (state, _tempdir) = isolated_state_with_tempdir();
@@ -4220,6 +4492,172 @@ async fn pair_nanoleaf_device_persists_credentials() {
     );
 
     server_task.await.expect("Nanoleaf mock task should finish");
+}
+
+#[cfg(feature = "nanoleaf")]
+#[tokio::test]
+async fn pair_device_route_pairs_nanoleaf_by_device_id() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind Nanoleaf mock server");
+    let port = listener.local_addr().expect("local addr").port();
+    let device_id =
+        insert_test_nanoleaf_device(&state, "Living Room Shapes", "serial42", "127.0.0.1", port)
+            .await;
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let server_task = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let request = read_pairing_http_request(&mut stream)
+                .await
+                .expect("read HTTP request");
+            let response = if request.starts_with("POST /api/v1/new HTTP/1.1") {
+                pairing_json_response(r#"{"auth_token":"nanoleaf-token"}"#)
+            } else if request.starts_with("GET /api/v1/nanoleaf-token HTTP/1.1") {
+                pairing_json_response(
+                    r#"{"name":"Living Room Shapes","model":"Shapes","serialNo":"SERIAL42","firmwareVersion":"12.0.0"}"#,
+                )
+            } else {
+                pairing_not_found_response()
+            };
+            stream
+                .write_all(response.as_slice())
+                .await
+                .expect("write HTTP response");
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/devices/{device_id}/pair"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"activate_after_pair":true}"#))
+                .expect("build request"),
+        )
+        .await
+        .expect("execute request");
+    let status = response.status();
+    let json = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["status"], "paired");
+    assert_eq!(json["data"]["activated"], false);
+    assert_eq!(json["data"]["device"]["auth"]["state"], "configured");
+
+    assert_eq!(
+        state.credential_store.get("nanoleaf:serial42").await,
+        Some(Credentials::Nanoleaf {
+            auth_token: "nanoleaf-token".to_owned(),
+        })
+    );
+
+    server_task.await.expect("Nanoleaf mock task should finish");
+}
+
+#[cfg(feature = "hue")]
+#[tokio::test]
+async fn delete_pairing_removes_hue_credentials() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let device_id =
+        insert_test_hue_bridge_device(&state, "Studio Bridge", "test-bridge", "10.0.0.5", 80).await;
+    state
+        .credential_store
+        .store(
+            "hue:test-bridge",
+            Credentials::HueBridge {
+                api_key: "api-key".to_owned(),
+                client_key: "client-key".to_owned(),
+            },
+        )
+        .await
+        .expect("store Hue credentials");
+    state
+        .credential_store
+        .store(
+            "hue:ip:10.0.0.5",
+            Credentials::HueBridge {
+                api_key: "api-key".to_owned(),
+                client_key: "client-key".to_owned(),
+            },
+        )
+        .await
+        .expect("store Hue IP credentials");
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/devices/{device_id}/pair"))
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("execute request");
+    let status = response.status();
+    let json = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["status"], "unpaired");
+    assert_eq!(json["data"]["device"]["auth"]["state"], "required");
+    assert_eq!(state.credential_store.get("hue:test-bridge").await, None);
+    assert_eq!(state.credential_store.get("hue:ip:10.0.0.5").await, None);
+}
+
+#[cfg(feature = "nanoleaf")]
+#[tokio::test]
+async fn delete_pairing_removes_nanoleaf_credentials() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let device_id =
+        insert_test_nanoleaf_device(&state, "Living Room Shapes", "serial42", "10.0.0.8", 16021)
+            .await;
+    state
+        .credential_store
+        .store(
+            "nanoleaf:serial42",
+            Credentials::Nanoleaf {
+                auth_token: "auth-token".to_owned(),
+            },
+        )
+        .await
+        .expect("store Nanoleaf credentials");
+    state
+        .credential_store
+        .store(
+            "nanoleaf:ip:10.0.0.8",
+            Credentials::Nanoleaf {
+                auth_token: "auth-token".to_owned(),
+            },
+        )
+        .await
+        .expect("store Nanoleaf IP credentials");
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/devices/{device_id}/pair"))
+                .body(Body::empty())
+                .expect("build request"),
+        )
+        .await
+        .expect("execute request");
+    let status = response.status();
+    let json = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["status"], "unpaired");
+    assert_eq!(json["data"]["device"]["auth"]["state"], "required");
+    assert_eq!(state.credential_store.get("nanoleaf:serial42").await, None);
+    assert_eq!(
+        state.credential_store.get("nanoleaf:ip:10.0.0.8").await,
+        None
+    );
 }
 
 fn pairing_json_response(body: &str) -> Vec<u8> {

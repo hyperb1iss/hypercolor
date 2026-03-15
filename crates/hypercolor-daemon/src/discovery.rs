@@ -21,8 +21,8 @@ use hypercolor_core::device::{
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
-    DeviceError, DeviceFamily, DeviceFingerprint, DeviceId, DeviceInfo, DeviceTopologyHint,
-    DeviceUserSettings,
+    DeviceError, DeviceFamily, DeviceFingerprint, DeviceId, DeviceInfo, DeviceState,
+    DeviceTopologyHint, DeviceUserSettings,
 };
 use hypercolor_types::event::{DeviceRef, DisconnectReason, HypercolorEvent, ZoneRef};
 use hypercolor_types::spatial::{
@@ -1084,6 +1084,137 @@ pub async fn apply_user_enabled_state(
     }
 
     Ok(UserEnabledStateResult::Applied)
+}
+
+/// Attempt to activate a paired device immediately without waiting for the
+/// next discovery-driven lifecycle reconciliation pass.
+pub async fn activate_pairable_device(
+    runtime: &DiscoveryRuntime,
+    device_id: DeviceId,
+    backend_id: &str,
+) -> anyhow::Result<bool> {
+    let Some(tracked) = runtime.device_registry.get(&device_id).await else {
+        return Ok(false);
+    };
+    if !tracked.user_settings.enabled || tracked.state == DeviceState::Disabled {
+        return Ok(false);
+    }
+    if tracked.state.is_renderable() {
+        return Ok(true);
+    }
+
+    let fingerprint = runtime.device_registry.fingerprint_for_id(&device_id).await;
+    let layout_device_id = {
+        let mut lifecycle = runtime.lifecycle_manager.lock().await;
+        if let Some(layout_device_id) = lifecycle.layout_device_id_for(device_id) {
+            layout_device_id.to_owned()
+        } else {
+            let _ = lifecycle.on_discovered_with_behavior(
+                device_id,
+                &tracked.info,
+                backend_id,
+                fingerprint.as_ref(),
+                DiscoveryConnectBehavior::Deferred,
+            );
+            lifecycle.layout_device_id_for(device_id).map_or_else(
+                || {
+                    DeviceLifecycleManager::canonical_layout_device_id(
+                        backend_id,
+                        &tracked.info,
+                        fingerprint.as_ref(),
+                    )
+                },
+                ToOwned::to_owned,
+            )
+        }
+    };
+
+    ensure_default_logical_for_device(
+        runtime,
+        device_id,
+        &layout_device_id,
+        &tracked.info.name,
+        tracked.info.total_led_count(),
+    )
+    .await;
+
+    if !active_layout_targets_enabled_device(runtime, device_id, &layout_device_id).await {
+        return Ok(false);
+    }
+
+    connect_backend_device(runtime, backend_id, device_id, &layout_device_id).await?;
+
+    if let Err(error) = refresh_connected_device_info(runtime, backend_id, device_id).await {
+        let device_label = device_log_label(runtime, device_id).await;
+        warn!(
+            device = %device_label,
+            device_id = %device_id,
+            backend_id = %backend_id,
+            error = %error,
+            error_chain = %format_error_chain(&error),
+            "failed to refresh device metadata after pairing activation"
+        );
+    }
+
+    let follow_up = {
+        let mut lifecycle = runtime.lifecycle_manager.lock().await;
+        lifecycle.on_connected(device_id)
+    };
+    let actions = match follow_up {
+        Ok(actions) => actions,
+        Err(DeviceError::InvalidTransition { .. }) => Vec::new(),
+        Err(DeviceError::NotFound { .. }) => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+
+    if !actions.is_empty() {
+        execute_lifecycle_actions(runtime.clone(), actions).await;
+    }
+    sync_logical_mappings_for_device(runtime, device_id, backend_id, &layout_device_id).await;
+    sync_registry_state(runtime, device_id).await;
+
+    let activated_only = HashSet::from([device_id]);
+    sync_active_layout_for_renderable_devices(runtime, Some(&activated_only)).await;
+    publish_device_connected(runtime, backend_id, device_id).await;
+    Ok(true)
+}
+
+/// Disconnect a known tracked device outside the standard discovery flow.
+pub async fn disconnect_tracked_device(
+    runtime: &DiscoveryRuntime,
+    device_id: DeviceId,
+    reason: DisconnectReason,
+    will_retry: bool,
+) -> anyhow::Result<bool> {
+    let was_renderable = runtime
+        .device_registry
+        .get(&device_id)
+        .await
+        .is_some_and(|tracked| tracked.state.is_renderable());
+
+    let actions = {
+        let mut lifecycle = runtime.lifecycle_manager.lock().await;
+        lifecycle.on_device_vanished(device_id)
+    };
+    if actions.is_empty() {
+        return Ok(false);
+    }
+
+    execute_lifecycle_actions(runtime.clone(), actions).await;
+    sync_registry_state(runtime, device_id).await;
+    sync_active_layout_for_renderable_devices(runtime, None).await;
+
+    if was_renderable {
+        runtime
+            .event_bus
+            .publish(HypercolorEvent::DeviceDisconnected {
+                device_id: device_id.to_string(),
+                reason,
+                will_retry,
+            });
+    }
+
+    Ok(was_renderable)
 }
 
 /// Clear and disconnect every renderable device during daemon shutdown.
