@@ -8,6 +8,7 @@ uniform vec2 iResolution;
 
 uniform vec3 iLeftColor;
 uniform vec3 iRightColor;
+uniform vec3 iBgColor;
 uniform float iSpeed;
 uniform float iTurbulence;
 uniform float iFlow;
@@ -25,7 +26,8 @@ float hash21(vec2 p) {
 float vnoise(vec2 p) {
     vec2 i = floor(p);
     vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
+    // Quintic interpolation — sharper ridges than hermite
+    f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
     float a = hash21(i);
     float b = hash21(i + vec2(1.0, 0.0));
     float c = hash21(i + vec2(0.0, 1.0));
@@ -109,37 +111,47 @@ void main() {
     float wavesB = waveField(p, time, -flowDir, turb, flowSpeed * 0.85);
 
     // ── Convert wave amplitude to ripple brightness ──
-    // Wider bright window — troughs dim but not black, crests pop
-    float rippleA = smoothstep(-0.7, 0.6, wavesA);
-    float rippleB = smoothstep(-0.7, 0.6, wavesB);
+    // Tight window + power curve = sharp crests, true-black valleys
+    float rippleA = smoothstep(-0.15, 0.55, wavesA);
+    rippleA = rippleA * rippleA;  // square for LED-punchy falloff
+    float rippleB = smoothstep(-0.15, 0.55, wavesB);
+    rippleB = rippleB * rippleB;
 
     // ── Spatial boundary — which current dominates where ──
     float flowPos = dot(uv, flowDir);
     float boundaryWarp = (fbm(p * 2.0 + time * 0.15) - 0.5) * 0.25;
     float boundary = flowPos + boundaryWarp;
 
-    float blendWidth = 0.05 + blend * 0.4;
+    float blendWidth = 0.03 + blend * 0.25;
     float currentMix = smoothstep(0.5 - blendWidth, 0.5 + blendWidth, boundary);
 
-    // ── Color composition ──
-    // Base tint — dim glow of each color fills the space, never pure black
-    vec3 baseLeft = iLeftColor * 0.12;
-    vec3 baseRight = iRightColor * 0.12;
-    vec3 color = mix(baseLeft, baseRight, currentMix);
+    // ── Color composition — blend, never accumulate ──
+    // Wave intensity weighted by spatial dominance
+    float leftStrength = mix(1.0, 0.08, currentMix);
+    float rightStrength = mix(0.08, 1.0, currentMix);
 
-    // Each wave field is visible everywhere, but dominant on its side
-    // leftColor waves: full strength on left, 30% bleed on right
-    float leftStrength = mix(1.0, 0.3, currentMix);
-    color += iLeftColor * rippleA * leftStrength * 0.85;
+    float leftIntensity = rippleA * leftStrength;
+    float rightIntensity = rippleB * rightStrength;
+    float totalIntensity = leftIntensity + rightIntensity;
 
-    // rightColor waves: full strength on right, 30% bleed on left
-    float rightStrength = mix(0.3, 1.0, currentMix);
-    color += iRightColor * rippleB * rightStrength * 0.85;
+    // Hue selection — interpolate between the two wave colors by dominance
+    // When only one wave fires, it's pure. Both active → hue blend, not sum.
+    float hueBlend = (totalIntensity > 0.001)
+        ? rightIntensity / totalIntensity
+        : currentMix;
+    vec3 waveColor = mix(iLeftColor, iRightColor, hueBlend);
 
-    // ── Constructive interference — where both crests align ──
+    // How much wave vs background at this pixel
+    float wavePresence = clamp(totalIntensity, 0.0, 1.0);
+
+    // Compose: background → wave color (never additive, never exceeds input)
+    vec3 color = mix(iBgColor, waveColor, wavePresence);
+
+    // ── Constructive interference — screen blend for brightness boost ──
+    // Where both crests align, push brightness without exceeding 1.0
     float constructive = rippleA * rippleB;
-    vec3 accentColor = (iLeftColor + iRightColor) * 0.45;
-    color += accentColor * constructive * 0.35;
+    vec3 boost = waveColor * constructive * 0.3;
+    color = color + boost * (1.0 - color);  // screen blend
 
     // ── Subtle low-freq brightness variation ──
     float shift = 0.93 + 0.07 * sin(dot(p, flowDir) * 2.0 - time * 1.2);

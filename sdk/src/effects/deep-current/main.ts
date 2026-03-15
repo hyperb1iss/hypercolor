@@ -5,7 +5,8 @@ export default effect(
     'Deep Current',
     shader,
     {
-        blend: num('Collision Width', [0, 100], 35, { group: 'Color' }),
+        bgColor: color('Background', '#050510', { group: 'Color' }),
+        blend: num('Collision Width', [0, 100], 20, { group: 'Color' }),
         direction: combo('Flow Direction', ['Diagonal', 'Horizontal', 'Vertical'], { group: 'Scene' }),
         flow: num('Flow Strength', [0, 100], 65, { group: 'Motion' }),
         leftColor: color('Left Color', '#ff4fb4', { group: 'Color' }),
@@ -19,6 +20,7 @@ export default effect(
         presets: [
             {
                 controls: {
+                    bgColor: '#030318',
                     blend: 15,
                     direction: 'Vertical',
                     flow: 80,
@@ -33,6 +35,7 @@ export default effect(
             },
             {
                 controls: {
+                    bgColor: '#020210',
                     blend: 55,
                     direction: 'Diagonal',
                     flow: 45,
@@ -47,6 +50,7 @@ export default effect(
             },
             {
                 controls: {
+                    bgColor: '#0a0200',
                     blend: 10,
                     direction: 'Horizontal',
                     flow: 90,
@@ -61,6 +65,7 @@ export default effect(
             },
             {
                 controls: {
+                    bgColor: '#060a12',
                     blend: 70,
                     direction: 'Horizontal',
                     flow: 30,
@@ -75,6 +80,7 @@ export default effect(
             },
             {
                 controls: {
+                    bgColor: '#020a04',
                     blend: 40,
                     direction: 'Diagonal',
                     flow: 70,
@@ -89,6 +95,7 @@ export default effect(
             },
             {
                 controls: {
+                    bgColor: '#08001a',
                     blend: 25,
                     direction: 'Vertical',
                     flow: 75,
@@ -103,6 +110,7 @@ export default effect(
             },
             {
                 controls: {
+                    bgColor: '#0a0600',
                     blend: 80,
                     direction: 'Horizontal',
                     flow: 25,
@@ -117,6 +125,7 @@ export default effect(
             },
             {
                 controls: {
+                    bgColor: '#020002',
                     blend: 8,
                     direction: 'Diagonal',
                     flow: 85,
