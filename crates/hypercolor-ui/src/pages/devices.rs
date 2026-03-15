@@ -6,9 +6,11 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
+use crate::api::DeviceSummary;
 use crate::app::DevicesContext;
 use crate::components::device_card::DeviceCard;
 use crate::components::device_detail::DeviceDetail;
+use crate::components::device_pairing_modal::{DevicePairingModal, ForgetCredentialsModal};
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::toasts;
@@ -65,6 +67,7 @@ const BACKEND_CHIPS: &[(&str, &str)] = &[
     ("wled", "128, 255, 234"),
     ("corsair", "255, 153, 255"),
     ("hue", "255, 183, 77"),
+    ("nanoleaf", "100, 220, 160"),
 ];
 
 fn filter_chips(
@@ -199,6 +202,26 @@ pub fn DevicesPage() -> impl IntoView {
     });
 
     let (filter_dropdown_open, set_filter_dropdown_open) = signal(false);
+
+    // Pairing modal state — holds the device to show the pairing/forget modal for
+    let (pairing_device, set_pairing_device) = signal(Option::<DeviceSummary>::None);
+    let (forget_device, set_forget_device) = signal(Option::<DeviceSummary>::None);
+
+    let on_pair_device = Callback::new(move |device_id: String| {
+        if let Some(Ok(devices)) = ctx.devices_resource.get()
+            && let Some(dev) = devices.into_iter().find(|d| d.id == device_id)
+        {
+            set_pairing_device.set(Some(dev));
+        }
+    });
+
+    let on_forget_device = Callback::new(move |device_id: String| {
+        if let Some(Ok(devices)) = ctx.devices_resource.get()
+            && let Some(dev) = devices.into_iter().find(|d| d.id == device_id)
+        {
+            set_forget_device.set(Some(dev));
+        }
+    });
 
     let active_filter_count = Memo::new(move |_| {
         let mut count = 0usize;
@@ -361,7 +384,7 @@ pub fn DevicesPage() -> impl IntoView {
                                                     selected_device.get().as_deref() == Some(&dev_id)
                                                 });
                                                 view! {
-                                                    <DeviceCard device=dev is_selected=is_selected on_select=on_select_device index=i />
+                                                    <DeviceCard device=dev is_selected=is_selected on_select=on_select_device on_pair=on_pair_device index=i />
                                                 }
                                             }).collect_view()}
                                         </div>
@@ -379,12 +402,33 @@ pub fn DevicesPage() -> impl IntoView {
                                 class="shrink-0 overflow-y-auto pb-6 pr-6 scrollbar-none animate-slide-in-right"
                                 style=move || format!("width: {:.0}px", sidebar_width.get())
                             >
-                                <DeviceDetail device_id=device_id />
+                                <DeviceDetail device_id=device_id on_pair=on_pair_device on_forget=on_forget_device />
                             </aside>
                         }
                     })}
                 </div>
             </div>
+
+            // ── Pairing modal overlay ────────────────────────────────────
+            {move || pairing_device.get().map(|dev| {
+                view! {
+                    <DevicePairingModal
+                        device=dev
+                        on_close=Callback::new(move |()| set_pairing_device.set(None))
+                        on_paired=Callback::new(move |()| set_pairing_device.set(None))
+                    />
+                }
+            })}
+
+            // ── Forget credentials modal overlay ─────────────────────────
+            {move || forget_device.get().map(|dev| {
+                view! {
+                    <ForgetCredentialsModal
+                        device=dev
+                        on_close=Callback::new(move |()| set_forget_device.set(None))
+                    />
+                }
+            })}
         </div>
     }
 }

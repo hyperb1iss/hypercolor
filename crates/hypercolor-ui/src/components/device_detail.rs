@@ -5,19 +5,24 @@ use leptos_icons::Icon;
 use leptos_use::use_throttle_fn_with_arg;
 use wasm_bindgen::JsCast;
 
-use crate::api;
+use crate::api::{self, DeviceAuthState};
 use crate::app::DevicesContext;
 use crate::components::attachment_panel::WiringPanel;
 use crate::components::device_card::{
     backend_accent_rgb, classify_device, device_class_icon, device_class_label,
     save_category_override, topology_shape_svg, ALL_DEVICE_CLASSES,
 };
+use crate::components::device_pairing_modal::needs_pairing;
 use crate::icons::*;
 use crate::toasts;
 
 /// Device detail sidebar.
 #[component]
-pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
+pub fn DeviceDetail(
+    #[prop(into)] device_id: Signal<String>,
+    #[prop(into)] on_pair: Callback<String>,
+    #[prop(into)] on_forget: Callback<String>,
+) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
 
     let device = Memo::new(move |_| {
@@ -137,6 +142,13 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                     _ => "139, 133, 160",
                 };
                 let enabled = dev.status != "disabled";
+                let pairing_required = needs_pairing(&dev.auth);
+                let auth_state = dev.auth.as_ref().map(|a| a.state.clone());
+                let can_pair = dev.auth.as_ref().map(|a| a.can_pair).unwrap_or(false);
+                let dev_id_for_pair = dev.id.clone();
+                let dev_id_for_forget = dev.id.clone();
+                let descriptor = dev.auth.as_ref().and_then(|a| a.descriptor.clone());
+                let last_error = dev.auth.as_ref().and_then(|a| a.last_error.clone());
                 let dev_name_for_edit = dev.name.clone();
                 let push_brightness = push_brightness.clone();
                 let dev_for_category = dev.clone();
@@ -230,12 +242,112 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                 }
                             }
 
-                            <div class="flex items-center gap-3">
+                            // ── Pairing panel ────────────────────────────────
+                            {match auth_state.as_ref() {
+                                Some(DeviceAuthState::Required) if can_pair => {
+                                    let pair_id = dev_id_for_pair.clone();
+                                    let rgb_pair = rgb.clone();
+                                    let desc_title = descriptor.as_ref().map(|d| d.title.clone());
+                                    Some(view! {
+                                        <div class="mb-3 px-3 py-2.5 rounded-lg border"
+                                             style="background: rgba(255, 183, 77, 0.05); border-color: rgba(255, 183, 77, 0.12)">
+                                            <div class="flex items-center gap-2 mb-1.5">
+                                                <Icon icon=LuKeyRound width="12px" height="12px" style="color: rgba(255, 183, 77, 0.7)" />
+                                                <span class="text-[11px] font-medium" style="color: rgba(255, 183, 77, 0.8)">
+                                                    {desc_title.unwrap_or_else(|| "Pairing required".to_string())}
+                                                </span>
+                                            </div>
+                                            <p class="text-[10px] text-fg-tertiary/60 mb-2">
+                                                "This device requires pairing before it can be controlled."
+                                            </p>
+                                            <button
+                                                class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-medium transition-all btn-press"
+                                                style=format!(
+                                                    "background: rgba({rgb_pair}, 0.1); color: rgb({rgb_pair}); border: 1px solid rgba({rgb_pair}, 0.15)"
+                                                )
+                                                on:click=move |_| on_pair.run(pair_id.clone())
+                                            >
+                                                <Icon icon=LuZap width="10px" height="10px" />
+                                                "Start pairing"
+                                            </button>
+                                        </div>
+                                    }.into_any())
+                                }
+                                Some(DeviceAuthState::Error) => {
+                                    let pair_id = dev_id_for_pair.clone();
+                                    let forget_id = dev_id_for_forget.clone();
+                                    let rgb_pair = rgb.clone();
+                                    let err_msg = last_error.clone();
+                                    Some(view! {
+                                        <div class="mb-3 px-3 py-2.5 rounded-lg border"
+                                             style="background: rgba(255, 99, 99, 0.05); border-color: rgba(255, 99, 99, 0.12)">
+                                            <div class="flex items-center gap-2 mb-1">
+                                                <Icon icon=LuTriangleAlert width="12px" height="12px" style="color: rgba(255, 99, 99, 0.7)" />
+                                                <span class="text-[11px] font-medium" style="color: rgba(255, 99, 99, 0.8)">
+                                                    "Authentication error"
+                                                </span>
+                                            </div>
+                                            {err_msg.map(|msg| view! {
+                                                <p class="text-[10px] text-fg-tertiary/50 mb-2">{msg}</p>
+                                            })}
+                                            <div class="flex items-center gap-2">
+                                                {can_pair.then(|| {
+                                                    let pair_id = pair_id.clone();
+                                                    let rgb_pair = rgb_pair.clone();
+                                                    view! {
+                                                        <button
+                                                            class="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press"
+                                                            style=format!(
+                                                                "background: rgba({rgb_pair}, 0.1); color: rgb({rgb_pair}); border: 1px solid rgba({rgb_pair}, 0.15)"
+                                                            )
+                                                            on:click=move |_| on_pair.run(pair_id.clone())
+                                                        >
+                                                            <Icon icon=LuRefreshCw width="9px" height="9px" />
+                                                            "Repair"
+                                                        </button>
+                                                    }
+                                                })}
+                                                <button
+                                                    class="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press
+                                                           text-fg-tertiary/60 bg-surface-overlay/20 border border-edge-subtle hover:text-fg-tertiary"
+                                                    on:click=move |_| on_forget.run(forget_id.clone())
+                                                >
+                                                    <Icon icon=LuTrash2 width="9px" height="9px" />
+                                                    "Forget"
+                                                </button>
+                                            </div>
+                                        </div>
+                                    }.into_any())
+                                }
+                                Some(DeviceAuthState::Configured) => {
+                                    let forget_id = dev_id_for_forget.clone();
+                                    Some(view! {
+                                        <div class="mb-3 px-3 py-2 rounded-lg border flex items-center justify-between"
+                                             style="background: rgba(80, 250, 123, 0.03); border-color: rgba(80, 250, 123, 0.08)">
+                                            <div class="flex items-center gap-2">
+                                                <Icon icon=LuShieldCheck width="11px" height="11px" style="color: rgba(80, 250, 123, 0.5)" />
+                                                <span class="text-[10px] text-fg-tertiary/50">"Credentials configured"</span>
+                                            </div>
+                                            <button
+                                                class="text-[9px] font-medium text-fg-tertiary/30 hover:text-fg-tertiary/60 transition-colors"
+                                                on:click=move |_| on_forget.run(forget_id.clone())
+                                            >
+                                                "Forget"
+                                            </button>
+                                        </div>
+                                    }.into_any())
+                                }
+                                _ => None,
+                            }}
+
+                            // ── Brightness (gated when pairing required) ────────
+                            <div class=if pairing_required { "flex items-center gap-3 opacity-40 pointer-events-none" } else { "flex items-center gap-3" }>
                                 <Icon icon=LuSun width="12px" height="12px" style="color: rgba(139, 133, 160, 0.5)" />
                                 <input
                                     type="range" min="0" max="100" step="1"
                                     class="flex-1 h-1 rounded-full appearance-none cursor-pointer"
                                     style=format!("accent-color: rgb({rgb_for_slider})")
+                                    disabled=pairing_required
                                     prop:value=move || device_brightness.get().to_string()
                                     on:input=move |ev| {
                                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
@@ -272,8 +384,12 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                 }}
                                 {if enabled { "Disable" } else { "Enable" }}
                             </button>
+                            // Identify (gated when pairing required)
                             <button
                                 class="text-[10px] font-medium px-2 py-1 rounded-md transition-all btn-press flex items-center gap-1"
+                                class:opacity-40=pairing_required
+                                class:pointer-events-none=pairing_required
+                                disabled=pairing_required
                                 style=move || {
                                     let r = rgb_for_identify.clone();
                                     if identify_active.get() {

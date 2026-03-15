@@ -1,5 +1,7 @@
 //! Device-related API types and fetch functions.
 
+use std::collections::HashMap;
+
 use gloo_net::http::Request;
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +41,103 @@ pub enum ZoneTopologySummary {
     Custom,
 }
 
+// ── Pairing / Auth Types ────────────────────────────────────────────────────
+
+/// Device authentication state from the daemon.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceAuthState {
+    /// Device does not require credentials.
+    Open,
+    /// Device requires credentials and none are stored.
+    Required,
+    /// Credentials are stored and can be used for connect attempts.
+    Configured,
+    /// Credentials are stored but known to be invalid or stale.
+    Error,
+}
+
+/// The kind of pairing flow to present.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PairingFlowKind {
+    /// User must perform a physical action, then press the action button.
+    PhysicalAction,
+    /// UI must render input fields and submit entered credentials.
+    CredentialsForm,
+}
+
+/// Describes a single input field for credential-based pairing flows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PairingFieldDescriptor {
+    pub key: String,
+    pub label: String,
+    pub secret: bool,
+    pub optional: bool,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+}
+
+/// Backend-provided descriptor that tells the UI exactly how to render a pairing flow.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PairingDescriptor {
+    pub kind: PairingFlowKind,
+    pub title: String,
+    pub instructions: Vec<String>,
+    pub action_label: String,
+    #[serde(default)]
+    pub fields: Vec<PairingFieldDescriptor>,
+}
+
+/// Auth/pairing summary attached to each device.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeviceAuthSummary {
+    pub state: DeviceAuthState,
+    pub can_pair: bool,
+    #[serde(default)]
+    pub descriptor: Option<PairingDescriptor>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
+/// Generic pair request sent to `POST /api/v1/devices/:id/pair`.
+#[derive(Debug, Serialize)]
+pub struct PairDeviceRequest {
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub values: HashMap<String, String>,
+    pub activate_after_pair: bool,
+}
+
+/// Status returned by the generic pair endpoint.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PairDeviceStatus {
+    Paired,
+    ActionRequired,
+    AlreadyPaired,
+    InvalidInput,
+}
+
+/// Response from `POST /api/v1/devices/:id/pair`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PairDeviceResponse {
+    pub status: PairDeviceStatus,
+    pub message: String,
+    pub activated: bool,
+    #[serde(default)]
+    pub device: Option<DeviceSummary>,
+}
+
+/// Response from `DELETE /api/v1/devices/:id/pair`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeletePairingResponse {
+    pub status: String,
+    pub message: String,
+    pub disconnected: bool,
+    #[serde(default)]
+    pub device: Option<DeviceSummary>,
+}
+
 /// Device summary from `GET /api/v1/devices`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeviceSummary {
@@ -57,6 +156,8 @@ pub struct DeviceSummary {
     #[serde(default)]
     pub connection_label: Option<String>,
     pub total_leds: usize,
+    #[serde(default)]
+    pub auth: Option<DeviceAuthSummary>,
     #[serde(default)]
     pub zones: Vec<ZoneSummary>,
 }
@@ -453,6 +554,52 @@ pub async fn set_global_brightness(brightness: u8) -> Result<u8, String> {
         resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
 
     Ok(envelope.data.brightness)
+}
+
+// ── Pairing Functions ───────────────────────────────────────────────────────
+
+/// Pair a device using the generic pairing surface.
+pub async fn pair_device(id: &str, req: &PairDeviceRequest) -> Result<PairDeviceResponse, String> {
+    let url = format!("/api/v1/devices/{id}/pair");
+    let body = serde_json::to_string(req).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::post(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {text}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<PairDeviceResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Remove stored credentials for a device.
+pub async fn unpair_device(id: &str) -> Result<DeletePairingResponse, String> {
+    let url = format!("/api/v1/devices/{id}/pair");
+
+    let resp = Request::delete(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {text}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<DeletePairingResponse> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
 }
 
 /// Fetch the current global brightness.

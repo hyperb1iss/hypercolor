@@ -251,9 +251,11 @@ pub fn DeviceCard(
     device: DeviceSummary,
     #[prop(into)] is_selected: Signal<bool>,
     #[prop(into)] on_select: Callback<String>,
+    #[prop(into)] on_pair: Callback<String>,
     #[prop(default = 0)] index: usize,
 ) -> impl IntoView {
     let device_id = device.id.clone();
+    let device_id_for_pair = device.id.clone();
     let rgb = backend_accent_rgb(&device.backend).to_string();
     let status_rgb = status_dot_rgb(&device.status).to_string();
     let device_class = classify_device(&device);
@@ -272,6 +274,9 @@ pub fn DeviceCard(
     let status = status_label(&device.status);
     let is_active = device.status.to_lowercase() == "active";
     let is_disabled = device.status.to_lowercase() == "disabled";
+
+    // Pairing badge info
+    let auth_badge = crate::components::device_pairing_modal::auth_badge_info(&device.auth);
 
     // Zone topology previews — collect unique topology types with LED totals
     let zone_previews: Vec<(&'static str, usize)> = device
@@ -372,6 +377,28 @@ pub fn DeviceCard(
                         </div>
                     </div>
                 </div>
+
+                // ── Pairing badge ─────────────────────────────────────────
+                {auth_badge.map(|(label, badge_rgb)| {
+                    let pair_id = device_id_for_pair.clone();
+                    view! {
+                        <div class="flex items-center gap-1.5 mt-0.5">
+                            <button
+                                class="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium transition-all btn-press"
+                                style=format!(
+                                    "background: rgba({badge_rgb}, 0.1); color: rgb({badge_rgb}); border: 1px solid rgba({badge_rgb}, 0.15)"
+                                )
+                                on:click=move |ev: web_sys::MouseEvent| {
+                                    ev.stop_propagation();
+                                    on_pair.run(pair_id.clone());
+                                }
+                            >
+                                <Icon icon=LuKeyRound width="10px" height="10px" />
+                                {label}
+                            </button>
+                        </div>
+                    }
+                })}
 
                 // ── Row 2: Zone topology preview ──────────────────────────
                 {(zone_count > 0).then(|| {
