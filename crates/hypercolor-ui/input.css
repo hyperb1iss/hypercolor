@@ -694,6 +694,14 @@ input[type="range"].slider-silk::-moz-range-track {
                 inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
+/* Preview panel glow — ambient-reactive edge glow around the live canvas */
+.preview-glow {
+    box-shadow: 0 0 40px var(--ambient-glow),
+                0 0 2px var(--ambient-border),
+                inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    transition: box-shadow 2s var(--ease-silk);
+}
+
 /* Command palette / modal glow — cinematic ambient */
 .modal-glow {
     box-shadow: 0 0 80px rgba(225, 53, 255, 0.08),
