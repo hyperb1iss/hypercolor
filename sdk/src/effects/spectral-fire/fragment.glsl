@@ -20,6 +20,7 @@ uniform float iIntensity;
 uniform float iEmberAmount;
 uniform int iPalette;
 uniform int iScene;
+uniform int iBackground;
 
 float hash21(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -40,7 +41,7 @@ float saturate(float v) {
 float noise(vec2 x) {
     vec2 i = floor(x);
     vec2 f = fract(x);
-    f = f * f * (3.0 - 2.0 * f);
+    f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
 
     float a = hash21(i);
     float b = hash21(i + vec2(1.0, 0.0));
@@ -74,12 +75,24 @@ vec3 fireRamp(float t, vec3 c0, vec3 c1, vec3 c2, vec3 c3) {
 }
 
 vec3 paletteColor(float t, int id) {
-    if (id == 0) return fireRamp(t, vec3(0.02, 0.0, 0.0), vec3(0.70, 0.07, 0.0), vec3(1.0, 0.44, 0.05), vec3(0.86, 0.48, 0.14));
-    if (id == 1) return fireRamp(t, vec3(0.01, 0.0, 0.0), vec3(0.78, 0.16, 0.02), vec3(1.0, 0.62, 0.06), vec3(0.88, 0.54, 0.17));
-    if (id == 2) return fireRamp(t, vec3(0.03, 0.0, 0.05), vec3(0.58, 0.07, 0.72), vec3(0.17, 0.74, 1.0), vec3(0.58, 0.86, 0.98));
-    if (id == 3) return fireRamp(t, vec3(0.01, 0.01, 0.0), vec3(0.28, 0.24, 0.0), vec3(0.92, 0.54, 0.08), vec3(0.88, 0.34, 0.14));
-    if (id == 4) return fireRamp(t, vec3(0.01, 0.0, 0.0), vec3(0.52, 0.09, 0.05), vec3(0.88, 0.40, 0.22), vec3(0.72, 0.30, 0.26));
-    return fireRamp(t, vec3(0.02, 0.0, 0.0), vec3(0.70, 0.07, 0.0), vec3(1.0, 0.44, 0.05), vec3(1.0, 0.95, 0.75));
+    if (id == 0) return fireRamp(t, vec3(0.015, 0.0, 0.0), vec3(0.82, 0.12, 0.0), vec3(1.0, 0.58, 0.02), vec3(1.0, 0.92, 0.45));
+    if (id == 1) return fireRamp(t, vec3(0.02, 0.0, 0.0), vec3(0.92, 0.28, 0.0), vec3(1.0, 0.82, 0.28), vec3(0.82, 0.92, 1.0));
+    if (id == 2) return fireRamp(t, vec3(0.0, 0.02, 0.02), vec3(0.0, 0.48, 0.52), vec3(0.18, 0.82, 0.68), vec3(0.92, 0.68, 0.22));
+    if (id == 3) return fireRamp(t, vec3(0.01, 0.0, 0.04), vec3(0.32, 0.02, 0.72), vec3(0.85, 0.12, 0.68), vec3(1.0, 0.52, 0.42));
+    if (id == 4) return fireRamp(t, vec3(0.025, 0.0, 0.01), vec3(0.78, 0.0, 0.32), vec3(1.0, 0.22, 0.48), vec3(1.0, 0.72, 0.28));
+    if (id == 5) return fireRamp(t, vec3(0.0, 0.015, 0.005), vec3(0.04, 0.58, 0.12), vec3(0.32, 0.95, 0.28), vec3(0.78, 1.0, 0.52));
+    if (id == 6) return fireRamp(t, vec3(0.0, 0.0, 0.03), vec3(0.04, 0.08, 0.72), vec3(0.28, 0.22, 0.98), vec3(0.82, 0.42, 1.0));
+    if (id == 7) return fireRamp(t, vec3(0.015, 0.015, 0.0), vec3(0.48, 0.44, 0.0), vec3(0.95, 0.88, 0.08), vec3(0.52, 1.0, 0.58));
+    return fireRamp(t, vec3(0.015, 0.0, 0.0), vec3(0.82, 0.12, 0.0), vec3(1.0, 0.58, 0.02), vec3(1.0, 0.92, 0.45));
+}
+
+vec3 bgColor(int id) {
+    if (id == 1) return vec3(0.06, 0.05, 0.04);
+    if (id == 2) return vec3(0.02, 0.02, 0.08);
+    if (id == 3) return vec3(0.08, 0.01, 0.01);
+    if (id == 4) return vec3(0.01, 0.06, 0.02);
+    if (id == 5) return vec3(0.06, 0.03, 0.01);
+    return vec3(0.0);
 }
 
 void sceneTuning(int scene, out float heightBoost, out float turbulenceBoost, out float emberBoost, out float slenderness, out float flicker) {
@@ -110,25 +123,6 @@ void sceneTuning(int scene, out float heightBoost, out float turbulenceBoost, ou
     }
 }
 
-float tongueLayer(vec2 uv, float time, float seedOffset, float count, float baseHeight, float sway, float edge) {
-    float x = uv.x * count;
-    float cell = floor(x);
-    float local = fract(x) * 2.0 - 1.0;
-
-    float seed = hash21(vec2(cell, seedOffset));
-    float width = mix(0.26, 0.50, seed);
-    float wobble = sin(time * (1.4 + seed * 2.4) + cell * (1.0 + seed * 0.45));
-    float bend = (seed - 0.5) * 0.95 + wobble * sway;
-
-    float profile = 1.0 - abs(local + bend * pow(uv.y + 0.04, 0.9) * 0.95);
-    profile = smoothstep(width, width + edge, profile);
-
-    float flicker = 0.82 + 0.24 * sin(time * (2.7 + seed * 3.3) + seed * 17.0);
-    float reach = baseHeight * mix(0.62, 1.18, seed) * profile * flicker;
-
-    return smoothstep(0.0, edge, reach - uv.y);
-}
-
 void main() {
     vec2 uv = gl_FragCoord.xy / iResolution.xy;
     float aspect = iResolution.x / max(iResolution.y, 1.0);
@@ -141,11 +135,7 @@ void main() {
     float intensityCtrl = saturate(iIntensity / 100.0);
     float emberCtrl = saturate(iEmberAmount / 100.0);
 
-    float sceneHeight;
-    float sceneTurbulence;
-    float sceneEmber;
-    float sceneSlenderness;
-    float sceneFlicker;
+    float sceneHeight, sceneTurbulence, sceneEmber, sceneSlenderness, sceneFlicker;
     sceneTuning(iScene, sceneHeight, sceneTurbulence, sceneEmber, sceneSlenderness, sceneFlicker);
 
     vec3 audioBands = clamp(vec3(iAudioBass, iAudioMid, iAudioTreble), 0.0, 1.0);
@@ -161,75 +151,66 @@ void main() {
     float drive = 0.28 + 0.46 * audioPresence * audioDrive;
 
     float turbulence = clamp(turbulenceCtrl * sceneTurbulence, 0.0, 1.6);
+    float maxHeight = (0.38 + heightCtrl * 0.56 + drive * 0.16) * sceneHeight;
+    maxHeight = clamp(maxHeight, 0.28, 1.05);
 
+    // ─── Domain warping — stronger at base to break up horizontal mass ───
     vec2 fuv = uv;
     float flow = fbm(vec2((uv.x - 0.5) * aspect * (3.4 + turbulence * 4.8), uv.y * (2.6 + turbulence * 2.2) - time * (1.4 + 0.25 * sceneFlicker)));
-    float curl = fbm(vec2((uv.x - 0.5) * aspect * (8.0 + turbulence * 8.0) + time * 0.35, uv.y * 5.8 - time * (2.5 + turbulence)));
-    float ridged = ridge(fbm(vec2((uv.x - 0.5) * aspect * 6.5, uv.y * 8.0 - time * 3.2)));
-    float xWarp = ((flow - 0.5) * (0.18 + turbulence * 0.34) + (curl - 0.5) * (0.12 + turbulence * 0.22) + (ridged - 0.5) * 0.1) * (0.25 + uv.y * 0.85);
+    float curl = fbm(vec2((uv.x - 0.5) * aspect * (6.5 + turbulence * 6.5) + time * 0.35, uv.y * 5.0 - time * (2.2 + turbulence)));
+    float ridged = ridge(fbm(vec2((uv.x - 0.5) * aspect * 5.5, uv.y * 7.0 - time * 2.8)));
+    float xWarp = ((flow - 0.5) * (0.28 + turbulence * 0.48) + (curl - 0.5) * (0.18 + turbulence * 0.30) + (ridged - 0.5) * 0.14) * (0.50 + uv.y * 0.70);
     fuv.x += xWarp;
+    fuv.y += (flow - 0.5) * 0.05;
 
     float bassBand = (1.0 - smoothstep(0.22, 0.52, uv.x)) * bands.x;
     float midBand = (1.0 - abs(uv.x - 0.5) * 2.0) * bands.y;
     float trebleBand = smoothstep(0.48, 0.78, uv.x) * bands.z;
     float bandMix = saturate(bassBand + midBand + trebleBand) * (0.45 + 0.55 * audioPresence);
 
-    float maxHeight = (0.38 + heightCtrl * 0.56 + drive * 0.16) * sceneHeight;
-    maxHeight = clamp(maxHeight, 0.28, 1.05);
+    // ─── Fire height field ───
+    float xFreq = aspect * (3.5 * sceneSlenderness + turbulence * 1.5);
+    float heightN1 = fbm(vec2(fuv.x * xFreq, time * 0.35 * sceneFlicker));
+    float heightN2 = ridge(fbm(vec2(fuv.x * xFreq * 1.6 + time * 0.08, time * 0.5 * sceneFlicker + 3.0)));
+    float heightN3 = fbm(vec2(fuv.x * xFreq * 2.3, time * 0.7 * sceneFlicker + 7.0));
 
-    float layer1 = tongueLayer(
-        fuv,
-        time * sceneFlicker,
-        11.0 + bandMix * 5.0,
-        mix(4.5, 7.0, turbulence) * sceneSlenderness,
-        maxHeight * (0.74 + bandMix * 0.24),
-        0.24 + turbulence * 0.30,
-        0.07
-    );
+    float localHeight = maxHeight * (0.30 + heightN1 * 0.35 + heightN2 * 0.30 + heightN3 * 0.12);
+    localHeight += maxHeight * bandMix * 0.15;
 
-    float layer2 = tongueLayer(
-        fuv + vec2(0.07 * sin(time * 0.9), 0.0),
-        time * (1.25 + turbulence * 0.4),
-        23.0 + bandMix * 7.0,
-        mix(7.8, 11.8, turbulence) * sceneSlenderness,
-        maxHeight * (0.66 + bandMix * 0.30),
-        0.30 + turbulence * 0.36,
-        0.055
-    );
+    // ─── Fire body ───
+    float edgeSoftness = 0.12 + turbulence * 0.08;
+    float fireBody = smoothstep(localHeight + edgeSoftness * 0.3, localHeight - edgeSoftness, uv.y);
 
-    float layer3 = tongueLayer(
-        fuv + vec2(-0.05 * sin(time * 1.3 + 2.0), 0.0),
-        time * (1.8 + turbulence * 0.6),
-        37.0 + bandMix * 9.0,
-        mix(10.5, 15.0, turbulence) * sceneSlenderness,
-        maxHeight * (0.56 + bandMix * 0.24),
-        0.38 + turbulence * 0.40,
-        0.045
-    );
+    // ─── Internal texture — vertically biased for flame-like streaks ───
+    float flow1 = fbm(vec2(fuv.x * aspect * 3.5, uv.y * 6.0 - time * 1.8));
+    float flow2 = fbm(vec2(fuv.x * aspect * 5.5, uv.y * 9.0 - time * 2.6 + 5.0));
+    float flow3 = ridge(fbm(vec2(fuv.x * aspect * 5.0, uv.y * 10.0 - time * 3.2)));
+    float internal = flow1 * 0.48 + flow2 * 0.30 + flow3 * 0.22;
 
-    float flame = layer1 * 0.62 + layer2 * 0.50 + layer3 * 0.35;
-    float cap = 1.0 - smoothstep(maxHeight - 0.08, maxHeight + 0.08, uv.y);
-    flame *= cap;
+    // More contrast — lower floor so dark pockets read as structure, not flat mass
+    float flame = fireBody * (0.22 + internal * 0.78);
 
-    float breakup = ridge(fbm(vec2(fuv.x * 12.0 + time * 0.6, uv.y * 11.0 - time * 2.8)));
-    flame = max(flame - breakup * (0.08 + uv.y * 0.14) * (0.5 + turbulence * 0.9), 0.0);
+    // Breakup — stronger at base for more structure, gentler at tips
+    float breakup = ridge(fbm(vec2(fuv.x * 10.0 + time * 0.5, uv.y * 9.0 - time * 2.4)));
+    flame = max(flame - breakup * (0.07 + uv.y * 0.03) * (0.30 + turbulence * 0.50), 0.0);
 
-    float coreGradient = saturate((maxHeight - uv.y) / max(maxHeight, 0.001));
-    float core = smoothstep(0.2, 0.92, flame) * pow(coreGradient, 0.55);
-    float rim = smoothstep(0.05, 0.22, flame) - smoothstep(0.26, 0.65, flame);
-
-    float temperature = saturate(flame * (0.55 + core * 0.6) + layer3 * 0.18 + drive * 0.2 + bandMix * 0.22);
+    // ─── Coloring ───
+    float coreGradient = saturate((localHeight - uv.y) / max(localHeight, 0.001));
+    float core = smoothstep(0.25, 0.88, flame) * pow(coreGradient, 0.50);
+    float rim = smoothstep(0.06, 0.24, flame) - smoothstep(0.28, 0.62, flame);
+    float temperature = saturate(flame * (0.50 + core * 0.65) + drive * 0.2 + bandMix * 0.2);
 
     vec3 col = vec3(0.0);
-    vec3 flameColor = paletteColor(temperature, iPalette);
-    col += flameColor * flame * (0.62 + intensityCtrl * 1.18);
+    col += paletteColor(temperature, iPalette) * flame * (0.62 + intensityCtrl * 1.18);
     col += paletteColor(saturate(temperature + 0.2), iPalette) * core * (0.16 + intensityCtrl * 0.42);
     col += paletteColor(0.82, iPalette) * rim * (0.03 + intensityCtrl * 0.08);
 
+    // ─── Ember bed — uses emberCtrl ───
     float emberBedNoise = fbm(vec2(fuv.x * 7.0, time * 0.2));
-    float emberBed = smoothstep(0.22, 0.0, uv.y) * (0.25 + emberBedNoise * 0.75) * (0.28 + intensityCtrl * 0.5);
+    float emberBed = smoothstep(0.18, 0.0, uv.y) * (0.25 + emberBedNoise * 0.75) * (0.28 + intensityCtrl * 0.5) * emberCtrl;
     col += paletteColor(0.22, iPalette) * emberBed * 0.6;
 
+    // ─── Ember particles — visible and responsive ───
     float emberDensity = emberCtrl * sceneEmber;
     emberDensity *= 0.85 + 0.3 * mix(0.25, saturate(iAudioBeatPulse), audioPresence);
 
@@ -240,32 +221,36 @@ void main() {
         puv.y -= time * (1.9 + fl * 0.9);
         puv.x += sin(time * (0.7 + fl * 0.4) + fl * 2.0) * (1.2 + turbulence * 1.6);
 
-        vec2 cell = floor(puv);
+        vec2 pcell = floor(puv);
         vec2 local = fract(puv) - 0.5;
-        float seed = hash21(cell + vec2(fl * 37.0, fl * 11.0));
-        float threshold = emberDensity * (0.014 + fl * 0.007);
+        float seed = hash21(pcell + vec2(fl * 37.0, fl * 11.0));
+        float threshold = emberDensity * (0.025 + fl * 0.012);
 
         if (seed < threshold) {
-            vec2 jitter = (hash22(cell + vec2(17.0 + fl * 9.0, 29.0 + fl * 7.0)) - 0.5) * vec2(0.7, 0.5);
+            vec2 jitter = (hash22(pcell + vec2(17.0 + fl * 9.0, 29.0 + fl * 7.0)) - 0.5) * vec2(0.7, 0.5);
             float dist = length(local - jitter);
-            float size = mix(0.13, 0.045, seed) * (1.0 - fl * 0.18);
-            float ember = smoothstep(size, size * 0.22, dist);
+            float size = mix(0.15, 0.05, seed) * (1.0 - fl * 0.15);
+            float ember = smoothstep(size, size * 0.18, dist);
             float trail = smoothstep(size * 2.4, 0.0, length(vec2((local.x - jitter.x) * 1.3, (local.y - jitter.y) * 0.45)));
             float cooling = 1.0 - saturate(uv.y * (0.8 + fl * 0.4));
             float emberFlicker = 0.72 + 0.28 * sin(time * (7.5 + fl * 1.8) + seed * 55.0);
             vec3 emberColor = paletteColor(0.6 + cooling * 0.35, iPalette);
-            col += emberColor * (ember + trail * 0.3) * cooling * emberFlicker * (0.24 - fl * 0.05);
+            col += emberColor * (ember + trail * 0.3) * cooling * emberFlicker * (0.38 - fl * 0.06);
         }
     }
 
+    // Haze
     float haze = fbm(vec2((uv.x - 0.5) * aspect * 2.8, uv.y * 3.6 - time * 0.4));
     col += paletteColor(0.12, iPalette) * haze * (0.03 + flame * 0.04) * (0.6 + intensityCtrl * 0.5);
 
+    // Vignette + tone mapping
     float vignette = 1.0 - 0.42 * length((uv - vec2(0.5, 0.28)) * vec2(1.2, 0.9));
     col *= max(vignette, 0.1);
-
     col = col / (1.0 + col * 0.55);
     col = pow(clamp(col, 0.0, 1.0), vec3(0.95));
+
+    // Background applied after tone mapping — not affected by vignette
+    col = max(col, bgColor(iBackground));
 
     fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
