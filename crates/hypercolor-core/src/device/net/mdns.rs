@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use mdns_sd::{ServiceDaemon, ServiceEvent};
+use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent};
 use tracing::debug;
 
 const SHUTDOWN_WAIT: Duration = Duration::from_millis(250);
@@ -32,6 +32,12 @@ impl MdnsBrowser {
     /// Returns an error if the underlying `mdns-sd` daemon cannot start.
     pub fn new() -> Result<Self> {
         let daemon = ServiceDaemon::new().context("failed to create mDNS daemon")?;
+        // Network backends currently expect routable IPv4 addresses for their
+        // follow-up HTTP/UDP traffic. Disabling IPv6 browsing also avoids the
+        // noisy utun multicast send failures seen on macOS VPN/tunnel interfaces.
+        if let Err(error) = daemon.disable_interface(IfKind::IPv6) {
+            debug!(error = %error, "failed to disable IPv6 mDNS interfaces");
+        }
         Ok(Self { daemon })
     }
 

@@ -480,6 +480,14 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(devices::discover_devices),
         )
         .route(
+            "/devices/pair/hue",
+            axum::routing::post(devices::pair_hue_device),
+        )
+        .route(
+            "/devices/pair/nanoleaf",
+            axum::routing::post(devices::pair_nanoleaf_device),
+        )
+        .route(
             "/devices/debug/queues",
             axum::routing::get(devices::debug_output_queues),
         )

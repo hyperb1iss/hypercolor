@@ -1,6 +1,7 @@
 //! Device endpoints — `/api/v1/devices/*`.
 
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -11,6 +12,9 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
+use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueBridgeClient};
+use hypercolor_core::device::nanoleaf::{DEFAULT_NANOLEAF_API_PORT, pair_device_with_status};
+use hypercolor_core::device::net::Credentials;
 use hypercolor_core::device::{BackendIo, BackendManager, SegmentRange};
 use hypercolor_core::spatial::generate_positions;
 use hypercolor_types::attachment::{
@@ -49,6 +53,29 @@ pub struct DiscoverRequest {
 pub struct IdentifyRequest {
     pub duration_ms: Option<u64>,
     pub color: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PairHueRequest {
+    pub bridge_ip: IpAddr,
+    #[serde(default)]
+    pub bridge_port: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PairNanoleafRequest {
+    pub device_ip: IpAddr,
+    #[serde(default)]
+    pub api_port: Option<u16>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PairDeviceResponse {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -730,6 +757,131 @@ pub async fn discover_devices(
         "backends": backend_names,
         "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
     }))
+}
+
+/// `POST /api/v1/devices/pair/hue` — pair with a Hue bridge.
+pub async fn pair_hue_device(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<PairHueRequest>,
+) -> Response {
+    let bridge_port = payload.bridge_port.unwrap_or(DEFAULT_HUE_API_PORT);
+    let client = HueBridgeClient::with_port(payload.bridge_ip, bridge_port);
+
+    match client.pair_with_status("hypercolor").await {
+        Ok(Some(pair_result)) => {
+            let bridge_identity = client.bridge_identity().await.ok();
+            let credentials = Credentials::HueBridge {
+                api_key: pair_result.api_key,
+                client_key: pair_result.client_key,
+            };
+
+            if let Some(identity) = bridge_identity.as_ref()
+                && let Err(error) = state
+                    .credential_store
+                    .store(&format!("hue:{}", identity.bridge_id), credentials.clone())
+                    .await
+            {
+                warn!(
+                    error = %error,
+                    ip = %payload.bridge_ip,
+                    "failed to persist Hue bridge credentials"
+                );
+                return ApiError::internal("Failed to store Hue bridge credentials");
+            }
+            if let Err(error) = state
+                .credential_store
+                .store(&format!("hue:ip:{}", payload.bridge_ip), credentials)
+                .await
+            {
+                warn!(
+                    error = %error,
+                    ip = %payload.bridge_ip,
+                    "failed to persist Hue bridge credentials"
+                );
+                return ApiError::internal("Failed to store Hue bridge credentials");
+            }
+
+            ApiResponse::ok(PairDeviceResponse {
+                status: "paired".to_owned(),
+                device_key: bridge_identity
+                    .as_ref()
+                    .map(|identity| identity.bridge_id.clone()),
+                name: bridge_identity
+                    .as_ref()
+                    .map(|identity| identity.name.clone()),
+            })
+        }
+        Ok(None) => ApiResponse::ok(PairDeviceResponse {
+            status: "press_button".to_owned(),
+            device_key: None,
+            name: None,
+        }),
+        Err(error) => {
+            warn!(error = %error, ip = %payload.bridge_ip, "Hue pairing request failed");
+            ApiError::internal("Failed to pair with Hue bridge")
+        }
+    }
+}
+
+/// `POST /api/v1/devices/pair/nanoleaf` — pair with a Nanoleaf controller.
+pub async fn pair_nanoleaf_device(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<PairNanoleafRequest>,
+) -> Response {
+    let api_port = payload.api_port.unwrap_or(DEFAULT_NANOLEAF_API_PORT);
+    match pair_device_with_status(payload.device_ip, api_port).await {
+        Ok(Some(pair_result)) => {
+            let credentials = Credentials::Nanoleaf {
+                auth_token: pair_result.auth_token.clone(),
+            };
+            if let Err(error) = state
+                .credential_store
+                .store(
+                    &format!("nanoleaf:{}", pair_result.device_key),
+                    credentials.clone(),
+                )
+                .await
+            {
+                warn!(
+                    error = %error,
+                    ip = %payload.device_ip,
+                    "failed to persist Nanoleaf credentials"
+                );
+                return ApiError::internal("Failed to store Nanoleaf credentials");
+            }
+            if let Err(error) = state
+                .credential_store
+                .store(&format!("nanoleaf:ip:{}", payload.device_ip), credentials)
+                .await
+            {
+                warn!(
+                    error = %error,
+                    ip = %payload.device_ip,
+                    "failed to persist Nanoleaf credentials"
+                );
+                return ApiError::internal("Failed to store Nanoleaf credentials");
+            }
+
+            ApiResponse::ok(PairDeviceResponse {
+                status: "paired".to_owned(),
+                device_key: Some(pair_result.device_key),
+                name: Some(pair_result.name),
+            })
+        }
+        Ok(None) => ApiResponse::ok(PairDeviceResponse {
+            status: "hold_power".to_owned(),
+            device_key: None,
+            name: None,
+        }),
+        Err(error) => {
+            warn!(
+                error = %error,
+                ip = %payload.device_ip,
+                "Nanoleaf pairing request failed"
+            );
+            ApiError::internal("Failed to pair with Nanoleaf device")
+        }
+    }
 }
 
 /// `POST /api/v1/devices/:id/identify` — Flash identification pattern.

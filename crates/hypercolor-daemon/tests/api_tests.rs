@@ -12,9 +12,12 @@ use anyhow::{Result, bail};
 use axum::body::Body;
 use http::{Request, StatusCode};
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::net::Credentials;
 use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::logical_devices::{LogicalDevice, LogicalDeviceKind};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -40,6 +43,10 @@ use hypercolor_types::spatial::{
 static DATA_DIR_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn isolated_state() -> AppState {
+    isolated_state_with_tempdir().0
+}
+
+fn isolated_state_with_tempdir() -> (AppState, tempfile::TempDir) {
     let _lock = DATA_DIR_LOCK
         .lock()
         .expect("data dir lock should not be poisoned");
@@ -49,7 +56,7 @@ fn isolated_state() -> AppState {
     ConfigManager::set_data_dir_override(Some(data_dir));
     let state = AppState::new();
     ConfigManager::set_data_dir_override(None);
-    state
+    (state, tempdir)
 }
 
 /// Build a test router with fresh state.
@@ -4077,4 +4084,194 @@ async fn logical_devices_migrate_legacy_default_ids_and_keep_legacy_aliases_mapp
         mapped_layout_ids.contains(&device_id.to_string()),
         "raw physical uuid alias should stay mapped"
     );
+}
+
+#[tokio::test]
+async fn pair_hue_device_persists_credentials() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let app = test_app_with_state(Arc::clone(&state));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind Hue mock server");
+    let port = listener.local_addr().expect("local addr").port();
+    let server_task = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let request = read_pairing_http_request(&mut stream)
+                .await
+                .expect("read HTTP request");
+            let response = if request.starts_with("POST /api HTTP/1.1") {
+                pairing_json_response(
+                    r#"[{"success":{"username":"test-api-key","clientkey":"00112233445566778899aabbccddeeff"}}]"#,
+                )
+            } else if request.starts_with("GET /api/config HTTP/1.1") {
+                pairing_json_response(
+                    r#"{"bridgeid":"test-bridge","name":"Studio Bridge","modelid":"BSB002","swversion":"1968096020"}"#,
+                )
+            } else {
+                pairing_not_found_response()
+            };
+            stream
+                .write_all(response.as_slice())
+                .await
+                .expect("write HTTP response");
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/devices/pair/hue")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"bridge_ip":"127.0.0.1","bridge_port":{port}}}"#
+                )))
+                .expect("build request"),
+        )
+        .await
+        .expect("execute request");
+    let status = response.status();
+    let json = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["status"], "paired");
+    assert_eq!(json["data"]["device_key"], "test-bridge");
+
+    assert_eq!(
+        state.credential_store.get("hue:test-bridge").await,
+        Some(Credentials::HueBridge {
+            api_key: "test-api-key".to_owned(),
+            client_key: "00112233445566778899aabbccddeeff".to_owned(),
+        })
+    );
+    assert_eq!(
+        state.credential_store.get("hue:ip:127.0.0.1").await,
+        Some(Credentials::HueBridge {
+            api_key: "test-api-key".to_owned(),
+            client_key: "00112233445566778899aabbccddeeff".to_owned(),
+        })
+    );
+
+    server_task.await.expect("Hue mock task should finish");
+}
+
+#[tokio::test]
+async fn pair_nanoleaf_device_persists_credentials() {
+    let (state, _tempdir) = isolated_state_with_tempdir();
+    let state = Arc::new(state);
+    let app = test_app_with_state(Arc::clone(&state));
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind Nanoleaf mock server");
+    let port = listener.local_addr().expect("local addr").port();
+    let server_task = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let request = read_pairing_http_request(&mut stream)
+                .await
+                .expect("read HTTP request");
+            let response = if request.starts_with("POST /api/v1/new HTTP/1.1") {
+                pairing_json_response(r#"{"auth_token":"nanoleaf-token"}"#)
+            } else if request.starts_with("GET /api/v1/nanoleaf-token HTTP/1.1") {
+                pairing_json_response(
+                    r#"{"name":"Living Room Shapes","model":"Shapes","serialNo":"SERIAL42","firmwareVersion":"12.0.0"}"#,
+                )
+            } else {
+                pairing_not_found_response()
+            };
+            stream
+                .write_all(response.as_slice())
+                .await
+                .expect("write HTTP response");
+        }
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/devices/pair/nanoleaf")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"device_ip":"127.0.0.1","api_port":{port}}}"#
+                )))
+                .expect("build request"),
+        )
+        .await
+        .expect("execute request");
+    let status = response.status();
+    let json = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["data"]["status"], "paired");
+    assert_eq!(json["data"]["device_key"], "serial42");
+
+    assert_eq!(
+        state.credential_store.get("nanoleaf:serial42").await,
+        Some(Credentials::Nanoleaf {
+            auth_token: "nanoleaf-token".to_owned(),
+        })
+    );
+    assert_eq!(
+        state.credential_store.get("nanoleaf:ip:127.0.0.1").await,
+        Some(Credentials::Nanoleaf {
+            auth_token: "nanoleaf-token".to_owned(),
+        })
+    );
+
+    server_task.await.expect("Nanoleaf mock task should finish");
+}
+
+fn pairing_json_response(body: &str) -> Vec<u8> {
+    format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    )
+    .into_bytes()
+}
+
+fn pairing_not_found_response() -> Vec<u8> {
+    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+}
+
+async fn read_pairing_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
+    let mut buf = vec![0_u8; 4096];
+    let mut total = 0_usize;
+    let mut header_end = None;
+
+    loop {
+        let read = stream.read(&mut buf[total..]).await?;
+        if read == 0 {
+            break;
+        }
+        total += read;
+
+        if header_end.is_none() {
+            header_end = buf[..total]
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4);
+        }
+
+        if let Some(header_end) = header_end {
+            let headers = String::from_utf8_lossy(&buf[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("Content-Length:")
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            if total >= header_end + content_length {
+                break;
+            }
+        }
+
+        if total == buf.len() {
+            buf.resize(buf.len() * 2, 0);
+        }
+    }
+
+    Ok(String::from_utf8_lossy(&buf[..total]).into_owned())
 }
