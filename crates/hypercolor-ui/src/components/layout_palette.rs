@@ -9,7 +9,7 @@ use crate::app::DevicesContext;
 use crate::icons::*;
 use crate::layout_utils;
 use crate::style_utils::{device_accent_colors, hex_to_rgb, uuid_v4_hex};
-use hypercolor_types::spatial::{SpatialLayout, ZoneGroup};
+use hypercolor_types::spatial::ZoneGroup;
 
 /// Group color presets — works in both dark and light themes.
 const GROUP_COLORS: &[&str] = &[
@@ -18,41 +18,35 @@ const GROUP_COLORS: &[&str] = &[
 
 /// Device palette for adding zones to the layout, with group management.
 #[component]
-pub fn LayoutPalette(
-    #[prop(into)] layout: Signal<Option<SpatialLayout>>,
-    #[prop(into)] selected_zone_id: Signal<Option<String>>,
-    #[prop(into)] hidden_zones: Signal<std::collections::HashSet<String>>,
-    set_layout: WriteSignal<Option<SpatialLayout>>,
-    set_selected_zone_id: WriteSignal<Option<String>>,
-    set_is_dirty: WriteSignal<bool>,
-    set_hidden_zones: WriteSignal<std::collections::HashSet<String>>,
-) -> impl IntoView {
-    let ctx = expect_context::<DevicesContext>();
+pub fn LayoutPalette() -> impl IntoView {
+    let devices_ctx = expect_context::<DevicesContext>();
+    let ctx = expect_context::<crate::components::layout_builder::LayoutEditorContext>();
+    let layout = ctx.layout;
+    let selected_zone_id = ctx.selected_zone_id;
+    let hidden_zones = ctx.hidden_zones;
+    let set_layout = ctx.set_layout;
+    let set_selected_zone_id = ctx.set_selected_zone_id;
+    let set_is_dirty = ctx.set_is_dirty;
+    let set_hidden_zones = ctx.set_hidden_zones;
+    let removed_zone_cache = ctx.removed_zone_cache;
+    let set_removed_zone_cache = ctx.set_removed_zone_cache;
 
-    // Stabilize the device list — only re-render when actual data changes,
-    // not on every 5-second refetch poll.
     let stable_devices = Memo::new(move |_| {
-        ctx.devices_resource
+        devices_ctx
+            .devices_resource
             .get()
             .and_then(|r| r.ok())
             .unwrap_or_default()
     });
 
-    // Track which devices are collapsed
     let (collapsed_devices, set_collapsed_devices) =
         signal(std::collections::HashSet::<String>::new());
 
-    // Cached attachment bindings per device — fetched lazily on expand.
     let (attachment_cache, set_attachment_cache) = signal(std::collections::HashMap::<
         String,
         Vec<api::AttachmentBindingSummary>,
     >::new());
     let (import_in_flight, set_import_in_flight) = signal(false);
-
-    // Removed-zone cache from parent context — restores settings on re-add
-    let zone_cache_ctx = expect_context::<crate::components::layout_builder::RemovedZoneCache>();
-    let removed_zone_cache = zone_cache_ctx.cache;
-    let set_removed_zone_cache = zone_cache_ctx.set_cache;
 
     // Fetch attachments for a device (if not already cached).
     let fetch_attachments = move |device_id: String| {
@@ -1398,7 +1392,7 @@ pub fn LayoutPalette(
                                                                                     layout_utils::import_device_attachments(
                                                                                         did.clone(),
                                                                                         set_import_in_flight,
-                                                                                        ctx.layouts_resource,
+                                                                                        devices_ctx.layouts_resource,
                                                                                     );
                                                                                 }
                                                                             >

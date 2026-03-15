@@ -8,19 +8,19 @@ use crate::app::DevicesContext;
 use crate::icons::*;
 use crate::layout_geometry::{self, SizeAxis};
 use crate::style_utils::hex_to_rgb;
-use hypercolor_types::spatial::SpatialLayout;
+
 
 /// Zone properties editor (bottom panel of layout builder).
 #[component]
-pub fn LayoutZoneProperties(
-    #[prop(into)] layout: Signal<Option<SpatialLayout>>,
-    #[prop(into)] selected_zone_id: Signal<Option<String>>,
-    #[prop(into)] keep_aspect_ratio: Signal<bool>,
-    set_layout: WriteSignal<Option<SpatialLayout>>,
-    set_keep_aspect_ratio: WriteSignal<bool>,
-    set_selected_zone_id: WriteSignal<Option<String>>,
-    set_is_dirty: WriteSignal<bool>,
-) -> impl IntoView {
+pub fn LayoutZoneProperties() -> impl IntoView {
+    let editor = expect_context::<crate::components::layout_builder::LayoutEditorContext>();
+    let layout = editor.layout;
+    let selected_zone_id = editor.selected_zone_id;
+    let keep_aspect_ratio = editor.keep_aspect_ratio;
+    let set_layout = editor.set_layout;
+    let set_keep_aspect_ratio = editor.set_keep_aspect_ratio;
+    let set_selected_zone_id = editor.set_selected_zone_id;
+    let set_is_dirty = editor.set_is_dirty;
     // Canvas pixel dimensions for display conversion
     let canvas_dims = Signal::derive(move || {
         layout.with(|current| {
@@ -455,9 +455,7 @@ pub fn LayoutZoneProperties(
                                             if let Some(pos) = layout.zones.iter().position(|z| z.id == zid) {
                                                 let removed = layout.zones.remove(pos);
                                                 let key = (removed.device_id.clone(), removed.zone_name.clone());
-                                                if let Some(ctx) = use_context::<crate::components::layout_builder::RemovedZoneCache>() {
-                                                    ctx.set_cache.update(|c| { c.insert(key, removed); });
-                                                }
+                                                editor.set_removed_zone_cache.update(|c| { c.insert(key, removed); });
                                             }
                                         }
                                     });

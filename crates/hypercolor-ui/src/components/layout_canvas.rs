@@ -11,15 +11,16 @@ use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout, ZoneShape};
 
 /// Canvas viewport with zone overlay divs and group containers.
 #[component]
-pub fn LayoutCanvas(
-    #[prop(into)] layout: Signal<Option<SpatialLayout>>,
-    #[prop(into)] selected_zone_id: Signal<Option<String>>,
-    #[prop(into)] keep_aspect_ratio: Signal<bool>,
-    #[prop(into)] hidden_zones: Signal<std::collections::HashSet<String>>,
-    set_selected_zone_id: WriteSignal<Option<String>>,
-    set_layout: WriteSignal<Option<SpatialLayout>>,
-    set_is_dirty: WriteSignal<bool>,
-) -> impl IntoView {
+pub fn LayoutCanvas() -> impl IntoView {
+    let editor = expect_context::<crate::components::layout_builder::LayoutEditorContext>();
+    let layout = editor.layout;
+    let selected_zone_id = editor.selected_zone_id;
+    let keep_aspect_ratio = editor.keep_aspect_ratio;
+    let hidden_zones = editor.hidden_zones;
+    let set_selected_zone_id = editor.set_selected_zone_id;
+    let set_layout = editor.set_layout;
+    let set_is_dirty = editor.set_is_dirty;
+
     let ws = expect_context::<WsContext>();
     let canvas_frame = Signal::derive(move || ws.canvas_frame.get());
     let preview_fps = Signal::derive(move || ws.preview_fps.get());

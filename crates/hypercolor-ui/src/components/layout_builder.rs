@@ -17,7 +17,7 @@ use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::toasts;
-use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
+use hypercolor_types::spatial::SpatialLayout;
 
 // Panel size defaults and constraints
 const SIDEBAR_DEFAULT: f64 = 280.0;
@@ -87,11 +87,20 @@ fn replacement_layout_name(layouts: &[api::LayoutSummary]) -> String {
     }
 }
 
-/// Cache of removed zones so re-adding restores previous settings.
-#[derive(Clone)]
-pub(crate) struct RemovedZoneCache {
-    pub cache: Signal<std::collections::HashMap<(String, Option<String>), DeviceZone>>,
-    pub set_cache: WriteSignal<std::collections::HashMap<(String, Option<String>), DeviceZone>>,
+/// Shared layout editor state — provided via context to palette, canvas, and zone properties.
+#[derive(Clone, Copy)]
+pub(crate) struct LayoutEditorContext {
+    pub layout: Signal<Option<SpatialLayout>>,
+    pub selected_zone_id: Signal<Option<String>>,
+    pub hidden_zones: Signal<std::collections::HashSet<String>>,
+    pub keep_aspect_ratio: Signal<bool>,
+    pub set_layout: WriteSignal<Option<SpatialLayout>>,
+    pub set_selected_zone_id: WriteSignal<Option<String>>,
+    pub set_is_dirty: WriteSignal<bool>,
+    pub set_hidden_zones: WriteSignal<std::collections::HashSet<String>>,
+    pub set_keep_aspect_ratio: WriteSignal<bool>,
+    pub removed_zone_cache: Signal<crate::layout_utils::ZoneCache>,
+    pub set_removed_zone_cache: WriteSignal<crate::layout_utils::ZoneCache>,
 }
 
 /// Layout builder — wraps toolbar, palette, canvas viewport, and zone properties.
@@ -110,20 +119,32 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (hidden_zones, set_hidden_zones) =
         signal(std::collections::HashSet::<String>::new());
 
-    // Removed-zone cache: zones stashed on remove so re-adding restores settings.
-    // Shared via context between palette and zone properties.
-    let (removed_zone_cache, set_removed_zone_cache) = signal(
-        std::collections::HashMap::<(String, Option<String>), DeviceZone>::new(),
-    );
-    provide_context(RemovedZoneCache {
-        cache: removed_zone_cache.into(),
-        set_cache: set_removed_zone_cache,
-    });
+    let (removed_zone_cache, set_removed_zone_cache) =
+        signal(crate::layout_utils::ZoneCache::new());
+
+    // Writable dirty signal for child components (actual dirty state is derived
+    // from layout vs saved_layout comparison, but children need to signal changes).
+    let (_dirty_marker, set_is_dirty) = signal(false);
+
     let layout_signal = Signal::derive(move || layout.get());
     let zone_id_signal = Signal::derive(move || selected_zone_id.get());
     let keep_aspect_ratio_signal = Signal::derive(move || keep_aspect_ratio.get());
     let hidden_zones_signal = Signal::derive(move || hidden_zones.get());
     let has_layout = Signal::derive(move || layout.with(|current| current.is_some()));
+
+    provide_context(LayoutEditorContext {
+        layout: layout_signal,
+        selected_zone_id: zone_id_signal,
+        hidden_zones: hidden_zones_signal,
+        keep_aspect_ratio: keep_aspect_ratio_signal,
+        set_layout,
+        set_selected_zone_id,
+        set_is_dirty,
+        set_hidden_zones,
+        set_keep_aspect_ratio,
+        removed_zone_cache: removed_zone_cache.into(),
+        set_removed_zone_cache,
+    });
 
     // --- Resizable panel state ---
     let (sidebar_width, set_sidebar_width) = signal(load_panel_size(
@@ -213,9 +234,6 @@ pub fn LayoutBuilder() -> impl IntoView {
         }
     });
 
-    // Child components still expect a writable dirty signal even though the
-    // actual dirty state is derived from layout vs saved_layout comparison.
-    let (_dirty_marker, set_is_dirty) = signal(false);
     let preview_layout = use_debounce_fn_with_arg(
         |layout: SpatialLayout| {
             leptos::task::spawn_local(async move {
@@ -718,15 +736,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                         class="shrink-0 min-h-0 overflow-y-auto"
                         style=move || format!("width: {:.0}px", sidebar_width.get())
                     >
-                        <LayoutPalette
-                            layout=layout_signal
-                            selected_zone_id=zone_id_signal
-                            hidden_zones=hidden_zones_signal
-                            set_layout=set_layout
-                            set_selected_zone_id=set_selected_zone_id
-                            set_is_dirty=set_is_dirty
-                            set_hidden_zones=set_hidden_zones
-                        />
+                        <LayoutPalette />
                     </div>
 
                     // Sidebar resize handle
@@ -747,15 +757,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                     <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
                         // Canvas viewport — flexes to fill remaining space
                         <div class="relative min-h-0 flex-1 overflow-hidden">
-                            <LayoutCanvas
-                                layout=layout_signal
-                                selected_zone_id=zone_id_signal
-                                keep_aspect_ratio=keep_aspect_ratio_signal
-                                hidden_zones=hidden_zones_signal
-                                set_selected_zone_id=set_selected_zone_id
-                                set_layout=set_layout
-                                set_is_dirty=set_is_dirty
-                            />
+                            <LayoutCanvas />
                         </div>
 
                         // Bottom panel resize handle
@@ -777,15 +779,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                             class="shrink-0 overflow-y-auto bg-surface-base/95 backdrop-blur-sm"
                             style=move || format!("height: {:.0}px", bottom_height.get())
                         >
-                            <LayoutZoneProperties
-                                layout=layout_signal
-                                selected_zone_id=zone_id_signal
-                                keep_aspect_ratio=keep_aspect_ratio_signal
-                                set_layout=set_layout
-                                set_keep_aspect_ratio=set_keep_aspect_ratio
-                                set_selected_zone_id=set_selected_zone_id
-                                set_is_dirty=set_is_dirty
-                            />
+                            <LayoutZoneProperties />
                         </div>
                     </div>
                 </div>
