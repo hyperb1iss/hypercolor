@@ -2,6 +2,7 @@
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use wasm_bindgen::JsCast;
 
 use crate::api::{self, ZoneTopologySummary};
 use crate::app::DevicesContext;
@@ -48,6 +49,11 @@ pub fn LayoutPalette(
         Vec<api::AttachmentBindingSummary>,
     >::new());
     let (import_in_flight, set_import_in_flight) = signal(false);
+
+    // Removed-zone cache from parent context — restores settings on re-add
+    let zone_cache_ctx = expect_context::<crate::components::layout_builder::RemovedZoneCache>();
+    let removed_zone_cache = zone_cache_ctx.cache;
+    let set_removed_zone_cache = zone_cache_ctx.set_cache;
 
     // Fetch attachments for a device (if not already cached).
     let fetch_attachments = move |device_id: String| {
@@ -100,6 +106,41 @@ pub fn LayoutPalette(
             counts
         })
     });
+
+    // Group being renamed (double-click to edit)
+    let (editing_group_id, set_editing_group_id) = signal(None::<String>);
+
+    // Group currently hovered during zone drag
+    let (drag_over_group_id, set_drag_over_group_id) = signal(None::<String>);
+
+    // Assign a zone to a group (or ungroup if group_id is None)
+    let assign_zone_to_group = move |zone_id: String, group_id: Option<String>| {
+        set_layout.update(|l| {
+            if let Some(layout) = l {
+                if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                    zone.group_id = group_id;
+                }
+            }
+        });
+        set_is_dirty.set(true);
+    };
+
+    // Rename a group
+    let rename_group = move |group_id: String, new_name: String| {
+        let name = new_name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        set_layout.update(|l| {
+            if let Some(layout) = l {
+                if let Some(group) = layout.groups.iter_mut().find(|g| g.id == group_id) {
+                    group.name = name;
+                }
+            }
+        });
+        set_is_dirty.set(true);
+        set_editing_group_id.set(None);
+    };
 
     // Create a new group
     let create_group = move || {
@@ -155,104 +196,244 @@ pub fn LayoutPalette(
                 {move || {
                     let current_groups = groups.get();
                     let counts = group_zone_counts.get();
-                    if current_groups.is_empty() {
+                    let has_groups = !current_groups.is_empty();
+                    if !has_groups {
                         view! {
                             <div class="text-[10px] text-fg-tertiary/50 italic">"No groups yet"</div>
                         }.into_any()
                     } else {
                         view! {
-                            <div class="flex flex-wrap gap-1.5">
-                                {current_groups.into_iter().map(|group| {
-                                    let gid_delete = group.id.clone();
-                                    let gid_visibility = group.id.clone();
-                                    let color = group.color.clone().unwrap_or_else(|| "#e135ff".to_string());
-                                    let rgb = hex_to_rgb(&color);
-                                    let count = counts.get(&group.id).copied().unwrap_or(0);
-
-                                    // Check if all zones in this group are hidden
-                                    let group_all_hidden = {
+                            <div class="space-y-1.5">
+                                <div class="flex flex-wrap gap-1.5">
+                                    {current_groups.into_iter().map(|group| {
                                         let gid = group.id.clone();
-                                        Signal::derive(move || {
-                                            let hidden = hidden_zones.get();
-                                            layout.with(|current| {
-                                                current.as_ref().map(|l| {
-                                                    let member_zones: Vec<_> = l.zones.iter()
-                                                        .filter(|z| z.group_id.as_deref() == Some(&gid))
-                                                        .collect();
-                                                    !member_zones.is_empty() && member_zones.iter().all(|z| hidden.contains(&z.id))
-                                                }).unwrap_or(false)
-                                            })
-                                        })
-                                    };
+                                        let gid_delete = group.id.clone();
+                                        let gid_visibility = group.id.clone();
+                                        let gid_rename = group.id.clone();
+                                        let gid_rename2 = group.id.clone();
+                                        let gid_drop = group.id.clone();
+                                        let gid_dragover = group.id.clone();
+                                        let gid_dragleave = group.id.clone();
+                                        let group_name = group.name.clone();
+                                        let color = group.color.clone().unwrap_or_else(|| "#e135ff".to_string());
+                                        let rgb = hex_to_rgb(&color);
+                                        let count = counts.get(&group.id).copied().unwrap_or(0);
 
-                                    view! {
-                                        <div
-                                            class="flex items-center gap-1 px-2 py-1 rounded-full text-[13px] font-medium border
-                                                   chip-interactive cursor-pointer group/chip"
-                                            style=format!(
-                                                "color: rgb({rgb}); border-color: rgba({rgb}, 0.25); background: rgba({rgb}, 0.08); \
-                                                 --glow-rgb: {rgb}"
-                                            )
-                                        >
+                                        // Is this group being renamed?
+                                        let is_editing = Signal::derive(move || {
+                                            editing_group_id.get().as_deref() == Some(&gid)
+                                        });
+
+                                        // Is a zone being dragged over this group?
+                                        let is_drag_over = {
+                                            let gid = gid_dragover.clone();
+                                            Signal::derive(move || {
+                                                drag_over_group_id.get().as_deref() == Some(&gid)
+                                            })
+                                        };
+
+                                        // Check if all zones in this group are hidden
+                                        let group_all_hidden = {
+                                            let gid = group.id.clone();
+                                            Signal::derive(move || {
+                                                let hidden = hidden_zones.get();
+                                                layout.with(|current| {
+                                                    current.as_ref().map(|l| {
+                                                        let member_zones: Vec<_> = l.zones.iter()
+                                                            .filter(|z| z.group_id.as_deref() == Some(&gid))
+                                                            .collect();
+                                                        !member_zones.is_empty() && member_zones.iter().all(|z| hidden.contains(&z.id))
+                                                    }).unwrap_or(false)
+                                                })
+                                            })
+                                        };
+
+                                        view! {
                                             <div
-                                                class="w-2 h-2 rounded-full shrink-0"
-                                                style=format!("background: rgb({rgb})")
-                                            />
-                                            {group.name}
-                                            <span class="text-[9px] opacity-60">{count}</span>
-                                            // Visibility toggle for group
-                                            <button
-                                                class="ml-0.5 transition-opacity btn-press"
-                                                style=move || if group_all_hidden.get() {
-                                                    "opacity: 0.35"
-                                                } else {
-                                                    "opacity: 0.6"
+                                                class="flex items-center gap-1 px-2 py-1 rounded-full text-[13px] font-medium border
+                                                       chip-interactive cursor-pointer group/chip transition-all"
+                                                style=move || {
+                                                    let drag = is_drag_over.get();
+                                                    let bg_opacity = if drag { 0.2 } else { 0.08 };
+                                                    let border_opacity = if drag { 0.6 } else { 0.25 };
+                                                    let shadow = if drag {
+                                                        format!("box-shadow: 0 0 12px rgba({rgb}, 0.3); ")
+                                                    } else {
+                                                        String::new()
+                                                    };
+                                                    format!(
+                                                        "color: rgb({rgb}); border-color: rgba({rgb}, {border_opacity}); \
+                                                         background: rgba({rgb}, {bg_opacity}); --glow-rgb: {rgb}; {shadow}"
+                                                    )
                                                 }
-                                                title=move || if group_all_hidden.get() { "Show group" } else { "Hide group" }
-                                                on:click={
-                                                    let gid = gid_visibility.clone();
-                                                    move |ev: web_sys::MouseEvent| {
-                                                        ev.stop_propagation();
-                                                        let all_hidden = group_all_hidden.get_untracked();
-                                                        // Get zone IDs for this group
-                                                        let zone_ids: Vec<String> = layout.with_untracked(|current| {
-                                                            current.as_ref().map(|l| {
-                                                                l.zones.iter()
-                                                                    .filter(|z| z.group_id.as_deref() == Some(&gid))
-                                                                    .map(|z| z.id.clone())
-                                                                    .collect()
-                                                            }).unwrap_or_default()
-                                                        });
-                                                        set_hidden_zones.update(|set| {
-                                                            for zid in &zone_ids {
-                                                                if all_hidden {
-                                                                    set.remove(zid);
-                                                                } else {
-                                                                    set.insert(zid.clone());
-                                                                }
+                                                on:dragover=move |ev: web_sys::DragEvent| {
+                                                    ev.prevent_default();
+                                                    set_drag_over_group_id.set(Some(gid_dragover.clone()));
+                                                }
+                                                on:dragleave=move |_: web_sys::DragEvent| {
+                                                    // Only clear if we're still the hovered group
+                                                    if drag_over_group_id.get_untracked().as_deref() == Some(&gid_dragleave) {
+                                                        set_drag_over_group_id.set(None);
+                                                    }
+                                                }
+                                                on:drop=move |ev: web_sys::DragEvent| {
+                                                    ev.prevent_default();
+                                                    set_drag_over_group_id.set(None);
+                                                    if let Some(dt) = ev.data_transfer() {
+                                                        if let Ok(zone_id) = dt.get_data("application/x-hypercolor-zone") {
+                                                            if !zone_id.is_empty() {
+                                                                assign_zone_to_group(zone_id, Some(gid_drop.clone()));
                                                             }
-                                                        });
+                                                        }
                                                     }
                                                 }
                                             >
-                                                {move || if group_all_hidden.get() {
-                                                    view! { <Icon icon=LuEyeOff width="10px" height="10px" /> }.into_any()
-                                                } else {
-                                                    view! { <Icon icon=LuEye width="10px" height="10px" /> }.into_any()
+                                                <div
+                                                    class="w-2 h-2 rounded-full shrink-0"
+                                                    style=format!("background: rgb({rgb})")
+                                                />
+                                                // Name: inline edit on double-click, plain text otherwise
+                                                {move || {
+                                                    if is_editing.get() {
+                                                        let gid = gid_rename.clone();
+                                                        let gid2 = gid_rename2.clone();
+                                                        let current_name = group_name.clone();
+                                                        view! {
+                                                            <input
+                                                                type="text"
+                                                                class="w-20 bg-transparent border-b border-current outline-none text-[13px] font-medium px-0 py-0"
+                                                                style="color: inherit"
+                                                                prop:value=current_name
+                                                                autofocus=true
+                                                                on:blur=move |ev| {
+                                                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                                    if let Some(el) = target {
+                                                                        rename_group(gid.clone(), el.value());
+                                                                    }
+                                                                }
+                                                                on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                                                    if ev.key() == "Enter" {
+                                                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                                        if let Some(el) = target {
+                                                                            rename_group(gid2.clone(), el.value());
+                                                                        }
+                                                                    } else if ev.key() == "Escape" {
+                                                                        set_editing_group_id.set(None);
+                                                                    }
+                                                                }
+                                                                on:click=move |ev: web_sys::MouseEvent| {
+                                                                    ev.stop_propagation();
+                                                                }
+                                                            />
+                                                        }.into_any()
+                                                    } else {
+                                                        let gid = group.id.clone();
+                                                        let name = group.name.clone();
+                                                        view! {
+                                                            <span
+                                                                class="cursor-text select-none"
+                                                                title="Double-click to rename"
+                                                                on:dblclick=move |ev: web_sys::MouseEvent| {
+                                                                    ev.stop_propagation();
+                                                                    set_editing_group_id.set(Some(gid.clone()));
+                                                                }
+                                                            >
+                                                                {name}
+                                                            </span>
+                                                        }.into_any()
+                                                    }
                                                 }}
-                                            </button>
-                                            <button
-                                                class="ml-0.5 opacity-0 group-hover/chip:opacity-60 hover:opacity-100 transition-opacity"
-                                                on:click=move |ev| {
-                                                    ev.stop_propagation();
-                                                    delete_group(gid_delete.clone());
-                                                }
-                                            >
-                                                <Icon icon=LuX width="10px" height="10px" />
-                                            </button>
-                                        </div>
+                                                <span class="text-[9px] opacity-60">{count}</span>
+                                                // Visibility toggle for group
+                                                <button
+                                                    class="ml-0.5 transition-opacity btn-press"
+                                                    style=move || if group_all_hidden.get() {
+                                                        "opacity: 0.35"
+                                                    } else {
+                                                        "opacity: 0.6"
+                                                    }
+                                                    title=move || if group_all_hidden.get() { "Show group" } else { "Hide group" }
+                                                    on:click={
+                                                        let gid = gid_visibility.clone();
+                                                        move |ev: web_sys::MouseEvent| {
+                                                            ev.stop_propagation();
+                                                            let all_hidden = group_all_hidden.get_untracked();
+                                                            let zone_ids: Vec<String> = layout.with_untracked(|current| {
+                                                                current.as_ref().map(|l| {
+                                                                    l.zones.iter()
+                                                                        .filter(|z| z.group_id.as_deref() == Some(&gid))
+                                                                        .map(|z| z.id.clone())
+                                                                        .collect()
+                                                                }).unwrap_or_default()
+                                                            });
+                                                            set_hidden_zones.update(|set| {
+                                                                for zid in &zone_ids {
+                                                                    if all_hidden {
+                                                                        set.remove(zid);
+                                                                    } else {
+                                                                        set.insert(zid.clone());
+                                                                    }
+                                                                }
+                                                            });
+                                                        }
+                                                    }
+                                                >
+                                                    {move || if group_all_hidden.get() {
+                                                        view! { <Icon icon=LuEyeOff width="10px" height="10px" /> }.into_any()
+                                                    } else {
+                                                        view! { <Icon icon=LuEye width="10px" height="10px" /> }.into_any()
+                                                    }}
+                                                </button>
+                                                <button
+                                                    class="ml-0.5 opacity-0 group-hover/chip:opacity-60 hover:opacity-100 transition-opacity"
+                                                    on:click=move |ev| {
+                                                        ev.stop_propagation();
+                                                        delete_group(gid_delete.clone());
+                                                    }
+                                                >
+                                                    <Icon icon=LuX width="10px" height="10px" />
+                                                </button>
+                                            </div>
+                                        }
+                                    }).collect_view()}
+                                </div>
+                                // "Ungrouped" drop target — visible when groups exist
+                                <div
+                                    class="flex items-center gap-1 px-2 py-1 rounded-full text-[10px] border border-dashed transition-all"
+                                    style=move || {
+                                        let drag = drag_over_group_id.get().as_deref() == Some("__ungrouped__");
+                                        if drag {
+                                            "color: var(--color-text-secondary); border-color: var(--color-text-tertiary); \
+                                             background: rgba(139, 133, 160, 0.1)".to_string()
+                                        } else {
+                                            "color: var(--color-text-tertiary); border-color: rgba(139, 133, 160, 0.15); \
+                                             background: transparent; opacity: 0.6".to_string()
+                                        }
                                     }
-                                }).collect_view()}
+                                    on:dragover=move |ev: web_sys::DragEvent| {
+                                        ev.prevent_default();
+                                        set_drag_over_group_id.set(Some("__ungrouped__".to_string()));
+                                    }
+                                    on:dragleave=move |_: web_sys::DragEvent| {
+                                        if drag_over_group_id.get_untracked().as_deref() == Some("__ungrouped__") {
+                                            set_drag_over_group_id.set(None);
+                                        }
+                                    }
+                                    on:drop=move |ev: web_sys::DragEvent| {
+                                        ev.prevent_default();
+                                        set_drag_over_group_id.set(None);
+                                        if let Some(dt) = ev.data_transfer() {
+                                            if let Ok(zone_id) = dt.get_data("application/x-hypercolor-zone") {
+                                                if !zone_id.is_empty() {
+                                                    assign_zone_to_group(zone_id, None);
+                                                }
+                                            }
+                                        }
+                                    }
+                                >
+                                    <Icon icon=LuUnlink width="10px" height="10px" />
+                                    "Ungrouped"
+                                </div>
                             </div>
                         }.into_any()
                     }
@@ -411,6 +592,20 @@ pub fn LayoutPalette(
                                         view! {
                                             <div
                                                 class="rounded-lg overflow-hidden transition-all animate-fade-in-up"
+                                                draggable=move || {
+                                                    if !has_multi_zones && single_zone_in_layout.get() { "true" } else { "false" }
+                                                }
+                                                on:dragstart=move |ev: web_sys::DragEvent| {
+                                                    // Single-zone devices: drag the whole card
+                                                    if !has_multi_zones {
+                                                        if let Some(zid) = first_zone_id_in_layout.get_untracked() {
+                                                            if let Some(dt) = ev.data_transfer() {
+                                                                let _ = dt.set_data("application/x-hypercolor-zone", &zid);
+                                                                dt.set_effect_allowed("move");
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                                 style=move || {
                                                     let active = device_is_active.get();
                                                     let border_opacity = if active { 0.5 } else { 0.15 };
@@ -604,6 +799,7 @@ pub fn LayoutPalette(
                                                                                         &set_layout,
                                                                                         &set_selected_zone_id,
                                                                                         &set_is_dirty,
+                                                                                        &set_removed_zone_cache,
                                                                                     );
                                                                                 }
                                                                             >
@@ -630,6 +826,8 @@ pub fn LayoutPalette(
                                                                                         &set_layout,
                                                                                         &set_selected_zone_id,
                                                                                         &set_is_dirty,
+                                                                                        &removed_zone_cache,
+                                                                                        &set_removed_zone_cache,
                                                                                     );
                                                                                 }
                                                                             >
@@ -744,6 +942,7 @@ pub fn LayoutPalette(
                                                                                         &set_layout,
                                                                                         &set_selected_zone_id,
                                                                                         &set_is_dirty,
+                                                                                        &set_removed_zone_cache,
                                                                                     );
                                                                                 }
                                                                             >
@@ -761,18 +960,27 @@ pub fn LayoutPalette(
                                                                                 title="Add to layout"
                                                                                 on:click=move |ev| {
                                                                                     ev.stop_propagation();
-                                                                                    let (canvas_width, canvas_height) =
-                                                                                        current_canvas_dimensions(&layout);
-                                                                                    let order = next_display_order(&layout);
-                                                                                    let new_zone = create_default_zone(
-                                                                                        &did,
-                                                                                        &dname,
-                                                                                        zone.as_ref(),
-                                                                                        fallback_leds,
-                                                                                        canvas_width,
-                                                                                        canvas_height,
-                                                                                        order,
-                                                                                    );
+                                                                                    let cache_key = (did.clone(), zone.as_ref().map(|z| z.name.clone()));
+                                                                                    let cached = removed_zone_cache.with_untracked(|c| c.get(&cache_key).cloned());
+                                                                                    let new_zone = if let Some(mut restored) = cached {
+                                                                                        // Restore from cache with a fresh ID
+                                                                                        restored.id = format!("zone_{}", uuid_v4_hex());
+                                                                                        set_removed_zone_cache.update(|c| { c.remove(&cache_key); });
+                                                                                        restored
+                                                                                    } else {
+                                                                                        let (canvas_width, canvas_height) =
+                                                                                            current_canvas_dimensions(&layout);
+                                                                                        let order = next_display_order(&layout);
+                                                                                        create_default_zone(
+                                                                                            &did,
+                                                                                            &dname,
+                                                                                            zone.as_ref(),
+                                                                                            fallback_leds,
+                                                                                            canvas_width,
+                                                                                            canvas_height,
+                                                                                            order,
+                                                                                        )
+                                                                                    };
                                                                                     let zone_id = new_zone.id.clone();
                                                                                     set_layout.update(|l| {
                                                                                         if let Some(layout) = l {
@@ -906,6 +1114,26 @@ pub fn LayoutPalette(
                                                                         let zone_rgb3 = rgb_for_zones.clone();
                                                                         let toggle_zone_name = zone_name_key.clone();
 
+                                                                        // Zone ID for drag-to-group
+                                                                        let zone_id_for_drag = zone_id_for_select;
+
+                                                                        // Group color for this zone (if assigned to a group)
+                                                                        let zone_group_color = {
+                                                                            let did = device_id.clone();
+                                                                            let zn = zone_name_key.clone();
+                                                                            Signal::derive(move || {
+                                                                                layout.with(|current| {
+                                                                                    let l = current.as_ref()?;
+                                                                                    let zone = l.zones.iter().find(|z| {
+                                                                                        z.device_id == did && z.zone_name.as_deref() == zn.as_deref()
+                                                                                    })?;
+                                                                                    let gid = zone.group_id.as_ref()?;
+                                                                                    let group = l.groups.iter().find(|g| &g.id == gid)?;
+                                                                                    group.color.clone()
+                                                                                })
+                                                                            })
+                                                                        };
+
                                                                         // Attachment binding for this zone/slot
                                                                         let binding_zone_name = display_name.clone();
                                                                         let binding_device_id = device_id.clone();
@@ -931,6 +1159,7 @@ pub fn LayoutPalette(
                                                                             <div
                                                                                 class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg
                                                                                         cursor-pointer hover:bg-white/[0.04] transition-all group/zone"
+                                                                                draggable=move || if in_layout.get() { "true" } else { "false" }
                                                                                 style=move || {
                                                                                     if zone_is_selected.get() {
                                                                                         format!(
@@ -941,12 +1170,33 @@ pub fn LayoutPalette(
                                                                                         String::new()
                                                                                     }
                                                                                 }
+                                                                                on:dragstart=move |ev: web_sys::DragEvent| {
+                                                                                    if let Some(zid) = zone_id_for_drag.get_untracked() {
+                                                                                        if let Some(dt) = ev.data_transfer() {
+                                                                                            let _ = dt.set_data("application/x-hypercolor-zone", &zid);
+                                                                                            dt.set_effect_allowed("move");
+                                                                                        }
+                                                                                    }
+                                                                                }
                                                                                 on:click=move |_| {
                                                                                     if let Some(zid) = zone_id_for_select.get_untracked() {
                                                                                         set_selected_zone_id.set(Some(zid));
                                                                                     }
                                                                                 }
                                                                             >
+                                                                                // Group membership dot
+                                                                                {move || {
+                                                                                    zone_group_color.get().map(|color| {
+                                                                                        let rgb = hex_to_rgb(&color);
+                                                                                        view! {
+                                                                                            <div
+                                                                                                class="w-1.5 h-1.5 rounded-full shrink-0"
+                                                                                                style=format!("background: rgb({rgb})")
+                                                                                                title="Drag to a group chip to reassign"
+                                                                                            />
+                                                                                        }
+                                                                                    })
+                                                                                }}
                                                                                 // Topology icon
                                                                                 <div class="text-fg-tertiary/50 shrink-0">
                                                                                     {topo_icon}
@@ -1070,6 +1320,7 @@ pub fn LayoutPalette(
                                                                                                         &set_layout,
                                                                                                         &set_selected_zone_id,
                                                                                                         &set_is_dirty,
+                                                                                                        &set_removed_zone_cache,
                                                                                                     );
                                                                                                 }
                                                                                             >
@@ -1087,18 +1338,26 @@ pub fn LayoutPalette(
                                                                                                 title="Add zone"
                                                                                                 on:click=move |ev| {
                                                                                                     ev.stop_propagation();
-                                                                                                    let (canvas_width, canvas_height) =
-                                                                                                        current_canvas_dimensions(&layout);
-                                                                                                    let order = next_display_order(&layout);
-                                                                                                    let new_zone = create_default_zone(
-                                                                                                        &did,
-                                                                                                        &dname,
-                                                                                                        zone_entry.as_ref(),
-                                                                                                        fallback_leds,
-                                                                                                        canvas_width,
-                                                                                                        canvas_height,
-                                                                                                        order,
-                                                                                                    );
+                                                                                                    let cache_key = (did.clone(), zone_entry.as_ref().map(|z| z.name.clone()));
+                                                                                                    let cached = removed_zone_cache.with_untracked(|c| c.get(&cache_key).cloned());
+                                                                                                    let new_zone = if let Some(mut restored) = cached {
+                                                                                                        restored.id = format!("zone_{}", uuid_v4_hex());
+                                                                                                        set_removed_zone_cache.update(|c| { c.remove(&cache_key); });
+                                                                                                        restored
+                                                                                                    } else {
+                                                                                                        let (canvas_width, canvas_height) =
+                                                                                                            current_canvas_dimensions(&layout);
+                                                                                                        let order = next_display_order(&layout);
+                                                                                                        create_default_zone(
+                                                                                                            &did,
+                                                                                                            &dname,
+                                                                                                            zone_entry.as_ref(),
+                                                                                                            fallback_leds,
+                                                                                                            canvas_width,
+                                                                                                            canvas_height,
+                                                                                                            order,
+                                                                                                        )
+                                                                                                    };
                                                                                                     let zone_id = new_zone.id.clone();
                                                                                                     set_layout.update(|l| {
                                                                                                         if let Some(layout) = l {
@@ -1407,19 +1666,30 @@ fn current_canvas_dimensions(layout: &Signal<Option<SpatialLayout>>) -> (u32, u3
     })
 }
 
-/// Remove a device zone from the layout by device_id + zone_name.
+/// Remove a device zone from the layout by device_id + zone_name,
+/// stashing it in the cache so re-adding restores its settings.
 fn remove_device_zone(
     device_id: &str,
     zone_name: Option<&str>,
     set_layout: &WriteSignal<Option<SpatialLayout>>,
     set_selected_zone_id: &WriteSignal<Option<String>>,
     set_is_dirty: &WriteSignal<bool>,
+    set_removed_zone_cache: &WriteSignal<
+        std::collections::HashMap<(String, Option<String>), DeviceZone>,
+    >,
 ) {
     set_layout.update(|l| {
         if let Some(layout) = l {
-            layout
-                .zones
-                .retain(|z| !(z.device_id == device_id && z.zone_name.as_deref() == zone_name));
+            // Stash the zone before removing
+            if let Some(pos) = layout.zones.iter().position(|z| {
+                z.device_id == device_id && z.zone_name.as_deref() == zone_name
+            }) {
+                let removed = layout.zones.remove(pos);
+                let key = (removed.device_id.clone(), removed.zone_name.clone());
+                set_removed_zone_cache.update(|cache| {
+                    cache.insert(key, removed);
+                });
+            }
             prune_empty_groups(layout);
         }
     });
@@ -1427,15 +1697,26 @@ fn remove_device_zone(
     set_is_dirty.set(true);
 }
 
-/// Remove ALL zones for a device from the layout in one action.
+/// Remove ALL zones for a device from the layout in one action,
+/// stashing each in the cache so re-adding restores settings.
 fn remove_all_device_zones(
     device_id: &str,
     set_layout: &WriteSignal<Option<SpatialLayout>>,
     set_selected_zone_id: &WriteSignal<Option<String>>,
     set_is_dirty: &WriteSignal<bool>,
+    set_removed_zone_cache: &WriteSignal<
+        std::collections::HashMap<(String, Option<String>), DeviceZone>,
+    >,
 ) {
     set_layout.update(|l| {
         if let Some(layout) = l {
+            // Stash all zones for this device before removing
+            set_removed_zone_cache.update(|cache| {
+                for zone in layout.zones.iter().filter(|z| z.device_id == device_id) {
+                    let key = (zone.device_id.clone(), zone.zone_name.clone());
+                    cache.insert(key, zone.clone());
+                }
+            });
             layout.zones.retain(|z| z.device_id != device_id);
             prune_empty_groups(layout);
         }
@@ -1445,6 +1726,7 @@ fn remove_all_device_zones(
 }
 
 /// Add ALL zones for a device to the layout in one action, skipping any already present.
+/// Checks the removed-zone cache first to restore previous settings.
 #[allow(clippy::too_many_arguments)]
 fn add_all_device_zones(
     device_id: &str,
@@ -1455,6 +1737,10 @@ fn add_all_device_zones(
     set_layout: &WriteSignal<Option<SpatialLayout>>,
     set_selected_zone_id: &WriteSignal<Option<String>>,
     set_is_dirty: &WriteSignal<bool>,
+    removed_zone_cache: &Signal<std::collections::HashMap<(String, Option<String>), DeviceZone>>,
+    set_removed_zone_cache: &WriteSignal<
+        std::collections::HashMap<(String, Option<String>), DeviceZone>,
+    >,
 ) {
     let (canvas_width, canvas_height) = current_canvas_dimensions(layout);
     let existing_zone_names: std::collections::HashSet<Option<String>> =
@@ -1471,7 +1757,12 @@ fn add_all_device_zones(
                 .unwrap_or_default()
         });
 
-    if existing_zone_names.is_empty() {
+    // Check if we have cached zones for this device — restore those instead of defaults
+    let has_cached = removed_zone_cache.with_untracked(|c| {
+        c.keys().any(|(did, _)| did == device_id)
+    });
+
+    if existing_zone_names.is_empty() && !has_cached {
         let display_order = next_display_order(layout);
         if let Some(seed) = layout_geometry::seeded_device_layout(
             device_id,
@@ -1522,15 +1813,23 @@ fn add_all_device_zones(
                 if existing_zone_names.contains(&zn) {
                     continue;
                 }
-                let new_zone = create_default_zone(
-                    device_id,
-                    device_name,
-                    Some(zone),
-                    total_leds,
-                    canvas_width,
-                    canvas_height,
-                    order,
-                );
+                let cache_key = (device_id.to_string(), Some(zone.name.clone()));
+                let cached = removed_zone_cache.with_untracked(|c| c.get(&cache_key).cloned());
+                let new_zone = if let Some(mut restored) = cached {
+                    restored.id = format!("zone_{}", uuid_v4_hex());
+                    set_removed_zone_cache.update(|c| { c.remove(&cache_key); });
+                    restored
+                } else {
+                    create_default_zone(
+                        device_id,
+                        device_name,
+                        Some(zone),
+                        total_leds,
+                        canvas_width,
+                        canvas_height,
+                        order,
+                    )
+                };
                 order += 1;
                 if first_new_id.is_none() {
                     first_new_id = Some(new_zone.id.clone());

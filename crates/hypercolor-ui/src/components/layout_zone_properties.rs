@@ -20,6 +20,16 @@ pub fn LayoutZoneProperties(
     set_selected_zone_id: WriteSignal<Option<String>>,
     set_is_dirty: WriteSignal<bool>,
 ) -> impl IntoView {
+    // Canvas pixel dimensions for display conversion
+    let canvas_dims = Signal::derive(move || {
+        layout.with(|current| {
+            current
+                .as_ref()
+                .map(|l| (l.canvas_width.max(1) as f32, l.canvas_height.max(1) as f32))
+                .unwrap_or((320.0, 200.0))
+        })
+    });
+
     // Derive selected zone snapshot for display
     let zone_snapshot = Signal::derive(move || {
         let id = selected_zone_id.get()?;
@@ -78,10 +88,11 @@ pub fn LayoutZoneProperties(
                 let device_id_display = zone.device_id.clone();
                 let device_id_title = zone.device_id.clone();
                 let channel_name = zone.zone_name.clone();
-                let pos_x = zone.position.x;
-                let pos_y = zone.position.y;
-                let size_w = zone.size.x;
-                let size_h = zone.size.y;
+                let (cw, ch) = canvas_dims.get_untracked();
+                let pos_x_px = zone.position.x * cw;
+                let pos_y_px = zone.position.y * ch;
+                let size_w_px = zone.size.x * cw;
+                let size_h_px = zone.size.y * ch;
                 let rotation_deg = zone.rotation.to_degrees();
                 let scale = zone.scale;
                 let led_count = zone.topology.led_count();
@@ -130,6 +141,10 @@ pub fn LayoutZoneProperties(
                 let zid_front = zone_id.clone();
                 let zid_up = zone_id.clone();
                 let zid_down = zone_id.clone();
+                let zid_reset_defaults = zone_id.clone();
+                let reset_device_id = zone.device_id.clone();
+                let reset_zone_name = zone.zone_name.clone();
+                let reset_device_name = default_name.split(" · ").next().unwrap_or(&default_name).to_string();
                 let zid_back = zone_id.clone();
                 let zid_remove = zone_id;
 
@@ -364,7 +379,70 @@ pub fn LayoutZoneProperties(
 
                             <div class="w-px h-4 bg-edge-subtle/30 shrink-0" />
 
-                            // Remove button
+                            // Reset zone to default position/size/rotation/scale
+                            <button
+                                class="shrink-0 p-1.5 rounded-md text-fg-tertiary/40 hover:text-accent hover:bg-accent/10
+                                       transition-all btn-press"
+                                title="Reset zone to defaults"
+                                on:click=move |_| {
+                                    let zid = zid_reset_defaults.clone();
+                                    let did = reset_device_id.clone();
+                                    let zn = reset_zone_name.clone();
+                                    let dname = reset_device_name.clone();
+                                    // Look up zone summary from devices for proper defaults
+                                    let zone_summary: Option<crate::api::ZoneSummary> = ctx
+                                        .devices_resource
+                                        .get_untracked()
+                                        .and_then(|r| r.ok())
+                                        .and_then(|devices| {
+                                            devices.iter()
+                                                .find(|d| d.layout_device_id == did)
+                                                .and_then(|d| {
+                                                    zn.as_ref().and_then(|name| {
+                                                        d.zones.iter().find(|z| z.name == *name).cloned()
+                                                    })
+                                                })
+                                        });
+                                    let total_leds = ctx
+                                        .devices_resource
+                                        .get_untracked()
+                                        .and_then(|r| r.ok())
+                                        .and_then(|devices| devices.iter().find(|d| d.layout_device_id == did).map(|d| d.total_leds))
+                                        .unwrap_or(1);
+                                    let (canvas_width, canvas_height) = layout.with_untracked(|current| {
+                                        current.as_ref()
+                                            .map(|l| (l.canvas_width.max(1), l.canvas_height.max(1)))
+                                            .unwrap_or((320, 200))
+                                    });
+                                    let defaults = crate::layout_geometry::default_zone_visuals(
+                                        &dname,
+                                        zone_summary.as_ref(),
+                                        total_leds,
+                                        canvas_width,
+                                        canvas_height,
+                                    );
+                                    set_layout.update(|l| {
+                                        if let Some(layout) = l {
+                                            if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
+                                                zone.position = hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5);
+                                                zone.size = crate::layout_geometry::normalize_zone_size_for_editor(
+                                                    zone.position,
+                                                    defaults.size,
+                                                    &defaults.topology,
+                                                );
+                                                zone.rotation = 0.0;
+                                                zone.scale = 1.0;
+                                                zone.group_id = None;
+                                            }
+                                        }
+                                    });
+                                    set_is_dirty.set(true);
+                                }
+                            >
+                                <Icon icon=LuRotateCcw width="13px" height="13px" />
+                            </button>
+
+                            // Remove button (stashes zone for re-add)
                             <button
                                 class="shrink-0 p-1.5 rounded-md text-status-error/40 hover:text-status-error hover:bg-status-error/10
                                        transition-all btn-press"
@@ -373,7 +451,13 @@ pub fn LayoutZoneProperties(
                                     let zid = zid_remove.clone();
                                     set_layout.update(|l| {
                                         if let Some(layout) = l {
-                                            layout.zones.retain(|z| z.id != zid);
+                                            if let Some(pos) = layout.zones.iter().position(|z| z.id == zid) {
+                                                let removed = layout.zones.remove(pos);
+                                                let key = (removed.device_id.clone(), removed.zone_name.clone());
+                                                if let Some(ctx) = use_context::<crate::components::layout_builder::RemovedZoneCache>() {
+                                                    ctx.set_cache.update(|c| { c.insert(key, removed); });
+                                                }
+                                            }
                                         }
                                     });
                                     set_selected_zone_id.set(None);
@@ -386,16 +470,24 @@ pub fn LayoutZoneProperties(
 
                         // Row 2: Transforms — fixed grid layout so controls don't float
                         <div class="flex items-center gap-5">
-                            // Position
+                            // Position (in pixels)
                             <div class="flex items-center gap-2">
                                 <span class="text-[10px] text-fg-tertiary/70 font-mono uppercase tracking-wide shrink-0 w-6">"Pos"</span>
-                                {zone_number_input("X", pos_x, "0.01", 2, "0", "1", {
+                                {zone_pixel_input("X", pos_x_px, "1", 0, cw, {
                                     let zid = zid_pos_x;
-                                    move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.x = val))
+                                    move |px: f32| {
+                                        let (cw, _) = canvas_dims.get_untracked();
+                                        let norm = (px / cw).clamp(0.0, 1.0);
+                                        update_zone(zid.clone(), Box::new(move |z| z.position.x = norm))
+                                    }
                                 })}
-                                {zone_number_input("Y", pos_y, "0.01", 2, "0", "1", {
+                                {zone_pixel_input("Y", pos_y_px, "1", 0, ch, {
                                     let zid = zid_pos_y;
-                                    move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.y = val))
+                                    move |px: f32| {
+                                        let (_, ch) = canvas_dims.get_untracked();
+                                        let norm = (px / ch).clamp(0.0, 1.0);
+                                        update_zone(zid.clone(), Box::new(move |z| z.position.y = norm))
+                                    }
                                 })}
                                 // Center buttons
                                 <button
@@ -424,27 +516,31 @@ pub fn LayoutZoneProperties(
 
                             <div class="w-px h-5 bg-edge-subtle/20 shrink-0" />
 
-                            // Size
+                            // Size (in pixels)
                             <div class="flex items-center gap-2">
                                 <span class="text-[10px] text-fg-tertiary/70 font-mono uppercase tracking-wide shrink-0 w-6">"Size"</span>
-                                {zone_number_input("W", size_w, "0.001", 3, "0", "1", {
+                                {zone_pixel_input("W", size_w_px, "1", 0, cw, {
                                     let zid = zid_size_w;
-                                    move |val: f32| {
+                                    move |px: f32| {
+                                        let (cw, _) = canvas_dims.get_untracked();
+                                        let norm = (px / cw).clamp(0.0, 1.0);
                                         let locked = keep_aspect_ratio.get_untracked();
                                         update_zone(zid.clone(), Box::new(move |z| {
                                             z.size = layout_geometry::update_zone_size(
-                                                z.size, SizeAxis::Width, val, locked,
+                                                z.size, SizeAxis::Width, norm, locked,
                                             );
                                         }))
                                     }
                                 })}
-                                {zone_number_input("H", size_h, "0.001", 3, "0", "1", {
+                                {zone_pixel_input("H", size_h_px, "1", 0, ch, {
                                     let zid = zid_size_h;
-                                    move |val: f32| {
+                                    move |px: f32| {
+                                        let (_, ch) = canvas_dims.get_untracked();
+                                        let norm = (px / ch).clamp(0.0, 1.0);
                                         let locked = keep_aspect_ratio.get_untracked();
                                         update_zone(zid.clone(), Box::new(move |z| {
                                             z.size = layout_geometry::update_zone_size(
-                                                z.size, SizeAxis::Height, val, locked,
+                                                z.size, SizeAxis::Height, norm, locked,
                                             );
                                         }))
                                     }
@@ -581,7 +677,8 @@ fn layer_icon_button(
     }
 }
 
-/// Inline labeled number input for zone properties.
+/// Inline labeled number input for zone properties (normalized 0–1 values).
+#[allow(dead_code)]
 fn zone_number_input(
     label: &'static str,
     value: f32,
@@ -603,6 +700,44 @@ fn zone_number_input(
                        text-xs text-fg-primary font-mono tabular-nums
                        focus:outline-none focus:border-accent-muted glow-ring transition-all"
                 prop:value=format!("{value:.precision$}")
+                on:change=move |ev| {
+                    let on_change = on_change.clone();
+                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                    if let Some(el) = target {
+                        if let Ok(v) = el.value().parse::<f32>() {
+                            on_change(v);
+                        }
+                    }
+                }
+            />
+        </div>
+    }
+}
+
+/// Inline labeled pixel input for zone position/size properties.
+///
+/// Displays and accepts values in pixels, with `max_px` as the canvas dimension.
+fn zone_pixel_input(
+    label: &'static str,
+    value_px: f32,
+    step: &'static str,
+    precision: usize,
+    max_px: f32,
+    on_change: impl Fn(f32) + Clone + 'static,
+) -> impl IntoView {
+    let max_str = format!("{max_px:.0}");
+    view! {
+        <div class="flex items-center gap-1">
+            <span class="text-[10px] text-fg-tertiary/60 font-mono w-3">{label}</span>
+            <input
+                type="number"
+                step=step
+                min="0"
+                max=max_str
+                class="w-[4.5rem] bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1.5
+                       text-xs text-fg-primary font-mono tabular-nums
+                       focus:outline-none focus:border-accent-muted glow-ring transition-all"
+                prop:value=format!("{value_px:.precision$}")
                 on:change=move |ev| {
                     let on_change = on_change.clone();
                     let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());

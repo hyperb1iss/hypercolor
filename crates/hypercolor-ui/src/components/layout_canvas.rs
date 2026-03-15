@@ -213,6 +213,7 @@ pub fn LayoutCanvas(
                                         resize.handle,
                                         mouse_norm,
                                         keep_ratio,
+                                        resize.rotation,
                                     );
                                     zone.position = position;
                                     zone.size = layout_geometry::normalize_zone_size_for_editor(
@@ -326,6 +327,7 @@ pub fn LayoutCanvas(
                                         let w_pct = zone.size.x * 100.0;
                                         let h_pct = zone.size.y * 100.0;
                                         let rotation = zone.rotation.to_degrees();
+                                        let scale = zone.scale;
 
                                         // Use group color if available, else unique per-device color
                                         let (primary, secondary) = zone
@@ -346,7 +348,7 @@ pub fn LayoutCanvas(
                                         Some(ZoneRenderData {
                                             position_style: format!(
                                                 "left: {x_pct:.2}%; top: {y_pct:.2}%; width: {w_pct:.2}%; height: {h_pct:.2}%; \
-                                                 transform: translate(-50%, -50%) rotate({rotation:.1}deg)"
+                                                 transform: translate(-50%, -50%) rotate({rotation:.1}deg) scale({scale:.3})"
                                             ),
                                             primary_rgb: primary,
                                             secondary_rgb: secondary,
@@ -482,7 +484,8 @@ pub fn LayoutCanvas(
                                         {move || zone_style.get().map(|zd| format!("{} · {} LEDs", zd.name, zd.led_count)).unwrap_or_default()}
                                     </div>
 
-                                    // Resize handles (selected only) — small circles with accent glow
+                                    // Resize handles (selected only) — small circles with accent glow.
+                                    // Counter-rotated so they stay axis-aligned, with dynamic cursors.
                                     {move || is_selected.get().then(|| {
                                         let zid_resize_nw = zid_resize_nw.clone();
                                         let zid_resize_ne = zid_resize_ne.clone();
@@ -492,11 +495,59 @@ pub fn LayoutCanvas(
                                         let handle_class = "absolute w-3 h-3 rounded-full border-2 transition-[box-shadow,transform] duration-150 \
                                                            hover:scale-125";
 
-                                        let handle_style = move || {
+                                        // Derive rotation for counter-rotate + cursor
+                                        let zone_rotation_deg = {
+                                            let zid = zid.clone();
+                                            Signal::derive(move || {
+                                                layout.with(|current| {
+                                                    current.as_ref()
+                                                        .and_then(|l| l.zones.iter().find(|z| z.id == zid))
+                                                        .map(|z| z.rotation.to_degrees())
+                                                        .unwrap_or(0.0)
+                                                })
+                                            })
+                                        };
+
+                                        let handle_style_nw = move || {
+                                            let rot = zone_rotation_deg.get();
+                                            let cursor = rotated_cursor(ResizeHandle::NorthWest, rot);
                                             zone_style.get()
                                                 .map(|zd| format!(
                                                     "background: rgba({}, 0.9); border-color: rgba(255,255,255,0.6); \
-                                                     box-shadow: 0 0 8px rgba({}, 0.4)",
+                                                     box-shadow: 0 0 8px rgba({}, 0.4); cursor: {cursor}",
+                                                    zd.primary_rgb, zd.primary_rgb
+                                                ))
+                                                .unwrap_or_default()
+                                        };
+                                        let handle_style_ne = move || {
+                                            let rot = zone_rotation_deg.get();
+                                            let cursor = rotated_cursor(ResizeHandle::NorthEast, rot);
+                                            zone_style.get()
+                                                .map(|zd| format!(
+                                                    "background: rgba({}, 0.9); border-color: rgba(255,255,255,0.6); \
+                                                     box-shadow: 0 0 8px rgba({}, 0.4); cursor: {cursor}",
+                                                    zd.primary_rgb, zd.primary_rgb
+                                                ))
+                                                .unwrap_or_default()
+                                        };
+                                        let handle_style_sw = move || {
+                                            let rot = zone_rotation_deg.get();
+                                            let cursor = rotated_cursor(ResizeHandle::SouthWest, rot);
+                                            zone_style.get()
+                                                .map(|zd| format!(
+                                                    "background: rgba({}, 0.9); border-color: rgba(255,255,255,0.6); \
+                                                     box-shadow: 0 0 8px rgba({}, 0.4); cursor: {cursor}",
+                                                    zd.primary_rgb, zd.primary_rgb
+                                                ))
+                                                .unwrap_or_default()
+                                        };
+                                        let handle_style_se = move || {
+                                            let rot = zone_rotation_deg.get();
+                                            let cursor = rotated_cursor(ResizeHandle::SouthEast, rot);
+                                            zone_style.get()
+                                                .map(|zd| format!(
+                                                    "background: rgba({}, 0.9); border-color: rgba(255,255,255,0.6); \
+                                                     box-shadow: 0 0 8px rgba({}, 0.4); cursor: {cursor}",
                                                     zd.primary_rgb, zd.primary_rgb
                                                 ))
                                                 .unwrap_or_default()
@@ -504,8 +555,8 @@ pub fn LayoutCanvas(
 
                                         view! {
                                             <div
-                                                class=format!("{handle_class} -top-1.5 -left-1.5 cursor-nw-resize")
-                                                style=handle_style
+                                                class=format!("{handle_class} -top-1.5 -left-1.5")
+                                                style=handle_style_nw
                                                 on:mousedown=move |ev| {
                                                     ev.stop_propagation();
                                                     ev.prevent_default();
@@ -517,8 +568,8 @@ pub fn LayoutCanvas(
                                                 }
                                             />
                                             <div
-                                                class=format!("{handle_class} -top-1.5 -right-1.5 cursor-ne-resize")
-                                                style=handle_style
+                                                class=format!("{handle_class} -top-1.5 -right-1.5")
+                                                style=handle_style_ne
                                                 on:mousedown=move |ev| {
                                                     ev.stop_propagation();
                                                     ev.prevent_default();
@@ -530,8 +581,8 @@ pub fn LayoutCanvas(
                                                 }
                                             />
                                             <div
-                                                class=format!("{handle_class} -bottom-1.5 -left-1.5 cursor-sw-resize")
-                                                style=handle_style
+                                                class=format!("{handle_class} -bottom-1.5 -left-1.5")
+                                                style=handle_style_sw
                                                 on:mousedown=move |ev| {
                                                     ev.stop_propagation();
                                                     ev.prevent_default();
@@ -543,8 +594,8 @@ pub fn LayoutCanvas(
                                                 }
                                             />
                                             <div
-                                                class=format!("{handle_class} -bottom-1.5 -right-1.5 cursor-se-resize")
-                                                style=handle_style
+                                                class=format!("{handle_class} -bottom-1.5 -right-1.5")
+                                                style=handle_style_se
                                                 on:mousedown=move |ev| {
                                                     ev.stop_propagation();
                                                     ev.prevent_default();
@@ -640,6 +691,7 @@ struct ResizeState {
     start_mouse: NormalizedPosition,
     start_center: NormalizedPosition,
     start_size: NormalizedPosition,
+    rotation: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -680,10 +732,10 @@ fn begin_resize(
             .zones
             .iter()
             .find(|z| z.id == zone_id)
-            .map(|zone| (zone.position, zone.size))
+            .map(|zone| (zone.position, zone.size, zone.rotation))
     });
 
-    let Some((start_center, start_size)) = zone_snapshot else {
+    let Some((start_center, start_size, rotation)) = zone_snapshot else {
         return;
     };
 
@@ -694,6 +746,7 @@ fn begin_resize(
         start_mouse: mouse,
         start_center,
         start_size,
+        rotation,
     })));
 }
 
@@ -790,4 +843,31 @@ fn hsl_to_rgb_string(h: f32, s: f32, l: f32) -> String {
     let g = ((g1 + m) * 255.0).round() as u8;
     let b = ((b1 + m) * 255.0).round() as u8;
     format!("{r}, {g}, {b}")
+}
+
+/// Compute the CSS cursor for a resize handle, accounting for zone rotation.
+///
+/// Each handle has a base angle (NW=315°, NE=45°, SE=135°, SW=225°). We add
+/// the zone rotation, then snap to the nearest 45° cursor direction.
+fn rotated_cursor(handle: ResizeHandle, rotation_deg: f32) -> &'static str {
+    let base = match handle {
+        ResizeHandle::NorthWest => 315.0,
+        ResizeHandle::NorthEast => 45.0,
+        ResizeHandle::SouthEast => 135.0,
+        ResizeHandle::SouthWest => 225.0,
+    };
+    let effective = (base + rotation_deg).rem_euclid(360.0);
+    // Snap to nearest 45° sector
+    let sector = ((effective + 22.5) / 45.0) as u32 % 8;
+    match sector {
+        0 => "n-resize",
+        1 => "ne-resize",
+        2 => "e-resize",
+        3 => "se-resize",
+        4 => "s-resize",
+        5 => "sw-resize",
+        6 => "w-resize",
+        7 => "nw-resize",
+        _ => "nw-resize",
+    }
 }

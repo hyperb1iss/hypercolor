@@ -431,12 +431,48 @@ pub(crate) fn resize_zone_from_handle(
     handle: ResizeHandle,
     current_mouse: NormalizedPosition,
     keep_aspect_ratio: bool,
+    rotation: f32,
 ) -> (NormalizedPosition, NormalizedPosition) {
+    // Rotate mouse coordinates into zone-local (unrotated) space so that
+    // dragging along a rotated edge correctly maps to width/height changes.
+    let (local_start, local_current) = rotate_mouse_to_local(
+        start_mouse,
+        current_mouse,
+        start_center,
+        rotation,
+    );
+
     if keep_aspect_ratio {
-        resize_zone_locked(start_center, start_size, handle, current_mouse)
+        resize_zone_locked(start_center, start_size, handle, local_current)
     } else {
-        resize_zone_unlocked(start_center, start_size, start_mouse, handle, current_mouse)
+        resize_zone_unlocked(start_center, start_size, local_start, handle, local_current)
     }
+}
+
+/// Rotate two mouse positions from viewport space into zone-local (unrotated)
+/// space, pivoting around the zone center.
+fn rotate_mouse_to_local(
+    start_mouse: NormalizedPosition,
+    current_mouse: NormalizedPosition,
+    center: NormalizedPosition,
+    rotation: f32,
+) -> (NormalizedPosition, NormalizedPosition) {
+    if rotation.abs() < GRID_EPSILON {
+        return (start_mouse, current_mouse);
+    }
+    let cos_r = (-rotation).cos();
+    let sin_r = (-rotation).sin();
+
+    let rotate = |p: NormalizedPosition| {
+        let dx = p.x - center.x;
+        let dy = p.y - center.y;
+        NormalizedPosition::new(
+            center.x + dx * cos_r - dy * sin_r,
+            center.y + dx * sin_r + dy * cos_r,
+        )
+    };
+
+    (rotate(start_mouse), rotate(current_mouse))
 }
 
 pub(crate) fn update_zone_size(

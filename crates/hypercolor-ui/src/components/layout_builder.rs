@@ -17,7 +17,7 @@ use crate::components::layout_zone_properties::LayoutZoneProperties;
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::toasts;
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 
 // Panel size defaults and constraints
 const SIDEBAR_DEFAULT: f64 = 280.0;
@@ -87,6 +87,13 @@ fn replacement_layout_name(layouts: &[api::LayoutSummary]) -> String {
     }
 }
 
+/// Cache of removed zones so re-adding restores previous settings.
+#[derive(Clone)]
+pub(crate) struct RemovedZoneCache {
+    pub cache: Signal<std::collections::HashMap<(String, Option<String>), DeviceZone>>,
+    pub set_cache: WriteSignal<std::collections::HashMap<(String, Option<String>), DeviceZone>>,
+}
+
 /// Layout builder — wraps toolbar, palette, canvas viewport, and zone properties.
 #[component]
 pub fn LayoutBuilder() -> impl IntoView {
@@ -102,6 +109,16 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(true);
     let (hidden_zones, set_hidden_zones) =
         signal(std::collections::HashSet::<String>::new());
+
+    // Removed-zone cache: zones stashed on remove so re-adding restores settings.
+    // Shared via context between palette and zone properties.
+    let (removed_zone_cache, set_removed_zone_cache) = signal(
+        std::collections::HashMap::<(String, Option<String>), DeviceZone>::new(),
+    );
+    provide_context(RemovedZoneCache {
+        cache: removed_zone_cache.into(),
+        set_cache: set_removed_zone_cache,
+    });
     let layout_signal = Signal::derive(move || layout.get());
     let zone_id_signal = Signal::derive(move || selected_zone_id.get());
     let keep_aspect_ratio_signal = Signal::derive(move || keep_aspect_ratio.get());
