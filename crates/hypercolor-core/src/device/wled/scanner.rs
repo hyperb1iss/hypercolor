@@ -8,12 +8,12 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use mdns_sd::{ServiceDaemon, ServiceEvent};
 use serde::{Deserialize, Serialize};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::device::discovery::{DiscoveredDevice, DiscoveryConnectBehavior, TransportScanner};
+use crate::device::net::MdnsBrowser;
 use crate::types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
     DeviceFingerprint, DeviceInfo, DeviceTopologyHint, ZoneInfo,
@@ -24,8 +24,6 @@ const WLED_SERVICE_TYPE: &str = "_wled._tcp.local.";
 
 /// Default scan timeout for mDNS browsing.
 const DEFAULT_SCAN_TIMEOUT: Duration = Duration::from_secs(5);
-/// Best-effort wait for the mDNS daemon to acknowledge shutdown.
-const MDNS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Persistable scanner hint for known WLED devices.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,69 +314,19 @@ impl WledScanner {
             return Ok(HashMap::new());
         }
 
-        let daemon = ServiceDaemon::new().context("Failed to create mDNS daemon")?;
-        let receiver = daemon
-            .browse(WLED_SERVICE_TYPE)
-            .context("Failed to start mDNS browse")?;
-
-        let mut candidates = HashMap::new();
-        let deadline = tokio::time::Instant::now() + self.scan_timeout;
-
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-
-            match tokio::time::timeout(remaining, async {
-                receiver
-                    .recv_async()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("mDNS recv error: {e}"))
-            })
+        let browser = MdnsBrowser::new()?;
+        let services = browser
+            .browse(WLED_SERVICE_TYPE, self.scan_timeout)
             .await
-            {
-                Ok(Ok(ServiceEvent::ServiceResolved(info))) => {
-                    let Some(&ip) = info.get_addresses().iter().next() else {
-                        debug!("mDNS resolved service with no addresses, skipping");
-                        continue;
-                    };
-
-                    let hostname = info.get_hostname().trim_end_matches('.').to_owned();
-                    info!(ip = %ip, hostname = %hostname, "Found WLED device via mDNS");
-                    candidates.entry(ip).or_insert(Some(hostname));
-                }
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => {
-                    warn!(error = %e, "mDNS browse error");
-                    break;
-                }
-                Err(_) => {
-                    break;
-                }
-            }
-        }
-
-        // Drain the shutdown status receiver so `mdns-sd` does not log an
-        // internal error when it reports daemon exit on a dropped channel.
-        match daemon.shutdown() {
-            Ok(receiver) => {
-                match tokio::time::timeout(MDNS_SHUTDOWN_TIMEOUT, receiver.recv_async()).await {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(error)) => {
-                        debug!(error = %error, "mDNS daemon shutdown channel closed");
-                    }
-                    Err(_) => {
-                        debug!(
-                            timeout_ms = MDNS_SHUTDOWN_TIMEOUT.as_millis(),
-                            "timed out waiting for mDNS daemon shutdown"
-                        );
-                    }
-                }
-            }
-            Err(error) => {
-                debug!(error = %error, "failed to request mDNS daemon shutdown");
-            }
+            .context("failed to browse WLED mDNS services")?;
+        let mut candidates = HashMap::new();
+        for service in services {
+            info!(
+                ip = %service.host,
+                hostname = %service.name,
+                "Found WLED device via mDNS"
+            );
+            candidates.entry(service.host).or_insert(Some(service.name));
         }
         Ok(candidates)
     }

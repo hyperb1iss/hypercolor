@@ -1,0 +1,234 @@
+//! Encrypted credential storage for network device backends.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
+use tokio::fs;
+use tokio::sync::RwLock;
+
+/// Per-process temp-file suffix counter for atomic store writes.
+static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+const STORE_FILE_NAME: &str = "credentials.json.enc";
+const SEED_FILE_NAME: &str = ".credential_seed";
+const NONCE_BYTES: usize = 12;
+
+/// Stored credentials for a network device/backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Credentials {
+    /// Philips Hue bridge credentials.
+    HueBridge {
+        /// CLIP v2 API key (the historical Hue "username").
+        api_key: String,
+        /// DTLS client key used as the entertainment streaming PSK.
+        client_key: String,
+    },
+
+    /// Nanoleaf auth token for REST + UDP control.
+    Nanoleaf {
+        /// Token issued after the physical pairing flow.
+        auth_token: String,
+    },
+
+    /// WLED credentials for secured HTTP/API deployments.
+    Wled {
+        /// Optional username for future/basic-auth-style flows.
+        #[serde(default)]
+        username: Option<String>,
+        /// Optional password or access secret.
+        #[serde(default)]
+        password: Option<String>,
+        /// Optional bearer/session token.
+        #[serde(default)]
+        token: Option<String>,
+    },
+
+    /// Escape hatch for future network backends without schema churn.
+    Custom {
+        /// Backend identifier, for example `openrgb`.
+        backend_id: String,
+        /// Backend-defined credential payload.
+        data: serde_json::Value,
+    },
+}
+
+/// Encrypted credential store rooted in Hypercolor's data directory.
+pub struct CredentialStore {
+    store_path: PathBuf,
+    cipher: Aes256Gcm,
+    cache: RwLock<HashMap<String, Credentials>>,
+}
+
+impl CredentialStore {
+    /// Open or create the credential store in `data_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the seed cannot be created/read, the backing file
+    /// cannot be decrypted, or the JSON payload is malformed.
+    pub async fn open(data_dir: &Path) -> Result<Self> {
+        fs::create_dir_all(data_dir)
+            .await
+            .with_context(|| format!("failed to create credential dir {}", data_dir.display()))?;
+
+        let seed_path = data_dir.join(SEED_FILE_NAME);
+        let store_path = data_dir.join(STORE_FILE_NAME);
+        let key = load_or_create_seed(&seed_path).await?;
+        let cipher = Aes256Gcm::new_from_slice(&key)
+            .map_err(|error| anyhow!("failed to construct credential cipher: {error}"))?;
+        let cache = load_cache(&cipher, &store_path).await?;
+
+        Ok(Self {
+            store_path,
+            cipher,
+            cache: RwLock::new(cache),
+        })
+    }
+
+    /// Retrieve credentials for one key.
+    pub async fn get(&self, key: &str) -> Option<Credentials> {
+        self.cache.read().await.get(key).cloned()
+    }
+
+    /// Store or replace credentials for one key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the encrypted payload cannot be persisted.
+    pub async fn store(&self, key: &str, creds: Credentials) -> Result<()> {
+        let snapshot = {
+            let mut cache = self.cache.write().await;
+            cache.insert(key.to_owned(), creds);
+            cache.clone()
+        };
+        self.persist_snapshot(&snapshot).await
+    }
+
+    /// Remove credentials for one key if present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the encrypted payload cannot be persisted.
+    pub async fn remove(&self, key: &str) -> Result<()> {
+        let snapshot = {
+            let mut cache = self.cache.write().await;
+            cache.remove(key);
+            cache.clone()
+        };
+        self.persist_snapshot(&snapshot).await
+    }
+
+    /// List all stored credential keys in deterministic order.
+    pub async fn keys(&self) -> Vec<String> {
+        let mut keys: Vec<_> = self.cache.read().await.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    async fn persist_snapshot(&self, snapshot: &HashMap<String, Credentials>) -> Result<()> {
+        let plaintext =
+            serde_json::to_vec_pretty(snapshot).context("failed to serialize credentials")?;
+        let nonce_bytes = rand::random::<[u8; NONCE_BYTES]>();
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = self
+            .cipher
+            .encrypt(nonce, plaintext.as_ref())
+            .map_err(|error| anyhow!("failed to encrypt credential store: {error}"))?;
+
+        let mut payload = Vec::with_capacity(NONCE_BYTES + ciphertext.len());
+        payload.extend_from_slice(&nonce_bytes);
+        payload.extend_from_slice(&ciphertext);
+
+        let tmp_path = temp_store_path(&self.store_path);
+        fs::write(&tmp_path, payload).await.with_context(|| {
+            format!(
+                "failed to write temporary credential store {}",
+                tmp_path.display()
+            )
+        })?;
+        fs::rename(&tmp_path, &self.store_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to replace credential store {}",
+                    self.store_path.display()
+                )
+            })?;
+
+        Ok(())
+    }
+}
+
+async fn load_or_create_seed(path: &Path) -> Result<[u8; 32]> {
+    if path.exists() {
+        let bytes = fs::read(path)
+            .await
+            .with_context(|| format!("failed to read credential seed {}", path.display()))?;
+        if bytes.len() != 32 {
+            bail!(
+                "credential seed {} must be exactly 32 bytes, found {}",
+                path.display(),
+                bytes.len()
+            );
+        }
+
+        let mut seed = [0_u8; 32];
+        seed.copy_from_slice(&bytes);
+        return Ok(seed);
+    }
+
+    let seed = rand::random::<[u8; 32]>();
+    fs::write(path, seed)
+        .await
+        .with_context(|| format!("failed to write credential seed {}", path.display()))?;
+    Ok(seed)
+}
+
+async fn load_cache(cipher: &Aes256Gcm, store_path: &Path) -> Result<HashMap<String, Credentials>> {
+    if !store_path.exists() {
+        return Ok(HashMap::new());
+    }
+
+    let payload = fs::read(store_path)
+        .await
+        .with_context(|| format!("failed to read credential store {}", store_path.display()))?;
+    if payload.is_empty() {
+        return Ok(HashMap::new());
+    }
+    if payload.len() <= NONCE_BYTES {
+        bail!("credential store {} is truncated", store_path.display());
+    }
+
+    let nonce = Nonce::from_slice(&payload[..NONCE_BYTES]);
+    let plaintext = cipher
+        .decrypt(nonce, &payload[NONCE_BYTES..])
+        .map_err(|error| anyhow!("failed to decrypt credential store: {error}"))?;
+
+    serde_json::from_slice(&plaintext).with_context(|| {
+        format!(
+            "failed to deserialize credential store {}",
+            store_path.display()
+        )
+    })
+}
+
+fn temp_store_path(store_path: &Path) -> PathBuf {
+    let counter = SAVE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let pid = std::process::id();
+    let file_name = store_path.file_name().map_or_else(
+        || STORE_FILE_NAME.to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+
+    store_path.with_file_name(format!("{file_name}.tmp-{pid}-{nanos}-{counter}"))
+}

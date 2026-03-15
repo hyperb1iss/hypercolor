@@ -82,6 +82,10 @@ strum = { version = "0.27", features = ["derive"] }
 dirs = "6.0"
 notify = "7.0"
 
+# Crypto / auth
+aes-gcm = "0.10.3"
+rand = "0.10"
+
 # Workspace crates
 hypercolor-types = { path = "crates/hypercolor-types" }
 hypercolor-hal = { path = "crates/hypercolor-hal" }
