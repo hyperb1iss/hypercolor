@@ -15,38 +15,38 @@ const PALETTE_MODES = [
 const STYLE_MODES = ['Glitch', 'Grain', 'Holo', 'Standard'] as const
 
 export default effect(
-    'Kaleido Tunnel',
+    'Breakthrough',
     shader,
     {
-        intensity: num('Intensity', [20, 220], 120, {
+        intensity: num('Intensity', [20, 220], 160, {
             group: 'Color',
             step: 1,
-            tooltip: 'Overall brightness and energy in the tunnel.',
+            tooltip: 'Overall brightness and color energy.',
             uniform: 'iColorIntensity',
         }),
         palette: combo('Palette', PALETTE_MODES, {
-            default: 'Rainbow',
+            default: 'Neon',
             group: 'Color',
-            tooltip: 'Core tunnel palette.',
+            tooltip: 'Core color palette.',
             uniform: 'iColorMode',
         }),
-        pulse: num('Pulse', [0, 100], 50, {
+        pulse: num('Pulse', [0, 100], 60, {
             group: 'Geometry',
             step: 1,
-            tooltip: 'Breathing and shimmer in the tunnel energy.',
+            tooltip: 'Radial breathing and shimmer.',
             uniform: 'iPulse',
         }),
-        segments: num('Segments', [3, 12], 6, {
+        segments: num('Segments', [3, 12], 8, {
             group: 'Geometry',
             step: 1,
             tooltip: 'Number of mirrored kaleidoscope slices.',
             uniform: 'iSegments',
         }),
-        speed: num('Speed', [1, 20], 5, {
+        speed: num('Speed', [1, 20], 7, {
             group: 'Motion',
             normalize: 'none',
             step: 0.5,
-            tooltip: 'Controls tunnel motion speed. Values above 10 push into extra overdrive.',
+            tooltip: 'Tunnel motion speed. Above 10 enters overdrive.',
             uniform: 'iSpeed',
         }),
         style: combo('Style', STYLE_MODES, {
@@ -55,13 +55,13 @@ export default effect(
             tooltip: 'Post-processing treatment.',
             uniform: 'iStyle',
         }),
-        twist: num('Twist', [0, 100], 40, {
+        twist: num('Twist', [0, 100], 55, {
             group: 'Motion',
             step: 1,
-            tooltip: 'Angular twist through the tunnel depth.',
+            tooltip: 'Angular spiral through the tunnel depth.',
             uniform: 'iTwist',
         }),
-        warp: num('Warp', [0, 100], 30, {
+        warp: num('Warp', [0, 100], 45, {
             group: 'Geometry',
             step: 1,
             tooltip: 'Psychedelic distortion before the kaleidoscope fold.',
@@ -71,7 +71,7 @@ export default effect(
     {
         author: 'Hypercolor',
         description:
-            'Fall through an infinite kaleidoscope — mirrored symmetry folds around a warping tunnel of endlessly shifting light',
+            'Shatter through infinite fractal symmetry — mirrored light folds and spirals as reality dissolves into pure color',
         presets: [
             {
                 controls: {
@@ -130,7 +130,7 @@ export default effect(
                     warp: 35,
                 },
                 description:
-                    'Golden hour refracting through a desert crystal — warm vaporwave tones fold into gentle geometry',
+                    'Golden hour refracting through a desert crystal — warm amber and deep purple fold into gentle geometry',
                 name: 'Sunset Kaleidoscope',
             },
             {
@@ -150,9 +150,9 @@ export default effect(
             },
             {
                 controls: {
-                    intensity: 55,
+                    intensity: 140,
                     palette: 'Deep Sea',
-                    pulse: 95,
+                    pulse: 90,
                     segments: 4,
                     speed: 1.5,
                     style: 'Holo',

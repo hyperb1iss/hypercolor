@@ -16,68 +16,59 @@ uniform float iPulse;
 uniform int iStyle;
 
 const float TAU = 6.28318530718;
-const float BASE_SATURATION = 1.2;
 const float BASE_COLOR_SHIFT = 1.0;
 const float BASE_ABERRATION = 0.2;
-const float BASE_MULTI_HUE = 0.6;
-const float BASE_PALETTE_DRIFT = 0.4;
-const float BASE_SPECTRUM_SPREAD = 1.2;
 
-vec3 hsv2rgb(vec3 c) {
-    vec4 k = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-    vec3 p = abs(fract(c.xxx + k.xyz) * 6.0 - k.www);
-    return c.z * mix(k.xxx, clamp(p - k.xxx, 0.0, 1.0), c.y);
+vec3 cosPal(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
+    return a + b * cos(TAU * (c * t + d));
 }
 
-vec3 palette(float t, int mode, float sat) {
-    t = fract(t);
-    float s = clamp(sat, 0.0, 1.0);
-    float drift = BASE_PALETTE_DRIFT * 0.25;
-    float spread = BASE_SPECTRUM_SPREAD * 0.15;
-    float multiHue = BASE_MULTI_HUE;
-    float t2 = fract(t + spread + sin(iTime * 0.17) * drift);
-    float t3 = fract(t - spread + cos(iTime * 0.11) * drift);
-    vec3 base;
+vec3 palette(float t, int mode) {
+    t = fract(t) + sin(iTime * 0.17) * 0.03;
 
+    if (mode == 0) {
+        // Amethyst — hot pink, magenta, violet, indigo crystal
+        return cosPal(t, vec3(0.60, 0.15, 0.58), vec3(0.35, 0.12, 0.33),
+                      vec3(0.7, 0.5, 0.8), vec3(0.00, 0.55, 0.50));
+    }
     if (mode == 1) {
-        float sector = floor(t * 3.0);
-        vec3 triad = sector < 1.0
-            ? vec3(1.0, 0.1, 0.8)
-            : sector < 2.0
-                ? vec3(0.1, 1.0, 0.9)
-                : vec3(1.0, 1.0, 0.1);
-        float shift = sin(t * TAU * 3.0 + iTime * 0.6) * 0.08;
-        vec3 hsv = vec3(fract(t + shift), s, 1.0);
-        return mix(triad, hsv2rgb(hsv), 0.5);
+        // Deep Sea — dark navy, bioluminescent teal, deep blue-green
+        return cosPal(t, vec3(0.10, 0.32, 0.50), vec3(0.08, 0.24, 0.35),
+                      vec3(0.8, 0.7, 0.6), vec3(0.30, 0.20, 0.25));
     }
-
     if (mode == 2) {
-        return vec3(t * 0.8 + 0.2);
+        // Electric — blue-white lightning arcs, deep blue valleys
+        return cosPal(t, vec3(0.35, 0.45, 0.72), vec3(0.40, 0.38, 0.28),
+                      vec3(1.5, 1.0, 0.6), vec3(0.05, 0.10, 0.30));
     }
-
     if (mode == 3) {
-        float flash = pow(sin(iTime * 10.0) * 0.5 + 0.5, 4.0);
-        base = vec3(0.2, 0.7, 1.6) + flash * 0.2;
-    } else if (mode == 4) {
-        base = vec3(0.9, 0.3 + 0.1 * sin(iTime * 0.5), 1.2);
-    } else if (mode == 5) {
-        base = mix(vec3(1.4, 0.6, 0.2), vec3(0.2, 0.2, 0.8), t);
-    } else if (mode == 6) {
-        base = vec3(0.3, 1.6, 0.4);
-    } else if (mode == 7) {
-        base = vec3(0.95, 0.4, 0.9);
-    } else if (mode == 8) {
-        base = vec3(0.05, 0.3, 0.6);
-    } else {
-        vec3 primary = hsv2rgb(vec3(t, s, 1.0));
-        vec3 secondary = hsv2rgb(vec3(t2, s, 1.0));
-        vec3 tertiary = hsv2rgb(vec3(t3, s, 1.0));
-        return mix(mix(primary, secondary, multiHue * 0.5), tertiary, multiHue * 0.35);
+        // Monochrome — true greyscale with smooth contrast
+        float v = 0.5 + 0.45 * cos(TAU * t);
+        return vec3(v);
     }
-
-    vec3 c2 = hsv2rgb(vec3(t2, s, 1.0));
-    vec3 c3 = hsv2rgb(vec3(t3, s, 1.0));
-    return mix(mix(base, c2, multiHue * 0.6), c3, multiHue * 0.4);
+    if (mode == 4) {
+        // Neon — hot pink, electric blue, acid green, neon yellow
+        return cosPal(t, vec3(0.50, 0.50, 0.50), vec3(0.50, 0.50, 0.50),
+                      vec3(1.0, 1.0, 1.0), vec3(0.88, 0.15, 0.52));
+    }
+    if (mode == 5) {
+        // Rainbow — full vivid spectrum sweep
+        return cosPal(t, vec3(0.50, 0.50, 0.50), vec3(0.50, 0.50, 0.50),
+                      vec3(1.0, 1.0, 1.0), vec3(0.00, 0.33, 0.67));
+    }
+    if (mode == 6) {
+        // Sunset — bright orange, dusky rose, deep purple horizon
+        return cosPal(t, vec3(0.55, 0.30, 0.20), vec3(0.45, 0.28, 0.25),
+                      vec3(0.7, 0.5, 0.8), vec3(0.00, 0.10, 0.55));
+    }
+    if (mode == 7) {
+        // Toxic — vivid acid green, dark teal, purple undertones
+        return cosPal(t, vec3(0.25, 0.50, 0.15), vec3(0.20, 0.40, 0.15),
+                      vec3(0.8, 0.7, 0.9), vec3(0.35, 0.05, 0.60));
+    }
+    // Vaporwave — dusty pink, lavender, soft teal, retro pastel
+    return cosPal(t, vec3(0.60, 0.45, 0.60), vec3(0.30, 0.25, 0.30),
+                  vec3(0.8, 0.8, 0.8), vec3(0.90, 0.40, 0.55));
 }
 
 void main() {
@@ -120,14 +111,17 @@ void main() {
 
     float pulse = 1.0 + 0.65 * pulseControl * sin(time * 2.5 + radius * 6.0);
     float shimmer = 0.92 + 0.08 * sin(twistedAngle * 3.0 - time * (1.8 + pulseControl));
-    float saturation = BASE_SATURATION;
-    vec3 base = palette(hue, iColorMode, clamp(saturation * 0.75, 0.0, 1.0));
+    vec3 base = palette(hue, iColorMode);
 
     float intensity = clamp(iColorIntensity / 100.0, 0.2, 2.2);
     vec3 color = base * pattern * intensity * pulse * shimmer;
 
     float vignette = smoothstep(1.3, 0.2, radius);
     color *= vignette;
+
+    // Hue-preserving soft clamp — prevent white-out at high intensity/pulse
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak > 1.0) color /= peak;
 
     if (iStyle == 0) {
         float line = step(0.98, fract(gl_FragCoord.y * 0.03 + sin(time) * 0.1));
