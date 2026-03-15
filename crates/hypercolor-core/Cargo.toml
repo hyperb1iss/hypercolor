@@ -39,6 +39,8 @@ realfft = { workspace = true }
 rustfft = { workspace = true }
 aes-gcm = { workspace = true }
 rand = { workspace = true }
+webrtc-dtls = { workspace = true }
+webrtc-util = { workspace = true }
 cpal = { workspace = true }
 device_query = { workspace = true }
 evdev = { workspace = true }

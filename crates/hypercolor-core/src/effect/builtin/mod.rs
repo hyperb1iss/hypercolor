@@ -932,6 +932,10 @@ fn color_zones_controls() -> Vec<ControlDefinition> {
     ]
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "preset catalogs are maintained as one readable static table"
+)]
 fn color_zones_presets() -> Vec<PresetTemplate> {
     vec![
         // ── Signature ────────────────────────────────────────────────────

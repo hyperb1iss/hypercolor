@@ -1,7 +1,9 @@
 //! RGB → CIE xy conversion utilities for Philips Hue.
 
+use serde::{Deserialize, Serialize};
+
 /// CIE 1931 xy chromaticity + brightness.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CieXyb {
     pub x: f64,
     pub y: f64,
@@ -9,7 +11,7 @@ pub struct CieXyb {
 }
 
 /// Hue device color gamut triangle.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ColorGamut {
     pub red: (f64, f64),
     pub green: (f64, f64),
