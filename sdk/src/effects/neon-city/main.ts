@@ -401,7 +401,7 @@ export default canvas.stateful(
             if (flow <= 0.01) return
 
             for (const lane of lanes) {
-                const bandY = sceneIndex === 2 ? h * (0.1 + lane.altitude * 0.72) : h * (0.56 + lane.altitude * 0.26)
+                const bandY = sceneIndex === 2 ? h * (0.42 + lane.altitude * 0.44) : h * (0.56 + lane.altitude * 0.26)
                 const segmentLength = lane.length * w
                 const spacing = segmentLength * (1.25 + lane.altitude * 0.9)
                 const speed = (28 + lane.speed * 58) * flow
@@ -409,26 +409,6 @@ export default canvas.stateful(
 
                 for (let cursor = -spacing * 2; cursor < w + spacing * 2; cursor += spacing) {
                     const position = cursor + offset
-
-                    if (sceneIndex === 2) {
-                        const top = (position % (h + 50)) - 25
-                        ctx.fillStyle = hexToRgba(palette.traffic, 0.1 + glow * 0.12)
-                        ctx.fillRect(
-                            w * (0.12 + lane.band * 0.76),
-                            top,
-                            Math.max(2, lane.thickness),
-                            segmentLength * 0.75,
-                        )
-
-                        ctx.fillStyle = hexToRgba(palette.traffic, 0.22 + glow * 0.24)
-                        ctx.fillRect(
-                            w * (0.12 + lane.band * 0.76),
-                            top + segmentLength * 0.54,
-                            Math.max(2, lane.thickness),
-                            Math.max(5, segmentLength * 0.22),
-                        )
-                        continue
-                    }
 
                     const tilt = sceneIndex === 1 ? (lane.direction > 0 ? 0.09 : -0.09) : 0
                     const y = bandY + tilt * (position - w * 0.5)
