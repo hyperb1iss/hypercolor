@@ -6,6 +6,7 @@ use leptos::prelude::*;
 use crate::app::WsContext;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::layout_geometry::{self, ResizeHandle};
+use crate::style_utils::{device_accent_colors, hex_to_rgb};
 use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout, ZoneShape};
 
 /// Canvas viewport with zone overlay divs and group containers.
@@ -780,69 +781,6 @@ fn ring_inner_style(
         )),
         _ => None,
     }
-}
-
-/// Convert a hex color like "#e135ff" to "225, 53, 255" RGB string.
-fn hex_to_rgb(hex: &str) -> String {
-    let hex = hex.trim_start_matches('#');
-    if hex.len() < 6 {
-        return "225, 53, 255".to_string();
-    }
-    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(225);
-    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(53);
-    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255);
-    format!("{r}, {g}, {b}")
-}
-
-/// Generate unique primary + secondary accent colors for a device based on its ID.
-///
-/// Uses a simple FNV-1a hash to pick a hue, then derives a complementary secondary
-/// hue shifted 40° for a rich gradient effect. High saturation + controlled lightness
-/// keeps colors vivid against dark backgrounds.
-pub(crate) fn device_accent_colors(device_id: &str) -> (String, String) {
-    // FNV-1a hash for good distribution
-    let mut hash: u32 = 2_166_136_261;
-    for byte in device_id.bytes() {
-        hash ^= u32::from(byte);
-        hash = hash.wrapping_mul(16_777_619);
-    }
-
-    // Primary hue from hash, secondary shifted 40° for analogous harmony
-    #[allow(clippy::cast_possible_truncation)]
-    let hue = (hash % 360) as f32;
-    let secondary_hue = (hue + 40.0) % 360.0;
-
-    // Vary saturation and lightness slightly per device for more distinction
-    let sat = 75.0 + (((hash >> 8) % 20) as f32); // 75–94%
-    let lit = 62.0 + (((hash >> 16) % 12) as f32); // 62–73%
-
-    let primary = hsl_to_rgb_string(hue, sat, lit);
-    let secondary = hsl_to_rgb_string(secondary_hue, sat.min(90.0), lit + 4.0);
-    (primary, secondary)
-}
-
-/// Convert HSL (h: 0–360, s: 0–100, l: 0–100) to an "r, g, b" string.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn hsl_to_rgb_string(h: f32, s: f32, l: f32) -> String {
-    let s = s / 100.0;
-    let l = l / 100.0;
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    let m = l - c / 2.0;
-
-    let (r1, g1, b1) = match h as u32 {
-        0..60 => (c, x, 0.0),
-        60..120 => (x, c, 0.0),
-        120..180 => (0.0, c, x),
-        180..240 => (0.0, x, c),
-        240..300 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-
-    let r = ((r1 + m) * 255.0).round() as u8;
-    let g = ((g1 + m) * 255.0).round() as u8;
-    let b = ((b1 + m) * 255.0).round() as u8;
-    format!("{r}, {g}, {b}")
 }
 
 /// Compute the CSS cursor for a resize handle, accounting for zone rotation.

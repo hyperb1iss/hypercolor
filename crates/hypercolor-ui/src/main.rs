@@ -3,6 +3,7 @@ mod app;
 mod components;
 mod icons;
 mod layout_geometry;
+mod layout_utils;
 mod pages;
 mod style_utils;
 mod toasts;

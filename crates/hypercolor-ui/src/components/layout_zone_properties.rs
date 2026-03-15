@@ -7,6 +7,7 @@ use wasm_bindgen::JsCast;
 use crate::app::DevicesContext;
 use crate::icons::*;
 use crate::layout_geometry::{self, SizeAxis};
+use crate::style_utils::hex_to_rgb;
 use hypercolor_types::spatial::SpatialLayout;
 
 /// Zone properties editor (bottom panel of layout builder).
@@ -765,14 +766,3 @@ fn topology_name(topology: &hypercolor_types::spatial::LedTopology) -> &'static 
     }
 }
 
-/// Convert a hex color like "#e135ff" to "225, 53, 255" RGB string.
-fn hex_to_rgb(hex: &str) -> String {
-    let hex = hex.trim_start_matches('#');
-    if hex.len() < 6 {
-        return "225, 53, 255".to_string();
-    }
-    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(225);
-    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(53);
-    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255);
-    format!("{r}, {g}, {b}")
-}
