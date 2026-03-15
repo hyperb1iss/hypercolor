@@ -606,6 +606,7 @@ impl Protocol for Push2Protocol {
             has_display: true,
             display_resolution: Some((960, 160)),
             max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         }
     }

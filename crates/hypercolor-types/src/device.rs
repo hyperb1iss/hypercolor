@@ -173,6 +173,10 @@ pub struct DeviceCapabilities {
     /// Maximum sustainable frame rate (0 = unknown / unlimited).
     pub max_fps: u32,
 
+    /// Native color model expected by the device/backend.
+    #[serde(default)]
+    pub color_space: DeviceColorSpace,
+
     /// Optional non-lighting device features.
     #[serde(default)]
     pub features: DeviceFeatures,
@@ -187,6 +191,7 @@ impl Default for DeviceCapabilities {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            color_space: DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         }
     }
@@ -320,6 +325,9 @@ pub enum DeviceFamily {
     /// Philips Hue bridge + lights.
     Hue,
 
+    /// Nanoleaf `WiFi` panels (Shapes, Canvas, Elements, Lines, Skylight).
+    Nanoleaf,
+
     /// Native Razer USB devices.
     Razer,
 
@@ -355,6 +363,7 @@ impl DeviceFamily {
         match self {
             Self::Wled => "WLED",
             Self::Hue => "Philips Hue",
+            Self::Nanoleaf => "Nanoleaf",
             Self::Razer => "Razer",
             Self::Corsair => "Corsair",
             Self::Dygma => "Dygma",
@@ -377,6 +386,7 @@ impl DeviceFamily {
         match self {
             Self::Wled => "wled".into(),
             Self::Hue => "hue".into(),
+            Self::Nanoleaf => "nanoleaf".into(),
             Self::Razer => "razer".into(),
             Self::Corsair => "corsair".into(),
             Self::Dygma => "dygma".into(),
@@ -403,6 +413,7 @@ impl DeviceFamily {
         match self {
             Self::Wled => "wled",
             Self::Hue => "hue",
+            Self::Nanoleaf => "nanoleaf",
             Self::Roli => "blocks",
             Self::Custom(_) => "custom",
             _ => "usb",
@@ -504,6 +515,18 @@ impl fmt::Display for DeviceColorFormat {
             Self::Jpeg => write!(f, "JPEG"),
         }
     }
+}
+
+/// Native device/backend color model used for transport conversion.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceColorSpace {
+    /// Standard sRGB/RGB byte triplets.
+    #[default]
+    Rgb,
+
+    /// CIE 1931 xy chromaticity with separate brightness.
+    CieXy,
 }
 
 // ── DeviceError ───────────────────────────────────────────────────────────

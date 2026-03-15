@@ -95,6 +95,9 @@ mod defaults {
     pub fn wled_dedup_threshold() -> u8 {
         2
     }
+    pub fn nanoleaf_transition() -> u16 {
+        1
+    }
 
     // Network
     pub fn remote_access() -> bool {
@@ -171,6 +174,12 @@ pub struct HypercolorConfig {
     pub wled: WledConfig,
 
     #[serde(default)]
+    pub hue: HueConfig,
+
+    #[serde(default)]
+    pub nanoleaf: NanoleafConfig,
+
+    #[serde(default)]
     pub dbus: DbusConfig,
 
     #[serde(default)]
@@ -200,6 +209,8 @@ impl Default for HypercolorConfig {
             discovery: DiscoveryConfig::default(),
             network: NetworkConfig::default(),
             wled: WledConfig::default(),
+            hue: HueConfig::default(),
+            nanoleaf: NanoleafConfig::default(),
             dbus: DbusConfig::default(),
             tui: TuiConfig::default(),
             session: SessionConfig::default(),
@@ -479,6 +490,10 @@ pub struct DiscoveryConfig {
     #[serde(default = "defaults::bool_true")]
     pub hue_scan: bool,
 
+    /// Enable Nanoleaf device scanning (mDNS + manual IP probe).
+    #[serde(default = "defaults::bool_true")]
+    pub nanoleaf_scan: bool,
+
     /// Enable ROLI Blocks discovery via blocksd bridge.
     #[serde(default = "defaults::bool_true")]
     pub blocks_scan: bool,
@@ -495,6 +510,7 @@ impl Default for DiscoveryConfig {
             scan_interval_secs: defaults::scan_interval(),
             wled_scan: defaults::bool_true(),
             hue_scan: defaults::bool_true(),
+            nanoleaf_scan: defaults::bool_true(),
             blocks_scan: defaults::bool_true(),
             blocks_socket_path: None,
         }
@@ -566,6 +582,53 @@ impl Default for WledConfig {
             default_protocol: WledProtocolConfig::default(),
             realtime_http_enabled: defaults::bool_true(),
             dedup_threshold: defaults::wled_dedup_threshold(),
+        }
+    }
+}
+
+/// Philips Hue backend configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HueConfig {
+    /// Preferred entertainment configuration name or ID.
+    #[serde(default)]
+    pub entertainment_config: Option<String>,
+
+    /// Manual bridge IPs for networks where mDNS discovery is unavailable.
+    #[serde(default)]
+    pub bridge_ips: Vec<IpAddr>,
+
+    /// Use CIE xy color conversion when streaming to Hue.
+    #[serde(default = "defaults::bool_true")]
+    pub use_cie_xy: bool,
+}
+
+impl Default for HueConfig {
+    fn default() -> Self {
+        Self {
+            entertainment_config: None,
+            bridge_ips: Vec::new(),
+            use_cie_xy: defaults::bool_true(),
+        }
+    }
+}
+
+/// Nanoleaf backend configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NanoleafConfig {
+    /// Manual device IPs for networks where mDNS discovery is unavailable.
+    #[serde(default)]
+    pub device_ips: Vec<IpAddr>,
+
+    /// Transition time per frame in deciseconds (100ms units).
+    #[serde(default = "defaults::nanoleaf_transition")]
+    pub transition_time: u16,
+}
+
+impl Default for NanoleafConfig {
+    fn default() -> Self {
+        Self {
+            device_ips: Vec::new(),
+            transition_time: defaults::nanoleaf_transition(),
         }
     }
 }

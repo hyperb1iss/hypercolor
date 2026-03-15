@@ -192,6 +192,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         },
     }
@@ -1433,6 +1434,7 @@ async fn multiple_scanners_aggregate_results() {
                 has_display: false,
                 display_resolution: None,
                 max_fps: 60,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
                 features: DeviceFeatures::default(),
             },
         };

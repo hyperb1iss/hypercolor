@@ -175,6 +175,7 @@ impl DeviceBackend for DirectControlRecordingBackend {
                 has_display: false,
                 display_resolution: None,
                 max_fps: 60,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
                 features: DeviceFeatures::default(),
             },
         }])
@@ -263,6 +264,7 @@ impl MetadataRefreshingBackend {
                     has_display: false,
                     display_resolution: None,
                     max_fps: 30,
+                    color_space: hypercolor_types::device::DeviceColorSpace::default(),
                     features: DeviceFeatures::default(),
                 },
             },
@@ -302,6 +304,7 @@ impl DeviceBackend for MetadataRefreshingBackend {
                 has_display: false,
                 display_resolution: None,
                 max_fps: 60,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
                 features: DeviceFeatures::default(),
             },
         }])
@@ -411,6 +414,7 @@ impl DeviceBackend for DiscoverRetryBackend {
                 has_display: false,
                 display_resolution: None,
                 max_fps: self.target_fps,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
                 features: DeviceFeatures::default(),
             },
         }])
@@ -491,6 +495,7 @@ impl DeviceBackend for DisplayRecordingBackend {
                 has_display: true,
                 display_resolution: Some((480, 480)),
                 max_fps: 30,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
                 features: DeviceFeatures::default(),
             },
         }])
@@ -1766,6 +1771,7 @@ async fn write_frame_routes_multi_zone_device_by_zone_name() {
                 has_display: false,
                 display_resolution: None,
                 max_fps: 10,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
                 features: DeviceFeatures::default(),
             },
         }
@@ -1861,6 +1867,7 @@ async fn write_frame_pads_single_multi_zone_write_to_full_device_length() {
                 has_display: false,
                 display_resolution: None,
                 max_fps: 10,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
                 features: DeviceFeatures::default(),
             },
         }

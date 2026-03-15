@@ -22,7 +22,7 @@ fn discover_response(uid: u64) -> String {
     )
 }
 
-async fn serve_backend_handshake(
+fn serve_backend_handshake(
     socket_path: &Path,
     ack: u8,
 ) -> TestResult<(
@@ -72,7 +72,7 @@ async fn serve_backend_handshake(
 async fn blocks_backend_writes_u64_binary_frames() -> TestResult {
     let tempdir = tempdir()?;
     let socket_path = tempdir.path().join("blocksd.sock");
-    let (frame_rx, server_task) = serve_backend_handshake(&socket_path, 0x01).await?;
+    let (frame_rx, server_task) = serve_backend_handshake(&socket_path, 0x01)?;
 
     let mut backend = BlocksBackend::new(socket_path);
     let discovered = backend.discover().await?;
@@ -97,7 +97,7 @@ async fn blocks_backend_writes_u64_binary_frames() -> TestResult {
 async fn blocks_backend_treats_binary_rejection_as_retryable() -> TestResult {
     let tempdir = tempdir()?;
     let socket_path = tempdir.path().join("blocksd.sock");
-    let (_frame_rx, server_task) = serve_backend_handshake(&socket_path, 0x00).await?;
+    let (_frame_rx, server_task) = serve_backend_handshake(&socket_path, 0x00)?;
 
     let mut backend = BlocksBackend::new(socket_path);
     let discovered = backend.discover().await?;

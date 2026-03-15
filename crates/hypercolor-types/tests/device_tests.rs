@@ -1,9 +1,9 @@
 //! Tests for device identity, capabilities, and state types.
 
 use hypercolor_types::device::{
-    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceError, DeviceFamily,
-    DeviceFeatures, DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier, DeviceInfo,
-    DeviceState, DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
+    ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceColorSpace, DeviceError,
+    DeviceFamily, DeviceFeatures, DeviceFingerprint, DeviceHandle, DeviceId, DeviceIdentifier,
+    DeviceInfo, DeviceState, DeviceTopologyHint, DeviceUserSettings, ZoneInfo,
 };
 use uuid::Uuid;
 
@@ -85,6 +85,7 @@ fn sample_device_info() -> DeviceInfo {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            color_space: DeviceColorSpace::Rgb,
             features: DeviceFeatures::default(),
         },
     }
@@ -131,6 +132,7 @@ fn capabilities_default_values() {
     assert!(caps.supports_direct);
     assert!(!caps.supports_brightness);
     assert_eq!(caps.max_fps, 60);
+    assert_eq!(caps.color_space, DeviceColorSpace::Rgb);
 }
 
 #[test]
@@ -142,6 +144,7 @@ fn capabilities_serde_round_trip() {
         has_display: false,
         display_resolution: None,
         max_fps: 30,
+        color_space: DeviceColorSpace::CieXy,
         features: DeviceFeatures::default(),
     };
     let json = serde_json::to_string(&caps).expect("serialize");
@@ -264,6 +267,7 @@ fn connection_type_serde_round_trip() {
 fn device_family_display() {
     assert_eq!(DeviceFamily::Wled.to_string(), "WLED");
     assert_eq!(DeviceFamily::Hue.to_string(), "Philips Hue");
+    assert_eq!(DeviceFamily::Nanoleaf.to_string(), "Nanoleaf");
     assert_eq!(DeviceFamily::Razer.to_string(), "Razer");
     assert_eq!(DeviceFamily::Corsair.to_string(), "Corsair");
     assert_eq!(DeviceFamily::Dygma.to_string(), "Dygma");
@@ -280,6 +284,7 @@ fn device_family_display() {
 fn device_family_equality() {
     assert_eq!(DeviceFamily::Wled, DeviceFamily::Wled);
     assert_ne!(DeviceFamily::Wled, DeviceFamily::Hue);
+    assert_ne!(DeviceFamily::Hue, DeviceFamily::Nanoleaf);
     assert_eq!(
         DeviceFamily::Custom("Foo".into()),
         DeviceFamily::Custom("Foo".into())
@@ -295,6 +300,7 @@ fn device_family_serde_round_trip() {
     let families = vec![
         DeviceFamily::Wled,
         DeviceFamily::Hue,
+        DeviceFamily::Nanoleaf,
         DeviceFamily::Razer,
         DeviceFamily::Corsair,
         DeviceFamily::Dygma,
@@ -310,7 +316,7 @@ fn device_family_serde_round_trip() {
     }
 }
 
-// ── ColorFormat ───────────────────────────────────────────────────────────
+// ── Color ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn color_format_display() {
@@ -318,6 +324,20 @@ fn color_format_display() {
     assert_eq!(DeviceColorFormat::Rgbw.to_string(), "RGBW");
     assert_eq!(DeviceColorFormat::Grb.to_string(), "GRB");
     assert_eq!(DeviceColorFormat::Rbg.to_string(), "RBG");
+}
+
+#[test]
+fn color_space_defaults_to_rgb() {
+    assert_eq!(DeviceColorSpace::default(), DeviceColorSpace::Rgb);
+}
+
+#[test]
+fn color_space_serde_round_trip() {
+    for color_space in [DeviceColorSpace::Rgb, DeviceColorSpace::CieXy] {
+        let json = serde_json::to_string(&color_space).expect("serialize");
+        let back: DeviceColorSpace = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, color_space);
+    }
 }
 
 #[test]

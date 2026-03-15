@@ -350,6 +350,7 @@ impl Protocol for CorsairLcdProtocol {
             has_display: true,
             display_resolution: Some((self.width, self.height)),
             max_fps: DEFAULT_TARGET_FPS,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         }
     }

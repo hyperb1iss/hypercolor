@@ -510,6 +510,7 @@ fn build_device_info(device_id: DeviceId, wled_info: &WledDeviceInfo, _ip: IpAdd
             has_display: false,
             display_resolution: None,
             max_fps: wled_info.negotiated_target_fps(),
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         },
     }

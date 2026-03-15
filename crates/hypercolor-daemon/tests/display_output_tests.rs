@@ -144,6 +144,7 @@ fn display_device_info(
             has_display,
             display_resolution: has_display.then_some((width, height)),
             max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         },
     }
@@ -329,6 +330,7 @@ fn mixed_led_display_device_info(device_id: DeviceId, width: u32, height: u32) -
             has_display: true,
             display_resolution: Some((width, height)),
             max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         },
     }

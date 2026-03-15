@@ -1035,6 +1035,7 @@ impl Protocol for RazerProtocol {
             has_display: false,
             display_resolution: None,
             max_fps,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures {
                 scroll_mode: self.supports_scroll_features,
                 scroll_smart_reel: self.supports_scroll_features,

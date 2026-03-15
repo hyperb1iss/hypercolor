@@ -727,6 +727,7 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         },
     };
@@ -756,6 +757,7 @@ async fn insert_test_asus_smbus_device(state: &Arc<AppState>, name: &str) -> Dev
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         },
     };
@@ -865,6 +867,7 @@ async fn list_devices_includes_structured_zone_topology_hints() {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         },
     };
@@ -3464,6 +3467,7 @@ async fn list_devices_includes_network_metadata_when_available() {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         },
     };
@@ -3938,6 +3942,7 @@ async fn logical_devices_migrate_legacy_default_ids_and_keep_legacy_aliases_mapp
                 has_display: false,
                 display_resolution: None,
                 max_fps: 60,
+                color_space: hypercolor_types::device::DeviceColorSpace::default(),
                 features: DeviceFeatures::default(),
             },
         };

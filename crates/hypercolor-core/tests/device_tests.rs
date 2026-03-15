@@ -477,6 +477,7 @@ async fn registry_add_with_fingerprint_preserves_renderable_runtime_shape_when_r
             has_display: false,
             display_resolution: None,
             max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         },
     };
@@ -695,6 +696,7 @@ async fn registry_update_info_preserves_id_and_state() {
             has_display: false,
             display_resolution: None,
             max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         },
     };

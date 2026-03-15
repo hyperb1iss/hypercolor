@@ -319,6 +319,7 @@ impl Protocol for QmkProtocol {
             has_display: false,
             display_resolution: None,
             max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         }
     }

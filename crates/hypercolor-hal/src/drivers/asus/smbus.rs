@@ -520,6 +520,7 @@ impl Protocol for AuraSmBusProtocol {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         }
     }

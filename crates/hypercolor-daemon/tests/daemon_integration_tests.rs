@@ -111,6 +111,7 @@ fn make_device_info(name: &str, led_count: u32) -> DeviceInfo {
             has_display: false,
             display_resolution: None,
             max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         },
     }
@@ -306,11 +307,16 @@ async fn config_loading_all_sub_configs_have_defaults() {
     assert!(config.discovery.mdns_enabled);
     assert!(config.discovery.wled_scan);
     assert!(config.discovery.hue_scan);
+    assert!(config.discovery.nanoleaf_scan);
 
     // Feature flags default to false
     assert!(!config.features.wasm_plugins);
     assert!(!config.features.hue_entertainment);
     assert!(!config.features.midi_input);
+
+    // Network backend config defaults
+    assert!(config.hue.use_cie_xy);
+    assert_eq!(config.nanoleaf.transition_time, 1);
 
     // TUI config defaults
     assert_eq!(config.tui.theme, "silkcircuit");

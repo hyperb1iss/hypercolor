@@ -198,6 +198,7 @@ impl Protocol for SeirenV3Protocol {
             has_display: false,
             display_resolution: None,
             max_fps: 500,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
             features: DeviceFeatures::default(),
         }
     }

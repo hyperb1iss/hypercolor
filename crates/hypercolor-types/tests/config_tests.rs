@@ -2,8 +2,8 @@
 
 use hypercolor_types::config::{
     AudioConfig, CaptureConfig, DaemonConfig, DbusConfig, DiscoveryConfig, EffectEngineConfig,
-    FeatureFlags, HypercolorConfig, LogLevel, McpConfig, NetworkConfig, ShutdownBehavior,
-    TuiConfig, WebConfig, WledConfig, WledProtocolConfig,
+    FeatureFlags, HueConfig, HypercolorConfig, LogLevel, McpConfig, NanoleafConfig, NetworkConfig,
+    ShutdownBehavior, TuiConfig, WebConfig, WledConfig, WledProtocolConfig,
 };
 use hypercolor_types::session::SessionConfig;
 
@@ -84,6 +84,7 @@ fn discovery_defaults_match_spec() {
     assert_eq!(d.scan_interval_secs, 300);
     assert!(d.wled_scan);
     assert!(d.hue_scan);
+    assert!(d.nanoleaf_scan);
 }
 
 #[test]
@@ -101,6 +102,21 @@ fn wled_defaults_match_spec() {
     assert_eq!(w.default_protocol, WledProtocolConfig::Ddp);
     assert!(w.realtime_http_enabled);
     assert_eq!(w.dedup_threshold, 2);
+}
+
+#[test]
+fn hue_defaults_match_spec() {
+    let h = HueConfig::default();
+    assert_eq!(h.entertainment_config, None);
+    assert!(h.bridge_ips.is_empty());
+    assert!(h.use_cie_xy);
+}
+
+#[test]
+fn nanoleaf_defaults_match_spec() {
+    let n = NanoleafConfig::default();
+    assert!(n.device_ips.is_empty());
+    assert_eq!(n.transition_time, 1);
 }
 
 #[test]
@@ -173,6 +189,8 @@ fn full_config_toml_roundtrip() {
         discovery: DiscoveryConfig::default(),
         network: NetworkConfig::default(),
         wled: WledConfig::default(),
+        hue: HueConfig::default(),
+        nanoleaf: NanoleafConfig::default(),
         dbus: DbusConfig::default(),
         tui: TuiConfig::default(),
         features: FeatureFlags::default(),
@@ -191,6 +209,8 @@ fn full_config_toml_roundtrip() {
     assert_eq!(restored.discovery.scan_interval_secs, 300);
     assert!(restored.network.mdns_publish);
     assert!(!restored.network.remote_access);
+    assert!(restored.hue.use_cie_xy);
+    assert_eq!(restored.nanoleaf.transition_time, 1);
     assert!(restored.dbus.enabled);
     assert_eq!(restored.tui.theme, "silkcircuit");
     assert!(!restored.features.wasm_plugins);
@@ -214,6 +234,8 @@ fn minimal_toml_fills_defaults() {
     assert_eq!(config.wled.default_protocol, WledProtocolConfig::Ddp);
     assert!(config.wled.realtime_http_enabled);
     assert_eq!(config.wled.dedup_threshold, 2);
+    assert!(config.hue.use_cie_xy);
+    assert_eq!(config.nanoleaf.transition_time, 1);
 }
 
 #[test]
