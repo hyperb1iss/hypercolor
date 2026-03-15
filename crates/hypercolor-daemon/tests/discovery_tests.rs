@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::device::hue::HueKnownBridge;
 use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_core::device::{
@@ -20,8 +21,8 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::discovery::{
-    DiscoveryBackend, DiscoveryRuntime, execute_discovery_scan, resolve_wled_probe_ips,
-    resolve_wled_probe_targets, sync_active_layout_connectivity,
+    DiscoveryBackend, DiscoveryRuntime, execute_discovery_scan, resolve_hue_probe_bridges,
+    resolve_wled_probe_ips, resolve_wled_probe_targets, sync_active_layout_connectivity,
     sync_active_layout_for_renderable_devices,
 };
 use hypercolor_daemon::logical_devices::LogicalDevice;
@@ -460,6 +461,58 @@ async fn resolve_wled_probe_targets_preserves_cached_identity_hints() {
     assert_eq!(
         configured.fingerprint,
         Some(DeviceFingerprint("net:11:22:33:44:55:66".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn resolve_hue_probe_bridges_merges_config_and_registry_metadata() {
+    let registry = DeviceRegistry::new();
+    let configured_ip: IpAddr = "10.9.0.10".parse().expect("configured IP should parse");
+    let cached_ip: IpAddr = "10.9.0.20".parse().expect("cached IP should parse");
+
+    let mut config = HypercolorConfig::default();
+    config.hue.bridge_ips = vec![configured_ip];
+
+    let mut hue_info = wled_device_info("Studio Bridge");
+    hue_info.family = DeviceFamily::Hue;
+    hue_info.vendor = "Philips Hue".to_owned();
+    hue_info.model = Some("BSB002".to_owned());
+    hue_info.firmware_version = Some("1968096020".to_owned());
+
+    let mut hue_metadata = HashMap::new();
+    hue_metadata.insert("backend_id".to_owned(), "hue".to_owned());
+    hue_metadata.insert("ip".to_owned(), cached_ip.to_string());
+    hue_metadata.insert("api_port".to_owned(), "8443".to_owned());
+    hue_metadata.insert("bridge_id".to_owned(), "bridge-cached".to_owned());
+    registry
+        .add_with_fingerprint_and_metadata(
+            hue_info,
+            DeviceFingerprint("hue:bridge-cached".to_owned()),
+            hue_metadata,
+        )
+        .await;
+
+    let resolved = resolve_hue_probe_bridges(&registry, &config).await;
+    assert_eq!(
+        resolved,
+        vec![
+            HueKnownBridge {
+                bridge_id: String::new(),
+                ip: configured_ip,
+                api_port: 443,
+                name: String::new(),
+                model_id: String::new(),
+                sw_version: String::new(),
+            },
+            HueKnownBridge {
+                bridge_id: "bridge-cached".to_owned(),
+                ip: cached_ip,
+                api_port: 8443,
+                name: "Studio Bridge".to_owned(),
+                model_id: "BSB002".to_owned(),
+                sw_version: "1968096020".to_owned(),
+            },
+        ]
     );
 }
 

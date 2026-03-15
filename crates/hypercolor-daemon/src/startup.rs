@@ -22,6 +22,7 @@ use uuid::Uuid;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::hue::HueBackend;
 use hypercolor_core::device::manager::BackendRoutingDebugSnapshot;
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::nanoleaf::NanoleafBackend;
@@ -308,6 +309,13 @@ impl DaemonState {
         if config.discovery.wled_scan {
             backend_manager_inner
                 .register_backend(Box::new(build_wled_backend(config, &runtime_state_path)));
+        }
+        if config.discovery.hue_scan {
+            backend_manager_inner.register_backend(Box::new(HueBackend::with_mdns_enabled(
+                config.hue.clone(),
+                Arc::clone(&credential_store),
+                config.discovery.mdns_enabled,
+            )));
         }
         if config.discovery.blocks_scan {
             let socket_path = config.discovery.blocks_socket_path.as_ref().map_or_else(

@@ -11,6 +11,7 @@ use std::time::Duration;
 use anyhow::Context;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueKnownBridge, HueScanner};
 use hypercolor_core::device::nanoleaf::{NanoleafKnownDevice, NanoleafScanner};
 use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::wled::{WledKnownTarget, WledScanner};
@@ -155,6 +156,7 @@ pub struct DiscoveryRuntime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiscoveryBackend {
     Wled,
+    Hue,
     Nanoleaf,
     Usb,
     SmBus,
@@ -167,6 +169,7 @@ impl DiscoveryBackend {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Wled => "wled",
+            Self::Hue => "hue",
             Self::Nanoleaf => "nanoleaf",
             Self::Usb => "usb",
             Self::SmBus => "smbus",
@@ -177,6 +180,7 @@ impl DiscoveryBackend {
     fn parse(raw: &str) -> Option<Self> {
         match raw {
             "wled" => Some(Self::Wled),
+            "hue" => Some(Self::Hue),
             "nanoleaf" => Some(Self::Nanoleaf),
             "usb" => Some(Self::Usb),
             "smbus" => Some(Self::SmBus),
@@ -188,6 +192,7 @@ impl DiscoveryBackend {
     /// All known backend identifiers for default discovery and error messages.
     const ALL: &[Self] = &[
         Self::Wled,
+        Self::Hue,
         Self::Nanoleaf,
         Self::Usb,
         Self::SmBus,
@@ -375,6 +380,87 @@ pub async fn resolve_nanoleaf_probe_devices(
     resolved
 }
 
+/// Resolve the Hue bridges that discovery should probe from config and
+/// registry metadata.
+pub async fn resolve_hue_probe_bridges(
+    device_registry: &DeviceRegistry,
+    config: &HypercolorConfig,
+) -> Vec<HueKnownBridge> {
+    let mut known_bridges: HashMap<IpAddr, HueKnownBridge> = config
+        .hue
+        .bridge_ips
+        .iter()
+        .copied()
+        .map(HueKnownBridge::from_ip)
+        .map(|bridge| (bridge.ip, bridge))
+        .collect();
+
+    for tracked in device_registry.list().await {
+        let metadata = device_registry.metadata_for_id(&tracked.info.id).await;
+        if backend_id_for_device(&tracked.info.family, metadata.as_ref()) != "hue" {
+            continue;
+        }
+
+        let Some(metadata) = metadata else {
+            continue;
+        };
+        let Some(ip) = metadata
+            .get("ip")
+            .and_then(|value| value.parse::<IpAddr>().ok())
+        else {
+            continue;
+        };
+
+        let api_port = metadata
+            .get("api_port")
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_HUE_API_PORT);
+        let bridge_id = metadata.get("bridge_id").cloned().unwrap_or_default();
+        let model_id = metadata
+            .get("model_id")
+            .cloned()
+            .or_else(|| tracked.info.model.clone())
+            .unwrap_or_default();
+        let sw_version = metadata
+            .get("sw_version")
+            .cloned()
+            .or_else(|| tracked.info.firmware_version.clone())
+            .unwrap_or_default();
+
+        known_bridges
+            .entry(ip)
+            .and_modify(|existing| {
+                if existing.bridge_id.is_empty() {
+                    existing.bridge_id.clone_from(&bridge_id);
+                }
+                if existing.api_port == 0 {
+                    existing.api_port = api_port;
+                }
+                if existing.name.is_empty() {
+                    existing.name.clone_from(&tracked.info.name);
+                }
+                if existing.model_id.is_empty() {
+                    existing.model_id.clone_from(&model_id);
+                }
+                if existing.sw_version.is_empty() {
+                    existing.sw_version.clone_from(&sw_version);
+                }
+            })
+            .or_insert_with(|| HueKnownBridge {
+                bridge_id,
+                ip,
+                api_port,
+                name: tracked.info.name.clone(),
+                model_id,
+                sw_version,
+            });
+    }
+
+    let mut resolved: Vec<_> = known_bridges.into_values().collect();
+    resolved.sort_by_key(|bridge| bridge.ip);
+    resolved
+}
+
 /// Resolve and validate requested discovery backends against configuration.
 ///
 /// Returns backend identifiers in a deterministic order with duplicates removed.
@@ -431,6 +517,17 @@ pub fn resolve_backends(
                     if explicit_request {
                         return Err(
                             "Discovery backend 'wled' is disabled by config (discovery.wled_scan=false)"
+                                .to_owned(),
+                        );
+                    }
+                    continue;
+                }
+            }
+            DiscoveryBackend::Hue => {
+                if !config.discovery.hue_scan {
+                    if explicit_request {
+                        return Err(
+                            "Discovery backend 'hue' is disabled by config (discovery.hue_scan=false)"
                                 .to_owned(),
                         );
                     }
@@ -539,6 +636,17 @@ pub async fn execute_discovery_scan(
                     known_targets,
                     config.discovery.mdns_enabled,
                     timeout,
+                )));
+            }
+            DiscoveryBackend::Hue => {
+                let known_bridges =
+                    resolve_hue_probe_bridges(&runtime.device_registry, config.as_ref()).await;
+                orchestrator.add_scanner(Box::new(HueScanner::with_options(
+                    known_bridges,
+                    Arc::clone(&runtime.credential_store),
+                    timeout,
+                    config.discovery.mdns_enabled,
+                    config.hue.entertainment_config.clone(),
                 )));
             }
             DiscoveryBackend::Nanoleaf => {
@@ -2454,6 +2562,7 @@ mod tests {
             resolved,
             vec![
                 DiscoveryBackend::Wled,
+                DiscoveryBackend::Hue,
                 DiscoveryBackend::Nanoleaf,
                 DiscoveryBackend::Usb,
                 DiscoveryBackend::SmBus,
@@ -2489,6 +2598,15 @@ mod tests {
     }
 
     #[test]
+    fn resolve_backends_rejects_disabled_hue() {
+        let mut cfg = HypercolorConfig::default();
+        cfg.discovery.hue_scan = false;
+        let requested = vec!["hue".to_owned()];
+        let error = resolve_backends(Some(&requested), &cfg).expect_err("hue must fail");
+        assert!(error.contains("disabled"));
+    }
+
+    #[test]
     fn resolve_backends_keeps_wled_when_mdns_is_disabled() {
         let mut cfg = HypercolorConfig::default();
         cfg.discovery.mdns_enabled = false;
@@ -2498,6 +2616,7 @@ mod tests {
             resolved,
             vec![
                 DiscoveryBackend::Wled,
+                DiscoveryBackend::Hue,
                 DiscoveryBackend::Nanoleaf,
                 DiscoveryBackend::Usb,
                 DiscoveryBackend::SmBus,
