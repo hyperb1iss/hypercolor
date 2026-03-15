@@ -162,14 +162,12 @@ struct PreparedDisplaySample {
     y_upper_weight: u16,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 struct DisplayFrameInputState {
-    source_width: u32,
-    source_height: u32,
+    source: CanvasFrame,
     brightness_factor: u16,
     geometry: DisplayGeometry,
     viewport: DisplayViewportSignature,
-    source_rgba: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,12 +190,12 @@ impl DisplayFrameInputState {
         geometry: &DisplayGeometry,
         brightness: f32,
     ) -> bool {
-        self.source_width == source.width
-            && self.source_height == source.height
+        self.source.width == source.width
+            && self.source.height == source.height
             && self.brightness_factor == display_brightness_factor(brightness)
             && self.geometry == *geometry
             && self.viewport == display_viewport_signature(viewport)
-            && self.source_rgba.as_slice() == source.rgba_bytes()
+            && self.source.rgba_bytes() == source.rgba_bytes()
     }
 
     fn capture(
@@ -207,12 +205,10 @@ impl DisplayFrameInputState {
         brightness: f32,
     ) -> Self {
         Self {
-            source_width: source.width,
-            source_height: source.height,
+            source: source.clone(),
             brightness_factor: display_brightness_factor(brightness),
             geometry: geometry.clone(),
             viewport: display_viewport_signature(viewport),
-            source_rgba: source.rgba_bytes().to_vec(),
         }
     }
 }

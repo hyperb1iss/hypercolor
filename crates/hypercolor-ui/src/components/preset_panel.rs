@@ -443,7 +443,7 @@ fn PresetSelectorRow(
                                bg-surface-overlay/98 backdrop-blur-xl
                                border border-t-0 border-edge-subtle
                                dropdown-glow animate-slide-down
-                               max-h-[240px] overflow-y-auto scrollbar-none"
+                               max-h-[320px] overflow-y-auto scrollbar-dropdown"
                         style="z-index: 9999; margin-top: -1px"
                         on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
                     >

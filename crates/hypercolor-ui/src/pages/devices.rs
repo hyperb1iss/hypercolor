@@ -186,7 +186,7 @@ pub fn DevicesPage() -> impl IntoView {
                             <div
                                 class="absolute top-full right-0 mt-1 z-30 w-[220px] max-h-[320px] overflow-y-auto
                                        rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
-                                       py-1.5 animate-fade-in animate-glow-reveal scrollbar-none"
+                                       py-1.5 animate-fade-in animate-glow-reveal scrollbar-dropdown"
                             >
                                 // ── Status section ──
                                 <div class="px-3 pt-1 pb-1.5">

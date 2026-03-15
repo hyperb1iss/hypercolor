@@ -346,7 +346,7 @@ pub fn EffectsPage() -> impl IntoView {
                                 <div
                                     class="absolute top-full right-0 mt-1 z-30 w-[260px] max-h-[400px] overflow-y-auto
                                            rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
-                                           py-1.5 animate-fade-in animate-glow-reveal scrollbar-none"
+                                           py-1.5 animate-fade-in animate-glow-reveal scrollbar-dropdown"
                                 >
                                     // ── Category section ──
                                     <div class="px-3 pt-1 pb-1.5">

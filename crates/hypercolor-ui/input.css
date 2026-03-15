@@ -268,6 +268,36 @@ input[type="color"]::-webkit-color-swatch {
     border-top: 1px solid rgba(255, 255, 255, 0.02);
 }
 
+/* ── Dropdown Scrollbars ───────────────────────────────────────────────── */
+
+.scrollbar-dropdown {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(225, 53, 255, 0.35) rgba(10, 9, 16, 0.18);
+}
+.scrollbar-dropdown::-webkit-scrollbar {
+    width: 7px;
+}
+.scrollbar-dropdown::-webkit-scrollbar-track {
+    background: rgba(10, 9, 16, 0.18);
+    border-radius: 999px;
+}
+.scrollbar-dropdown::-webkit-scrollbar-thumb {
+    background: linear-gradient(
+        180deg,
+        rgba(225, 53, 255, 0.42) 0%,
+        rgba(128, 255, 234, 0.3) 100%
+    );
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+}
+.scrollbar-dropdown::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(
+        180deg,
+        rgba(225, 53, 255, 0.56) 0%,
+        rgba(128, 255, 234, 0.4) 100%
+    );
+}
+
 /* ── Toolbar Action Buttons ────────────────────────────────────────────── */
 
 .toolbar-action {

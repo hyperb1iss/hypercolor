@@ -3,6 +3,7 @@
 //! falling back to the definition's `default_value`.
 
 use leptos::ev;
+use leptos::portal::Portal;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
@@ -210,8 +211,9 @@ fn install_control_dropdown_outside_handler(class_name: String, set_open: WriteS
     );
 }
 
-/// Close a dropdown when any ancestor scrolls (fixed-position panels don't
-/// track scroll, so dismissing is the correct UX).
+/// Close a dropdown when any ancestor scrolls. The menu is portaled and uses
+/// viewport-relative positioning, so scrolling should dismiss it rather than
+/// leaving it visually detached from the trigger.
 fn install_scroll_close_handler(set_open: WriteSignal<bool>) {
     let Some(win) = web_sys::window() else {
         return;
@@ -228,6 +230,55 @@ fn install_scroll_close_handler(set_open: WriteSignal<bool>) {
             .capture(true)
             .passive(true),
     );
+}
+
+fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
+    trigger
+        .map(|el| {
+            let rect = el.get_bounding_client_rect();
+            let Some(window) = web_sys::window() else {
+                return String::new();
+            };
+
+            let viewport_width = window
+                .inner_width()
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or(rect.right());
+            let viewport_height = window
+                .inner_height()
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or(rect.bottom());
+
+            let horizontal_margin = 12.0;
+            let vertical_margin = 12.0;
+            let desired_max_height = 320.0;
+            let width = rect.width();
+            let max_left = (viewport_width - width - horizontal_margin).max(horizontal_margin);
+            let left = rect.left().clamp(horizontal_margin, max_left);
+            let available_below = (viewport_height - rect.bottom() - vertical_margin).max(0.0);
+            let available_above = (rect.top() - vertical_margin).max(0.0);
+            let open_upward = available_below < 160.0 && available_above > available_below;
+            let max_height = if open_upward {
+                available_above
+            } else {
+                available_below
+            }
+            .min(desired_max_height)
+            .max(96.0);
+
+            if open_upward {
+                let bottom = (viewport_height - rect.top() + 1.0).max(vertical_margin);
+                format!(
+                    "left: {left}px; bottom: {bottom}px; width: {width}px; max-height: {max_height}px"
+                )
+            } else {
+                let top = (rect.bottom() - 1.0).max(vertical_margin);
+                format!("top: {top}px; left: {left}px; width: {width}px; max-height: {max_height}px")
+            }
+        })
+        .unwrap_or_default()
 }
 
 /// A single control widget, dispatched by ControlType.
@@ -533,11 +584,13 @@ fn ControlWidget(
                 _ => labels.first().cloned().unwrap_or_default(),
             };
             let labels_for_sync = labels.clone();
+            let dropdown_labels = StoredValue::new(labels.clone());
             let (selected, set_selected) = signal(initial);
             let (dropdown_open, set_dropdown_open) = signal(false);
             let control_name = control_id.clone();
-            let dropdown_id = format!("ctrl-dropdown-{}", control_name);
+            let dropdown_control_name = StoredValue::new(control_name.clone());
             let dropdown_class = format!("control-dropdown-{}", control_name);
+            let dropdown_class_value = StoredValue::new(dropdown_class.clone());
             let trigger_ref = NodeRef::<leptos::html::Button>::new();
 
             Effect::new(move |_| {
@@ -555,8 +608,6 @@ fn ControlWidget(
                 let dropdown_class = dropdown_class.clone();
                 install_control_dropdown_outside_handler(dropdown_class, set_dropdown_open);
             }
-
-            // Close dropdown on scroll (fixed-position panel won't track)
             install_scroll_close_handler(set_dropdown_open);
 
             view! {
@@ -572,7 +623,6 @@ fn ControlWidget(
                         <button
                             type="button"
                             node_ref=trigger_ref
-                            id=dropdown_id
                             class="w-full flex items-center gap-1.5 bg-surface-sunken border px-2.5 py-1.5
                                    text-xs cursor-pointer select-silk-trigger"
                             class=("rounded-t-lg", move || dropdown_open.get())
@@ -605,55 +655,53 @@ fn ControlWidget(
                         </button>
 
                         <Show when=move || dropdown_open.get()>
-                            <div
-                                class="fixed z-[9999]
-                                       rounded-b-xl overflow-hidden
-                                       bg-surface-overlay/98 backdrop-blur-xl
-                                       border border-t-0 border-edge-subtle
-                                       dropdown-glow animate-slide-down
-                                       max-h-[200px] overflow-y-auto scrollbar-none"
-                                style=move || {
-                                    trigger_ref.get().map(|el| {
-                                        let rect = el.get_bounding_client_rect();
-                                        format!(
-                                            "top: {}px; left: {}px; width: {}px",
-                                            rect.bottom() - 1.0, rect.left(), rect.width()
-                                        )
-                                    }).unwrap_or_default()
-                                }
-                                on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
-                            >
-                                {labels.iter().map(|label| {
-                                    let label_val = label.clone();
-                                    let display = label.clone();
-                                    let m1 = label.clone();
-                                    let m2 = label.clone();
-                                    let m3 = label.clone();
-                                    let m4 = label.clone();
-                                    let control_name = control_name.clone();
-                                    view! {
-                                        <button
-                                            type="button"
-                                            class="dropdown-option w-full text-left px-3 py-[7px] text-xs cursor-pointer
-                                                   flex items-center gap-2"
-                                            class=("dropdown-option-active", move || selected.get() == m1)
-                                            class=("text-fg-tertiary", move || selected.get() != m2)
-                                            on:click=move |_| {
-                                                set_selected.set(label_val.clone());
-                                                on_change.run((control_name.clone(), json!(label_val.clone())));
-                                                set_dropdown_open.set(false);
-                                            }
-                                        >
-                                            <span
-                                                class="w-1 h-1 rounded-full shrink-0 transition-all duration-200"
-                                                class=("bg-accent-muted scale-100 opacity-100", move || selected.get() == m3)
-                                                class=("scale-0 opacity-0", move || selected.get() != m4)
-                                            />
-                                            <span class="truncate">{display}</span>
-                                        </button>
-                                    }
-                                }).collect_view()}
-                            </div>
+                            <Portal>
+                                <div class=move || dropdown_class_value.get_value()>
+                                    <div
+                                        class="fixed z-[9999]
+                                               rounded-b-xl overflow-hidden
+                                               bg-surface-overlay/98 backdrop-blur-xl
+                                               border border-t-0 border-edge-subtle
+                                               dropdown-glow animate-slide-down
+                                               overflow-y-auto scrollbar-dropdown"
+                                        style=move || dropdown_panel_style(trigger_ref.get())
+                                        on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
+                                    >
+                                        {move || dropdown_labels.with_value(|labels| {
+                                            labels.iter().map(|label| {
+                                                let label_val = label.clone();
+                                                let display = label.clone();
+                                                let m1 = label.clone();
+                                                let m2 = label.clone();
+                                                let m3 = label.clone();
+                                                let m4 = label.clone();
+                                                let control_name = dropdown_control_name.get_value();
+                                                view! {
+                                                    <button
+                                                        type="button"
+                                                        class="dropdown-option w-full text-left px-3 py-[7px] text-xs cursor-pointer
+                                                               flex items-center gap-2"
+                                                        class=("dropdown-option-active", move || selected.get() == m1)
+                                                        class=("text-fg-tertiary", move || selected.get() != m2)
+                                                        on:click=move |_| {
+                                                            set_selected.set(label_val.clone());
+                                                            on_change.run((control_name.clone(), json!(label_val.clone())));
+                                                            set_dropdown_open.set(false);
+                                                        }
+                                                    >
+                                                        <span
+                                                            class="w-1 h-1 rounded-full shrink-0 transition-all duration-200"
+                                                            class=("bg-accent-muted scale-100 opacity-100", move || selected.get() == m3)
+                                                            class=("scale-0 opacity-0", move || selected.get() != m4)
+                                                        />
+                                                        <span class="truncate">{display}</span>
+                                                    </button>
+                                                }
+                                            }).collect_view()
+                                        })}
+                                    </div>
+                                </div>
+                            </Portal>
                         </Show>
                     </div>
                 </div>
