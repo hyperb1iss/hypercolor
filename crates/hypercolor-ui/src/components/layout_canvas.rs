@@ -14,6 +14,7 @@ pub fn LayoutCanvas(
     #[prop(into)] layout: Signal<Option<SpatialLayout>>,
     #[prop(into)] selected_zone_id: Signal<Option<String>>,
     #[prop(into)] keep_aspect_ratio: Signal<bool>,
+    #[prop(into)] hidden_zones: Signal<std::collections::HashSet<String>>,
     set_selected_zone_id: WriteSignal<Option<String>>,
     set_layout: WriteSignal<Option<SpatialLayout>>,
     set_is_dirty: WriteSignal<bool>,
@@ -51,8 +52,9 @@ pub fn LayoutCanvas(
         })
     });
 
-    // Derive group data for rendering group containers
+    // Derive group data for rendering group containers (excludes fully hidden groups)
     let group_bounds = Memo::new(move |_| {
+        let hidden = hidden_zones.get();
         layout.with(|current| {
             let Some(l) = current.as_ref() else {
                 return Vec::new();
@@ -60,10 +62,11 @@ pub fn LayoutCanvas(
             l.groups
                 .iter()
                 .filter_map(|group| {
+                    // Only include visible member zones in the bounding box
                     let member_zones: Vec<_> = l
                         .zones
                         .iter()
-                        .filter(|z| z.group_id.as_deref() == Some(&group.id))
+                        .filter(|z| z.group_id.as_deref() == Some(&group.id) && !hidden.contains(&z.id))
                         .collect();
                     if member_zones.is_empty() {
                         return None;
@@ -265,17 +268,27 @@ pub fn LayoutCanvas(
                             let rgb = hex_to_rgb(&color);
                             view! {
                                 <div
-                                    class="absolute rounded-md pointer-events-none"
+                                    class="absolute rounded-lg pointer-events-none"
                                     style=format!(
                                         "left: {left_pct:.2}%; top: {top_pct:.2}%; width: {w_pct:.2}%; height: {h_pct:.2}%; \
-                                         border: 1.5px dashed rgba({rgb}, 0.4); \
-                                         background: rgba({rgb}, 0.04);"
+                                         border: 2px solid rgba({rgb}, 0.6); \
+                                         background: linear-gradient(180deg, rgba({rgb}, 0.12) 0%, rgba({rgb}, 0.04) 100%); \
+                                         box-shadow: 0 0 16px rgba({rgb}, 0.15), inset 0 0 12px rgba({rgb}, 0.05);"
                                     )
                                 >
+                                    // Top accent bar
+                                    <div
+                                        class="absolute top-0 left-2 right-2 h-px"
+                                        style=format!("background: linear-gradient(90deg, transparent, rgba({rgb}, 0.6), transparent)")
+                                    />
                                     // Group name label
                                     <div
-                                        class="absolute -top-5 left-1 text-[8px] font-mono px-1.5 py-0.5 rounded glass-subtle whitespace-nowrap"
-                                        style=format!("color: rgba({rgb}, 0.8)")
+                                        class="absolute -top-3.5 left-2 text-[10px] font-semibold font-mono px-2 py-0.5 rounded-md whitespace-nowrap"
+                                        style=format!(
+                                            "color: rgb({rgb}); background: rgba(0, 0, 0, 0.7); \
+                                             border: 1px solid rgba({rgb}, 0.4); \
+                                             text-shadow: 0 0 8px rgba({rgb}, 0.5); backdrop-filter: blur(4px)"
+                                        )
                                     >
                                         {group.name} " (" {group.zone_count} ")"
                                     </div>
@@ -350,14 +363,20 @@ pub fn LayoutCanvas(
                                 Signal::derive(move || selected_zone_id.get().as_deref() == Some(&zid))
                             };
 
+                            let is_hidden = {
+                                let zid = zid.clone();
+                                Signal::derive(move || hidden_zones.get().contains(&zid))
+                            };
+
                             view! {
                                 <div
-                                    class="absolute rounded-md cursor-move group transition-[border-color,box-shadow,background] duration-200"
+                                    class="absolute rounded-md cursor-move group transition-[border-color,box-shadow,background,opacity,transform] duration-300"
                                     style=move || {
                                         let Some(zd) = zone_style.get() else {
                                             return "display: none".to_string();
                                         };
                                         let selected = is_selected.get();
+                                        let hidden = is_hidden.get();
                                         let border = if selected {
                                             format!("border: 2px solid rgba({}, 0.85)", zd.primary_rgb)
                                         } else {
@@ -385,9 +404,14 @@ pub fn LayoutCanvas(
                                         };
                                         let shape = zone_shape_style(&zd.shape);
                                         let z = if selected { elevated_z_index } else { base_z_index };
+                                        let visibility = if hidden {
+                                            "opacity: 0.08; pointer-events: none; filter: grayscale(1)"
+                                        } else {
+                                            "opacity: 1"
+                                        };
                                         format!(
-                                            "{}; {}; {}; {}; {}; z-index: {z}; backdrop-filter: blur(4px) saturate(120%)",
-                                            zd.position_style, border, bg, shadow, shape
+                                            "{}; {}; {}; {}; {}; z-index: {z}; backdrop-filter: blur(4px) saturate(120%); {}",
+                                            zd.position_style, border, bg, shadow, shape, visibility
                                         )
                                     }
                                     on:mousedown=move |ev| {
@@ -534,19 +558,28 @@ pub fn LayoutCanvas(
                                         }
                                     })}
 
-                                    // Zone identity — device name + LED count
-                                    <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none overflow-hidden px-1">
+                                    // Zone identity — full-bleed radial vignette for contrast
+                                    <div
+                                        class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none overflow-hidden p-1"
+                                        style="background: radial-gradient(ellipse at center, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.2) 60%, transparent 100%)"
+                                    >
                                         <div
-                                            class="text-[9px] font-medium leading-tight text-center truncate max-w-full select-none"
+                                            class="text-[10px] font-semibold leading-snug text-center max-w-full select-none break-words line-clamp-2 shrink-0"
                                             style=move || {
                                                 zone_style.get()
-                                                    .map(|zd| format!("color: rgba({}, 0.55)", zd.primary_rgb))
+                                                    .map(|zd| format!(
+                                                        "color: rgba({}, 0.95); text-shadow: 0 1px 2px rgba(0,0,0,0.8), 0 0 8px rgba({}, 0.35)",
+                                                        zd.primary_rgb, zd.primary_rgb
+                                                    ))
                                                     .unwrap_or_default()
                                             }
                                         >
                                             {move || zone_style.get().map(|zd| zd.name.clone()).unwrap_or_default()}
                                         </div>
-                                        <div class="text-[7px] font-mono text-white/20 select-none tabular-nums">
+                                        <div
+                                            class="text-[8px] font-mono select-none tabular-nums mt-0.5 shrink min-h-0 overflow-hidden"
+                                            style="color: rgba(255, 255, 255, 0.55); text-shadow: 0 1px 2px rgba(0,0,0,0.6)"
+                                        >
                                             {move || zone_style.get().map(|zd| format!("{} LEDs", zd.led_count)).unwrap_or_default()}
                                         </div>
                                     </div>

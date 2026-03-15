@@ -90,15 +90,15 @@ input[type="range"] {
 }
 
 input[type="range"]::-webkit-slider-runnable-track {
-    height: 3px;
+    height: 5px;
     background: var(--border-subtle);
-    border-radius: 2px;
+    border-radius: 3px;
 }
 
 input[type="range"]::-moz-range-track {
-    height: 3px;
+    height: 5px;
     background: var(--border-subtle);
-    border-radius: 2px;
+    border-radius: 3px;
     border: none;
 }
 

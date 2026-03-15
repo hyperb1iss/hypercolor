@@ -1,7 +1,9 @@
-//! Device attachment panel — visual hardware attachment configuration with auto-save.
+//! Wiring panel — map physical components (fans, strips, etc.) to device channels.
+//! Terminology: "wiring" = section, "component" = individual item, "channel" = device slot.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
+use wasm_bindgen::JsCast;
 
 use hypercolor_types::attachment::AttachmentSuggestedZone;
 use hypercolor_types::spatial::{
@@ -15,7 +17,26 @@ use crate::icons::*;
 use crate::layout_geometry;
 use crate::toasts;
 
-/// Category → shape SVG for inline attachment visualization.
+// ── LocalStorage helpers for channel name overrides ─────────────────────────
+
+fn ls_channel_key(device_id: &str, slot_id: &str) -> String {
+    format!("hc-channel-name-{device_id}-{slot_id}")
+}
+
+fn load_channel_name(device_id: &str, slot_id: &str) -> Option<String> {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item(&ls_channel_key(device_id, slot_id)).ok().flatten())
+}
+
+fn save_channel_name(device_id: &str, slot_id: &str, name: &str) {
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = storage.set_item(&ls_channel_key(device_id, slot_id), name);
+    }
+}
+
+// ── Category shape SVGs ─────────────────────────────────────────────────────
+
 fn category_shape_svg(category: &str, size: u32) -> String {
     let s = size;
     let half = s / 2;
@@ -56,14 +77,15 @@ fn category_shape_svg(category: &str, size: u32) -> String {
     }
 }
 
-/// Attachment panel for a selected device.
+// ── Wiring panel ────────────────────────────────────────────────────────────
+
+/// Wiring panel — configure which components are connected to each channel.
 #[component]
-pub fn AttachmentPanel(
+pub fn WiringPanel(
     #[prop(into)] device_id: Signal<String>,
     #[prop(into)] device: Signal<Option<api::DeviceSummary>>,
 ) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
-    let (import_in_flight, set_import_in_flight) = signal(false);
     let (expanded_slot, set_expanded_slot) = signal(Option::<String>::None);
     let (save_in_flight, set_save_in_flight) = signal(false);
     let (refetch_tick, set_refetch_tick) = signal(0_u32);
@@ -91,84 +113,22 @@ pub fn AttachmentPanel(
             .unwrap_or_default()
     });
 
-    let import_to_layout = move || {
-        if import_in_flight.get_untracked() {
-            return;
-        }
-        let Some(device) = device.get_untracked() else {
-            return;
-        };
-        set_import_in_flight.set(true);
-        let layouts_resource = ctx.layouts_resource;
-        leptos::task::spawn_local(async move {
-            let result: Result<(usize, String), String> = async {
-                let attachments = api::fetch_device_attachments(&device.id).await?;
-                if attachments.suggested_zones.is_empty() {
-                    return Ok((0_usize, String::new()));
-                }
-                let mut layout = api::fetch_active_layout().await?;
-                let layout_name = layout.name.clone();
-                let layout_id = layout.id.clone();
-                let imported_zones =
-                    build_attachment_layout_zones(&device, &attachments.suggested_zones);
-                let imported_count = imported_zones.len();
-                layout.zones.retain(|zone| {
-                    !(zone.device_id == device.layout_device_id && zone.attachment.is_some())
-                });
-                layout.zones.extend(imported_zones);
-                let req = api::UpdateLayoutApiRequest {
-                    name: None,
-                    description: None,
-                    canvas_width: None,
-                    canvas_height: None,
-                    zones: Some(layout.zones),
-                    groups: None,
-                };
-                api::update_layout(&layout_id, &req).await?;
-                api::apply_layout(&layout_id).await?;
-                Ok((imported_count, layout_name))
-            }
-            .await;
-
-            set_import_in_flight.set(false);
-            match result {
-                Ok((0, _)) => toasts::toast_info("No attachment zones to import"),
-                Ok((count, layout_name)) => {
-                    layouts_resource.refetch();
-                    let noun = if count == 1 { "zone" } else { "zones" };
-                    toasts::toast_success(&format!("Imported {count} {noun} into {layout_name}"));
-                }
-                Err(error) => {
-                    toasts::toast_error(&format!("Import failed: {error}"));
-                }
-            }
-        });
-    };
-
     view! {
-        <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">
-            // Header
-            <div class="flex items-center justify-between px-4 py-2.5 border-b border-edge-subtle">
+        <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-visible edge-glow">
+            <div class="flex items-center justify-between px-4 py-2 border-b border-edge-subtle">
                 <div class="flex items-center gap-2">
-                    <Icon icon=LuLayoutTemplate width="12px" height="12px" style="color: rgba(128, 255, 234, 0.7)" />
-                    <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Attachments"</h3>
+                    <Icon icon=LuCable width="12px" height="12px" style="color: rgba(128, 255, 234, 0.7)" />
+                    <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Components"</h3>
                 </div>
-                <button
-                    class="px-2 py-0.5 rounded-md text-[9px] font-medium transition-all btn-press disabled:opacity-40"
-                    style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06)"
-                    disabled=move || import_in_flight.get()
-                    on:click=move |_| import_to_layout()
-                >
-                    {move || if import_in_flight.get() { "Importing..." } else { "Sync to Layout" }}
-                </button>
             </div>
 
-            <div class="p-3">
+            <div class="p-2">
                 <Suspense fallback=|| view! {
-                    <div class="text-[10px] text-fg-tertiary animate-pulse py-2">"Loading..."</div>
+                    <div class="text-[10px] text-fg-tertiary animate-pulse py-2 px-1">"Loading..."</div>
                 }>
                     {move || {
                         let all_templates = templates.get().map(|loaded| loaded.to_vec()).unwrap_or_default();
+                        let did = device_id.get();
 
                         attachments.get().map(|result| match result {
                             Ok(profile) => {
@@ -177,30 +137,48 @@ pub fn AttachmentPanel(
 
                                 if slots.is_empty() {
                                     return view! {
-                                        <div class="text-[10px] text-fg-tertiary/50 text-center py-3">
-                                            "No attachment slots"
+                                        <div class="text-[10px] text-fg-tertiary/50 text-center py-2">
+                                            "No channels"
                                         </div>
-                                    }
-                                    .into_any();
+                                    }.into_any();
                                 }
 
                                 view! {
-                                    <div class="space-y-1.5">
+                                    <div class="space-y-1">
                                         {slots.into_iter().map(|slot| {
                                             let slot_id = slot.id.clone();
                                             let slot_bindings = bindings
                                                 .iter()
-                                                .filter(|binding| binding.slot_id == slot.id)
+                                                .filter(|b| b.slot_id == slot.id)
                                                 .cloned()
                                                 .collect::<Vec<_>>();
-                                            let used_leds: u32 = slot_bindings
-                                                .iter()
-                                                .map(|binding| binding.effective_led_count)
-                                                .sum();
-                                            let attachment_count: u32 = slot_bindings
-                                                .iter()
-                                                .map(|binding| binding.instances.max(1))
-                                                .sum();
+                                            let used_leds: u32 = slot_bindings.iter().map(|b| b.effective_led_count).sum();
+                                            let attachment_count: u32 = slot_bindings.iter().map(|b| b.instances.max(1)).sum();
+
+                                            // Editable channel name (localStorage override)
+                                            let default_name = slot.name.clone();
+                                            let stored_name = load_channel_name(&did, &slot.id);
+                                            let display_name = stored_name.unwrap_or_else(|| default_name.clone());
+                                            let (channel_name, set_channel_name) = signal(display_name);
+                                            let (editing_channel, set_editing_channel) = signal(false);
+                                            let (channel_input, set_channel_input) = signal(String::new());
+
+                                            let save_channel = {
+                                                let did = did.clone();
+                                                let slot_id = slot_id.clone();
+                                                let default_name = default_name.clone();
+                                                move || {
+                                                    set_editing_channel.set(false);
+                                                    let new_name = channel_input.get();
+                                                    let name = if new_name.trim().is_empty() || new_name.trim() == default_name {
+                                                        default_name.clone()
+                                                    } else {
+                                                        new_name.trim().to_string()
+                                                    };
+                                                    save_channel_name(&did, &slot_id, &name);
+                                                    set_channel_name.set(name);
+                                                }
+                                            };
 
                                             let is_expanded = {
                                                 let slot_id = slot_id.clone();
@@ -219,314 +197,212 @@ pub fn AttachmentPanel(
                                                 }
                                             };
 
-                                            let initial_rows =
-                                                attachment_editor::expand_slot_bindings(
-                                                    &slot.id,
-                                                    &bindings,
-                                                );
-                                            let initial_rows_store =
-                                                StoredValue::new(initial_rows.clone());
-                                            let (draft_rows, set_draft_rows) =
-                                                signal(initial_rows.clone());
+                                            let initial_rows = attachment_editor::expand_slot_bindings(&slot.id, &bindings);
+                                            let initial_rows_store = StoredValue::new(initial_rows.clone());
+                                            let (draft_rows, set_draft_rows) = signal(initial_rows.clone());
 
                                             let slot_categories = slot.suggested_categories.clone();
                                             let relevant_templates = if slot_categories.is_empty() {
                                                 all_templates.clone()
                                             } else {
-                                                let matching = all_templates
-                                                    .iter()
-                                                    .filter(|template| {
-                                                        slot_categories.iter().any(|category| {
-                                                            category.matches_category(
-                                                                &template.category,
-                                                            )
-                                                        })
-                                                    })
-                                                    .cloned()
-                                                    .collect::<Vec<_>>();
-                                                let matching_ids = matching
-                                                    .iter()
-                                                    .map(|template| template.id.clone())
-                                                    .collect::<std::collections::HashSet<_>>();
+                                                let matching = all_templates.iter()
+                                                    .filter(|t| slot_categories.iter().any(|c| c.matches_category(&t.category)))
+                                                    .cloned().collect::<Vec<_>>();
+                                                let matching_ids = matching.iter().map(|t| t.id.clone()).collect::<std::collections::HashSet<_>>();
                                                 let mut ordered = matching;
-                                                ordered.extend(
-                                                    all_templates
-                                                        .iter()
-                                                        .filter(|template| {
-                                                            !matching_ids.contains(
-                                                                &template.id,
-                                                            )
-                                                        })
-                                                        .cloned(),
-                                                );
+                                                ordered.extend(all_templates.iter().filter(|t| !matching_ids.contains(&t.id)).cloned());
                                                 ordered
                                             };
-                                            let category_count = relevant_templates
-                                                .iter()
-                                                .take_while(|template| {
-                                                    slot_categories.is_empty()
-                                                        || slot_categories.iter().any(|category| {
-                                                            category.matches_category(
-                                                                &template.category,
-                                                            )
-                                                        })
-                                                })
+                                            let category_count = relevant_templates.iter()
+                                                .take_while(|t| slot_categories.is_empty() || slot_categories.iter().any(|c| c.matches_category(&t.category)))
                                                 .count();
-                                            let templates_store =
-                                                StoredValue::new(relevant_templates.clone());
+                                            let templates_store = StoredValue::new(relevant_templates.clone());
 
                                             let draft_summary = Signal::derive({
                                                 let slot = slot.clone();
-                                                move || {
-                                                    templates_store.with_value(|templates| {
-                                                        attachment_editor::summarize_slot_rows(
-                                                            &slot,
-                                                            &draft_rows.get(),
-                                                            templates,
-                                                        )
-                                                    })
-                                                }
+                                                move || templates_store.with_value(|ts| attachment_editor::summarize_slot_rows(&slot, &draft_rows.get(), ts))
                                             });
-                                            let draft_is_dirty = Signal::derive(move || {
-                                                initial_rows_store.with_value(|saved| {
-                                                    draft_rows.get() != *saved
-                                                })
-                                            });
+                                            let draft_is_dirty = Signal::derive(move || initial_rows_store.with_value(|saved| draft_rows.get() != *saved));
 
-                                            let add_row = {
-                                                move |_: web_sys::MouseEvent| {
-                                                    set_draft_rows.update(|rows| {
-                                                        rows.push(
-                                                            attachment_editor::AttachmentDraftRow::empty(),
-                                                        );
-                                                    });
-                                                }
+                                            let add_row = move |_: web_sys::MouseEvent| {
+                                                set_draft_rows.update(|rows| rows.push(attachment_editor::AttachmentDraftRow::empty()));
                                             };
 
-                                            // Visual summary of attached items when collapsed
-                                            let bound_shapes: Vec<(String, String, u32)> = slot_bindings
-                                                .iter()
-                                                .map(|binding| {
-                                                    let cat = all_templates
-                                                        .iter()
-                                                        .find(|t| t.id == binding.template_id)
-                                                        .map(|t| t.category.as_str().to_string())
-                                                        .unwrap_or_else(|| "other".to_string());
-                                                    let name = binding.name.clone()
-                                                        .unwrap_or_else(|| binding.template_name.clone());
-                                                    (cat, name, binding.instances)
-                                                })
-                                                .collect();
+                                            // Collapsed summary shapes
+                                            let bound_shapes: Vec<(String, String, u32)> = slot_bindings.iter().map(|b| {
+                                                let cat = all_templates.iter().find(|t| t.id == b.template_id)
+                                                    .map(|t| t.category.as_str().to_string())
+                                                    .unwrap_or_else(|| "other".to_string());
+                                                let name = b.name.clone().unwrap_or_else(|| b.template_name.clone());
+                                                (cat, name, b.instances)
+                                            }).collect();
 
                                             view! {
-                                                <div class="rounded-lg border border-edge-subtle bg-surface-overlay/15 overflow-hidden transition-all">
-                                                    // Slot header — always visible
+                                                <div class="rounded-lg border border-edge-subtle bg-surface-overlay/15 overflow-visible transition-all">
+                                                    // Channel header
                                                     <button
-                                                        class="w-full px-3 py-2 text-left hover:bg-surface-hover/20 transition-colors"
+                                                        class="w-full px-2.5 py-1.5 text-left hover:bg-surface-hover/20 transition-colors"
                                                         on:click=toggle_slot
                                                     >
                                                         <div class="flex items-center justify-between gap-2">
                                                             <div class="flex items-center gap-2 min-w-0">
-                                                                <span class="text-[11px] font-medium text-fg-primary truncate">{slot.name.clone()}</span>
+                                                                // Editable channel name
+                                                                {move || if editing_channel.get() {
+                                                                    view! {
+                                                                        <input
+                                                                            type="text"
+                                                                            class="bg-surface-overlay border border-edge-subtle rounded px-1.5 py-0.5 text-[11px] text-fg-primary
+                                                                                   focus:outline-none focus:border-accent-muted w-full"
+                                                                            prop:value=move || channel_input.get()
+                                                                            on:input=move |ev| {
+                                                                                let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                                                if let Some(el) = target { set_channel_input.set(el.value()); }
+                                                                            }
+                                                                            on:keydown={
+                                                                                let save = save_channel.clone();
+                                                                                move |ev: web_sys::KeyboardEvent| {
+                                                                                    ev.stop_propagation();
+                                                                                    if ev.key() == "Enter" { save(); }
+                                                                                    if ev.key() == "Escape" { set_editing_channel.set(false); }
+                                                                                }
+                                                                            }
+                                                                            on:blur={
+                                                                                let save = save_channel.clone();
+                                                                                move |_| save()
+                                                                            }
+                                                                            on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()
+                                                                        />
+                                                                    }.into_any()
+                                                                } else {
+                                                                    view! {
+                                                                        <span
+                                                                            class="text-[11px] font-medium text-fg-primary group/ch flex items-center gap-1 cursor-text"
+                                                                            on:dblclick={
+                                                                                move |ev: web_sys::MouseEvent| {
+                                                                                    ev.stop_propagation();
+                                                                                    set_channel_input.set(channel_name.get_untracked());
+                                                                                    set_editing_channel.set(true);
+                                                                                }
+                                                                            }
+                                                                        >
+                                                                            {move || channel_name.get()}
+                                                                            <span class="w-2.5 h-2.5 text-fg-tertiary/30 opacity-0 group-hover/ch:opacity-100 transition-opacity shrink-0">
+                                                                                <Icon icon=LuPencil width="10px" height="10px" />
+                                                                            </span>
+                                                                        </span>
+                                                                    }.into_any()
+                                                                }}
                                                                 {(used_leds > 0).then(|| view! {
                                                                     <span class="text-[9px] font-mono text-fg-tertiary/40 tabular-nums shrink-0">
                                                                         {used_leds} "/" {slot.led_count}
                                                                     </span>
                                                                 })}
                                                             </div>
-                                                            <div class="flex items-center gap-1.5 shrink-0">
+                                                            <div class="shrink-0">
                                                                 {if is_expanded() {
-                                                                    view! {
-                                                                        <Icon icon=LuChevronUp width="11px" height="11px" style="color: rgba(139, 133, 160, 0.5)" />
-                                                                    }.into_any()
+                                                                    view! { <Icon icon=LuChevronUp width="11px" height="11px" style="color: rgba(139, 133, 160, 0.5)" /> }.into_any()
                                                                 } else {
-                                                                    view! {
-                                                                        <Icon icon=LuChevronDown width="11px" height="11px" style="color: rgba(139, 133, 160, 0.5)" />
-                                                                    }.into_any()
+                                                                    view! { <Icon icon=LuChevronDown width="11px" height="11px" style="color: rgba(139, 133, 160, 0.5)" /> }.into_any()
                                                                 }}
                                                             </div>
                                                         </div>
 
-                                                        // Collapsed: show attached shapes inline
+                                                        // Collapsed: attached component shapes
                                                         {(!is_expanded() && attachment_count > 0).then(|| {
                                                             let shapes = bound_shapes.clone();
                                                             view! {
-                                                                <div class="flex items-center gap-2 mt-1.5" style="color: rgba(128, 255, 234, 0.5)">
+                                                                <div class="flex items-center gap-2 mt-1" style="color: rgba(128, 255, 234, 0.5)">
                                                                     {shapes.into_iter().map(|(cat, name, instances)| {
                                                                         let svg = category_shape_svg(&cat, 16);
-                                                                        let label = if instances > 1 {
-                                                                            format!("{name} \u{00d7}{instances}")
-                                                                        } else {
-                                                                            name
-                                                                        };
+                                                                        let label = if instances > 1 { format!("{name} \u{00d7}{instances}") } else { name };
                                                                         view! {
                                                                             <div class="flex items-center gap-1">
                                                                                 <div class="w-4 h-4 shrink-0" inner_html=svg />
-                                                                                <span class="text-[10px] text-fg-tertiary/60 truncate max-w-[100px]">{label}</span>
+                                                                                <span class="text-[10px] text-fg-tertiary/60">{label}</span>
                                                                             </div>
                                                                         }
                                                                     }).collect_view()}
                                                                 </div>
                                                             }
                                                         })}
-
-                                                        // Collapsed: empty hint
-                                                        {(!is_expanded() && attachment_count == 0).then(|| {
-                                                            let hint_count = slot.suggested_categories.len();
-                                                            let hint_shapes: Vec<String> = slot.suggested_categories
-                                                                .iter()
-                                                                .take(4)
-                                                                .map(|cat| category_shape_svg(cat.as_str(), 14))
-                                                                .collect();
-                                                            view! {
-                                                                <div class="flex items-center gap-1.5 mt-1.5" style="color: rgba(139, 133, 160, 0.25)">
-                                                                    {hint_shapes.into_iter().map(|svg| view! {
-                                                                        <div class="w-3.5 h-3.5" inner_html=svg />
-                                                                    }).collect_view()}
-                                                                    {(hint_count > 0).then(|| view! {
-                                                                        <span class="text-[9px] font-mono text-fg-tertiary/25">
-                                                                            {hint_count} " suggested"
-                                                                        </span>
-                                                                    })}
-                                                                </div>
-                                                            }
-                                                        })}
                                                     </button>
 
-                                                    // Expanded: attachment rows
+                                                    // Expanded: component rows with searchable picker
                                                     {
                                                     let slot_for_save = StoredValue::new(slot.clone());
                                                     let slot_id_for_save = StoredValue::new(slot_id.clone());
                                                     view! {
                                                     <Show when=is_expanded>
-                                                        <div class="px-3 pb-2.5 space-y-2 border-t border-edge-subtle bg-surface-sunken/20 animate-fade-in">
-                                                            <div class="pt-2 space-y-1.5">
+                                                        <div class="px-2.5 pb-2 space-y-1.5 border-t border-edge-subtle bg-surface-sunken/20 animate-fade-in">
+                                                            <div class="pt-1.5 space-y-1">
                                                                 {move || {
                                                                     let rows = draft_rows.get();
                                                                     let summary = draft_summary.get();
 
                                                                     if rows.is_empty() {
                                                                         return view! {
-                                                                            <div class="text-[10px] text-fg-tertiary/40 text-center py-2">
-                                                                                "No attachments"
-                                                                            </div>
+                                                                            <div class="text-[10px] text-fg-tertiary/40 text-center py-1.5">"No components"</div>
                                                                         }.into_any();
                                                                     }
 
-                                                                    rows.into_iter()
-                                                                        .enumerate()
-                                                                        .map(|(index, row)| {
-                                                                            let placement = summary
-                                                                                .rows
-                                                                                .get(index)
-                                                                                .cloned()
-                                                                                .flatten();
-                                                                            let template_info = templates_store
-                                                                                .with_value(|templates| {
-                                                                                    templates
-                                                                                        .iter()
-                                                                                        .find(|template| {
-                                                                                            template.id == row.template_id
-                                                                                        })
-                                                                                        .cloned()
-                                                                                });
-                                                                            let options = templates_store
-                                                                                .with_value(|templates| {
-                                                                                    templates.clone()
-                                                                                });
-                                                                            let cat_str = template_info
-                                                                                .as_ref()
-                                                                                .map(|t| t.category.as_str().to_string())
-                                                                                .unwrap_or_else(|| "other".to_string());
-                                                                            let shape_svg = category_shape_svg(&cat_str, 20);
+                                                                    rows.into_iter().enumerate().map(|(index, row)| {
+                                                                        let placement = summary.rows.get(index).cloned().flatten();
+                                                                        let template_info = templates_store.with_value(|ts| ts.iter().find(|t| t.id == row.template_id).cloned());
+                                                                        let options = templates_store.with_value(|ts| ts.clone());
+                                                                        let cat_str = template_info.as_ref().map(|t| t.category.as_str().to_string()).unwrap_or_else(|| "other".to_string());
+                                                                        let shape_svg = category_shape_svg(&cat_str, 18);
+                                                                        let selected_name = template_info.as_ref()
+                                                                            .map(|t| format!("{} \u{2014} {} LEDs", t.name, t.led_count))
+                                                                            .unwrap_or_default();
 
-                                                                            view! {
-                                                                                <div class="flex items-center gap-2 group/row">
-                                                                                    // Shape icon
-                                                                                    <div class="w-5 h-5 shrink-0" style="color: rgba(128, 255, 234, 0.4)" inner_html=shape_svg />
+                                                                        view! {
+                                                                            <div class="flex items-center gap-1.5 group/row">
+                                                                                <div class="w-4.5 h-4.5 shrink-0" style="color: rgba(128, 255, 234, 0.4)" inner_html=shape_svg />
 
-                                                                                    // Template selector
-                                                                                    <select
-                                                                                        class="flex-1 bg-surface-overlay/40 border border-edge-subtle rounded px-2 py-1 text-[11px] text-fg-primary
-                                                                                               focus:outline-none focus:border-accent-muted cursor-pointer min-w-0"
-                                                                                        prop:value=row.template_id.clone()
-                                                                                        on:change={
-                                                                                            let set_rows = set_draft_rows;
-                                                                                            move |ev| {
-                                                                                                let value = event_target_value(&ev);
-                                                                                                set_rows.update(|rows| {
-                                                                                                    if let Some(row) = rows.get_mut(index) {
-                                                                                                        row.template_id = value.clone();
-                                                                                                    }
-                                                                                                });
-                                                                                            }
+                                                                                <ComponentCombobox
+                                                                                    components=options
+                                                                                    selected_id=row.template_id.clone()
+                                                                                    selected_label=selected_name
+                                                                                    category_count=category_count
+                                                                                    on_select=Callback::new({
+                                                                                        let set_rows = set_draft_rows;
+                                                                                        move |value: String| {
+                                                                                            set_rows.update(|rows| {
+                                                                                                if let Some(row) = rows.get_mut(index) {
+                                                                                                    row.template_id = value;
+                                                                                                }
+                                                                                            });
                                                                                         }
-                                                                                    >
-                                                                                        <option value="">"Select..."</option>
-                                                                                        {if category_count > 0 && category_count < options.len() {
-                                                                                            let suggested = options[..category_count].to_vec();
-                                                                                            let others = options[category_count..].to_vec();
-                                                                                            view! {
-                                                                                                <optgroup label="Suggested">
-                                                                                                    {suggested.into_iter().map(|template| {
-                                                                                                        let id = template.id.clone();
-                                                                                                        let label = format!("{} \u{2014} {}", template.name, template.led_count);
-                                                                                                        view! { <option value=id>{label}</option> }
-                                                                                                    }).collect_view()}
-                                                                                                </optgroup>
-                                                                                                <optgroup label="All">
-                                                                                                    {others.into_iter().map(|template| {
-                                                                                                        let id = template.id.clone();
-                                                                                                        let label = format!("{} \u{2014} {}", template.name, template.led_count);
-                                                                                                        view! { <option value=id>{label}</option> }
-                                                                                                    }).collect_view()}
-                                                                                                </optgroup>
-                                                                                            }.into_any()
-                                                                                        } else {
-                                                                                            options.into_iter().map(|template| {
-                                                                                                let id = template.id.clone();
-                                                                                                let label = format!("{} \u{2014} {}", template.name, template.led_count);
-                                                                                                view! { <option value=id>{label}</option> }
-                                                                                            }).collect_view().into_any()
-                                                                                        }}
-                                                                                    </select>
+                                                                                    })
+                                                                                />
 
-                                                                                    // LED range (only when placed)
-                                                                                    {placement.map(|p| view! {
-                                                                                        <span class="text-[8px] font-mono text-fg-tertiary/30 tabular-nums shrink-0 w-10 text-right">
-                                                                                            {p.led_offset} "-" {p.led_end.saturating_sub(1)}
-                                                                                        </span>
-                                                                                    })}
+                                                                                {placement.map(|p| view! {
+                                                                                    <span class="text-[8px] font-mono text-fg-tertiary/30 tabular-nums shrink-0 w-10 text-right">
+                                                                                        {p.led_offset} "-" {p.led_end.saturating_sub(1)}
+                                                                                    </span>
+                                                                                })}
 
-                                                                                    // Delete — visible on hover
-                                                                                    <button
-                                                                                        class="w-5 h-5 flex items-center justify-center rounded shrink-0
-                                                                                               opacity-0 group-hover/row:opacity-100 transition-opacity
-                                                                                               text-fg-tertiary/40 hover:text-error-red"
-                                                                                        on:click={
-                                                                                            let set_rows = set_draft_rows;
-                                                                                            move |ev: web_sys::MouseEvent| {
-                                                                                                ev.stop_propagation();
-                                                                                                set_rows.update(|rows| {
-                                                                                                    if index < rows.len() {
-                                                                                                        rows.remove(index);
-                                                                                                    }
-                                                                                                });
-                                                                                            }
+                                                                                <button
+                                                                                    class="w-4 h-4 flex items-center justify-center rounded shrink-0
+                                                                                           opacity-0 group-hover/row:opacity-100 transition-opacity
+                                                                                           text-fg-tertiary/40 hover:text-error-red"
+                                                                                    on:click={
+                                                                                        let set_rows = set_draft_rows;
+                                                                                        move |ev: web_sys::MouseEvent| {
+                                                                                            ev.stop_propagation();
+                                                                                            set_rows.update(|rows| { if index < rows.len() { rows.remove(index); } });
                                                                                         }
-                                                                                    >
-                                                                                        <Icon icon=LuX width="10px" height="10px" />
-                                                                                    </button>
-                                                                                </div>
-                                                                            }
-                                                                        })
-                                                                        .collect_view()
-                                                                        .into_any()
+                                                                                    }
+                                                                                >
+                                                                                    <Icon icon=LuX width="9px" height="9px" />
+                                                                                </button>
+                                                                            </div>
+                                                                        }
+                                                                    }).collect_view().into_any()
                                                                 }}
                                                             </div>
 
-                                                            // Footer: add + save
-                                                            <div class="flex items-center justify-between pt-1">
+                                                            <div class="flex items-center justify-between">
                                                                 <button
                                                                     class="text-[9px] font-medium px-1.5 py-0.5 rounded transition-all btn-press flex items-center gap-1"
                                                                     style="color: rgba(128, 255, 234, 0.6)"
@@ -535,122 +411,66 @@ pub fn AttachmentPanel(
                                                                     <Icon icon=LuPlus width="9px" height="9px" />
                                                                     "Add"
                                                                 </button>
-
                                                                 <div class="flex items-center gap-2">
                                                                     {move || {
                                                                         let summary = draft_summary.get();
-                                                                        if summary.overflow_leds > 0 {
-                                                                            Some(view! {
-                                                                                <span class="text-[9px] font-mono" style="color: rgb(255, 99, 99)">
-                                                                                    {summary.overflow_leds} " over"
-                                                                                </span>
-                                                                            })
-                                                                        } else {
-                                                                            None
-                                                                        }
+                                                                        (summary.overflow_leds > 0).then(|| view! {
+                                                                            <span class="text-[9px] font-mono" style="color: rgb(255, 99, 99)">{summary.overflow_leds} " over"</span>
+                                                                        })
                                                                     }}
                                                                     <Show when=move || draft_is_dirty.get()>
                                                                         <button
                                                                             class="text-[9px] font-medium px-1.5 py-0.5 rounded transition-all btn-press disabled:opacity-30"
                                                                             style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.08)"
-                                                                            disabled=move || {
-                                                                                let summary = draft_summary.get();
-                                                                                save_in_flight.get() || !summary.is_valid()
-                                                                            }
+                                                                            disabled=move || { let s = draft_summary.get(); save_in_flight.get() || !s.is_valid() }
                                                                             on:click={
                                                                                 move |_: web_sys::MouseEvent| {
                                                                                 let slot = slot_for_save.get_value();
                                                                                 let slot_id = slot_id_for_save.get_value();
-                                                                                    let packed_rows = match templates_store
-                                                                                        .with_value(|templates| {
-                                                                                            attachment_editor::pack_slot_rows(
-                                                                                                &slot,
-                                                                                                &draft_rows.get_untracked(),
-                                                                                                templates,
-                                                                                            )
-                                                                                        }) {
-                                                                                        Ok(packed_rows) => packed_rows,
-                                                                                        Err(error) => {
-                                                                                            toasts::toast_error(&error);
-                                                                                            return;
-                                                                                        }
-                                                                                    };
-
-                                                                                    set_save_in_flight.set(true);
-                                                                                    let did = device_id.get_untracked();
-                                                                                    let slot_id = slot_id.clone();
-                                                                                    leptos::task::spawn_local(async move {
-                                                                                        let result = async {
-                                                                                            let current =
-                                                                                                api::fetch_device_attachments(&did)
-                                                                                                    .await?;
-                                                                                            let mut api_bindings = current
-                                                                                                .bindings
-                                                                                                .iter()
-                                                                                                .filter(|binding| {
-                                                                                                    binding.slot_id != slot_id
-                                                                                                })
-                                                                                                .map(|binding| {
-                                                                                                    api::AttachmentBindingRequest {
-                                                                                                        slot_id: binding.slot_id.clone(),
-                                                                                                        template_id: binding.template_id.clone(),
-                                                                                                        name: binding.name.clone(),
-                                                                                                        enabled: binding.enabled,
-                                                                                                        instances: binding.instances,
-                                                                                                        led_offset: binding.led_offset,
-                                                                                                    }
-                                                                                                })
-                                                                                                .collect::<Vec<_>>();
-
-                                                                                            api_bindings.extend(
-                                                                                                packed_rows.into_iter().map(
-                                                                                                    |binding| {
-                                                                                                        api::AttachmentBindingRequest {
-                                                                                                            slot_id: slot_id.clone(),
-                                                                                                            template_id: binding.template_id,
-                                                                                                            name: binding.name,
-                                                                                                            enabled: true,
-                                                                                                            instances: 1,
-                                                                                                            led_offset: binding.led_offset,
-                                                                                                        }
-                                                                                                    },
-                                                                                                ),
-                                                                                            );
-
-                                                                                            api::update_device_attachments(
-                                                                                                &did,
-                                                                                                &api::UpdateAttachmentsRequest {
-                                                                                                    bindings: api_bindings,
-                                                                                                },
-                                                                                            )
-                                                                                            .await
-                                                                                        }
-                                                                                        .await;
-
-                                                                                        set_save_in_flight.set(false);
-                                                                                        match result {
-                                                                                            Ok(updated) => {
-                                                                                                let saved_rows =
-                                                                                                    attachment_editor::expand_slot_bindings(
-                                                                                                        &slot_id,
-                                                                                                        &updated.bindings,
-                                                                                                    );
-                                                                                                initial_rows_store
-                                                                                                    .set_value(saved_rows.clone());
-                                                                                                set_draft_rows.set(saved_rows);
-                                                                                                toasts::toast_success("Saved");
-                                                                                                set_refetch_tick
-                                                                                                    .update(|tick| *tick += 1);
-                                                                                            }
-                                                                                            Err(error) => {
-                                                                                                toasts::toast_error(
-                                                                                                    &format!("Save failed: {error}"),
-                                                                                                );
+                                                                                let packed_rows = match templates_store.with_value(|ts| {
+                                                                                    attachment_editor::pack_slot_rows(&slot, &draft_rows.get_untracked(), ts)
+                                                                                }) {
+                                                                                    Ok(r) => r,
+                                                                                    Err(e) => { toasts::toast_error(&e); return; }
+                                                                                };
+                                                                                set_save_in_flight.set(true);
+                                                                                let did = device_id.get_untracked();
+                                                                                let slot_id = slot_id.clone();
+                                                                                let layouts_resource = ctx.layouts_resource;
+                                                                                let device_for_sync = device.get_untracked();
+                                                                                leptos::task::spawn_local(async move {
+                                                                                    let result = async {
+                                                                                        let current = api::fetch_device_attachments(&did).await?;
+                                                                                        let mut api_bindings = current.bindings.iter()
+                                                                                            .filter(|b| b.slot_id != slot_id)
+                                                                                            .map(|b| api::AttachmentBindingRequest {
+                                                                                                slot_id: b.slot_id.clone(), template_id: b.template_id.clone(),
+                                                                                                name: b.name.clone(), enabled: b.enabled, instances: b.instances, led_offset: b.led_offset,
+                                                                                            }).collect::<Vec<_>>();
+                                                                                        api_bindings.extend(packed_rows.into_iter().map(|b| api::AttachmentBindingRequest {
+                                                                                            slot_id: slot_id.clone(), template_id: b.template_id,
+                                                                                            name: b.name, enabled: true, instances: 1, led_offset: b.led_offset,
+                                                                                        }));
+                                                                                        api::update_device_attachments(&did, &api::UpdateAttachmentsRequest { bindings: api_bindings }).await
+                                                                                    }.await;
+                                                                                    set_save_in_flight.set(false);
+                                                                                    match result {
+                                                                                        Ok(updated) => {
+                                                                                            let saved = attachment_editor::expand_slot_bindings(&slot_id, &updated.bindings);
+                                                                                            initial_rows_store.set_value(saved.clone());
+                                                                                            set_draft_rows.set(saved);
+                                                                                            toasts::toast_success("Saved");
+                                                                                            set_refetch_tick.update(|t| *t += 1);
+                                                                                            if let Some(dev) = device_for_sync {
+                                                                                                if !updated.suggested_zones.is_empty() {
+                                                                                                    sync_wiring_to_layout(dev, updated.suggested_zones, layouts_resource);
+                                                                                                }
                                                                                             }
                                                                                         }
-                                                                                    });
-                                                                                }
-                                                                            }
+                                                                                        Err(e) => toasts::toast_error(&format!("Save failed: {e}")),
+                                                                                    }
+                                                                                });
+                                                                            }}
                                                                         >
                                                                             <Icon icon=LuCheck width="9px" height="9px" style="color: inherit" />
                                                                             " Save"
@@ -665,19 +485,276 @@ pub fn AttachmentPanel(
                                             }
                                         }).collect_view()}
                                     </div>
-                                }
-                                    .into_any()
+                                }.into_any()
                             }
                             Err(error) => view! {
                                 <div class="text-[10px] text-error-red py-2">{error}</div>
-                            }
-                            .into_any(),
+                            }.into_any(),
                         })
                     }}
                 </Suspense>
             </div>
         </div>
     }
+}
+
+// ── Searchable component combobox ───────────────────────────────────────────
+
+/// Searchable dropdown for selecting a component (fan, strip, etc.).
+/// Uses `position: fixed` to escape overflow clipping from parent containers.
+/// Backdrop uses `mousedown` to avoid capturing the opening click event.
+#[component]
+fn ComponentCombobox(
+    components: Vec<api::TemplateSummary>,
+    selected_id: String,
+    selected_label: String,
+    category_count: usize,
+    #[prop(into)] on_select: Callback<String>,
+) -> impl IntoView {
+    let (open, set_open) = signal(false);
+    let (search, set_search) = signal(String::new());
+    let (dropdown_pos, set_dropdown_pos) = signal((0.0_f64, 0.0_f64, 0.0_f64));
+    let trigger_ref = NodeRef::<leptos::html::Button>::new();
+    let components_store = StoredValue::new(components);
+    let has_selection = !selected_id.is_empty();
+
+    let filtered = Memo::new(move |_| {
+        let term = search.get().to_lowercase();
+        components_store.with_value(|components| {
+            if term.is_empty() {
+                return components.clone();
+            }
+            components
+                .iter()
+                .filter(|t| {
+                    t.name.to_lowercase().contains(&term)
+                        || t.vendor.to_lowercase().contains(&term)
+                        || t.category.as_str().to_lowercase().contains(&term)
+                        || t.description.to_lowercase().contains(&term)
+                        || t.tags.iter().any(|tag| tag.to_lowercase().contains(&term))
+                })
+                .cloned()
+                .collect()
+        })
+    });
+
+    let open_dropdown = move |ev: web_sys::MouseEvent| {
+        ev.stop_propagation();
+        ev.prevent_default();
+        if open.get_untracked() {
+            set_open.set(false);
+            return;
+        }
+        // Compute fixed position from trigger bounding rect
+        if let Some(el) = trigger_ref.get() {
+            let el_ref: &web_sys::HtmlElement = &el;
+            let rect = el_ref.get_bounding_client_rect();
+            set_dropdown_pos.set((rect.left(), rect.bottom() + 4.0, rect.width().max(300.0)));
+        }
+        set_search.set(String::new());
+        set_open.set(true);
+    };
+
+    view! {
+        <div class="flex-1 min-w-0 relative">
+            <button
+                node_ref=trigger_ref
+                class="w-full flex items-center gap-1 px-2 py-1 rounded border text-left text-[11px] transition-all min-w-0"
+                style=move || {
+                    if open.get() {
+                        "background: rgba(128, 255, 234, 0.06); border-color: rgba(128, 255, 234, 0.3); color: var(--text-primary)"
+                    } else if has_selection {
+                        "background: rgba(255, 255, 255, 0.03); border-color: rgba(139, 133, 160, 0.15); color: var(--text-primary)"
+                    } else {
+                        "background: rgba(255, 255, 255, 0.02); border-color: rgba(139, 133, 160, 0.1); color: rgba(139, 133, 160, 0.5)"
+                    }
+                }
+                on:mousedown=open_dropdown
+            >
+                <span class="flex-1 min-w-0" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
+                    {if has_selection { selected_label.clone() } else { "Select component...".to_string() }}
+                </span>
+                <span class="w-3 h-3 shrink-0 transition-transform duration-200 flex items-center justify-center"
+                      class:rotate-180=move || open.get()>
+                    <Icon icon=LuChevronDown width="10px" height="10px" style="color: rgba(139, 133, 160, 0.4)" />
+                </span>
+            </button>
+
+            // Fixed-position dropdown (escapes overflow clipping)
+            {move || open.get().then(|| {
+                let cat_count = category_count;
+                let (left, top, width) = dropdown_pos.get();
+                let pos_style = format!("position: fixed; left: {left:.0}px; top: {top:.0}px; width: {width:.0}px; z-index: 9999");
+
+                view! {
+                    // Use mousedown to avoid catching the same click that opened the dropdown
+                    <div class="fixed inset-0 z-[9998]" on:mousedown=move |_| set_open.set(false) />
+
+                    <div class="max-h-[340px] flex flex-col rounded-xl border border-edge-subtle bg-surface-overlay shadow-xl
+                                dropdown-glow animate-fade-in overflow-hidden"
+                         style=pos_style>
+
+                        <div class="p-1.5 border-b border-edge-subtle">
+                            <div class="relative">
+                                <span class="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary/40">
+                                    <Icon icon=LuSearch width="11px" height="11px" />
+                                </span>
+                                <input
+                                    type="text"
+                                    placeholder="Search components..."
+                                    class="w-full bg-surface-base/60 border border-edge-subtle rounded-lg pl-6 pr-2 py-1
+                                           text-[11px] text-fg-primary placeholder-fg-tertiary/40
+                                           focus:outline-none focus:border-accent-muted search-glow"
+                                    prop:value=move || search.get()
+                                    on:input=move |ev| {
+                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                        if let Some(el) = target { set_search.set(el.value()); }
+                                    }
+                                    on:click=move |ev| ev.stop_propagation()
+                                    autofocus=true
+                                />
+                            </div>
+                        </div>
+
+                        <div class="flex-1 overflow-y-auto scrollbar-dropdown">
+                            {move || {
+                                let results = filtered.get();
+                                let is_searching = !search.get().is_empty();
+
+                                if results.is_empty() {
+                                    return view! {
+                                        <div class="px-3 py-4 text-center text-[10px] text-fg-tertiary/40">"No components found"</div>
+                                    }.into_any();
+                                }
+
+                                if is_searching || cat_count == 0 || cat_count >= results.len() {
+                                    results.into_iter().map(|t| {
+                                        let svg = category_shape_svg(t.category.as_str(), 16);
+                                        view! { <ComponentOption component=t shape_svg=svg on_click=Callback::new({
+                                            let on_select = on_select; let set_open = set_open;
+                                            move |id: String| { on_select.run(id); set_open.set(false); }
+                                        }) /> }
+                                    }).collect_view().into_any()
+                                } else {
+                                    let suggested = results[..cat_count].to_vec();
+                                    let others = results[cat_count..].to_vec();
+                                    view! {
+                                        <div class="px-2 pt-1.5 pb-0.5">
+                                            <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/35 px-1">"Suggested"</div>
+                                        </div>
+                                        {suggested.into_iter().map(|t| {
+                                            let svg = category_shape_svg(t.category.as_str(), 16);
+                                            view! { <ComponentOption component=t shape_svg=svg on_click=Callback::new({
+                                                let on_select = on_select; let set_open = set_open;
+                                                move |id: String| { on_select.run(id); set_open.set(false); }
+                                            }) /> }
+                                        }).collect_view()}
+                                        <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
+                                        <div class="px-2 pt-1 pb-0.5">
+                                            <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/25 px-1">"All"</div>
+                                        </div>
+                                        {others.into_iter().map(|t| {
+                                            let svg = category_shape_svg(t.category.as_str(), 16);
+                                            view! { <ComponentOption component=t shape_svg=svg on_click=Callback::new({
+                                                let on_select = on_select; let set_open = set_open;
+                                                move |id: String| { on_select.run(id); set_open.set(false); }
+                                            }) /> }
+                                        }).collect_view()}
+                                    }.into_any()
+                                }
+                            }}
+                        </div>
+
+                        {has_selection.then(|| view! {
+                            <div class="border-t border-edge-subtle">
+                                <button
+                                    class="w-full px-3 py-1 text-[10px] text-fg-tertiary/50 hover:text-fg-tertiary hover:bg-surface-hover/30 transition-colors text-left"
+                                    on:click=move |_| { on_select.run(String::new()); set_open.set(false); }
+                                >
+                                    "Clear"
+                                </button>
+                            </div>
+                        })}
+                    </div>
+                }
+            })}
+        </div>
+    }
+}
+
+/// Single component option row.
+#[component]
+fn ComponentOption(
+    component: api::TemplateSummary,
+    shape_svg: String,
+    #[prop(into)] on_click: Callback<String>,
+) -> impl IntoView {
+    let tid = component.id.clone();
+    let name = component.name.clone();
+    let vendor = component.vendor.clone();
+    let led_count = component.led_count;
+    let category = component.category.as_str().to_string();
+
+    view! {
+        <button
+            class="w-full flex items-center gap-2 px-2 py-1 mx-1 rounded-lg
+                   hover:bg-surface-hover/40 transition-colors text-left"
+            style="width: calc(100% - 8px)"
+            on:click=move |ev| { ev.stop_propagation(); on_click.run(tid.clone()); }
+        >
+            <div class="w-4 h-4 shrink-0 flex items-center justify-center" style="color: rgba(128, 255, 234, 0.4)" inner_html=shape_svg />
+            <div class="flex-1 min-w-0">
+                <div class="text-[11px] text-fg-primary leading-tight">{name}</div>
+                <div class="text-[9px] text-fg-tertiary/40">
+                    {vendor} " \u{b7} " <span class="capitalize">{category}</span>
+                </div>
+            </div>
+            <span class="text-[9px] font-mono tabular-nums text-fg-tertiary/40 shrink-0 px-1 py-0.5 rounded bg-surface-overlay/20">
+                {led_count}
+            </span>
+        </button>
+    }
+}
+
+// ── Auto-sync wiring to layout ──────────────────────────────────────────────
+
+fn sync_wiring_to_layout(
+    device: api::DeviceSummary,
+    suggested_zones: Vec<AttachmentSuggestedZone>,
+    layouts_resource: LocalResource<Result<Vec<api::LayoutSummary>, String>>,
+) {
+    leptos::task::spawn_local(async move {
+        let result: Result<usize, String> = async {
+            let mut layout = api::fetch_active_layout().await?;
+            let layout_id = layout.id.clone();
+            let imported_zones = build_attachment_layout_zones(&device, &suggested_zones);
+            let imported_count = imported_zones.len();
+            layout
+                .zones
+                .retain(|z| !(z.device_id == device.layout_device_id && z.attachment.is_some()));
+            layout.zones.extend(imported_zones);
+            let req = api::UpdateLayoutApiRequest {
+                name: None,
+                description: None,
+                canvas_width: None,
+                canvas_height: None,
+                zones: Some(layout.zones),
+                groups: None,
+            };
+            api::update_layout(&layout_id, &req).await?;
+            api::apply_layout(&layout_id).await?;
+            Ok(imported_count)
+        }
+        .await;
+
+        if let Ok(count) = result {
+            if count > 0 {
+                layouts_resource.refetch();
+                let noun = if count == 1 { "zone" } else { "zones" };
+                toasts::toast_info(&format!("Layout synced ({count} {noun})"));
+            }
+        }
+    });
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -773,19 +850,16 @@ fn attachment_zone_id(layout_device_id: &str, suggested: &AttachmentSuggestedZon
 fn slugify(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut previous_dash = false;
-
     for ch in raw.chars() {
         if ch.is_ascii_alphanumeric() {
             out.push(ch.to_ascii_lowercase());
             previous_dash = false;
             continue;
         }
-
         if !out.is_empty() && !previous_dash {
             out.push('-');
             previous_dash = true;
         }
     }
-
     out.trim_matches('-').to_owned()
 }

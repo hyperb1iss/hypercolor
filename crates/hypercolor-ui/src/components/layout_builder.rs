@@ -23,9 +23,9 @@ use hypercolor_types::spatial::SpatialLayout;
 const SIDEBAR_DEFAULT: f64 = 280.0;
 const SIDEBAR_MIN: f64 = 180.0;
 const SIDEBAR_MAX: f64 = 480.0;
-const BOTTOM_DEFAULT: f64 = 96.0;
-const BOTTOM_MIN: f64 = 72.0;
-const BOTTOM_MAX: f64 = 400.0;
+const BOTTOM_DEFAULT: f64 = 160.0;
+const BOTTOM_MIN: f64 = 96.0;
+const BOTTOM_MAX: f64 = 500.0;
 
 const LS_KEY_SIDEBAR: &str = "hc-layout-sidebar-width";
 const LS_KEY_BOTTOM: &str = "hc-layout-bottom-height";
@@ -100,9 +100,12 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (new_layout_name, set_new_layout_name) = signal(String::new());
     let (initialized, set_initialized) = signal(false);
     let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(true);
+    let (hidden_zones, set_hidden_zones) =
+        signal(std::collections::HashSet::<String>::new());
     let layout_signal = Signal::derive(move || layout.get());
     let zone_id_signal = Signal::derive(move || selected_zone_id.get());
     let keep_aspect_ratio_signal = Signal::derive(move || keep_aspect_ratio.get());
+    let hidden_zones_signal = Signal::derive(move || hidden_zones.get());
     let has_layout = Signal::derive(move || layout.with(|current| current.is_some()));
 
     // --- Resizable panel state ---
@@ -444,6 +447,48 @@ pub fn LayoutBuilder() -> impl IntoView {
         });
     };
 
+    // Duplicate handler — creates a copy of the current layout with zones + groups
+    let duplicate_layout = move || {
+        let Some(current) = layout.get_untracked() else {
+            return;
+        };
+        let new_name = format!("{} (copy)", current.name);
+        let zones = current.zones.clone();
+        let groups = current.groups.clone();
+        let canvas_width = current.canvas_width;
+        let canvas_height = current.canvas_height;
+        let layouts_resource = ctx.layouts_resource;
+        let set_id = set_selected_layout_id;
+        leptos::task::spawn_local(async move {
+            let req = api::CreateLayoutRequest {
+                name: new_name,
+                description: None,
+                canvas_width: Some(canvas_width),
+                canvas_height: Some(canvas_height),
+            };
+            match api::create_layout(&req).await {
+                Ok(summary) => {
+                    // Update the new layout with zones + groups from the original
+                    let update_req = api::UpdateLayoutApiRequest {
+                        name: None,
+                        description: None,
+                        canvas_width: None,
+                        canvas_height: None,
+                        zones: Some(zones),
+                        groups: Some(groups),
+                    };
+                    let _ = api::update_layout(&summary.id, &update_req).await;
+                    toasts::toast_success("Layout duplicated");
+                    layouts_resource.refetch();
+                    set_id.set(Some(summary.id));
+                }
+                Err(e) => {
+                    toasts::toast_error(&format!("Duplicate failed: {e}"));
+                }
+            }
+        });
+    };
+
     view! {
         <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
             // Toolbar — glass background with edge glow
@@ -545,6 +590,21 @@ pub fn LayoutBuilder() -> impl IntoView {
                     }.into_any()
                 }}
 
+                // Duplicate button — only when a layout is loaded
+                {move || layout.get().map(|_| {
+                    view! {
+                        <button
+                            class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium border whitespace-nowrap transition-all btn-press"
+                            style="background: rgba(128, 255, 234, 0.06); border-color: rgba(128, 255, 234, 0.15); color: rgba(128, 255, 234, 0.8)"
+                            title="Duplicate current layout"
+                            on:click=move |_| duplicate_layout()
+                        >
+                            <Icon icon=LuCopy width="12px" height="12px" />
+                            "Duplicate"
+                        </button>
+                    }
+                })}
+
                 <div class="flex-1" />
 
                 // Save / Revert / Delete buttons — only when a layout is loaded
@@ -644,9 +704,11 @@ pub fn LayoutBuilder() -> impl IntoView {
                         <LayoutPalette
                             layout=layout_signal
                             selected_zone_id=zone_id_signal
+                            hidden_zones=hidden_zones_signal
                             set_layout=set_layout
                             set_selected_zone_id=set_selected_zone_id
                             set_is_dirty=set_is_dirty
+                            set_hidden_zones=set_hidden_zones
                         />
                     </div>
 
@@ -672,6 +734,7 @@ pub fn LayoutBuilder() -> impl IntoView {
                                 layout=layout_signal
                                 selected_zone_id=zone_id_signal
                                 keep_aspect_ratio=keep_aspect_ratio_signal
+                                hidden_zones=hidden_zones_signal
                                 set_selected_zone_id=set_selected_zone_id
                                 set_layout=set_layout
                                 set_is_dirty=set_is_dirty

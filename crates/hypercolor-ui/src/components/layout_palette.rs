@@ -21,9 +21,11 @@ const GROUP_COLORS: &[&str] = &[
 pub fn LayoutPalette(
     #[prop(into)] layout: Signal<Option<SpatialLayout>>,
     #[prop(into)] selected_zone_id: Signal<Option<String>>,
+    #[prop(into)] hidden_zones: Signal<std::collections::HashSet<String>>,
     set_layout: WriteSignal<Option<SpatialLayout>>,
     set_selected_zone_id: WriteSignal<Option<String>>,
     set_is_dirty: WriteSignal<bool>,
+    set_hidden_zones: WriteSignal<std::collections::HashSet<String>>,
 ) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
 
@@ -162,9 +164,27 @@ pub fn LayoutPalette(
                             <div class="flex flex-wrap gap-1.5">
                                 {current_groups.into_iter().map(|group| {
                                     let gid_delete = group.id.clone();
+                                    let gid_visibility = group.id.clone();
                                     let color = group.color.clone().unwrap_or_else(|| "#e135ff".to_string());
                                     let rgb = hex_to_rgb(&color);
                                     let count = counts.get(&group.id).copied().unwrap_or(0);
+
+                                    // Check if all zones in this group are hidden
+                                    let group_all_hidden = {
+                                        let gid = group.id.clone();
+                                        Signal::derive(move || {
+                                            let hidden = hidden_zones.get();
+                                            layout.with(|current| {
+                                                current.as_ref().map(|l| {
+                                                    let member_zones: Vec<_> = l.zones.iter()
+                                                        .filter(|z| z.group_id.as_deref() == Some(&gid))
+                                                        .collect();
+                                                    !member_zones.is_empty() && member_zones.iter().all(|z| hidden.contains(&z.id))
+                                                }).unwrap_or(false)
+                                            })
+                                        })
+                                    };
+
                                     view! {
                                         <div
                                             class="flex items-center gap-1 px-2 py-1 rounded-full text-[13px] font-medium border
@@ -180,6 +200,47 @@ pub fn LayoutPalette(
                                             />
                                             {group.name}
                                             <span class="text-[9px] opacity-60">{count}</span>
+                                            // Visibility toggle for group
+                                            <button
+                                                class="ml-0.5 transition-opacity btn-press"
+                                                style=move || if group_all_hidden.get() {
+                                                    "opacity: 0.35"
+                                                } else {
+                                                    "opacity: 0.6"
+                                                }
+                                                title=move || if group_all_hidden.get() { "Show group" } else { "Hide group" }
+                                                on:click={
+                                                    let gid = gid_visibility.clone();
+                                                    move |ev: web_sys::MouseEvent| {
+                                                        ev.stop_propagation();
+                                                        let all_hidden = group_all_hidden.get_untracked();
+                                                        // Get zone IDs for this group
+                                                        let zone_ids: Vec<String> = layout.with_untracked(|current| {
+                                                            current.as_ref().map(|l| {
+                                                                l.zones.iter()
+                                                                    .filter(|z| z.group_id.as_deref() == Some(&gid))
+                                                                    .map(|z| z.id.clone())
+                                                                    .collect()
+                                                            }).unwrap_or_default()
+                                                        });
+                                                        set_hidden_zones.update(|set| {
+                                                            for zid in &zone_ids {
+                                                                if all_hidden {
+                                                                    set.remove(zid);
+                                                                } else {
+                                                                    set.insert(zid.clone());
+                                                                }
+                                                            }
+                                                        });
+                                                    }
+                                                }
+                                            >
+                                                {move || if group_all_hidden.get() {
+                                                    view! { <Icon icon=LuEyeOff width="10px" height="10px" /> }.into_any()
+                                                } else {
+                                                    view! { <Icon icon=LuEye width="10px" height="10px" /> }.into_any()
+                                                }}
+                                            </button>
                                             <button
                                                 class="ml-0.5 opacity-0 group-hover/chip:opacity-60 hover:opacity-100 transition-opacity"
                                                 on:click=move |ev| {
@@ -458,14 +519,72 @@ pub fn LayoutPalette(
                                                         </div>
                                                     </div>
 
-                                                    // Right side: chevron + add/remove-all (multi) or toggle (single)
+                                                    // Right side: device actions — uniform button strip
                                                     {if has_multi_zones {
                                                         let toggle_all_rgb = rgb_for_indicator.clone();
                                                         let toggle_all_did = device_id.clone();
                                                         let toggle_all_dname = dev.name.clone();
                                                         let toggle_all_zones = dev.zones.clone();
+                                                        let vis_did = device_id.clone();
+
+                                                        // Device-level visibility: are ALL zones for this device hidden?
+                                                        let device_all_hidden = {
+                                                            let did = device_id.clone();
+                                                            Signal::derive(move || {
+                                                                let hidden = hidden_zones.get();
+                                                                layout.with(|current| {
+                                                                    current.as_ref().map(|l| {
+                                                                        let device_zones: Vec<_> = l.zones.iter()
+                                                                            .filter(|z| z.device_id == did)
+                                                                            .collect();
+                                                                        !device_zones.is_empty() && device_zones.iter().all(|z| hidden.contains(&z.id))
+                                                                    }).unwrap_or(false)
+                                                                })
+                                                            })
+                                                        };
+
                                                         view! {
                                                             <div class="shrink-0 flex items-center gap-1">
+                                                                // Visibility toggle (device-level)
+                                                                {move || {
+                                                                    if !any_zone_in_layout.get() { return None; }
+                                                                    let did = vis_did.clone();
+                                                                    let all_hidden = device_all_hidden.get();
+                                                                    Some(view! {
+                                                                        <button
+                                                                            class="w-6 h-6 flex items-center justify-center rounded-md
+                                                                                   transition-all shrink-0 btn-press"
+                                                                            style=if all_hidden {
+                                                                                "color: var(--color-text-tertiary); opacity: 0.3"
+                                                                            } else {
+                                                                                "color: var(--color-text-tertiary); opacity: 0.5"
+                                                                            }
+                                                                            title=if all_hidden { "Show all zones" } else { "Hide all zones" }
+                                                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                                                ev.stop_propagation();
+                                                                                let zone_ids: Vec<String> = layout.with_untracked(|current| {
+                                                                                    current.as_ref().map(|l| {
+                                                                                        l.zones.iter()
+                                                                                            .filter(|z| z.device_id == did)
+                                                                                            .map(|z| z.id.clone())
+                                                                                            .collect()
+                                                                                    }).unwrap_or_default()
+                                                                                });
+                                                                                set_hidden_zones.update(|set| {
+                                                                                    for zid in &zone_ids {
+                                                                                        if all_hidden { set.remove(zid); } else { set.insert(zid.clone()); }
+                                                                                    }
+                                                                                });
+                                                                            }
+                                                                        >
+                                                                            {if all_hidden {
+                                                                                view! { <Icon icon=LuEyeOff width="12px" height="12px" /> }.into_any()
+                                                                            } else {
+                                                                                view! { <Icon icon=LuEye width="12px" height="12px" /> }.into_any()
+                                                                            }}
+                                                                        </button>
+                                                                    })
+                                                                }}
                                                                 // Add-all / remove-all toggle
                                                                 {move || {
                                                                     let did = toggle_all_did.clone();
@@ -474,9 +593,9 @@ pub fn LayoutPalette(
                                                                     if any_zone_in_layout.get() {
                                                                         view! {
                                                                             <button
-                                                                                class="w-5 h-5 flex items-center justify-center rounded
-                                                                                       transition-all shrink-0 opacity-30 hover:opacity-80 btn-press"
-                                                                                style="color: var(--color-text-tertiary)"
+                                                                                class="w-6 h-6 flex items-center justify-center rounded-md
+                                                                                       transition-all shrink-0 btn-press"
+                                                                                style="color: rgba(255, 99, 99, 0.4)"
                                                                                 title="Remove all zones"
                                                                                 on:click=move |ev| {
                                                                                     ev.stop_propagation();
@@ -488,7 +607,7 @@ pub fn LayoutPalette(
                                                                                     );
                                                                                 }
                                                                             >
-                                                                                <Icon icon=LuX width="10px" height="10px" />
+                                                                                <Icon icon=LuTrash2 width="12px" height="12px" />
                                                                             </button>
                                                                         }.into_any()
                                                                     } else {
@@ -521,7 +640,7 @@ pub fn LayoutPalette(
                                                                 }}
                                                                 // Expand/collapse chevron
                                                                 <div
-                                                                    class="text-fg-tertiary"
+                                                                    class="text-fg-tertiary/60"
                                                                     style=move || {
                                                                         if is_collapsed.get() {
                                                                             "transform: rotate(-90deg); transition: transform 0.2s ease"
@@ -544,9 +663,68 @@ pub fn LayoutPalette(
                                                         let toggle_did = device_id.clone();
                                                         let toggle_dname = dev.name.clone();
                                                         let toggle_zone = single_zone_summary.clone();
+                                                        let vis_single_did = device_id.clone();
+
+                                                        // Single-zone device visibility
+                                                        let single_zone_hidden = {
+                                                            let did = device_id.clone();
+                                                            Signal::derive(move || {
+                                                                let hidden = hidden_zones.get();
+                                                                layout.with(|current| {
+                                                                    current.as_ref().map(|l| {
+                                                                        l.zones.iter()
+                                                                            .filter(|z| z.device_id == did)
+                                                                            .all(|z| hidden.contains(&z.id))
+                                                                            && l.zones.iter().any(|z| z.device_id == did)
+                                                                    }).unwrap_or(false)
+                                                                })
+                                                            })
+                                                        };
+
                                                         view! {
-                                                            <div class="shrink-0 flex items-center gap-1.5">
+                                                            <div class="shrink-0 flex items-center gap-1">
                                                                 {single_topo}
+                                                                // Visibility toggle (single-zone device)
+                                                                {move || {
+                                                                    if !single_zone_in_layout.get() { return None; }
+                                                                    let did = vis_single_did.clone();
+                                                                    let is_hidden = single_zone_hidden.get();
+                                                                    Some(view! {
+                                                                        <button
+                                                                            class="w-6 h-6 flex items-center justify-center rounded-md
+                                                                                   transition-all shrink-0 btn-press"
+                                                                            style=if is_hidden {
+                                                                                "color: var(--color-text-tertiary); opacity: 0.3"
+                                                                            } else {
+                                                                                "color: var(--color-text-tertiary); opacity: 0.5"
+                                                                            }
+                                                                            title=if is_hidden { "Show device" } else { "Hide device" }
+                                                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                                                ev.stop_propagation();
+                                                                                let zone_ids: Vec<String> = layout.with_untracked(|current| {
+                                                                                    current.as_ref().map(|l| {
+                                                                                        l.zones.iter()
+                                                                                            .filter(|z| z.device_id == did)
+                                                                                            .map(|z| z.id.clone())
+                                                                                            .collect()
+                                                                                    }).unwrap_or_default()
+                                                                                });
+                                                                                set_hidden_zones.update(|set| {
+                                                                                    for zid in &zone_ids {
+                                                                                        if is_hidden { set.remove(zid); } else { set.insert(zid.clone()); }
+                                                                                    }
+                                                                                });
+                                                                            }
+                                                                        >
+                                                                            {if is_hidden {
+                                                                                view! { <Icon icon=LuEyeOff width="12px" height="12px" /> }.into_any()
+                                                                            } else {
+                                                                                view! { <Icon icon=LuEye width="12px" height="12px" /> }.into_any()
+                                                                            }}
+                                                                        </button>
+                                                                    })
+                                                                }}
+                                                                // Add / remove toggle
                                                                 {move || {
                                                                     let did = toggle_did.clone();
                                                                     let zone = toggle_zone.clone();
@@ -554,9 +732,10 @@ pub fn LayoutPalette(
                                                                     if single_zone_in_layout.get() {
                                                                         view! {
                                                                             <button
-                                                                                class="w-5 h-5 flex items-center justify-center rounded
-                                                                                       transition-all shrink-0 opacity-30 hover:opacity-80 btn-press"
-                                                                                style="color: var(--color-text-tertiary)"
+                                                                                class="w-6 h-6 flex items-center justify-center rounded-md
+                                                                                       transition-all shrink-0 btn-press"
+                                                                                style="color: rgba(255, 99, 99, 0.4)"
+                                                                                title="Remove from layout"
                                                                                 on:click=move |ev| {
                                                                                     ev.stop_propagation();
                                                                                     remove_device_zone(
@@ -568,7 +747,7 @@ pub fn LayoutPalette(
                                                                                     );
                                                                                 }
                                                                             >
-                                                                                <Icon icon=LuX width="10px" height="10px" />
+                                                                                <Icon icon=LuTrash2 width="12px" height="12px" />
                                                                             </button>
                                                                         }.into_any()
                                                                     } else {
@@ -579,6 +758,7 @@ pub fn LayoutPalette(
                                                                                 style=format!(
                                                                                     "background: rgba({toggle_rgb}, 0.08); border-color: rgba({toggle_rgb}, 0.2); color: rgb({toggle_rgb})"
                                                                                 )
+                                                                                title="Add to layout"
                                                                                 on:click=move |ev| {
                                                                                     ev.stop_propagation();
                                                                                     let (canvas_width, canvas_height) =
@@ -833,7 +1013,43 @@ pub fn LayoutPalette(
                                                                                         }}
                                                                                     </div>
                                                                                 </div>
-                                                                                // Toggle button — add or remove zone
+                                                                                // Zone action buttons — uniform sizing
+                                                                                <div class="flex items-center gap-0.5 shrink-0">
+                                                                                // Visibility toggle
+                                                                                {move || {
+                                                                                    if !in_layout.get() { return None; }
+                                                                                    let zone_id = zone_id_for_select.get()?;
+                                                                                    let zid_toggle = zone_id.clone();
+                                                                                    let is_zone_hidden = hidden_zones.with(|s| s.contains(&zone_id));
+                                                                                    Some(view! {
+                                                                                        <button
+                                                                                            class="w-6 h-6 flex items-center justify-center rounded-md
+                                                                                                   transition-all shrink-0 btn-press"
+                                                                                            style=if is_zone_hidden {
+                                                                                                "color: var(--color-text-tertiary); opacity: 0.3"
+                                                                                            } else {
+                                                                                                "color: var(--color-text-tertiary); opacity: 0.5"
+                                                                                            }
+                                                                                            title=if is_zone_hidden { "Show zone" } else { "Hide zone" }
+                                                                                            on:click=move |ev: web_sys::MouseEvent| {
+                                                                                                ev.stop_propagation();
+                                                                                                let zid = zid_toggle.clone();
+                                                                                                set_hidden_zones.update(|set| {
+                                                                                                    if !set.remove(&zid) {
+                                                                                                        set.insert(zid);
+                                                                                                    }
+                                                                                                });
+                                                                                            }
+                                                                                        >
+                                                                                            {if is_zone_hidden {
+                                                                                                view! { <Icon icon=LuEyeOff width="12px" height="12px" /> }.into_any()
+                                                                                            } else {
+                                                                                                view! { <Icon icon=LuEye width="12px" height="12px" /> }.into_any()
+                                                                                            }}
+                                                                                        </button>
+                                                                                    })
+                                                                                }}
+                                                                                // Add or remove zone
                                                                                 {move || {
                                                                                     let did = did_for_toggle.clone();
                                                                                     let zn = toggle_zone_name.clone();
@@ -842,10 +1058,10 @@ pub fn LayoutPalette(
                                                                                     if in_layout.get() {
                                                                                         view! {
                                                                                             <button
-                                                                                                class="w-5 h-5 flex items-center justify-center rounded
-                                                                                                       transition-all shrink-0 opacity-0 group-hover/zone:opacity-30
-                                                                                                       hover:!opacity-80 btn-press"
-                                                                                                style="color: var(--color-text-tertiary)"
+                                                                                                class="w-6 h-6 flex items-center justify-center rounded-md
+                                                                                                       transition-all shrink-0 btn-press"
+                                                                                                style="color: rgba(255, 99, 99, 0.4)"
+                                                                                                title="Remove zone"
                                                                                                 on:click=move |ev| {
                                                                                                     ev.stop_propagation();
                                                                                                     remove_device_zone(
@@ -857,7 +1073,7 @@ pub fn LayoutPalette(
                                                                                                     );
                                                                                                 }
                                                                                             >
-                                                                                                <Icon icon=LuX width="10px" height="10px" />
+                                                                                                <Icon icon=LuTrash2 width="12px" height="12px" />
                                                                                             </button>
                                                                                         }.into_any()
                                                                                     } else {
@@ -868,6 +1084,7 @@ pub fn LayoutPalette(
                                                                                                 style=format!(
                                                                                                     "background: rgba({zone_rgb3}, 0.08); border-color: rgba({zone_rgb3}, 0.2); color: rgb({zone_rgb3})"
                                                                                                 )
+                                                                                                title="Add zone"
                                                                                                 on:click=move |ev| {
                                                                                                     ev.stop_propagation();
                                                                                                     let (canvas_width, canvas_height) =
@@ -897,6 +1114,7 @@ pub fn LayoutPalette(
                                                                                         }.into_any()
                                                                                     }
                                                                                 }}
+                                                                                </div>
                                                                             </div>
                                                                         }
                                                                     },
@@ -945,6 +1163,150 @@ pub fn LayoutPalette(
                         .into_any()
                 }}
             </div>
+
+            // Offline devices — zones in the layout whose device is not currently connected
+            {move || {
+                let devices = stable_devices.get();
+                let connected_ids: std::collections::HashSet<String> = devices.iter()
+                    .map(|d| d.layout_device_id.clone())
+                    .collect();
+
+                // Collect unique offline device IDs from the layout
+                let offline_devices: Vec<(String, Vec<hypercolor_types::spatial::DeviceZone>)> = layout.with(|current| {
+                    let Some(l) = current.as_ref() else { return Vec::new(); };
+                    let mut by_device: std::collections::BTreeMap<String, Vec<hypercolor_types::spatial::DeviceZone>> =
+                        std::collections::BTreeMap::new();
+                    for zone in &l.zones {
+                        if !connected_ids.contains(&zone.device_id) {
+                            by_device.entry(zone.device_id.clone()).or_default().push(zone.clone());
+                        }
+                    }
+                    by_device.into_iter().collect()
+                });
+
+                if offline_devices.is_empty() { return None; }
+
+                Some(view! {
+                    <div class="h-px bg-edge-subtle" />
+                    <div class="space-y-2">
+                        <h3 class="text-[9px] font-mono uppercase tracking-[0.12em] text-fg-tertiary/60 flex items-center gap-1.5">
+                            <Icon icon=LuWifi width="12px" height="12px" />
+                            "Offline"
+                        </h3>
+                        <div class="space-y-1.5">
+                            {offline_devices.into_iter().map(|(device_id, zones)| {
+                                let (primary_rgb, secondary_rgb) = crate::components::layout_canvas::device_accent_colors(&device_id);
+                                let zone_count = zones.len();
+                                let total_leds: u32 = zones.iter().map(|z| z.topology.led_count()).sum();
+                                let device_name = zones[0].name.clone();
+                                let did_remove = device_id.clone();
+                                let did_vis = device_id.clone();
+
+                                // Device-level visibility for offline device
+                                let offline_all_hidden = {
+                                    let did = device_id.clone();
+                                    Signal::derive(move || {
+                                        let hidden = hidden_zones.get();
+                                        layout.with(|current| {
+                                            current.as_ref().map(|l| {
+                                                let dzones: Vec<_> = l.zones.iter().filter(|z| z.device_id == did).collect();
+                                                !dzones.is_empty() && dzones.iter().all(|z| hidden.contains(&z.id))
+                                            }).unwrap_or(false)
+                                        })
+                                    })
+                                };
+
+                                view! {
+                                    <div
+                                        class="rounded-lg overflow-hidden"
+                                        style=format!(
+                                            "border: 1px solid rgba({primary_rgb}, 0.12); \
+                                             background: linear-gradient(135deg, rgba({primary_rgb}, 0.03), rgba({secondary_rgb}, 0.01)); \
+                                             opacity: 0.7"
+                                        )
+                                    >
+                                        <div class="flex items-center gap-2 px-2.5 py-2">
+                                            <div
+                                                class="w-1 self-stretch rounded-full shrink-0 opacity-40"
+                                                style=format!("background: linear-gradient(180deg, rgb({primary_rgb}), rgb({secondary_rgb}))")
+                                            />
+                                            <div class="flex-1 min-w-0">
+                                                <div class="flex items-center gap-1.5">
+                                                    <span class="text-[11px] font-medium text-fg-secondary truncate">{device_name}</span>
+                                                    <span class="text-[8px] font-mono uppercase tracking-wider px-1 py-0.5 rounded border shrink-0"
+                                                        style="color: rgba(255, 99, 99, 0.6); border-color: rgba(255, 99, 99, 0.15); background: rgba(255, 99, 99, 0.04)"
+                                                    >"offline"</span>
+                                                </div>
+                                                <div class="text-[10px] text-fg-tertiary/60 font-mono mt-0.5">
+                                                    {total_leds} " LEDs"
+                                                    {(zone_count > 1).then(|| view! {
+                                                        <><span class="opacity-40">" · "</span>{zone_count}" zones"</>
+                                                    })}
+                                                </div>
+                                            </div>
+                                            // Visibility toggle
+                                            {move || {
+                                                let did = did_vis.clone();
+                                                let all_hidden = offline_all_hidden.get();
+                                                Some(view! {
+                                                    <button
+                                                        class="w-6 h-6 flex items-center justify-center rounded-md transition-all shrink-0 btn-press"
+                                                        style=if all_hidden {
+                                                            "color: var(--color-text-tertiary); opacity: 0.3"
+                                                        } else {
+                                                            "color: var(--color-text-tertiary); opacity: 0.5"
+                                                        }
+                                                        title=if all_hidden { "Show device" } else { "Hide device" }
+                                                        on:click=move |ev: web_sys::MouseEvent| {
+                                                            ev.stop_propagation();
+                                                            let zone_ids: Vec<String> = layout.with_untracked(|current| {
+                                                                current.as_ref().map(|l| {
+                                                                    l.zones.iter().filter(|z| z.device_id == did)
+                                                                        .map(|z| z.id.clone()).collect()
+                                                                }).unwrap_or_default()
+                                                            });
+                                                            set_hidden_zones.update(|set| {
+                                                                for zid in &zone_ids {
+                                                                    if all_hidden { set.remove(zid); } else { set.insert(zid.clone()); }
+                                                                }
+                                                            });
+                                                        }
+                                                    >
+                                                        {if all_hidden {
+                                                            view! { <Icon icon=LuEyeOff width="12px" height="12px" /> }.into_any()
+                                                        } else {
+                                                            view! { <Icon icon=LuEye width="12px" height="12px" /> }.into_any()
+                                                        }}
+                                                    </button>
+                                                })
+                                            }}
+                                            // Remove all zones for this offline device
+                                            <button
+                                                class="w-6 h-6 flex items-center justify-center rounded-md transition-all shrink-0 btn-press"
+                                                style="color: rgba(255, 99, 99, 0.4)"
+                                                title="Remove all zones for this device"
+                                                on:click=move |ev| {
+                                                    ev.stop_propagation();
+                                                    let did = did_remove.clone();
+                                                    set_layout.update(|l| {
+                                                        if let Some(layout) = l {
+                                                            layout.zones.retain(|z| z.device_id != did);
+                                                        }
+                                                    });
+                                                    set_selected_zone_id.set(None);
+                                                    set_is_dirty.set(true);
+                                                }
+                                            >
+                                                <Icon icon=LuTrash2 width="12px" height="12px" />
+                                            </button>
+                                        </div>
+                                    </div>
+                                }
+                            }).collect_view()}
+                        </div>
+                    </div>
+                })
+            }}
         </div>
     }
 }

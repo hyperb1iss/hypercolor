@@ -1,5 +1,7 @@
-//! Devices page — hardware gallery grid with detail sidebar.
+//! Devices page — hardware gallery grid with resizable detail sidebar.
+//! All layout state (selected device, sidebar width, filters) persists via localStorage.
 
+use leptos::ev;
 use leptos::prelude::*;
 use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
@@ -7,10 +9,48 @@ use wasm_bindgen::JsCast;
 use crate::app::DevicesContext;
 use crate::components::device_card::DeviceCard;
 use crate::components::device_detail::DeviceDetail;
+use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use crate::toasts;
 
-/// Filter chip definition: (label, accent RGB).
+// ── LocalStorage keys + helpers ─────────────────────────────────────────────
+
+const SIDEBAR_DEFAULT: f64 = 400.0;
+const SIDEBAR_MIN: f64 = 300.0;
+const SIDEBAR_MAX: f64 = 600.0;
+
+const LS_SIDEBAR: &str = "hc-devices-sidebar-width";
+const LS_SELECTED: &str = "hc-devices-selected";
+const LS_STATUS: &str = "hc-devices-status-filter";
+const LS_BACKEND: &str = "hc-devices-backend-filter";
+
+fn ls_get(key: &str) -> Option<String> {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item(key).ok().flatten())
+}
+
+fn ls_set(key: &str, value: &str) {
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = storage.set_item(key, value);
+    }
+}
+
+fn ls_remove(key: &str) {
+    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = storage.remove_item(key);
+    }
+}
+
+fn load_sidebar_width() -> f64 {
+    ls_get(LS_SIDEBAR)
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(SIDEBAR_DEFAULT)
+        .clamp(SIDEBAR_MIN, SIDEBAR_MAX)
+}
+
+// ── Filter definitions ──────────────────────────────────────────────────────
+
 const STATUS_CHIPS: &[(&str, &str)] = &[
     ("all", "225, 53, 255"),
     ("active", "80, 250, 123"),
@@ -27,7 +67,6 @@ const BACKEND_CHIPS: &[(&str, &str)] = &[
     ("hue", "255, 183, 77"),
 ];
 
-/// Render a row of filter chip buttons.
 fn filter_chips(
     chips: &'static [(&'static str, &'static str)],
     current: ReadSignal<String>,
@@ -56,15 +95,63 @@ fn filter_chips(
         .collect_view()
 }
 
-/// Devices page with filter chips, search, and device grid.
+// ── Page component ──────────────────────────────────────────────────────────
+
 #[component]
 pub fn DevicesPage() -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
 
+    // Restore persisted state
     let (search, set_search) = signal(String::new());
-    let (status_filter, set_status_filter) = signal("all".to_string());
-    let (backend_filter, set_backend_filter) = signal("all".to_string());
-    let (selected_device, set_selected_device) = signal(None::<String>);
+    let (status_filter, set_status_filter) =
+        signal(ls_get(LS_STATUS).unwrap_or_else(|| "all".to_string()));
+    let (backend_filter, set_backend_filter) =
+        signal(ls_get(LS_BACKEND).unwrap_or_else(|| "all".to_string()));
+    let (selected_device, set_selected_device) = signal(ls_get(LS_SELECTED));
+
+    // Persist filter changes
+    Effect::new(move |_| {
+        let s = status_filter.get();
+        if s == "all" {
+            ls_remove(LS_STATUS);
+        } else {
+            ls_set(LS_STATUS, &s);
+        }
+    });
+    Effect::new(move |_| {
+        let b = backend_filter.get();
+        if b == "all" {
+            ls_remove(LS_BACKEND);
+        } else {
+            ls_set(LS_BACKEND, &b);
+        }
+    });
+    Effect::new(move |_| {
+        if let Some(id) = selected_device.get() {
+            ls_set(LS_SELECTED, &id);
+        } else {
+            ls_remove(LS_SELECTED);
+        }
+    });
+
+    // Resizable sidebar
+    let (sidebar_width, set_sidebar_width) = signal(load_sidebar_width());
+    let sidebar_start = StoredValue::new(0.0_f64);
+
+    let on_drag_start = Callback::new(move |()| {
+        sidebar_start.set_value(sidebar_width.get_untracked());
+    });
+    let on_drag = Callback::new(move |delta: f64| {
+        if let Some(start) = sidebar_start.try_get_value() {
+            let clamped = (start - delta).clamp(SIDEBAR_MIN, SIDEBAR_MAX);
+            set_sidebar_width.set(clamped);
+        }
+    });
+    let on_drag_end = Callback::new(move |()| {
+        if let Some(width) = sidebar_width.try_get_untracked() {
+            ls_set(LS_SIDEBAR, &format!("{width:.0}"));
+        }
+    });
 
     let filtered_devices = Memo::new(move |_| {
         let Some(Ok(devices)) = ctx.devices_resource.get() else {
@@ -94,6 +181,14 @@ pub fn DevicesPage() -> impl IntoView {
             .collect::<Vec<_>>()
     });
 
+    let device_count = Memo::new(move |_| {
+        ctx.devices_resource
+            .get()
+            .and_then(|r| r.ok())
+            .map(|d| d.len())
+            .unwrap_or(0)
+    });
+
     let on_select_device = Callback::new(move |id: String| {
         let current = selected_device.get();
         if current.as_deref() == Some(&id) {
@@ -116,14 +211,27 @@ pub fn DevicesPage() -> impl IntoView {
         count
     });
 
+    let _close_listener = window_event_listener(ev::keydown, move |ev| {
+        if ev.key() == "Escape" {
+            set_filter_dropdown_open.set(false);
+        }
+    });
+
     view! {
         <div class="flex flex-col h-full -m-6 animate-fade-in">
-            // Header — title + search + filters on one line
+            // Header
             <div class="shrink-0 px-6 pt-5 pb-3 bg-surface-base z-10">
                 <div class="flex items-center gap-3">
                     <h1 class="text-lg font-medium text-fg-primary shrink-0">"Devices"</h1>
 
-                    // Search bar — fills available space
+                    <span class="text-[10px] font-mono text-fg-tertiary/40 tabular-nums shrink-0">
+                        {move || {
+                            let total = device_count.get();
+                            let filtered = filtered_devices.get().len();
+                            if filtered == total { format!("{total}") } else { format!("{filtered}/{total}") }
+                        }}
+                    </span>
+
                     <div class="relative flex-1 min-w-0">
                         <span class="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary">
                             <Icon icon=LuSearch width="14px" height="14px" />
@@ -143,7 +251,6 @@ pub fn DevicesPage() -> impl IntoView {
                         <kbd class="absolute right-3 top-1/2 -translate-y-1/2 text-[9px] font-mono text-fg-tertiary bg-surface-overlay/30 px-1.5 py-0.5 rounded border border-edge-subtle">"/"</kbd>
                     </div>
 
-                    // Filters dropdown
                     <div class="relative shrink-0">
                         <button
                             class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition-all duration-200"
@@ -161,52 +268,36 @@ pub fn DevicesPage() -> impl IntoView {
                             {move || {
                                 let count = active_filter_count.get();
                                 (count > 0).then(|| view! {
-                                    <span
-                                        class="min-w-[16px] h-4 flex items-center justify-center rounded-full text-[9px] font-mono"
-                                        style="background: rgba(225, 53, 255, 0.3); color: rgb(225, 53, 255)"
-                                    >
+                                    <span class="min-w-[16px] h-4 flex items-center justify-center rounded-full text-[9px] font-mono"
+                                          style="background: rgba(225, 53, 255, 0.3); color: rgb(225, 53, 255)">
                                         {count}
                                     </span>
                                 })
                             }}
-                            <span
-                                class="w-3 h-3 flex items-center justify-center transition-transform duration-200"
-                                class:rotate-180=move || filter_dropdown_open.get()
-                            >
+                            <span class="w-3 h-3 flex items-center justify-center transition-transform duration-200"
+                                  class:rotate-180=move || filter_dropdown_open.get()>
                                 <Icon icon=LuChevronDown width="11px" height="11px" />
                             </span>
                         </button>
 
                         {move || filter_dropdown_open.get().then(|| view! {
-                            // Backdrop
-                            <div
-                                class="fixed inset-0 z-20"
-                                on:click=move |_| set_filter_dropdown_open.set(false)
-                            />
-                            <div
-                                class="absolute top-full right-0 mt-1 z-30 w-[220px] max-h-[320px] overflow-y-auto
+                            <div class="fixed inset-0 z-20" on:click=move |_| set_filter_dropdown_open.set(false) />
+                            <div class="absolute top-full right-0 mt-1 z-30 w-[220px] max-h-[320px] overflow-y-auto
                                        rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
-                                       py-1.5 animate-fade-in animate-glow-reveal scrollbar-dropdown"
-                            >
-                                // ── Status section ──
+                                       py-1.5 animate-fade-in animate-glow-reveal scrollbar-dropdown">
                                 <div class="px-3 pt-1 pb-1.5">
                                     <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1.5">"Status"</div>
                                     <div class="flex gap-1 flex-wrap">
                                         {filter_chips(STATUS_CHIPS, status_filter, set_status_filter)}
                                     </div>
                                 </div>
-
                                 <div class="h-px bg-border-subtle/30 mx-2 my-1" />
-
-                                // ── Backend section ──
                                 <div class="px-3 pt-1 pb-1.5">
                                     <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1.5">"Backend"</div>
                                     <div class="flex gap-1 flex-wrap">
                                         {filter_chips(BACKEND_CHIPS, backend_filter, set_backend_filter)}
                                     </div>
                                 </div>
-
-                                // ── Clear all ──
                                 {move || (active_filter_count.get() > 0).then(|| view! {
                                     <div class="h-px bg-border-subtle/30 mx-2 my-1" />
                                     <button
@@ -223,7 +314,6 @@ pub fn DevicesPage() -> impl IntoView {
                         })}
                     </div>
 
-                    // Scan button
                     <button
                         class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all btn-press shrink-0"
                         style="background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.1); color: rgba(128, 255, 234, 0.8)"
@@ -242,11 +332,10 @@ pub fn DevicesPage() -> impl IntoView {
                 </div>
             </div>
 
-            // Grid + sidebar
-            <div class="flex-1 overflow-y-auto px-6 pb-6">
-                <div class="flex gap-4 items-start">
-                    // Device grid
-                    <div class="flex-1 min-w-0">
+            // Grid + resizable sidebar
+            <div class="flex-1 overflow-hidden">
+                <div class="flex h-full">
+                    <div class="flex-1 min-w-0 overflow-y-auto px-6 pb-6">
                         <Suspense fallback=move || view! { <DevicesLoadingSkeleton /> }>
                             {move || {
                                 let devices = filtered_devices.get();
@@ -260,9 +349,9 @@ pub fn DevicesPage() -> impl IntoView {
                                 } else {
                                     let has_selected = selected_device.get().is_some();
                                     let grid_class = if has_selected {
-                                        "grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-2.5"
+                                        "grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-2.5"
                                     } else {
-                                        "grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3"
+                                        "grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3"
                                     };
                                     view! {
                                         <div class=grid_class>
@@ -272,12 +361,7 @@ pub fn DevicesPage() -> impl IntoView {
                                                     selected_device.get().as_deref() == Some(&dev_id)
                                                 });
                                                 view! {
-                                                    <DeviceCard
-                                                        device=dev
-                                                        is_selected=is_selected
-                                                        on_select=on_select_device
-                                                        index=i
-                                                    />
+                                                    <DeviceCard device=dev is_selected=is_selected on_select=on_select_device index=i />
                                                 }
                                             }).collect_view()}
                                         </div>
@@ -287,11 +371,16 @@ pub fn DevicesPage() -> impl IntoView {
                         </Suspense>
                     </div>
 
-                    // Detail sidebar
                     {move || selected_device.get().map(|id| {
                         let device_id = Signal::derive(move || id.clone());
                         view! {
-                            <DeviceDetail device_id=device_id />
+                            <ResizeHandle on_drag_start=on_drag_start on_drag=on_drag on_drag_end=on_drag_end />
+                            <aside
+                                class="shrink-0 overflow-y-auto pb-6 pr-6 scrollbar-none animate-slide-in-right"
+                                style=move || format!("width: {:.0}px", sidebar_width.get())
+                            >
+                                <DeviceDetail device_id=device_id />
+                            </aside>
                         }
                     })}
                 </div>
@@ -300,26 +389,29 @@ pub fn DevicesPage() -> impl IntoView {
     }
 }
 
-/// Loading skeleton.
 #[component]
 fn DevicesLoadingSkeleton() -> impl IntoView {
     view! {
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
+        <div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
             {(0..6).map(|i| {
                 let stagger = format!("animation-delay: {}ms", i * 60);
                 view! {
-                    <div class="rounded-xl border border-edge-subtle/50 bg-surface-overlay/30 h-[108px] animate-pulse" style=stagger>
+                    <div class="rounded-xl border border-edge-subtle/50 bg-surface-overlay/30 h-[140px] animate-pulse" style=stagger>
                         <div class="px-3.5 py-3 space-y-3">
                             <div class="flex items-center gap-2.5">
-                                <div class="w-8 h-8 bg-surface-overlay/30 rounded-lg" />
+                                <div class="w-9 h-9 bg-surface-overlay/30 rounded-lg" />
                                 <div class="space-y-1.5 flex-1">
                                     <div class="h-3.5 w-28 bg-surface-overlay/30 rounded" />
-                                    <div class="h-2.5 w-16 bg-surface-overlay/20 rounded" />
+                                    <div class="h-2.5 w-20 bg-surface-overlay/20 rounded" />
                                 </div>
                             </div>
                             <div class="flex gap-1.5">
-                                <div class="w-4 h-4 bg-surface-overlay/15 rounded" />
-                                <div class="w-4 h-4 bg-surface-overlay/15 rounded" />
+                                <div class="w-10 h-5 bg-surface-overlay/15 rounded" />
+                                <div class="w-10 h-5 bg-surface-overlay/15 rounded" />
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <div class="h-2.5 w-16 bg-surface-overlay/15 rounded" />
+                                <div class="h-[3px] w-12 bg-surface-overlay/15 rounded-full" />
                             </div>
                         </div>
                     </div>

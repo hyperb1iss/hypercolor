@@ -60,13 +60,13 @@ pub fn LayoutZoneProperties(
         };
 
     view! {
-        <div class="h-full px-4 py-2">
+        <div class="h-full px-5 py-3 overflow-y-auto">
             {move || {
                 let Some(zone) = zone_snapshot.get() else {
                     return view! {
-                        <div class="flex items-center justify-center py-3 gap-2">
-                            <Icon icon=LuMousePointerClick width="16px" height="16px" style="color: rgba(139, 133, 160, 0.15)" />
-                            <div class="text-[10px] text-fg-tertiary">"Click a zone on the canvas to edit its properties"</div>
+                        <div class="flex items-center justify-center h-full gap-2.5">
+                            <Icon icon=LuMousePointerClick width="18px" height="18px" style="color: rgba(139, 133, 160, 0.15)" />
+                            <div class="text-xs text-fg-tertiary">"Click a zone on the canvas to edit its properties"</div>
                         </div>
                     }.into_any();
                 };
@@ -87,6 +87,7 @@ pub fn LayoutZoneProperties(
                 let led_count = zone.topology.led_count();
                 let topology_label = topology_name(&zone.topology);
                 let current_group_id = zone.group_id.clone();
+                let attachment = zone.attachment.clone();
 
                 // Compute the default display name for reset.
                 let default_name = {
@@ -117,10 +118,14 @@ pub fn LayoutZoneProperties(
                 let zid_channel = zone_id.clone();
                 let zid_pos_x = zone_id.clone();
                 let zid_pos_y = zone_id.clone();
+                let zid_center_h = zone_id.clone();
+                let zid_center_v = zone_id.clone();
                 let zid_size_w = zone_id.clone();
                 let zid_size_h = zone_id.clone();
                 let zid_rotation = zone_id.clone();
+                let zid_rotation_input = zone_id.clone();
                 let zid_scale = zone_id.clone();
+                let zid_scale_input = zone_id.clone();
                 let zid_group = zone_id.clone();
                 let zid_front = zone_id.clone();
                 let zid_up = zone_id.clone();
@@ -129,17 +134,14 @@ pub fn LayoutZoneProperties(
                 let zid_remove = zone_id;
 
                 view! {
-                    <div class="space-y-1.5">
-                        // Row 1: Name + metadata badges + layer + actions — all inline
-                        <div class="flex items-center gap-1.5 min-w-0">
-                            // Settings icon
-                            <Icon icon=LuSettings2 width="11px" height="11px" style="color: rgba(139, 133, 160, 0.35); flex-shrink: 0" />
-
-                            // Name input (flexible, takes available space)
+                    <div class="space-y-3">
+                        // Row 1: Zone identity — name, channel, metadata, group, layer, actions
+                        <div class="flex items-center gap-2 min-w-0">
+                            // Name input
                             <input
                                 type="text"
-                                class="min-w-0 flex-1 max-w-72 bg-surface-sunken border border-edge-subtle rounded px-1.5 py-0.5
-                                       text-[11px] text-fg-primary placeholder-fg-tertiary
+                                class="min-w-0 flex-1 max-w-80 bg-surface-sunken border border-edge-subtle rounded-md px-2.5 py-1.5
+                                       text-sm text-fg-primary placeholder-fg-tertiary
                                        focus:outline-none focus:border-accent-muted glow-ring transition-all"
                                 prop:value=zone_name
                                 on:change=move |ev| {
@@ -165,21 +167,21 @@ pub fn LayoutZoneProperties(
                                             update_zone(zid, Box::new(move |z| z.name = val));
                                         }
                                     >
-                                        <Icon icon=LuRotateCcw width="10px" height="10px" />
+                                        <Icon icon=LuRotateCcw width="12px" height="12px" />
                                     </button>
                                 }
                             })}
 
-                            <div class="w-px h-3.5 bg-edge-subtle/30 shrink-0" />
+                            <div class="w-px h-4 bg-edge-subtle/30 shrink-0" />
 
-                            // Channel (compact inline input)
-                            <div class="flex items-center gap-1 shrink-0">
-                                <span class="text-[8px] text-fg-tertiary/60 font-mono uppercase">"Ch"</span>
+                            // Channel input
+                            <div class="flex items-center gap-1.5 shrink-0">
+                                <span class="text-[9px] text-fg-tertiary/60 font-mono uppercase">"Ch"</span>
                                 <input
                                     type="text"
                                     placeholder="\u{2014}"
-                                    class="w-24 bg-surface-sunken border border-edge-subtle rounded px-1.5 py-0.5
-                                           text-[10px] text-fg-primary font-mono placeholder-fg-tertiary/30
+                                    class="w-24 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1.5
+                                           text-xs text-fg-primary font-mono placeholder-fg-tertiary/30
                                            focus:outline-none focus:border-accent-muted glow-ring transition-all"
                                     prop:value=channel_name.clone().unwrap_or_default()
                                     on:change=move |ev| {
@@ -194,27 +196,43 @@ pub fn LayoutZoneProperties(
                                 />
                             </div>
 
-                            <div class="w-px h-3.5 bg-edge-subtle/30 shrink-0" />
+                            <div class="w-px h-4 bg-edge-subtle/30 shrink-0" />
 
-                            // Device ID (truncated badge, hover for full)
+                            // Metadata badges
                             <div
-                                class="shrink-0 max-w-40 text-[10px] text-fg-tertiary/70 font-mono bg-surface-overlay/40
-                                       rounded px-1.5 py-0.5 border border-edge-subtle/60 truncate cursor-default"
+                                class="shrink-0 max-w-40 text-xs text-fg-tertiary/70 font-mono bg-surface-overlay/40
+                                       rounded-md px-2 py-1 border border-edge-subtle/60 truncate cursor-default"
                                 title=device_id_title
                             >
                                 {device_id_display}
                             </div>
-
-                            // Topology badge
-                            <span class="shrink-0 text-[10px] text-fg-tertiary/70 font-mono bg-surface-overlay/40
-                                         rounded px-1.5 py-0.5 border border-edge-subtle/60 whitespace-nowrap">
+                            <span class="shrink-0 text-xs text-fg-tertiary/70 font-mono bg-surface-overlay/40
+                                         rounded-md px-2 py-1 border border-edge-subtle/60 whitespace-nowrap">
                                 {topology_label} " \u{00b7} " {led_count}
                             </span>
 
-                            // Group dropdown (compact)
+                            // Attachment badge
+                            {attachment.map(|att| {
+                                let label = att.template_id.clone();
+                                let detail = match att.led_count {
+                                    Some(count) => format!("{label} ({count} LEDs)"),
+                                    None => label.clone(),
+                                };
+                                view! {
+                                    <span class="shrink-0 text-xs font-mono px-2 py-1 rounded-md truncate max-w-[160px]"
+                                        style="color: rgb(128, 255, 234); background: rgba(128, 255, 234, 0.08); border: 1px solid rgba(128, 255, 234, 0.15)"
+                                        title=detail
+                                    >
+                                        <Icon icon=LuCable width="10px" height="10px" style="display: inline; vertical-align: -1px; margin-right: 3px" />
+                                        {label}
+                                    </span>
+                                }
+                            })}
+
+                            // Group dropdown
                             <select
-                                class="shrink-0 bg-surface-sunken border border-edge-subtle rounded px-1.5 py-0.5
-                                       text-[10px] text-fg-primary focus:outline-none focus:border-accent-muted glow-ring transition-all"
+                                class="shrink-0 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1.5
+                                       text-xs text-fg-primary focus:outline-none focus:border-accent-muted glow-ring transition-all"
                                 on:change=move |ev| {
                                     let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
                                     if let Some(el) = target {
@@ -225,7 +243,7 @@ pub fn LayoutZoneProperties(
                                     }
                                 }
                             >
-                                <option value="" selected=current_group_id.is_none()>"None"</option>
+                                <option value="" selected=current_group_id.is_none()>"No group"</option>
                                 {available_groups.get().into_iter().map(|group| {
                                     let gid = group.id.clone();
                                     let is_current = current_group_id.as_deref() == Some(&gid);
@@ -243,10 +261,10 @@ pub fn LayoutZoneProperties(
                                 }).collect_view()}
                             </select>
 
-                            <div class="w-px h-3.5 bg-edge-subtle/30 shrink-0" />
+                            <div class="flex-1" />
 
-                            // Layer controls (icon-only, compact)
-                            <div class="flex items-center gap-0.5 shrink-0">
+                            // Layer controls
+                            <div class="flex items-center gap-1 shrink-0">
                                 {layer_icon_button(LuSkipForward, "Bring to front", {
                                     let zid = zid_front;
                                     move |_| {
@@ -284,10 +302,8 @@ pub fn LayoutZoneProperties(
                                                                 z.display_order = order;
                                                             }
                                                         }
-                                                    } else {
-                                                        if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
-                                                            zone.display_order += 1;
-                                                        }
+                                                    } else if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
+                                                        zone.display_order += 1;
                                                     }
                                                 }
                                             }
@@ -341,16 +357,16 @@ pub fn LayoutZoneProperties(
                                         set_is_dirty.set(true);
                                     }
                                 })}
-                                <span class="text-[9px] font-mono text-fg-tertiary/40 tabular-nums ml-0.5">
+                                <span class="text-[10px] font-mono text-fg-tertiary/40 tabular-nums ml-1">
                                     {display_order}
                                 </span>
                             </div>
 
-                            <div class="w-px h-3.5 bg-edge-subtle/30 shrink-0" />
+                            <div class="w-px h-4 bg-edge-subtle/30 shrink-0" />
 
-                            // Remove button (icon-only)
+                            // Remove button
                             <button
-                                class="shrink-0 p-1 rounded text-status-error/40 hover:text-status-error hover:bg-status-error/10
+                                class="shrink-0 p-1.5 rounded-md text-status-error/40 hover:text-status-error hover:bg-status-error/10
                                        transition-all btn-press"
                                 title="Remove zone from layout"
                                 on:click=move |_| {
@@ -364,58 +380,77 @@ pub fn LayoutZoneProperties(
                                     set_is_dirty.set(true);
                                 }
                             >
-                                <Icon icon=LuTrash2 width="11px" height="11px" />
+                                <Icon icon=LuTrash2 width="13px" height="13px" />
                             </button>
                         </div>
 
-                        // Row 2: Transforms — position, size, rotation, scale (all inline)
-                        <div class="flex items-center gap-4 flex-wrap">
+                        // Row 2: Transforms — fixed grid layout so controls don't float
+                        <div class="flex items-center gap-5">
                             // Position
-                            <div class="flex items-center gap-1.5">
-                                <span class="text-[8px] text-fg-tertiary/60 font-mono uppercase shrink-0">"Pos"</span>
-                                {zone_number_input("X", pos_x, "0.01", 3, {
+                            <div class="flex items-center gap-2">
+                                <span class="text-[10px] text-fg-tertiary/70 font-mono uppercase tracking-wide shrink-0 w-6">"Pos"</span>
+                                {zone_number_input("X", pos_x, "0.01", 2, "0", "1", {
                                     let zid = zid_pos_x;
                                     move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.x = val))
                                 })}
-                                {zone_number_input("Y", pos_y, "0.01", 3, {
+                                {zone_number_input("Y", pos_y, "0.01", 2, "0", "1", {
                                     let zid = zid_pos_y;
                                     move |val: f32| update_zone(zid.clone(), Box::new(move |z| z.position.y = val))
                                 })}
+                                // Center buttons
+                                <button
+                                    class="shrink-0 p-1 rounded-md border transition-all btn-press
+                                           text-fg-tertiary/50 hover:text-accent border-edge-subtle/40 hover:border-accent-muted/40"
+                                    title="Center horizontally"
+                                    on:click=move |_| {
+                                        let zid = zid_center_h.clone();
+                                        update_zone(zid, Box::new(|z| z.position.x = 0.5));
+                                    }
+                                >
+                                    <Icon icon=LuAlignCenterHorizontal width="12px" height="12px" />
+                                </button>
+                                <button
+                                    class="shrink-0 p-1 rounded-md border transition-all btn-press
+                                           text-fg-tertiary/50 hover:text-accent border-edge-subtle/40 hover:border-accent-muted/40"
+                                    title="Center vertically"
+                                    on:click=move |_| {
+                                        let zid = zid_center_v.clone();
+                                        update_zone(zid, Box::new(|z| z.position.y = 0.5));
+                                    }
+                                >
+                                    <Icon icon=LuAlignCenterVertical width="12px" height="12px" />
+                                </button>
                             </div>
 
+                            <div class="w-px h-5 bg-edge-subtle/20 shrink-0" />
+
                             // Size
-                            <div class="flex items-center gap-1.5">
-                                <span class="text-[8px] text-fg-tertiary/60 font-mono uppercase shrink-0">"Size"</span>
-                                {zone_number_input("W", size_w, "0.0001", 4, {
+                            <div class="flex items-center gap-2">
+                                <span class="text-[10px] text-fg-tertiary/70 font-mono uppercase tracking-wide shrink-0 w-6">"Size"</span>
+                                {zone_number_input("W", size_w, "0.001", 3, "0", "1", {
                                     let zid = zid_size_w;
                                     move |val: f32| {
                                         let locked = keep_aspect_ratio.get_untracked();
                                         update_zone(zid.clone(), Box::new(move |z| {
                                             z.size = layout_geometry::update_zone_size(
-                                                z.size,
-                                                SizeAxis::Width,
-                                                val,
-                                                locked,
+                                                z.size, SizeAxis::Width, val, locked,
                                             );
                                         }))
                                     }
                                 })}
-                                {zone_number_input("H", size_h, "0.0001", 4, {
+                                {zone_number_input("H", size_h, "0.001", 3, "0", "1", {
                                     let zid = zid_size_h;
                                     move |val: f32| {
                                         let locked = keep_aspect_ratio.get_untracked();
                                         update_zone(zid.clone(), Box::new(move |z| {
                                             z.size = layout_geometry::update_zone_size(
-                                                z.size,
-                                                SizeAxis::Height,
-                                                val,
-                                                locked,
+                                                z.size, SizeAxis::Height, val, locked,
                                             );
                                         }))
                                     }
                                 })}
                                 <button
-                                    class="shrink-0 p-0.5 rounded border transition-all btn-press"
+                                    class="shrink-0 p-1 rounded-md border transition-all btn-press"
                                     title=move || if keep_aspect_ratio.get() { "Aspect ratio linked" } else { "Aspect ratio free" }
                                     style=move || {
                                         if keep_aspect_ratio.get() {
@@ -429,18 +464,18 @@ pub fn LayoutZoneProperties(
                                     }
                                 >
                                     {move || if keep_aspect_ratio.get() {
-                                        view! { <Icon icon=LuLink width="10px" height="10px" /> }.into_any()
+                                        view! { <Icon icon=LuLink width="12px" height="12px" /> }.into_any()
                                     } else {
-                                        view! { <Icon icon=LuUnlink width="10px" height="10px" /> }.into_any()
+                                        view! { <Icon icon=LuUnlink width="12px" height="12px" /> }.into_any()
                                     }}
                                 </button>
                             </div>
 
-                            <div class="w-px h-3.5 bg-edge-subtle/20 shrink-0" />
+                            <div class="w-px h-5 bg-edge-subtle/20 shrink-0" />
 
-                            // Rotation
-                            <div class="flex items-center gap-1.5 flex-1 min-w-32">
-                                <span class="text-[8px] text-fg-tertiary/60 font-mono uppercase shrink-0">"Rot"</span>
+                            // Rotation — slider + number input
+                            <div class="flex items-center gap-2 flex-1 min-w-40">
+                                <span class="text-[10px] text-fg-tertiary/70 font-mono uppercase tracking-wide shrink-0 w-6">"Rot"</span>
                                 <input
                                     type="range"
                                     min="0" max="360" step="1"
@@ -457,14 +492,34 @@ pub fn LayoutZoneProperties(
                                         }
                                     }
                                 />
-                                <span class="text-[10px] font-mono text-fg-tertiary/60 tabular-nums w-7 text-right shrink-0">
-                                    {format!("{rotation_deg:.0}")} "\u{00b0}"
-                                </span>
+                                <div class="flex items-center gap-0.5 shrink-0">
+                                    <input
+                                        type="number"
+                                        min="0" max="360" step="1"
+                                        class="w-14 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1.5
+                                               text-xs text-fg-primary font-mono tabular-nums text-right
+                                               focus:outline-none focus:border-accent-muted glow-ring transition-all"
+                                        prop:value=format!("{rotation_deg:.0}")
+                                        on:change=move |ev| {
+                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                            if let Some(el) = target {
+                                                if let Ok(deg) = el.value().parse::<f32>() {
+                                                    let rad = deg.to_radians();
+                                                    let zid = zid_rotation_input.clone();
+                                                    update_zone(zid, Box::new(move |z| z.rotation = rad));
+                                                }
+                                            }
+                                        }
+                                    />
+                                    <span class="text-xs font-mono text-fg-tertiary/50">"\u{00b0}"</span>
+                                </div>
                             </div>
 
-                            // Scale
-                            <div class="flex items-center gap-1.5 flex-1 min-w-32">
-                                <span class="text-[8px] text-fg-tertiary/60 font-mono uppercase shrink-0">"Scale"</span>
+                            <div class="w-px h-5 bg-edge-subtle/20 shrink-0" />
+
+                            // Scale — slider + number input
+                            <div class="flex items-center gap-2 flex-1 min-w-40">
+                                <span class="text-[10px] text-fg-tertiary/70 font-mono uppercase tracking-wide shrink-0">"Scale"</span>
                                 <input
                                     type="range"
                                     min="0.5" max="3.0" step="0.1"
@@ -480,9 +535,26 @@ pub fn LayoutZoneProperties(
                                         }
                                     }
                                 />
-                                <span class="text-[10px] font-mono text-fg-tertiary/60 tabular-nums w-7 text-right shrink-0">
-                                    {format!("{scale:.1}")} "x"
-                                </span>
+                                <div class="flex items-center gap-0.5 shrink-0">
+                                    <input
+                                        type="number"
+                                        min="0.5" max="3.0" step="0.1"
+                                        class="w-14 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1.5
+                                               text-xs text-fg-primary font-mono tabular-nums text-right
+                                               focus:outline-none focus:border-accent-muted glow-ring transition-all"
+                                        prop:value=format!("{scale:.1}")
+                                        on:change=move |ev| {
+                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                            if let Some(el) = target {
+                                                if let Ok(s) = el.value().parse::<f32>() {
+                                                    let zid = zid_scale_input.clone();
+                                                    update_zone(zid, Box::new(move |z| z.scale = s));
+                                                }
+                                            }
+                                        }
+                                    />
+                                    <span class="text-xs font-mono text-fg-tertiary/50">"x"</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -500,11 +572,11 @@ fn layer_icon_button(
 ) -> impl IntoView {
     view! {
         <button
-            class="p-0.5 rounded text-fg-tertiary/50 hover:text-accent transition-all btn-press"
+            class="p-1 rounded-md text-fg-tertiary/50 hover:text-accent transition-all btn-press"
             title=title
             on:click=on_click
         >
-            <Icon icon=icon width="11px" height="11px" />
+            <Icon icon=icon width="13px" height="13px" />
         </button>
     }
 }
@@ -515,17 +587,20 @@ fn zone_number_input(
     value: f32,
     step: &'static str,
     precision: usize,
+    min: &'static str,
+    max: &'static str,
     on_change: impl Fn(f32) + Clone + 'static,
 ) -> impl IntoView {
     view! {
         <div class="flex items-center gap-1">
-            <span class="text-[8px] text-fg-tertiary font-mono w-3">{label}</span>
+            <span class="text-[10px] text-fg-tertiary/60 font-mono w-3">{label}</span>
             <input
                 type="number"
                 step=step
-                min="0"
-                max="1"
-                class="w-16 bg-surface-sunken border border-edge-subtle rounded-md px-1.5 py-1 text-[10px] text-fg-primary font-mono tabular-nums
+                min=min
+                max=max
+                class="w-[4.5rem] bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1.5
+                       text-xs text-fg-primary font-mono tabular-nums
                        focus:outline-none focus:border-accent-muted glow-ring transition-all"
                 prop:value=format!("{value:.precision$}")
                 on:change=move |ev| {

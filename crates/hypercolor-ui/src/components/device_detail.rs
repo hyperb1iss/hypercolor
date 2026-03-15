@@ -1,4 +1,4 @@
-//! Device detail sidebar — hardware spec sheet with visual zones and attachment shapes.
+//! Device detail sidebar — hardware spec sheet with visual zones and components.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -7,8 +7,11 @@ use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::app::DevicesContext;
-use crate::components::attachment_panel::AttachmentPanel;
-use crate::components::device_card::{backend_accent_rgb, topology_shape_svg};
+use crate::components::attachment_panel::WiringPanel;
+use crate::components::device_card::{
+    backend_accent_rgb, classify_device, device_class_icon, device_class_label,
+    save_category_override, topology_shape_svg, DeviceClass, ALL_DEVICE_CLASSES,
+};
 use crate::icons::*;
 use crate::toasts;
 
@@ -25,22 +28,8 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
             .and_then(|devices| devices.into_iter().find(|d| d.id == id))
     });
 
-    let logical_devices = LocalResource::new(move || {
-        let id = device_id.get();
-        async move {
-            if id.is_empty() {
-                return Ok(Vec::new());
-            }
-            api::fetch_logical_devices(&id).await
-        }
-    });
-
     let (editing_name, set_editing_name) = signal(false);
     let (name_input, set_name_input) = signal(String::new());
-    let (show_add_segment, set_show_add_segment) = signal(false);
-    let (seg_name, set_seg_name) = signal(String::new());
-    let (seg_start, set_seg_start) = signal(String::new());
-    let (seg_count, set_seg_count) = signal(String::new());
     let (identify_active, set_identify_active) = signal(false);
     let (device_brightness, set_device_brightness) = signal(100_u8);
     let device_signal = Signal::derive(move || device.get());
@@ -134,38 +123,8 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
         });
     };
 
-    let add_segment = move || {
-        let id = device_id.get();
-        let name = seg_name.get();
-        let start: u32 = seg_start.get().parse().unwrap_or(0);
-        let count: u32 = seg_count.get().parse().unwrap_or(1);
-        if name.trim().is_empty() {
-            return;
-        }
-        set_show_add_segment.set(false);
-        set_seg_name.set(String::new());
-        set_seg_start.set(String::new());
-        set_seg_count.set(String::new());
-        leptos::task::spawn_local(async move {
-            let req = api::CreateLogicalDeviceRequest {
-                name,
-                led_start: start,
-                led_count: count,
-                enabled: Some(true),
-            };
-            let _ = api::create_logical_device(&id, &req).await;
-        });
-    };
-
-    let delete_logical = move |logical_id: String| {
-        leptos::task::spawn_local(async move {
-            let _ = api::delete_logical_device(&logical_id).await;
-        });
-    };
-
     view! {
-        <aside class="w-[400px] shrink-0 sticky top-0 self-start space-y-2.5 animate-slide-in-right scrollbar-none will-change-transform"
-               style="max-height: calc(100vh - 10rem); overflow-y: auto">
+        <div class="space-y-2.5">
             {move || device.get().map(|dev| {
                 let rgb = backend_accent_rgb(&dev.backend).to_string();
                 let rgb_for_border = rgb.clone();
@@ -180,13 +139,13 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                 let enabled = dev.status != "disabled";
                 let dev_name_for_edit = dev.name.clone();
                 let push_brightness = push_brightness.clone();
+                let dev_for_category = dev.clone();
 
                 view! {
                     // ── Header: Name + status + actions ──────────────────────
                     <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow"
                          style=format!("border-top: 2px solid rgba({rgb_for_border}, 0.2)")>
                         <div class="px-4 py-3">
-                            // Name row
                             <div class="flex items-center gap-2.5 mb-2">
                                 <div class="w-2 h-2 rounded-full shrink-0 dot-alive"
                                      style=format!("background: rgb({dot_rgb}); box-shadow: 0 0 8px rgba({dot_rgb}, 0.5)") />
@@ -212,7 +171,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                     let name = dev_name_for_edit.clone();
                                     view! {
                                         <span
-                                            class="text-sm font-medium text-fg-primary cursor-pointer hover:text-accent transition-colors group flex items-center gap-1.5 truncate"
+                                            class="text-sm font-medium text-fg-primary cursor-pointer hover:text-accent transition-colors group flex items-center gap-1.5"
                                             on:click=move |_| {
                                                 set_name_input.set(name.clone());
                                                 set_editing_name.set(true);
@@ -227,8 +186,7 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                 }}
                             </div>
 
-                            // Compact metadata
-                            <div class="flex items-center gap-3 text-[10px] font-mono text-fg-tertiary mb-3">
+                            <div class="flex items-center gap-3 text-[10px] font-mono text-fg-tertiary mb-2">
                                 <span class="capitalize">{dev.backend.clone()}</span>
                                 <span class="w-px h-3 bg-border-subtle" />
                                 <span>{dev.total_leds} " LEDs"</span>
@@ -240,14 +198,42 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                                 })}
                             </div>
 
-                            // Brightness — single compact row
+                            // Device category (editable)
+                            {
+                                let dev_id_for_cat = dev_for_category.id.clone();
+                                let current_class = classify_device(&dev_for_category);
+                                let current_icon = device_class_icon(&current_class);
+                                let (cat_label, set_cat_label) = signal(device_class_label(&current_class).to_string());
+                                view! {
+                                    <div class="flex items-center gap-2 mb-3">
+                                        <Icon icon=current_icon width="11px" height="11px" style="color: rgba(139, 133, 160, 0.5)" />
+                                        <select
+                                            class="bg-transparent border-none text-[10px] font-mono text-fg-tertiary cursor-pointer
+                                                   focus:outline-none hover:text-fg-secondary transition-colors appearance-none"
+                                            prop:value=move || cat_label.get()
+                                            on:change={
+                                                let did = dev_id_for_cat.clone();
+                                                move |ev| {
+                                                    let value = event_target_value(&ev);
+                                                    save_category_override(&did, &value);
+                                                    set_cat_label.set(value);
+                                                }
+                                            }
+                                        >
+                                            {ALL_DEVICE_CLASSES.iter().map(|c| {
+                                                let label = device_class_label(c);
+                                                view! { <option value=label>{label}</option> }
+                                            }).collect_view()}
+                                        </select>
+                                        <span class="text-[8px] text-fg-tertiary/25">"(category)"</span>
+                                    </div>
+                                }
+                            }
+
                             <div class="flex items-center gap-3">
                                 <Icon icon=LuSun width="12px" height="12px" style="color: rgba(139, 133, 160, 0.5)" />
                                 <input
-                                    type="range"
-                                    min="0"
-                                    max="100"
-                                    step="1"
+                                    type="range" min="0" max="100" step="1"
                                     class="flex-1 h-1 rounded-full appearance-none cursor-pointer"
                                     style=format!("accent-color: rgb({rgb_for_slider})")
                                     prop:value=move || device_brightness.get().to_string()
@@ -267,7 +253,6 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                             </div>
                         </div>
 
-                        // Actions — minimal row at bottom
                         <div class="px-4 py-2 bg-surface-overlay/10 border-t border-edge-subtle flex items-center gap-2">
                             <button
                                 class="text-[10px] font-medium px-2 py-1 rounded-md transition-all btn-press flex items-center gap-1"
@@ -307,180 +292,107 @@ pub fn DeviceDetail(#[prop(into)] device_id: Signal<String>) -> impl IntoView {
                         </div>
                     </div>
 
-                    // ── Zones — visual topology shapes ───────────────────────
+                    // ── Zones (expanded by default, animated collapse) ──────
                     {(!dev.zones.is_empty()).then(|| {
                         let zones = dev.zones.clone();
                         let zone_rgb = rgb.clone();
+                        let zone_count = zones.len();
+                        let (zones_open, set_zones_open) = signal(true);
+                        let dev_id_for_zone = dev.id.clone();
                         view! {
                             <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">
-                                <div class="px-4 py-2.5 flex items-center gap-2">
+                                <button
+                                    class="w-full px-4 py-2.5 flex items-center gap-2 hover:bg-surface-hover/20 transition-colors"
+                                    on:click=move |_| set_zones_open.update(|v| *v = !*v)
+                                >
                                     <Icon icon=LuGrid2x2 width="12px" height="12px" style="color: rgba(139, 133, 160, 0.6)" />
                                     <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Zones"</h3>
-                                    <span class="text-[9px] font-mono text-fg-tertiary/40 ml-auto">{zones.len()}</span>
-                                </div>
-                                <div class="px-3 pb-3">
-                                    <div class="grid grid-cols-2 gap-1.5">
-                                        {zones.into_iter().map(|zone| {
-                                            let zr = zone_rgb.clone();
-                                            let svg = topology_shape_svg(&zone.topology);
-                                            view! {
-                                                <div class="flex items-center gap-2 px-2 py-1.5 rounded-md
-                                                            bg-surface-overlay/15 hover:bg-surface-hover/30 transition-colors group/zone">
-                                                    <div class="w-4 h-4 shrink-0" style=format!("color: rgba({zr}, 0.5)")
-                                                         inner_html=format!(r#"<svg viewBox="0 0 16 16" width="16" height="16">{svg}</svg>"#) />
-                                                    <div class="min-w-0 flex-1">
-                                                        <div class="text-[11px] text-fg-primary truncate leading-tight">{zone.name}</div>
-                                                        <div class="text-[9px] font-mono text-fg-tertiary/50">{zone.led_count}</div>
-                                                    </div>
-                                                </div>
-                                            }
-                                        }).collect_view()}
+                                    <span class="text-[9px] font-mono text-fg-tertiary/40 ml-auto">{zone_count}</span>
+                                    <span class="w-3 h-3 flex items-center justify-center transition-transform duration-200"
+                                          class:rotate-180=move || !zones_open.get()>
+                                        <Icon icon=LuChevronDown width="11px" height="11px" style="color: rgba(139, 133, 160, 0.4)" />
+                                    </span>
+                                </button>
+                                // Animated expand/collapse via grid-template-rows
+                                <div
+                                    class="transition-[grid-template-rows] duration-200 ease-out"
+                                    style=move || if zones_open.get() {
+                                        "display: grid; grid-template-rows: 1fr"
+                                    } else {
+                                        "display: grid; grid-template-rows: 0fr"
+                                    }
+                                >
+                                    <div style="overflow: hidden">
+                                        <div class="px-3 pb-3">
+                                            <div class="grid grid-cols-2 gap-1.5">
+                                                {zones.into_iter().map(|zone| {
+                                                    let zr = zone_rgb.clone();
+                                                    let svg = topology_shape_svg(&zone.topology);
+                                                    let zone_name = zone.name.clone();
+                                                    let dev_id = dev_id_for_zone.clone();
+
+                                                    // Display metadata from topology hint
+                                                    let display_info = zone.topology_hint.as_ref().and_then(|h| {
+                                                        if let api::ZoneTopologySummary::Display { width, height, circular } = h {
+                                                            Some((*width, *height, *circular))
+                                                        } else { None }
+                                                    });
+
+                                                    view! {
+                                                        <div class="flex items-center gap-2 px-2 py-1.5 rounded-md
+                                                                    bg-surface-overlay/15 hover:bg-surface-hover/30 transition-colors group/zone">
+                                                            <div class="w-4 h-4 shrink-0" style=format!("color: rgba({zr}, 0.5)")
+                                                                 inner_html=format!(r#"<svg viewBox="0 0 16 16" width="16" height="16">{svg}</svg>"#) />
+                                                            <div class="min-w-0 flex-1">
+                                                                <div class="text-[11px] text-fg-primary leading-tight">{zone_name}</div>
+                                                                <div class="flex items-center gap-1.5">
+                                                                    <span class="text-[9px] font-mono text-fg-tertiary/50">{zone.led_count} " LEDs"</span>
+                                                                    {display_info.map(|(w, h, circular)| {
+                                                                        let label = if circular { format!("{w}\u{00d7}{h} \u{25cb}") } else { format!("{w}\u{00d7}{h}") };
+                                                                        view! {
+                                                                            <span class="text-[8px] font-mono text-fg-tertiary/30">{label}</span>
+                                                                        }
+                                                                    })}
+                                                                </div>
+                                                            </div>
+                                                            // Zone identify button
+                                                            <button
+                                                                class="w-4 h-4 flex items-center justify-center rounded shrink-0
+                                                                       opacity-0 group-hover/zone:opacity-100 transition-opacity
+                                                                       text-fg-tertiary/40 hover:text-accent btn-press"
+                                                                title="Identify zone"
+                                                                on:click={
+                                                                    let dev_id = dev_id.clone();
+                                                                    move |ev: web_sys::MouseEvent| {
+                                                                        ev.stop_propagation();
+                                                                        let did = dev_id.clone();
+                                                                        leptos::task::spawn_local(async move {
+                                                                            if let Err(e) = api::identify_device(&did).await {
+                                                                                toasts::toast_error(&format!("Identify failed: {e}"));
+                                                                            } else {
+                                                                                toasts::toast_success("Flashing device");
+                                                                            }
+                                                                        });
+                                                                    }
+                                                                }
+                                                            >
+                                                                <Icon icon=LuZap width="9px" height="9px" />
+                                                            </button>
+                                                        </div>
+                                                    }
+                                                }).collect_view()}
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         }
                     })}
 
-                    // ── Attachments ──────────────────────────────────────────
-                    <AttachmentPanel device_id=device_id device=device_signal />
-
-                    // ── Segments ─────────────────────────────────────────────
-                    <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">
-                        <div class="flex items-center justify-between px-4 py-2.5">
-                            <div class="flex items-center gap-2">
-                                <Icon icon=LuCable width="12px" height="12px" style="color: rgba(139, 133, 160, 0.6)" />
-                                <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Segments"</h3>
-                            </div>
-                            <button
-                                class="px-1.5 py-0.5 rounded text-[9px] font-medium transition-all"
-                                style="background: rgba(225, 53, 255, 0.06); color: rgba(225, 53, 255, 0.7)"
-                                on:click=move |_| set_show_add_segment.update(|v| *v = !*v)
-                            >
-                                {move || if show_add_segment.get() { "Cancel" } else { "+ Add" }}
-                            </button>
-                        </div>
-
-                        {move || show_add_segment.get().then(|| view! {
-                            <div class="mx-3 mb-2.5 space-y-1.5 p-2.5 rounded-lg bg-surface-overlay/60 border border-edge-subtle animate-fade-in">
-                                <input
-                                    type="text"
-                                    placeholder="Segment name"
-                                    class="w-full bg-surface-base/60 border border-edge-subtle rounded px-2 py-1 text-[11px] text-fg-primary
-                                           placeholder-fg-tertiary focus:outline-none focus:border-accent-muted"
-                                    prop:value=move || seg_name.get()
-                                    on:input=move |ev| {
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target { set_seg_name.set(el.value()); }
-                                    }
-                                />
-                                <div class="flex gap-1.5">
-                                    <input
-                                        type="number"
-                                        placeholder="Start"
-                                        class="flex-1 bg-surface-base/60 border border-edge-subtle rounded px-2 py-1 text-[11px] text-fg-primary font-mono
-                                               placeholder-fg-tertiary focus:outline-none focus:border-accent-muted"
-                                        prop:value=move || seg_start.get()
-                                        on:input=move |ev| {
-                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                            if let Some(el) = target { set_seg_start.set(el.value()); }
-                                        }
-                                    />
-                                    <input
-                                        type="number"
-                                        placeholder="Count"
-                                        class="flex-1 bg-surface-base/60 border border-edge-subtle rounded px-2 py-1 text-[11px] text-fg-primary font-mono
-                                               placeholder-fg-tertiary focus:outline-none focus:border-accent-muted"
-                                        prop:value=move || seg_count.get()
-                                        on:input=move |ev| {
-                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                            if let Some(el) = target { set_seg_count.set(el.value()); }
-                                        }
-                                    />
-                                </div>
-                                <button
-                                    class="w-full px-2 py-1 rounded-md text-[10px] font-medium transition-all btn-press"
-                                    style="background: rgba(80, 250, 123, 0.08); color: rgba(80, 250, 123, 0.8)"
-                                    on:click=move |_| add_segment()
-                                >
-                                    "Create"
-                                </button>
-                            </div>
-                        })}
-
-                        <div class="px-3 pb-3">
-                            <Suspense fallback=|| view! {
-                                <div class="text-[10px] text-fg-tertiary animate-pulse py-2">"Loading..."</div>
-                            }>
-                                {move || {
-                                    logical_devices.get().map(|result| {
-                                        match result {
-                                            Ok(segments) => {
-                                                let dev = device.get();
-                                                let total = dev.map(|d| d.total_leds).unwrap_or(0);
-                                                if segments.is_empty() {
-                                                    return view! {
-                                                        <div class="text-[10px] text-fg-tertiary/50 py-2 text-center">"No segments"</div>
-                                                    }.into_any();
-                                                }
-                                                view! {
-                                                    <div class="space-y-1">
-                                                        {segments.into_iter().map(|seg| {
-                                                            let seg_id = seg.id.clone();
-                                                            let is_default = seg.kind == "default";
-                                                            let bar_start = if total > 0 { f64::from(seg.led_start) / total as f64 * 100.0 } else { 0.0 };
-                                                            let bar_width = if total > 0 { f64::from(seg.led_count) / total as f64 * 100.0 } else { 100.0 };
-                                                            view! {
-                                                                <div class="px-2 py-1.5 rounded-md bg-surface-overlay/15 hover:bg-surface-hover/30 transition-colors">
-                                                                    <div class="flex items-center justify-between mb-1">
-                                                                        <div class="flex items-center gap-1.5">
-                                                                            <span class="text-[11px] text-fg-primary font-medium">{seg.name}</span>
-                                                                            {is_default.then(|| view! {
-                                                                                <span class="px-1 py-0.5 rounded text-[7px] font-mono uppercase text-fg-tertiary/50 bg-surface-overlay/30">"default"</span>
-                                                                            })}
-                                                                        </div>
-                                                                        <div class="flex items-center gap-1.5">
-                                                                            <span class="text-[9px] font-mono text-fg-tertiary/60 tabular-nums">
-                                                                                {seg.led_start} "\u{2013}" {seg.led_end}
-                                                                            </span>
-                                                                            {(!is_default).then(|| {
-                                                                                let sid = seg_id.clone();
-                                                                                view! {
-                                                                                    <button
-                                                                                        class="p-0.5 rounded text-fg-tertiary/40 hover:text-error-red transition-colors"
-                                                                                        on:click=move |_| delete_logical(sid.clone())
-                                                                                    >
-                                                                                        <Icon icon=LuX width="10px" height="10px" />
-                                                                                    </button>
-                                                                                }
-                                                                            })}
-                                                                        </div>
-                                                                    </div>
-                                                                    <div class="h-1 rounded-full bg-surface-overlay/30 overflow-hidden">
-                                                                        <div
-                                                                            class="h-full rounded-full"
-                                                                            style=format!(
-                                                                                "margin-left: {bar_start:.1}%; width: {bar_width:.1}%; \
-                                                                                 background: linear-gradient(90deg, rgba(225, 53, 255, 0.4), rgba(128, 255, 234, 0.3))"
-                                                                            )
-                                                                        />
-                                                                    </div>
-                                                                </div>
-                                                            }
-                                                        }).collect_view()}
-                                                    </div>
-                                                }.into_any()
-                                            }
-                                            Err(e) => view! {
-                                                <div class="text-[10px] text-error-red py-2">{e}</div>
-                                            }.into_any(),
-                                        }
-                                    })
-                                }}
-                            </Suspense>
-                        </div>
-                    </div>
+                    // ── Components ────────────────────────────────────────────
+                    <WiringPanel device_id=device_id device=device_signal />
                 }
             })}
-        </aside>
+        </div>
     }
 }
