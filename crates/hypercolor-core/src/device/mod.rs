@@ -7,10 +7,12 @@
 pub mod blocks;
 mod discovery;
 mod discovery_server;
+#[cfg(feature = "hue")]
 pub mod hue;
 mod lifecycle;
 pub mod manager;
 pub mod mock;
+#[cfg(feature = "nanoleaf")]
 pub mod nanoleaf;
 pub mod net;
 mod registry;

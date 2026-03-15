@@ -12,7 +12,9 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = []
+hue = ["dep:webrtc-dtls", "dep:webrtc-util"]
+nanoleaf = []
+default = ["hue", "nanoleaf"]
 servo = ["dep:servo", "dep:dpi", "dep:rustls", "dep:mozjs-jit"]
 
 [dependencies]
@@ -39,8 +41,8 @@ realfft = { workspace = true }
 rustfft = { workspace = true }
 aes-gcm = { workspace = true }
 rand = { workspace = true }
-webrtc-dtls = { workspace = true }
-webrtc-util = { workspace = true }
+webrtc-dtls = { workspace = true, optional = true }
+webrtc-util = { workspace = true, optional = true }
 cpal = { workspace = true }
 device_query = { workspace = true }
 evdev = { workspace = true }

@@ -480,14 +480,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
             axum::routing::post(devices::discover_devices),
         )
         .route(
-            "/devices/pair/hue",
-            axum::routing::post(devices::pair_hue_device),
-        )
-        .route(
-            "/devices/pair/nanoleaf",
-            axum::routing::post(devices::pair_nanoleaf_device),
-        )
-        .route(
             "/devices/debug/queues",
             axum::routing::get(devices::debug_output_queues),
         )
@@ -701,6 +693,16 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route("/diagnose", axum::routing::post(diagnose::run_diagnostics))
         // ── WebSocket ────────────────────────────────────────────────
         .route("/ws", axum::routing::get(ws::ws_handler));
+    #[cfg(feature = "hue")]
+    let api = api.route(
+        "/devices/pair/hue",
+        axum::routing::post(devices::pair_hue_device),
+    );
+    #[cfg(feature = "nanoleaf")]
+    let api = api.route(
+        "/devices/pair/nanoleaf",
+        axum::routing::post(devices::pair_nanoleaf_device),
+    );
 
     let mut router = Router::new()
         .nest("/api/v1", api)

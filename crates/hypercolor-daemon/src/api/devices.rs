@@ -1,7 +1,6 @@
 //! Device endpoints — `/api/v1/devices/*`.
 
 use std::collections::{HashMap, HashSet};
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -12,9 +11,6 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueBridgeClient};
-use hypercolor_core::device::nanoleaf::{DEFAULT_NANOLEAF_API_PORT, pair_device_with_status};
-use hypercolor_core::device::net::Credentials;
 use hypercolor_core::device::{BackendIo, BackendManager, SegmentRange};
 use hypercolor_core::spatial::generate_positions;
 use hypercolor_types::attachment::{
@@ -32,6 +28,15 @@ use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::discovery;
 use crate::logical_devices::{self, LogicalDevice, LogicalDeviceKind};
+
+#[cfg(feature = "hue")]
+use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueBridgeClient};
+#[cfg(feature = "nanoleaf")]
+use hypercolor_core::device::nanoleaf::{DEFAULT_NANOLEAF_API_PORT, pair_device_with_status};
+#[cfg(any(feature = "hue", feature = "nanoleaf"))]
+use hypercolor_core::device::net::Credentials;
+#[cfg(any(feature = "hue", feature = "nanoleaf"))]
+use std::net::IpAddr;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -55,6 +60,7 @@ pub struct IdentifyRequest {
     pub color: Option<String>,
 }
 
+#[cfg(feature = "hue")]
 #[derive(Debug, Deserialize)]
 pub struct PairHueRequest {
     pub bridge_ip: IpAddr,
@@ -62,6 +68,7 @@ pub struct PairHueRequest {
     pub bridge_port: Option<u16>,
 }
 
+#[cfg(feature = "nanoleaf")]
 #[derive(Debug, Deserialize)]
 pub struct PairNanoleafRequest {
     pub device_ip: IpAddr,
@@ -69,6 +76,7 @@ pub struct PairNanoleafRequest {
     pub api_port: Option<u16>,
 }
 
+#[cfg(any(feature = "hue", feature = "nanoleaf"))]
 #[derive(Debug, Serialize)]
 pub struct PairDeviceResponse {
     pub status: String,
@@ -759,6 +767,7 @@ pub async fn discover_devices(
     }))
 }
 
+#[cfg(feature = "hue")]
 /// `POST /api/v1/devices/pair/hue` — pair with a Hue bridge.
 pub async fn pair_hue_device(
     State(state): State<Arc<AppState>>,
@@ -823,6 +832,7 @@ pub async fn pair_hue_device(
     }
 }
 
+#[cfg(feature = "nanoleaf")]
 /// `POST /api/v1/devices/pair/nanoleaf` — pair with a Nanoleaf controller.
 pub async fn pair_nanoleaf_device(
     State(state): State<Arc<AppState>>,

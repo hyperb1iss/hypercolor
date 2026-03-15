@@ -11,8 +11,6 @@ use std::time::Duration;
 use anyhow::Context;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueKnownBridge, HueScanner};
-use hypercolor_core::device::nanoleaf::{NanoleafKnownDevice, NanoleafScanner};
 use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::wled::{WledKnownTarget, WledScanner};
 use hypercolor_core::device::{
@@ -42,6 +40,11 @@ use crate::device_settings::{DeviceSettingsStore, StoredDeviceSettings};
 use crate::layout_auto_exclusions;
 use crate::logical_devices::{self, LogicalDevice};
 use crate::runtime_state;
+
+#[cfg(feature = "hue")]
+use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueKnownBridge, HueScanner};
+#[cfg(feature = "nanoleaf")]
+use hypercolor_core::device::nanoleaf::{NanoleafKnownDevice, NanoleafScanner};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
 const MIN_DISCOVERY_TIMEOUT_MS: u64 = 100;
@@ -156,7 +159,9 @@ pub struct DiscoveryRuntime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiscoveryBackend {
     Wled,
+    #[cfg(feature = "hue")]
     Hue,
+    #[cfg(feature = "nanoleaf")]
     Nanoleaf,
     Usb,
     SmBus,
@@ -169,7 +174,9 @@ impl DiscoveryBackend {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Wled => "wled",
+            #[cfg(feature = "hue")]
             Self::Hue => "hue",
+            #[cfg(feature = "nanoleaf")]
             Self::Nanoleaf => "nanoleaf",
             Self::Usb => "usb",
             Self::SmBus => "smbus",
@@ -180,7 +187,9 @@ impl DiscoveryBackend {
     fn parse(raw: &str) -> Option<Self> {
         match raw {
             "wled" => Some(Self::Wled),
+            #[cfg(feature = "hue")]
             "hue" => Some(Self::Hue),
+            #[cfg(feature = "nanoleaf")]
             "nanoleaf" => Some(Self::Nanoleaf),
             "usb" => Some(Self::Usb),
             "smbus" => Some(Self::SmBus),
@@ -189,15 +198,16 @@ impl DiscoveryBackend {
         }
     }
 
-    /// All known backend identifiers for default discovery and error messages.
-    const ALL: &[Self] = &[
-        Self::Wled,
-        Self::Hue,
-        Self::Nanoleaf,
-        Self::Usb,
-        Self::SmBus,
-        Self::Blocks,
-    ];
+    /// All backend identifiers compiled into this daemon binary.
+    fn all() -> Vec<Self> {
+        let mut backends = vec![Self::Wled];
+        #[cfg(feature = "hue")]
+        backends.push(Self::Hue);
+        #[cfg(feature = "nanoleaf")]
+        backends.push(Self::Nanoleaf);
+        backends.extend([Self::Usb, Self::SmBus, Self::Blocks]);
+        backends
+    }
 }
 
 /// Default timeout used when callers do not provide one.
@@ -308,6 +318,7 @@ pub async fn resolve_wled_probe_targets(
     resolved
 }
 
+#[cfg(feature = "nanoleaf")]
 /// Resolve the Nanoleaf devices that discovery should probe from config and
 /// currently tracked registry metadata.
 pub async fn resolve_nanoleaf_probe_devices(
@@ -380,6 +391,7 @@ pub async fn resolve_nanoleaf_probe_devices(
     resolved
 }
 
+#[cfg(feature = "hue")]
 /// Resolve the Hue bridges that discovery should probe from config and
 /// registry metadata.
 pub async fn resolve_hue_probe_bridges(
@@ -478,9 +490,10 @@ pub fn resolve_backends(
             .any(|item| item.trim().eq_ignore_ascii_case("all"))
     });
     let explicit_request = requested.is_some_and(|raw| !raw.is_empty()) && !includes_all;
-    let all_backends: Vec<String> = DiscoveryBackend::ALL
+    let compiled_backends = DiscoveryBackend::all();
+    let all_backends: Vec<String> = compiled_backends
         .iter()
-        .map(|b| b.as_str().to_owned())
+        .map(|backend| backend.as_str().to_owned())
         .collect();
     let mut candidates: Vec<String> = match requested {
         Some(raw) if !raw.is_empty() => raw.to_vec(),
@@ -499,7 +512,10 @@ pub fn resolve_backends(
 
     for candidate in candidates {
         let normalized = candidate.trim().to_ascii_lowercase();
-        let supported: Vec<&str> = DiscoveryBackend::ALL.iter().map(|b| b.as_str()).collect();
+        let supported: Vec<&str> = compiled_backends
+            .iter()
+            .map(|backend| backend.as_str())
+            .collect();
         let backend = DiscoveryBackend::parse(&normalized).ok_or_else(|| {
             format!(
                 "Unknown discovery backend '{candidate}'. Supported backends: {}",
@@ -523,6 +539,7 @@ pub fn resolve_backends(
                     continue;
                 }
             }
+            #[cfg(feature = "hue")]
             DiscoveryBackend::Hue => {
                 if !config.discovery.hue_scan {
                     if explicit_request {
@@ -534,6 +551,7 @@ pub fn resolve_backends(
                     continue;
                 }
             }
+            #[cfg(feature = "nanoleaf")]
             DiscoveryBackend::Nanoleaf => {
                 if !config.discovery.nanoleaf_scan {
                     if explicit_request {
@@ -638,6 +656,7 @@ pub async fn execute_discovery_scan(
                     timeout,
                 )));
             }
+            #[cfg(feature = "hue")]
             DiscoveryBackend::Hue => {
                 let known_bridges =
                     resolve_hue_probe_bridges(&runtime.device_registry, config.as_ref()).await;
@@ -649,6 +668,7 @@ pub async fn execute_discovery_scan(
                     config.hue.entertainment_config.clone(),
                 )));
             }
+            #[cfg(feature = "nanoleaf")]
             DiscoveryBackend::Nanoleaf => {
                 let known_devices =
                     resolve_nanoleaf_probe_devices(&runtime.device_registry, config.as_ref()).await;

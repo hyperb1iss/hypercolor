@@ -16,7 +16,9 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-default = []
+hue = ["hypercolor-core/hue"]
+nanoleaf = ["hypercolor-core/nanoleaf"]
+default = ["hue", "nanoleaf"]
 servo = ["hypercolor-core/servo"]
 
 [dependencies]

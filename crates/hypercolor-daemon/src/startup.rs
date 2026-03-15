@@ -22,10 +22,8 @@ use uuid::Uuid;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
-use hypercolor_core::device::hue::HueBackend;
 use hypercolor_core::device::manager::BackendRoutingDebugSnapshot;
 use hypercolor_core::device::mock::MockDeviceBackend;
-use hypercolor_core::device::nanoleaf::NanoleafBackend;
 use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::wled::{WledBackend, WledDeviceInfo, WledKnownTarget, WledProtocol};
 use hypercolor_core::device::{
@@ -53,6 +51,11 @@ use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
+
+#[cfg(feature = "hue")]
+use hypercolor_core::device::hue::HueBackend;
+#[cfg(feature = "nanoleaf")]
+use hypercolor_core::device::nanoleaf::NanoleafBackend;
 
 use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
@@ -310,6 +313,7 @@ impl DaemonState {
             backend_manager_inner
                 .register_backend(Box::new(build_wled_backend(config, &runtime_state_path)));
         }
+        #[cfg(feature = "hue")]
         if config.discovery.hue_scan {
             backend_manager_inner.register_backend(Box::new(HueBackend::with_mdns_enabled(
                 config.hue.clone(),
@@ -326,6 +330,7 @@ impl DaemonState {
                 hypercolor_core::device::BlocksBackend::new(socket_path),
             ));
         }
+        #[cfg(feature = "nanoleaf")]
         if config.discovery.nanoleaf_scan {
             backend_manager_inner.register_backend(Box::new(NanoleafBackend::with_mdns_enabled(
                 config.nanoleaf.clone(),
