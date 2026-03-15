@@ -39,6 +39,7 @@ use tracing::warn;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
@@ -137,6 +138,9 @@ pub struct AppState {
     /// Persistent per-device user settings store.
     pub device_settings: Arc<RwLock<DeviceSettingsStore>>,
 
+    /// Shared encrypted credential store for network-authenticated backends.
+    pub credential_store: Arc<CredentialStore>,
+
     /// In-memory layout store (shared with `DaemonState`, persisted to layouts.json).
     pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
 
@@ -186,6 +190,10 @@ impl AppState {
     /// Primarily useful for testing. In production, prefer
     /// [`from_daemon_state`](Self::from_daemon_state) to share subsystems
     /// with the daemon lifecycle.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test-facing app state construction wires all shared subsystems in one place"
+    )]
     pub fn new() -> Self {
         use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
@@ -251,6 +259,10 @@ impl AppState {
             global_brightness: initial_global_brightness,
             ..OutputPowerState::default()
         });
+        let credential_store = Arc::new(
+            CredentialStore::open_blocking(&ConfigManager::data_dir())
+                .expect("default app state should open credential store"),
+        );
 
         Self {
             device_registry: DeviceRegistry::new(),
@@ -272,6 +284,7 @@ impl AppState {
             attachment_registry: Arc::new(RwLock::new(attachment_registry)),
             attachment_profiles: Arc::new(RwLock::new(attachment_profiles)),
             device_settings: Arc::new(RwLock::new(device_settings)),
+            credential_store,
             layouts: Arc::new(RwLock::new(HashMap::new())),
             layouts_path: ConfigManager::data_dir().join("layouts.json"),
             layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
@@ -344,6 +357,7 @@ impl AppState {
             attachment_registry: Arc::clone(&daemon.attachment_registry),
             attachment_profiles: Arc::clone(&daemon.attachment_profiles),
             device_settings: Arc::clone(&daemon.device_settings),
+            credential_store: Arc::clone(&daemon.credential_store),
             layouts: Arc::clone(&daemon.layouts),
             layouts_path: daemon.layouts_path.clone(),
             layout_auto_exclusions: Arc::clone(&daemon.layout_auto_exclusions),
@@ -437,6 +451,7 @@ pub(crate) fn discovery_runtime(state: &AppState) -> crate::discovery::Discovery
         device_settings: Arc::clone(&state.device_settings),
         runtime_state_path: state.runtime_state_path.clone(),
         usb_protocol_configs: state.usb_protocol_configs.clone(),
+        credential_store: Arc::clone(&state.credential_store),
         in_progress: Arc::clone(&state.discovery_in_progress),
         task_spawner: tokio::runtime::Handle::current(),
     }

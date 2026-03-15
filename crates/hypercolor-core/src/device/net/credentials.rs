@@ -67,6 +67,33 @@ pub struct CredentialStore {
 }
 
 impl CredentialStore {
+    /// Open or create the credential store in `data_dir` using blocking file I/O.
+    ///
+    /// This is intended for synchronous initialization paths such as daemon
+    /// startup and scanner defaults.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the seed cannot be created/read, the backing file
+    /// cannot be decrypted, or the JSON payload is malformed.
+    pub fn open_blocking(data_dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(data_dir)
+            .with_context(|| format!("failed to create credential dir {}", data_dir.display()))?;
+
+        let seed_path = data_dir.join(SEED_FILE_NAME);
+        let store_path = data_dir.join(STORE_FILE_NAME);
+        let key = load_or_create_seed_blocking(&seed_path)?;
+        let cipher = Aes256Gcm::new_from_slice(&key)
+            .map_err(|error| anyhow!("failed to construct credential cipher: {error}"))?;
+        let cache = load_cache_blocking(&cipher, &store_path)?;
+
+        Ok(Self {
+            store_path,
+            cipher,
+            cache: RwLock::new(cache),
+        })
+    }
+
     /// Open or create the credential store in `data_dir`.
     ///
     /// # Errors
@@ -166,6 +193,29 @@ impl CredentialStore {
     }
 }
 
+fn load_or_create_seed_blocking(path: &Path) -> Result<[u8; 32]> {
+    if path.exists() {
+        let bytes = std::fs::read(path)
+            .with_context(|| format!("failed to read credential seed {}", path.display()))?;
+        if bytes.len() != 32 {
+            bail!(
+                "credential seed {} must be exactly 32 bytes, found {}",
+                path.display(),
+                bytes.len()
+            );
+        }
+
+        let mut seed = [0_u8; 32];
+        seed.copy_from_slice(&bytes);
+        return Ok(seed);
+    }
+
+    let seed = rand::random::<[u8; 32]>();
+    std::fs::write(path, seed)
+        .with_context(|| format!("failed to write credential seed {}", path.display()))?;
+    Ok(seed)
+}
+
 async fn load_or_create_seed(path: &Path) -> Result<[u8; 32]> {
     if path.exists() {
         let bytes = fs::read(path)
@@ -189,6 +239,36 @@ async fn load_or_create_seed(path: &Path) -> Result<[u8; 32]> {
         .await
         .with_context(|| format!("failed to write credential seed {}", path.display()))?;
     Ok(seed)
+}
+
+fn load_cache_blocking(
+    cipher: &Aes256Gcm,
+    store_path: &Path,
+) -> Result<HashMap<String, Credentials>> {
+    if !store_path.exists() {
+        return Ok(HashMap::new());
+    }
+
+    let payload = std::fs::read(store_path)
+        .with_context(|| format!("failed to read credential store {}", store_path.display()))?;
+    if payload.is_empty() {
+        return Ok(HashMap::new());
+    }
+    if payload.len() <= NONCE_BYTES {
+        bail!("credential store {} is truncated", store_path.display());
+    }
+
+    let nonce = Nonce::from_slice(&payload[..NONCE_BYTES]);
+    let plaintext = cipher
+        .decrypt(nonce, &payload[NONCE_BYTES..])
+        .map_err(|error| anyhow!("failed to decrypt credential store: {error}"))?;
+
+    serde_json::from_slice(&plaintext).with_context(|| {
+        format!(
+            "failed to deserialize credential store {}",
+            store_path.display()
+        )
+    })
 }
 
 async fn load_cache(cipher: &Aes256Gcm, store_path: &Path) -> Result<HashMap<String, Credentials>> {

@@ -15,6 +15,7 @@ use tokio::sync::{Mutex, RwLock, watch};
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::mock::{MockDeviceBackend, MockDeviceConfig, MockEffectRenderer};
+use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{
     BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry, ReconnectPolicy,
     UsbProtocolConfigStore,
@@ -923,6 +924,13 @@ async fn pipeline_async_write_failures_enter_reconnect_flow() {
         )))),
         runtime_state_path: PathBuf::from("runtime-state.json"),
         usb_protocol_configs: UsbProtocolConfigStore::new(),
+        credential_store: Arc::new(
+            CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
+                "hypercolor-test-credentials-{}",
+                uuid::Uuid::now_v7()
+            )))
+            .expect("test credential store"),
+        ),
         in_progress: Arc::new(AtomicBool::new(false)),
         task_spawner: tokio::runtime::Handle::current(),
     };

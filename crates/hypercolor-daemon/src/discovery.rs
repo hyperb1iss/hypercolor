@@ -11,6 +11,8 @@ use std::time::Duration;
 use anyhow::Context;
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::device::nanoleaf::{NanoleafKnownDevice, NanoleafScanner};
+use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::wled::{WledKnownTarget, WledScanner};
 use hypercolor_core::device::{
     AsyncWriteFailure, BackendIo, BackendManager, BlocksScanner, DeviceLifecycleManager,
@@ -139,6 +141,9 @@ pub struct DiscoveryRuntime {
     /// Shared per-device USB protocol configuration store.
     pub usb_protocol_configs: UsbProtocolConfigStore,
 
+    /// Shared encrypted credential store for network device auth.
+    pub credential_store: Arc<CredentialStore>,
+
     /// Shared "scan in progress" lock flag.
     pub in_progress: Arc<AtomicBool>,
 
@@ -150,6 +155,7 @@ pub struct DiscoveryRuntime {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiscoveryBackend {
     Wled,
+    Nanoleaf,
     Usb,
     SmBus,
     Blocks,
@@ -161,6 +167,7 @@ impl DiscoveryBackend {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Wled => "wled",
+            Self::Nanoleaf => "nanoleaf",
             Self::Usb => "usb",
             Self::SmBus => "smbus",
             Self::Blocks => "blocks",
@@ -170,6 +177,7 @@ impl DiscoveryBackend {
     fn parse(raw: &str) -> Option<Self> {
         match raw {
             "wled" => Some(Self::Wled),
+            "nanoleaf" => Some(Self::Nanoleaf),
             "usb" => Some(Self::Usb),
             "smbus" => Some(Self::SmBus),
             "blocks" => Some(Self::Blocks),
@@ -178,7 +186,13 @@ impl DiscoveryBackend {
     }
 
     /// All known backend identifiers for default discovery and error messages.
-    const ALL: &[Self] = &[Self::Wled, Self::Usb, Self::SmBus, Self::Blocks];
+    const ALL: &[Self] = &[
+        Self::Wled,
+        Self::Nanoleaf,
+        Self::Usb,
+        Self::SmBus,
+        Self::Blocks,
+    ];
 }
 
 /// Default timeout used when callers do not provide one.
@@ -289,6 +303,78 @@ pub async fn resolve_wled_probe_targets(
     resolved
 }
 
+/// Resolve the Nanoleaf devices that discovery should probe from config and
+/// currently tracked registry metadata.
+pub async fn resolve_nanoleaf_probe_devices(
+    device_registry: &DeviceRegistry,
+    config: &HypercolorConfig,
+) -> Vec<NanoleafKnownDevice> {
+    let mut known_devices: HashMap<IpAddr, NanoleafKnownDevice> = config
+        .nanoleaf
+        .device_ips
+        .iter()
+        .copied()
+        .map(NanoleafKnownDevice::from_ip)
+        .map(|device| (device.ip, device))
+        .collect();
+
+    for tracked in device_registry.list().await {
+        let metadata = device_registry.metadata_for_id(&tracked.info.id).await;
+        if backend_id_for_device(&tracked.info.family, metadata.as_ref()) != "nanoleaf" {
+            continue;
+        }
+
+        let Some(metadata) = metadata else {
+            continue;
+        };
+        let Some(ip_raw) = metadata.get("ip") else {
+            continue;
+        };
+        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
+            continue;
+        };
+
+        let port = metadata
+            .get("api_port")
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(hypercolor_core::device::nanoleaf::DEFAULT_NANOLEAF_API_PORT);
+        let device_key = metadata
+            .get("device_key")
+            .cloned()
+            .unwrap_or_else(|| tracked.info.name.to_ascii_lowercase().replace(' ', "-"));
+
+        known_devices
+            .entry(ip)
+            .and_modify(|existing| {
+                if existing.device_id.is_empty() {
+                    existing.device_id.clone_from(&device_key);
+                }
+                existing.port = port;
+                if existing.name.is_empty() {
+                    existing.name.clone_from(&tracked.info.name);
+                }
+                if existing.model.is_empty() {
+                    existing.model = tracked.info.model.clone().unwrap_or_default();
+                }
+                if existing.firmware.is_empty() {
+                    existing.firmware = tracked.info.firmware_version.clone().unwrap_or_default();
+                }
+            })
+            .or_insert_with(|| NanoleafKnownDevice {
+                device_id: device_key,
+                ip,
+                port,
+                name: tracked.info.name.clone(),
+                model: tracked.info.model.clone().unwrap_or_default(),
+                firmware: tracked.info.firmware_version.clone().unwrap_or_default(),
+            });
+    }
+
+    let mut resolved: Vec<_> = known_devices.into_values().collect();
+    resolved.sort_by_key(|device| device.ip);
+    resolved
+}
+
 /// Resolve and validate requested discovery backends against configuration.
 ///
 /// Returns backend identifiers in a deterministic order with duplicates removed.
@@ -345,6 +431,17 @@ pub fn resolve_backends(
                     if explicit_request {
                         return Err(
                             "Discovery backend 'wled' is disabled by config (discovery.wled_scan=false)"
+                                .to_owned(),
+                        );
+                    }
+                    continue;
+                }
+            }
+            DiscoveryBackend::Nanoleaf => {
+                if !config.discovery.nanoleaf_scan {
+                    if explicit_request {
+                        return Err(
+                            "Discovery backend 'nanoleaf' is disabled by config (discovery.nanoleaf_scan=false)"
                                 .to_owned(),
                         );
                     }
@@ -442,6 +539,16 @@ pub async fn execute_discovery_scan(
                     known_targets,
                     config.discovery.mdns_enabled,
                     timeout,
+                )));
+            }
+            DiscoveryBackend::Nanoleaf => {
+                let known_devices =
+                    resolve_nanoleaf_probe_devices(&runtime.device_registry, config.as_ref()).await;
+                orchestrator.add_scanner(Box::new(NanoleafScanner::with_options(
+                    known_devices,
+                    Arc::clone(&runtime.credential_store),
+                    timeout,
+                    config.discovery.mdns_enabled,
                 )));
             }
             DiscoveryBackend::Usb => {
@@ -2347,6 +2454,7 @@ mod tests {
             resolved,
             vec![
                 DiscoveryBackend::Wled,
+                DiscoveryBackend::Nanoleaf,
                 DiscoveryBackend::Usb,
                 DiscoveryBackend::SmBus,
                 DiscoveryBackend::Blocks,
@@ -2372,6 +2480,15 @@ mod tests {
     }
 
     #[test]
+    fn resolve_backends_rejects_disabled_nanoleaf() {
+        let mut cfg = HypercolorConfig::default();
+        cfg.discovery.nanoleaf_scan = false;
+        let requested = vec!["nanoleaf".to_owned()];
+        let error = resolve_backends(Some(&requested), &cfg).expect_err("nanoleaf must fail");
+        assert!(error.contains("disabled"));
+    }
+
+    #[test]
     fn resolve_backends_keeps_wled_when_mdns_is_disabled() {
         let mut cfg = HypercolorConfig::default();
         cfg.discovery.mdns_enabled = false;
@@ -2381,6 +2498,7 @@ mod tests {
             resolved,
             vec![
                 DiscoveryBackend::Wled,
+                DiscoveryBackend::Nanoleaf,
                 DiscoveryBackend::Usb,
                 DiscoveryBackend::SmBus,
                 DiscoveryBackend::Blocks,

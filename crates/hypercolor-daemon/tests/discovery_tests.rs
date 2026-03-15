@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
+use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_core::device::{
     BackendInfo, BackendManager, DeviceBackend, DeviceLifecycleManager, DeviceRegistry,
@@ -246,6 +247,13 @@ fn make_runtime(
         ))),
         runtime_state_path,
         usb_protocol_configs: UsbProtocolConfigStore::new(),
+        credential_store: Arc::new(
+            CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
+                "hypercolor-test-credentials-{}",
+                uuid::Uuid::now_v7()
+            )))
+            .expect("test credential store"),
+        ),
         in_progress: Arc::new(AtomicBool::new(true)),
         task_spawner: tokio::runtime::Handle::current(),
     }

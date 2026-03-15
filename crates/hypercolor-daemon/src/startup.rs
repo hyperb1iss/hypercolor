@@ -24,6 +24,8 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::manager::BackendRoutingDebugSnapshot;
 use hypercolor_core::device::mock::MockDeviceBackend;
+use hypercolor_core::device::nanoleaf::NanoleafBackend;
+use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::wled::{WledBackend, WledDeviceInfo, WledKnownTarget, WledProtocol};
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, SmBusBackend, UsbBackend,
@@ -117,6 +119,9 @@ pub struct DaemonState {
 
     /// Shared per-device USB protocol configuration for dynamic topologies.
     pub usb_protocol_configs: UsbProtocolConfigStore,
+
+    /// Shared credential store for network-authenticated device backends.
+    pub credential_store: Arc<CredentialStore>,
 
     /// Rolling render-performance snapshot shared with the API.
     pub performance: Arc<RwLock<PerformanceTracker>>,
@@ -291,6 +296,10 @@ impl DaemonState {
         info!("Spatial engine created (empty default layout)");
 
         let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
+        let credential_store = Arc::new(
+            CredentialStore::open_blocking(&ConfigManager::data_dir())
+                .context("failed to open network credential store")?,
+        );
 
         // ── Backend Manager ─────────────────────────────────────────────
         let usb_protocol_configs = UsbProtocolConfigStore::new();
@@ -308,6 +317,13 @@ impl DaemonState {
             backend_manager_inner.register_backend(Box::new(
                 hypercolor_core::device::BlocksBackend::new(socket_path),
             ));
+        }
+        if config.discovery.nanoleaf_scan {
+            backend_manager_inner.register_backend(Box::new(NanoleafBackend::with_mdns_enabled(
+                config.nanoleaf.clone(),
+                Arc::clone(&credential_store),
+                config.discovery.mdns_enabled,
+            )));
         }
         backend_manager_inner.register_backend(Box::new(SmBusBackend::new()));
         backend_manager_inner.register_backend(Box::new(UsbBackend::with_protocol_config_store(
@@ -493,6 +509,7 @@ impl DaemonState {
             spatial_engine,
             backend_manager,
             usb_protocol_configs,
+            credential_store,
             performance,
             lifecycle_manager,
             reconnect_tasks,
@@ -545,6 +562,7 @@ impl DaemonState {
             device_settings: Arc::clone(&self.device_settings),
             runtime_state_path: self.runtime_state_path.clone(),
             usb_protocol_configs: self.usb_protocol_configs.clone(),
+            credential_store: Arc::clone(&self.credential_store),
             in_progress: Arc::clone(&self.discovery_in_progress),
             task_spawner: tokio::runtime::Handle::current(),
         }
@@ -955,6 +973,7 @@ impl DaemonState {
             device_settings: Arc::clone(&self.device_settings),
             runtime_state_path: self.runtime_state_path.clone(),
             usb_protocol_configs: self.usb_protocol_configs.clone(),
+            credential_store: Arc::clone(&self.credential_store),
             in_progress: Arc::clone(&self.discovery_in_progress),
         };
 
@@ -1069,6 +1088,7 @@ struct DiscoveryWorkerContext {
     device_settings: Arc<RwLock<DeviceSettingsStore>>,
     runtime_state_path: PathBuf,
     usb_protocol_configs: UsbProtocolConfigStore,
+    credential_store: Arc<CredentialStore>,
     in_progress: Arc<AtomicBool>,
 }
 
@@ -1090,6 +1110,7 @@ impl DiscoveryWorkerContext {
             device_settings: Arc::clone(&self.device_settings),
             runtime_state_path: self.runtime_state_path.clone(),
             usb_protocol_configs: self.usb_protocol_configs.clone(),
+            credential_store: Arc::clone(&self.credential_store),
             in_progress: Arc::clone(&self.in_progress),
             task_spawner: tokio::runtime::Handle::current(),
         }

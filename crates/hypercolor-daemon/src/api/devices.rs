@@ -684,6 +684,7 @@ pub async fn discover_devices(
             device_settings: Arc::clone(&state.device_settings),
             runtime_state_path: state.runtime_state_path.clone(),
             usb_protocol_configs: state.usb_protocol_configs.clone(),
+            credential_store: Arc::clone(&state.credential_store),
             in_progress: Arc::clone(&state.discovery_in_progress),
             task_spawner: tokio::runtime::Handle::current(),
         };
@@ -715,6 +716,7 @@ pub async fn discover_devices(
             device_settings: Arc::clone(&state_for_task.device_settings),
             runtime_state_path: state_for_task.runtime_state_path.clone(),
             usb_protocol_configs: state_for_task.usb_protocol_configs.clone(),
+            credential_store: Arc::clone(&state_for_task.credential_store),
             in_progress: Arc::clone(&state_for_task.discovery_in_progress),
             task_spawner: tokio::runtime::Handle::current(),
         };
