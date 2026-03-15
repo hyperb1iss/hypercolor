@@ -197,7 +197,7 @@ Response:
 }
 ```
 
-The `uid` is the device's topology UID — a 32-bit integer assigned by the ROLI protocol. It is
+The `uid` is the device's topology UID — exposed by blocksd as a deterministic 64-bit integer. It is
 stable across reconnections for the same physical device and serves as the device address for all
 subsequent commands.
 
@@ -224,8 +224,9 @@ Response:
 }
 ```
 
-If `accepted` is `false`, the device is busy (in-flight byte limit reached) and the frame was
-dropped. The caller should retry on the next render tick. This is not an error — it's backpressure.
+If `accepted` is `false`, the daemon rejected the write because the device was unavailable, the
+`uid` was unknown, or the payload was malformed. Callers should treat this as retryable while a
+device is still coming up.
 
 #### `frame_binary` — Write Frame Data (Binary Fast Path)
 
@@ -233,21 +234,23 @@ For sustained 25+ fps rendering, JSON + base64 adds ~33% overhead and parse late
 fast path uses a fixed-size binary message format on the same socket:
 
 ```
-Byte:  0       1       2  3  4  5    6 ............. 680
+Byte:  0       1       2  3  4  5  6  7  8  9    10 ............ 684
      ┌───────┬───────┬──────────────┬───────────────────┐
      │ Magic │ Type  │   UID (LE)   │ RGB888 × 225      │
-     │ 0xBD  │ 0x01  │   4 bytes    │ 675 bytes         │
+     │ 0xBD  │ 0x01  │   8 bytes    │ 675 bytes         │
      └───────┴───────┴──────────────┴───────────────────┘
-     Total: 681 bytes
+     Total: 685 bytes
 ```
 
 - **Magic byte `0xBD`** (for "**B**locks **D**ata") — distinguishes binary messages from JSON
   (which always starts with `{` = `0x7B`). The server peeks at the first byte to determine mode.
 - **Type `0x01`** — frame write. Reserved for future binary message types.
-- **UID** — 32-bit little-endian device topology UID.
+- **UID** — 64-bit little-endian device topology UID.
 - **Pixels** — 675 bytes of raw RGB888, row-major, no base64 encoding.
 
-Response: single byte `0x01` (accepted) or `0x00` (dropped/backpressure).
+Response: single byte `0x01` (accepted) or `0x00` (rejected because the device is unavailable or
+the payload is invalid). Once a device is live, blocksd coalesces later frames into the latest
+target state rather than surfacing internal heap backpressure as dropped writes.
 
 Both JSON and binary paths are supported simultaneously on the same socket. Hypercolor uses the
 binary path for frame writes during rendering and JSON for everything else.
@@ -478,9 +481,8 @@ The connection runs two tasks:
 - **Reader task** — reads from socket, dispatches responses to waiting request futures and events
   to the event channel.
 
-Frame writes never block on responses when using the binary fast path — they are fire-and-forget
-with optional backpressure signaling. JSON request/response pairs use a `oneshot` channel per
-request ID.
+Frame writes wait for a 1-byte accept/reject ack when using the binary fast path. JSON
+request/response pairs use a `oneshot` channel per request ID.
 
 ---
 
@@ -710,13 +712,13 @@ fn device_info_from_blocks(dev: &BlocksDeviceResponse) -> DeviceInfo {
 ### 6.4 Stable Device IDs
 
 Device IDs must be deterministic so that Hypercolor can persist layout assignments across sessions.
-The ROLI topology UID is a 32-bit integer that is stable for a given physical device. We derive a
-UUIDv5 from it:
+blocksd exposes a deterministic 64-bit UID for each physical device, derived from its serial. We
+derive a UUIDv5 from that UID:
 
 ```rust
 const BLOCKS_NAMESPACE: Uuid = uuid::uuid!("b10c4500-da7a-4001-b10c-4500da7a4001");
 
-fn device_id_from_uid(uid: u32) -> DeviceId {
+fn device_id_from_uid(uid: u64) -> DeviceId {
     let uuid = Uuid::new_v5(&BLOCKS_NAMESPACE, &uid.to_le_bytes());
     DeviceId::from_uuid(uuid)
 }
@@ -900,7 +902,7 @@ pub struct BlocksBackend {
     /// Known devices reported by blocksd.
     devices: HashMap<DeviceId, BlocksDevice>,
     /// UID → DeviceId mapping for event routing.
-    uid_map: HashMap<u32, DeviceId>,
+    uid_map: HashMap<u64, DeviceId>,
     /// Per-device brightness (applied by blocksd).
     brightness: HashMap<DeviceId, u8>,
     /// Event sender for touch/device events.
@@ -910,7 +912,7 @@ pub struct BlocksBackend {
 }
 
 struct BlocksDevice {
-    uid: u32,
+    uid: u64,
     info: DeviceInfo,
     block_type: RoliBlockType,
     connected: bool,
@@ -1213,10 +1215,10 @@ if config.backends.blocks.enabled {
 | blocksd not running | `connect()` ECONNREFUSED | Exponential backoff reconnect |
 | blocksd crashes mid-session | Socket EOF / broken pipe | Mark devices disconnected, reconnect |
 | Device disconnected | `device_removed` event | Remove from device map, notify registry |
-| Frame dropped (backpressure) | Binary response `0x00` | Skip frame, send next (no retry) |
+| Frame rejected | Binary response `0x00` | Retry on next render tick; treat as unavailable device or invalid payload |
 | Socket write timeout | 1s write deadline | Treat as disconnect, reconnect |
 | Malformed JSON from blocksd | `serde_json` parse error | Log warning, skip message, continue |
-| Version mismatch | `pong` version check | Log warning, attempt anyway (best-effort) |
+| Version mismatch | `pong` version check | Treat as failed handshake and retry with backoff |
 
 ### 12.2 Graceful Degradation
 
@@ -1234,8 +1236,8 @@ The backend never causes Hypercolor to fail or stall:
 tracing::info!("blocksd connected at {}", socket_path.display());
 tracing::info!("blocksd disconnected, {} devices lost", device_count);
 
-// Frame errors (debug level — happens frequently under backpressure)
-tracing::debug!("blocks frame dropped for device {uid}: backpressure");
+// Frame rejections (debug level — daemon rejected the write)
+tracing::debug!("blocks frame rejected for device {uid}");
 
 // Protocol errors (warn level)
 tracing::warn!("blocksd sent malformed message: {err}");
@@ -1330,11 +1332,11 @@ async fn test_binary_frame_format() {
     backend.write_colors(&device_id, &colors).await.unwrap();
 
     let frame = server.last_frame(42).await;
-    assert_eq!(frame.len(), 681);
+    assert_eq!(frame.len(), 685);
     assert_eq!(frame[0], 0xBD);  // magic
     assert_eq!(frame[1], 0x01);  // type
-    assert_eq!(u32::from_le_bytes(frame[2..6].try_into().unwrap()), 42);  // uid
-    assert_eq!(&frame[6..9], &[255, 0, 0]);  // first pixel
+    assert_eq!(u64::from_le_bytes(frame[2..10].try_into().unwrap()), 42);  // uid
+    assert_eq!(&frame[10..13], &[255, 0, 0]);  // first pixel
 }
 
 #[tokio::test]
@@ -1463,7 +1465,7 @@ This phase is independent of Phases 1–2 and can be deferred.
 
 | Magic | Type | Payload | Response |
 |-------|------|---------|----------|
-| `0xBD` | `0x01` | UID (4B LE) + RGB888 (675B) | `0x01` or `0x00` |
+| `0xBD` | `0x01` | UID (8B LE) + RGB888 (675B) | `0x01` or `0x00` |
 
 ### Server-Sent Events
 
