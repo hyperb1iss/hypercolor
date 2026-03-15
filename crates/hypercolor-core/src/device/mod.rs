@@ -7,6 +7,7 @@
 pub mod blocks;
 mod discovery;
 mod discovery_server;
+pub mod hue;
 mod lifecycle;
 pub mod manager;
 pub mod mock;
