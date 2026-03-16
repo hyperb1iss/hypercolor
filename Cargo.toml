@@ -92,6 +92,8 @@ webrtc-util = "0.11.0"
 hypercolor-types = { path = "crates/hypercolor-types" }
 hypercolor-hal = { path = "crates/hypercolor-hal" }
 hypercolor-core = { path = "crates/hypercolor-core" }
+hypercolor-driver-api = { path = "crates/hypercolor-driver-api" }
+hypercolor-network = { path = "crates/hypercolor-network" }
 
 # Audio + input capture
 realfft = "3.4"

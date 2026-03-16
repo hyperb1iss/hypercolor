@@ -1,0 +1,23 @@
+[package]
+name = "hypercolor-driver-api"
+description = "Stable host and capability boundary for Hypercolor network drivers"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hypercolor-types = { workspace = true }
+hypercolor-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

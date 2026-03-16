@@ -1,0 +1,291 @@
+use anyhow::Result;
+use async_trait::async_trait;
+use hypercolor_core::device::{BackendInfo, DeviceBackend};
+use hypercolor_driver_api::{
+    DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
+    DriverCredentialStore, DriverDescriptor, DriverHost, DriverRuntimeActions, DriverTransport,
+    NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairingCapability,
+    TrackedDeviceCtx,
+};
+use hypercolor_network::{DriverRegistry, DriverRegistryError};
+use hypercolor_types::device::{DeviceId, DeviceInfo};
+
+struct NullCredentialStore;
+
+#[async_trait]
+impl DriverCredentialStore for NullCredentialStore {
+    async fn get_json(&self, key: &str) -> Result<Option<serde_json::Value>> {
+        let _ = key;
+        Ok(None)
+    }
+
+    async fn set_json(&self, key: &str, value: serde_json::Value) -> Result<()> {
+        let _ = (key, value);
+        Ok(())
+    }
+
+    async fn remove(&self, key: &str) -> Result<()> {
+        let _ = key;
+        Ok(())
+    }
+}
+
+struct NullRuntimeActions;
+
+#[async_trait]
+impl DriverRuntimeActions for NullRuntimeActions {
+    async fn activate_device(&self, device_id: DeviceId, backend_id: &str) -> Result<bool> {
+        let _ = (device_id, backend_id);
+        Ok(false)
+    }
+
+    async fn disconnect_device(
+        &self,
+        device_id: DeviceId,
+        backend_id: &str,
+        will_retry: bool,
+    ) -> Result<bool> {
+        let _ = (device_id, backend_id, will_retry);
+        Ok(false)
+    }
+}
+
+struct NullHost {
+    credentials: NullCredentialStore,
+    runtime: NullRuntimeActions,
+}
+
+impl NullHost {
+    fn new() -> Self {
+        Self {
+            credentials: NullCredentialStore,
+            runtime: NullRuntimeActions,
+        }
+    }
+}
+
+impl DriverHost for NullHost {
+    fn credentials(&self) -> &dyn DriverCredentialStore {
+        &self.credentials
+    }
+
+    fn runtime(&self) -> &dyn DriverRuntimeActions {
+        &self.runtime
+    }
+}
+
+struct TestBackend;
+
+#[async_trait]
+impl DeviceBackend for TestBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "test".to_owned(),
+            name: "Test Backend".to_owned(),
+            description: "Test backend".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, id: &DeviceId) -> Result<()> {
+        let _ = id;
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, id: &DeviceId) -> Result<()> {
+        let _ = id;
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        let _ = (id, colors);
+        Ok(())
+    }
+}
+
+struct DiscoveryOnlyCapability;
+
+#[async_trait]
+impl DiscoveryCapability for DiscoveryOnlyCapability {
+    async fn discover(
+        &self,
+        host: &dyn DriverHost,
+        request: &DiscoveryRequest,
+    ) -> Result<DiscoveryResult> {
+        let _ = (host, request);
+        Ok(DiscoveryResult::default())
+    }
+}
+
+struct PairingOnlyCapability;
+
+#[async_trait]
+impl PairingCapability for PairingOnlyCapability {
+    fn auth_summary(&self, device: &TrackedDeviceCtx<'_>) -> Option<DeviceAuthSummary> {
+        let _ = device;
+        None
+    }
+
+    async fn pair(
+        &self,
+        host: &dyn DriverHost,
+        device: &TrackedDeviceCtx<'_>,
+        request: &PairDeviceRequest,
+    ) -> Result<PairDeviceOutcome> {
+        let _ = (host, device, request);
+        unreachable!("pair is not exercised in registry tests")
+    }
+
+    async fn clear_credentials(
+        &self,
+        host: &dyn DriverHost,
+        device: &TrackedDeviceCtx<'_>,
+    ) -> Result<()> {
+        let _ = (host, device);
+        unreachable!("clear_credentials is not exercised in registry tests")
+    }
+}
+
+struct DiscoveryOnlyDriver;
+
+static DISCOVERY_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "discovery-only",
+    "Discovery Only",
+    DriverTransport::Network,
+    true,
+    false,
+);
+
+impl NetworkDriverFactory for DiscoveryOnlyDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &DISCOVERY_ONLY_DESCRIPTOR
+    }
+
+    fn build_backend(&self, host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let _ = host;
+        Ok(Some(Box::new(TestBackend)))
+    }
+
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+        Some(&DiscoveryOnlyCapability)
+    }
+}
+
+struct PairingOnlyDriver;
+
+static PAIRING_ONLY_DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
+    "pairing-only",
+    "Pairing Only",
+    DriverTransport::Network,
+    false,
+    true,
+);
+
+impl NetworkDriverFactory for PairingOnlyDriver {
+    fn descriptor(&self) -> &'static DriverDescriptor {
+        &PAIRING_ONLY_DESCRIPTOR
+    }
+
+    fn build_backend(&self, host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
+        let _ = host;
+        Ok(None)
+    }
+
+    fn pairing(&self) -> Option<&dyn PairingCapability> {
+        Some(&PairingOnlyCapability)
+    }
+}
+
+#[test]
+fn registry_rejects_duplicate_ids() {
+    let mut registry = DriverRegistry::new();
+    registry
+        .register(DiscoveryOnlyDriver)
+        .expect("first registration should succeed");
+    let error = registry
+        .register(DiscoveryOnlyDriver)
+        .expect_err("duplicate id should fail");
+
+    assert_eq!(
+        error,
+        DriverRegistryError::DuplicateDriverId {
+            id: "discovery-only".to_owned()
+        }
+    );
+}
+
+#[test]
+fn registry_lists_ids_in_deterministic_order() {
+    let mut registry = DriverRegistry::new();
+    registry
+        .register(PairingOnlyDriver)
+        .expect("pairing driver should register");
+    registry
+        .register(DiscoveryOnlyDriver)
+        .expect("discovery driver should register");
+
+    assert_eq!(
+        registry.ids(),
+        vec!["discovery-only".to_owned(), "pairing-only".to_owned()]
+    );
+}
+
+#[test]
+fn registry_filters_discovery_and_pairing_drivers() {
+    let mut registry = DriverRegistry::new();
+    registry
+        .register(PairingOnlyDriver)
+        .expect("pairing driver should register");
+    registry
+        .register(DiscoveryOnlyDriver)
+        .expect("discovery driver should register");
+
+    let discovery_ids = registry
+        .discovery_drivers()
+        .into_iter()
+        .map(|driver| driver.descriptor().id.to_owned())
+        .collect::<Vec<_>>();
+    let pairing_ids = registry
+        .pairing_drivers()
+        .into_iter()
+        .map(|driver| driver.descriptor().id.to_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(discovery_ids, vec!["discovery-only".to_owned()]);
+    assert_eq!(pairing_ids, vec!["pairing-only".to_owned()]);
+}
+
+#[test]
+fn registry_can_return_registered_driver() {
+    let mut registry = DriverRegistry::new();
+    registry
+        .register(DiscoveryOnlyDriver)
+        .expect("driver should register");
+
+    let driver = registry
+        .get("discovery-only")
+        .expect("driver should be returned");
+    assert_eq!(driver.descriptor().display_name, "Discovery Only");
+}
+
+#[test]
+fn drivers_can_build_backends_through_registry_lookup() {
+    let host = NullHost::new();
+    let mut registry = DriverRegistry::new();
+    registry
+        .register(DiscoveryOnlyDriver)
+        .expect("driver should register");
+
+    let driver = registry
+        .get("discovery-only")
+        .expect("driver should be returned");
+    let backend = driver
+        .build_backend(&host)
+        .expect("backend build should succeed")
+        .expect("driver should return a backend");
+
+    assert_eq!(backend.info().id, "test");
+}
