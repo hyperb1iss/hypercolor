@@ -399,6 +399,11 @@ fn PerformancePanel(
     let preview_hint = Memo::new(move |_| {
         if preview_target_fps.get() <= 15 {
             "debug preview cap".to_string()
+        } else if let Some(metrics) = metrics.get() {
+            format!(
+                "jitter p95 {:.2} ms · wake p95 {:.2} ms",
+                metrics.pacing.jitter_p95_ms, metrics.pacing.wake_delay_p95_ms
+            )
         } else {
             "canvas stream".to_string()
         }
@@ -486,11 +491,47 @@ fn PerformancePanel(
             .map(|m| m.stages.device_output_ms)
             .unwrap_or_default()
     });
+    let postprocess_stage = Memo::new(move |_| {
+        metrics
+            .get()
+            .map(|m| m.stages.preview_postprocess_ms)
+            .unwrap_or_default()
+    });
     let publish_stage = Memo::new(move |_| {
         metrics
             .get()
             .map(|m| m.stages.event_bus_ms)
             .unwrap_or_default()
+    });
+    let overhead_stage = Memo::new(move |_| {
+        metrics
+            .get()
+            .map(|m| m.stages.coordination_overhead_ms)
+            .unwrap_or_default()
+    });
+    let pacing_jitter_text = Memo::new(move |_| {
+        metrics
+            .get()
+            .map(|m| format!("p95 {:.2} ms", m.pacing.jitter_p95_ms))
+            .unwrap_or_else(|| "\u{2014}".to_string())
+    });
+    let pacing_wake_text = Memo::new(move |_| {
+        metrics
+            .get()
+            .map(|m| format!("p95 {:.2} ms", m.pacing.wake_delay_p95_ms))
+            .unwrap_or_else(|| "\u{2014}".to_string())
+    });
+    let pacing_age_text = Memo::new(move |_| {
+        metrics
+            .get()
+            .map(|m| format!("{:.2} ms", m.pacing.frame_age_ms))
+            .unwrap_or_else(|| "\u{2014}".to_string())
+    });
+    let pacing_reuse_text = Memo::new(move |_| {
+        metrics
+            .get()
+            .map(|m| format!("{} input · {} canvas", m.pacing.reused_inputs, m.pacing.reused_canvas))
+            .unwrap_or_else(|| "\u{2014}".to_string())
     });
 
     view! {
@@ -556,12 +597,24 @@ fn PerformancePanel(
                 // Pipeline stages — with color accents per stage
                 <div>
                     <div class="text-[9px] font-mono uppercase tracking-[0.14em] text-fg-tertiary mb-2 px-1">"Pipeline Stages"</div>
-                    <div class="grid grid-cols-2 lg:grid-cols-5 gap-2">
+                    <div class="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-2">
                         <StageChip label="Input"   value=Signal::derive(move || input_stage.get())   color="var(--neon-cyan)" />
                         <StageChip label="Render"  value=Signal::derive(move || render_stage.get())  color="var(--electric-purple)" />
                         <StageChip label="Sample"  value=Signal::derive(move || sample_stage.get())  color="var(--coral)" />
-                        <StageChip label="Queue"   value=Signal::derive(move || push_stage.get())    color="var(--electric-yellow)" />
+                        <StageChip label="Output"  value=Signal::derive(move || push_stage.get())    color="var(--electric-yellow)" />
+                        <StageChip label="Post"    value=Signal::derive(move || postprocess_stage.get()) color="var(--coral)" />
                         <StageChip label="Publish" value=Signal::derive(move || publish_stage.get()) color="var(--success-green)" />
+                        <StageChip label="Overhead" value=Signal::derive(move || overhead_stage.get()) color="var(--fg-tertiary)" />
+                    </div>
+                </div>
+
+                <div>
+                    <div class="text-[9px] font-mono uppercase tracking-[0.14em] text-fg-tertiary mb-2 px-1">"Frame Pacing"</div>
+                    <div class="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                        <StatChip label="Jitter" value=Signal::derive(move || pacing_jitter_text.get()) color="var(--electric-purple)" />
+                        <StatChip label="Wake Delay" value=Signal::derive(move || pacing_wake_text.get()) color="var(--electric-yellow)" />
+                        <StatChip label="Frame Age" value=Signal::derive(move || pacing_age_text.get()) color="var(--neon-cyan)" />
+                        <StatChip label="Reuse (120f)" value=Signal::derive(move || pacing_reuse_text.get()) color="var(--success-green)" />
                     </div>
                 </div>
 
@@ -698,6 +751,29 @@ fn StageChip(
             </div>
             <div class="text-sm tabular-nums text-fg-secondary">
                 {move || format!("{:.2} ms", value.get())}
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn StatChip(
+    label: &'static str,
+    #[prop(into)] value: Signal<String>,
+    color: &'static str,
+) -> impl IntoView {
+    let border_style = format!("border-left: 2px solid {color}");
+
+    view! {
+        <div
+            class="rounded-lg border border-edge-subtle bg-surface-overlay/30 px-3 py-2"
+            style=border_style
+        >
+            <div class="text-[9px] font-mono uppercase tracking-[0.14em] text-fg-tertiary mb-1">
+                {label}
+            </div>
+            <div class="text-sm tabular-nums text-fg-secondary">
+                {move || value.get()}
             </div>
         </div>
     }

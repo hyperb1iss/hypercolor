@@ -118,6 +118,7 @@ pub struct PerformanceMetrics {
     pub fps: MetricsFps,
     pub frame_time: MetricsFrameTime,
     pub stages: MetricsStages,
+    pub pacing: MetricsPacing,
     pub memory: MetricsMemory,
     pub devices: MetricsDevices,
     pub websocket: MetricsWebsocket,
@@ -147,7 +148,23 @@ pub struct MetricsStages {
     pub effect_rendering_ms: f64,
     pub spatial_sampling_ms: f64,
     pub device_output_ms: f64,
+    pub preview_postprocess_ms: f64,
     pub event_bus_ms: f64,
+    pub coordination_overhead_ms: f64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct MetricsPacing {
+    pub jitter_avg_ms: f64,
+    pub jitter_p95_ms: f64,
+    pub jitter_max_ms: f64,
+    pub wake_delay_avg_ms: f64,
+    pub wake_delay_p95_ms: f64,
+    pub wake_delay_max_ms: f64,
+    pub frame_age_ms: f64,
+    pub reused_inputs: u32,
+    pub reused_canvas: u32,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]

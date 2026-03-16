@@ -256,10 +256,9 @@ async fn run_pipeline(state: RenderThreadState) {
     let mut last_audio_capture_active = None;
 
     loop {
-        let now = Instant::now();
-        let scheduled_start = next_frame_at.max(now);
-        if next_frame_at > now {
-            tokio::time::sleep_until(tokio::time::Instant::from_std(next_frame_at)).await;
+        let scheduled_start = next_frame_at;
+        if scheduled_start > Instant::now() {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(scheduled_start)).await;
         }
 
         // ── Timing gate ─────────────────────────────────────────────
@@ -290,6 +289,7 @@ async fn run_pipeline(state: RenderThreadState) {
 
         let frame = execute_frame(
             &state,
+            scheduled_start,
             skip_decision,
             &mut cached_inputs,
             &mut cached_canvas,
@@ -332,6 +332,7 @@ fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant
 )]
 async fn execute_frame(
     state: &RenderThreadState,
+    scheduled_start: Instant,
     skip_decision: SkipDecision,
     cached_inputs: &mut FrameInputs,
     cached_canvas: &mut Option<Canvas>,
@@ -343,8 +344,16 @@ async fn execute_frame(
     last_audio_capture_active: &mut Option<bool>,
 ) -> FrameExecution {
     let frame_start = Instant::now();
-    let delta_secs = last_tick.elapsed().as_secs_f32();
+    let frame_interval = frame_start.saturating_duration_since(*last_tick);
+    let delta_secs = frame_interval.as_secs_f32();
     *last_tick = frame_start;
+    let frame_interval_us = micros_u32(frame_interval);
+    let wake_late_us = micros_u32(frame_start.saturating_duration_since(scheduled_start));
+    let reused_inputs = matches!(
+        skip_decision,
+        SkipDecision::ReuseInputs | SkipDecision::ReuseCanvas
+    );
+    let reused_canvas = matches!(skip_decision, SkipDecision::ReuseCanvas);
 
     let output_power = *state.power_state.borrow();
     let effect_demand = current_effect_demand(state).await;
@@ -418,12 +427,14 @@ async fn execute_frame(
         handle_async_write_failures(runtime, async_failures).await;
     }
 
+    let postprocess_start = Instant::now();
     apply_preview_brightness(&mut canvas, output_power.effective_brightness());
+    let postprocess_us = micros_u32(postprocess_start.elapsed());
 
     // ── Stage 5: Publish to bus ─────────────────────────────────
     let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
     let frame_num_u32 = u64_to_u32(frame_number);
-    let total_us = micros_u32(frame_start.elapsed());
+    let timing_total_us = micros_u32(frame_start.elapsed());
     let publish_us = publish_frame_updates(
         state,
         recycled_frame,
@@ -436,20 +447,36 @@ async fn execute_frame(
             render_us,
             sample_us,
             push_us,
-            total_us,
+            total_us: timing_total_us,
             budget_us,
         },
     );
+    let total_us = micros_u32(frame_start.elapsed());
+    let known_stage_us = input_us
+        .saturating_add(render_us)
+        .saturating_add(sample_us)
+        .saturating_add(push_us)
+        .saturating_add(postprocess_us)
+        .saturating_add(publish_us);
+    let overhead_us = total_us.saturating_sub(known_stage_us);
+    let jitter_us = frame_interval_us.abs_diff(budget_us);
 
     {
         let mut performance = state.performance.write().await;
         performance.record_frame(LatestFrameMetrics {
+            timestamp_ms: elapsed_ms,
             input_us,
             render_us,
             sample_us,
             push_us,
+            postprocess_us,
             publish_us,
+            overhead_us,
             total_us,
+            wake_late_us,
+            jitter_us,
+            reused_inputs,
+            reused_canvas,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
         });
     }
@@ -460,13 +487,19 @@ async fn execute_frame(
 
     trace!(
         frame = frame_number,
+        frame_interval_us,
+        wake_late_us,
+        jitter_us,
         input_us,
         render_us,
         sample_us,
         push_us,
+        postprocess_us,
         publish_us,
+        overhead_us,
         total_us,
-        ?skip_decision,
+        reused_inputs,
+        reused_canvas,
         devices = write_stats.devices_written,
         leds = write_stats.total_leds,
         "frame complete"
@@ -602,6 +635,8 @@ async fn maybe_sleep_throttle(
         return None;
     }
 
+    let frame_start = Instant::now();
+
     if *sleep_black_pushed {
         {
             let mut rl = state.render_loop.write().await;
@@ -639,7 +674,7 @@ async fn maybe_sleep_throttle(
 
     let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
     let frame_num_u32 = u64_to_u32(frame_number);
-    let total_us = sample_us.saturating_add(push_us);
+    let timing_total_us = sample_us.saturating_add(push_us);
     let publish_us = publish_frame_updates(
         state,
         recycled_frame,
@@ -652,20 +687,30 @@ async fn maybe_sleep_throttle(
             render_us: 0,
             sample_us,
             push_us,
-            total_us,
+            total_us: timing_total_us,
             budget_us,
         },
     );
+    let total_us = micros_u32(frame_start.elapsed());
+    let overhead_us =
+        total_us.saturating_sub(sample_us.saturating_add(push_us).saturating_add(publish_us));
 
     {
         let mut performance = state.performance.write().await;
         performance.record_frame(LatestFrameMetrics {
+            timestamp_ms: elapsed_ms,
             input_us: 0,
             render_us: 0,
             sample_us,
             push_us,
+            postprocess_us: 0,
             publish_us,
+            overhead_us,
             total_us,
+            wake_late_us: 0,
+            jitter_us: 0,
+            reused_inputs: false,
+            reused_canvas: false,
             output_errors: u32::try_from(write_stats.errors.len()).unwrap_or(u32::MAX),
         });
     }

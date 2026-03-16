@@ -429,6 +429,7 @@ struct MetricsPayload {
     fps: MetricsFps,
     frame_time: MetricsFrameTime,
     stages: MetricsStages,
+    pacing: MetricsPacing,
     memory: MetricsMemory,
     devices: MetricsDevices,
     websocket: MetricsWebsocket,
@@ -463,7 +464,26 @@ struct MetricsStages {
     effect_rendering_ms: f64,
     spatial_sampling_ms: f64,
     device_output_ms: f64,
+    preview_postprocess_ms: f64,
     event_bus_ms: f64,
+    coordination_overhead_ms: f64,
+}
+
+#[derive(Debug, Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "JSON keys mirror protocol field names from the WebSocket spec"
+)]
+struct MetricsPacing {
+    jitter_avg_ms: f64,
+    jitter_p95_ms: f64,
+    jitter_max_ms: f64,
+    wake_delay_avg_ms: f64,
+    wake_delay_p95_ms: f64,
+    wake_delay_max_ms: f64,
+    frame_age_ms: f64,
+    reused_inputs: u32,
+    reused_canvas: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -1395,7 +1415,13 @@ fn sanitize_f32(value: f32) -> f32 {
 }
 
 async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> ServerMessage {
-    let render_stats = state.render_loop.read().await.stats();
+    let (render_stats, render_elapsed_ms) = {
+        let render_loop = state.render_loop.read().await;
+        (
+            render_loop.stats(),
+            render_loop.elapsed().as_secs_f64() * 1000.0,
+        )
+    };
     let performance_snapshot = state.performance.read().await.snapshot();
     let target_fps = render_stats.tier.fps();
     let avg_frame_secs = render_stats.avg_frame_time.as_secs_f64();
@@ -1403,6 +1429,11 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
     let avg_ms = avg_frame_secs * 1000.0;
     let frame_time = frame_time_summary(performance_snapshot.frame_time, avg_ms);
     let latest_frame = performance_snapshot.latest_frame.unwrap_or_default();
+    let frame_age_ms = if latest_frame.timestamp_ms > 0 {
+        (render_elapsed_ms - f64::from(latest_frame.timestamp_ms)).max(0.0)
+    } else {
+        0.0
+    };
 
     let devices = state.device_registry.list().await;
     let total_leds = devices.iter().fold(0_usize, |acc, tracked| {
@@ -1443,7 +1474,20 @@ async fn build_metrics_message(state: &AppState, bytes_sent_per_sec: f64) -> Ser
                 effect_rendering_ms: round_2(us_to_ms(latest_frame.render_us)),
                 spatial_sampling_ms: round_2(us_to_ms(latest_frame.sample_us)),
                 device_output_ms: round_2(us_to_ms(latest_frame.push_us)),
+                preview_postprocess_ms: round_2(us_to_ms(latest_frame.postprocess_us)),
                 event_bus_ms: round_2(us_to_ms(latest_frame.publish_us)),
+                coordination_overhead_ms: round_2(us_to_ms(latest_frame.overhead_us)),
+            },
+            pacing: MetricsPacing {
+                jitter_avg_ms: round_2(performance_snapshot.pacing.jitter_avg_ms),
+                jitter_p95_ms: round_2(performance_snapshot.pacing.jitter_p95_ms),
+                jitter_max_ms: round_2(performance_snapshot.pacing.jitter_max_ms),
+                wake_delay_avg_ms: round_2(performance_snapshot.pacing.wake_delay_avg_ms),
+                wake_delay_p95_ms: round_2(performance_snapshot.pacing.wake_delay_p95_ms),
+                wake_delay_max_ms: round_2(performance_snapshot.pacing.wake_delay_max_ms),
+                frame_age_ms: round_2(frame_age_ms),
+                reused_inputs: performance_snapshot.pacing.reused_inputs,
+                reused_canvas: performance_snapshot.pacing.reused_canvas,
             },
             memory: MetricsMemory {
                 daemon_rss_mb: round_1(daemon_rss_mb),
