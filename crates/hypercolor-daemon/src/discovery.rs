@@ -701,6 +701,7 @@ pub async fn execute_discovery_scan(
             vanished_ids.insert(id);
         }
     }
+    retain_transient_smbus_devices(&runtime, &scanned_backend_ids, &mut vanished_ids).await;
 
     let mut vanished_ids: Vec<DeviceId> = vanished_ids.into_iter().collect();
     vanished_ids.sort_by_key(DeviceId::as_uuid);
@@ -767,6 +768,49 @@ pub async fn execute_discovery_scan(
         duration_ms,
         scanners: map_scanner_reports(&report.scanner_reports),
     }
+}
+
+async fn retain_transient_smbus_devices(
+    runtime: &DiscoveryRuntime,
+    scanned_backend_ids: &HashSet<String>,
+    vanished_ids: &mut HashSet<DeviceId>,
+) {
+    if vanished_ids.is_empty() || !scanned_backend_ids.contains("smbus") {
+        return;
+    }
+
+    let mut preserved_ids = Vec::new();
+    let mut preserved_labels = Vec::new();
+    for id in vanished_ids.iter().copied() {
+        let Some(tracked) = runtime.device_registry.get(&id).await else {
+            continue;
+        };
+        if !(tracked.state.is_renderable() || tracked.state == DeviceState::Reconnecting) {
+            continue;
+        }
+
+        let metadata = runtime.device_registry.metadata_for_id(&id).await;
+        if backend_id_for_device(&tracked.info.family, metadata.as_ref()) != "smbus" {
+            continue;
+        }
+
+        preserved_ids.push(id);
+        preserved_labels.push(format!("{} ({id})", tracked.info.name));
+    }
+
+    if preserved_ids.is_empty() {
+        return;
+    }
+
+    for id in preserved_ids {
+        vanished_ids.remove(&id);
+    }
+
+    debug!(
+        preserved_count = preserved_labels.len(),
+        devices = ?preserved_labels,
+        "preserving connected SMBus devices across transient discovery miss"
+    );
 }
 
 #[derive(Debug, Clone, Default)]

@@ -143,6 +143,34 @@ fn usb_device_info() -> DeviceInfo {
     }
 }
 
+fn smbus_device_info(name: &str) -> DeviceInfo {
+    DeviceInfo {
+        id: DeviceId::new(),
+        name: name.into(),
+        vendor: "ASUS".into(),
+        family: DeviceFamily::Asus,
+        model: Some("asus_aura_smbus_dram".into()),
+        connection_type: ConnectionType::SmBus,
+        zones: vec![ZoneInfo {
+            name: "Main".into(),
+            led_count: 8,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        firmware_version: Some("AUDA0-E6K5-0101".into()),
+        capabilities: DeviceCapabilities {
+            led_count: 8,
+            supports_direct: true,
+            supports_brightness: true,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 30,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    }
+}
+
 fn wled_device_info(name: &str) -> DeviceInfo {
     DeviceInfo {
         id: DeviceId::new(),
@@ -375,6 +403,69 @@ async fn wled_only_scan_does_not_vanish_connected_usb_devices() {
         .get(&device_id)
         .await
         .expect("USB device should remain in the registry");
+    assert_eq!(tracked.state, DeviceState::Connected);
+
+    let lifecycle_state = lifecycle_manager.lock().await.state(device_id);
+    assert_eq!(lifecycle_state, Some(DeviceState::Connected));
+}
+
+#[tokio::test]
+async fn smbus_scan_does_not_timeout_connected_smbus_devices_on_transient_miss() {
+    let device_registry = DeviceRegistry::new();
+    let info = smbus_device_info("ASUS Aura DRAM (SMBus 0x71)");
+    let fingerprint = DeviceFingerprint("smbus:/dev/i2c-999:71".to_owned());
+    let mut metadata = HashMap::new();
+    metadata.insert("backend_id".to_owned(), "smbus".to_owned());
+    metadata.insert("bus_path".to_owned(), "/dev/i2c-999".to_owned());
+    metadata.insert("smbus_address".to_owned(), "0x71".to_owned());
+
+    let device_id = device_registry
+        .add_with_fingerprint_and_metadata(info.clone(), fingerprint.clone(), metadata)
+        .await;
+    assert_eq!(device_id, info.id);
+    assert!(
+        device_registry
+            .set_state(&device_id, DeviceState::Connected)
+            .await,
+        "device registry state should update"
+    );
+
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    {
+        let mut lifecycle = lifecycle_manager.lock().await;
+        let _ = lifecycle.on_discovered(device_id, &info, "smbus", Some(&fingerprint));
+        lifecycle
+            .on_connected(device_id)
+            .expect("lifecycle should accept connected transition");
+    }
+
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime = make_runtime(
+        device_registry.clone(),
+        Arc::clone(&lifecycle_manager),
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+    );
+
+    let result = execute_discovery_scan(
+        runtime.runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
+        Arc::new(HypercolorConfig::default()),
+        vec![DiscoveryBackend::SmBus],
+        Duration::from_millis(50),
+    )
+    .await;
+
+    assert!(
+        !result.vanished_devices.contains(&device_id.to_string()),
+        "connected SMBus devices should not be timed out by a transient miss"
+    );
+
+    let tracked = device_registry
+        .get(&device_id)
+        .await
+        .expect("SMBus device should remain in the registry");
     assert_eq!(tracked.state, DeviceState::Connected);
 
     let lifecycle_state = lifecycle_manager.lock().await.state(device_id);
