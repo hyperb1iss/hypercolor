@@ -506,7 +506,13 @@ impl DaemonState {
         );
 
         {
-            let mut backend_manager_inner = backend_manager.blocking_lock();
+            // `initialize()` is invoked from `tokio::main` and `#[tokio::test]`,
+            // so taking a blocking mutex guard here will panic inside the runtime.
+            let mut backend_manager_inner = backend_manager.try_lock().map_err(|_| {
+                anyhow::anyhow!(
+                    "backend manager lock unexpectedly contended during daemon initialization"
+                )
+            })?;
             backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
             network::register_enabled_backends(
                 &mut backend_manager_inner,
