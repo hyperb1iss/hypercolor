@@ -41,7 +41,8 @@ pub fn DevicePairingModal(
     /// only dismiss the modal if the ID matches the currently-shown device,
     /// to avoid a stale async response dismissing a modal opened for a
     /// different device.
-    #[prop(into)] on_paired: Callback<String>,
+    #[prop(into)]
+    on_paired: Callback<String>,
 ) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
     let device_id = device.id.clone();
@@ -49,9 +50,7 @@ pub fn DevicePairingModal(
     let rgb = crate::components::device_card::backend_accent_rgb(&device.backend).to_string();
 
     let auth = device.auth.clone();
-    let descriptor = auth
-        .as_ref()
-        .and_then(|a| a.descriptor.clone());
+    let descriptor = auth.as_ref().and_then(|a| a.descriptor.clone());
 
     let (stage, set_stage) = signal(PairingStage::Ready);
     let (form_values, set_form_values) = signal(HashMap::<String, String>::new());
@@ -332,7 +331,8 @@ pub fn ForgetCredentialsModal(
     /// Fires with the device ID after credentials are successfully removed.
     /// The parent should only dismiss the modal if the ID matches the
     /// currently-shown device, to guard against stale async responses.
-    #[prop(into)] on_forgot: Callback<String>,
+    #[prop(into)]
+    on_forgot: Callback<String>,
 ) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
     let device_id = device.id.clone();
@@ -419,10 +419,7 @@ pub fn needs_pairing(auth: &Option<DeviceAuthSummary>) -> bool {
 // ── Shared modal backdrop ──────────────────────────────────────────────────
 
 #[component]
-fn ModalBackdrop(
-    #[prop(into)] on_close: Callback<()>,
-    children: Children,
-) -> impl IntoView {
+fn ModalBackdrop(#[prop(into)] on_close: Callback<()>, children: Children) -> impl IntoView {
     view! {
         <div class="fixed inset-0 z-50 grid place-items-center p-4 animate-fade-in">
             // Backdrop

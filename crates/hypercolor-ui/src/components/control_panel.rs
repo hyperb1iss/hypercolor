@@ -259,7 +259,10 @@ fn color_picker_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> Stri
 
     // Center horizontally on the swatch, clamped to viewport
     let ideal_left = rect.left() + rect.width() / 2.0 - popover_width / 2.0;
-    let left = ideal_left.clamp(margin, (viewport_width - popover_width - margin).max(margin));
+    let left = ideal_left.clamp(
+        margin,
+        (viewport_width - popover_width - margin).max(margin),
+    );
 
     // Prefer opening above the trigger; fall back to below if not enough room
     let space_above = rect.top() - margin;
@@ -277,9 +280,7 @@ fn color_picker_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> Stri
 
 /// Close the color picker popover on any ancestor scroll (same rationale as
 /// `install_scroll_close_handler` but targets the expanded-picker signal).
-fn install_scroll_close_handler_for_picker(
-    set_expanded: WriteSignal<Option<String>>,
-) {
+fn install_scroll_close_handler_for_picker(set_expanded: WriteSignal<Option<String>>) {
     let Some(win) = web_sys::window() else {
         return;
     };

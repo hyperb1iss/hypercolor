@@ -435,12 +435,8 @@ pub(crate) fn resize_zone_from_handle(
 ) -> (NormalizedPosition, NormalizedPosition) {
     // Rotate mouse coordinates into zone-local (unrotated) space so that
     // dragging along a rotated edge correctly maps to width/height changes.
-    let (local_start, local_current) = rotate_mouse_to_local(
-        start_mouse,
-        current_mouse,
-        start_center,
-        rotation,
-    );
+    let (local_start, local_current) =
+        rotate_mouse_to_local(start_mouse, current_mouse, start_center, rotation);
 
     if keep_aspect_ratio {
         resize_zone_locked(start_center, start_size, handle, local_current)
@@ -1135,48 +1131,19 @@ fn resize_zone_locked(
         raw_min_preserved.y * min_scale,
     );
 
-    let candidate_width_from_x = if horizontal_sign > 0.0 {
-        current_mouse.x - anchor_x
-    } else {
-        anchor_x - current_mouse.x
-    }
-    .abs();
-    let candidate_height_from_y = if vertical_sign > 0.0 {
-        current_mouse.y - anchor_y
-    } else {
-        anchor_y - current_mouse.y
-    }
-    .abs();
+    // Project the mouse displacement onto the aspect-ratio diagonal for smooth,
+    // continuous resizing. This replaces the old two-candidate distance heuristic
+    // that caused discrete size jumps when crossing between width-driven and
+    // height-driven modes.
+    let signed_dx = (current_mouse.x - anchor_x) * horizontal_sign;
+    let signed_dy = (current_mouse.y - anchor_y) * vertical_sign;
 
-    let option_width_x = candidate_width_from_x.clamp(min_preserved_size.x, max_preserved_width);
-    let option_height_x = option_width_x / aspect;
-    let option_height_y = candidate_height_from_y.clamp(min_preserved_size.y, max_preserved_height);
-    let option_width_y = option_height_y * aspect;
+    // Diagonal direction is (aspect, 1) — the aspect-ratio preserving diagonal.
+    // t is the scalar projection onto this diagonal.
+    let t = (signed_dx * aspect + signed_dy) / (aspect * aspect + 1.0);
 
-    let handle_from_width = corner_from_anchor(
-        anchor_x,
-        anchor_y,
-        horizontal_sign,
-        vertical_sign,
-        option_width_x,
-        option_height_x,
-    );
-    let handle_from_height = corner_from_anchor(
-        anchor_x,
-        anchor_y,
-        horizontal_sign,
-        vertical_sign,
-        option_width_y,
-        option_height_y,
-    );
-
-    let (width, height) = if distance_sq(handle_from_width, current_mouse)
-        <= distance_sq(handle_from_height, current_mouse)
-    {
-        (option_width_x, option_height_x)
-    } else {
-        (option_width_y, option_height_y)
-    };
+    let width = (t * aspect).clamp(min_preserved_size.x, max_preserved_width);
+    let height = (width / aspect).clamp(min_preserved_size.y, max_preserved_height);
 
     let left = if horizontal_sign > 0.0 {
         anchor_x

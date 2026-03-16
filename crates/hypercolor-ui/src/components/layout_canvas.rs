@@ -33,6 +33,15 @@ pub fn LayoutCanvas() -> impl IntoView {
     // Drag state
     let (interaction, set_interaction) = signal(None::<InteractionState>);
 
+    // Track which zone is actively being dragged/resized so we can disable
+    // CSS transitions on it (prevents visual lag during interaction).
+    let interacting_zone_id = Signal::derive(move || {
+        interaction.get().map(|state| match &state {
+            InteractionState::Drag(d) => d.zone_id.clone(),
+            InteractionState::Resize(r) => r.zone_id.clone(),
+        })
+    });
+
     // Derive zone IDs sorted by display_order — only re-renders when zones are added/removed
     // or their stacking order changes, NOT when positions change during drag.
     let zone_ids = Memo::new(move |_| {
@@ -68,7 +77,9 @@ pub fn LayoutCanvas() -> impl IntoView {
                     let member_zones: Vec<_> = l
                         .zones
                         .iter()
-                        .filter(|z| z.group_id.as_deref() == Some(&group.id) && !hidden.contains(&z.id))
+                        .filter(|z| {
+                            z.group_id.as_deref() == Some(&group.id) && !hidden.contains(&z.id)
+                        })
                         .collect();
                     if member_zones.is_empty() {
                         return None;
@@ -164,9 +175,41 @@ pub fn LayoutCanvas() -> impl IntoView {
             class="relative w-full h-full overflow-hidden"
             style="background: var(--color-surface-base)"
             on:mouseup=move |_| {
+                // Normalize zone size on interaction end (deferred from mousemove
+                // to prevent strip aspect enforcement from fighting the user mid-drag).
+                if let Some(state) = interaction.try_get_untracked().flatten() {
+                    let zone_id = match &state {
+                        InteractionState::Drag(d) => d.zone_id.clone(),
+                        InteractionState::Resize(r) => r.zone_id.clone(),
+                    };
+                    set_layout.update(|l| {
+                        if let Some(layout) = l {
+                            if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                                zone.size = layout_geometry::normalize_zone_size_for_editor(
+                                    zone.position, zone.size, &zone.topology,
+                                );
+                            }
+                        }
+                    });
+                }
                 set_interaction.set(None);
             }
             on:mouseleave=move |_| {
+                if let Some(state) = interaction.try_get_untracked().flatten() {
+                    let zone_id = match &state {
+                        InteractionState::Drag(d) => d.zone_id.clone(),
+                        InteractionState::Resize(r) => r.zone_id.clone(),
+                    };
+                    set_layout.update(|l| {
+                        if let Some(layout) = l {
+                            if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                                zone.size = layout_geometry::normalize_zone_size_for_editor(
+                                    zone.position, zone.size, &zone.topology,
+                                );
+                            }
+                        }
+                    });
+                }
                 set_interaction.set(None);
             }
             on:mousemove=move |ev| {
@@ -218,11 +261,9 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         resize.rotation,
                                     );
                                     zone.position = position;
-                                    zone.size = layout_geometry::normalize_zone_size_for_editor(
-                                        zone.position,
-                                        size,
-                                        &zone.topology,
-                                    );
+                                    // Raw size — normalization deferred to mouseup to prevent
+                                    // strip aspect enforcement from fighting the user mid-drag.
+                                    zone.size = size;
                                 }
                             }
                         });
@@ -372,9 +413,18 @@ pub fn LayoutCanvas() -> impl IntoView {
                                 Signal::derive(move || hidden_zones.get().contains(&zid))
                             };
 
+                            let is_interacting = {
+                                let zid = zid.clone();
+                                Signal::derive(move || interacting_zone_id.get().as_deref() == Some(&zid))
+                            };
+
                             view! {
                                 <div
-                                    class="absolute rounded-md cursor-move group transition-[border-color,box-shadow,background,opacity,transform] duration-300"
+                                    class=move || if is_interacting.get() {
+                                        "absolute rounded-md cursor-move group"
+                                    } else {
+                                        "absolute rounded-md cursor-move group transition-[border-color,box-shadow,background,opacity] duration-300"
+                                    }
                                     style=move || {
                                         let Some(zd) = zone_style.get() else {
                                             return "display: none".to_string();

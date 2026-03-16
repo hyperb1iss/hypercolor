@@ -522,6 +522,7 @@ fn locked_resize_keeps_original_aspect_ratio() {
         ResizeHandle::SouthEast,
         NormalizedPosition::new(0.72, 0.66),
         true,
+        0.0,
     );
 
     let aspect = size.x / size.y;
@@ -578,6 +579,7 @@ fn locked_resize_can_shrink_long_strip_below_old_aspect_floor() {
         ResizeHandle::SouthEast,
         NormalizedPosition::new(0.43, 0.498_833_33),
         true,
+        0.0,
     );
 
     assert!((size.x - 0.05).abs() < 0.001);

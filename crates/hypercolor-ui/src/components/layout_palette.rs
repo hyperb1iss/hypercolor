@@ -1581,4 +1581,3 @@ fn topology_icon(zone: Option<&api::ZoneSummary>) -> leptos::prelude::AnyView {
         _ => view! { <Icon icon=LuMinus width="12px" height="12px" /> }.into_any(),
     }
 }
-

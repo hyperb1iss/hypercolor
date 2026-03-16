@@ -102,9 +102,11 @@ pub fn remove_device_zone(
 ) {
     set_layout.update(|l| {
         if let Some(layout) = l {
-            if let Some(pos) = layout.zones.iter().position(|z| {
-                z.device_id == device_id && z.zone_name.as_deref() == zone_name
-            }) {
+            if let Some(pos) = layout
+                .zones
+                .iter()
+                .position(|z| z.device_id == device_id && z.zone_name.as_deref() == zone_name)
+            {
                 let removed = layout.zones.remove(pos);
                 let key = (removed.device_id.clone(), removed.zone_name.clone());
                 set_removed_zone_cache.update(|cache| {
@@ -172,8 +174,8 @@ pub fn add_all_device_zones(
                 .unwrap_or_default()
         });
 
-    let has_cached = removed_zone_cache
-        .with_untracked(|c| c.keys().any(|(did, _)| did == device_id));
+    let has_cached =
+        removed_zone_cache.with_untracked(|c| c.keys().any(|(did, _)| did == device_id));
 
     if existing_zone_names.is_empty() && !has_cached {
         let display_order = next_display_order(layout);
@@ -227,8 +229,7 @@ pub fn add_all_device_zones(
                     continue;
                 }
                 let cache_key = (device_id.to_string(), Some(zone.name.clone()));
-                let cached =
-                    removed_zone_cache.with_untracked(|c| c.get(&cache_key).cloned());
+                let cached = removed_zone_cache.with_untracked(|c| c.get(&cache_key).cloned());
                 let new_zone = if let Some(mut restored) = cached {
                     restored.id = format!("zone_{}", uuid_v4_hex());
                     set_removed_zone_cache.update(|c| {
@@ -296,11 +297,10 @@ pub fn import_device_attachments(
             let mut layout = api::fetch_active_layout().await?;
             let layout_name = layout.name.clone();
             let layout_id = layout.id.clone();
-            let imported_zones =
-                crate::components::attachment_panel::build_attachment_layout_zones(
-                    &device,
-                    &attachments.suggested_zones,
-                );
+            let imported_zones = crate::components::attachment_panel::build_attachment_layout_zones(
+                &device,
+                &attachments.suggested_zones,
+            );
             let imported_count = imported_zones.len();
 
             layout.zones.retain(|zone| {

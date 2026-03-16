@@ -57,7 +57,10 @@ pub const ALL_DEVICE_CLASSES: &[DeviceClass] = &[
 
 /// Parse a device class from its label string.
 pub fn parse_device_class(label: &str) -> Option<DeviceClass> {
-    ALL_DEVICE_CLASSES.iter().find(|c| device_class_label(c) == label).copied()
+    ALL_DEVICE_CLASSES
+        .iter()
+        .find(|c| device_class_label(c) == label)
+        .copied()
 }
 
 /// Classify a device by name/zone heuristics (auto-detection).
@@ -79,23 +82,32 @@ pub fn classify_device(device: &DeviceSummary) -> DeviceClass {
         return DeviceClass::SmartLight;
     }
 
-    if name.contains("push") || name.contains("huntsman") || name.contains("defy")
+    if name.contains("push")
+        || name.contains("huntsman")
+        || name.contains("defy")
         || name.contains("keyboard")
     {
         return DeviceClass::Keyboard;
     }
-    if name.contains("basilisk") || name.contains("deathadder") || name.contains("viper")
+    if name.contains("basilisk")
+        || name.contains("deathadder")
+        || name.contains("viper")
         || name.contains("mouse")
     {
         return DeviceClass::Mouse;
     }
-    if name.contains("prism") || name.contains("link") || name.contains("commander")
+    if name.contains("prism")
+        || name.contains("link")
+        || name.contains("commander")
         || name.contains("hub")
     {
         return DeviceClass::Hub;
     }
-    if name.contains("seiren") || name.contains("kraken") || name.contains("nari")
-        || name.contains("mic") || name.contains("headset")
+    if name.contains("seiren")
+        || name.contains("kraken")
+        || name.contains("nari")
+        || name.contains("mic")
+        || name.contains("headset")
     {
         return DeviceClass::Audio;
     }
@@ -112,7 +124,11 @@ pub fn classify_device(device: &DeviceSummary) -> DeviceClass {
 fn load_category_override(device_id: &str) -> Option<String> {
     web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item(&format!("hc-device-category-{device_id}")).ok().flatten())
+        .and_then(|s| {
+            s.get_item(&format!("hc-device-category-{device_id}"))
+                .ok()
+                .flatten()
+        })
 }
 
 pub fn save_category_override(device_id: &str, label: &str) {
@@ -306,9 +322,8 @@ pub fn DeviceCard(
     );
     let dot_style =
         format!("background: rgb({status_rgb}); box-shadow: 0 0 6px rgba({status_rgb}, 0.5)");
-    let accent_bar = format!(
-        "background: linear-gradient(90deg, rgba({rgb}, 0.25), rgba({rgb}, 0.08))"
-    );
+    let accent_bar =
+        format!("background: linear-gradient(90deg, rgba({rgb}, 0.25), rgba({rgb}, 0.08))");
 
     let stagger = (index.min(12) + 1).to_string();
 

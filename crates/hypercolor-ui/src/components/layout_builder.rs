@@ -116,8 +116,7 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (new_layout_name, set_new_layout_name) = signal(String::new());
     let (initialized, set_initialized) = signal(false);
     let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(true);
-    let (hidden_zones, set_hidden_zones) =
-        signal(std::collections::HashSet::<String>::new());
+    let (hidden_zones, set_hidden_zones) = signal(std::collections::HashSet::<String>::new());
 
     let (removed_zone_cache, set_removed_zone_cache) =
         signal(crate::layout_utils::ZoneCache::new());

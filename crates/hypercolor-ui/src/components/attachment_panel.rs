@@ -26,7 +26,11 @@ fn ls_channel_key(device_id: &str, slot_id: &str) -> String {
 fn load_channel_name(device_id: &str, slot_id: &str) -> Option<String> {
     web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item(&ls_channel_key(device_id, slot_id)).ok().flatten())
+        .and_then(|s| {
+            s.get_item(&ls_channel_key(device_id, slot_id))
+                .ok()
+                .flatten()
+        })
 }
 
 fn save_channel_name(device_id: &str, slot_id: &str, name: &str) {
@@ -502,7 +506,6 @@ pub fn WiringPanel(
 
 /// Searchable dropdown for selecting a component (fan, strip, etc.).
 /// Uses `position: fixed` to escape overflow clipping from parent containers.
-/// Backdrop uses `mousedown` to avoid capturing the opening click event.
 #[component]
 fn ComponentCombobox(
     components: Vec<api::TemplateSummary>,
@@ -540,7 +543,6 @@ fn ComponentCombobox(
 
     let open_dropdown = move |ev: web_sys::MouseEvent| {
         ev.stop_propagation();
-        ev.prevent_default();
         if open.get_untracked() {
             set_open.set(false);
             return;
@@ -558,6 +560,7 @@ fn ComponentCombobox(
     view! {
         <div class="flex-1 min-w-0 relative">
             <button
+                type="button"
                 node_ref=trigger_ref
                 class="w-full flex items-center gap-1 px-2 py-1 rounded border text-left text-[11px] transition-all min-w-0"
                 style=move || {
@@ -569,7 +572,7 @@ fn ComponentCombobox(
                         "background: rgba(255, 255, 255, 0.02); border-color: rgba(139, 133, 160, 0.1); color: rgba(139, 133, 160, 0.5)"
                     }
                 }
-                on:mousedown=open_dropdown
+                on:click=open_dropdown
             >
                 <span class="flex-1 min-w-0" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap">
                     {if has_selection { selected_label.clone() } else { "Select component...".to_string() }}
@@ -587,8 +590,7 @@ fn ComponentCombobox(
                 let pos_style = format!("position: fixed; left: {left:.0}px; top: {top:.0}px; width: {width:.0}px; z-index: 9999");
 
                 view! {
-                    // Use mousedown to avoid catching the same click that opened the dropdown
-                    <div class="fixed inset-0 z-[9998]" on:mousedown=move |_| set_open.set(false) />
+                    <div class="fixed inset-0 z-[9998]" on:click=move |_| set_open.set(false) />
 
                     <div class="max-h-[340px] flex flex-col rounded-xl border border-edge-subtle bg-surface-overlay shadow-xl
                                 dropdown-glow animate-fade-in overflow-hidden"
@@ -668,6 +670,7 @@ fn ComponentCombobox(
                         {has_selection.then(|| view! {
                             <div class="border-t border-edge-subtle">
                                 <button
+                                    type="button"
                                     class="w-full px-3 py-1 text-[10px] text-fg-tertiary/50 hover:text-fg-tertiary hover:bg-surface-hover/30 transition-colors text-left"
                                     on:click=move |_| { on_select.run(String::new()); set_open.set(false); }
                                 >
@@ -697,6 +700,7 @@ fn ComponentOption(
 
     view! {
         <button
+            type="button"
             class="w-full flex items-center gap-2 px-2 py-1 mx-1 rounded-lg
                    hover:bg-surface-hover/40 transition-colors text-left"
             style="width: calc(100% - 8px)"

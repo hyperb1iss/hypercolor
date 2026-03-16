@@ -55,6 +55,13 @@ pub struct IdentifyRequest {
     pub color: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct IdentifyAttachmentRequest {
+    #[serde(flatten)]
+    pub base: IdentifyRequest,
+    pub binding_index: Option<usize>,
+}
+
 pub type GenericPairDeviceRequest = hypercolor_driver_api::PairDeviceRequest;
 
 #[derive(Debug, Serialize)]
@@ -889,13 +896,256 @@ pub async fn identify_device(
         direct_backend,
         backend_id,
         device_id,
-        led_count,
+        on_frame,
         Duration::from_millis(duration_ms),
-        identify_color,
     ));
 
     ApiResponse::ok(serde_json::json!({
         "device_id": device_id.to_string(),
+        "identifying": true,
+        "duration_ms": duration_ms,
+        "color": color,
+    }))
+}
+
+/// `POST /api/v1/devices/:id/zones/:zone_id/identify` — Flash a single zone.
+pub async fn identify_zone(
+    State(state): State<Arc<AppState>>,
+    Path((id, zone_id)): Path<(String, String)>,
+    body: Option<Json<IdentifyRequest>>,
+) -> Response {
+    let device_id = match resolve_device_id_or_response(&state, &id).await {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
+        return ApiError::not_found(format!("Device not found: {id}"));
+    };
+    if !tracked.state.is_renderable() {
+        return ApiError::conflict(format!(
+            "Device is not connected: {} (state={})",
+            tracked.info.name, tracked.state
+        ));
+    }
+
+    let zone_index = match resolve_zone_index(&tracked.info, &zone_id) {
+        Ok(index) => index,
+        Err(response) => return response,
+    };
+
+    let total_leds = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
+    if total_leds == 0 {
+        return ApiError::conflict(format!(
+            "Device has no LEDs to identify: {}",
+            tracked.info.name
+        ));
+    }
+
+    let duration_ms = body.as_ref().and_then(|b| b.duration_ms).unwrap_or(3000);
+    if duration_ms == 0 || duration_ms > 120_000 {
+        return ApiError::validation("duration_ms must be between 1 and 120000");
+    }
+    let color = match body.as_ref().and_then(|b| b.color.as_deref()) {
+        Some(color) => match parse_hex_color(color) {
+            Some(normalized) => Some(normalized),
+            None => return ApiError::validation("color must be a 6-digit hex value (RRGGBB)"),
+        },
+        None => None,
+    };
+    let identify_rgb = color
+        .as_deref()
+        .and_then(parse_hex_rgb)
+        .unwrap_or(DEFAULT_IDENTIFY_COLOR_RGB);
+    let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
+        * tracked.user_settings.brightness)
+        .clamp(0.0, 1.0);
+    let identify_color = scale_rgb(identify_rgb, identify_brightness);
+
+    let on_frame = build_zone_identify_frame(&tracked.info, zone_index, identify_color);
+
+    let backend_id = resolved_backend_id(&state, device_id, &tracked.info.family).await;
+    let manager = Arc::clone(&state.backend_manager);
+    let direct_backend = {
+        let mut manager = manager.lock().await;
+        let Some(direct_backend) = manager.backend_io(&backend_id) else {
+            return ApiError::internal(format!(
+                "Failed to start identify flash for {}: backend '{backend_id}' is not registered",
+                tracked.info.name
+            ));
+        };
+        manager.begin_direct_control(&backend_id, device_id);
+        direct_backend
+    };
+
+    if let Err(error) = direct_backend.write_colors(device_id, &on_frame).await {
+        let mut manager = manager.lock().await;
+        manager.end_direct_control(&backend_id, device_id);
+        warn!(
+            backend_id = %backend_id,
+            device_id = %device_id,
+            zone = %tracked.info.zones[zone_index].name,
+            error = %error,
+            "zone identify initial write failed"
+        );
+        return ApiError::internal(format!(
+            "Failed to start zone identify for {}: {error}",
+            tracked.info.name
+        ));
+    }
+
+    let zone_name = tracked.info.zones[zone_index].name.clone();
+    tracing::info!(
+        device_id = %device_id,
+        device = %tracked.info.name,
+        zone = %zone_name,
+        zone_index,
+        backend = %backend_id,
+        duration_ms,
+        color = ?identify_rgb,
+        "Zone identify flash started"
+    );
+    tokio::spawn(run_identify_flash(
+        manager,
+        direct_backend,
+        backend_id,
+        device_id,
+        on_frame,
+        Duration::from_millis(duration_ms),
+    ));
+
+    ApiResponse::ok(serde_json::json!({
+        "device_id": device_id.to_string(),
+        "zone_id": zone_id,
+        "zone_name": zone_name,
+        "identifying": true,
+        "duration_ms": duration_ms,
+        "color": color,
+    }))
+}
+
+/// `POST /api/v1/devices/:id/attachments/:slot_id/identify` — Flash a single
+/// attachment component within a slot.
+pub async fn identify_attachment(
+    State(state): State<Arc<AppState>>,
+    Path((id, slot_id)): Path<(String, String)>,
+    body: Option<Json<IdentifyAttachmentRequest>>,
+) -> Response {
+    let device_id = match resolve_device_id_or_response(&state, &id).await {
+        Ok(id) => id,
+        Err(response) => return response,
+    };
+
+    let Some(tracked) = state.device_registry.get(&device_id).await else {
+        return ApiError::not_found(format!("Device not found: {id}"));
+    };
+    if !tracked.state.is_renderable() {
+        return ApiError::conflict(format!(
+            "Device is not connected: {} (state={})",
+            tracked.info.name, tracked.state
+        ));
+    }
+
+    let total_leds = usize::try_from(tracked.info.total_led_count()).unwrap_or_default();
+    if total_leds == 0 {
+        return ApiError::conflict(format!(
+            "Device has no LEDs to identify: {}",
+            tracked.info.name
+        ));
+    }
+
+    let duration_ms = body.as_ref().and_then(|b| b.base.duration_ms).unwrap_or(3000);
+    if duration_ms == 0 || duration_ms > 120_000 {
+        return ApiError::validation("duration_ms must be between 1 and 120000");
+    }
+    let color = match body.as_ref().and_then(|b| b.base.color.as_deref()) {
+        Some(color) => match parse_hex_color(color) {
+            Some(normalized) => Some(normalized),
+            None => return ApiError::validation("color must be a 6-digit hex value (RRGGBB)"),
+        },
+        None => None,
+    };
+    let identify_rgb = color
+        .as_deref()
+        .and_then(parse_hex_rgb)
+        .unwrap_or(DEFAULT_IDENTIFY_COLOR_RGB);
+    let identify_brightness = ((*state.power_state.borrow()).effective_brightness()
+        * tracked.user_settings.brightness)
+        .clamp(0.0, 1.0);
+    let identify_color = scale_rgb(identify_rgb, identify_brightness);
+
+    let binding_index = body.as_ref().and_then(|b| b.binding_index).unwrap_or(0);
+
+    let on_frame = {
+        let profiles = state.attachment_profiles.read().await;
+        let registry = state.attachment_registry.read().await;
+        match build_attachment_identify_frame(
+            &profiles,
+            &registry,
+            device_id,
+            &slot_id,
+            binding_index,
+            total_leds,
+            identify_color,
+        ) {
+            Ok(frame) => frame,
+            Err(msg) => return ApiError::not_found(msg),
+        }
+    };
+
+    let backend_id = resolved_backend_id(&state, device_id, &tracked.info.family).await;
+    let manager = Arc::clone(&state.backend_manager);
+    let direct_backend = {
+        let mut manager = manager.lock().await;
+        let Some(direct_backend) = manager.backend_io(&backend_id) else {
+            return ApiError::internal(format!(
+                "Failed to start identify flash for {}: backend '{backend_id}' is not registered",
+                tracked.info.name
+            ));
+        };
+        manager.begin_direct_control(&backend_id, device_id);
+        direct_backend
+    };
+
+    if let Err(error) = direct_backend.write_colors(device_id, &on_frame).await {
+        let mut manager = manager.lock().await;
+        manager.end_direct_control(&backend_id, device_id);
+        warn!(
+            backend_id = %backend_id,
+            device_id = %device_id,
+            slot_id = %slot_id,
+            error = %error,
+            "attachment identify initial write failed"
+        );
+        return ApiError::internal(format!(
+            "Failed to start attachment identify for {}: {error}",
+            tracked.info.name
+        ));
+    }
+
+    tracing::info!(
+        device_id = %device_id,
+        device = %tracked.info.name,
+        slot_id = %slot_id,
+        binding_index,
+        backend = %backend_id,
+        duration_ms,
+        color = ?identify_rgb,
+        "Attachment identify flash started"
+    );
+    tokio::spawn(run_identify_flash(
+        manager,
+        direct_backend,
+        backend_id,
+        device_id,
+        on_frame,
+        Duration::from_millis(duration_ms),
+    ));
+
+    ApiResponse::ok(serde_json::json!({
+        "device_id": device_id.to_string(),
+        "slot_id": slot_id,
+        "binding_index": binding_index,
         "identifying": true,
         "duration_ms": duration_ms,
         "color": color,
@@ -2340,16 +2590,14 @@ async fn run_identify_flash(
     direct_backend: BackendIo,
     backend_id: String,
     device_id: DeviceId,
-    led_count: usize,
+    on_frame: Vec<[u8; 3]>,
     duration: Duration,
-    color: [u8; 3],
 ) {
-    if led_count == 0 {
+    if on_frame.is_empty() {
         return;
     }
 
-    let on_frame = vec![color; led_count];
-    let off_frame = vec![[0, 0, 0]; led_count];
+    let off_frame = vec![[0, 0, 0]; on_frame.len()];
     let started_at = Instant::now();
     let mut show_on = false;
     let mut identify_failed = false;
@@ -2450,4 +2698,135 @@ fn parse_hex_rgb(raw: &str) -> Option<[u8; 3]> {
     let green = u8::from_str_radix(&color[2..4], 16).ok()?;
     let blue = u8::from_str_radix(&color[4..6], 16).ok()?;
     Some([red, green, blue])
+}
+
+// ── Identify helpers ─────────────────────────────────────────────────────
+
+/// Resolve a zone specifier (`"zone_0"`, `"0"`, or zone name) to an index.
+fn resolve_zone_index(info: &DeviceInfo, zone_id: &str) -> Result<usize, Response> {
+    // Try "zone_N" format
+    if let Some(stripped) = zone_id.strip_prefix("zone_") {
+        if let Ok(index) = stripped.parse::<usize>() {
+            if index < info.zones.len() {
+                return Ok(index);
+            }
+        }
+    }
+
+    // Try bare numeric index
+    if let Ok(index) = zone_id.parse::<usize>() {
+        if index < info.zones.len() {
+            return Ok(index);
+        }
+    }
+
+    // Try name match (case-insensitive)
+    let needle = zone_id.to_ascii_lowercase();
+    for (i, zone) in info.zones.iter().enumerate() {
+        if zone.name.to_ascii_lowercase() == needle {
+            return Ok(i);
+        }
+    }
+
+    Err(ApiError::not_found(format!(
+        "Zone not found: {zone_id} (device has {} zone(s): {})",
+        info.zones.len(),
+        info.zones
+            .iter()
+            .enumerate()
+            .map(|(i, z)| format!("zone_{i}={}", z.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
+}
+
+/// Build a full-device LED frame with only one zone lit.
+fn build_zone_identify_frame(
+    info: &DeviceInfo,
+    zone_index: usize,
+    color: [u8; 3],
+) -> Vec<[u8; 3]> {
+    let total_leds = usize::try_from(info.total_led_count()).unwrap_or_default();
+    let mut frame = vec![[0_u8; 3]; total_leds];
+
+    let mut offset = 0_usize;
+    for (i, zone) in info.zones.iter().enumerate() {
+        let count = usize::try_from(zone.led_count).unwrap_or_default();
+        if i == zone_index {
+            for led in &mut frame[offset..offset + count] {
+                *led = color;
+            }
+        }
+        offset += count;
+    }
+
+    frame
+}
+
+/// Build a full-device LED frame with only a single attachment binding lit.
+fn build_attachment_identify_frame(
+    profiles: &crate::attachment_profiles::AttachmentProfileStore,
+    registry: &hypercolor_core::attachment::AttachmentRegistry,
+    device_id: DeviceId,
+    slot_id: &str,
+    binding_index: usize,
+    total_leds: usize,
+    color: [u8; 3],
+) -> Result<Vec<[u8; 3]>, String> {
+    let device_key = device_id.to_string();
+    let profile = profiles
+        .get(&device_key)
+        .ok_or_else(|| format!("No attachment profile for device {device_id}"))?;
+
+    let slot = profile
+        .slots
+        .iter()
+        .find(|s| s.id == slot_id)
+        .ok_or_else(|| {
+            format!(
+                "Slot '{slot_id}' not found (available: {})",
+                profile
+                    .slots
+                    .iter()
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+
+    let slot_bindings: Vec<&AttachmentBinding> = profile
+        .bindings
+        .iter()
+        .filter(|b| b.slot_id == slot_id && b.enabled)
+        .collect();
+
+    if slot_bindings.is_empty() {
+        return Err(format!("No enabled bindings in slot '{slot_id}'"));
+    }
+    let binding = slot_bindings.get(binding_index).ok_or_else(|| {
+        format!(
+            "Binding index {binding_index} out of range (slot '{slot_id}' has {} binding(s))",
+            slot_bindings.len()
+        )
+    })?;
+
+    let template = registry.get(&binding.template_id).ok_or_else(|| {
+        format!(
+            "Attachment template '{}' not found",
+            binding.template_id
+        )
+    })?;
+
+    let led_count = usize::try_from(binding.effective_led_count(template)).unwrap_or_default();
+    let slot_start = usize::try_from(slot.led_start).unwrap_or_default();
+    let binding_offset = usize::try_from(binding.led_offset).unwrap_or_default();
+    let start = slot_start + binding_offset;
+    let end = (start + led_count).min(total_leds);
+
+    let mut frame = vec![[0_u8; 3]; total_leds];
+    for led in &mut frame[start..end] {
+        *led = color;
+    }
+
+    Ok(frame)
 }
