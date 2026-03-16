@@ -17,7 +17,7 @@ interface Rgb {
 
 // ── Constants ────────────────────────────────────────────────────────────
 
-const SCENES = ['Lattice', 'Prism', 'Shardfield', 'Signal']
+const SCENES = ['Lattice', 'Prism', 'Shardfield', 'Signal', 'Dendrite', 'Koch', 'Interference']
 const TAU = Math.PI * 2
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -146,6 +146,51 @@ function hexCenter(col: number, row: number, size: number): [number, number] {
     return [x, y]
 }
 
+// ── Koch Snowflake Geometry ──────────────────────────────────────────
+
+const KOCH_COS_N60 = 0.5
+const KOCH_SIN_N60 = -Math.sqrt(3) / 2
+
+function kochSubdivide(points: [number, number][], depth: number): [number, number][] {
+    let edges = points
+    for (let d = 0; d < depth; d++) {
+        const next: [number, number][] = []
+        for (let i = 0; i < edges.length; i++) {
+            const [ax, ay] = edges[i]
+            const [bx, by] = edges[(i + 1) % edges.length]
+            const dx = bx - ax
+            const dy = by - ay
+            const p1x = ax + dx / 3
+            const p1y = ay + dy / 3
+            const p2x = ax + (dx * 2) / 3
+            const p2y = ay + (dy * 2) / 3
+            // Peak: rotate (p2-p1) by -60° around p1
+            const sdx = p2x - p1x
+            const sdy = p2y - p1y
+            const peakX = p1x + sdx * KOCH_COS_N60 - sdy * KOCH_SIN_N60
+            const peakY = p1y + sdx * KOCH_SIN_N60 + sdy * KOCH_COS_N60
+            next.push([ax, ay], [p1x, p1y], [peakX, peakY], [p2x, p2y])
+        }
+        edges = next
+    }
+    return edges
+}
+
+function kochSnowflake(
+    cx: number,
+    cy: number,
+    radius: number,
+    depth: number,
+    rotation: number,
+): [number, number][] {
+    const triangle: [number, number][] = []
+    for (let i = 0; i < 3; i++) {
+        const angle = rotation + (TAU / 3) * i - Math.PI / 2
+        triangle.push([cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius])
+    }
+    return kochSubdivide(triangle, depth)
+}
+
 // ── Effect ───────────────────────────────────────────────────────────────
 
 export default canvas.stateful(
@@ -246,12 +291,19 @@ export default canvas.stateful(
                 const cellAlpha = activation * breathe
 
                 // Choose scene-specific cell rendering
+                const cellSize = hexSize * 0.9
                 if (scene === 'Lattice' || scene === 'Prism') {
-                    drawHexCell(ctx, cell.cx, cell.cy, hexSize * 0.9, pal, cellAlpha, glowMix, scene === 'Prism')
+                    drawHexCell(ctx, cell.cx, cell.cy, cellSize, pal, cellAlpha, glowMix, scene === 'Prism')
                 } else if (scene === 'Shardfield') {
-                    drawShardCell(ctx, cell.cx, cell.cy, hexSize * 0.9, pal, cellAlpha, glowMix, cell.seed, t)
+                    drawShardCell(ctx, cell.cx, cell.cy, cellSize, pal, cellAlpha, glowMix, cell.seed, t)
+                } else if (scene === 'Dendrite') {
+                    drawDendriteCell(ctx, cell.cx, cell.cy, cellSize, pal, cellAlpha, glowMix, cell.seed, t)
+                } else if (scene === 'Koch') {
+                    drawKochCell(ctx, cell.cx, cell.cy, cellSize, pal, cellAlpha, glowMix, cell.seed, t)
+                } else if (scene === 'Interference') {
+                    drawInterferenceCell(ctx, cell.cx, cell.cy, cellSize, pal, cellAlpha, glowMix, cell.seed, t)
                 } else {
-                    drawSignalCell(ctx, cell.cx, cell.cy, hexSize * 0.9, pal, cellAlpha, glowMix, cell.seed, t)
+                    drawSignalCell(ctx, cell.cx, cell.cy, cellSize, pal, cellAlpha, glowMix, cell.seed, t)
                 }
             }
 
@@ -417,6 +469,208 @@ export default canvas.stateful(
             }
             ctx.closePath()
         }
+
+        // ── Dendrite (recursive 6-fold branching) ─────────────────────
+
+        function drawDendriteBranch(
+            ctx: CanvasRenderingContext2D,
+            x: number,
+            y: number,
+            angle: number,
+            length: number,
+            width: number,
+            pal: FrostPalette,
+            alpha: number,
+            glow: number,
+            seed: number,
+            t: number,
+            depth: number,
+            maxDepth: number,
+        ): void {
+            if (depth > maxDepth || length < 2) return
+
+            // Sinusoidal breathing — each depth level phase-shifted
+            const breathe = 0.82 + 0.18 * Math.sin(t * (0.8 + seed * 0.4) + depth * 1.5)
+            const len = length * breathe
+            const endX = x + Math.cos(angle) * len
+            const endY = y + Math.sin(angle) * len
+
+            // Color gradient through palette by depth
+            const depthT = depth / maxDepth
+            const color =
+                depth === 0
+                    ? pal.primary
+                    : depth === 1
+                      ? mixRgb(pal.primary, pal.accent, 0.5)
+                      : mixRgb(pal.accent, pal.highlight, depthT)
+
+            ctx.lineWidth = width * (1 - depthT * 0.4)
+            ctx.strokeStyle = toRgba(color, alpha * (1 - depthT * 0.3) * (0.4 + glow * 0.45))
+            ctx.lineCap = 'round'
+            ctx.beginPath()
+            ctx.moveTo(x, y)
+            ctx.lineTo(endX, endY)
+            ctx.stroke()
+
+            // Sub-branches at ±60° — ice crystal growth directions
+            if (depth < maxDepth) {
+                const subLength = len * (0.48 + hash(seed * 17 + depth * 31) * 0.12)
+                const subWidth = width * 0.6
+                const branchOffset = Math.PI / 3
+                const frac = 0.55 + hash(seed * 23 + depth * 7) * 0.1
+                const bx = x + Math.cos(angle) * len * frac
+                const by = y + Math.sin(angle) * len * frac
+
+                drawDendriteBranch(
+                    ctx, bx, by, angle + branchOffset,
+                    subLength, subWidth, pal, alpha, glow, seed, t,
+                    depth + 1, maxDepth,
+                )
+                drawDendriteBranch(
+                    ctx, bx, by, angle - branchOffset,
+                    subLength, subWidth, pal, alpha, glow, seed, t,
+                    depth + 1, maxDepth,
+                )
+            }
+        }
+
+        function drawDendriteCell(
+            ctx: CanvasRenderingContext2D,
+            cx: number,
+            cy: number,
+            size: number,
+            pal: FrostPalette,
+            alpha: number,
+            glow: number,
+            seed: number,
+            t: number,
+        ): void {
+            const armLength = size * 0.85
+            const baseWidth = 2.5 + glow * 3.5
+
+            for (let arm = 0; arm < 6; arm++) {
+                const baseAngle = (TAU / 6) * arm + seed * 0.2
+                drawDendriteBranch(
+                    ctx, cx, cy, baseAngle, armLength, baseWidth,
+                    pal, alpha, glow, seed, t, 0, 3,
+                )
+            }
+        }
+
+        // ── Koch Snowflake (fractal cell outlines) ────────────────────
+
+        function drawKochCell(
+            ctx: CanvasRenderingContext2D,
+            cx: number,
+            cy: number,
+            size: number,
+            pal: FrostPalette,
+            alpha: number,
+            glow: number,
+            seed: number,
+            t: number,
+        ): void {
+            const rotation = t * 0.08 + seed * TAU
+            const points = kochSnowflake(cx, cy, size * 0.88, 2, rotation)
+            const edgeWidth = 2.5 + glow * 3.5
+
+            // Radial fill — dim interior
+            const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, size)
+            grad.addColorStop(0, toRgba(pal.primary, alpha * 0.1))
+            grad.addColorStop(0.6, toRgba(pal.accent, alpha * 0.05))
+            grad.addColorStop(1, 'rgba(0,0,0,0)')
+            ctx.fillStyle = grad
+            ctx.beginPath()
+            ctx.moveTo(points[0][0], points[0][1])
+            for (let i = 1; i < points.length; i++) {
+                ctx.lineTo(points[i][0], points[i][1])
+            }
+            ctx.closePath()
+            ctx.fill()
+
+            // Fractal outline — bold for LED readability
+            const colorT = Math.sin(t * 0.3 + seed * TAU) * 0.5 + 0.5
+            ctx.lineWidth = edgeWidth
+            ctx.strokeStyle = toRgba(
+                mixRgb(pal.primary, pal.highlight, colorT),
+                alpha * (0.35 + glow * 0.45),
+            )
+            ctx.lineJoin = 'round'
+            ctx.beginPath()
+            ctx.moveTo(points[0][0], points[0][1])
+            for (let i = 1; i < points.length; i++) {
+                ctx.lineTo(points[i][0], points[i][1])
+            }
+            ctx.closePath()
+            ctx.stroke()
+
+            // Inner snowflake — offset 30°, depth 1, accent color
+            if (glow > 0.3) {
+                const innerPts = kochSnowflake(cx, cy, size * 0.45, 1, rotation + Math.PI / 6)
+                ctx.lineWidth = edgeWidth * 0.6
+                ctx.strokeStyle = toRgba(pal.accent, alpha * (glow - 0.3) * 0.5)
+                ctx.beginPath()
+                ctx.moveTo(innerPts[0][0], innerPts[0][1])
+                for (let i = 1; i < innerPts.length; i++) {
+                    ctx.lineTo(innerPts[i][0], innerPts[i][1])
+                }
+                ctx.closePath()
+                ctx.stroke()
+            }
+        }
+
+        // ── Interference (hexagonal wave superposition) ───────────────
+
+        function drawInterferenceCell(
+            ctx: CanvasRenderingContext2D,
+            cx: number,
+            cy: number,
+            size: number,
+            pal: FrostPalette,
+            alpha: number,
+            glow: number,
+            seed: number,
+            t: number,
+        ): void {
+            // Dense coherent wave rings with 6-fold angular modulation
+            const numRings = 5 + Math.floor(glow * 5)
+            const wavelength = size * 0.32
+            const edgeWidth = 1.8 + glow * 2.2
+            const angularMod = 0.1 + glow * 0.1
+            const phaseShift = t * 1.2 + seed * TAU
+            const STEPS = 36
+
+            for (let i = 0; i < numRings; i++) {
+                const baseRadius =
+                    wavelength * (i + 0.5) +
+                    Math.sin(phaseShift + i * 0.5) * wavelength * 0.15
+                const ringAlpha =
+                    alpha * (0.12 + glow * 0.18) * (1 - (i / numRings) * 0.6)
+
+                if (ringAlpha < 0.02) continue
+
+                const colorT = (i / numRings + seed + t * 0.02) % 1
+                const color = mixRgb(pal.primary, pal.accent, colorT)
+
+                ctx.lineWidth = edgeWidth * (1 - (i / numRings) * 0.3)
+                ctx.strokeStyle = toRgba(color, ringAlpha)
+                ctx.beginPath()
+
+                // Angular modulation → hexagonal wave fronts
+                for (let s = 0; s <= STEPS; s++) {
+                    const angle = (s / STEPS) * TAU
+                    const modulation =
+                        1 + angularMod * Math.cos(angle * 6 + seed * TAU + t * 0.3)
+                    const r = baseRadius * modulation
+                    const px = cx + Math.cos(angle) * r
+                    const py = cy + Math.sin(angle) * r
+                    if (s === 0) ctx.moveTo(px, py)
+                    else ctx.lineTo(px, py)
+                }
+                ctx.closePath()
+                ctx.stroke()
+            }
+        }
     },
     {
         description:
@@ -533,6 +787,90 @@ export default canvas.stateful(
                 description:
                     'Stained glass shatters in slow motion inside a collapsing ice cathedral — azure diamond shards tumble through pale blue fog',
                 name: 'Ice Cathedral Collapse',
+            },
+            {
+                controls: {
+                    edgeGlow: 75,
+                    growth: 70,
+                    palette: 'Ice',
+                    rotation: 5,
+                    scale: 35,
+                    scene: 'Dendrite',
+                    speed: 3,
+                },
+                description:
+                    'Microscopic ice crystals bloom in perfect hexagonal symmetry — six-armed dendrites branch and breathe with pale blue phosphorescence',
+                name: 'Snowflake Garden',
+            },
+            {
+                controls: {
+                    edgeGlow: 90,
+                    growth: 85,
+                    palette: 'Aurora',
+                    rotation: -12,
+                    scale: 55,
+                    scene: 'Dendrite',
+                    speed: 5,
+                },
+                description:
+                    'Crystalline ferns unfurl in aurora light — recursive branches split and split again, each generation glowing a deeper green-violet',
+                name: 'Crystalline Bloom',
+            },
+            {
+                controls: {
+                    edgeGlow: 82,
+                    growth: 65,
+                    palette: 'Frost',
+                    rotation: 10,
+                    scale: 30,
+                    scene: 'Koch',
+                    speed: 2,
+                },
+                description:
+                    'Infinite fractal snowflakes tessellate in frozen geometry — Koch curves trace impossible coastlines of ice, each edge spawning smaller copies of itself',
+                name: 'Fractal Permafrost',
+            },
+            {
+                controls: {
+                    edgeGlow: 95,
+                    growth: 90,
+                    palette: 'Cyberpunk',
+                    rotation: -55,
+                    scale: 70,
+                    scene: 'Koch',
+                    speed: 8,
+                },
+                description:
+                    'Neon snowflakes spin like throwing stars in a cyberpunk blizzard — hot magenta fractals with cyan cores rotating through electric darkness',
+                name: 'Neon Snowflake Dojo',
+            },
+            {
+                controls: {
+                    edgeGlow: 70,
+                    growth: 60,
+                    palette: 'Frost',
+                    rotation: 0,
+                    scale: 42,
+                    scene: 'Interference',
+                    speed: 3,
+                },
+                description:
+                    'Hexagonal wave fronts ripple outward from crystal nodes, overlapping into standing wave patterns — frozen sound made visible in deep azure',
+                name: 'Standing Waves',
+            },
+            {
+                controls: {
+                    edgeGlow: 88,
+                    growth: 78,
+                    palette: 'SilkCircuit',
+                    rotation: 25,
+                    scale: 50,
+                    scene: 'Interference',
+                    speed: 6,
+                },
+                description:
+                    'Electric purple wave sources pulse in crystalline symmetry — where hexagonal ripples collide, moiré ghosts shimmer in neon cyan',
+                name: 'Crystal Resonance',
             },
         ],
     },
