@@ -7,6 +7,12 @@
 
 import { createDebugLogger } from '../utils/debug'
 
+/** Default canvas width used by the render pipeline (design resolution). */
+export const DEFAULT_CANVAS_WIDTH = 320
+
+/** Default canvas height used by the render pipeline (design resolution). */
+export const DEFAULT_CANVAS_HEIGHT = 200
+
 export interface EffectConfig {
     id: string
     name: string
@@ -35,8 +41,8 @@ export abstract class BaseEffect<T> {
         this.id = config.id
         this.name = config.name
         this.debug = createDebugLogger(this.name, config.debug ?? false)
-        this.canvasWidth = config.canvasWidth ?? 320
-        this.canvasHeight = config.canvasHeight ?? 200
+        this.canvasWidth = config.canvasWidth ?? DEFAULT_CANVAS_WIDTH
+        this.canvasHeight = config.canvasHeight ?? DEFAULT_CANVAS_HEIGHT
         this.debug('info', 'Effect created', { id: this.id })
     }
 

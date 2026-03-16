@@ -27,6 +27,7 @@ import { deriveLabel, hasMagicTransform, resolveControlNames } from '../controls
 import type { ControlSpec } from '../controls/specs'
 import { isControlSpec } from '../controls/specs'
 import { initializeEffect } from '../init'
+import { DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH } from './base-effect'
 import type { UniformValue } from './webgl-effect'
 import { WebGLEffect } from './webgl-effect'
 
@@ -235,13 +236,13 @@ class GeneratedWebGLEffect extends WebGLEffect<Record<string, unknown>> {
             },
             gl,
             get height() {
-                return self.canvas?.height ?? 200
+                return self.canvas?.height ?? DEFAULT_CANVAS_HEIGHT
             },
             program,
             registerUniform: (name, value) => self.registerUniform(name, value),
             setUniform: (name, value) => self.setUniform(name, value),
             get width() {
-                return self.canvas?.width ?? 320
+                return self.canvas?.width ?? DEFAULT_CANVAS_WIDTH
             },
         }
     }

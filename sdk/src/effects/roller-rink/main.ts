@@ -1,4 +1,4 @@
-import { canvas, color, combo, num } from '@hypercolor/sdk'
+import { DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, canvas, color, combo, num } from '@hypercolor/sdk'
 
 type ThemeName = 'Blacklight' | 'Bus Seat' | 'Laser Lime' | 'Cotton Candy' | 'Arcade Heat' | 'Custom'
 type SceneName = 'Pattern 1' | 'Pattern 2' | 'Pattern 3'
@@ -600,8 +600,8 @@ function drawPatternOne(
     moveScale: number,
     glow: number,
 ): void {
-    const sx = w / 320
-    const sy = h / 200
+    const sx = w / DEFAULT_CANVAS_WIDTH
+    const sy = h / DEFAULT_CANVAS_HEIGHT
     const scale = Math.min(sx, sy)
     const lineWidth = Math.max(8, 16 * scale)
     const bandY = [0.18, 0.46, 0.74]

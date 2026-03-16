@@ -1,5 +1,5 @@
 export type { EffectConfig } from './base-effect'
-export { BaseEffect } from './base-effect'
+export { BaseEffect, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH } from './base-effect'
 export type { CanvasEffectConfig } from './canvas-effect'
 export { CanvasEffect } from './canvas-effect'
 export type { CanvasFnOptions, DrawFn, FactoryFn } from './canvas-fn'

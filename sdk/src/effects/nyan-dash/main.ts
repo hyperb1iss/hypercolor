@@ -1,4 +1,4 @@
-import { canvas, combo, normalizeSpeed, num } from '@hypercolor/sdk'
+import { DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, canvas, combo, normalizeSpeed, num } from '@hypercolor/sdk'
 import { CAT_FRAME_SVG_TEMPLATES, CAT_SPRITE_HEIGHT, CAT_SPRITE_WIDTH } from './cat-frames'
 
 type MotionMode = 'Original' | 'Dash' | 'Hyper'
@@ -201,8 +201,8 @@ const CSS_SPARK_PHASES: readonly (readonly RectSpec[])[] = [
 const CAT_FRAME_RATE = 1 / 0.07
 const RAINBOW_STEP_RATE = 1 / 0.35
 const CSS_CAT_HEIGHT = 122
-const DESIGN_HEIGHT = 200
-const DESIGN_WIDTH = 320
+const DESIGN_HEIGHT = DEFAULT_CANVAS_HEIGHT
+const DESIGN_WIDTH = DEFAULT_CANVAS_WIDTH
 const SPRITE_SCALE_BASE = 0.55
 const CAT_RAINBOW_ANCHOR_X = 8
 const FACE_FRAME_LAYOUTS = [

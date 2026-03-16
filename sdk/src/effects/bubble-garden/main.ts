@@ -1,4 +1,4 @@
-import { canvas, color, combo, num } from '@hypercolor/sdk'
+import { DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, canvas, color, combo, num } from '@hypercolor/sdk'
 
 interface Bubble {
     x: number
@@ -323,7 +323,7 @@ export default canvas.stateful(
         ),
     },
     () => {
-        let bubbles = createBubbles(30, 320, 200)
+        let bubbles = createBubbles(30, DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT)
         let prevCount = 30
         let prevSpeed = 10
 

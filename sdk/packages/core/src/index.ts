@@ -60,7 +60,7 @@ export {
 // ── Base Classes ────────────────────────────────────────────────────────
 
 export type { CanvasEffectConfig, EffectConfig, UniformValue, WebGLEffectConfig } from './effects'
-export { BaseEffect, CanvasEffect, WebGLEffect } from './effects'
+export { BaseEffect, CanvasEffect, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, WebGLEffect } from './effects'
 
 // ── Audio ───────────────────────────────────────────────────────────────
 
