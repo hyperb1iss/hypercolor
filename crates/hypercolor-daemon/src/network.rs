@@ -1,33 +1,33 @@
 //! Built-in network driver registry and host adapters.
 
 mod host;
-#[cfg(feature = "hue")]
-mod hue;
-#[cfg(feature = "nanoleaf")]
-mod nanoleaf;
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
-mod pairing;
-mod wled;
 
 use std::sync::Arc;
 
 use anyhow::Result;
+use hypercolor_core::device::BackendManager;
 use hypercolor_core::device::net::CredentialStore;
-use hypercolor_core::device::{BackendManager, DiscoveredDevice};
-use hypercolor_driver_api::{DriverDiscoveredDevice, DriverHost};
+use hypercolor_driver_api::DriverHost;
+#[cfg(feature = "hue")]
+use hypercolor_driver_hue::HueDriverFactory;
+#[cfg(feature = "nanoleaf")]
+use hypercolor_driver_nanoleaf::NanoleafDriverFactory;
+use hypercolor_driver_wled::WledDriverFactory;
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::HypercolorConfig;
 
 pub use host::DaemonDriverHost;
 #[cfg(feature = "hue")]
-pub use hue::pair_hue_bridge_at_ip;
+pub use hypercolor_driver_hue::pair_hue_bridge_at_ip;
 #[cfg(feature = "hue")]
-pub use hue::resolve_hue_probe_bridges_from_sources;
+pub use hypercolor_driver_hue::resolve_hue_probe_bridges_from_sources;
 #[cfg(feature = "nanoleaf")]
-pub use nanoleaf::pair_nanoleaf_device_at_ip;
+pub use hypercolor_driver_nanoleaf::pair_nanoleaf_device_at_ip;
 #[cfg(feature = "nanoleaf")]
-pub use nanoleaf::resolve_nanoleaf_probe_devices_from_sources;
-pub use wled::{resolve_wled_probe_ips_from_sources, resolve_wled_probe_targets_from_sources};
+pub use hypercolor_driver_nanoleaf::resolve_nanoleaf_probe_devices_from_sources;
+pub use hypercolor_driver_wled::{
+    resolve_wled_probe_ips_from_sources, resolve_wled_probe_targets_from_sources,
+};
 
 /// Build the daemon's compiled-in network driver registry.
 ///
@@ -39,19 +39,19 @@ pub fn build_builtin_driver_registry(
     credential_store: Arc<CredentialStore>,
 ) -> Result<DriverRegistry> {
     let mut registry = DriverRegistry::new();
-    registry.register(wled::WledDriverFactory::new(config.clone()))?;
+    registry.register(WledDriverFactory::new(config.clone()))?;
     #[cfg(not(any(feature = "hue", feature = "nanoleaf")))]
     let _ = &credential_store;
 
     #[cfg(feature = "hue")]
-    registry.register(hue::HueDriverFactory::new(
+    registry.register(HueDriverFactory::new(
         Arc::clone(&credential_store),
         config.hue.clone(),
         config.discovery.mdns_enabled,
     ))?;
 
     #[cfg(feature = "nanoleaf")]
-    registry.register(nanoleaf::NanoleafDriverFactory::new(
+    registry.register(NanoleafDriverFactory::new(
         credential_store,
         config.nanoleaf.clone(),
         config.discovery.mdns_enabled,
@@ -108,13 +108,4 @@ pub fn register_enabled_backends(
     }
 
     Ok(())
-}
-
-pub(crate) fn into_driver_discovered(device: DiscoveredDevice) -> DriverDiscoveredDevice {
-    DriverDiscoveredDevice {
-        info: device.info,
-        fingerprint: device.fingerprint,
-        metadata: device.metadata,
-        connect_behavior: device.connect_behavior,
-    }
 }

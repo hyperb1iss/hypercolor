@@ -1,6 +1,6 @@
 [package]
-name = "hypercolor-driver-api"
-description = "Stable host and capability boundary for Hypercolor network drivers"
+name = "hypercolor-driver-nanoleaf"
+description = "Modular Nanoleaf network driver for Hypercolor"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -12,13 +12,8 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+hypercolor-core = { path = "../hypercolor-core", default-features = false, features = ["nanoleaf"] }
+hypercolor-driver-api = { workspace = true }
 hypercolor-types = { workspace = true }
-hypercolor-core = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-tracing = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }

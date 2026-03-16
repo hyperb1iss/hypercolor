@@ -4,23 +4,22 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hypercolor_core::device::DeviceBackend;
-use hypercolor_core::device::TransportScanner;
-use hypercolor_core::device::hue::HueScanner;
-use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueBackend, HueBridgeClient};
-use hypercolor_core::device::net::{CredentialStore, Credentials};
-use hypercolor_driver_api::{
-    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
-    DiscoveryResult, DriverDescriptor, DriverHost, DriverTrackedDevice, DriverTransport,
-    NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
-    PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
+use hypercolor_core::device::hue::{
+    DEFAULT_HUE_API_PORT, HueBackend, HueBridgeClient, HueKnownBridge, HueScanner,
 };
-use hypercolor_types::config::HueConfig;
-
-use super::pairing::{
+use hypercolor_core::device::net::{CredentialStore, Credentials};
+use hypercolor_core::device::{DeviceBackend, TransportScanner};
+use hypercolor_driver_api::support::{
     activate_if_requested, disconnect_after_unpair, metadata_value, network_ip_from_metadata,
     push_lookup_key,
 };
+use hypercolor_driver_api::{
+    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
+    DiscoveryResult, DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverTrackedDevice,
+    DriverTransport, NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
+    PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
+};
+use hypercolor_types::config::HueConfig;
 
 const HUE_PAIRING_INSTRUCTIONS: &[&str] = &[
     "Press the link button on the Hue Bridge.",
@@ -28,18 +27,19 @@ const HUE_PAIRING_INSTRUCTIONS: &[&str] = &[
     "Click Pair Bridge.",
 ];
 
-pub(crate) static DESCRIPTOR: DriverDescriptor =
+pub static DESCRIPTOR: DriverDescriptor =
     DriverDescriptor::new("hue", "Philips Hue", DriverTransport::Network, true, true);
 
 #[derive(Clone)]
-pub(crate) struct HueDriverFactory {
+pub struct HueDriverFactory {
     credential_store: Arc<CredentialStore>,
     config: HueConfig,
     mdns_enabled: bool,
 }
 
 impl HueDriverFactory {
-    pub(crate) fn new(
+    #[must_use]
+    pub fn new(
         credential_store: Arc<CredentialStore>,
         config: HueConfig,
         mdns_enabled: bool,
@@ -57,8 +57,7 @@ impl NetworkDriverFactory for HueDriverFactory {
         &DESCRIPTOR
     }
 
-    fn build_backend(&self, host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = host;
+    fn build_backend(&self, _host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
         Ok(Some(Box::new(HueBackend::with_mdns_enabled(
             self.config.clone(),
             Arc::clone(&self.credential_store),
@@ -95,7 +94,7 @@ impl DiscoveryCapability for HueDriverFactory {
             .scan()
             .await?
             .into_iter()
-            .map(super::into_driver_discovered)
+            .map(DriverDiscoveredDevice::from)
             .collect();
 
         Ok(DiscoveryResult { devices })
@@ -106,10 +105,9 @@ impl DiscoveryCapability for HueDriverFactory {
 impl PairingCapability for HueDriverFactory {
     async fn auth_summary(
         &self,
-        host: &dyn DriverHost,
+        _host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
     ) -> Option<DeviceAuthSummary> {
-        let _ = host;
         let last_error = device
             .metadata
             .and_then(|values| values.get("auth_error").cloned());
@@ -212,15 +210,17 @@ impl PairingCapability for HueDriverFactory {
     }
 }
 
+/// Merge Hue bridge probe hints from config and tracked devices.
+#[must_use]
 pub fn resolve_hue_probe_bridges_from_sources(
     config: &HueConfig,
     tracked_devices: &[DriverTrackedDevice],
-) -> Vec<hypercolor_core::device::hue::HueKnownBridge> {
-    let mut known_bridges: HashMap<IpAddr, hypercolor_core::device::hue::HueKnownBridge> = config
+) -> Vec<HueKnownBridge> {
+    let mut known_bridges: HashMap<IpAddr, HueKnownBridge> = config
         .bridge_ips
         .iter()
         .copied()
-        .map(hypercolor_core::device::hue::HueKnownBridge::from_ip)
+        .map(HueKnownBridge::from_ip)
         .map(|bridge| (bridge.ip, bridge))
         .collect();
 
@@ -275,7 +275,7 @@ pub fn resolve_hue_probe_bridges_from_sources(
                     existing.sw_version.clone_from(&sw_version);
                 }
             })
-            .or_insert_with(|| hypercolor_core::device::hue::HueKnownBridge {
+            .or_insert_with(|| HueKnownBridge {
                 bridge_id,
                 ip,
                 api_port,
@@ -296,6 +296,11 @@ pub struct StoredHuePairingResult {
     pub name: Option<String>,
 }
 
+/// Pair directly against a Hue bridge IP and persist credentials.
+///
+/// # Errors
+///
+/// Returns an error if the Hue pairing exchange or credential persistence fails.
 pub async fn pair_hue_bridge_at_ip(
     credential_store: &CredentialStore,
     bridge_ip: IpAddr,

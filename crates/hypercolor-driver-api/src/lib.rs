@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hypercolor_core::device::{DeviceBackend, DiscoveryConnectBehavior};
+use hypercolor_core::device::{DeviceBackend, DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_types::device::{DeviceFingerprint, DeviceId, DeviceInfo, DeviceState};
 use serde::{Deserialize, Serialize};
 
@@ -166,6 +166,17 @@ pub struct DriverDiscoveredDevice {
     pub fingerprint: DeviceFingerprint,
     pub metadata: HashMap<String, String>,
     pub connect_behavior: DiscoveryConnectBehavior,
+}
+
+impl From<DiscoveredDevice> for DriverDiscoveredDevice {
+    fn from(device: DiscoveredDevice) -> Self {
+        Self {
+            info: device.info,
+            fingerprint: device.fingerprint,
+            metadata: device.metadata,
+            connect_behavior: device.connect_behavior,
+        }
+    }
 }
 
 /// Discovery result for one driver execution.
@@ -343,4 +354,92 @@ pub trait NetworkDriverFactory: Send + Sync {
 
 const fn bool_true() -> bool {
     true
+}
+
+/// Shared helper utilities for network drivers.
+pub mod support {
+    use std::collections::HashMap;
+    use std::net::IpAddr;
+
+    use tracing::warn;
+
+    use crate::DriverHost;
+    use hypercolor_types::device::DeviceId;
+
+    /// Best-effort immediate activation after pairing.
+    pub async fn activate_if_requested(
+        host: &dyn DriverHost,
+        activate_after_pair: bool,
+        device_id: DeviceId,
+        backend_id: &str,
+    ) -> bool {
+        if !activate_after_pair {
+            return false;
+        }
+
+        match host.runtime().activate_device(device_id, backend_id).await {
+            Ok(activated) => activated,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    device_id = %device_id,
+                    backend_id = %backend_id,
+                    "paired device activation failed"
+                );
+                false
+            }
+        }
+    }
+
+    /// Best-effort disconnect after credentials are removed.
+    pub async fn disconnect_after_unpair(
+        host: &dyn DriverHost,
+        device_id: DeviceId,
+        backend_id: &str,
+    ) -> bool {
+        match host
+            .runtime()
+            .disconnect_device(device_id, backend_id, false)
+            .await
+        {
+            Ok(disconnected) => disconnected,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    device_id = %device_id,
+                    backend_id = %backend_id,
+                    "paired device disconnect failed"
+                );
+                false
+            }
+        }
+    }
+
+    /// Extract a trimmed metadata value if present and non-empty.
+    #[must_use]
+    pub fn metadata_value<'a>(
+        metadata: Option<&'a HashMap<String, String>>,
+        key: &str,
+    ) -> Option<&'a str> {
+        metadata
+            .and_then(|values| values.get(key))
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    /// Parse a network IP from the standard `ip` metadata key.
+    #[must_use]
+    pub fn network_ip_from_metadata(metadata: Option<&HashMap<String, String>>) -> Option<IpAddr> {
+        metadata
+            .and_then(|values| values.get("ip"))
+            .and_then(|value| value.parse::<IpAddr>().ok())
+    }
+
+    /// Push a credential lookup key if it is not already present.
+    pub fn push_lookup_key(keys: &mut Vec<String>, key: String) {
+        if !keys.iter().any(|existing| existing == &key) {
+            keys.push(key);
+        }
+    }
 }

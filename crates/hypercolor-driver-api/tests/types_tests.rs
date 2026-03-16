@@ -1,10 +1,10 @@
 use std::time::Duration;
 
-use hypercolor_core::device::DiscoveryConnectBehavior;
+use hypercolor_core::device::{DiscoveredDevice, DiscoveryConnectBehavior};
 use hypercolor_driver_api::{
     DeviceAuthState, DiscoveryRequest, DriverDescriptor, DriverDiscoveredDevice, DriverTransport,
     PairDeviceRequest, PairDeviceStatus, PairingDescriptor, PairingFieldDescriptor,
-    PairingFlowKind,
+    PairingFlowKind, support,
 };
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -99,6 +99,42 @@ fn discovered_device_payload_keeps_connect_behavior() {
 }
 
 #[test]
+fn discovered_device_converts_from_core_payload() {
+    let info = DeviceInfo {
+        id: DeviceId::new(),
+        name: "Bridge".to_owned(),
+        vendor: "Philips".to_owned(),
+        family: DeviceFamily::Hue,
+        model: Some("bridge".to_owned()),
+        connection_type: ConnectionType::Network,
+        zones: Vec::new(),
+        firmware_version: Some("1.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 0,
+            supports_direct: false,
+            supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 0,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+    let discovered = DriverDiscoveredDevice::from(DiscoveredDevice {
+        connection_type: ConnectionType::Network,
+        name: "Bridge".to_owned(),
+        family: DeviceFamily::Hue,
+        info,
+        fingerprint: DeviceFingerprint("net:hue:bridge".to_owned()),
+        metadata: std::collections::HashMap::from([("ip".to_owned(), "10.0.0.8".to_owned())]),
+        connect_behavior: DiscoveryConnectBehavior::Deferred,
+    });
+
+    assert_eq!(discovered.metadata.get("ip"), Some(&"10.0.0.8".to_owned()));
+    assert_eq!(discovered.fingerprint.0, "net:hue:bridge");
+}
+
+#[test]
 fn discovery_request_keeps_timeout_and_mdns_flag() {
     let request = DiscoveryRequest {
         timeout: Duration::from_secs(5),
@@ -118,4 +154,32 @@ fn pair_device_status_serde_uses_snake_case() {
     let auth_state =
         serde_json::to_value(DeviceAuthState::Configured).expect("state should serialize");
     assert_eq!(auth_state, serde_json::json!("configured"));
+}
+
+#[test]
+fn support_helpers_parse_metadata_and_dedupe_keys() {
+    let metadata = std::collections::HashMap::from([
+        ("ip".to_owned(), "10.0.0.42".to_owned()),
+        ("name".to_owned(), " Desk Strip ".to_owned()),
+    ]);
+    let mut keys = vec!["wled:ip:10.0.0.42".to_owned()];
+
+    assert_eq!(
+        support::network_ip_from_metadata(Some(&metadata))
+            .expect("ip should parse")
+            .to_string(),
+        "10.0.0.42"
+    );
+    assert_eq!(
+        support::metadata_value(Some(&metadata), "name"),
+        Some("Desk Strip")
+    );
+
+    support::push_lookup_key(&mut keys, "wled:ip:10.0.0.42".to_owned());
+    support::push_lookup_key(&mut keys, "wled:desk".to_owned());
+
+    assert_eq!(
+        keys,
+        vec!["wled:ip:10.0.0.42".to_owned(), "wled:desk".to_owned()]
+    );
 }

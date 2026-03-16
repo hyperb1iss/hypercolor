@@ -3,28 +3,28 @@ use std::net::IpAddr;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use hypercolor_core::device::DeviceBackend;
-use hypercolor_core::device::TransportScanner;
 use hypercolor_core::device::wled::{
     WledBackend, WledDeviceInfo, WledKnownTarget, WledProtocol, WledScanner,
 };
+use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::{
-    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverDescriptor, DriverHost,
-    DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
+    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverDescriptor,
+    DriverDiscoveredDevice, DriverHost, DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
 };
 use hypercolor_types::config::{HypercolorConfig, WledConfig, WledProtocolConfig};
 use hypercolor_types::device::DeviceId;
 
-pub(crate) static DESCRIPTOR: DriverDescriptor =
+pub static DESCRIPTOR: DriverDescriptor =
     DriverDescriptor::new("wled", "WLED", DriverTransport::Network, true, false);
 
 #[derive(Clone)]
-pub(crate) struct WledDriverFactory {
+pub struct WledDriverFactory {
     config: HypercolorConfig,
 }
 
 impl WledDriverFactory {
-    pub(crate) fn new(config: HypercolorConfig) -> Self {
+    #[must_use]
+    pub fn new(config: HypercolorConfig) -> Self {
         Self { config }
     }
 }
@@ -65,13 +65,18 @@ impl DiscoveryCapability for WledDriverFactory {
             .scan()
             .await?
             .into_iter()
-            .map(super::into_driver_discovered)
+            .map(DriverDiscoveredDevice::from)
             .collect();
 
         Ok(DiscoveryResult { devices })
     }
 }
 
+/// Build the runtime WLED backend using config and cached discovery hints.
+///
+/// # Errors
+///
+/// Returns an error if cached probe data cannot be parsed.
 pub fn build_wled_backend(config: &HypercolorConfig, host: &dyn DriverHost) -> Result<WledBackend> {
     let mut known_ips: HashSet<_> = config.wled.known_ips.iter().copied().collect();
     known_ips.extend(load_cached_probe_ips(host)?);
@@ -97,6 +102,8 @@ pub fn build_wled_backend(config: &HypercolorConfig, host: &dyn DriverHost) -> R
     Ok(backend)
 }
 
+/// Merge WLED probe IPs from config, tracked devices, and cached discovery.
+#[must_use]
 pub fn resolve_wled_probe_ips_from_sources(
     config: &WledConfig,
     tracked_devices: &[DriverTrackedDevice],
@@ -122,6 +129,8 @@ pub fn resolve_wled_probe_ips_from_sources(
     resolved
 }
 
+/// Merge WLED probe targets from config, tracked devices, and cached discovery.
+#[must_use]
 pub fn resolve_wled_probe_targets_from_sources(
     config: &WledConfig,
     tracked_devices: &[DriverTrackedDevice],

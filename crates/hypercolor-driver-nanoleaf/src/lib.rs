@@ -4,24 +4,23 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hypercolor_core::device::DeviceBackend;
-use hypercolor_core::device::TransportScanner;
 use hypercolor_core::device::nanoleaf::{
-    DEFAULT_NANOLEAF_API_PORT, NanoleafBackend, NanoleafScanner, pair_device_with_status,
+    DEFAULT_NANOLEAF_API_PORT, NanoleafBackend, NanoleafKnownDevice, NanoleafScanner,
+    pair_device_with_status,
 };
 use hypercolor_core::device::net::{CredentialStore, Credentials};
-use hypercolor_driver_api::{
-    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
-    DiscoveryResult, DriverDescriptor, DriverHost, DriverTrackedDevice, DriverTransport,
-    NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
-    PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
-};
-use hypercolor_types::config::NanoleafConfig;
-
-use super::pairing::{
+use hypercolor_core::device::{DeviceBackend, TransportScanner};
+use hypercolor_driver_api::support::{
     activate_if_requested, disconnect_after_unpair, metadata_value, network_ip_from_metadata,
     push_lookup_key,
 };
+use hypercolor_driver_api::{
+    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
+    DiscoveryResult, DriverDescriptor, DriverDiscoveredDevice, DriverHost, DriverTrackedDevice,
+    DriverTransport, NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
+    PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
+};
+use hypercolor_types::config::NanoleafConfig;
 
 const NANOLEAF_PAIRING_INSTRUCTIONS: &[&str] = &[
     "Hold the Nanoleaf power button for 5-7 seconds.",
@@ -29,18 +28,19 @@ const NANOLEAF_PAIRING_INSTRUCTIONS: &[&str] = &[
     "Click Pair Device.",
 ];
 
-pub(crate) static DESCRIPTOR: DriverDescriptor =
+pub static DESCRIPTOR: DriverDescriptor =
     DriverDescriptor::new("nanoleaf", "Nanoleaf", DriverTransport::Network, true, true);
 
 #[derive(Clone)]
-pub(crate) struct NanoleafDriverFactory {
+pub struct NanoleafDriverFactory {
     credential_store: Arc<CredentialStore>,
     config: NanoleafConfig,
     mdns_enabled: bool,
 }
 
 impl NanoleafDriverFactory {
-    pub(crate) fn new(
+    #[must_use]
+    pub fn new(
         credential_store: Arc<CredentialStore>,
         config: NanoleafConfig,
         mdns_enabled: bool,
@@ -58,8 +58,7 @@ impl NetworkDriverFactory for NanoleafDriverFactory {
         &DESCRIPTOR
     }
 
-    fn build_backend(&self, host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = host;
+    fn build_backend(&self, _host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
         Ok(Some(Box::new(NanoleafBackend::with_mdns_enabled(
             self.config.clone(),
             Arc::clone(&self.credential_store),
@@ -96,7 +95,7 @@ impl DiscoveryCapability for NanoleafDriverFactory {
             .scan()
             .await?
             .into_iter()
-            .map(super::into_driver_discovered)
+            .map(DriverDiscoveredDevice::from)
             .collect();
 
         Ok(DiscoveryResult { devices })
@@ -107,10 +106,9 @@ impl DiscoveryCapability for NanoleafDriverFactory {
 impl PairingCapability for NanoleafDriverFactory {
     async fn auth_summary(
         &self,
-        host: &dyn DriverHost,
+        _host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
     ) -> Option<DeviceAuthSummary> {
-        let _ = host;
         let last_error = device
             .metadata
             .and_then(|values| values.get("auth_error").cloned());
@@ -219,18 +217,19 @@ impl PairingCapability for NanoleafDriverFactory {
     }
 }
 
+/// Merge Nanoleaf probe hints from config and tracked devices.
+#[must_use]
 pub fn resolve_nanoleaf_probe_devices_from_sources(
     config: &NanoleafConfig,
     tracked_devices: &[DriverTrackedDevice],
-) -> Vec<hypercolor_core::device::nanoleaf::NanoleafKnownDevice> {
-    let mut known_devices: HashMap<IpAddr, hypercolor_core::device::nanoleaf::NanoleafKnownDevice> =
-        config
-            .device_ips
-            .iter()
-            .copied()
-            .map(hypercolor_core::device::nanoleaf::NanoleafKnownDevice::from_ip)
-            .map(|device| (device.ip, device))
-            .collect();
+) -> Vec<NanoleafKnownDevice> {
+    let mut known_devices: HashMap<IpAddr, NanoleafKnownDevice> = config
+        .device_ips
+        .iter()
+        .copied()
+        .map(NanoleafKnownDevice::from_ip)
+        .map(|device| (device.ip, device))
+        .collect();
 
     for tracked in tracked_devices {
         let Some(ip_raw) = tracked.metadata.get("ip") else {
@@ -268,7 +267,7 @@ pub fn resolve_nanoleaf_probe_devices_from_sources(
                     existing.firmware = tracked.info.firmware_version.clone().unwrap_or_default();
                 }
             })
-            .or_insert_with(|| hypercolor_core::device::nanoleaf::NanoleafKnownDevice {
+            .or_insert_with(|| NanoleafKnownDevice {
                 device_id: device_key,
                 ip,
                 port,
@@ -289,6 +288,11 @@ pub struct StoredNanoleafPairingResult {
     pub name: String,
 }
 
+/// Pair directly against a Nanoleaf IP and persist credentials.
+///
+/// # Errors
+///
+/// Returns an error if the Nanoleaf pairing exchange or credential persistence fails.
 pub async fn pair_nanoleaf_device_at_ip(
     credential_store: &CredentialStore,
     device_ip: IpAddr,
