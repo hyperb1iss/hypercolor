@@ -10,6 +10,9 @@ uniform float iSpeed;
 uniform float iDensity;
 uniform float iTrails;
 uniform float iSparkle;
+uniform float iAngle;
+uniform float iSize;
+uniform int iTailMode;
 
 // ─── Hash primitives ────────────────────────────────────────────────
 
@@ -30,6 +33,14 @@ vec2 hash22(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.xx + p3.yz) * p3.zx);
+}
+
+// ─── HSV helpers ─────────────────────────────────────────────────────
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
 // ─── Palette ────────────────────────────────────────────────────────
@@ -98,6 +109,37 @@ float starField(vec2 uv) {
     return brightness * twinkle * h * 0.4;
 }
 
+// ─── Tail mode color ────────────────────────────────────────────────
+// 0: Palette (original), 1: Rainbow, 2: Ghostly, 3: Electric
+
+vec3 getTailColor(vec3 headCol, vec3 trailCol, vec3 fadeCol, float energy, float particleId, float time, int mode) {
+    // Palette — original head→trail→fade blend
+    if (mode == 0) {
+        vec3 headMix = mix(trailCol, headCol, pow(energy, 2.0));
+        return mix(fadeCol, headMix, energy);
+    }
+    // Rainbow — hue shifts along the trail length
+    if (mode == 1) {
+        float hueBase = hash11(particleId * 7.31) + time * 0.1;
+        float hueShift = (1.0 - energy) * 0.8;
+        vec3 rainbow = hsv2rgb(vec3(fract(hueBase + hueShift), 0.9, 1.0));
+        vec3 bright = mix(rainbow, headCol, pow(energy, 3.0));
+        return mix(vec3(0.0), bright, energy);
+    }
+    // Ghostly — desaturated white-blue fade with ethereal glow
+    if (mode == 2) {
+        vec3 ghost = vec3(0.7, 0.8, 1.0);
+        vec3 core = mix(ghost * 0.3, headCol, pow(energy, 2.5));
+        float flicker = 0.8 + 0.2 * sin(particleId * 43.7 + time * 8.0 + energy * 12.0);
+        return core * energy * flicker;
+    }
+    // Electric — bright forked appearance with palette accent
+    vec3 spark = mix(trailCol, vec3(1.0), pow(energy, 1.5));
+    float crackle = 0.7 + 0.3 * sin(particleId * 97.3 + energy * 30.0 + time * 15.0);
+    vec3 elec = mix(fadeCol, spark * crackle, energy);
+    return elec;
+}
+
 // ─── Particle system ────────────────────────────────────────────────
 
 void main() {
@@ -119,7 +161,17 @@ void main() {
     // Sparkle intensity
     float sparkleNorm = clamp(iSparkle * 0.01, 0.0, 1.0);
 
+    // Star size: 0.5x at size=0, 3.0x at size=100
+    float sizeNorm = clamp(iSize * 0.01, 0.0, 1.0);
+    float sizeMult = mix(0.5, 3.0, sizeNorm);
+
+    // Fall angle: degrees from vertical (-60 to +60)
+    float angleRad = radians(clamp(iAngle, -60.0, 60.0));
+    vec2 fallDir = vec2(sin(angleRad), -cos(angleRad));
+    vec2 perpDir = vec2(cos(angleRad), sin(angleRad));
+
     StarPalette pal = getPalette(iPalette);
+    int tailMode = iTailMode;
 
     // ── Background ──
     vec3 color = vec3(0.005, 0.005, 0.015);
@@ -133,7 +185,25 @@ void main() {
     // Aspect-corrected coordinates for circular glow
     vec2 uvAspect = vec2(uv.x * aspect, uv.y);
 
-    float cellWidth = aspect / numColumns;
+    // Project viewport corners onto fall/perp axes to find true travel bounds.
+    // Viewport in aspect-corrected space: (0,0), (A,0), (0,1), (A,1)
+    float f0 = 0.0;
+    float f1 = aspect * fallDir.x;
+    float f2 = fallDir.y;
+    float f3 = aspect * fallDir.x + fallDir.y;
+    float fallMin = min(min(f0, f1), min(f2, f3));
+    float fallMax = max(max(f0, f1), max(f2, f3));
+
+    float p0 = 0.0;
+    float p1 = aspect * perpDir.x;
+    float p2 = perpDir.y;
+    float p3 = aspect * perpDir.x + perpDir.y;
+    float perpMin = min(min(p0, p1), min(p2, p3));
+    float perpMax = max(max(p0, p1), max(p2, p3));
+
+    float fallSpan = fallMax - fallMin;
+    float perpSpan = perpMax - perpMin;
+    float spawnMargin = 0.25 + trailMult * 0.15;
 
     // Check particles in nearby columns (current + neighbors)
     // Integer loop with constant upper bound for GLSL ES 300 compatibility
@@ -158,27 +228,47 @@ void main() {
             // Speed variation per particle: 0.6x to 1.5x
             float particleSpeed = 0.6 + h1 * 0.9;
 
-            // Horizontal position: jittered within column
-            float px = (col + 0.15 + h0 * 0.7) * cellWidth;
-            float pxNorm = px / aspect;
+            // Column position along the perpendicular axis (jittered within slot)
+            float colPerp = perpMin + (col + 0.15 + h0 * 0.7) / numColumns * perpSpan;
 
-            // Vertical position: falling with wrap
-            float period = 1.0 / (particleSpeed * 0.5 + 0.3);
+            // Fall position: travel from fallMin-margin → fallMax+margin
+            // fallMin is the "upstream" edge (where particles enter from),
+            // fallMax is the "downstream" edge (where they exit).
+            // For angle=0, fallDir=(0,-1): top of screen has fallProj=-1 (=fallMin),
+            // bottom has fallProj=0 (=fallMax). Particles travel min→max = top→bottom.
+            float totalTravel = fallSpan + spawnMargin * 2.0;
+            float period = totalTravel / (particleSpeed * 0.5 + 0.3);
             float phase = h2 * period;
-            float py = 1.0 - fract((time * particleSpeed + phase) / period);
+            float t = mod(time * particleSpeed + phase, period);
+            float progress = t / period;  // 0→1 over the travel
 
-            // Particle world position (aspect-corrected)
-            vec2 particlePos = vec2(px, py);
+            float fallPos = fallMin - spawnMargin + progress * totalTravel;
+
+            // Reconstruct screen position from fall/perp coordinates
+            vec2 particlePos = fallPos * fallDir + colPerp * perpDir;
+
+            // Skip particles fully off-screen (with margin for glow/trail)
+            float margin = 0.3 * sizeMult;
+            float pxNorm = particlePos.x / aspect;
+            float py = particlePos.y;
+            if (py < -margin || py > 1.0 + margin) continue;
+            if (pxNorm < -margin || pxNorm > 1.0 + margin) continue;
 
             // ── Distance field ──
             vec2 delta = uvAspect - particlePos;
 
-            // Asymmetric: short above particle, long trail below
-            float ahead = max(0.0, -delta.y);    // pixels above (short cutoff)
-            float behind = max(0.0, delta.y);     // pixels below (trail)
+            // Project delta onto fall direction for trail orientation.
+            // fallDir is already unit-length; particlePos is in aspect-corrected
+            // space, and so is uvAspect, so the projection is direct.
+            float alongFall = dot(delta, fallDir);
+            float alongTrail = -alongFall;  // trail extends opposite to motion
+            float perpTrail = length(delta - fallDir * alongFall);
 
-            // Horizontal squeeze for narrow trail
-            float hSqueeze = 4.0 + h3 * 2.0;
+            float ahead = max(0.0, -alongTrail);   // ahead of particle (short cutoff)
+            float behind = max(0.0, alongTrail);    // behind particle (trail)
+
+            // Horizontal squeeze for narrow trail (scaled by star size)
+            float hSqueeze = (4.0 + h3 * 2.0) / sizeMult;
 
             // Trail length from controls + per-particle variation
             float trailLen = (0.15 + h3 * 0.25) * trailMult;
@@ -186,27 +276,30 @@ void main() {
 
             // Asymmetric distance: sharp above, stretched below
             float trailShape = length(vec2(
-                delta.x * hSqueeze,
-                ahead * 8.0 + behind * (0.2 + 0.15 * (1.0 - trailNorm))
+                perpTrail * hSqueeze,
+                ahead * 8.0 / sizeMult + behind * (0.2 + 0.15 * (1.0 - trailNorm))
             ));
 
             // Size/brightness variation: some are foreground (bigger), some background (dimmer)
-            float sizeFactor = 0.4 + h4 * 0.6;
+            float sizeFactor = (0.4 + h4 * 0.6) * sizeMult;
             float headBrightness = sizeFactor * (0.8 + h2 * 0.4);
 
             // ── Glow calculation ──
-            float glow = headBrightness * 0.0012 / (trailShape * trailShape + 0.0008);
+            float glowRadius = 0.0012 * sizeMult;
+            float glowFloor = 0.0008 * sizeMult;
+            float glow = headBrightness * glowRadius / (trailShape * trailShape + glowFloor);
 
             // Clamp to avoid firefly-level blowout at exact center
             glow = min(glow, 3.0);
 
-            // ── Trail color gradient ──
+            // ── Trail color ──
             float energy = exp(-behind * trailDecay);
             energy = pow(energy, 1.8);  // non-linear falloff for premium decay
 
-            // Head → trail → fade color blend
-            vec3 headMix = mix(pal.trailColor, pal.headColor, pow(energy, 2.0));
-            vec3 trailColor = mix(pal.fadeColor, headMix, energy);
+            vec3 trailColor = getTailColor(
+                pal.headColor, pal.trailColor, pal.fadeColor,
+                energy, particleId, iTime, tailMode
+            );
 
             // ── Sparkle: random trail pixel brightening ──
             if (sparkleNorm > 0.0 && behind > 0.01 && behind < trailLen * 0.9) {
@@ -223,8 +316,9 @@ void main() {
             }
 
             // ── Head hotspot — extra bright single-pixel punch ──
-            float headDist = length(delta * vec2(hSqueeze * 0.5, 6.0));
-            float headSpot = headBrightness * 0.0003 / (headDist * headDist + 0.0001);
+            float headScale = sizeMult;
+            float headDist = length(vec2(perpTrail * hSqueeze * 0.5, alongTrail * 6.0 / headScale));
+            float headSpot = headBrightness * 0.0003 * headScale / (headDist * headDist + 0.0001 * headScale);
             headSpot = min(headSpot, 4.0);
 
             // Accumulate
