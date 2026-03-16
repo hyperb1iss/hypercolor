@@ -424,16 +424,16 @@ fn ModalBackdrop(
     children: Children,
 ) -> impl IntoView {
     view! {
-        <div class="fixed inset-0 z-50 flex items-center justify-center animate-fade-in">
+        <div class="fixed inset-0 z-50 grid place-items-center p-4 animate-fade-in">
             // Backdrop
             <div
                 class="absolute inset-0 bg-black/60 backdrop-blur-sm"
                 on:click=move |_| on_close.run(())
             />
-            // Modal panel
-            <div class="relative w-full max-w-md mx-4 rounded-2xl border border-edge-subtle bg-surface-raised
+            // Modal panel — explicit width avoids flex/grid sizing quirks
+            <div class="relative rounded-2xl border border-edge-subtle bg-surface-raised
                         shadow-2xl animate-scale-in p-5"
-                 style="box-shadow: 0 0 60px rgba(0,0,0,0.3), 0 0 30px rgba(225, 53, 255, 0.05)">
+                 style="width: min(28rem, calc(100vw - 2rem)); box-shadow: 0 0 60px rgba(0,0,0,0.3), 0 0 30px rgba(225, 53, 255, 0.05)">
                 {children()}
             </div>
         </div>
