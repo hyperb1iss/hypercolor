@@ -31,7 +31,7 @@ use hypercolor_core::input::{InputData, InputManager, InteractionData, ScreenDat
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{
-    Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
+    Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
 };
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 
@@ -951,7 +951,7 @@ async fn render_effect(
         Ok(canvas) => canvas,
         Err(e) => {
             warn!(error = %e, "effect render failed, producing black canvas");
-            Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT)
+            Canvas::new(state.canvas_width, state.canvas_height)
         }
     }
 }

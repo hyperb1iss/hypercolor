@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use dpi::PhysicalSize;
-use hypercolor_types::canvas::{Canvas, Rgba};
+use hypercolor_types::canvas::{Canvas, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, Rgba};
 use hypercolor_types::effect::{ControlValue, EffectCategory, EffectMetadata, EffectSource};
 use reqwest::Url;
 use servo::{
@@ -30,8 +30,6 @@ use super::lightscript::LightscriptRuntime;
 use super::paths::resolve_html_source_path;
 use super::{ConsoleMessage, EffectRenderer, FrameInput, HypercolorWebViewDelegate};
 
-const DEFAULT_WIDTH: u32 = 320;
-const DEFAULT_HEIGHT: u32 = 200;
 const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -80,7 +78,7 @@ impl ServoRenderer {
             html_resolved_path: None,
             runtime_html_path: None,
             controls: HashMap::new(),
-            runtime: LightscriptRuntime::new(DEFAULT_WIDTH, DEFAULT_HEIGHT),
+            runtime: LightscriptRuntime::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT),
             initialized: false,
             pending_scripts: Vec::new(),
             worker: None,
@@ -312,7 +310,7 @@ impl EffectRenderer for ServoRenderer {
         self.cleanup_runtime_html();
         self.worker = None;
         self.controls.clear();
-        self.runtime = LightscriptRuntime::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+        self.runtime = LightscriptRuntime::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
         self.pending_scripts.clear();
         self.warned_fallback_frame = false;
         self.warned_stalled_frame = false;
@@ -348,7 +346,7 @@ impl EffectRenderer for ServoRenderer {
                 )
             })?;
 
-        let worker = acquire_servo_worker(DEFAULT_WIDTH, DEFAULT_HEIGHT)?;
+        let worker = acquire_servo_worker(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT)?;
         if let Err(error) = worker.load_effect(&runtime_source) {
             retire_shared_servo_worker_if_fatal("Servo effect page load failed", &error);
             return Err(error);
@@ -1527,8 +1525,8 @@ mod tests {
             frame_number: 0,
             audio: &SILENCE,
             interaction: &DEFAULT_INTERACTION,
-            canvas_width: DEFAULT_WIDTH,
-            canvas_height: DEFAULT_HEIGHT,
+            canvas_width: DEFAULT_CANVAS_WIDTH,
+            canvas_height: DEFAULT_CANVAS_HEIGHT,
         }
     }
 
@@ -1571,7 +1569,7 @@ mod tests {
     }
 
     fn solid_canvas(r: u8, g: u8, b: u8) -> Canvas {
-        let mut canvas = Canvas::new(DEFAULT_WIDTH, DEFAULT_HEIGHT);
+        let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
         canvas.fill(Rgba::new(r, g, b, 255));
         canvas
     }
