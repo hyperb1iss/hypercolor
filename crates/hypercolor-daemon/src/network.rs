@@ -18,11 +18,7 @@ use hypercolor_types::config::HypercolorConfig;
 
 pub use host::DaemonDriverHost;
 #[cfg(feature = "hue")]
-pub use hypercolor_driver_hue::pair_hue_bridge_at_ip;
-#[cfg(feature = "hue")]
 pub use hypercolor_driver_hue::resolve_hue_probe_bridges_from_sources;
-#[cfg(feature = "nanoleaf")]
-pub use hypercolor_driver_nanoleaf::pair_nanoleaf_device_at_ip;
 #[cfg(feature = "nanoleaf")]
 pub use hypercolor_driver_nanoleaf::resolve_nanoleaf_probe_devices_from_sources;
 pub use hypercolor_driver_wled::{

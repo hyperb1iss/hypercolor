@@ -744,17 +744,6 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         .route("/diagnose", axum::routing::post(diagnose::run_diagnostics))
         // ── WebSocket ────────────────────────────────────────────────
         .route("/ws", axum::routing::get(ws::ws_handler));
-    #[cfg(feature = "hue")]
-    let api = api.route(
-        "/devices/pair/hue",
-        axum::routing::post(devices::pair_hue_device),
-    );
-    #[cfg(feature = "nanoleaf")]
-    let api = api.route(
-        "/devices/pair/nanoleaf",
-        axum::routing::post(devices::pair_nanoleaf_device),
-    );
-
     let mut router = Router::new()
         .nest("/api/v1", api)
         // Compatibility alias for clients still using the legacy top-level WS path.

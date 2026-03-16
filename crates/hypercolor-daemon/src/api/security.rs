@@ -330,13 +330,6 @@ fn classify_operation(method: &Method, path: &str) -> OperationClass {
 }
 
 fn is_pairing_path(path: &str) -> bool {
-    if matches!(
-        path,
-        "/api/v1/devices/pair/hue" | "/api/v1/devices/pair/nanoleaf"
-    ) {
-        return true;
-    }
-
     let mut segments = path.trim_matches('/').split('/');
     matches!(
         (
@@ -489,14 +482,6 @@ mod tests {
             .route(
                 "/api/v1/devices/device-1/pair",
                 post(|| async { StatusCode::OK }).delete(|| async { StatusCode::NO_CONTENT }),
-            )
-            .route(
-                "/api/v1/devices/pair/hue",
-                post(|| async { StatusCode::OK }),
-            )
-            .route(
-                "/api/v1/devices/pair/nanoleaf",
-                post(|| async { StatusCode::OK }),
             )
             .layer(axum::middleware::from_fn_with_state(
                 state,
@@ -727,44 +712,6 @@ mod tests {
         assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(limited.headers()["x-ratelimit-limit"], "6");
         assert_eq!(limited.headers()["x-ratelimit-remaining"], "0");
-    }
-
-    #[tokio::test]
-    async fn legacy_pairing_routes_share_pairing_bucket() {
-        let app = secured_test_router();
-
-        let hue = app
-            .clone()
-            .oneshot(
-                with_bearer(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/api/v1/devices/pair/hue"),
-                    CONTROL_KEY,
-                )
-                .body(Body::empty())
-                .expect("failed to build hue request"),
-            )
-            .await
-            .expect("hue request failed");
-        let nanoleaf = app
-            .oneshot(
-                with_bearer(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/api/v1/devices/pair/nanoleaf"),
-                    CONTROL_KEY,
-                )
-                .body(Body::empty())
-                .expect("failed to build nanoleaf request"),
-            )
-            .await
-            .expect("nanoleaf request failed");
-
-        assert_eq!(hue.status(), StatusCode::OK);
-        assert_eq!(nanoleaf.status(), StatusCode::OK);
-        assert_eq!(nanoleaf.headers()["x-ratelimit-limit"], "6");
-        assert_eq!(nanoleaf.headers()["x-ratelimit-remaining"], "4");
     }
 
     #[test]

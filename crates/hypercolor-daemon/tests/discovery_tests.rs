@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
-use hypercolor_core::device::hue::HueKnownBridge;
 use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_core::device::{
@@ -28,6 +27,7 @@ use hypercolor_daemon::discovery::{
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::runtime_state;
+use hypercolor_driver_hue::HueKnownBridge;
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{

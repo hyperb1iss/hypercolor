@@ -16,8 +16,8 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-hue = ["dep:hypercolor-driver-hue", "hypercolor-core/hue"]
-nanoleaf = ["dep:hypercolor-driver-nanoleaf", "hypercolor-core/nanoleaf"]
+hue = ["dep:hypercolor-driver-hue"]
+nanoleaf = ["dep:hypercolor-driver-nanoleaf"]
 default = ["hue", "nanoleaf"]
 servo = ["hypercolor-core/servo"]
 

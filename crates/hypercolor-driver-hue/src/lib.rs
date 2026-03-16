@@ -4,9 +4,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use hypercolor_core::device::hue::{
-    DEFAULT_HUE_API_PORT, HueBackend, HueBridgeClient, HueKnownBridge, HueScanner,
-};
+pub use hypercolor_core::device::hue::HueKnownBridge;
+use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueBackend, HueBridgeClient, HueScanner};
 use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_core::device::{DeviceBackend, TransportScanner};
 use hypercolor_driver_api::support::{

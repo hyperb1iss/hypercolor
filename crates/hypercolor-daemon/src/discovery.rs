@@ -40,21 +40,21 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
+#[cfg(feature = "hue")]
+use hypercolor_driver_hue::HueKnownBridge;
+#[cfg(feature = "nanoleaf")]
+use hypercolor_driver_nanoleaf::NanoleafKnownDevice;
+#[cfg(feature = "hue")]
+use hypercolor_types::config::HueConfig;
+#[cfg(feature = "nanoleaf")]
+use hypercolor_types::config::NanoleafConfig;
+
 use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::{DeviceSettingsStore, StoredDeviceSettings};
 use crate::layout_auto_exclusions;
 use crate::logical_devices::{self, LogicalDevice};
 use crate::network::{self, DaemonDriverHost};
 use crate::runtime_state;
-
-#[cfg(feature = "hue")]
-use hypercolor_core::device::hue::HueKnownBridge;
-#[cfg(feature = "nanoleaf")]
-use hypercolor_core::device::nanoleaf::NanoleafKnownDevice;
-#[cfg(feature = "hue")]
-use hypercolor_types::config::HueConfig;
-#[cfg(feature = "nanoleaf")]
-use hypercolor_types::config::NanoleafConfig;
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
 const MIN_DISCOVERY_TIMEOUT_MS: u64 = 100;

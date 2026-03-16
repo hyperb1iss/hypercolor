@@ -32,15 +32,6 @@ use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::discovery;
 use crate::logical_devices::{self, LogicalDevice, LogicalDeviceKind};
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
-use crate::network;
-
-#[cfg(feature = "hue")]
-use hypercolor_core::device::hue::DEFAULT_HUE_API_PORT;
-#[cfg(feature = "nanoleaf")]
-use hypercolor_core::device::nanoleaf::DEFAULT_NANOLEAF_API_PORT;
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
-use std::net::IpAddr;
 
 // ── Request / Response Types ─────────────────────────────────────────────
 
@@ -65,32 +56,6 @@ pub struct IdentifyRequest {
 }
 
 pub type GenericPairDeviceRequest = hypercolor_driver_api::PairDeviceRequest;
-
-#[cfg(feature = "hue")]
-#[derive(Debug, Deserialize)]
-pub struct PairHueRequest {
-    pub bridge_ip: IpAddr,
-    #[serde(default)]
-    pub bridge_port: Option<u16>,
-}
-
-#[cfg(feature = "nanoleaf")]
-#[derive(Debug, Deserialize)]
-pub struct PairNanoleafRequest {
-    pub device_ip: IpAddr,
-    #[serde(default)]
-    pub api_port: Option<u16>,
-}
-
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
-#[derive(Debug, Serialize)]
-pub struct PairDeviceResponse {
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
 
 #[derive(Debug, Serialize)]
 pub struct GenericPairDeviceResponse {
@@ -805,72 +770,6 @@ pub async fn delete_pairing(
     match delete_device_pairing(&state, device_id).await {
         Ok(response) => ApiResponse::ok(response),
         Err(response) => response,
-    }
-}
-
-#[cfg(feature = "hue")]
-/// `POST /api/v1/devices/pair/hue` — pair with a Hue bridge.
-pub async fn pair_hue_device(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<PairHueRequest>,
-) -> Response {
-    let bridge_port = payload.bridge_port.unwrap_or(DEFAULT_HUE_API_PORT);
-    match network::pair_hue_bridge_at_ip(
-        state.credential_store.as_ref(),
-        payload.bridge_ip,
-        bridge_port,
-    )
-    .await
-    {
-        Ok(Some(pair_result)) => ApiResponse::ok(PairDeviceResponse {
-            status: "paired".to_owned(),
-            device_key: pair_result.device_key,
-            name: pair_result.name,
-        }),
-        Ok(None) => ApiResponse::ok(PairDeviceResponse {
-            status: "press_button".to_owned(),
-            device_key: None,
-            name: None,
-        }),
-        Err(error) => {
-            warn!(error = %error, ip = %payload.bridge_ip, "Hue pairing request failed");
-            ApiError::internal("Failed to pair with Hue bridge")
-        }
-    }
-}
-
-#[cfg(feature = "nanoleaf")]
-/// `POST /api/v1/devices/pair/nanoleaf` — pair with a Nanoleaf controller.
-pub async fn pair_nanoleaf_device(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<PairNanoleafRequest>,
-) -> Response {
-    let api_port = payload.api_port.unwrap_or(DEFAULT_NANOLEAF_API_PORT);
-    match network::pair_nanoleaf_device_at_ip(
-        state.credential_store.as_ref(),
-        payload.device_ip,
-        api_port,
-    )
-    .await
-    {
-        Ok(Some(pair_result)) => ApiResponse::ok(PairDeviceResponse {
-            status: "paired".to_owned(),
-            device_key: Some(pair_result.device_key),
-            name: Some(pair_result.name),
-        }),
-        Ok(None) => ApiResponse::ok(PairDeviceResponse {
-            status: "hold_power".to_owned(),
-            device_key: None,
-            name: None,
-        }),
-        Err(error) => {
-            warn!(
-                error = %error,
-                ip = %payload.device_ip,
-                "Nanoleaf pairing request failed"
-            );
-            ApiError::internal("Failed to pair with Nanoleaf device")
-        }
     }
 }
 

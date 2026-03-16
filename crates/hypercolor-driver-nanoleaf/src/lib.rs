@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+pub use hypercolor_core::device::nanoleaf::NanoleafKnownDevice;
 use hypercolor_core::device::nanoleaf::{
-    DEFAULT_NANOLEAF_API_PORT, NanoleafBackend, NanoleafKnownDevice, NanoleafScanner,
-    pair_device_with_status,
+    DEFAULT_NANOLEAF_API_PORT, NanoleafBackend, NanoleafScanner, pair_device_with_status,
 };
 use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_core::device::{DeviceBackend, TransportScanner};

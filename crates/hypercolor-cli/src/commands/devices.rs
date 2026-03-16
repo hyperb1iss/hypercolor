@@ -57,33 +57,12 @@ pub struct DeviceDiscoverArgs {
 /// Arguments for `devices pair`.
 #[derive(Debug, Args)]
 pub struct DevicePairArgs {
-    #[command(subcommand)]
-    pub backend: DevicePairBackend,
-}
+    /// Device name or ID.
+    pub device: String,
 
-/// Pairable network backends.
-#[derive(Debug, Subcommand)]
-pub enum DevicePairBackend {
-    /// Pair a Philips Hue bridge.
-    Hue(DevicePairHueArgs),
-    /// Pair a Nanoleaf panel controller.
-    Nanoleaf(DevicePairNanoleafArgs),
-}
-
-/// Arguments for `devices pair hue`.
-#[derive(Debug, Args)]
-pub struct DevicePairHueArgs {
-    /// Hue bridge IP address. Defaults to the first discovered Hue bridge.
+    /// Store credentials but skip immediate activation.
     #[arg(long)]
-    pub bridge_ip: Option<String>,
-}
-
-/// Arguments for `devices pair nanoleaf`.
-#[derive(Debug, Args)]
-pub struct DevicePairNanoleafArgs {
-    /// Nanoleaf device IP address. Defaults to the first discovered Nanoleaf device.
-    #[arg(long)]
-    pub device_ip: Option<String>,
+    pub no_activate: bool,
 }
 
 /// Arguments for `devices info`.
@@ -210,45 +189,14 @@ async fn execute_pair(
     client: &DaemonClient,
     ctx: &OutputContext,
 ) -> Result<()> {
-    match &args.backend {
-        DevicePairBackend::Hue(hue_args) => execute_pair_hue(hue_args, client, ctx).await,
-        DevicePairBackend::Nanoleaf(nanoleaf_args) => {
-            execute_pair_nanoleaf(nanoleaf_args, client, ctx).await
-        }
-    }
-}
-
-async fn execute_pair_hue(
-    args: &DevicePairHueArgs,
-    client: &DaemonClient,
-    ctx: &OutputContext,
-) -> Result<()> {
-    let bridge_ip =
-        resolve_pair_ip(client, "hue", args.bridge_ip.as_deref(), "--bridge-ip").await?;
+    let path = format!("/devices/{}/pair", urlencoded(&args.device));
     let response = client
         .post(
-            "/devices/pair/hue",
-            &serde_json::json!({ "bridge_ip": bridge_ip }),
+            &path,
+            &serde_json::json!({ "activate_after_pair": !args.no_activate }),
         )
         .await?;
-    render_pair_response("Hue bridge", &response, ctx)?;
-    Ok(())
-}
-
-async fn execute_pair_nanoleaf(
-    args: &DevicePairNanoleafArgs,
-    client: &DaemonClient,
-    ctx: &OutputContext,
-) -> Result<()> {
-    let device_ip =
-        resolve_pair_ip(client, "nanoleaf", args.device_ip.as_deref(), "--device-ip").await?;
-    let response = client
-        .post(
-            "/devices/pair/nanoleaf",
-            &serde_json::json!({ "device_ip": device_ip }),
-        )
-        .await?;
-    render_pair_response("Nanoleaf device", &response, ctx)?;
+    render_pair_response(&args.device, &response, ctx)?;
     Ok(())
 }
 
@@ -369,37 +317,6 @@ async fn execute_set_color(
     Ok(())
 }
 
-async fn resolve_pair_ip(
-    client: &DaemonClient,
-    backend: &str,
-    provided_ip: Option<&str>,
-    flag_name: &str,
-) -> Result<String> {
-    if let Some(ip) = provided_ip {
-        return Ok(ip.to_owned());
-    }
-
-    let response = client
-        .get(&format!("/devices?backend={}", urlencoded(backend)))
-        .await?;
-    let items = response
-        .get("items")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("Daemon returned an invalid device list"))?;
-
-    if let Some(ip) = items.iter().find_map(|item| {
-        item.get("network_ip")
-            .and_then(serde_json::Value::as_str)
-            .map(ToOwned::to_owned)
-    }) {
-        return Ok(ip);
-    }
-
-    anyhow::bail!(
-        "No discovered {backend} devices expose a network IP. Run `hyper devices discover --backend {backend}` or pass {flag_name}."
-    );
-}
-
 fn render_pair_response(
     target_label: &str,
     response: &serde_json::Value,
@@ -408,32 +325,19 @@ fn render_pair_response(
     match ctx.format {
         OutputFormat::Json => ctx.print_json(response)?,
         OutputFormat::Plain | OutputFormat::Table => {
-            match response.get("status").and_then(serde_json::Value::as_str) {
-                Some("paired") => {
-                    let name = response
-                        .get("name")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or(target_label);
-                    let device_key = response
-                        .get("device_key")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("stored");
-                    ctx.success(&format!("Paired {name} ({device_key})"));
-                }
-                Some("press_button") => {
-                    ctx.info("Press the Hue bridge link button, then rerun the pair command.");
-                }
-                Some("hold_power") => {
-                    ctx.info(
-                    "Hold the Nanoleaf power button for 5-7 seconds, then rerun the pair command.",
-                );
-                }
-                Some(status) => {
-                    ctx.info(&format!("{target_label} pairing status: {status}"));
-                }
-                None => {
-                    ctx.info(&format!("{target_label} pairing request completed."));
-                }
+            let status = response
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let message = response
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Pairing request completed.");
+
+            if matches!(status, "paired" | "already_paired") {
+                ctx.success(message);
+            } else {
+                ctx.info(&format!("{target_label}: {message}"));
             }
         }
     }
