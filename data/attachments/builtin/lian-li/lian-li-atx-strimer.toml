@@ -1,9 +1,9 @@
 schema_version = 1
 id = "lian-li-atx-strimer"
-name = "Lian Li ATX Strimer Plus - 60 LED"
+name = "Lian Li ATX Strimer Plus V2 - 120 LED"
 category = "strimer"
 origin = "built_in"
-description = "Lian Li ATX Strimer Plus - 60 LED"
+description = "Lian Li ATX Strimer Plus V2 - 120 LED (20×6 matrix)"
 vendor = "Lian Li"
 compatible_slots = []
 tags = [
@@ -17,6 +17,6 @@ height = 0.07999999821186066
 [topology]
 type = "matrix"
 width = 20
-height = 3
+height = 6
 serpentine = false
 start_corner = "top_left"

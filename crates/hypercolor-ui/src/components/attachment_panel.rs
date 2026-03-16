@@ -1,8 +1,9 @@
 //! Wiring panel — map physical components (fans, strips, etc.) to device channels.
 //! Terminology: "wiring" = section, "component" = individual item, "channel" = device slot.
 
-use leptos::prelude::*;
+use leptos::{ev, prelude::*};
 use leptos_icons::Icon;
+use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use wasm_bindgen::JsCast;
 
 use hypercolor_types::attachment::AttachmentSuggestedZone;
@@ -504,6 +505,29 @@ pub fn WiringPanel(
 
 // ── Searchable component combobox ───────────────────────────────────────────
 
+fn install_component_combobox_outside_handler(set_open: WriteSignal<bool>) {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+
+    let _ = use_event_listener_with_options(
+        doc,
+        ev::mousedown,
+        move |ev: leptos::ev::MouseEvent| {
+            let inside = ev
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .map(|el| el.closest(".component-combobox").ok().flatten().is_some())
+                .unwrap_or(false);
+
+            if !inside {
+                set_open.set(false);
+            }
+        },
+        UseEventListenerOptions::default().capture(true),
+    );
+}
+
 /// Searchable dropdown for selecting a component (fan, strip, etc.).
 /// Uses `position: fixed` to escape overflow clipping from parent containers.
 #[component]
@@ -520,6 +544,8 @@ fn ComponentCombobox(
     let trigger_ref = NodeRef::<leptos::html::Button>::new();
     let components_store = StoredValue::new(components);
     let has_selection = !selected_id.is_empty();
+
+    install_component_combobox_outside_handler(set_open);
 
     let filtered = Memo::new(move |_| {
         let term = search.get().to_lowercase();
@@ -558,7 +584,7 @@ fn ComponentCombobox(
     };
 
     view! {
-        <div class="flex-1 min-w-0 relative">
+        <div class="component-combobox flex-1 min-w-0 relative">
             <button
                 type="button"
                 node_ref=trigger_ref
@@ -590,8 +616,6 @@ fn ComponentCombobox(
                 let pos_style = format!("position: fixed; left: {left:.0}px; top: {top:.0}px; width: {width:.0}px; z-index: 9999");
 
                 view! {
-                    <div class="fixed inset-0 z-[9998]" on:click=move |_| set_open.set(false) />
-
                     <div class="max-h-[340px] flex flex-col rounded-xl border border-edge-subtle bg-surface-overlay shadow-xl
                                 dropdown-glow animate-fade-in overflow-hidden"
                          style=pos_style>
