@@ -11,6 +11,7 @@ pub mod library;
 pub mod logical_devices;
 pub mod mcp;
 pub mod mdns;
+pub mod network;
 pub mod performance;
 pub mod playlist_runtime;
 pub mod profile_store;

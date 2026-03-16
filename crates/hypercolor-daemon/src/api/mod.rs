@@ -48,7 +48,8 @@ use hypercolor_core::engine::RenderLoop;
 use hypercolor_core::input::InputManager;
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_types::config::McpConfig;
+use hypercolor_network::DriverRegistry;
+use hypercolor_types::config::{HypercolorConfig, McpConfig};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::SpatialLayout;
@@ -58,6 +59,7 @@ use crate::device_settings::DeviceSettingsStore;
 use crate::layout_auto_exclusions;
 use crate::library::{InMemoryLibraryStore, JsonLibraryStore, LibraryStore};
 use crate::logical_devices::LogicalDevice;
+use crate::network::{self, DaemonDriverHost};
 use crate::performance::PerformanceTracker;
 use crate::playlist_runtime::PlaylistRuntimeState;
 use crate::profile_store::ProfileStore;
@@ -140,6 +142,12 @@ pub struct AppState {
 
     /// Shared encrypted credential store for network-authenticated backends.
     pub credential_store: Arc<CredentialStore>,
+
+    /// Narrow host adapter shared with built-in network drivers.
+    pub driver_host: Arc<DaemonDriverHost>,
+
+    /// Registry of compiled-in network drivers and capabilities.
+    pub driver_registry: Arc<DriverRegistry>,
 
     /// In-memory layout store (shared with `DaemonState`, persisted to layouts.json).
     pub layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
@@ -263,38 +271,93 @@ impl AppState {
             CredentialStore::open_blocking(&ConfigManager::data_dir())
                 .expect("default app state should open credential store"),
         );
+        let device_registry = DeviceRegistry::new();
+        let effect_registry = Arc::new(RwLock::new(EffectRegistry::default()));
+        let effect_engine = Arc::new(Mutex::new(EffectEngine::new()));
+        let scene_manager = Arc::new(RwLock::new(SceneManager::new()));
+        let event_bus = Arc::new(HypercolorBus::new());
+        let render_loop = Arc::new(RwLock::new(RenderLoop::new(60)));
+        let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(default_layout)));
+        let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
+        let usb_protocol_configs = UsbProtocolConfigStore::new();
+        let performance = Arc::new(RwLock::new(PerformanceTracker::default()));
+        let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+        let reconnect_tasks = Arc::new(StdMutex::new(HashMap::new()));
+        let input_manager = Arc::new(Mutex::new(InputManager::new()));
+        let discovery_in_progress = Arc::new(AtomicBool::new(false));
+        let attachment_registry = Arc::new(RwLock::new(attachment_registry));
+        let attachment_profiles = Arc::new(RwLock::new(attachment_profiles));
+        let device_settings = Arc::new(RwLock::new(device_settings));
+        let layouts = Arc::new(RwLock::new(HashMap::new()));
+        let layouts_path = ConfigManager::data_dir().join("layouts.json");
+        let layout_auto_exclusions = Arc::new(RwLock::new(HashMap::new()));
+        let layout_auto_exclusions_path =
+            ConfigManager::data_dir().join("layout-auto-exclusions.json");
+        let logical_devices = Arc::new(RwLock::new(HashMap::new()));
+        let logical_devices_path = ConfigManager::data_dir().join("logical-devices.json");
+        let effect_layout_links = Arc::new(RwLock::new(HashMap::new()));
+        let effect_layout_links_path = ConfigManager::data_dir().join("effect-layouts.json");
+        let runtime_state_path = ConfigManager::data_dir().join("runtime-state.json");
+        let driver_host = Arc::new(DaemonDriverHost::new(
+            device_registry.clone(),
+            Arc::clone(&backend_manager),
+            Arc::clone(&lifecycle_manager),
+            Arc::clone(&reconnect_tasks),
+            Arc::clone(&event_bus),
+            Arc::clone(&spatial_engine),
+            Arc::clone(&layouts),
+            layouts_path.clone(),
+            Arc::clone(&layout_auto_exclusions),
+            Arc::clone(&logical_devices),
+            Arc::clone(&attachment_registry),
+            Arc::clone(&attachment_profiles),
+            Arc::clone(&device_settings),
+            runtime_state_path.clone(),
+            usb_protocol_configs.clone(),
+            Arc::clone(&credential_store),
+            Arc::clone(&discovery_in_progress),
+        ));
+        let driver_registry = Arc::new(
+            network::build_builtin_driver_registry(
+                &HypercolorConfig::default(),
+                Arc::clone(&driver_host),
+                runtime_state_path.clone(),
+            )
+            .expect("default app state should build network driver registry"),
+        );
 
         Self {
-            device_registry: DeviceRegistry::new(),
-            effect_registry: Arc::new(RwLock::new(EffectRegistry::default())),
-            effect_engine: Arc::new(Mutex::new(EffectEngine::new())),
-            scene_manager: Arc::new(RwLock::new(SceneManager::new())),
-            event_bus: Arc::new(HypercolorBus::new()),
-            render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
-            spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(default_layout))),
-            backend_manager: Arc::new(Mutex::new(BackendManager::new())),
-            usb_protocol_configs: UsbProtocolConfigStore::new(),
-            performance: Arc::new(RwLock::new(PerformanceTracker::default())),
-            lifecycle_manager: Arc::new(Mutex::new(DeviceLifecycleManager::new())),
-            reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
+            device_registry,
+            effect_registry,
+            effect_engine,
+            scene_manager,
+            event_bus,
+            render_loop,
+            spatial_engine,
+            backend_manager,
+            usb_protocol_configs,
+            performance,
+            lifecycle_manager,
+            reconnect_tasks,
             config_manager: None,
-            input_manager: Arc::new(Mutex::new(InputManager::new())),
-            discovery_in_progress: Arc::new(AtomicBool::new(false)),
+            input_manager,
+            discovery_in_progress,
             profiles: Arc::new(RwLock::new(profiles)),
-            attachment_registry: Arc::new(RwLock::new(attachment_registry)),
-            attachment_profiles: Arc::new(RwLock::new(attachment_profiles)),
-            device_settings: Arc::new(RwLock::new(device_settings)),
+            attachment_registry,
+            attachment_profiles,
+            device_settings,
             credential_store,
-            layouts: Arc::new(RwLock::new(HashMap::new())),
-            layouts_path: ConfigManager::data_dir().join("layouts.json"),
-            layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
-            layout_auto_exclusions_path: ConfigManager::data_dir()
-                .join("layout-auto-exclusions.json"),
-            logical_devices: Arc::new(RwLock::new(HashMap::new())),
-            logical_devices_path: ConfigManager::data_dir().join("logical-devices.json"),
-            effect_layout_links: Arc::new(RwLock::new(HashMap::new())),
-            effect_layout_links_path: ConfigManager::data_dir().join("effect-layouts.json"),
-            runtime_state_path: ConfigManager::data_dir().join("runtime-state.json"),
+            driver_host,
+            driver_registry,
+            layouts,
+            layouts_path,
+            layout_auto_exclusions,
+            layout_auto_exclusions_path,
+            logical_devices,
+            logical_devices_path,
+            effect_layout_links,
+            effect_layout_links_path,
+            runtime_state_path,
             power_state,
             library_store: Arc::new(InMemoryLibraryStore::new()),
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
@@ -336,6 +399,8 @@ impl AppState {
             );
             ProfileStore::new(profiles_path)
         });
+        let driver_host = Arc::clone(&daemon.driver_host);
+        let driver_registry = Arc::clone(&daemon.driver_registry);
 
         Self {
             device_registry: daemon.device_registry.clone(),
@@ -358,6 +423,8 @@ impl AppState {
             attachment_profiles: Arc::clone(&daemon.attachment_profiles),
             device_settings: Arc::clone(&daemon.device_settings),
             credential_store: Arc::clone(&daemon.credential_store),
+            driver_host,
+            driver_registry,
             layouts: Arc::clone(&daemon.layouts),
             layouts_path: daemon.layouts_path.clone(),
             layout_auto_exclusions: Arc::clone(&daemon.layout_auto_exclusions),
@@ -435,26 +502,7 @@ pub(crate) async fn persist_runtime_session(state: &Arc<AppState>) {
 }
 
 pub(crate) fn discovery_runtime(state: &AppState) -> crate::discovery::DiscoveryRuntime {
-    crate::discovery::DiscoveryRuntime {
-        device_registry: state.device_registry.clone(),
-        backend_manager: Arc::clone(&state.backend_manager),
-        lifecycle_manager: Arc::clone(&state.lifecycle_manager),
-        reconnect_tasks: Arc::clone(&state.reconnect_tasks),
-        event_bus: Arc::clone(&state.event_bus),
-        spatial_engine: Arc::clone(&state.spatial_engine),
-        layouts: Arc::clone(&state.layouts),
-        layouts_path: state.layouts_path.clone(),
-        layout_auto_exclusions: Arc::clone(&state.layout_auto_exclusions),
-        logical_devices: Arc::clone(&state.logical_devices),
-        attachment_registry: Arc::clone(&state.attachment_registry),
-        attachment_profiles: Arc::clone(&state.attachment_profiles),
-        device_settings: Arc::clone(&state.device_settings),
-        runtime_state_path: state.runtime_state_path.clone(),
-        usb_protocol_configs: state.usb_protocol_configs.clone(),
-        credential_store: Arc::clone(&state.credential_store),
-        in_progress: Arc::clone(&state.discovery_in_progress),
-        task_spawner: tokio::runtime::Handle::current(),
-    }
+    state.driver_host.discovery_runtime()
 }
 
 // ── Router ───────────────────────────────────────────────────────────────

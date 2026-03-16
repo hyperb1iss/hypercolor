@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_driver_api::{
-    DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
+    ClearPairingOutcome, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
     DriverCredentialStore, DriverDescriptor, DriverHost, DriverRuntimeActions, DriverTransport,
     NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairingCapability,
     TrackedDeviceCtx,
@@ -124,8 +124,12 @@ struct PairingOnlyCapability;
 
 #[async_trait]
 impl PairingCapability for PairingOnlyCapability {
-    fn auth_summary(&self, device: &TrackedDeviceCtx<'_>) -> Option<DeviceAuthSummary> {
-        let _ = device;
+    async fn auth_summary(
+        &self,
+        host: &dyn DriverHost,
+        device: &TrackedDeviceCtx<'_>,
+    ) -> Option<DeviceAuthSummary> {
+        let _ = (host, device);
         None
     }
 
@@ -143,7 +147,7 @@ impl PairingCapability for PairingOnlyCapability {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Result<()> {
+    ) -> Result<ClearPairingOutcome> {
         let _ = (host, device);
         unreachable!("clear_credentials is not exercised in registry tests")
     }

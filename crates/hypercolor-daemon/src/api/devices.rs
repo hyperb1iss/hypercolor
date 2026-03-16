@@ -13,6 +13,10 @@ use tracing::{debug, warn};
 
 use hypercolor_core::device::{BackendIo, BackendManager, SegmentRange};
 use hypercolor_core::spatial::generate_positions;
+use hypercolor_driver_api::{
+    DeviceAuthState, DeviceAuthSummary, PairDeviceStatus as GenericPairDeviceStatus,
+    TrackedDeviceCtx,
+};
 use hypercolor_types::attachment::{
     AttachmentBinding, AttachmentSlot, AttachmentSuggestedZone, AttachmentTemplate,
     DeviceAttachmentProfile,
@@ -21,8 +25,6 @@ use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
     DeviceFamily, DeviceId, DeviceInfo, DeviceState, DeviceTopologyHint, DeviceUserSettings,
 };
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
-use hypercolor_types::event::DisconnectReason;
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::spatial::{LedTopology, NormalizedPosition};
 
@@ -30,13 +32,13 @@ use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::discovery;
 use crate::logical_devices::{self, LogicalDevice, LogicalDeviceKind};
+#[cfg(any(feature = "hue", feature = "nanoleaf"))]
+use crate::network;
 
 #[cfg(feature = "hue")]
-use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueBridgeClient};
+use hypercolor_core::device::hue::DEFAULT_HUE_API_PORT;
 #[cfg(feature = "nanoleaf")]
-use hypercolor_core::device::nanoleaf::{DEFAULT_NANOLEAF_API_PORT, pair_device_with_status};
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
-use hypercolor_core::device::net::Credentials;
+use hypercolor_core::device::nanoleaf::DEFAULT_NANOLEAF_API_PORT;
 #[cfg(any(feature = "hue", feature = "nanoleaf"))]
 use std::net::IpAddr;
 
@@ -62,13 +64,7 @@ pub struct IdentifyRequest {
     pub color: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Default)]
-pub struct GenericPairDeviceRequest {
-    #[serde(default)]
-    pub values: HashMap<String, String>,
-    #[serde(default = "bool_true")]
-    pub activate_after_pair: bool,
-}
+pub type GenericPairDeviceRequest = hypercolor_driver_api::PairDeviceRequest;
 
 #[cfg(feature = "hue")]
 #[derive(Debug, Deserialize)]
@@ -94,61 +90,6 @@ pub struct PairDeviceResponse {
     pub device_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DeviceAuthState {
-    Open,
-    Required,
-    Configured,
-    Error,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PairingFlowKind {
-    PhysicalAction,
-    CredentialsForm,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PairingFieldDescriptor {
-    pub key: String,
-    pub label: String,
-    pub secret: bool,
-    pub optional: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub placeholder: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PairingDescriptor {
-    pub kind: PairingFlowKind,
-    pub title: String,
-    pub instructions: Vec<String>,
-    pub action_label: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<PairingFieldDescriptor>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DeviceAuthSummary {
-    pub state: DeviceAuthState,
-    pub can_pair: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub descriptor: Option<PairingDescriptor>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum GenericPairDeviceStatus {
-    Paired,
-    ActionRequired,
-    AlreadyPaired,
-    InvalidInput,
 }
 
 #[derive(Debug, Serialize)]
@@ -334,24 +275,6 @@ pub struct AttachmentPreviewZone {
     pub led_count: u32,
     pub topology: LedTopology,
     pub led_positions: Vec<NormalizedPosition>,
-}
-
-#[cfg(feature = "hue")]
-const HUE_PAIRING_INSTRUCTIONS: &[&str] = &[
-    "Press the link button on the Hue Bridge.",
-    "Return here within 30 seconds.",
-    "Click Pair Bridge.",
-];
-
-#[cfg(feature = "nanoleaf")]
-const NANOLEAF_PAIRING_INSTRUCTIONS: &[&str] = &[
-    "Hold the Nanoleaf power button for 5-7 seconds.",
-    "Wait for the controller to enter pairing mode.",
-    "Click Pair Device.",
-];
-
-fn bool_true() -> bool {
-    true
 }
 
 #[derive(Debug, Clone)]
@@ -913,7 +836,13 @@ pub async fn pair_hue_device(
     Json(payload): Json<PairHueRequest>,
 ) -> Response {
     let bridge_port = payload.bridge_port.unwrap_or(DEFAULT_HUE_API_PORT);
-    match pair_hue_bridge_at_ip(state.as_ref(), payload.bridge_ip, bridge_port).await {
+    match network::pair_hue_bridge_at_ip(
+        state.credential_store.as_ref(),
+        payload.bridge_ip,
+        bridge_port,
+    )
+    .await
+    {
         Ok(Some(pair_result)) => ApiResponse::ok(PairDeviceResponse {
             status: "paired".to_owned(),
             device_key: pair_result.device_key,
@@ -938,7 +867,13 @@ pub async fn pair_nanoleaf_device(
     Json(payload): Json<PairNanoleafRequest>,
 ) -> Response {
     let api_port = payload.api_port.unwrap_or(DEFAULT_NANOLEAF_API_PORT);
-    match pair_nanoleaf_device_at_ip(state.as_ref(), payload.device_ip, api_port).await {
+    match network::pair_nanoleaf_device_at_ip(
+        state.credential_store.as_ref(),
+        payload.device_ip,
+        api_port,
+    )
+    .await
+    {
         Ok(Some(pair_result)) => ApiResponse::ok(PairDeviceResponse {
             status: "paired".to_owned(),
             device_key: Some(pair_result.device_key),
@@ -1654,7 +1589,7 @@ async fn summarize_device_for_response(
         network_hostname: metadata.and_then(|values| values.get("hostname").cloned()),
         connection_label: device_connection_label(metadata),
         total_leds: info.total_led_count(),
-        auth: build_device_auth_summary(state, info, metadata).await,
+        auth: build_device_auth_summary(state, info, device_state, metadata).await,
         zones: info
             .zones
             .iter()
@@ -1673,57 +1608,24 @@ async fn summarize_device_for_response(
 async fn build_device_auth_summary(
     state: &AppState,
     info: &DeviceInfo,
+    device_state: &DeviceState,
     metadata: Option<&HashMap<String, String>>,
 ) -> Option<DeviceAuthSummary> {
-    #[cfg(not(any(feature = "hue", feature = "nanoleaf")))]
-    let _ = state;
-
     let backend_id = crate::discovery::backend_id_for_device(&info.family, metadata);
-    let last_error = metadata.and_then(|values| values.get("auth_error").cloned());
+    let driver = state.driver_registry.get(&backend_id)?;
+    let pairing = driver.pairing()?;
+    let device = TrackedDeviceCtx {
+        device_id: info.id,
+        info,
+        metadata,
+        current_state: device_state,
+    };
 
-    #[cfg(feature = "hue")]
-    if backend_id == "hue" {
-        let configured = hue_credentials_present(&state.credential_store, metadata).await;
-        let descriptor = hue_pairing_descriptor();
-        return Some(DeviceAuthSummary {
-            state: if last_error.is_some() {
-                DeviceAuthState::Error
-            } else if configured {
-                DeviceAuthState::Configured
-            } else {
-                DeviceAuthState::Required
-            },
-            can_pair: true,
-            descriptor: Some(descriptor),
-            last_error,
-        });
-    }
-
-    #[cfg(feature = "nanoleaf")]
-    if backend_id == "nanoleaf" {
-        let configured = nanoleaf_credentials_present(&state.credential_store, metadata).await;
-        let descriptor = nanoleaf_pairing_descriptor();
-        return Some(DeviceAuthSummary {
-            state: if last_error.is_some() {
-                DeviceAuthState::Error
-            } else if configured {
-                DeviceAuthState::Configured
-            } else {
-                DeviceAuthState::Required
-            },
-            can_pair: true,
-            descriptor: Some(descriptor),
-            last_error,
-        });
-    }
-
-    #[cfg(not(any(feature = "hue", feature = "nanoleaf")))]
-    let _ = (backend_id, last_error);
-
-    None
+    pairing
+        .auth_summary(state.driver_host.as_ref(), &device)
+        .await
 }
 
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
 fn pairing_state_label(state: DeviceAuthState) -> &'static str {
     match state {
         DeviceAuthState::Open => "open",
@@ -1733,7 +1635,6 @@ fn pairing_state_label(state: DeviceAuthState) -> &'static str {
     }
 }
 
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
 fn publish_pairing_state_changed(
     state: &AppState,
     device_id: DeviceId,
@@ -1758,7 +1659,6 @@ fn publish_pairing_state_changed(
         });
 }
 
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
 async fn refreshed_device_summary(
     state: &AppState,
     device_id: DeviceId,
@@ -1801,41 +1701,55 @@ async fn pair_device_for_ui(
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
     let backend_id =
         crate::discovery::backend_id_for_device(&tracked.info.family, metadata.as_ref());
-    let GenericPairDeviceRequest {
-        values,
-        activate_after_pair,
-    } = request;
-    drop(values);
-    #[cfg(not(any(feature = "hue", feature = "nanoleaf")))]
-    let _ = activate_after_pair;
+    let Some(driver) = state.driver_registry.get(&backend_id) else {
+        return Err(ApiError::validation(format!(
+            "Pairing is not supported for backend '{backend_id}'"
+        )));
+    };
+    let Some(pairing) = driver.pairing() else {
+        return Err(ApiError::validation(format!(
+            "Pairing is not supported for backend '{backend_id}'"
+        )));
+    };
+    let device = TrackedDeviceCtx {
+        device_id,
+        info: &tracked.info,
+        metadata: metadata.as_ref(),
+        current_state: &tracked.state,
+    };
+    let outcome = pairing
+        .pair(state.driver_host.as_ref(), &device, &request)
+        .await
+        .map_err(|error| {
+            warn!(
+                error = %error,
+                device_id = %device_id,
+                backend_id = %backend_id,
+                "device pairing request failed"
+            );
+            ApiError::internal(format!(
+                "Failed to pair with {}",
+                driver.descriptor().display_name
+            ))
+        })?;
 
-    #[cfg(feature = "hue")]
-    if backend_id == "hue" {
-        return pair_hue_device_for_ui(
-            state.as_ref(),
-            device_id,
-            metadata.as_ref(),
-            activate_after_pair,
-            &backend_id,
-        )
-        .await;
+    if matches!(outcome.status, GenericPairDeviceStatus::InvalidInput) {
+        return Err(ApiError::validation(outcome.message));
     }
 
-    #[cfg(feature = "nanoleaf")]
-    if backend_id == "nanoleaf" {
-        return pair_nanoleaf_device_for_ui(
-            state.as_ref(),
-            device_id,
-            metadata.as_ref(),
-            activate_after_pair,
-            &backend_id,
-        )
-        .await;
-    }
+    publish_pairing_state_changed(
+        state.as_ref(),
+        device_id,
+        outcome.auth_state,
+        outcome.activated,
+    );
 
-    Err(ApiError::validation(format!(
-        "Pairing is not supported for backend '{backend_id}'"
-    )))
+    Ok(GenericPairDeviceResponse {
+        status: outcome.status,
+        message: outcome.message,
+        activated: outcome.activated,
+        device: refreshed_device_summary(state.as_ref(), device_id).await?,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -1859,464 +1773,46 @@ async fn delete_device_pairing(
     let metadata = state.device_registry.metadata_for_id(&device_id).await;
     let backend_id =
         crate::discovery::backend_id_for_device(&tracked.info.family, metadata.as_ref());
-
-    #[cfg(feature = "hue")]
-    if backend_id == "hue" {
-        if let Err(error) = clear_hue_credentials(&state.credential_store, metadata.as_ref()).await
-        {
-            warn!(error = %error, device_id = %device_id, "failed to clear Hue credentials");
-            return Err(ApiError::internal("Failed to clear Hue bridge credentials"));
-        }
-        let disconnected = disconnect_paired_device_if_renderable(
-            state.as_ref(),
-            device_id,
-            DisconnectReason::User,
-        )
-        .await;
-        publish_pairing_state_changed(state.as_ref(), device_id, DeviceAuthState::Required, false);
-        return Ok(DeletePairingResponse {
-            status: "unpaired".to_owned(),
-            message: "Hue bridge credentials removed.".to_owned(),
-            disconnected,
-            device: refreshed_device_summary(state.as_ref(), device_id).await?,
-        });
-    }
-
-    #[cfg(feature = "nanoleaf")]
-    if backend_id == "nanoleaf" {
-        if let Err(error) =
-            clear_nanoleaf_credentials(&state.credential_store, metadata.as_ref()).await
-        {
-            warn!(
-                error = %error,
-                device_id = %device_id,
-                "failed to clear Nanoleaf credentials"
-            );
-            return Err(ApiError::internal("Failed to clear Nanoleaf credentials"));
-        }
-        let disconnected = disconnect_paired_device_if_renderable(
-            state.as_ref(),
-            device_id,
-            DisconnectReason::User,
-        )
-        .await;
-        publish_pairing_state_changed(state.as_ref(), device_id, DeviceAuthState::Required, false);
-        return Ok(DeletePairingResponse {
-            status: "unpaired".to_owned(),
-            message: "Nanoleaf credentials removed.".to_owned(),
-            disconnected,
-            device: refreshed_device_summary(state.as_ref(), device_id).await?,
-        });
-    }
-
-    Err(ApiError::validation(format!(
-        "Pairing is not supported for backend '{backend_id}'"
-    )))
-}
-
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
-async fn attempt_paired_device_activation(
-    state: &AppState,
-    device_id: DeviceId,
-    backend_id: &str,
-) -> bool {
-    let runtime = super::discovery_runtime(state);
-    match discovery::activate_pairable_device(&runtime, device_id, backend_id).await {
-        Ok(activated) => activated,
-        Err(error) => {
+    let Some(driver) = state.driver_registry.get(&backend_id) else {
+        return Err(ApiError::validation(format!(
+            "Pairing is not supported for backend '{backend_id}'"
+        )));
+    };
+    let Some(pairing) = driver.pairing() else {
+        return Err(ApiError::validation(format!(
+            "Pairing is not supported for backend '{backend_id}'"
+        )));
+    };
+    let device = TrackedDeviceCtx {
+        device_id,
+        info: &tracked.info,
+        metadata: metadata.as_ref(),
+        current_state: &tracked.state,
+    };
+    let outcome = pairing
+        .clear_credentials(state.driver_host.as_ref(), &device)
+        .await
+        .map_err(|error| {
             warn!(
                 error = %error,
                 device_id = %device_id,
                 backend_id = %backend_id,
-                "paired device activation failed"
+                "failed to clear pairing credentials"
             );
-            false
-        }
-    }
-}
+            ApiError::internal(format!(
+                "Failed to clear {} credentials",
+                driver.descriptor().display_name
+            ))
+        })?;
 
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
-async fn disconnect_paired_device_if_renderable(
-    state: &AppState,
-    device_id: DeviceId,
-    reason: DisconnectReason,
-) -> bool {
-    let runtime = super::discovery_runtime(state);
-    match discovery::disconnect_tracked_device(&runtime, device_id, reason, false).await {
-        Ok(disconnected) => disconnected,
-        Err(error) => {
-            warn!(error = %error, device_id = %device_id, "paired device disconnect failed");
-            false
-        }
-    }
-}
+    publish_pairing_state_changed(state.as_ref(), device_id, outcome.auth_state, false);
 
-#[cfg(feature = "hue")]
-async fn pair_hue_device_for_ui(
-    state: &AppState,
-    device_id: DeviceId,
-    metadata: Option<&HashMap<String, String>>,
-    activate_after_pair: bool,
-    backend_id: &str,
-) -> Result<GenericPairDeviceResponse, Response> {
-    if hue_credentials_present(&state.credential_store, metadata).await {
-        let activated = if activate_after_pair {
-            attempt_paired_device_activation(state, device_id, backend_id).await
-        } else {
-            false
-        };
-        publish_pairing_state_changed(state, device_id, DeviceAuthState::Configured, activated);
-        return Ok(GenericPairDeviceResponse {
-            status: GenericPairDeviceStatus::AlreadyPaired,
-            message: if activated {
-                "Hue bridge credentials are already configured and the device was activated."
-                    .to_owned()
-            } else {
-                "Hue bridge credentials are already configured.".to_owned()
-            },
-            activated,
-            device: refreshed_device_summary(state, device_id).await?,
-        });
-    }
-
-    let Some(bridge_ip) = network_ip_from_metadata(metadata, "Hue bridge")? else {
-        return Err(ApiError::validation(
-            "Hue bridge is missing network address metadata",
-        ));
-    };
-    let bridge_port = metadata
-        .and_then(|values| values.get("api_port"))
-        .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_HUE_API_PORT);
-
-    match pair_hue_bridge_at_ip(state, bridge_ip, bridge_port).await {
-        Ok(Some(_)) => {
-            let activated = if activate_after_pair {
-                attempt_paired_device_activation(state, device_id, backend_id).await
-            } else {
-                false
-            };
-            publish_pairing_state_changed(state, device_id, DeviceAuthState::Configured, activated);
-            Ok(GenericPairDeviceResponse {
-                status: GenericPairDeviceStatus::Paired,
-                message: if activated {
-                    "Hue bridge paired and activated.".to_owned()
-                } else {
-                    "Hue bridge paired. Credentials are stored.".to_owned()
-                },
-                activated,
-                device: refreshed_device_summary(state, device_id).await?,
-            })
-        }
-        Ok(None) => Ok(GenericPairDeviceResponse {
-            status: GenericPairDeviceStatus::ActionRequired,
-            message: "Press the Hue bridge link button, then retry pairing.".to_owned(),
-            activated: false,
-            device: refreshed_device_summary(state, device_id).await?,
-        }),
-        Err(error) => {
-            warn!(error = %error, device_id = %device_id, "Hue pairing request failed");
-            Err(ApiError::internal("Failed to pair with Hue bridge"))
-        }
-    }
-}
-
-#[cfg(feature = "nanoleaf")]
-async fn pair_nanoleaf_device_for_ui(
-    state: &AppState,
-    device_id: DeviceId,
-    metadata: Option<&HashMap<String, String>>,
-    activate_after_pair: bool,
-    backend_id: &str,
-) -> Result<GenericPairDeviceResponse, Response> {
-    if nanoleaf_credentials_present(&state.credential_store, metadata).await {
-        let activated = if activate_after_pair {
-            attempt_paired_device_activation(state, device_id, backend_id).await
-        } else {
-            false
-        };
-        publish_pairing_state_changed(state, device_id, DeviceAuthState::Configured, activated);
-        return Ok(GenericPairDeviceResponse {
-            status: GenericPairDeviceStatus::AlreadyPaired,
-            message: if activated {
-                "Nanoleaf credentials are already configured and the device was activated."
-                    .to_owned()
-            } else {
-                "Nanoleaf credentials are already configured.".to_owned()
-            },
-            activated,
-            device: refreshed_device_summary(state, device_id).await?,
-        });
-    }
-
-    let Some(nanoleaf_ip) = network_ip_from_metadata(metadata, "Nanoleaf device")? else {
-        return Err(ApiError::validation(
-            "Nanoleaf device is missing network address metadata",
-        ));
-    };
-    let api_port = metadata
-        .and_then(|values| values.get("api_port"))
-        .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_NANOLEAF_API_PORT);
-
-    match pair_nanoleaf_device_at_ip(state, nanoleaf_ip, api_port).await {
-        Ok(Some(_)) => {
-            let activated = if activate_after_pair {
-                attempt_paired_device_activation(state, device_id, backend_id).await
-            } else {
-                false
-            };
-            publish_pairing_state_changed(state, device_id, DeviceAuthState::Configured, activated);
-            Ok(GenericPairDeviceResponse {
-                status: GenericPairDeviceStatus::Paired,
-                message: if activated {
-                    "Nanoleaf device paired and activated.".to_owned()
-                } else {
-                    "Nanoleaf device paired. Credentials are stored.".to_owned()
-                },
-                activated,
-                device: refreshed_device_summary(state, device_id).await?,
-            })
-        }
-        Ok(None) => Ok(GenericPairDeviceResponse {
-            status: GenericPairDeviceStatus::ActionRequired,
-            message: "Hold the Nanoleaf power button for 5-7 seconds, then retry pairing."
-                .to_owned(),
-            activated: false,
-            device: refreshed_device_summary(state, device_id).await?,
-        }),
-        Err(error) => {
-            warn!(
-                error = %error,
-                device_id = %device_id,
-                "Nanoleaf pairing request failed"
-            );
-            Err(ApiError::internal("Failed to pair with Nanoleaf device"))
-        }
-    }
-}
-
-#[cfg(feature = "hue")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StoredHuePairingResult {
-    device_key: Option<String>,
-    name: Option<String>,
-}
-
-#[cfg(feature = "nanoleaf")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StoredNanoleafPairingResult {
-    device_key: String,
-    name: String,
-}
-
-#[cfg(feature = "hue")]
-async fn pair_hue_bridge_at_ip(
-    state: &AppState,
-    bridge_ip: IpAddr,
-    bridge_port: u16,
-) -> anyhow::Result<Option<StoredHuePairingResult>> {
-    let client = HueBridgeClient::with_port(bridge_ip, bridge_port);
-    let Some(pair_result) = client.pair_with_status("hypercolor").await? else {
-        return Ok(None);
-    };
-
-    let bridge_identity = client.bridge_identity().await.ok();
-    let credentials = Credentials::HueBridge {
-        api_key: pair_result.api_key,
-        client_key: pair_result.client_key,
-    };
-
-    if let Some(identity) = bridge_identity.as_ref() {
-        state
-            .credential_store
-            .store(&format!("hue:{}", identity.bridge_id), credentials.clone())
-            .await?;
-    }
-    state
-        .credential_store
-        .store(&format!("hue:ip:{bridge_ip}"), credentials)
-        .await?;
-
-    Ok(Some(StoredHuePairingResult {
-        device_key: bridge_identity
-            .as_ref()
-            .map(|identity| identity.bridge_id.clone()),
-        name: bridge_identity
-            .as_ref()
-            .map(|identity| identity.name.clone()),
-    }))
-}
-
-#[cfg(feature = "nanoleaf")]
-async fn pair_nanoleaf_device_at_ip(
-    state: &AppState,
-    device_ip: IpAddr,
-    api_port: u16,
-) -> anyhow::Result<Option<StoredNanoleafPairingResult>> {
-    let Some(pair_result) = pair_device_with_status(device_ip, api_port).await? else {
-        return Ok(None);
-    };
-
-    let credentials = Credentials::Nanoleaf {
-        auth_token: pair_result.auth_token,
-    };
-    state
-        .credential_store
-        .store(
-            &format!("nanoleaf:{}", pair_result.device_key),
-            credentials.clone(),
-        )
-        .await?;
-    state
-        .credential_store
-        .store(&format!("nanoleaf:ip:{device_ip}"), credentials)
-        .await?;
-
-    Ok(Some(StoredNanoleafPairingResult {
-        device_key: pair_result.device_key,
-        name: pair_result.name,
-    }))
-}
-
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
-fn metadata_value<'a>(metadata: Option<&'a HashMap<String, String>>, key: &str) -> Option<&'a str> {
-    metadata
-        .and_then(|values| values.get(key))
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
-fn push_lookup_key(keys: &mut Vec<String>, key: String) {
-    if !keys.iter().any(|existing| existing == &key) {
-        keys.push(key);
-    }
-}
-
-#[cfg(feature = "hue")]
-fn hue_credential_keys(metadata: Option<&HashMap<String, String>>) -> Vec<String> {
-    let mut keys = Vec::new();
-    if let Some(bridge_id) = metadata_value(metadata, "bridge_id") {
-        push_lookup_key(&mut keys, format!("hue:{bridge_id}"));
-    }
-    if let Some(ip) = metadata_value(metadata, "ip") {
-        push_lookup_key(&mut keys, format!("hue:ip:{ip}"));
-    }
-    keys
-}
-
-#[cfg(feature = "hue")]
-async fn hue_credentials_present(
-    credential_store: &hypercolor_core::device::net::CredentialStore,
-    metadata: Option<&HashMap<String, String>>,
-) -> bool {
-    for key in hue_credential_keys(metadata) {
-        if matches!(
-            credential_store.get(&key).await,
-            Some(Credentials::HueBridge { .. })
-        ) {
-            return true;
-        }
-    }
-    false
-}
-
-#[cfg(feature = "hue")]
-async fn clear_hue_credentials(
-    credential_store: &hypercolor_core::device::net::CredentialStore,
-    metadata: Option<&HashMap<String, String>>,
-) -> anyhow::Result<()> {
-    for key in hue_credential_keys(metadata) {
-        credential_store.remove(&key).await?;
-    }
-    Ok(())
-}
-
-#[cfg(feature = "nanoleaf")]
-fn nanoleaf_credential_keys(metadata: Option<&HashMap<String, String>>) -> Vec<String> {
-    let mut keys = Vec::new();
-    if let Some(device_key) = metadata_value(metadata, "device_key") {
-        push_lookup_key(&mut keys, format!("nanoleaf:{device_key}"));
-    }
-    if let Some(ip) = metadata_value(metadata, "ip") {
-        push_lookup_key(&mut keys, format!("nanoleaf:ip:{ip}"));
-    }
-    keys
-}
-
-#[cfg(feature = "nanoleaf")]
-async fn nanoleaf_credentials_present(
-    credential_store: &hypercolor_core::device::net::CredentialStore,
-    metadata: Option<&HashMap<String, String>>,
-) -> bool {
-    for key in nanoleaf_credential_keys(metadata) {
-        if matches!(
-            credential_store.get(&key).await,
-            Some(Credentials::Nanoleaf { .. })
-        ) {
-            return true;
-        }
-    }
-    false
-}
-
-#[cfg(feature = "nanoleaf")]
-async fn clear_nanoleaf_credentials(
-    credential_store: &hypercolor_core::device::net::CredentialStore,
-    metadata: Option<&HashMap<String, String>>,
-) -> anyhow::Result<()> {
-    for key in nanoleaf_credential_keys(metadata) {
-        credential_store.remove(&key).await?;
-    }
-    Ok(())
-}
-
-#[cfg(feature = "hue")]
-fn hue_pairing_descriptor() -> PairingDescriptor {
-    PairingDescriptor {
-        kind: PairingFlowKind::PhysicalAction,
-        title: "Pair Hue Bridge".to_owned(),
-        instructions: HUE_PAIRING_INSTRUCTIONS
-            .iter()
-            .map(|step| (*step).to_owned())
-            .collect(),
-        action_label: "Pair Bridge".to_owned(),
-        fields: Vec::new(),
-    }
-}
-
-#[cfg(feature = "nanoleaf")]
-fn nanoleaf_pairing_descriptor() -> PairingDescriptor {
-    PairingDescriptor {
-        kind: PairingFlowKind::PhysicalAction,
-        title: "Pair Nanoleaf Device".to_owned(),
-        instructions: NANOLEAF_PAIRING_INSTRUCTIONS
-            .iter()
-            .map(|step| (*step).to_owned())
-            .collect(),
-        action_label: "Pair Device".to_owned(),
-        fields: Vec::new(),
-    }
-}
-
-#[expect(
-    clippy::result_large_err,
-    reason = "private handler helper returns a concrete HTTP response on validation failure"
-)]
-#[cfg(any(feature = "hue", feature = "nanoleaf"))]
-fn network_ip_from_metadata(
-    metadata: Option<&HashMap<String, String>>,
-    label: &str,
-) -> Result<Option<IpAddr>, Response> {
-    let Some(ip_raw) = metadata.and_then(|values| values.get("ip")) else {
-        return Ok(None);
-    };
-    let ip = ip_raw.parse::<IpAddr>().map_err(|_| {
-        ApiError::validation(format!("{label} metadata contains an invalid IP address"))
-    })?;
-    Ok(Some(ip))
+    Ok(DeletePairingResponse {
+        status: "unpaired".to_owned(),
+        message: outcome.message,
+        disconnected: outcome.disconnected,
+        device: refreshed_device_summary(state.as_ref(), device_id).await?,
+    })
 }
 
 fn device_connection_label(metadata: Option<&HashMap<String, String>>) -> Option<String> {

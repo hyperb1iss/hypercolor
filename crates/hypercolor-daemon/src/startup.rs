@@ -25,7 +25,6 @@ use hypercolor_core::config::ConfigManager;
 use hypercolor_core::device::manager::BackendRoutingDebugSnapshot;
 use hypercolor_core::device::mock::MockDeviceBackend;
 use hypercolor_core::device::net::CredentialStore;
-use hypercolor_core::device::wled::{WledBackend, WledDeviceInfo, WledKnownTarget, WledProtocol};
 use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, SmBusBackend, UsbBackend,
     UsbHotplugEvent, UsbHotplugMonitor, UsbProtocolConfigStore,
@@ -45,17 +44,13 @@ use hypercolor_core::input::screen::{
 use hypercolor_core::input::{InputManager, InteractionInput};
 use hypercolor_core::scene::SceneManager;
 use hypercolor_core::spatial::SpatialEngine;
+use hypercolor_network::DriverRegistry;
 use hypercolor_types::audio::{AudioPipelineConfig, AudioSourceType};
-use hypercolor_types::config::{HypercolorConfig, WledProtocolConfig};
+use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::effect::{EffectId, EffectMetadata};
 use hypercolor_types::server::ServerIdentity;
 use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
-
-#[cfg(feature = "hue")]
-use hypercolor_core::device::hue::HueBackend;
-#[cfg(feature = "nanoleaf")]
-use hypercolor_core::device::nanoleaf::NanoleafBackend;
 
 use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
@@ -63,6 +58,7 @@ use crate::display_output::{DisplayOutputState, DisplayOutputThread};
 use crate::effect_layouts;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
+use crate::network::{self, DaemonDriverHost};
 use crate::performance::PerformanceTracker;
 use crate::render_thread::{RenderThread, RenderThreadState};
 use crate::runtime_state::{self, RuntimeSessionSnapshot};
@@ -126,6 +122,12 @@ pub struct DaemonState {
 
     /// Shared credential store for network-authenticated device backends.
     pub credential_store: Arc<CredentialStore>,
+
+    /// Narrow host adapter shared with built-in network drivers.
+    pub driver_host: Arc<DaemonDriverHost>,
+
+    /// Registry of compiled-in network drivers and capabilities.
+    pub driver_registry: Arc<DriverRegistry>,
 
     /// Rolling render-performance snapshot shared with the API.
     pub performance: Arc<RwLock<PerformanceTracker>>,
@@ -310,15 +312,9 @@ impl DaemonState {
         let mut backend_manager_inner = BackendManager::new();
         backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
         if config.discovery.wled_scan {
-            backend_manager_inner
-                .register_backend(Box::new(build_wled_backend(config, &runtime_state_path)));
-        }
-        #[cfg(feature = "hue")]
-        if config.discovery.hue_scan {
-            backend_manager_inner.register_backend(Box::new(HueBackend::with_mdns_enabled(
-                config.hue.clone(),
-                Arc::clone(&credential_store),
-                config.discovery.mdns_enabled,
+            backend_manager_inner.register_backend(Box::new(network::build_wled_backend(
+                config,
+                &runtime_state_path,
             )));
         }
         if config.discovery.blocks_scan {
@@ -330,13 +326,25 @@ impl DaemonState {
                 hypercolor_core::device::BlocksBackend::new(socket_path),
             ));
         }
+        #[cfg(feature = "hue")]
+        if config.discovery.hue_scan {
+            backend_manager_inner.register_backend(Box::new(
+                hypercolor_core::device::hue::HueBackend::with_mdns_enabled(
+                    config.hue.clone(),
+                    Arc::clone(&credential_store),
+                    config.discovery.mdns_enabled,
+                ),
+            ));
+        }
         #[cfg(feature = "nanoleaf")]
         if config.discovery.nanoleaf_scan {
-            backend_manager_inner.register_backend(Box::new(NanoleafBackend::with_mdns_enabled(
-                config.nanoleaf.clone(),
-                Arc::clone(&credential_store),
-                config.discovery.mdns_enabled,
-            )));
+            backend_manager_inner.register_backend(Box::new(
+                hypercolor_core::device::nanoleaf::NanoleafBackend::with_mdns_enabled(
+                    config.nanoleaf.clone(),
+                    Arc::clone(&credential_store),
+                    config.discovery.mdns_enabled,
+                ),
+            ));
         }
         backend_manager_inner.register_backend(Box::new(SmBusBackend::new()));
         backend_manager_inner.register_backend(Box::new(UsbBackend::with_protocol_config_store(
@@ -509,6 +517,39 @@ impl DaemonState {
             "Runtime session store ready"
         );
 
+        let discovery_in_progress = Arc::new(AtomicBool::new(false));
+        let driver_host = Arc::new(DaemonDriverHost::new(
+            device_registry.clone(),
+            Arc::clone(&backend_manager),
+            Arc::clone(&lifecycle_manager),
+            Arc::clone(&reconnect_tasks),
+            Arc::clone(&event_bus),
+            Arc::clone(&spatial_engine),
+            Arc::clone(&layouts),
+            layouts_path.clone(),
+            Arc::clone(&layout_auto_exclusions),
+            Arc::clone(&logical_devices),
+            Arc::clone(&attachment_registry),
+            Arc::clone(&attachment_profiles),
+            Arc::clone(&device_settings),
+            runtime_state_path.clone(),
+            usb_protocol_configs.clone(),
+            Arc::clone(&credential_store),
+            Arc::clone(&discovery_in_progress),
+        ));
+        let driver_registry = Arc::new(
+            network::build_builtin_driver_registry(
+                config,
+                Arc::clone(&driver_host),
+                runtime_state_path.clone(),
+            )
+            .context("failed to build network driver registry")?,
+        );
+        info!(
+            drivers = ?driver_registry.ids(),
+            "Network driver registry ready"
+        );
+
         info!("All subsystems initialized");
 
         Ok(Self {
@@ -523,6 +564,8 @@ impl DaemonState {
             backend_manager,
             usb_protocol_configs,
             credential_store,
+            driver_host,
+            driver_registry,
             performance,
             lifecycle_manager,
             reconnect_tasks,
@@ -539,7 +582,7 @@ impl DaemonState {
             layout_auto_exclusions,
             layout_auto_exclusions_path,
             runtime_state_path,
-            discovery_in_progress: Arc::new(AtomicBool::new(false)),
+            discovery_in_progress,
             power_state,
             render_thread: None,
             display_output_thread: None,
@@ -559,26 +602,7 @@ impl DaemonState {
     }
 
     fn discovery_runtime(&self) -> discovery::DiscoveryRuntime {
-        discovery::DiscoveryRuntime {
-            device_registry: self.device_registry.clone(),
-            backend_manager: Arc::clone(&self.backend_manager),
-            lifecycle_manager: Arc::clone(&self.lifecycle_manager),
-            reconnect_tasks: Arc::clone(&self.reconnect_tasks),
-            event_bus: Arc::clone(&self.event_bus),
-            spatial_engine: Arc::clone(&self.spatial_engine),
-            layouts: Arc::clone(&self.layouts),
-            layouts_path: self.layouts_path.clone(),
-            layout_auto_exclusions: Arc::clone(&self.layout_auto_exclusions),
-            logical_devices: Arc::clone(&self.logical_devices),
-            attachment_registry: Arc::clone(&self.attachment_registry),
-            attachment_profiles: Arc::clone(&self.attachment_profiles),
-            device_settings: Arc::clone(&self.device_settings),
-            runtime_state_path: self.runtime_state_path.clone(),
-            usb_protocol_configs: self.usb_protocol_configs.clone(),
-            credential_store: Arc::clone(&self.credential_store),
-            in_progress: Arc::clone(&self.discovery_in_progress),
-            task_spawner: tokio::runtime::Handle::current(),
-        }
+        self.driver_host.discovery_runtime()
     }
 
     /// Start all subsystems — render loop, render thread, backend discovery.
@@ -1308,95 +1332,6 @@ pub(crate) fn build_input_manager(config: &HypercolorConfig) -> InputManager {
     }
 
     input_manager
-}
-
-fn build_wled_backend(config: &HypercolorConfig, runtime_state_path: &Path) -> WledBackend {
-    let mut known_ips: HashSet<_> = config.wled.known_ips.iter().copied().collect();
-    match runtime_state::load_wled_probe_ips(runtime_state_path) {
-        Ok(cached_ips) => {
-            known_ips.extend(cached_ips);
-        }
-        Err(error) => {
-            warn!(
-                path = %runtime_state_path.display(),
-                %error,
-                "Failed to load cached WLED probe IPs; falling back to config only"
-            );
-        }
-    }
-
-    let mut resolved_known_ips: Vec<_> = known_ips.into_iter().collect();
-    resolved_known_ips.sort_unstable();
-
-    let mut backend =
-        WledBackend::with_mdns_fallback(resolved_known_ips, config.discovery.mdns_enabled);
-    match runtime_state::load_wled_probe_targets(runtime_state_path) {
-        Ok(cached_targets) => {
-            for target in cached_targets {
-                let Some((device_id, ip, info)) = cached_wled_backend_seed(&target) else {
-                    continue;
-                };
-                backend.remember_device(device_id, ip, info);
-            }
-        }
-        Err(error) => {
-            warn!(
-                path = %runtime_state_path.display(),
-                %error,
-                "Failed to load cached WLED identity hints; backend will rely on fresh probing"
-            );
-        }
-    }
-    let protocol = match config.wled.default_protocol {
-        WledProtocolConfig::Ddp => WledProtocol::Ddp,
-        WledProtocolConfig::E131 => WledProtocol::E131,
-    };
-    backend.set_protocol(protocol);
-    backend.set_realtime_http_enabled(config.wled.realtime_http_enabled);
-    backend.set_dedup_threshold(config.wled.dedup_threshold);
-    backend
-}
-
-fn cached_wled_backend_seed(
-    target: &WledKnownTarget,
-) -> Option<(DeviceId, std::net::IpAddr, WledDeviceInfo)> {
-    let fingerprint = target.fingerprint.clone()?;
-    let name = target.name.clone()?;
-    let led_count = target.led_count?;
-    let fps = target
-        .max_fps
-        .map_or(60, |value| u8::try_from(value).unwrap_or(u8::MAX));
-
-    Some((
-        fingerprint.stable_device_id(),
-        target.ip,
-        WledDeviceInfo {
-            firmware_version: target
-                .firmware_version
-                .clone()
-                .unwrap_or_else(|| "unknown".to_owned()),
-            build_id: 0,
-            mac: fingerprint
-                .0
-                .strip_prefix("net:")
-                .filter(|value| !value.starts_with("wled:"))
-                .unwrap_or_default()
-                .to_owned(),
-            name,
-            led_count: u16::try_from(led_count).unwrap_or(u16::MAX),
-            rgbw: target.rgbw.unwrap_or(false),
-            max_segments: 1,
-            fps,
-            power_draw_ma: 0,
-            max_power_ma: 0,
-            free_heap: 0,
-            uptime_secs: 0,
-            arch: "unknown".to_owned(),
-            is_wifi: true,
-            effect_count: 0,
-            palette_count: 0,
-        },
-    ))
 }
 
 fn audio_source_from_device(device: &str) -> AudioSourceType {

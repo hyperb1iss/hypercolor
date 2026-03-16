@@ -141,6 +141,15 @@ pub struct PairDeviceOutcome {
     pub status: PairDeviceStatus,
     pub message: String,
     pub auth_state: DeviceAuthState,
+    pub activated: bool,
+}
+
+/// Driver-owned result of clearing pairing credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClearPairingOutcome {
+    pub message: String,
+    pub auth_state: DeviceAuthState,
+    pub disconnected: bool,
 }
 
 /// Discovery request normalized by the host.
@@ -250,7 +259,11 @@ pub trait DiscoveryCapability: Send + Sync {
 #[async_trait]
 pub trait PairingCapability: Send + Sync {
     /// Summarize auth state for one tracked device.
-    fn auth_summary(&self, device: &TrackedDeviceCtx<'_>) -> Option<DeviceAuthSummary>;
+    async fn auth_summary(
+        &self,
+        host: &dyn DriverHost,
+        device: &TrackedDeviceCtx<'_>,
+    ) -> Option<DeviceAuthSummary>;
 
     /// Pair a tracked device.
     ///
@@ -273,7 +286,7 @@ pub trait PairingCapability: Send + Sync {
         &self,
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
-    ) -> Result<()>;
+    ) -> Result<ClearPairingOutcome>;
 }
 
 /// Factory and capability root for one modular network driver.
