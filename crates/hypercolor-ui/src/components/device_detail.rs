@@ -408,6 +408,36 @@ pub fn DeviceDetail(
                         </div>
                     </div>
 
+                    // ── Hue entertainment area hint (when no zones) ─────────
+                    {(dev.zones.is_empty() && dev.backend.to_lowercase() == "hue").then(|| {
+                        view! {
+                            <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">
+                                <div class="px-4 py-3">
+                                    <div class="flex items-center gap-2 mb-2">
+                                        <Icon icon=LuLightbulb width="13px" height="13px" style="color: rgba(255, 183, 77, 0.6)" />
+                                        <h3 class="text-[11px] font-medium" style="color: rgba(255, 183, 77, 0.8)">
+                                            "Entertainment Area Required"
+                                        </h3>
+                                    </div>
+                                    <p class="text-[10px] text-fg-tertiary/60 leading-relaxed mb-2">
+                                        "Hypercolor streams to Hue lights through the Entertainment API. "
+                                        "To get started:"
+                                    </p>
+                                    <ol class="text-[10px] text-fg-tertiary/50 leading-relaxed space-y-1 pl-4 list-decimal mb-2">
+                                        <li>"Open the Hue app on your phone"</li>
+                                        <li>"Go to Settings \u{2192} Entertainment areas"</li>
+                                        <li>"Create an area and add the lights you want to control"</li>
+                                        <li>"Come back here and re-scan for devices"</li>
+                                    </ol>
+                                    <p class="text-[9px] text-fg-tertiary/35 leading-relaxed">
+                                        "Each light in the entertainment area becomes an addressable channel "
+                                        "that Hypercolor can stream color data to in real time."
+                                    </p>
+                                </div>
+                            </div>
+                        }
+                    })}
+
                     // ── Zones (expanded by default, animated collapse) ──────
                     {(!dev.zones.is_empty()).then(|| {
                         let zones = dev.zones.clone();

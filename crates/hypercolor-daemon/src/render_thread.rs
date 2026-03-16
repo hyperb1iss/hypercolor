@@ -30,9 +30,7 @@ use hypercolor_core::engine::{FrameStats, RenderLoop};
 use hypercolor_core::input::{InputData, InputManager, InteractionData, ScreenData};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
-use hypercolor_core::types::canvas::{
-    Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear,
-};
+use hypercolor_core::types::canvas::{Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
 
 use crate::device_settings::DeviceSettingsStore;

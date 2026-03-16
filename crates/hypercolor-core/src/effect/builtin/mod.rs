@@ -763,19 +763,26 @@ fn gradient_presets() -> Vec<PresetTemplate> {
     ]
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "preset catalog is intentionally data-heavy and easier to maintain as one table"
+)]
 fn color_wave_presets() -> Vec<PresetTemplate> {
     vec![
+        // ── Signature ────────────────────────────────────────────────────
         preset_with_desc(
             "Neon Scanner",
-            "Fast cyan scan line",
+            "Fast cyan scan lines bouncing across the rig",
             &[
                 ("wave_color", ControlValue::Color([0.5, 1.0, 0.92, 1.0])),
                 (
                     "background_color",
                     ControlValue::Color([0.0, 0.01, 0.04, 1.0]),
                 ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
                 ("speed", ControlValue::Float(95.0)),
                 ("wave_width", ControlValue::Float(20.0)),
+                ("spawn_delay", ControlValue::Float(65.0)),
                 ("trail", ControlValue::Float(30.0)),
                 (
                     "direction",
@@ -783,8 +790,27 @@ fn color_wave_presets() -> Vec<PresetTemplate> {
                 ),
             ],
         ),
-        preset(
+        preset_with_desc(
+            "SilkCircuit Pulse",
+            "Electric purple waves on deep void",
+            &[
+                ("wave_color", ControlValue::Color([0.88, 0.21, 1.0, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.02, 0.0, 0.06, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(70.0)),
+                ("wave_width", ControlValue::Float(35.0)),
+                ("spawn_delay", ControlValue::Float(55.0)),
+                ("trail", ControlValue::Float(60.0)),
+                ("direction", ControlValue::Enum("Right".to_owned())),
+            ],
+        ),
+        // ── Cinematic ────────────────────────────────────────────────────
+        preset_with_desc(
             "Lava Flow",
+            "Slow molten waves with long ember trails",
             &[
                 ("wave_color", ControlValue::Color([1.0, 0.3, 0.0, 1.0])),
                 (
@@ -792,9 +818,176 @@ fn color_wave_presets() -> Vec<PresetTemplate> {
                     ControlValue::Color([0.15, 0.02, 0.0, 1.0]),
                 ),
                 ("color_mode", ControlValue::Enum("Custom".to_owned())),
-                ("speed", ControlValue::Float(30.0)),
+                ("speed", ControlValue::Float(25.0)),
                 ("wave_width", ControlValue::Float(80.0)),
-                ("trail", ControlValue::Float(85.0)),
+                ("spawn_delay", ControlValue::Float(30.0)),
+                ("trail", ControlValue::Float(90.0)),
+                ("direction", ControlValue::Enum("Right".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Ocean Drift",
+            "Gentle blue-green waves rolling downward",
+            &[
+                ("wave_color", ControlValue::Color([0.1, 0.5, 0.9, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.0, 0.03, 0.1, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(35.0)),
+                ("wave_width", ControlValue::Float(60.0)),
+                ("spawn_delay", ControlValue::Float(40.0)),
+                ("trail", ControlValue::Float(75.0)),
+                ("direction", ControlValue::Enum("Down".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Arctic Cascade",
+            "Cool white-blue bands falling like snow",
+            &[
+                ("wave_color", ControlValue::Color([0.7, 0.85, 1.0, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.02, 0.04, 0.1, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(45.0)),
+                ("wave_width", ControlValue::Float(25.0)),
+                ("spawn_delay", ControlValue::Float(60.0)),
+                ("trail", ControlValue::Float(50.0)),
+                ("direction", ControlValue::Enum("Down".to_owned())),
+            ],
+        ),
+        // ── Intense ──────────────────────────────────────────────────────
+        preset_with_desc(
+            "Blade Runner",
+            "Fast pink slices on noir darkness",
+            &[
+                ("wave_color", ControlValue::Color([1.0, 0.1, 0.6, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.01, 0.0, 0.03, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(90.0)),
+                ("wave_width", ControlValue::Float(12.0)),
+                ("spawn_delay", ControlValue::Float(75.0)),
+                ("trail", ControlValue::Float(15.0)),
+                (
+                    "direction",
+                    ControlValue::Enum("Horizontal Pass".to_owned()),
+                ),
+            ],
+        ),
+        preset_with_desc(
+            "Laser Grid",
+            "Rapid thin beams crisscrossing vertically",
+            &[
+                ("wave_color", ControlValue::Color([0.0, 1.0, 0.4, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.0, 0.02, 0.0, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(85.0)),
+                ("wave_width", ControlValue::Float(8.0)),
+                ("spawn_delay", ControlValue::Float(80.0)),
+                ("trail", ControlValue::Float(10.0)),
+                ("direction", ControlValue::Enum("Vertical Pass".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Warning Strobe",
+            "Amber hazard bands sweeping left",
+            &[
+                ("wave_color", ControlValue::Color([1.0, 0.7, 0.0, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.08, 0.03, 0.0, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(80.0)),
+                ("wave_width", ControlValue::Float(40.0)),
+                ("spawn_delay", ControlValue::Float(70.0)),
+                ("trail", ControlValue::Float(20.0)),
+                ("direction", ControlValue::Enum("Left".to_owned())),
+            ],
+        ),
+        // ── Rainbow / Color Cycling ──────────────────────────────────────
+        preset_with_desc(
+            "Prism Parade",
+            "Rainbow waves cycling through the full spectrum",
+            &[
+                ("wave_color", ControlValue::Color([1.0, 0.2, 0.3, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.01, 0.01, 0.02, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Color Cycle".to_owned())),
+                ("cycle_speed", ControlValue::Float(60.0)),
+                ("speed", ControlValue::Float(55.0)),
+                ("wave_width", ControlValue::Float(45.0)),
+                ("spawn_delay", ControlValue::Float(55.0)),
+                ("trail", ControlValue::Float(65.0)),
+                ("direction", ControlValue::Enum("Right".to_owned())),
+            ],
+        ),
+        preset_with_desc(
+            "Confetti Storm",
+            "Random-colored bands flying in all directions",
+            &[
+                ("wave_color", ControlValue::Color([1.0, 0.4, 0.8, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.02, 0.01, 0.04, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Random".to_owned())),
+                ("speed", ControlValue::Float(75.0)),
+                ("wave_width", ControlValue::Float(18.0)),
+                ("spawn_delay", ControlValue::Float(85.0)),
+                ("trail", ControlValue::Float(25.0)),
+                (
+                    "direction",
+                    ControlValue::Enum("Horizontal Pass".to_owned()),
+                ),
+            ],
+        ),
+        // ── Ambient ──────────────────────────────────────────────────────
+        preset_with_desc(
+            "Meditation",
+            "Ultra-slow deep indigo wash",
+            &[
+                ("wave_color", ControlValue::Color([0.25, 0.1, 0.7, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.01, 0.0, 0.04, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Custom".to_owned())),
+                ("speed", ControlValue::Float(12.0)),
+                ("wave_width", ControlValue::Float(100.0)),
+                ("spawn_delay", ControlValue::Float(15.0)),
+                ("trail", ControlValue::Float(95.0)),
+                ("direction", ControlValue::Enum("Up".to_owned())),
+                ("brightness", ControlValue::Float(0.7)),
+            ],
+        ),
+        preset_with_desc(
+            "Candlelight",
+            "Warm flickering gold on soft amber",
+            &[
+                ("wave_color", ControlValue::Color([1.0, 0.65, 0.15, 1.0])),
+                (
+                    "background_color",
+                    ControlValue::Color([0.12, 0.04, 0.0, 1.0]),
+                ),
+                ("color_mode", ControlValue::Enum("Random".to_owned())),
+                ("speed", ControlValue::Float(20.0)),
+                ("wave_width", ControlValue::Float(70.0)),
+                ("spawn_delay", ControlValue::Float(25.0)),
+                ("trail", ControlValue::Float(88.0)),
+                ("direction", ControlValue::Enum("Vertical Pass".to_owned())),
+                ("brightness", ControlValue::Float(0.8)),
             ],
         ),
     ]

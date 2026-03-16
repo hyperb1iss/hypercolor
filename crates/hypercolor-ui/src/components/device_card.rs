@@ -36,6 +36,7 @@ pub enum DeviceClass {
     Hub,
     Controller,
     WledController,
+    SmartLight,
     Audio,
     Display,
     Other,
@@ -48,6 +49,7 @@ pub const ALL_DEVICE_CLASSES: &[DeviceClass] = &[
     DeviceClass::Hub,
     DeviceClass::Controller,
     DeviceClass::WledController,
+    DeviceClass::SmartLight,
     DeviceClass::Audio,
     DeviceClass::Display,
     DeviceClass::Other,
@@ -72,6 +74,9 @@ pub fn classify_device(device: &DeviceSummary) -> DeviceClass {
 
     if backend == "wled" {
         return DeviceClass::WledController;
+    }
+    if backend == "hue" {
+        return DeviceClass::SmartLight;
     }
 
     if name.contains("push") || name.contains("huntsman") || name.contains("defy")
@@ -124,6 +129,7 @@ pub fn device_class_icon(class: &DeviceClass) -> icondata_core::Icon {
         DeviceClass::Hub => LuNetwork,
         DeviceClass::Controller => LuLayers,
         DeviceClass::WledController => LuWifi,
+        DeviceClass::SmartLight => LuLightbulb,
         DeviceClass::Audio => LuMic,
         DeviceClass::Display => LuMonitor,
         DeviceClass::Other => LuCircleDot,
@@ -138,6 +144,7 @@ pub fn device_class_label(class: &DeviceClass) -> &'static str {
         DeviceClass::Hub => "Hub",
         DeviceClass::Controller => "Controller",
         DeviceClass::WledController => "WLED",
+        DeviceClass::SmartLight => "Smart Light",
         DeviceClass::Audio => "Audio",
         DeviceClass::Display => "Display",
         DeviceClass::Other => "Device",
@@ -152,6 +159,7 @@ fn device_class_tint(class: &DeviceClass) -> &'static str {
         DeviceClass::Hub => "100, 220, 200",
         DeviceClass::Controller => "180, 170, 200",
         DeviceClass::WledController => "128, 255, 234",
+        DeviceClass::SmartLight => "255, 183, 77",
         DeviceClass::Audio => "200, 130, 255",
         DeviceClass::Display => "140, 200, 255",
         DeviceClass::Other => "139, 133, 160",
@@ -191,6 +199,9 @@ fn device_class_pattern(class: &DeviceClass) -> &'static str {
         }
         DeviceClass::Controller | DeviceClass::WledController => {
             "repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 4px)"
+        }
+        DeviceClass::SmartLight => {
+            "radial-gradient(ellipse at 50% 20%, rgba(255,183,77,0.04), transparent 60%)"
         }
         DeviceClass::Audio => {
             "radial-gradient(circle at 30% 50%, rgba(255,255,255,0.03), transparent 60%)"
@@ -400,10 +411,10 @@ pub fn DeviceCard(
                     }
                 })}
 
-                // ── Row 2: Zone topology preview ──────────────────────────
-                {(zone_count > 0).then(|| {
+                // ── Row 2: Zone topology preview / Hue setup hint ──────────
+                {if zone_count > 0 {
                     let zone_rgb = rgb.clone();
-                    view! {
+                    Some(view! {
                         <div class="flex items-center gap-1 mt-0.5">
                             {zone_previews.into_iter().map(|(svg, led_count)| {
                                 let zr = zone_rgb.clone();
@@ -422,8 +433,20 @@ pub fn DeviceCard(
                                 </span>
                             })}
                         </div>
-                    }
-                })}
+                    }.into_any())
+                } else if device.backend.to_lowercase() == "hue" {
+                    Some(view! {
+                        <div class="flex items-center gap-1.5 mt-1 px-2 py-1.5 rounded-md"
+                             style="background: rgba(255, 183, 77, 0.05); border: 1px solid rgba(255, 183, 77, 0.08)">
+                            <Icon icon=LuInfo width="10px" height="10px" style="color: rgba(255, 183, 77, 0.5); flex-shrink: 0" />
+                            <span class="text-[9px] leading-tight" style="color: rgba(255, 183, 77, 0.55)">
+                                "Set up an Entertainment Area in the Hue app to enable streaming"
+                            </span>
+                        </div>
+                    }.into_any())
+                } else {
+                    None
+                }}
 
                 // ── Row 3: LED count + firmware + brightness ──────────────
                 <div class="flex items-center justify-between">
