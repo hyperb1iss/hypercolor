@@ -11,10 +11,12 @@ use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::config::ConfigManager;
 use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::session::{SessionWatcher, SleepPolicy};
+use hypercolor_network::DriverRegistry;
 use hypercolor_types::event::HypercolorEvent;
 use hypercolor_types::session::{SessionEvent, SleepAction, WakeAction};
 
 use crate::discovery::{self, DiscoveryBackend, DiscoveryRuntime};
+use crate::network::DaemonDriverHost;
 
 const FADE_STEP_MS: u64 = 16;
 
@@ -56,6 +58,8 @@ struct SessionRuntime {
     effect_engine: Arc<Mutex<EffectEngine>>,
     power_tx: watch::Sender<OutputPowerState>,
     discovery_runtime: DiscoveryRuntime,
+    driver_host: Arc<DaemonDriverHost>,
+    driver_registry: Arc<DriverRegistry>,
 }
 
 impl SessionController {
@@ -66,6 +70,8 @@ impl SessionController {
         effect_engine: Arc<Mutex<EffectEngine>>,
         power_tx: watch::Sender<OutputPowerState>,
         discovery_runtime: DiscoveryRuntime,
+        driver_host: Arc<DaemonDriverHost>,
+        driver_registry: Arc<DriverRegistry>,
     ) -> Self {
         let session_config = config_manager.get().session.clone();
         let watcher = SessionWatcher::start(&session_config);
@@ -76,6 +82,8 @@ impl SessionController {
             effect_engine,
             power_tx,
             discovery_runtime,
+            driver_host,
+            driver_registry,
         };
         let task = tokio::spawn(run_session_loop(event_rx, runtime));
 
@@ -241,6 +249,8 @@ async fn run_usb_resume_scan(runtime: &SessionRuntime) {
     let config = Arc::clone(&*config_guard);
     let result = discovery::execute_discovery_scan(
         runtime.discovery_runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
         config,
         vec![DiscoveryBackend::Usb, DiscoveryBackend::SmBus],
         discovery::default_timeout(),

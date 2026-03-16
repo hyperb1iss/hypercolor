@@ -5,12 +5,15 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_core::device::DeviceBackend;
+use hypercolor_core::device::TransportScanner;
+use hypercolor_core::device::hue::HueScanner;
 use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueBackend, HueBridgeClient};
 use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_driver_api::{
-    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DriverDescriptor, DriverHost,
-    DriverTransport, NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
-    PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
+    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
+    DiscoveryResult, DriverDescriptor, DriverHost, DriverTransport, NetworkDriverFactory,
+    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
+    PairingFlowKind, TrackedDeviceCtx,
 };
 use hypercolor_types::config::HueConfig;
 
@@ -27,7 +30,7 @@ const HUE_PAIRING_INSTRUCTIONS: &[&str] = &[
 ];
 
 pub(crate) static DESCRIPTOR: DriverDescriptor =
-    DriverDescriptor::new("hue", "Philips Hue", DriverTransport::Network, false, true);
+    DriverDescriptor::new("hue", "Philips Hue", DriverTransport::Network, true, true);
 
 #[derive(Clone)]
 pub(crate) struct HueDriverFactory {
@@ -62,6 +65,40 @@ impl NetworkDriverFactory for HueDriverFactory {
 
     fn pairing(&self) -> Option<&dyn PairingCapability> {
         Some(self)
+    }
+
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl DiscoveryCapability for HueDriverFactory {
+    async fn discover(
+        &self,
+        host: &dyn DriverHost,
+        request: &DiscoveryRequest,
+    ) -> Result<DiscoveryResult> {
+        let _ = host;
+        let runtime = self.host.discovery_runtime();
+        let known_bridges =
+            crate::discovery::resolve_hue_probe_bridges(&runtime.device_registry, &self.config)
+                .await;
+        let mut scanner = HueScanner::with_options(
+            known_bridges,
+            self.host.credential_store(),
+            request.timeout,
+            request.mdns_enabled,
+            self.config.entertainment_config.clone(),
+        );
+        let devices = scanner
+            .scan()
+            .await?
+            .into_iter()
+            .map(super::into_driver_discovered)
+            .collect();
+
+        Ok(DiscoveryResult { devices })
     }
 }
 

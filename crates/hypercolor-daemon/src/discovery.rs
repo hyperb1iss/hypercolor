@@ -8,18 +8,21 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use anyhow::Context;
+use anyhow::{Context, Result};
 use hypercolor_core::attachment::AttachmentRegistry;
 use hypercolor_core::bus::HypercolorBus;
 use hypercolor_core::device::net::CredentialStore;
-use hypercolor_core::device::wled::{WledKnownTarget, WledScanner};
+use hypercolor_core::device::wled::WledKnownTarget;
 use hypercolor_core::device::{
     AsyncWriteFailure, BackendIo, BackendManager, BlocksScanner, DeviceLifecycleManager,
-    DeviceRegistry, DiscoveryConnectBehavior, DiscoveryOrchestrator, DiscoveryProgress,
-    LifecycleAction, ScannerScanReport, SmBusScanner, UsbProtocolConfigStore, UsbScanner,
+    DeviceRegistry, DiscoveredDevice, DiscoveryConnectBehavior, DiscoveryOrchestrator,
+    DiscoveryProgress, LifecycleAction, ScannerScanReport, SmBusScanner, TransportScanner,
+    UsbProtocolConfigStore, UsbScanner,
 };
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
-use hypercolor_types::config::HypercolorConfig;
+use hypercolor_driver_api::{DiscoveryRequest, DriverDiscoveredDevice, NetworkDriverFactory};
+use hypercolor_network::DriverRegistry;
+use hypercolor_types::config::{HypercolorConfig, WledConfig};
 use hypercolor_types::device::{
     DeviceError, DeviceFamily, DeviceFingerprint, DeviceId, DeviceInfo, DeviceState,
     DeviceTopologyHint, DeviceUserSettings,
@@ -39,12 +42,17 @@ use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::{DeviceSettingsStore, StoredDeviceSettings};
 use crate::layout_auto_exclusions;
 use crate::logical_devices::{self, LogicalDevice};
+use crate::network::{self, DaemonDriverHost};
 use crate::runtime_state;
 
 #[cfg(feature = "hue")]
-use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueKnownBridge, HueScanner};
+use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueKnownBridge};
 #[cfg(feature = "nanoleaf")]
-use hypercolor_core::device::nanoleaf::{NanoleafKnownDevice, NanoleafScanner};
+use hypercolor_core::device::nanoleaf::NanoleafKnownDevice;
+#[cfg(feature = "hue")]
+use hypercolor_types::config::HueConfig;
+#[cfg(feature = "nanoleaf")]
+use hypercolor_types::config::NanoleafConfig;
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 10_000;
 const MIN_DISCOVERY_TIMEOUT_MS: u64 = 100;
@@ -156,55 +164,51 @@ pub struct DiscoveryRuntime {
 }
 
 /// Discovery backends currently implemented in runtime scans.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DiscoveryBackend {
-    Wled,
-    #[cfg(feature = "hue")]
-    Hue,
-    #[cfg(feature = "nanoleaf")]
-    Nanoleaf,
+    Network(String),
     Usb,
     SmBus,
     Blocks,
 }
 
 impl DiscoveryBackend {
+    /// Create a network-backed discovery target.
+    #[must_use]
+    pub fn network(id: impl Into<String>) -> Self {
+        Self::Network(id.into())
+    }
+
     /// Stable backend identifier used in request/response payloads.
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
-            Self::Wled => "wled",
-            #[cfg(feature = "hue")]
-            Self::Hue => "hue",
-            #[cfg(feature = "nanoleaf")]
-            Self::Nanoleaf => "nanoleaf",
+            Self::Network(id) => id.as_str(),
             Self::Usb => "usb",
             Self::SmBus => "smbus",
             Self::Blocks => "blocks",
         }
     }
 
-    fn parse(raw: &str) -> Option<Self> {
+    fn parse(raw: &str, registry: &DriverRegistry) -> Option<Self> {
         match raw {
-            "wled" => Some(Self::Wled),
-            #[cfg(feature = "hue")]
-            "hue" => Some(Self::Hue),
-            #[cfg(feature = "nanoleaf")]
-            "nanoleaf" => Some(Self::Nanoleaf),
             "usb" => Some(Self::Usb),
             "smbus" => Some(Self::SmBus),
             "blocks" => Some(Self::Blocks),
-            _ => None,
+            _ => registry
+                .get(raw)
+                .filter(|driver| driver.discovery().is_some())
+                .map(|_| Self::network(raw)),
         }
     }
 
     /// All backend identifiers compiled into this daemon binary.
-    fn all() -> Vec<Self> {
-        let mut backends = vec![Self::Wled];
-        #[cfg(feature = "hue")]
-        backends.push(Self::Hue);
-        #[cfg(feature = "nanoleaf")]
-        backends.push(Self::Nanoleaf);
+    fn all(registry: &DriverRegistry) -> Vec<Self> {
+        let mut backends = registry
+            .discovery_drivers()
+            .into_iter()
+            .map(|driver| Self::network(driver.descriptor().id))
+            .collect::<Vec<_>>();
         backends.extend([Self::Usb, Self::SmBus, Self::Blocks]);
         backends
     }
@@ -230,10 +234,10 @@ pub fn normalize_timeout_ms(timeout_ms: Option<u64>) -> Duration {
 /// that was recently reachable over HTTP.
 pub async fn resolve_wled_probe_ips(
     device_registry: &DeviceRegistry,
-    config: &HypercolorConfig,
+    config: &WledConfig,
     runtime_state_path: &std::path::Path,
 ) -> Vec<IpAddr> {
-    let mut known_ips: HashSet<IpAddr> = config.wled.known_ips.iter().copied().collect();
+    let mut known_ips: HashSet<IpAddr> = config.known_ips.iter().copied().collect();
 
     match runtime_state::load_wled_probe_ips(runtime_state_path) {
         Ok(cached_ips) => {
@@ -259,11 +263,10 @@ pub async fn resolve_wled_probe_ips(
 /// identity hints for friendly fallback labels when HTTP enrichment fails.
 pub async fn resolve_wled_probe_targets(
     device_registry: &DeviceRegistry,
-    config: &HypercolorConfig,
+    config: &WledConfig,
     runtime_state_path: &std::path::Path,
 ) -> Vec<WledKnownTarget> {
     let mut known_targets: HashMap<IpAddr, WledKnownTarget> = config
-        .wled
         .known_ips
         .iter()
         .copied()
@@ -323,10 +326,9 @@ pub async fn resolve_wled_probe_targets(
 /// currently tracked registry metadata.
 pub async fn resolve_nanoleaf_probe_devices(
     device_registry: &DeviceRegistry,
-    config: &HypercolorConfig,
+    config: &NanoleafConfig,
 ) -> Vec<NanoleafKnownDevice> {
     let mut known_devices: HashMap<IpAddr, NanoleafKnownDevice> = config
-        .nanoleaf
         .device_ips
         .iter()
         .copied()
@@ -396,10 +398,9 @@ pub async fn resolve_nanoleaf_probe_devices(
 /// registry metadata.
 pub async fn resolve_hue_probe_bridges(
     device_registry: &DeviceRegistry,
-    config: &HypercolorConfig,
+    config: &HueConfig,
 ) -> Vec<HueKnownBridge> {
     let mut known_bridges: HashMap<IpAddr, HueKnownBridge> = config
-        .hue
         .bridge_ips
         .iter()
         .copied()
@@ -484,13 +485,14 @@ pub async fn resolve_hue_probe_bridges(
 pub fn resolve_backends(
     requested: Option<&[String]>,
     config: &HypercolorConfig,
+    driver_registry: &DriverRegistry,
 ) -> Result<Vec<DiscoveryBackend>, String> {
     let includes_all = requested.is_some_and(|raw| {
         raw.iter()
             .any(|item| item.trim().eq_ignore_ascii_case("all"))
     });
     let explicit_request = requested.is_some_and(|raw| !raw.is_empty()) && !includes_all;
-    let compiled_backends = DiscoveryBackend::all();
+    let compiled_backends = DiscoveryBackend::all(driver_registry);
     let all_backends: Vec<String> = compiled_backends
         .iter()
         .map(|backend| backend.as_str().to_owned())
@@ -514,51 +516,28 @@ pub fn resolve_backends(
         let normalized = candidate.trim().to_ascii_lowercase();
         let supported: Vec<&str> = compiled_backends
             .iter()
-            .map(|backend| backend.as_str())
+            .map(DiscoveryBackend::as_str)
             .collect();
-        let backend = DiscoveryBackend::parse(&normalized).ok_or_else(|| {
+        let backend = DiscoveryBackend::parse(&normalized, driver_registry).ok_or_else(|| {
             format!(
                 "Unknown discovery backend '{candidate}'. Supported backends: {}",
                 supported.join(", ")
             )
         })?;
 
-        if !seen.insert(backend) {
+        if !seen.insert(backend.clone()) {
             continue;
         }
 
-        match backend {
-            DiscoveryBackend::Wled => {
-                if !config.discovery.wled_scan {
+        match &backend {
+            DiscoveryBackend::Network(driver_id) => {
+                if !network::driver_enabled(config, driver_id) {
                     if explicit_request {
-                        return Err(
-                            "Discovery backend 'wled' is disabled by config (discovery.wled_scan=false)"
-                                .to_owned(),
-                        );
-                    }
-                    continue;
-                }
-            }
-            #[cfg(feature = "hue")]
-            DiscoveryBackend::Hue => {
-                if !config.discovery.hue_scan {
-                    if explicit_request {
-                        return Err(
-                            "Discovery backend 'hue' is disabled by config (discovery.hue_scan=false)"
-                                .to_owned(),
-                        );
-                    }
-                    continue;
-                }
-            }
-            #[cfg(feature = "nanoleaf")]
-            DiscoveryBackend::Nanoleaf => {
-                if !config.discovery.nanoleaf_scan {
-                    if explicit_request {
-                        return Err(
-                            "Discovery backend 'nanoleaf' is disabled by config (discovery.nanoleaf_scan=false)"
-                                .to_owned(),
-                        );
+                        let config_flag =
+                            network::driver_config_flag(driver_id).unwrap_or("unknown");
+                        return Err(format!(
+                            "Discovery backend '{driver_id}' is disabled by config ({config_flag}=false)"
+                        ));
                     }
                     continue;
                 }
@@ -592,6 +571,59 @@ pub fn backend_names(backends: &[DiscoveryBackend]) -> Vec<String> {
         .collect()
 }
 
+struct NetworkDriverScanner {
+    driver: Arc<dyn NetworkDriverFactory>,
+    host: Arc<DaemonDriverHost>,
+    request: DiscoveryRequest,
+}
+
+impl NetworkDriverScanner {
+    fn new(
+        driver: Arc<dyn NetworkDriverFactory>,
+        host: Arc<DaemonDriverHost>,
+        request: DiscoveryRequest,
+    ) -> Self {
+        Self {
+            driver,
+            host,
+            request,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl TransportScanner for NetworkDriverScanner {
+    fn name(&self) -> &str {
+        self.driver.descriptor().display_name
+    }
+
+    async fn scan(&mut self) -> Result<Vec<DiscoveredDevice>> {
+        let Some(capability) = self.driver.discovery() else {
+            return Ok(Vec::new());
+        };
+        let result = capability
+            .discover(self.host.as_ref(), &self.request)
+            .await?;
+        Ok(result
+            .devices
+            .into_iter()
+            .map(driver_discovered_to_device)
+            .collect())
+    }
+}
+
+fn driver_discovered_to_device(device: DriverDiscoveredDevice) -> DiscoveredDevice {
+    DiscoveredDevice {
+        connection_type: device.info.connection_type,
+        name: device.info.name.clone(),
+        family: device.info.family.clone(),
+        fingerprint: device.fingerprint,
+        connect_behavior: device.connect_behavior,
+        info: device.info,
+        metadata: device.metadata,
+    }
+}
+
 /// Execute one full discovery scan and publish discovery events.
 ///
 /// This function assumes the caller already set `in_progress=true`. It always
@@ -599,6 +631,8 @@ pub fn backend_names(backends: &[DiscoveryBackend]) -> Vec<String> {
 #[allow(clippy::too_many_lines)]
 pub async fn execute_discovery_scan(
     runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
     config: Arc<HypercolorConfig>,
     backends: Vec<DiscoveryBackend>,
     timeout: Duration,
@@ -643,40 +677,25 @@ pub async fn execute_discovery_scan(
     let mut orchestrator = DiscoveryOrchestrator::new(runtime.device_registry.clone());
     for backend in backends {
         match backend {
-            DiscoveryBackend::Wled => {
-                let known_targets = resolve_wled_probe_targets(
-                    &runtime.device_registry,
-                    config.as_ref(),
-                    &runtime.runtime_state_path,
-                )
-                .await;
-                orchestrator.add_scanner(Box::new(WledScanner::with_known_targets(
-                    known_targets,
-                    config.discovery.mdns_enabled,
-                    timeout,
-                )));
-            }
-            #[cfg(feature = "hue")]
-            DiscoveryBackend::Hue => {
-                let known_bridges =
-                    resolve_hue_probe_bridges(&runtime.device_registry, config.as_ref()).await;
-                orchestrator.add_scanner(Box::new(HueScanner::with_options(
-                    known_bridges,
-                    Arc::clone(&runtime.credential_store),
-                    timeout,
-                    config.discovery.mdns_enabled,
-                    config.hue.entertainment_config.clone(),
-                )));
-            }
-            #[cfg(feature = "nanoleaf")]
-            DiscoveryBackend::Nanoleaf => {
-                let known_devices =
-                    resolve_nanoleaf_probe_devices(&runtime.device_registry, config.as_ref()).await;
-                orchestrator.add_scanner(Box::new(NanoleafScanner::with_options(
-                    known_devices,
-                    Arc::clone(&runtime.credential_store),
-                    timeout,
-                    config.discovery.mdns_enabled,
+            DiscoveryBackend::Network(driver_id) => {
+                let Some(driver) = driver_registry.get(&driver_id) else {
+                    warn!(driver_id, "skipping unknown network discovery driver");
+                    continue;
+                };
+                if driver.discovery().is_none() {
+                    warn!(
+                        driver_id,
+                        "skipping network driver without discovery capability"
+                    );
+                    continue;
+                }
+                orchestrator.add_scanner(Box::new(NetworkDriverScanner::new(
+                    driver,
+                    Arc::clone(&driver_host),
+                    DiscoveryRequest {
+                        timeout,
+                        mdns_enabled: config.discovery.mdns_enabled,
+                    },
                 )));
             }
             DiscoveryBackend::Usb => {
@@ -2691,7 +2710,27 @@ mod tests {
         DiscoveryBackend, backend_id_for_device, default_timeout, normalize_timeout_ms,
         resolve_backends,
     };
+    use crate::api::AppState;
     use hypercolor_types::{config::HypercolorConfig, device::DeviceFamily};
+
+    fn builtin_registry() -> AppState {
+        AppState::new()
+    }
+
+    fn expected_default_backends(state: &AppState) -> Vec<DiscoveryBackend> {
+        let mut backends = state
+            .driver_registry
+            .discovery_drivers()
+            .into_iter()
+            .map(|driver| DiscoveryBackend::network(driver.descriptor().id))
+            .collect::<Vec<_>>();
+        backends.extend([
+            DiscoveryBackend::Usb,
+            DiscoveryBackend::SmBus,
+            DiscoveryBackend::Blocks,
+        ]);
+        backends
+    }
 
     #[test]
     fn default_timeout_is_ten_seconds() {
@@ -2707,73 +2746,65 @@ mod tests {
 
     #[test]
     fn resolve_backends_defaults_to_all() {
+        let state = builtin_registry();
         let cfg = HypercolorConfig::default();
-        let resolved = resolve_backends(None, &cfg).expect("default backends should resolve");
-        assert_eq!(
-            resolved,
-            vec![
-                DiscoveryBackend::Wled,
-                DiscoveryBackend::Hue,
-                DiscoveryBackend::Nanoleaf,
-                DiscoveryBackend::Usb,
-                DiscoveryBackend::SmBus,
-                DiscoveryBackend::Blocks,
-            ]
-        );
+        let resolved = resolve_backends(None, &cfg, state.driver_registry.as_ref())
+            .expect("default backends should resolve");
+        assert_eq!(resolved, expected_default_backends(&state));
     }
 
     #[test]
     fn resolve_backends_rejects_unknown_values() {
+        let state = builtin_registry();
         let cfg = HypercolorConfig::default();
         let requested = vec!["unknown".to_owned()];
-        let error = resolve_backends(Some(&requested), &cfg).expect_err("unknown must fail");
+        let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
+            .expect_err("unknown must fail");
         assert!(error.contains("Unknown discovery backend"));
     }
 
     #[test]
     fn resolve_backends_rejects_disabled_wled() {
+        let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
         cfg.discovery.wled_scan = false;
         let requested = vec!["wled".to_owned()];
-        let error = resolve_backends(Some(&requested), &cfg).expect_err("wled must fail");
+        let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
+            .expect_err("wled must fail");
         assert!(error.contains("disabled"));
     }
 
     #[test]
     fn resolve_backends_rejects_disabled_nanoleaf() {
+        let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
         cfg.discovery.nanoleaf_scan = false;
         let requested = vec!["nanoleaf".to_owned()];
-        let error = resolve_backends(Some(&requested), &cfg).expect_err("nanoleaf must fail");
+        let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
+            .expect_err("nanoleaf must fail");
         assert!(error.contains("disabled"));
     }
 
     #[test]
     fn resolve_backends_rejects_disabled_hue() {
+        let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
         cfg.discovery.hue_scan = false;
         let requested = vec!["hue".to_owned()];
-        let error = resolve_backends(Some(&requested), &cfg).expect_err("hue must fail");
+        let error = resolve_backends(Some(&requested), &cfg, state.driver_registry.as_ref())
+            .expect_err("hue must fail");
         assert!(error.contains("disabled"));
     }
 
     #[test]
     fn resolve_backends_keeps_wled_when_mdns_is_disabled() {
+        let state = builtin_registry();
         let mut cfg = HypercolorConfig::default();
         cfg.discovery.mdns_enabled = false;
 
-        let resolved = resolve_backends(None, &cfg).expect("wled should still resolve");
-        assert_eq!(
-            resolved,
-            vec![
-                DiscoveryBackend::Wled,
-                DiscoveryBackend::Hue,
-                DiscoveryBackend::Nanoleaf,
-                DiscoveryBackend::Usb,
-                DiscoveryBackend::SmBus,
-                DiscoveryBackend::Blocks,
-            ]
-        );
+        let resolved = resolve_backends(None, &cfg, state.driver_registry.as_ref())
+            .expect("wled should still resolve");
+        assert_eq!(resolved, expected_default_backends(&state));
     }
 
     #[test]

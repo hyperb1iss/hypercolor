@@ -5,14 +5,16 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use hypercolor_core::device::DeviceBackend;
+use hypercolor_core::device::TransportScanner;
 use hypercolor_core::device::nanoleaf::{
-    DEFAULT_NANOLEAF_API_PORT, NanoleafBackend, pair_device_with_status,
+    DEFAULT_NANOLEAF_API_PORT, NanoleafBackend, NanoleafScanner, pair_device_with_status,
 };
 use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_driver_api::{
-    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DriverDescriptor, DriverHost,
-    DriverTransport, NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
-    PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
+    ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
+    DiscoveryResult, DriverDescriptor, DriverHost, DriverTransport, NetworkDriverFactory,
+    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
+    PairingFlowKind, TrackedDeviceCtx,
 };
 use hypercolor_types::config::NanoleafConfig;
 
@@ -28,13 +30,8 @@ const NANOLEAF_PAIRING_INSTRUCTIONS: &[&str] = &[
     "Click Pair Device.",
 ];
 
-pub(crate) static DESCRIPTOR: DriverDescriptor = DriverDescriptor::new(
-    "nanoleaf",
-    "Nanoleaf",
-    DriverTransport::Network,
-    false,
-    true,
-);
+pub(crate) static DESCRIPTOR: DriverDescriptor =
+    DriverDescriptor::new("nanoleaf", "Nanoleaf", DriverTransport::Network, true, true);
 
 #[derive(Clone)]
 pub(crate) struct NanoleafDriverFactory {
@@ -73,6 +70,41 @@ impl NetworkDriverFactory for NanoleafDriverFactory {
 
     fn pairing(&self) -> Option<&dyn PairingCapability> {
         Some(self)
+    }
+
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl DiscoveryCapability for NanoleafDriverFactory {
+    async fn discover(
+        &self,
+        host: &dyn DriverHost,
+        request: &DiscoveryRequest,
+    ) -> Result<DiscoveryResult> {
+        let _ = host;
+        let runtime = self.host.discovery_runtime();
+        let known_devices = crate::discovery::resolve_nanoleaf_probe_devices(
+            &runtime.device_registry,
+            &self.config,
+        )
+        .await;
+        let mut scanner = NanoleafScanner::with_options(
+            known_devices,
+            self.host.credential_store(),
+            request.timeout,
+            request.mdns_enabled,
+        );
+        let devices = scanner
+            .scan()
+            .await?
+            .into_iter()
+            .map(super::into_driver_discovered)
+            .collect();
+
+        Ok(DiscoveryResult { devices })
     }
 }
 

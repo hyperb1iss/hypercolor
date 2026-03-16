@@ -713,11 +713,14 @@ pub async fn discover_devices(
         |manager| Arc::clone(&manager.get()),
     );
     let requested_backends = body.as_ref().and_then(|request| request.backends.as_ref());
-    let resolved_backends =
-        match discovery::resolve_backends(requested_backends.map(Vec::as_slice), config.as_ref()) {
-            Ok(backends) => backends,
-            Err(error) => return ApiError::validation(error),
-        };
+    let resolved_backends = match discovery::resolve_backends(
+        requested_backends.map(Vec::as_slice),
+        config.as_ref(),
+        state.driver_registry.as_ref(),
+    ) {
+        Ok(backends) => backends,
+        Err(error) => return ApiError::validation(error),
+    };
     let timeout = discovery::normalize_timeout_ms(body.as_ref().and_then(|b| b.timeout_ms));
     let wait_for_completion = body.as_ref().and_then(|b| b.wait).unwrap_or(false);
 
@@ -732,28 +735,16 @@ pub async fn discover_devices(
     let scan_id = format!("scan_{}", uuid::Uuid::now_v7());
     let backend_names = discovery::backend_names(&resolved_backends);
     if wait_for_completion {
-        let runtime = discovery::DiscoveryRuntime {
-            device_registry: state.device_registry.clone(),
-            backend_manager: Arc::clone(&state.backend_manager),
-            lifecycle_manager: Arc::clone(&state.lifecycle_manager),
-            reconnect_tasks: Arc::clone(&state.reconnect_tasks),
-            event_bus: Arc::clone(&state.event_bus),
-            spatial_engine: Arc::clone(&state.spatial_engine),
-            layouts: Arc::clone(&state.layouts),
-            layouts_path: state.layouts_path.clone(),
-            layout_auto_exclusions: Arc::clone(&state.layout_auto_exclusions),
-            logical_devices: Arc::clone(&state.logical_devices),
-            attachment_registry: Arc::clone(&state.attachment_registry),
-            attachment_profiles: Arc::clone(&state.attachment_profiles),
-            device_settings: Arc::clone(&state.device_settings),
-            runtime_state_path: state.runtime_state_path.clone(),
-            usb_protocol_configs: state.usb_protocol_configs.clone(),
-            credential_store: Arc::clone(&state.credential_store),
-            in_progress: Arc::clone(&state.discovery_in_progress),
-            task_spawner: tokio::runtime::Handle::current(),
-        };
-        let result =
-            discovery::execute_discovery_scan(runtime, config, resolved_backends, timeout).await;
+        let runtime = state.driver_host.discovery_runtime();
+        let result = discovery::execute_discovery_scan(
+            runtime,
+            Arc::clone(&state.driver_registry),
+            Arc::clone(&state.driver_host),
+            config,
+            resolved_backends,
+            timeout,
+        )
+        .await;
 
         return ApiResponse::ok(serde_json::json!({
             "scan_id": scan_id,
@@ -764,28 +755,16 @@ pub async fn discover_devices(
 
     let state_for_task = Arc::clone(&state);
     tokio::spawn(async move {
-        let runtime = discovery::DiscoveryRuntime {
-            device_registry: state_for_task.device_registry.clone(),
-            backend_manager: Arc::clone(&state_for_task.backend_manager),
-            lifecycle_manager: Arc::clone(&state_for_task.lifecycle_manager),
-            reconnect_tasks: Arc::clone(&state_for_task.reconnect_tasks),
-            event_bus: Arc::clone(&state_for_task.event_bus),
-            spatial_engine: Arc::clone(&state_for_task.spatial_engine),
-            layouts: Arc::clone(&state_for_task.layouts),
-            layouts_path: state_for_task.layouts_path.clone(),
-            layout_auto_exclusions: Arc::clone(&state_for_task.layout_auto_exclusions),
-            logical_devices: Arc::clone(&state_for_task.logical_devices),
-            attachment_registry: Arc::clone(&state_for_task.attachment_registry),
-            attachment_profiles: Arc::clone(&state_for_task.attachment_profiles),
-            device_settings: Arc::clone(&state_for_task.device_settings),
-            runtime_state_path: state_for_task.runtime_state_path.clone(),
-            usb_protocol_configs: state_for_task.usb_protocol_configs.clone(),
-            credential_store: Arc::clone(&state_for_task.credential_store),
-            in_progress: Arc::clone(&state_for_task.discovery_in_progress),
-            task_spawner: tokio::runtime::Handle::current(),
-        };
-        let _ =
-            discovery::execute_discovery_scan(runtime, config, resolved_backends, timeout).await;
+        let runtime = state_for_task.driver_host.discovery_runtime();
+        let _ = discovery::execute_discovery_scan(
+            runtime,
+            Arc::clone(&state_for_task.driver_registry),
+            Arc::clone(&state_for_task.driver_host),
+            config,
+            resolved_backends,
+            timeout,
+        )
+        .await;
     });
 
     ApiResponse::accepted(serde_json::json!({

@@ -309,48 +309,7 @@ impl DaemonState {
 
         // ── Backend Manager ─────────────────────────────────────────────
         let usb_protocol_configs = UsbProtocolConfigStore::new();
-        let mut backend_manager_inner = BackendManager::new();
-        backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
-        if config.discovery.wled_scan {
-            backend_manager_inner.register_backend(Box::new(network::build_wled_backend(
-                config,
-                &runtime_state_path,
-            )));
-        }
-        if config.discovery.blocks_scan {
-            let socket_path = config.discovery.blocks_socket_path.as_ref().map_or_else(
-                hypercolor_core::device::BlocksBackend::default_socket_path,
-                std::path::PathBuf::from,
-            );
-            backend_manager_inner.register_backend(Box::new(
-                hypercolor_core::device::BlocksBackend::new(socket_path),
-            ));
-        }
-        #[cfg(feature = "hue")]
-        if config.discovery.hue_scan {
-            backend_manager_inner.register_backend(Box::new(
-                hypercolor_core::device::hue::HueBackend::with_mdns_enabled(
-                    config.hue.clone(),
-                    Arc::clone(&credential_store),
-                    config.discovery.mdns_enabled,
-                ),
-            ));
-        }
-        #[cfg(feature = "nanoleaf")]
-        if config.discovery.nanoleaf_scan {
-            backend_manager_inner.register_backend(Box::new(
-                hypercolor_core::device::nanoleaf::NanoleafBackend::with_mdns_enabled(
-                    config.nanoleaf.clone(),
-                    Arc::clone(&credential_store),
-                    config.discovery.mdns_enabled,
-                ),
-            ));
-        }
-        backend_manager_inner.register_backend(Box::new(SmBusBackend::new()));
-        backend_manager_inner.register_backend(Box::new(UsbBackend::with_protocol_config_store(
-            usb_protocol_configs.clone(),
-        )));
-        let backend_manager = Arc::new(Mutex::new(backend_manager_inner));
+        let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
         info!("Backend manager created");
 
         // ── Device Lifecycle Manager ───────────────────────────────────
@@ -550,6 +509,32 @@ impl DaemonState {
             "Network driver registry ready"
         );
 
+        {
+            let mut backend_manager_inner = backend_manager.blocking_lock();
+            backend_manager_inner.register_backend(Box::new(MockDeviceBackend::new()));
+            network::register_enabled_backends(
+                &mut backend_manager_inner,
+                driver_registry.as_ref(),
+                driver_host.as_ref(),
+                config,
+            )
+            .context("failed to register built-in network backends")?;
+            if config.discovery.blocks_scan {
+                let socket_path = config.discovery.blocks_socket_path.as_ref().map_or_else(
+                    hypercolor_core::device::BlocksBackend::default_socket_path,
+                    std::path::PathBuf::from,
+                );
+                backend_manager_inner.register_backend(Box::new(
+                    hypercolor_core::device::BlocksBackend::new(socket_path),
+                ));
+            }
+            backend_manager_inner.register_backend(Box::new(SmBusBackend::new()));
+            backend_manager_inner.register_backend(Box::new(
+                UsbBackend::with_protocol_config_store(usb_protocol_configs.clone()),
+            ));
+        }
+        info!("Device backends registered");
+
         info!("All subsystems initialized");
 
         Ok(Self {
@@ -639,6 +624,8 @@ impl DaemonState {
             Arc::clone(&self.effect_engine),
             self.power_state.clone(),
             self.discovery_runtime(),
+            Arc::clone(&self.driver_host),
+            Arc::clone(&self.driver_registry),
         ));
 
         // Start the render loop.
@@ -1000,6 +987,8 @@ impl DaemonState {
             reconnect_tasks: Arc::clone(&self.reconnect_tasks),
             event_bus: Arc::clone(&self.event_bus),
             config_manager: Arc::clone(&self.config_manager),
+            driver_host: Arc::clone(&self.driver_host),
+            driver_registry: Arc::clone(&self.driver_registry),
             spatial_engine: Arc::clone(&self.spatial_engine),
             layouts: Arc::clone(&self.layouts),
             layouts_path: self.layouts_path.clone(),
@@ -1014,13 +1003,14 @@ impl DaemonState {
             in_progress: Arc::clone(&self.discovery_in_progress),
         };
 
-        let initial_backends = match discovery::resolve_backends(None, &config) {
-            Ok(backends) => backends,
-            Err(error) => {
-                warn!(error = %error, "Initial discovery backend resolution failed");
-                Vec::<DiscoveryBackend>::new()
-            }
-        };
+        let initial_backends =
+            match discovery::resolve_backends(None, &config, self.driver_registry.as_ref()) {
+                Ok(backends) => backends,
+                Err(error) => {
+                    warn!(error = %error, "Initial discovery backend resolution failed");
+                    Vec::<DiscoveryBackend>::new()
+                }
+            };
         let scan_interval =
             std::time::Duration::from_secs(config.discovery.scan_interval_secs.max(1));
 
@@ -1115,6 +1105,8 @@ struct DiscoveryWorkerContext {
     reconnect_tasks: Arc<StdMutex<HashMap<DeviceId, JoinHandle<()>>>>,
     event_bus: Arc<HypercolorBus>,
     config_manager: Arc<ConfigManager>,
+    driver_host: Arc<DaemonDriverHost>,
+    driver_registry: Arc<DriverRegistry>,
     spatial_engine: Arc<RwLock<SpatialEngine>>,
     layouts: Arc<RwLock<HashMap<String, SpatialLayout>>>,
     layouts_path: PathBuf,
@@ -1174,6 +1166,8 @@ impl DiscoveryWorkerContext {
 
         let _ = discovery::execute_discovery_scan(
             self.runtime(),
+            Arc::clone(&self.driver_registry),
+            Arc::clone(&self.driver_host),
             config,
             backends,
             discovery::default_timeout(),
@@ -1183,7 +1177,11 @@ impl DiscoveryWorkerContext {
 
     async fn run_periodic_scan(&self) {
         let latest_config = Arc::clone(&self.config_manager.get());
-        let backends = match discovery::resolve_backends(None, &latest_config) {
+        let backends = match discovery::resolve_backends(
+            None,
+            &latest_config,
+            self.driver_registry.as_ref(),
+        ) {
             Ok(backends) => backends,
             Err(error) => {
                 warn!(
@@ -1238,7 +1236,7 @@ impl DiscoveryWorkerContext {
 
             self.run_scan_if_idle(
                 Arc::clone(&latest_config),
-                vec![DiscoveryBackend::Wled],
+                vec![DiscoveryBackend::network("wled")],
                 "Skipping startup WLED recovery scan; discovery already in progress",
             )
             .await;

@@ -26,7 +26,9 @@ use hypercolor_daemon::discovery::{
     sync_active_layout_for_renderable_devices,
 };
 use hypercolor_daemon::logical_devices::LogicalDevice;
+use hypercolor_daemon::network::{self, DaemonDriverHost};
 use hypercolor_daemon::runtime_state;
+use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -37,6 +39,20 @@ use hypercolor_types::spatial::{
     StripDirection,
 };
 use tokio::sync::{Mutex, RwLock};
+
+struct TestDiscoveryRuntime {
+    runtime: DiscoveryRuntime,
+    driver_host: Arc<DaemonDriverHost>,
+    driver_registry: Arc<DriverRegistry>,
+}
+
+impl std::ops::Deref for TestDiscoveryRuntime {
+    type Target = DiscoveryRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        &self.runtime
+    }
+}
 
 #[derive(Clone)]
 struct CountingBackend {
@@ -227,36 +243,82 @@ fn make_runtime(
     lifecycle_manager: Arc<Mutex<DeviceLifecycleManager>>,
     layouts_path: std::path::PathBuf,
     runtime_state_path: std::path::PathBuf,
-) -> DiscoveryRuntime {
-    DiscoveryRuntime {
-        device_registry,
-        backend_manager: Arc::new(Mutex::new(BackendManager::new())),
-        lifecycle_manager,
-        reconnect_tasks: Arc::new(StdMutex::new(HashMap::new())),
-        event_bus: Arc::new(HypercolorBus::new()),
-        spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(empty_layout()))),
-        layouts: Arc::new(RwLock::new(HashMap::new())),
+) -> TestDiscoveryRuntime {
+    let backend_manager = Arc::new(Mutex::new(BackendManager::new()));
+    let reconnect_tasks = Arc::new(StdMutex::new(HashMap::new()));
+    let event_bus = Arc::new(HypercolorBus::new());
+    let spatial_engine = Arc::new(RwLock::new(SpatialEngine::new(empty_layout())));
+    let layouts = Arc::new(RwLock::new(HashMap::new()));
+    let layout_auto_exclusions = Arc::new(RwLock::new(HashMap::new()));
+    let logical_devices = Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new()));
+    let attachment_registry = Arc::new(RwLock::new(AttachmentRegistry::new()));
+    let attachment_profiles = Arc::new(RwLock::new(AttachmentProfileStore::new(
+        std::path::PathBuf::from("attachment-profiles.json"),
+    )));
+    let device_settings = Arc::new(RwLock::new(DeviceSettingsStore::new(
+        std::path::PathBuf::from("device-settings.json"),
+    )));
+    let usb_protocol_configs = UsbProtocolConfigStore::new();
+    let credential_store = Arc::new(
+        CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
+            "hypercolor-test-credentials-{}",
+            uuid::Uuid::now_v7()
+        )))
+        .expect("test credential store"),
+    );
+    let in_progress = Arc::new(AtomicBool::new(true));
+    let runtime = DiscoveryRuntime {
+        device_registry: device_registry.clone(),
+        backend_manager: Arc::clone(&backend_manager),
+        lifecycle_manager: Arc::clone(&lifecycle_manager),
+        reconnect_tasks: Arc::clone(&reconnect_tasks),
+        event_bus: Arc::clone(&event_bus),
+        spatial_engine: Arc::clone(&spatial_engine),
+        layouts: Arc::clone(&layouts),
         layouts_path,
-        layout_auto_exclusions: Arc::new(RwLock::new(HashMap::new())),
-        logical_devices: Arc::new(RwLock::new(HashMap::<String, LogicalDevice>::new())),
-        attachment_registry: Arc::new(RwLock::new(AttachmentRegistry::new())),
-        attachment_profiles: Arc::new(RwLock::new(AttachmentProfileStore::new(
-            std::path::PathBuf::from("attachment-profiles.json"),
-        ))),
-        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(
-            std::path::PathBuf::from("device-settings.json"),
-        ))),
-        runtime_state_path,
-        usb_protocol_configs: UsbProtocolConfigStore::new(),
-        credential_store: Arc::new(
-            CredentialStore::open_blocking(&std::env::temp_dir().join(format!(
-                "hypercolor-test-credentials-{}",
-                uuid::Uuid::now_v7()
-            )))
-            .expect("test credential store"),
-        ),
-        in_progress: Arc::new(AtomicBool::new(true)),
+        layout_auto_exclusions: Arc::clone(&layout_auto_exclusions),
+        logical_devices: Arc::clone(&logical_devices),
+        attachment_registry: Arc::clone(&attachment_registry),
+        attachment_profiles: Arc::clone(&attachment_profiles),
+        device_settings: Arc::clone(&device_settings),
+        runtime_state_path: runtime_state_path.clone(),
+        usb_protocol_configs: usb_protocol_configs.clone(),
+        credential_store: Arc::clone(&credential_store),
+        in_progress: Arc::clone(&in_progress),
         task_spawner: tokio::runtime::Handle::current(),
+    };
+    let driver_host = Arc::new(DaemonDriverHost::new(
+        device_registry,
+        backend_manager,
+        lifecycle_manager,
+        reconnect_tasks,
+        event_bus,
+        spatial_engine,
+        layouts,
+        runtime.layouts_path.clone(),
+        layout_auto_exclusions,
+        logical_devices,
+        attachment_registry,
+        attachment_profiles,
+        device_settings,
+        runtime_state_path.clone(),
+        usb_protocol_configs,
+        credential_store,
+        in_progress,
+    ));
+    let driver_registry = Arc::new(
+        network::build_builtin_driver_registry(
+            &HypercolorConfig::default(),
+            Arc::clone(&driver_host),
+            runtime_state_path,
+        )
+        .expect("test driver registry"),
+    );
+
+    TestDiscoveryRuntime {
+        runtime,
+        driver_host,
+        driver_registry,
     }
 }
 
@@ -295,9 +357,11 @@ async fn wled_only_scan_does_not_vanish_connected_usb_devices() {
     config.wled.known_ips.clear();
 
     let result = execute_discovery_scan(
-        runtime,
+        runtime.runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
         Arc::new(config),
-        vec![DiscoveryBackend::Wled],
+        vec![DiscoveryBackend::network("wled")],
         Duration::from_millis(50),
     )
     .await;
@@ -386,7 +450,7 @@ async fn resolve_wled_probe_ips_merges_config_runtime_state_and_registry_metadat
     )
     .expect("runtime state should save");
 
-    let resolved = resolve_wled_probe_ips(&registry, &config, &runtime_state_path).await;
+    let resolved = resolve_wled_probe_ips(&registry, &config.wled, &runtime_state_path).await;
     assert_eq!(
         resolved,
         vec![
@@ -441,7 +505,7 @@ async fn resolve_wled_probe_targets_preserves_cached_identity_hints() {
     )
     .expect("runtime state should save");
 
-    let resolved = resolve_wled_probe_targets(&registry, &config, &runtime_state_path).await;
+    let resolved = resolve_wled_probe_targets(&registry, &config.wled, &runtime_state_path).await;
     assert_eq!(resolved.len(), 2);
 
     let cached = resolved
@@ -492,7 +556,7 @@ async fn resolve_hue_probe_bridges_merges_config_and_registry_metadata() {
         )
         .await;
 
-    let resolved = resolve_hue_probe_bridges(&registry, &config).await;
+    let resolved = resolve_hue_probe_bridges(&registry, &config.hue).await;
     assert_eq!(
         resolved,
         vec![

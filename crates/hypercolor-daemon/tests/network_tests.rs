@@ -38,3 +38,35 @@ fn builtin_pairing_drivers_expose_pairing_capabilities() {
             .is_some()
     );
 }
+
+#[test]
+fn builtin_network_drivers_expose_discovery_capabilities() {
+    let state = AppState::new();
+
+    assert!(
+        state
+            .driver_registry
+            .get("wled")
+            .expect("wled driver should be registered")
+            .discovery()
+            .is_some()
+    );
+    #[cfg(feature = "hue")]
+    assert!(
+        state
+            .driver_registry
+            .get("hue")
+            .expect("hue driver should be registered")
+            .discovery()
+            .is_some()
+    );
+    #[cfg(feature = "nanoleaf")]
+    assert!(
+        state
+            .driver_registry
+            .get("nanoleaf")
+            .expect("nanoleaf driver should be registered")
+            .discovery()
+            .is_some()
+    );
+}

@@ -1,29 +1,44 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use hypercolor_core::device::DeviceBackend;
-use hypercolor_core::device::wled::{WledBackend, WledDeviceInfo, WledKnownTarget, WledProtocol};
-use hypercolor_driver_api::{DriverDescriptor, DriverHost, DriverTransport, NetworkDriverFactory};
+use hypercolor_core::device::TransportScanner;
+use hypercolor_core::device::wled::{
+    WledBackend, WledDeviceInfo, WledKnownTarget, WledProtocol, WledScanner,
+};
+use hypercolor_driver_api::{
+    DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverDescriptor, DriverHost,
+    DriverTransport, NetworkDriverFactory,
+};
 use hypercolor_types::config::{HypercolorConfig, WledProtocolConfig};
 use hypercolor_types::device::DeviceId;
 use tracing::warn;
 
+use super::DaemonDriverHost;
 use crate::runtime_state;
 
 pub(crate) static DESCRIPTOR: DriverDescriptor =
-    DriverDescriptor::new("wled", "WLED", DriverTransport::Network, false, false);
+    DriverDescriptor::new("wled", "WLED", DriverTransport::Network, true, false);
 
 #[derive(Clone)]
 pub(crate) struct WledDriverFactory {
+    host: Arc<DaemonDriverHost>,
     config: HypercolorConfig,
     runtime_state_path: PathBuf,
 }
 
 impl WledDriverFactory {
-    pub(crate) fn new(config: HypercolorConfig, runtime_state_path: PathBuf) -> Self {
+    pub(crate) fn new(
+        host: Arc<DaemonDriverHost>,
+        config: HypercolorConfig,
+        runtime_state_path: PathBuf,
+    ) -> Self {
         Self {
+            host,
             config,
             runtime_state_path,
         }
@@ -41,6 +56,38 @@ impl NetworkDriverFactory for WledDriverFactory {
             &self.config,
             &self.runtime_state_path,
         ))))
+    }
+
+    fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl DiscoveryCapability for WledDriverFactory {
+    async fn discover(
+        &self,
+        host: &dyn DriverHost,
+        request: &DiscoveryRequest,
+    ) -> Result<DiscoveryResult> {
+        let _ = host;
+        let runtime = self.host.discovery_runtime();
+        let known_targets = crate::discovery::resolve_wled_probe_targets(
+            &runtime.device_registry,
+            &self.config.wled,
+            &runtime.runtime_state_path,
+        )
+        .await;
+        let mut scanner =
+            WledScanner::with_known_targets(known_targets, request.mdns_enabled, request.timeout);
+        let devices = scanner
+            .scan()
+            .await?
+            .into_iter()
+            .map(super::into_driver_discovered)
+            .collect();
+
+        Ok(DiscoveryResult { devices })
     }
 }
 
