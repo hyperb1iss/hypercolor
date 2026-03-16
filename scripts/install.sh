@@ -101,6 +101,16 @@ build_ui() {
   )
 }
 
+build_effects() {
+  if [[ ! -d "${ROOT_DIR}/sdk/node_modules" ]]; then
+    info "installing SDK dependencies"
+    (cd "${ROOT_DIR}/sdk" && bun install)
+  fi
+
+  info "building SDK effects"
+  (cd "${ROOT_DIR}/sdk" && bun run build:effects)
+}
+
 build_binaries() {
   local cargo_profile_flag=()
 
@@ -113,13 +123,45 @@ build_binaries() {
     cargo_profile_flag=(--release)
   fi
 
-  info "building hypercolor daemon"
-  cargo build -p hypercolor-daemon --bin hypercolor "${cargo_profile_flag[@]}"
+  info "building hypercolor daemon (with Servo)"
+  cargo build -p hypercolor-daemon --bin hypercolor --features servo "${cargo_profile_flag[@]}"
 
   info "building hyper CLI"
   cargo build -p hypercolor-cli --bin hyper "${cargo_profile_flag[@]}"
 
+  info "building hypercolor-tui"
+  cargo build -p hypercolor-tui "${cargo_profile_flag[@]}"
+
+  info "building hypercolor-tray"
+  cargo build -p hypercolor-tray "${cargo_profile_flag[@]}"
+
   build_ui
+  build_effects
+}
+
+install_icons() {
+  local svg_src="${ROOT_DIR}/packaging/icons/hypercolor.svg"
+  local icon_base="${PREFIX}/share/icons/hicolor"
+
+  if [[ ! -f "${svg_src}" ]]; then
+    warn "no icon SVG found at ${svg_src}"
+    return
+  fi
+
+  install -d "${icon_base}/scalable/apps"
+  install -Dm644 "${svg_src}" "${icon_base}/scalable/apps/hypercolor.svg"
+
+  if command -v rsvg-convert &>/dev/null; then
+    for size in 48 128 256; do
+      install -d "${icon_base}/${size}x${size}/apps"
+      rsvg-convert -w "${size}" -h "${size}" "${svg_src}" \
+        -o "${icon_base}/${size}x${size}/apps/hypercolor.png"
+    done
+  fi
+
+  if command -v gtk-update-icon-cache &>/dev/null; then
+    gtk-update-icon-cache -f -t "${icon_base}" 2>/dev/null || true
+  fi
 }
 
 install_user_files() {
@@ -138,6 +180,12 @@ install_user_files() {
   install -Dm755 \
     "${ROOT_DIR}/target/${target_dir}/hyper" \
     "${BIN_DIR}/hyper"
+  install -Dm755 \
+    "${ROOT_DIR}/target/${target_dir}/hypercolor-tui" \
+    "${BIN_DIR}/hypercolor-tui"
+  install -Dm755 \
+    "${ROOT_DIR}/target/${target_dir}/hypercolor-tray" \
+    "${BIN_DIR}/hypercolor-tray"
   install -Dm755 \
     "${ROOT_DIR}/packaging/bin/hypercolor-open" \
     "${BIN_DIR}/hypercolor-open"
@@ -159,6 +207,7 @@ install_user_files() {
   fi
 
   render_desktop_entry "${APP_DIR}/hypercolor.desktop"
+  install_icons
   install_completions
 }
 

@@ -282,9 +282,17 @@ setup:
     cd "{{justfile_directory()}}/sdk" && bun install
     echo '✅ All dependencies installed'
 
+# Build everything end-to-end and create a distribution tarball
+dist *args='':
+    ./scripts/dist.sh {{ args }}
+
 # Install Hypercolor locally under ~/.local and set up host integration
 install *args='':
     ./scripts/install.sh {{ args }}
+
+# Uninstall Hypercolor from ~/.local
+uninstall *args='':
+    ./scripts/uninstall.sh {{ args }}
 
 # Install udev rules for USB device access (requires sudo)
 udev-install:

@@ -1,0 +1,30 @@
+# System-packaged variant — used by AUR, deb, and rpm packages.
+# Paths reference /usr instead of %h/.local.
+[Unit]
+Description=Hypercolor RGB Lighting Daemon
+Documentation=https://github.com/hyperb1iss/hypercolor
+After=graphical-session.target dbus.socket
+Wants=graphical-session.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/hypercolor --ui-dir /usr/share/hypercolor/ui
+WatchdogSec=30
+Restart=on-failure
+RestartSec=3
+Environment=HYPERCOLOR_LOG=info
+Environment=RUST_BACKTRACE=1
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=25%
+
+# Security hardening
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=%h/.config/hypercolor %h/.local/share/hypercolor %h/.local/state/hypercolor
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

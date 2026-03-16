@@ -7,5 +7,5 @@ Exec=@BIN_DIR@/hypercolor-open
 Terminal=false
 Categories=Settings;Utility;
 Keywords=rgb;lighting;led;
-Icon=applications-graphics
+Icon=hypercolor
 StartupNotify=true

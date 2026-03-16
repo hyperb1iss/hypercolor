@@ -16,6 +16,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # System deps shared across Linux jobs
+  LINUX_DEPS: >-
+    libudev-dev libdbus-1-dev libasound2-dev
+    cmake nasm pkg-config lld
+    libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+    libgtk-3-dev libappindicator3-dev
+
 jobs:
   # ── Rust Workspace ───────────────────────────────────────────
   rust:
@@ -33,6 +41,7 @@ jobs:
         libudev-dev libdbus-1-dev libasound2-dev
         cmake nasm pkg-config lld
         libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+        libgtk-3-dev libappindicator3-dev
       workspace: true
       all-features: false
       all-targets: true
@@ -59,7 +68,7 @@ jobs:
       - run: bun run check
       - run: bun run build
 
-  # ── UI (Leptos / Trunk) ────────────────────────────────────
+  # ── UI (Leptos / Trunk) ──────────────────────────────────────
   ui:
     name: UI
     runs-on: ubuntu-latest
@@ -80,10 +89,55 @@ jobs:
       - run: bun install
       - run: trunk build --release
 
-  # ── Build Artifacts ──────────────────────────────────────────
-  build-artifacts:
+  # ── Web Assets (built once, shared across release platforms) ─
+  web-assets:
+    name: Web Assets
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [rust, sdk, ui]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/hypercolor-ui -> target
+
+      - name: Install Trunk
+        run: cargo install trunk --locked
+
+      - name: Build UI
+        working-directory: crates/hypercolor-ui
+        run: |
+          bun install
+          trunk build --release
+
+      - name: Build effects
+        working-directory: sdk
+        run: |
+          bun install
+          bun run build:effects
+
+      - name: Stage web assets
+        run: |
+          mkdir -p staging/ui staging/effects
+          cp -R crates/hypercolor-ui/dist/. staging/ui/
+          if [ -d effects/hypercolor ]; then
+            cp -R effects/hypercolor/. staging/effects/
+          fi
+
+      - name: Upload web assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-assets
+          path: staging/
+          if-no-files-found: error
+
+  # ── Build Release Tarballs ──────────────────────────────────
+  build-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [rust, sdk, ui, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -91,60 +145,133 @@ jobs:
           - target: linux-amd64
             os: ubuntu-latest
             rust-target: x86_64-unknown-linux-gnu
-            suffix: ''
-            system-deps: >-
-              libudev-dev libdbus-1-dev libasound2-dev
-              cmake nasm pkg-config lld
-              libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
           - target: linux-arm64
             os: ubuntu-24.04-arm
             rust-target: aarch64-unknown-linux-gnu
-            suffix: ''
-            system-deps: >-
-              libudev-dev libdbus-1-dev libasound2-dev
-              cmake nasm pkg-config lld
-              libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
           - target: macos-arm64
             os: macos-latest
             rust-target: aarch64-apple-darwin
-            suffix: ''
-            system-deps: ''
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v6
+
       - name: Install system dependencies (Linux)
-        if: matrix.system-deps != '' && runner.os == 'Linux'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ${{ matrix.system-deps }}
+          sudo apt-get install -y ${{ env.LINUX_DEPS }} librsvg2-bin
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust-target }}
+
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
-      - name: Build release binaries
-        run: cargo build --release --locked --target ${{ matrix.rust-target }}
-      - name: Stage binaries
-        shell: bash
+          key: release-${{ matrix.target }}
+
+      - name: Build daemon (with Servo)
+        run: >-
+          cargo build --release --locked
+          -p hypercolor-daemon --features servo
+          --target ${{ matrix.rust-target }}
+
+      - name: Build CLI + TUI + tray
+        run: >-
+          cargo build --release --locked
+          -p hypercolor-cli
+          -p hypercolor-tui
+          -p hypercolor-tray
+          --target ${{ matrix.rust-target }}
+
+      - name: Download web assets
+        uses: actions/download-artifact@v4
+        with:
+          name: web-assets
+          path: web-assets/
+
+      - name: Determine version
+        id: version
         run: |
-          mkdir -p staging
-          for binary in hypercolor hyper; do
-            cp "target/${{ matrix.rust-target }}/release/${binary}${{ matrix.suffix }}" "staging/"
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "dist_name=hypercolor-${VERSION}-${{ matrix.target }}" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble distribution
+        env:
+          DIST: dist/${{ steps.version.outputs.dist_name }}
+          REL: target/${{ matrix.rust-target }}/release
+        run: |
+          mkdir -p "${DIST}"/{bin,share/hypercolor/{ui,effects/bundled}}
+          mkdir -p "${DIST}"/share/{applications,bash-completion/completions,zsh/site-functions}
+          mkdir -p "${DIST}"/share/icons/hicolor/{scalable,48x48,128x128,256x256}/apps
+          mkdir -p "${DIST}"/share/fish/vendor_completions.d
+
+          # Binaries
+          for bin in hypercolor hyper hypercolor-tray hypercolor-tui; do
+            cp "${REL}/${bin}" "${DIST}/bin/"
           done
-      - name: Upload artifacts
+          cp packaging/bin/hypercolor-open "${DIST}/bin/"
+          chmod 755 "${DIST}/bin/"*
+
+          # Web assets
+          cp -R web-assets/ui/. "${DIST}/share/hypercolor/ui/"
+          if [ -d web-assets/effects ]; then
+            cp -R web-assets/effects/. "${DIST}/share/hypercolor/effects/bundled/"
+          fi
+
+          # Desktop entry + icons
+          sed 's|@BIN_DIR@|/usr/bin|g' packaging/desktop/hypercolor.desktop.in \
+            > "${DIST}/share/applications/hypercolor.desktop"
+          cp packaging/icons/hypercolor.svg "${DIST}/share/icons/hicolor/scalable/apps/"
+          if command -v rsvg-convert &>/dev/null; then
+            for size in 48 128 256; do
+              rsvg-convert -w "${size}" -h "${size}" packaging/icons/hypercolor.svg \
+                -o "${DIST}/share/icons/hicolor/${size}x${size}/apps/hypercolor.png"
+            done
+          fi
+
+          # Shell completions (host builds only)
+          if [ "${{ matrix.rust-target }}" = "$(rustc -vV | sed -n 's/host: //p')" ]; then
+            "${DIST}/bin/hyper" completions bash > "${DIST}/share/bash-completion/completions/hyper" || true
+            "${DIST}/bin/hyper" completions zsh  > "${DIST}/share/zsh/site-functions/_hyper" || true
+            "${DIST}/bin/hyper" completions fish > "${DIST}/share/fish/vendor_completions.d/hyper.fish" || true
+          fi
+
+          # Linux integration
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            mkdir -p "${DIST}"/{lib/systemd/user,lib/udev/rules.d,etc/modules-load.d}
+            cp packaging/systemd/user/hypercolor.service "${DIST}/lib/systemd/user/"
+            cp udev/99-hypercolor.rules "${DIST}/lib/udev/rules.d/"
+            cp packaging/modules-load/i2c-dev.conf "${DIST}/etc/modules-load.d/"
+          fi
+
+          # macOS integration
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            mkdir -p "${DIST}/share/hypercolor/launchd"
+            cp packaging/launchd/tech.hyperbliss.hypercolor.plist \
+              "${DIST}/share/hypercolor/launchd/"
+          fi
+
+          # License
+          cp LICENSE "${DIST}/"
+
+      - name: Create tarball
+        working-directory: dist
+        run: tar czf "${{ steps.version.outputs.dist_name }}.tar.gz" "${{ steps.version.outputs.dist_name }}"
+
+      - name: Upload release tarball
         uses: actions/upload-artifact@v4
         with:
-          name: binaries-${{ matrix.target }}
-          path: staging/
+          name: ${{ steps.version.outputs.dist_name }}
+          path: dist/${{ steps.version.outputs.dist_name }}.tar.gz
           if-no-files-found: error
 
   # ── Create GitHub Release ────────────────────────────────────
   create-release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: build-artifacts
+    needs: build-release
     uses: hyperb1iss/shared-workflows/.github/workflows/github-release.yml@main
     with:
       attach-artifacts: true
@@ -158,10 +285,55 @@ jobs:
   update-homebrew:
     if: startsWith(github.ref, 'refs/tags/')
     needs: create-release
-    uses: hyperb1iss/shared-workflows/.github/workflows/homebrew-update.yml@main
-    with:
-      formula-name: hypercolor
-      description: "Open-source RGB lighting orchestration engine"
-      homepage: "https://github.com/hyperb1iss/hypercolor"
-      binary-names: 'hypercolor hyper'
-    secrets: inherit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Determine version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release tarballs and compute checksums
+        id: checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for platform in linux-amd64 linux-arm64 macos-arm64; do
+            tarball="hypercolor-${VERSION}-${platform}.tar.gz"
+            url="https://github.com/${{ github.repository }}/releases/download/v${VERSION}/${tarball}"
+            echo "Downloading ${tarball}..."
+            curl -fSL "${url}" -o "${tarball}"
+            sha=$(sha256sum "${tarball}" | cut -d' ' -f1)
+            echo "sha256_${platform//-/_}=${sha}" >> "$GITHUB_OUTPUT"
+            echo "  ${platform}: ${sha}"
+          done
+
+      - name: Generate formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sed \
+            -e "s/VERSION_PLACEHOLDER/${VERSION}/g" \
+            -e "s/SHA256_MACOS_ARM64/${{ steps.checksums.outputs.sha256_macos_arm64 }}/g" \
+            -e "s/SHA256_LINUX_AMD64/${{ steps.checksums.outputs.sha256_linux_amd64 }}/g" \
+            -e "s/SHA256_LINUX_ARM64/${{ steps.checksums.outputs.sha256_linux_arm64 }}/g" \
+            packaging/homebrew/hypercolor.rb > hypercolor.rb
+          echo "Generated formula:"
+          cat hypercolor.rb
+
+      - name: Push to homebrew-tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/hyperb1iss/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp hypercolor.rb tap/Formula/hypercolor.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/hypercolor.rb
+          git commit -m "hypercolor: update to ${{ steps.version.outputs.version }}"
+          git push
