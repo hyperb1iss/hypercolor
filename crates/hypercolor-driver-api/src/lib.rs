@@ -183,6 +183,15 @@ pub struct TrackedDeviceCtx<'a> {
     pub current_state: &'a DeviceState,
 }
 
+/// Snapshot of a tracked device exposed to discovery-capable drivers.
+#[derive(Debug, Clone)]
+pub struct DriverTrackedDevice {
+    pub info: DeviceInfo,
+    pub metadata: HashMap<String, String>,
+    pub fingerprint: Option<DeviceFingerprint>,
+    pub current_state: DeviceState,
+}
+
 /// Driver-facing credential store abstraction.
 #[async_trait]
 pub trait DriverCredentialStore: Send + Sync {
@@ -231,6 +240,20 @@ pub trait DriverRuntimeActions: Send + Sync {
     ) -> Result<bool>;
 }
 
+/// Discovery-oriented host state exposed to drivers.
+#[async_trait]
+pub trait DriverDiscoveryState: Send + Sync {
+    /// Return tracked devices previously seen for one backend.
+    async fn tracked_devices(&self, backend_id: &str) -> Vec<DriverTrackedDevice>;
+
+    /// Load a driver-scoped cached JSON payload, if available.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cache cannot be loaded.
+    fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>>;
+}
+
 /// Host capabilities exposed to drivers.
 pub trait DriverHost: Send + Sync {
     /// Access the shared credential store.
@@ -238,6 +261,9 @@ pub trait DriverHost: Send + Sync {
 
     /// Access limited runtime lifecycle actions.
     fn runtime(&self) -> &dyn DriverRuntimeActions;
+
+    /// Access discovery-oriented tracked state and caches.
+    fn discovery_state(&self) -> &dyn DriverDiscoveryState;
 }
 
 /// Driver capability for device discovery.

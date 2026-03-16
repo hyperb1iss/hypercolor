@@ -267,6 +267,7 @@ fn make_runtime(
         .expect("test credential store"),
     );
     let in_progress = Arc::new(AtomicBool::new(true));
+    let runtime_state_path_for_host = runtime_state_path.clone();
     let runtime = DiscoveryRuntime {
         device_registry: device_registry.clone(),
         backend_manager: Arc::clone(&backend_manager),
@@ -281,7 +282,7 @@ fn make_runtime(
         attachment_registry: Arc::clone(&attachment_registry),
         attachment_profiles: Arc::clone(&attachment_profiles),
         device_settings: Arc::clone(&device_settings),
-        runtime_state_path: runtime_state_path.clone(),
+        runtime_state_path,
         usb_protocol_configs: usb_protocol_configs.clone(),
         credential_store: Arc::clone(&credential_store),
         in_progress: Arc::clone(&in_progress),
@@ -301,7 +302,7 @@ fn make_runtime(
         attachment_registry,
         attachment_profiles,
         device_settings,
-        runtime_state_path.clone(),
+        runtime_state_path_for_host,
         usb_protocol_configs,
         credential_store,
         in_progress,
@@ -309,8 +310,7 @@ fn make_runtime(
     let driver_registry = Arc::new(
         network::build_builtin_driver_registry(
             &HypercolorConfig::default(),
-            Arc::clone(&driver_host),
-            runtime_state_path,
+            Arc::clone(&runtime.credential_store),
         )
         .expect("test driver registry"),
     );

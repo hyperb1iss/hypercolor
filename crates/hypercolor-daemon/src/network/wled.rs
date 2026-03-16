@@ -1,9 +1,7 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use hypercolor_core::device::DeviceBackend;
 use hypercolor_core::device::TransportScanner;
@@ -12,36 +10,22 @@ use hypercolor_core::device::wled::{
 };
 use hypercolor_driver_api::{
     DiscoveryCapability, DiscoveryRequest, DiscoveryResult, DriverDescriptor, DriverHost,
-    DriverTransport, NetworkDriverFactory,
+    DriverTrackedDevice, DriverTransport, NetworkDriverFactory,
 };
-use hypercolor_types::config::{HypercolorConfig, WledProtocolConfig};
+use hypercolor_types::config::{HypercolorConfig, WledConfig, WledProtocolConfig};
 use hypercolor_types::device::DeviceId;
-use tracing::warn;
-
-use super::DaemonDriverHost;
-use crate::runtime_state;
 
 pub(crate) static DESCRIPTOR: DriverDescriptor =
     DriverDescriptor::new("wled", "WLED", DriverTransport::Network, true, false);
 
 #[derive(Clone)]
 pub(crate) struct WledDriverFactory {
-    host: Arc<DaemonDriverHost>,
     config: HypercolorConfig,
-    runtime_state_path: PathBuf,
 }
 
 impl WledDriverFactory {
-    pub(crate) fn new(
-        host: Arc<DaemonDriverHost>,
-        config: HypercolorConfig,
-        runtime_state_path: PathBuf,
-    ) -> Self {
-        Self {
-            host,
-            config,
-            runtime_state_path,
-        }
+    pub(crate) fn new(config: HypercolorConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -51,11 +35,7 @@ impl NetworkDriverFactory for WledDriverFactory {
     }
 
     fn build_backend(&self, host: &dyn DriverHost) -> Result<Option<Box<dyn DeviceBackend>>> {
-        let _ = host;
-        Ok(Some(Box::new(build_wled_backend(
-            &self.config,
-            &self.runtime_state_path,
-        ))))
+        Ok(Some(Box::new(build_wled_backend(&self.config, host)?)))
     }
 
     fn discovery(&self) -> Option<&dyn DiscoveryCapability> {
@@ -70,14 +50,15 @@ impl DiscoveryCapability for WledDriverFactory {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
     ) -> Result<DiscoveryResult> {
-        let _ = host;
-        let runtime = self.host.discovery_runtime();
-        let known_targets = crate::discovery::resolve_wled_probe_targets(
-            &runtime.device_registry,
+        let tracked_devices = host.discovery_state().tracked_devices("wled").await;
+        let cached_probe_ips = load_cached_probe_ips(host)?;
+        let cached_targets = load_cached_probe_targets(host)?;
+        let known_targets = resolve_wled_probe_targets_from_sources(
             &self.config.wled,
-            &runtime.runtime_state_path,
-        )
-        .await;
+            &tracked_devices,
+            &cached_probe_ips,
+            &cached_targets,
+        );
         let mut scanner =
             WledScanner::with_known_targets(known_targets, request.mdns_enabled, request.timeout);
         let devices = scanner
@@ -91,42 +72,20 @@ impl DiscoveryCapability for WledDriverFactory {
     }
 }
 
-pub fn build_wled_backend(config: &HypercolorConfig, runtime_state_path: &Path) -> WledBackend {
+pub fn build_wled_backend(config: &HypercolorConfig, host: &dyn DriverHost) -> Result<WledBackend> {
     let mut known_ips: HashSet<_> = config.wled.known_ips.iter().copied().collect();
-    match runtime_state::load_wled_probe_ips(runtime_state_path) {
-        Ok(cached_ips) => {
-            known_ips.extend(cached_ips);
-        }
-        Err(error) => {
-            warn!(
-                path = %runtime_state_path.display(),
-                %error,
-                "Failed to load cached WLED probe IPs; falling back to config only"
-            );
-        }
-    }
+    known_ips.extend(load_cached_probe_ips(host)?);
 
     let mut resolved_known_ips: Vec<_> = known_ips.into_iter().collect();
     resolved_known_ips.sort_unstable();
 
     let mut backend =
         WledBackend::with_mdns_fallback(resolved_known_ips, config.discovery.mdns_enabled);
-    match runtime_state::load_wled_probe_targets(runtime_state_path) {
-        Ok(cached_targets) => {
-            for target in cached_targets {
-                let Some((device_id, ip, info)) = cached_wled_backend_seed(&target) else {
-                    continue;
-                };
-                backend.remember_device(device_id, ip, info);
-            }
-        }
-        Err(error) => {
-            warn!(
-                path = %runtime_state_path.display(),
-                %error,
-                "Failed to load cached WLED identity hints; backend will rely on fresh probing"
-            );
-        }
+    for target in load_cached_probe_targets(host)? {
+        let Some((device_id, ip, info)) = cached_wled_backend_seed(&target) else {
+            continue;
+        };
+        backend.remember_device(device_id, ip, info);
     }
     let protocol = match config.wled.default_protocol {
         WledProtocolConfig::Ddp => WledProtocol::Ddp,
@@ -135,7 +94,113 @@ pub fn build_wled_backend(config: &HypercolorConfig, runtime_state_path: &Path) 
     backend.set_protocol(protocol);
     backend.set_realtime_http_enabled(config.wled.realtime_http_enabled);
     backend.set_dedup_threshold(config.wled.dedup_threshold);
-    backend
+    Ok(backend)
+}
+
+pub fn resolve_wled_probe_ips_from_sources(
+    config: &WledConfig,
+    tracked_devices: &[DriverTrackedDevice],
+    cached_probe_ips: &[IpAddr],
+    cached_targets: &[WledKnownTarget],
+) -> Vec<IpAddr> {
+    let mut known_ips: HashSet<IpAddr> = config.known_ips.iter().copied().collect();
+    known_ips.extend(cached_probe_ips.iter().copied());
+    known_ips.extend(cached_targets.iter().map(|target| target.ip));
+
+    for tracked in tracked_devices {
+        let Some(ip_raw) = tracked.metadata.get("ip") else {
+            continue;
+        };
+        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
+            continue;
+        };
+        known_ips.insert(ip);
+    }
+
+    let mut resolved: Vec<IpAddr> = known_ips.into_iter().collect();
+    resolved.sort_unstable();
+    resolved
+}
+
+pub fn resolve_wled_probe_targets_from_sources(
+    config: &WledConfig,
+    tracked_devices: &[DriverTrackedDevice],
+    cached_probe_ips: &[IpAddr],
+    cached_targets: &[WledKnownTarget],
+) -> Vec<WledKnownTarget> {
+    let mut known_targets: std::collections::HashMap<IpAddr, WledKnownTarget> = config
+        .known_ips
+        .iter()
+        .copied()
+        .map(WledKnownTarget::from_ip)
+        .map(|target| (target.ip, target))
+        .collect();
+
+    for ip in cached_probe_ips {
+        known_targets
+            .entry(*ip)
+            .or_insert_with(|| WledKnownTarget::from_ip(*ip));
+    }
+
+    for target in cached_targets {
+        known_targets
+            .entry(target.ip)
+            .and_modify(|existing| existing.merge_from(target))
+            .or_insert_with(|| target.clone());
+    }
+
+    for tracked in tracked_devices {
+        let Some(ip_raw) = tracked.metadata.get("ip") else {
+            continue;
+        };
+        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
+            continue;
+        };
+
+        let rgbw = tracked.info.zones.first().map(|zone| {
+            matches!(
+                zone.color_format,
+                hypercolor_types::device::DeviceColorFormat::Rgbw
+            )
+        });
+        let target = WledKnownTarget {
+            ip,
+            hostname: tracked.metadata.get("hostname").cloned(),
+            fingerprint: tracked.fingerprint.clone(),
+            name: Some(tracked.info.name.clone()),
+            led_count: Some(tracked.info.total_led_count()),
+            firmware_version: tracked.info.firmware_version.clone(),
+            max_fps: Some(tracked.info.capabilities.max_fps),
+            rgbw,
+        };
+
+        known_targets
+            .entry(ip)
+            .and_modify(|existing| existing.merge_from(&target))
+            .or_insert(target);
+    }
+
+    let mut resolved: Vec<WledKnownTarget> = known_targets.into_values().collect();
+    resolved.sort_by_key(|target| target.ip);
+    resolved
+}
+
+fn load_cached_probe_ips(host: &dyn DriverHost) -> Result<Vec<IpAddr>> {
+    host.discovery_state()
+        .load_cached_json("wled", "probe_ips")?
+        .map(serde_json::from_value)
+        .transpose()
+        .context("failed to parse cached WLED probe IPs")
+        .map(Option::unwrap_or_default)
+}
+
+fn load_cached_probe_targets(host: &dyn DriverHost) -> Result<Vec<WledKnownTarget>> {
+    host.discovery_state()
+        .load_cached_json("wled", "probe_targets")?
+        .map(serde_json::from_value)
+        .transpose()
+        .context("failed to parse cached WLED probe targets")
+        .map(Option::unwrap_or_default)
 }
 
 fn cached_wled_backend_seed(

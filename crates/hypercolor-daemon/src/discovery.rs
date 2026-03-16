@@ -20,7 +20,9 @@ use hypercolor_core::device::{
     UsbProtocolConfigStore, UsbScanner,
 };
 use hypercolor_core::spatial::{SpatialEngine, generate_positions};
-use hypercolor_driver_api::{DiscoveryRequest, DriverDiscoveredDevice, NetworkDriverFactory};
+use hypercolor_driver_api::{
+    DiscoveryRequest, DriverDiscoveredDevice, DriverTrackedDevice, NetworkDriverFactory,
+};
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::config::{HypercolorConfig, WledConfig};
 use hypercolor_types::device::{
@@ -46,7 +48,7 @@ use crate::network::{self, DaemonDriverHost};
 use crate::runtime_state;
 
 #[cfg(feature = "hue")]
-use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueKnownBridge};
+use hypercolor_core::device::hue::HueKnownBridge;
 #[cfg(feature = "nanoleaf")]
 use hypercolor_core::device::nanoleaf::NanoleafKnownDevice;
 #[cfg(feature = "hue")]
@@ -237,26 +239,31 @@ pub async fn resolve_wled_probe_ips(
     config: &WledConfig,
     runtime_state_path: &std::path::Path,
 ) -> Vec<IpAddr> {
-    let mut known_ips: HashSet<IpAddr> = config.known_ips.iter().copied().collect();
-
-    match runtime_state::load_wled_probe_ips(runtime_state_path) {
-        Ok(cached_ips) => {
-            known_ips.extend(cached_ips);
-        }
-        Err(error) => {
+    let tracked_devices = collect_tracked_devices_for_backend(device_registry, "wled").await;
+    let cached_probe_ips = load_cached_wled_probe_ips(runtime_state_path).unwrap_or_else(|error| {
+        warn!(
+            path = %runtime_state_path.display(),
+            %error,
+            "failed to load cached WLED probe IPs; ignoring persisted runtime cache"
+        );
+        Vec::new()
+    });
+    let cached_targets =
+        load_cached_wled_probe_targets(runtime_state_path).unwrap_or_else(|error| {
             warn!(
                 path = %runtime_state_path.display(),
                 %error,
-                "failed to load cached WLED probe IPs; ignoring persisted runtime cache"
+                "failed to load cached WLED probe targets; ignoring persisted runtime cache"
             );
-        }
-    }
+            Vec::new()
+        });
 
-    known_ips.extend(runtime_state::collect_wled_probe_ips(device_registry).await);
-
-    let mut resolved: Vec<IpAddr> = known_ips.into_iter().collect();
-    resolved.sort_unstable();
-    resolved
+    network::resolve_wled_probe_ips_from_sources(
+        config,
+        &tracked_devices,
+        &cached_probe_ips,
+        &cached_targets,
+    )
 }
 
 /// Resolve the WLED targets that discovery should probe, including cached
@@ -266,59 +273,31 @@ pub async fn resolve_wled_probe_targets(
     config: &WledConfig,
     runtime_state_path: &std::path::Path,
 ) -> Vec<WledKnownTarget> {
-    let mut known_targets: HashMap<IpAddr, WledKnownTarget> = config
-        .known_ips
-        .iter()
-        .copied()
-        .map(WledKnownTarget::from_ip)
-        .map(|target| (target.ip, target))
-        .collect();
-
-    match runtime_state::load_wled_probe_ips(runtime_state_path) {
-        Ok(cached_ips) => {
-            for ip in cached_ips {
-                known_targets
-                    .entry(ip)
-                    .or_insert_with(|| WledKnownTarget::from_ip(ip));
-            }
-        }
-        Err(error) => {
-            warn!(
-                path = %runtime_state_path.display(),
-                %error,
-                "failed to load cached WLED probe IPs; ignoring persisted runtime cache"
-            );
-        }
-    }
-
-    match runtime_state::load_wled_probe_targets(runtime_state_path) {
-        Ok(cached_targets) => {
-            for target in cached_targets {
-                known_targets
-                    .entry(target.ip)
-                    .and_modify(|existing| existing.merge_from(&target))
-                    .or_insert(target);
-            }
-        }
-        Err(error) => {
+    let tracked_devices = collect_tracked_devices_for_backend(device_registry, "wled").await;
+    let cached_probe_ips = load_cached_wled_probe_ips(runtime_state_path).unwrap_or_else(|error| {
+        warn!(
+            path = %runtime_state_path.display(),
+            %error,
+            "failed to load cached WLED probe IPs; ignoring persisted runtime cache"
+        );
+        Vec::new()
+    });
+    let cached_targets =
+        load_cached_wled_probe_targets(runtime_state_path).unwrap_or_else(|error| {
             warn!(
                 path = %runtime_state_path.display(),
                 %error,
                 "failed to load cached WLED probe targets; ignoring persisted runtime cache"
             );
-        }
-    }
+            Vec::new()
+        });
 
-    for target in runtime_state::collect_wled_probe_targets(device_registry).await {
-        known_targets
-            .entry(target.ip)
-            .and_modify(|existing| existing.merge_from(&target))
-            .or_insert(target);
-    }
-
-    let mut resolved: Vec<WledKnownTarget> = known_targets.into_values().collect();
-    resolved.sort_by_key(|target| target.ip);
-    resolved
+    network::resolve_wled_probe_targets_from_sources(
+        config,
+        &tracked_devices,
+        &cached_probe_ips,
+        &cached_targets,
+    )
 }
 
 #[cfg(feature = "nanoleaf")]
@@ -328,69 +307,8 @@ pub async fn resolve_nanoleaf_probe_devices(
     device_registry: &DeviceRegistry,
     config: &NanoleafConfig,
 ) -> Vec<NanoleafKnownDevice> {
-    let mut known_devices: HashMap<IpAddr, NanoleafKnownDevice> = config
-        .device_ips
-        .iter()
-        .copied()
-        .map(NanoleafKnownDevice::from_ip)
-        .map(|device| (device.ip, device))
-        .collect();
-
-    for tracked in device_registry.list().await {
-        let metadata = device_registry.metadata_for_id(&tracked.info.id).await;
-        if backend_id_for_device(&tracked.info.family, metadata.as_ref()) != "nanoleaf" {
-            continue;
-        }
-
-        let Some(metadata) = metadata else {
-            continue;
-        };
-        let Some(ip_raw) = metadata.get("ip") else {
-            continue;
-        };
-        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
-            continue;
-        };
-
-        let port = metadata
-            .get("api_port")
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(hypercolor_core::device::nanoleaf::DEFAULT_NANOLEAF_API_PORT);
-        let device_key = metadata
-            .get("device_key")
-            .cloned()
-            .unwrap_or_else(|| tracked.info.name.to_ascii_lowercase().replace(' ', "-"));
-
-        known_devices
-            .entry(ip)
-            .and_modify(|existing| {
-                if existing.device_id.is_empty() {
-                    existing.device_id.clone_from(&device_key);
-                }
-                existing.port = port;
-                if existing.name.is_empty() {
-                    existing.name.clone_from(&tracked.info.name);
-                }
-                if existing.model.is_empty() {
-                    existing.model = tracked.info.model.clone().unwrap_or_default();
-                }
-                if existing.firmware.is_empty() {
-                    existing.firmware = tracked.info.firmware_version.clone().unwrap_or_default();
-                }
-            })
-            .or_insert_with(|| NanoleafKnownDevice {
-                device_id: device_key,
-                ip,
-                port,
-                name: tracked.info.name.clone(),
-                model: tracked.info.model.clone().unwrap_or_default(),
-                firmware: tracked.info.firmware_version.clone().unwrap_or_default(),
-            });
-    }
-
-    let mut resolved: Vec<_> = known_devices.into_values().collect();
-    resolved.sort_by_key(|device| device.ip);
-    resolved
+    let tracked_devices = collect_tracked_devices_for_backend(device_registry, "nanoleaf").await;
+    network::resolve_nanoleaf_probe_devices_from_sources(config, &tracked_devices)
 }
 
 #[cfg(feature = "hue")]
@@ -400,78 +318,43 @@ pub async fn resolve_hue_probe_bridges(
     device_registry: &DeviceRegistry,
     config: &HueConfig,
 ) -> Vec<HueKnownBridge> {
-    let mut known_bridges: HashMap<IpAddr, HueKnownBridge> = config
-        .bridge_ips
-        .iter()
-        .copied()
-        .map(HueKnownBridge::from_ip)
-        .map(|bridge| (bridge.ip, bridge))
-        .collect();
+    let tracked_devices = collect_tracked_devices_for_backend(device_registry, "hue").await;
+    network::resolve_hue_probe_bridges_from_sources(config, &tracked_devices)
+}
+
+async fn collect_tracked_devices_for_backend(
+    device_registry: &DeviceRegistry,
+    backend_id: &str,
+) -> Vec<DriverTrackedDevice> {
+    let mut tracked_devices = Vec::new();
 
     for tracked in device_registry.list().await {
-        let metadata = device_registry.metadata_for_id(&tracked.info.id).await;
-        if backend_id_for_device(&tracked.info.family, metadata.as_ref()) != "hue" {
+        let metadata = device_registry
+            .metadata_for_id(&tracked.info.id)
+            .await
+            .unwrap_or_default();
+        if backend_id_for_device(&tracked.info.family, Some(&metadata)) != backend_id {
             continue;
         }
+        let fingerprint = device_registry.fingerprint_for_id(&tracked.info.id).await;
 
-        let Some(metadata) = metadata else {
-            continue;
-        };
-        let Some(ip) = metadata
-            .get("ip")
-            .and_then(|value| value.parse::<IpAddr>().ok())
-        else {
-            continue;
-        };
-
-        let api_port = metadata
-            .get("api_port")
-            .and_then(|value| value.parse::<u16>().ok())
-            .unwrap_or(DEFAULT_HUE_API_PORT);
-        let bridge_id = metadata.get("bridge_id").cloned().unwrap_or_default();
-        let model_id = metadata
-            .get("model_id")
-            .cloned()
-            .or_else(|| tracked.info.model.clone())
-            .unwrap_or_default();
-        let sw_version = metadata
-            .get("sw_version")
-            .cloned()
-            .or_else(|| tracked.info.firmware_version.clone())
-            .unwrap_or_default();
-
-        known_bridges
-            .entry(ip)
-            .and_modify(|existing| {
-                if existing.bridge_id.is_empty() {
-                    existing.bridge_id.clone_from(&bridge_id);
-                }
-                if existing.api_port == 0 {
-                    existing.api_port = api_port;
-                }
-                if existing.name.is_empty() {
-                    existing.name.clone_from(&tracked.info.name);
-                }
-                if existing.model_id.is_empty() {
-                    existing.model_id.clone_from(&model_id);
-                }
-                if existing.sw_version.is_empty() {
-                    existing.sw_version.clone_from(&sw_version);
-                }
-            })
-            .or_insert_with(|| HueKnownBridge {
-                bridge_id,
-                ip,
-                api_port,
-                name: tracked.info.name.clone(),
-                model_id,
-                sw_version,
-            });
+        tracked_devices.push(DriverTrackedDevice {
+            info: tracked.info,
+            metadata,
+            fingerprint,
+            current_state: tracked.state,
+        });
     }
 
-    let mut resolved: Vec<_> = known_bridges.into_values().collect();
-    resolved.sort_by_key(|bridge| bridge.ip);
-    resolved
+    tracked_devices
+}
+
+fn load_cached_wled_probe_ips(path: &std::path::Path) -> Result<Vec<IpAddr>> {
+    runtime_state::load_wled_probe_ips(path).map_err(Into::into)
+}
+
+fn load_cached_wled_probe_targets(path: &std::path::Path) -> Result<Vec<WledKnownTarget>> {
+    runtime_state::load_wled_probe_targets(path).map_err(Into::into)
 }
 
 /// Resolve and validate requested discovery backends against configuration.

@@ -320,8 +320,7 @@ impl AppState {
         let driver_registry = Arc::new(
             network::build_builtin_driver_registry(
                 &HypercolorConfig::default(),
-                Arc::clone(&driver_host),
-                runtime_state_path.clone(),
+                Arc::clone(&credential_store),
             )
             .expect("default app state should build network driver registry"),
         );

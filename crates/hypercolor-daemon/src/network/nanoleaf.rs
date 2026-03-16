@@ -12,13 +12,12 @@ use hypercolor_core::device::nanoleaf::{
 use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_driver_api::{
     ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
-    DiscoveryResult, DriverDescriptor, DriverHost, DriverTransport, NetworkDriverFactory,
-    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
-    PairingFlowKind, TrackedDeviceCtx,
+    DiscoveryResult, DriverDescriptor, DriverHost, DriverTrackedDevice, DriverTransport,
+    NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
+    PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
 };
 use hypercolor_types::config::NanoleafConfig;
 
-use super::host::DaemonDriverHost;
 use super::pairing::{
     activate_if_requested, disconnect_after_unpair, metadata_value, network_ip_from_metadata,
     push_lookup_key,
@@ -35,19 +34,19 @@ pub(crate) static DESCRIPTOR: DriverDescriptor =
 
 #[derive(Clone)]
 pub(crate) struct NanoleafDriverFactory {
-    host: Arc<DaemonDriverHost>,
+    credential_store: Arc<CredentialStore>,
     config: NanoleafConfig,
     mdns_enabled: bool,
 }
 
 impl NanoleafDriverFactory {
     pub(crate) fn new(
-        host: Arc<DaemonDriverHost>,
+        credential_store: Arc<CredentialStore>,
         config: NanoleafConfig,
         mdns_enabled: bool,
     ) -> Self {
         Self {
-            host,
+            credential_store,
             config,
             mdns_enabled,
         }
@@ -63,7 +62,7 @@ impl NetworkDriverFactory for NanoleafDriverFactory {
         let _ = host;
         Ok(Some(Box::new(NanoleafBackend::with_mdns_enabled(
             self.config.clone(),
-            self.host.credential_store(),
+            Arc::clone(&self.credential_store),
             self.mdns_enabled,
         ))))
     }
@@ -84,16 +83,12 @@ impl DiscoveryCapability for NanoleafDriverFactory {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
     ) -> Result<DiscoveryResult> {
-        let _ = host;
-        let runtime = self.host.discovery_runtime();
-        let known_devices = crate::discovery::resolve_nanoleaf_probe_devices(
-            &runtime.device_registry,
-            &self.config,
-        )
-        .await;
+        let tracked_devices = host.discovery_state().tracked_devices("nanoleaf").await;
+        let known_devices =
+            resolve_nanoleaf_probe_devices_from_sources(&self.config, &tracked_devices);
         let mut scanner = NanoleafScanner::with_options(
             known_devices,
-            self.host.credential_store(),
+            Arc::clone(&self.credential_store),
             request.timeout,
             request.mdns_enabled,
         );
@@ -120,7 +115,7 @@ impl PairingCapability for NanoleafDriverFactory {
             .metadata
             .and_then(|values| values.get("auth_error").cloned());
         let configured =
-            nanoleaf_credentials_present(&self.host.credential_store(), device.metadata).await;
+            nanoleaf_credentials_present(&self.credential_store, device.metadata).await;
 
         Some(DeviceAuthSummary {
             state: if last_error.is_some() {
@@ -142,7 +137,7 @@ impl PairingCapability for NanoleafDriverFactory {
         device: &TrackedDeviceCtx<'_>,
         request: &PairDeviceRequest,
     ) -> Result<PairDeviceOutcome> {
-        if nanoleaf_credentials_present(&self.host.credential_store(), device.metadata).await {
+        if nanoleaf_credentials_present(&self.credential_store, device.metadata).await {
             let activated = activate_if_requested(
                 host,
                 request.activate_after_pair,
@@ -177,8 +172,7 @@ impl PairingCapability for NanoleafDriverFactory {
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or(DEFAULT_NANOLEAF_API_PORT);
 
-        match pair_nanoleaf_device_at_ip(&self.host.credential_store(), device_ip, api_port).await?
-        {
+        match pair_nanoleaf_device_at_ip(&self.credential_store, device_ip, api_port).await? {
             Some(_) => {
                 let activated = activate_if_requested(
                     host,
@@ -214,7 +208,7 @@ impl PairingCapability for NanoleafDriverFactory {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
     ) -> Result<ClearPairingOutcome> {
-        clear_nanoleaf_credentials(&self.host.credential_store(), device.metadata).await?;
+        clear_nanoleaf_credentials(&self.credential_store, device.metadata).await?;
         let disconnected = disconnect_after_unpair(host, device.device_id, "nanoleaf").await;
 
         Ok(ClearPairingOutcome {
@@ -223,6 +217,70 @@ impl PairingCapability for NanoleafDriverFactory {
             disconnected,
         })
     }
+}
+
+pub fn resolve_nanoleaf_probe_devices_from_sources(
+    config: &NanoleafConfig,
+    tracked_devices: &[DriverTrackedDevice],
+) -> Vec<hypercolor_core::device::nanoleaf::NanoleafKnownDevice> {
+    let mut known_devices: HashMap<IpAddr, hypercolor_core::device::nanoleaf::NanoleafKnownDevice> =
+        config
+            .device_ips
+            .iter()
+            .copied()
+            .map(hypercolor_core::device::nanoleaf::NanoleafKnownDevice::from_ip)
+            .map(|device| (device.ip, device))
+            .collect();
+
+    for tracked in tracked_devices {
+        let Some(ip_raw) = tracked.metadata.get("ip") else {
+            continue;
+        };
+        let Ok(ip) = ip_raw.parse::<IpAddr>() else {
+            continue;
+        };
+
+        let port = tracked
+            .metadata
+            .get("api_port")
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_NANOLEAF_API_PORT);
+        let device_key = tracked
+            .metadata
+            .get("device_key")
+            .cloned()
+            .unwrap_or_else(|| tracked.info.name.to_ascii_lowercase().replace(' ', "-"));
+
+        known_devices
+            .entry(ip)
+            .and_modify(|existing| {
+                if existing.device_id.is_empty() {
+                    existing.device_id.clone_from(&device_key);
+                }
+                existing.port = port;
+                if existing.name.is_empty() {
+                    existing.name.clone_from(&tracked.info.name);
+                }
+                if existing.model.is_empty() {
+                    existing.model = tracked.info.model.clone().unwrap_or_default();
+                }
+                if existing.firmware.is_empty() {
+                    existing.firmware = tracked.info.firmware_version.clone().unwrap_or_default();
+                }
+            })
+            .or_insert_with(|| hypercolor_core::device::nanoleaf::NanoleafKnownDevice {
+                device_id: device_key,
+                ip,
+                port,
+                name: tracked.info.name.clone(),
+                model: tracked.info.model.clone().unwrap_or_default(),
+                firmware: tracked.info.firmware_version.clone().unwrap_or_default(),
+            });
+    }
+
+    let mut resolved: Vec<_> = known_devices.into_values().collect();
+    resolved.sort_by_key(|device| device.ip);
+    resolved
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

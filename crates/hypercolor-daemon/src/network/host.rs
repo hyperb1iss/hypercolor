@@ -13,7 +13,10 @@ use hypercolor_core::device::{
     BackendManager, DeviceLifecycleManager, DeviceRegistry, UsbProtocolConfigStore,
 };
 use hypercolor_core::spatial::SpatialEngine;
-use hypercolor_driver_api::{DriverCredentialStore, DriverHost, DriverRuntimeActions};
+use hypercolor_driver_api::{
+    DriverCredentialStore, DriverDiscoveryState, DriverHost, DriverRuntimeActions,
+    DriverTrackedDevice,
+};
 use hypercolor_types::device::DeviceId;
 use hypercolor_types::event::DisconnectReason;
 use hypercolor_types::spatial::SpatialLayout;
@@ -26,6 +29,7 @@ use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{self, DiscoveryRuntime};
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
+use crate::runtime_state;
 
 /// Daemon-owned host adapter passed to built-in drivers.
 #[derive(Clone)]
@@ -190,12 +194,67 @@ impl DriverRuntimeActions for DaemonDriverHost {
     }
 }
 
+#[async_trait]
+impl DriverDiscoveryState for DaemonDriverHost {
+    async fn tracked_devices(&self, backend_id: &str) -> Vec<DriverTrackedDevice> {
+        let mut tracked_devices = Vec::new();
+
+        for tracked in self.device_registry.list().await {
+            let metadata = self
+                .device_registry
+                .metadata_for_id(&tracked.info.id)
+                .await
+                .unwrap_or_default();
+            if discovery::backend_id_for_device(&tracked.info.family, Some(&metadata)) != backend_id
+            {
+                continue;
+            }
+            let fingerprint = self
+                .device_registry
+                .fingerprint_for_id(&tracked.info.id)
+                .await;
+
+            tracked_devices.push(DriverTrackedDevice {
+                fingerprint,
+                metadata,
+                current_state: tracked.state,
+                info: tracked.info,
+            });
+        }
+
+        tracked_devices
+    }
+
+    fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<Value>> {
+        match (driver_id, key) {
+            ("wled", "probe_ips") => {
+                let cached = runtime_state::load_wled_probe_ips(&self.runtime_state_path)?;
+                Ok(Some(
+                    serde_json::to_value(cached)
+                        .context("failed to serialize cached WLED probe IPs")?,
+                ))
+            }
+            ("wled", "probe_targets") => {
+                let cached = runtime_state::load_wled_probe_targets(&self.runtime_state_path)?;
+                Ok(Some(serde_json::to_value(cached).context(
+                    "failed to serialize cached WLED probe targets",
+                )?))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
 impl DriverHost for DaemonDriverHost {
     fn credentials(&self) -> &dyn DriverCredentialStore {
         self
     }
 
     fn runtime(&self) -> &dyn DriverRuntimeActions {
+        self
+    }
+
+    fn discovery_state(&self) -> &dyn DriverDiscoveryState {
         self
     }
 }

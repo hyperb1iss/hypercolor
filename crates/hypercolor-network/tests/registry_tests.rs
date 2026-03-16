@@ -3,9 +3,9 @@ use async_trait::async_trait;
 use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_driver_api::{
     ClearPairingOutcome, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest, DiscoveryResult,
-    DriverCredentialStore, DriverDescriptor, DriverHost, DriverRuntimeActions, DriverTransport,
-    NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairingCapability,
-    TrackedDeviceCtx,
+    DriverCredentialStore, DriverDescriptor, DriverDiscoveryState, DriverHost,
+    DriverRuntimeActions, DriverTransport, NetworkDriverFactory, PairDeviceOutcome,
+    PairDeviceRequest, PairingCapability, TrackedDeviceCtx,
 };
 use hypercolor_network::{DriverRegistry, DriverRegistryError};
 use hypercolor_types::device::{DeviceId, DeviceInfo};
@@ -55,6 +55,24 @@ struct NullHost {
     runtime: NullRuntimeActions,
 }
 
+struct NullDiscoveryState;
+
+#[async_trait]
+impl DriverDiscoveryState for NullDiscoveryState {
+    async fn tracked_devices(
+        &self,
+        backend_id: &str,
+    ) -> Vec<hypercolor_driver_api::DriverTrackedDevice> {
+        let _ = backend_id;
+        Vec::new()
+    }
+
+    fn load_cached_json(&self, driver_id: &str, key: &str) -> Result<Option<serde_json::Value>> {
+        let _ = (driver_id, key);
+        Ok(None)
+    }
+}
+
 impl NullHost {
     fn new() -> Self {
         Self {
@@ -71,6 +89,11 @@ impl DriverHost for NullHost {
 
     fn runtime(&self) -> &dyn DriverRuntimeActions {
         &self.runtime
+    }
+
+    fn discovery_state(&self) -> &dyn DriverDiscoveryState {
+        static DISCOVERY_STATE: NullDiscoveryState = NullDiscoveryState;
+        &DISCOVERY_STATE
     }
 }
 

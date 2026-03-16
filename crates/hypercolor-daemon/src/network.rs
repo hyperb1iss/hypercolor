@@ -9,10 +9,10 @@ mod nanoleaf;
 mod pairing;
 mod wled;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use hypercolor_core::device::net::CredentialStore;
 use hypercolor_core::device::{BackendManager, DiscoveredDevice};
 use hypercolor_driver_api::{DriverDiscoveredDevice, DriverHost};
 use hypercolor_network::DriverRegistry;
@@ -21,8 +21,13 @@ use hypercolor_types::config::HypercolorConfig;
 pub use host::DaemonDriverHost;
 #[cfg(feature = "hue")]
 pub use hue::pair_hue_bridge_at_ip;
+#[cfg(feature = "hue")]
+pub use hue::resolve_hue_probe_bridges_from_sources;
 #[cfg(feature = "nanoleaf")]
 pub use nanoleaf::pair_nanoleaf_device_at_ip;
+#[cfg(feature = "nanoleaf")]
+pub use nanoleaf::resolve_nanoleaf_probe_devices_from_sources;
+pub use wled::{resolve_wled_probe_ips_from_sources, resolve_wled_probe_targets_from_sources};
 
 /// Build the daemon's compiled-in network driver registry.
 ///
@@ -31,26 +36,23 @@ pub use nanoleaf::pair_nanoleaf_device_at_ip;
 /// Returns an error if a built-in driver registration collides.
 pub fn build_builtin_driver_registry(
     config: &HypercolorConfig,
-    host: Arc<DaemonDriverHost>,
-    runtime_state_path: PathBuf,
+    credential_store: Arc<CredentialStore>,
 ) -> Result<DriverRegistry> {
     let mut registry = DriverRegistry::new();
-    registry.register(wled::WledDriverFactory::new(
-        Arc::clone(&host),
-        config.clone(),
-        runtime_state_path,
-    ))?;
+    registry.register(wled::WledDriverFactory::new(config.clone()))?;
+    #[cfg(not(any(feature = "hue", feature = "nanoleaf")))]
+    let _ = &credential_store;
 
     #[cfg(feature = "hue")]
     registry.register(hue::HueDriverFactory::new(
-        Arc::clone(&host),
+        Arc::clone(&credential_store),
         config.hue.clone(),
         config.discovery.mdns_enabled,
     ))?;
 
     #[cfg(feature = "nanoleaf")]
     registry.register(nanoleaf::NanoleafDriverFactory::new(
-        host,
+        credential_store,
         config.nanoleaf.clone(),
         config.discovery.mdns_enabled,
     ))?;

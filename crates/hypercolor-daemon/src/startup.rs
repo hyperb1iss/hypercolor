@@ -497,12 +497,8 @@ impl DaemonState {
             Arc::clone(&discovery_in_progress),
         ));
         let driver_registry = Arc::new(
-            network::build_builtin_driver_registry(
-                config,
-                Arc::clone(&driver_host),
-                runtime_state_path.clone(),
-            )
-            .context("failed to build network driver registry")?,
+            network::build_builtin_driver_registry(config, Arc::clone(&credential_store))
+                .context("failed to build network driver registry")?,
         );
         info!(
             drivers = ?driver_registry.ids(),

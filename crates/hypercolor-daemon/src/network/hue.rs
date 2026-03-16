@@ -11,13 +11,12 @@ use hypercolor_core::device::hue::{DEFAULT_HUE_API_PORT, HueBackend, HueBridgeCl
 use hypercolor_core::device::net::{CredentialStore, Credentials};
 use hypercolor_driver_api::{
     ClearPairingOutcome, DeviceAuthState, DeviceAuthSummary, DiscoveryCapability, DiscoveryRequest,
-    DiscoveryResult, DriverDescriptor, DriverHost, DriverTransport, NetworkDriverFactory,
-    PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus, PairingCapability, PairingDescriptor,
-    PairingFlowKind, TrackedDeviceCtx,
+    DiscoveryResult, DriverDescriptor, DriverHost, DriverTrackedDevice, DriverTransport,
+    NetworkDriverFactory, PairDeviceOutcome, PairDeviceRequest, PairDeviceStatus,
+    PairingCapability, PairingDescriptor, PairingFlowKind, TrackedDeviceCtx,
 };
 use hypercolor_types::config::HueConfig;
 
-use super::host::DaemonDriverHost;
 use super::pairing::{
     activate_if_requested, disconnect_after_unpair, metadata_value, network_ip_from_metadata,
     push_lookup_key,
@@ -34,15 +33,19 @@ pub(crate) static DESCRIPTOR: DriverDescriptor =
 
 #[derive(Clone)]
 pub(crate) struct HueDriverFactory {
-    host: Arc<DaemonDriverHost>,
+    credential_store: Arc<CredentialStore>,
     config: HueConfig,
     mdns_enabled: bool,
 }
 
 impl HueDriverFactory {
-    pub(crate) fn new(host: Arc<DaemonDriverHost>, config: HueConfig, mdns_enabled: bool) -> Self {
+    pub(crate) fn new(
+        credential_store: Arc<CredentialStore>,
+        config: HueConfig,
+        mdns_enabled: bool,
+    ) -> Self {
         Self {
-            host,
+            credential_store,
             config,
             mdns_enabled,
         }
@@ -58,7 +61,7 @@ impl NetworkDriverFactory for HueDriverFactory {
         let _ = host;
         Ok(Some(Box::new(HueBackend::with_mdns_enabled(
             self.config.clone(),
-            self.host.credential_store(),
+            Arc::clone(&self.credential_store),
             self.mdns_enabled,
         ))))
     }
@@ -79,14 +82,11 @@ impl DiscoveryCapability for HueDriverFactory {
         host: &dyn DriverHost,
         request: &DiscoveryRequest,
     ) -> Result<DiscoveryResult> {
-        let _ = host;
-        let runtime = self.host.discovery_runtime();
-        let known_bridges =
-            crate::discovery::resolve_hue_probe_bridges(&runtime.device_registry, &self.config)
-                .await;
+        let tracked_devices = host.discovery_state().tracked_devices("hue").await;
+        let known_bridges = resolve_hue_probe_bridges_from_sources(&self.config, &tracked_devices);
         let mut scanner = HueScanner::with_options(
             known_bridges,
-            self.host.credential_store(),
+            Arc::clone(&self.credential_store),
             request.timeout,
             request.mdns_enabled,
             self.config.entertainment_config.clone(),
@@ -113,8 +113,7 @@ impl PairingCapability for HueDriverFactory {
         let last_error = device
             .metadata
             .and_then(|values| values.get("auth_error").cloned());
-        let configured =
-            hue_credentials_present(&self.host.credential_store(), device.metadata).await;
+        let configured = hue_credentials_present(&self.credential_store, device.metadata).await;
 
         Some(DeviceAuthSummary {
             state: if last_error.is_some() {
@@ -136,7 +135,7 @@ impl PairingCapability for HueDriverFactory {
         device: &TrackedDeviceCtx<'_>,
         request: &PairDeviceRequest,
     ) -> Result<PairDeviceOutcome> {
-        if hue_credentials_present(&self.host.credential_store(), device.metadata).await {
+        if hue_credentials_present(&self.credential_store, device.metadata).await {
             let activated =
                 activate_if_requested(host, request.activate_after_pair, device.device_id, "hue")
                     .await;
@@ -167,7 +166,7 @@ impl PairingCapability for HueDriverFactory {
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or(DEFAULT_HUE_API_PORT);
 
-        match pair_hue_bridge_at_ip(&self.host.credential_store(), bridge_ip, bridge_port).await? {
+        match pair_hue_bridge_at_ip(&self.credential_store, bridge_ip, bridge_port).await? {
             Some(_) => {
                 let activated = activate_if_requested(
                     host,
@@ -202,7 +201,7 @@ impl PairingCapability for HueDriverFactory {
         host: &dyn DriverHost,
         device: &TrackedDeviceCtx<'_>,
     ) -> Result<ClearPairingOutcome> {
-        clear_hue_credentials(&self.host.credential_store(), device.metadata).await?;
+        clear_hue_credentials(&self.credential_store, device.metadata).await?;
         let disconnected = disconnect_after_unpair(host, device.device_id, "hue").await;
 
         Ok(ClearPairingOutcome {
@@ -211,6 +210,84 @@ impl PairingCapability for HueDriverFactory {
             disconnected,
         })
     }
+}
+
+pub fn resolve_hue_probe_bridges_from_sources(
+    config: &HueConfig,
+    tracked_devices: &[DriverTrackedDevice],
+) -> Vec<hypercolor_core::device::hue::HueKnownBridge> {
+    let mut known_bridges: HashMap<IpAddr, hypercolor_core::device::hue::HueKnownBridge> = config
+        .bridge_ips
+        .iter()
+        .copied()
+        .map(hypercolor_core::device::hue::HueKnownBridge::from_ip)
+        .map(|bridge| (bridge.ip, bridge))
+        .collect();
+
+    for tracked in tracked_devices {
+        let Some(ip) = tracked
+            .metadata
+            .get("ip")
+            .and_then(|value| value.parse::<IpAddr>().ok())
+        else {
+            continue;
+        };
+
+        let api_port = tracked
+            .metadata
+            .get("api_port")
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_HUE_API_PORT);
+        let bridge_id = tracked
+            .metadata
+            .get("bridge_id")
+            .cloned()
+            .unwrap_or_default();
+        let model_id = tracked
+            .metadata
+            .get("model_id")
+            .cloned()
+            .or_else(|| tracked.info.model.clone())
+            .unwrap_or_default();
+        let sw_version = tracked
+            .metadata
+            .get("sw_version")
+            .cloned()
+            .or_else(|| tracked.info.firmware_version.clone())
+            .unwrap_or_default();
+
+        known_bridges
+            .entry(ip)
+            .and_modify(|existing| {
+                if existing.bridge_id.is_empty() {
+                    existing.bridge_id.clone_from(&bridge_id);
+                }
+                if existing.api_port == 0 {
+                    existing.api_port = api_port;
+                }
+                if existing.name.is_empty() {
+                    existing.name.clone_from(&tracked.info.name);
+                }
+                if existing.model_id.is_empty() {
+                    existing.model_id.clone_from(&model_id);
+                }
+                if existing.sw_version.is_empty() {
+                    existing.sw_version.clone_from(&sw_version);
+                }
+            })
+            .or_insert_with(|| hypercolor_core::device::hue::HueKnownBridge {
+                bridge_id,
+                ip,
+                api_port,
+                name: tracked.info.name.clone(),
+                model_id,
+                sw_version,
+            });
+    }
+
+    let mut resolved: Vec<_> = known_bridges.into_values().collect();
+    resolved.sort_by_key(|bridge| bridge.ip);
+    resolved
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
