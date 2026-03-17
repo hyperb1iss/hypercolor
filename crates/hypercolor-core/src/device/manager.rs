@@ -310,6 +310,12 @@ pub struct OutputQueueDebugSnapshot {
     /// Average latency from enqueue to write completion.
     pub avg_latency_ms: u64,
 
+    /// Average time spent waiting in the latest-frame slot before a write starts.
+    pub avg_queue_wait_ms: u64,
+
+    /// Average backend write duration from write start to write completion.
+    pub avg_write_ms: u64,
+
     /// Last async write error observed by this queue worker.
     pub last_error: Option<String>,
 
@@ -337,6 +343,8 @@ struct OutputQueueMetrics {
     frames_sent: u64,
     frames_dropped: u64,
     total_latency: Duration,
+    total_queue_wait: Duration,
+    total_write_time: Duration,
     last_error: Option<String>,
     last_sent_at: Option<Instant>,
 }
@@ -411,6 +419,9 @@ impl OutputQueue {
                     continue;
                 };
 
+                let write_started = Instant::now();
+                let queue_wait = write_started.saturating_duration_since(frame.produced_at);
+
                 if frame.sequence > last_sent_sequence + 1 {
                     let dropped = frame.sequence - last_sent_sequence - 1;
                     if let Ok(mut snapshot) = metrics_for_task.lock() {
@@ -430,6 +441,7 @@ impl OutputQueue {
                     backend.write_colors(&device_id, &frame.colors).await
                 };
                 let send_completed = Instant::now();
+                let write_time = send_completed.saturating_duration_since(write_started);
 
                 if let Ok(mut snapshot) = metrics_for_task.lock() {
                     snapshot.last_sent_at = Some(send_completed);
@@ -437,6 +449,8 @@ impl OutputQueue {
                     match &result {
                         Ok(()) => {
                             snapshot.frames_sent = snapshot.frames_sent.saturating_add(1);
+                            snapshot.total_queue_wait += queue_wait;
+                            snapshot.total_write_time += write_time;
                             snapshot.total_latency +=
                                 send_completed.saturating_duration_since(frame.produced_at);
                             snapshot.last_error = None;
@@ -499,17 +513,9 @@ impl OutputQueue {
             .lock()
             .map(|guard| guard.clone())
             .unwrap_or_default();
-        let avg_latency_ms = if metrics.frames_sent == 0 {
-            0
-        } else {
-            let divisor = u32::try_from(metrics.frames_sent).unwrap_or(u32::MAX);
-            let average = metrics
-                .total_latency
-                .checked_div(divisor)
-                .unwrap_or_default()
-                .as_millis();
-            u64::try_from(average).unwrap_or(u64::MAX)
-        };
+        let avg_latency_ms = average_duration_ms(metrics.total_latency, metrics.frames_sent);
+        let avg_queue_wait_ms = average_duration_ms(metrics.total_queue_wait, metrics.frames_sent);
+        let avg_write_ms = average_duration_ms(metrics.total_write_time, metrics.frames_sent);
         let now = Instant::now();
         let last_sent_ago_ms = metrics.last_sent_at.map(|last| {
             let ms = now.saturating_duration_since(last).as_millis();
@@ -525,6 +531,8 @@ impl OutputQueue {
             frames_sent: metrics.frames_sent,
             frames_dropped: metrics.frames_dropped,
             avg_latency_ms,
+            avg_queue_wait_ms,
+            avg_write_ms,
             last_error: metrics.last_error,
             last_sent_ago_ms,
             last_sequence: self.next_sequence,
@@ -1534,6 +1542,16 @@ fn target_interval_for_fps(target_fps: u32) -> Option<Duration> {
     Some(Duration::from_secs_f64(1.0 / f64::from(target_fps)))
 }
 
+fn average_duration_ms(total: Duration, sample_count: u64) -> u64 {
+    if sample_count == 0 {
+        return 0;
+    }
+
+    let divisor = u32::try_from(sample_count).unwrap_or(u32::MAX);
+    let average = total.checked_div(divisor).unwrap_or_default().as_millis();
+    u64::try_from(average).unwrap_or(u64::MAX)
+}
+
 fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant) -> Instant {
     previous_deadline
         .checked_add(interval)
@@ -1723,25 +1741,34 @@ fn attachment_segment_for_zone(
     } else {
         led_count
     };
+    let attachment_end = led_start.saturating_add(resolved_led_count);
 
     if let Some(base_segment) = base_segment {
-        if led_start.saturating_add(resolved_led_count) > base_segment.length {
-            warn!(
-                zone_id = %zone_id,
-                attachment_led_start = led_start,
-                attachment_led_count = led_count,
+        if led_start >= base_segment.start && attachment_end <= base_segment.end() {
+            return Some(SegmentRange::new(led_start, resolved_led_count));
+        }
+
+        if attachment_end <= base_segment.length {
+            return Some(SegmentRange::new(
+                base_segment.start.saturating_add(led_start),
                 resolved_led_count,
-                base_segment_start = base_segment.start,
-                base_segment_length = base_segment.length,
-                "ignoring attachment segment override because it exceeds the mapped segment"
-            );
+            ));
+        }
+
+        if resolved_led_count == base_segment.length {
             return Some(base_segment);
         }
 
-        return Some(SegmentRange::new(
-            base_segment.start.saturating_add(led_start),
+        warn!(
+            zone_id = %zone_id,
+            attachment_led_start = led_start,
+            attachment_led_count = led_count,
             resolved_led_count,
-        ));
+            base_segment_start = base_segment.start,
+            base_segment_length = base_segment.length,
+            "ignoring attachment segment override because it exceeds the mapped segment"
+        );
+        return Some(base_segment);
     }
 
     Some(SegmentRange::new(led_start, resolved_led_count))

@@ -2048,6 +2048,148 @@ async fn write_frame_uses_sampled_led_count_when_attachment_metadata_is_stale() 
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn write_frame_uses_absolute_attachment_coordinates_for_segmented_logical_device() {
+    let buffer = SharedLogBuffer::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(buffer.clone())
+        .with_ansi(false)
+        .without_time()
+        .with_target(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(10),
+        writes.clone(),
+        write_count,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device_with_segment(
+        "attachment:gpu",
+        "slow",
+        device_id,
+        Some(SegmentRange::new(120, 108)),
+    );
+
+    let mut zone = make_zone("attachment_zone", "attachment:gpu", 108);
+    zone.attachment = Some(ZoneAttachment {
+        template_id: "strimer-gpu".into(),
+        slot_id: "gpu-strimer".into(),
+        instance: 0,
+        led_start: Some(120),
+        led_count: Some(108),
+        led_mapping: None,
+    });
+    let layout = make_layout(vec![zone]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "attachment_zone".into(),
+        colors: vec![[0, 0, 255]; 108],
+    }];
+
+    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout).await;
+
+    let logs = buffer.contents();
+    assert_eq!(
+        logs
+            .matches("ignoring attachment segment override because it exceeds the mapped segment")
+            .count(),
+        0
+    );
+    assert_eq!(
+        logs.matches("attachment segment length already matches the mapped segment")
+            .count(),
+        0
+    );
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let writes = writes.lock().await;
+    let frame = writes.last().expect("one frame should be written");
+    assert_eq!(frame.len(), 228);
+    assert!(frame[..120].iter().all(|color| *color == [0, 0, 0]));
+    assert!(frame[120..228].iter().all(|color| *color == [0, 0, 255]));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn write_frame_uses_mapped_segment_when_attachment_length_already_matches() {
+    let buffer = SharedLogBuffer::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(buffer.clone())
+        .with_ansi(false)
+        .without_time()
+        .with_target(false)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    let device_id = DeviceId::new();
+    let writes = Arc::new(Mutex::new(Vec::<Vec<[u8; 3]>>::new()));
+    let write_count = Arc::new(AtomicUsize::new(0));
+    let backend = SlowRecordingBackend::new(
+        device_id,
+        Duration::from_millis(10),
+        writes.clone(),
+        write_count,
+    );
+
+    let mut manager = BackendManager::new();
+    manager.register_backend(Box::new(backend));
+    manager.map_device_with_segment(
+        "attachment-usb-16d0-1294-a04328385154315431202020ff01332e-gpu-strimer-120-0",
+        "slow",
+        device_id,
+        Some(SegmentRange::new(0, 108)),
+    );
+
+    let mut zone = make_zone(
+        "attachment-usb-16d0-1294-a04328385154315431202020ff01332e-gpu-strimer-120-0",
+        "attachment-usb-16d0-1294-a04328385154315431202020ff01332e-gpu-strimer-120-0",
+        108,
+    );
+    zone.attachment = Some(ZoneAttachment {
+        template_id: "lian-li-gpu-strimer-4x27".into(),
+        slot_id: "gpu-strimer".into(),
+        instance: 0,
+        led_start: Some(120),
+        led_count: Some(108),
+        led_mapping: None,
+    });
+    let layout = make_layout(vec![zone]);
+    let zone_colors = vec![ZoneColors {
+        zone_id: "attachment-usb-16d0-1294-a04328385154315431202020ff01332e-gpu-strimer-120-0"
+            .into(),
+        colors: vec![[0, 0, 255]; 108],
+    }];
+
+    manager.write_frame(&zone_colors, &layout).await;
+    manager.write_frame(&zone_colors, &layout).await;
+
+    let logs = buffer.contents();
+    assert_eq!(
+        logs
+            .matches("ignoring attachment segment override because it exceeds the mapped segment")
+            .count(),
+        0
+    );
+    assert_eq!(
+        logs.matches("attachment segment length already matches the mapped segment")
+            .count(),
+        0
+    );
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let writes = writes.lock().await;
+    let frame = writes.last().expect("one frame should be written");
+    assert_eq!(frame.len(), 108);
+    assert!(frame.iter().all(|color| *color == [0, 0, 255]));
+}
+
 #[tokio::test]
 async fn write_frame_unknown_zone_id_warns_but_continues() {
     let device_id = DeviceId::new();
@@ -2140,6 +2282,15 @@ async fn write_frame_returns_immediately_with_slow_backend() {
     assert_eq!(queue.frames_sent, 1);
     assert_eq!(queue.frames_dropped, 0);
     assert!(queue.avg_latency_ms > 0);
+    assert!(
+        queue.avg_write_ms >= 120,
+        "expected write timing to reflect slow backend, avg_write_ms={}",
+        queue.avg_write_ms
+    );
+    assert!(
+        queue.avg_latency_ms >= queue.avg_write_ms,
+        "total latency should include backend write time"
+    );
 }
 
 #[tokio::test]
@@ -2272,6 +2423,11 @@ async fn write_frame_uses_interval_pacing_for_cached_target_fps() {
         .expect("expected one queue snapshot");
     assert_eq!(queue.target_fps, 10);
     assert_eq!(queue.frames_sent, 2);
+    assert!(
+        queue.avg_queue_wait_ms >= 30,
+        "expected paced queue to retain payloads before writing, avg_queue_wait_ms={}",
+        queue.avg_queue_wait_ms
+    );
 }
 
 #[tokio::test]

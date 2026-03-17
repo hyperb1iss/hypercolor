@@ -1054,7 +1054,10 @@ pub async fn identify_attachment(
         ));
     }
 
-    let duration_ms = body.as_ref().and_then(|b| b.base.duration_ms).unwrap_or(3000);
+    let duration_ms = body
+        .as_ref()
+        .and_then(|b| b.base.duration_ms)
+        .unwrap_or(3000);
     if duration_ms == 0 || duration_ms > 120_000 {
         return ApiError::validation("duration_ms must be between 1 and 120000");
     }
@@ -2741,11 +2744,7 @@ fn resolve_zone_index(info: &DeviceInfo, zone_id: &str) -> Result<usize, Respons
 }
 
 /// Build a full-device LED frame with only one zone lit.
-fn build_zone_identify_frame(
-    info: &DeviceInfo,
-    zone_index: usize,
-    color: [u8; 3],
-) -> Vec<[u8; 3]> {
+fn build_zone_identify_frame(info: &DeviceInfo, zone_index: usize, color: [u8; 3]) -> Vec<[u8; 3]> {
     let total_leds = usize::try_from(info.total_led_count()).unwrap_or_default();
     let mut frame = vec![[0_u8; 3]; total_leds];
 
@@ -2810,12 +2809,9 @@ fn build_attachment_identify_frame(
         )
     })?;
 
-    let template = registry.get(&binding.template_id).ok_or_else(|| {
-        format!(
-            "Attachment template '{}' not found",
-            binding.template_id
-        )
-    })?;
+    let template = registry
+        .get(&binding.template_id)
+        .ok_or_else(|| format!("Attachment template '{}' not found", binding.template_id))?;
 
     let led_count = usize::try_from(binding.effective_led_count(template)).unwrap_or_default();
     let slot_start = usize::try_from(slot.led_start).unwrap_or_default();
