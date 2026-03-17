@@ -114,6 +114,8 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (selected_zone_id, set_selected_zone_id) = signal(None::<String>);
     let (creating, set_creating) = signal(false);
     let (new_layout_name, set_new_layout_name) = signal(String::new());
+    let (renaming, set_renaming) = signal(false);
+    let (rename_value, set_rename_value) = signal(String::new());
     let (initialized, set_initialized) = signal(false);
     let (keep_aspect_ratio, set_keep_aspect_ratio) = signal(true);
     let (hidden_zones, set_hidden_zones) = signal(std::collections::HashSet::<String>::new());
@@ -481,6 +483,59 @@ pub fn LayoutBuilder() -> impl IntoView {
         });
     };
 
+    // Rename handler — persists name change immediately via API
+    let commit_rename = move || {
+        let name = rename_value.get_untracked();
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            set_renaming.set(false);
+            return;
+        }
+        let Some(current) = layout.get_untracked() else {
+            set_renaming.set(false);
+            return;
+        };
+        // Skip if name hasn't changed
+        if name == current.name {
+            set_renaming.set(false);
+            return;
+        }
+        let id = current.id.clone();
+        let new_name = name.clone();
+        let layouts_resource = ctx.layouts_resource;
+        set_renaming.set(false);
+        leptos::task::spawn_local(async move {
+            let req = api::UpdateLayoutApiRequest {
+                name: Some(new_name.clone()),
+                description: None,
+                canvas_width: None,
+                canvas_height: None,
+                zones: None,
+                groups: None,
+            };
+            match api::update_layout(&id, &req).await {
+                Ok(_) => {
+                    // Update the in-memory layout name so the dropdown reflects it immediately
+                    set_layout.update(|l| {
+                        if let Some(layout) = l {
+                            layout.name.clone_from(&new_name);
+                        }
+                    });
+                    set_saved_layout.update(|l| {
+                        if let Some(layout) = l {
+                            layout.name.clone_from(&new_name);
+                        }
+                    });
+                    toasts::toast_success("Layout renamed");
+                    layouts_resource.refetch();
+                }
+                Err(e) => {
+                    toasts::toast_error(&format!("Rename failed: {e}"));
+                }
+            }
+        });
+    };
+
     // Duplicate handler — creates a copy of the current layout with zones + groups
     let duplicate_layout = move || {
         let Some(current) = layout.get_untracked() else {
@@ -527,52 +582,104 @@ pub fn LayoutBuilder() -> impl IntoView {
         <div class="flex min-h-0 flex-1 flex-col overflow-hidden">
             // Toolbar — glass background with edge glow
             <div class="shrink-0 px-5 py-2.5 flex items-center gap-3 glass-subtle border-b border-edge-subtle">
-                // Layout selector
+                // Layout selector / rename
                 <div class="flex items-center gap-3">
                     <h1 class="text-lg font-medium text-fg-primary">"Layout"</h1>
-                    <Suspense fallback=|| ()>
-                        {move || {
-                            ctx.layouts_resource.get().map(|result| {
-                                let layouts = result.unwrap_or_default();
-                                view! {
-                                    <select
-                                        class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
-                                               focus:outline-none focus:border-accent-muted glow-ring min-w-[180px] transition-all"
-                                        on:change=move |ev| {
-                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
-                                            if let Some(el) = target {
-                                                let val = el.value();
-                                                if val.is_empty() {
-                                                    set_selected_layout_id.set(None);
-                                                } else {
-                                                    set_selected_layout_id.set(Some(val));
-                                                }
+
+                    {move || if renaming.get() {
+                        // Inline rename input
+                        view! {
+                            <div class="flex items-center gap-2 animate-slide-down">
+                                <input
+                                    type="text"
+                                    class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
+                                           placeholder-fg-tertiary focus:outline-none focus:border-accent-muted glow-ring w-52 transition-all"
+                                    prop:value=move || rename_value.get()
+                                    autofocus=true
+                                    on:input=move |ev| {
+                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                        if let Some(el) = target { set_rename_value.set(el.value()); }
+                                    }
+                                    on:blur=move |_| commit_rename()
+                                    on:keydown=move |ev: web_sys::KeyboardEvent| {
+                                        if ev.key() == "Enter" {
+                                            // Blur triggers commit_rename, so just blur the input
+                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                            if let Some(el) = target { let _ = el.blur(); }
+                                        } else if ev.key() == "Escape" {
+                                            set_renaming.set(false);
+                                        }
+                                    }
+                                />
+                            </div>
+                        }.into_any()
+                    } else {
+                        // Normal dropdown selector + rename button
+                        view! {
+                            <div class="flex items-center gap-2">
+                                <Suspense fallback=|| ()>
+                                    {move || {
+                                        ctx.layouts_resource.get().map(|result| {
+                                            let layouts = result.unwrap_or_default();
+                                            view! {
+                                                <select
+                                                    class="bg-surface-sunken border border-edge-subtle rounded-lg px-3 py-1.5 text-sm text-fg-primary
+                                                           focus:outline-none focus:border-accent-muted glow-ring min-w-[180px] transition-all"
+                                                    on:change=move |ev| {
+                                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
+                                                        if let Some(el) = target {
+                                                            let val = el.value();
+                                                            if val.is_empty() {
+                                                                set_selected_layout_id.set(None);
+                                                            } else {
+                                                                set_selected_layout_id.set(Some(val));
+                                                            }
+                                                        }
+                                                    }
+                                                >
+                                                    <option value="" selected=move || selected_layout_id.get().is_none()>"Select layout..."</option>
+                                                    {layouts.into_iter().map(|l| {
+                                                        let lid = l.id.clone();
+                                                        let lid2 = l.id.clone();
+                                                        let label = if l.is_active {
+                                                            format!("{} ({} zones) *", l.name, l.zone_count)
+                                                        } else {
+                                                            format!("{} ({} zones)", l.name, l.zone_count)
+                                                        };
+                                                        view! {
+                                                            <option
+                                                                value=lid
+                                                                selected=move || selected_layout_id.get().as_deref() == Some(&lid2)
+                                                            >
+                                                                {label}
+                                                            </option>
+                                                        }
+                                                    }).collect_view()}
+                                                </select>
+                                            }
+                                        })
+                                    }}
+                                </Suspense>
+
+                                // Rename button — only when a layout is selected
+                                <Show when=move || layout.with(|l| l.is_some())>
+                                    <button
+                                        class="p-1.5 rounded-md text-fg-tertiary hover:text-fg-primary hover:bg-surface-hover/40
+                                               transition-all btn-press"
+                                        title="Rename layout"
+                                        on:click=move |_| {
+                                            if let Some(current) = layout.get_untracked() {
+                                                set_rename_value.set(current.name.clone());
+                                                set_renaming.set(true);
                                             }
                                         }
                                     >
-                                        <option value="" selected=move || selected_layout_id.get().is_none()>"Select layout..."</option>
-                                        {layouts.into_iter().map(|l| {
-                                            let lid = l.id.clone();
-                                            let lid2 = l.id.clone();
-                                            let label = if l.is_active {
-                                                format!("{} ({} zones) *", l.name, l.zone_count)
-                                            } else {
-                                                format!("{} ({} zones)", l.name, l.zone_count)
-                                            };
-                                            view! {
-                                                <option
-                                                    value=lid
-                                                    selected=move || selected_layout_id.get().as_deref() == Some(&lid2)
-                                                >
-                                                    {label}
-                                                </option>
-                                            }
-                                        }).collect_view()}
-                                    </select>
-                                }
-                            })
-                        }}
-                    </Suspense>
+                                        <Icon icon=LuPencil width="14px" height="14px" />
+                                    </button>
+                                </Show>
+                            </div>
+                        }.into_any()
+                    }}
 
                     // Dirty indicator
                     <Show when=move || is_dirty.get()>

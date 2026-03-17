@@ -530,7 +530,12 @@ fn PerformancePanel(
     let pacing_reuse_text = Memo::new(move |_| {
         metrics
             .get()
-            .map(|m| format!("{} input · {} canvas", m.pacing.reused_inputs, m.pacing.reused_canvas))
+            .map(|m| {
+                format!(
+                    "{} input · {} canvas",
+                    m.pacing.reused_inputs, m.pacing.reused_canvas
+                )
+            })
             .unwrap_or_else(|| "\u{2014}".to_string())
     });
 

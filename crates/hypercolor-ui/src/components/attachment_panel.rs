@@ -1,7 +1,7 @@
 //! Wiring panel — map physical components (fans, strips, etc.) to device channels.
 //! Terminology: "wiring" = section, "component" = individual item, "channel" = device slot.
 
-use leptos::{ev, prelude::*};
+use leptos::{ev, portal::Portal, prelude::*};
 use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
 use wasm_bindgen::JsCast;
@@ -517,7 +517,12 @@ fn install_component_combobox_outside_handler(set_open: WriteSignal<bool>) {
             let inside = ev
                 .target()
                 .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .map(|el| el.closest(".component-combobox").ok().flatten().is_some())
+                .map(|el| {
+                    el.closest(".component-combobox, .component-combobox-panel")
+                        .ok()
+                        .flatten()
+                        .is_some()
+                })
                 .unwrap_or(false);
 
             if !inside {
@@ -526,6 +531,74 @@ fn install_component_combobox_outside_handler(set_open: WriteSignal<bool>) {
         },
         UseEventListenerOptions::default().capture(true),
     );
+}
+
+fn install_component_combobox_scroll_close_handler(set_open: WriteSignal<bool>) {
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+
+    let _ = use_event_listener_with_options(
+        win,
+        ev::scroll,
+        move |_: web_sys::Event| {
+            set_open.set(false);
+        },
+        UseEventListenerOptions::default()
+            .capture(true)
+            .passive(true),
+    );
+}
+
+fn component_dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
+    trigger
+        .map(|el| {
+            let rect = el.get_bounding_client_rect();
+            let Some(window) = web_sys::window() else {
+                return String::new();
+            };
+
+            let viewport_width = window
+                .inner_width()
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or(rect.right());
+            let viewport_height = window
+                .inner_height()
+                .ok()
+                .and_then(|value| value.as_f64())
+                .unwrap_or(rect.bottom());
+
+            let horizontal_margin = 12.0;
+            let vertical_margin = 12.0;
+            let desired_max_height = 340.0;
+            let width = rect.width().max(300.0);
+            let max_left = (viewport_width - width - horizontal_margin).max(horizontal_margin);
+            let left = rect.left().clamp(horizontal_margin, max_left);
+            let available_below = (viewport_height - rect.bottom() - vertical_margin).max(0.0);
+            let available_above = (rect.top() - vertical_margin).max(0.0);
+            let open_upward = available_below < 180.0 && available_above > available_below;
+            let max_height = if open_upward {
+                available_above
+            } else {
+                available_below
+            }
+            .min(desired_max_height)
+            .max(120.0);
+
+            if open_upward {
+                let bottom = (viewport_height - rect.top() + 4.0).max(vertical_margin);
+                format!(
+                    "left: {left}px; bottom: {bottom}px; width: {width}px; max-height: {max_height}px; z-index: 9999"
+                )
+            } else {
+                let top = (rect.bottom() + 4.0).max(vertical_margin);
+                format!(
+                    "top: {top}px; left: {left}px; width: {width}px; max-height: {max_height}px; z-index: 9999"
+                )
+            }
+        })
+        .unwrap_or_default()
 }
 
 /// Searchable dropdown for selecting a component (fan, strip, etc.).
@@ -540,12 +613,12 @@ fn ComponentCombobox(
 ) -> impl IntoView {
     let (open, set_open) = signal(false);
     let (search, set_search) = signal(String::new());
-    let (dropdown_pos, set_dropdown_pos) = signal((0.0_f64, 0.0_f64, 0.0_f64));
     let trigger_ref = NodeRef::<leptos::html::Button>::new();
     let components_store = StoredValue::new(components);
     let has_selection = !selected_id.is_empty();
 
     install_component_combobox_outside_handler(set_open);
+    install_component_combobox_scroll_close_handler(set_open);
 
     let filtered = Memo::new(move |_| {
         let term = search.get().to_lowercase();
@@ -572,12 +645,6 @@ fn ComponentCombobox(
         if open.get_untracked() {
             set_open.set(false);
             return;
-        }
-        // Compute fixed position from trigger bounding rect
-        if let Some(el) = trigger_ref.get() {
-            let el_ref: &web_sys::HtmlElement = &el;
-            let rect = el_ref.get_bounding_client_rect();
-            set_dropdown_pos.set((rect.left(), rect.bottom() + 4.0, rect.width().max(300.0)));
         }
         set_search.set(String::new());
         set_open.set(true);
@@ -612,97 +679,99 @@ fn ComponentCombobox(
             // Fixed-position dropdown (escapes overflow clipping)
             {move || open.get().then(|| {
                 let cat_count = category_count;
-                let (left, top, width) = dropdown_pos.get();
-                let pos_style = format!("position: fixed; left: {left:.0}px; top: {top:.0}px; width: {width:.0}px; z-index: 9999");
 
                 view! {
-                    <div class="max-h-[340px] flex flex-col rounded-xl border border-edge-subtle bg-surface-overlay shadow-xl
-                                dropdown-glow animate-fade-in overflow-hidden"
-                         style=pos_style>
+                    <Portal>
+                        <div
+                            class="component-combobox-panel fixed flex flex-col rounded-xl border border-edge-subtle
+                                   bg-surface-overlay shadow-xl dropdown-glow animate-fade-in overflow-hidden"
+                            style=move || component_dropdown_panel_style(trigger_ref.get())
+                            on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
+                        >
+                            <div class="p-1.5 border-b border-edge-subtle">
+                                <div class="relative">
+                                    <span class="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary/40">
+                                        <Icon icon=LuSearch width="11px" height="11px" />
+                                    </span>
+                                    <input
+                                        type="text"
+                                        placeholder="Search components..."
+                                        class="w-full bg-surface-base/60 border border-edge-subtle rounded-lg pl-6 pr-2 py-1
+                                               text-[11px] text-fg-primary placeholder-fg-tertiary/40
+                                               focus:outline-none focus:border-accent-muted search-glow"
+                                        prop:value=move || search.get()
+                                        on:input=move |ev| {
+                                            let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                            if let Some(el) = target { set_search.set(el.value()); }
+                                        }
+                                        on:click=move |ev| ev.stop_propagation()
+                                        autofocus=true
+                                    />
+                                </div>
+                            </div>
 
-                        <div class="p-1.5 border-b border-edge-subtle">
-                            <div class="relative">
-                                <span class="absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none text-fg-tertiary/40">
-                                    <Icon icon=LuSearch width="11px" height="11px" />
-                                </span>
-                                <input
-                                    type="text"
-                                    placeholder="Search components..."
-                                    class="w-full bg-surface-base/60 border border-edge-subtle rounded-lg pl-6 pr-2 py-1
-                                           text-[11px] text-fg-primary placeholder-fg-tertiary/40
-                                           focus:outline-none focus:border-accent-muted search-glow"
-                                    prop:value=move || search.get()
-                                    on:input=move |ev| {
-                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target { set_search.set(el.value()); }
+                            <div class="flex-1 overflow-y-auto scrollbar-dropdown">
+                                {move || {
+                                    let results = filtered.get();
+                                    let is_searching = !search.get().is_empty();
+
+                                    if results.is_empty() {
+                                        return view! {
+                                            <div class="px-3 py-4 text-center text-[10px] text-fg-tertiary/40">"No components found"</div>
+                                        }.into_any();
                                     }
-                                    on:click=move |ev| ev.stop_propagation()
-                                    autofocus=true
-                                />
-                            </div>
-                        </div>
 
-                        <div class="flex-1 overflow-y-auto scrollbar-dropdown">
-                            {move || {
-                                let results = filtered.get();
-                                let is_searching = !search.get().is_empty();
-
-                                if results.is_empty() {
-                                    return view! {
-                                        <div class="px-3 py-4 text-center text-[10px] text-fg-tertiary/40">"No components found"</div>
-                                    }.into_any();
-                                }
-
-                                if is_searching || cat_count == 0 || cat_count >= results.len() {
-                                    results.into_iter().map(|t| {
-                                        let svg = category_shape_svg(t.category.as_str(), 16);
-                                        view! { <ComponentOption component=t shape_svg=svg on_click=Callback::new({
-                                            let on_select = on_select; let set_open = set_open;
-                                            move |id: String| { on_select.run(id); set_open.set(false); }
-                                        }) /> }
-                                    }).collect_view().into_any()
-                                } else {
-                                    let suggested = results[..cat_count].to_vec();
-                                    let others = results[cat_count..].to_vec();
-                                    view! {
-                                        <div class="px-2 pt-1.5 pb-0.5">
-                                            <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/35 px-1">"Suggested"</div>
-                                        </div>
-                                        {suggested.into_iter().map(|t| {
+                                    if is_searching || cat_count == 0 || cat_count >= results.len() {
+                                        results.into_iter().map(|t| {
                                             let svg = category_shape_svg(t.category.as_str(), 16);
                                             view! { <ComponentOption component=t shape_svg=svg on_click=Callback::new({
                                                 let on_select = on_select; let set_open = set_open;
                                                 move |id: String| { on_select.run(id); set_open.set(false); }
                                             }) /> }
-                                        }).collect_view()}
-                                        <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
-                                        <div class="px-2 pt-1 pb-0.5">
-                                            <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/25 px-1">"All"</div>
-                                        </div>
-                                        {others.into_iter().map(|t| {
-                                            let svg = category_shape_svg(t.category.as_str(), 16);
-                                            view! { <ComponentOption component=t shape_svg=svg on_click=Callback::new({
-                                                let on_select = on_select; let set_open = set_open;
-                                                move |id: String| { on_select.run(id); set_open.set(false); }
-                                            }) /> }
-                                        }).collect_view()}
-                                    }.into_any()
-                                }
-                            }}
-                        </div>
-
-                        {has_selection.then(|| view! {
-                            <div class="border-t border-edge-subtle">
-                                <button
-                                    type="button"
-                                    class="w-full px-3 py-1 text-[10px] text-fg-tertiary/50 hover:text-fg-tertiary hover:bg-surface-hover/30 transition-colors text-left"
-                                    on:click=move |_| { on_select.run(String::new()); set_open.set(false); }
-                                >
-                                    "Clear"
-                                </button>
+                                        }).collect_view().into_any()
+                                    } else {
+                                        let suggested = results[..cat_count].to_vec();
+                                        let others = results[cat_count..].to_vec();
+                                        view! {
+                                            <div class="px-2 pt-1.5 pb-0.5">
+                                                <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/35 px-1">"Suggested"</div>
+                                            </div>
+                                            {suggested.into_iter().map(|t| {
+                                                let svg = category_shape_svg(t.category.as_str(), 16);
+                                                view! { <ComponentOption component=t shape_svg=svg on_click=Callback::new({
+                                                    let on_select = on_select; let set_open = set_open;
+                                                    move |id: String| { on_select.run(id); set_open.set(false); }
+                                                }) /> }
+                                            }).collect_view()}
+                                            <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
+                                            <div class="px-2 pt-1 pb-0.5">
+                                                <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/25 px-1">"All"</div>
+                                            </div>
+                                            {others.into_iter().map(|t| {
+                                                let svg = category_shape_svg(t.category.as_str(), 16);
+                                                view! { <ComponentOption component=t shape_svg=svg on_click=Callback::new({
+                                                    let on_select = on_select; let set_open = set_open;
+                                                    move |id: String| { on_select.run(id); set_open.set(false); }
+                                                }) /> }
+                                            }).collect_view()}
+                                        }.into_any()
+                                    }
+                                }}
                             </div>
-                        })}
-                    </div>
+
+                            {has_selection.then(|| view! {
+                                <div class="border-t border-edge-subtle">
+                                    <button
+                                        type="button"
+                                        class="w-full px-3 py-1 text-[10px] text-fg-tertiary/50 hover:text-fg-tertiary hover:bg-surface-hover/30 transition-colors text-left"
+                                        on:click=move |_| { on_select.run(String::new()); set_open.set(false); }
+                                    >
+                                        "Clear"
+                                    </button>
+                                </div>
+                            })}
+                        </div>
+                    </Portal>
                 }
             })}
         </div>
