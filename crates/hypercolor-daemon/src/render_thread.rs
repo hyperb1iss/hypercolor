@@ -39,6 +39,8 @@ use crate::performance::{LatestFrameMetrics, PerformanceTracker};
 use crate::session::OutputPowerState;
 
 const RENDER_RUNTIME_WORKERS: usize = 2;
+const RENDER_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
+const RENDER_RUNTIME_THREAD_KEEP_ALIVE: Duration = Duration::from_secs(2);
 
 // ── RenderThread ────────────────────────────────────────────────────────────
 
@@ -109,6 +111,8 @@ impl RenderThread {
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(RENDER_RUNTIME_WORKERS)
+                    .max_blocking_threads(RENDER_RUNTIME_MAX_BLOCKING_THREADS)
+                    .thread_keep_alive(RENDER_RUNTIME_THREAD_KEEP_ALIVE)
                     .thread_name("hypercolor-render-rt")
                     .enable_all()
                     .build()

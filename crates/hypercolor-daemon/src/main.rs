@@ -11,6 +11,10 @@ use hypercolor_daemon::api::{self, AppState};
 use hypercolor_daemon::mdns::MdnsPublisher;
 use hypercolor_daemon::startup::{DaemonState, install_signal_handlers, load_config};
 
+const MAIN_RUNTIME_WORKERS: usize = 4;
+const MAIN_RUNTIME_MAX_BLOCKING_THREADS: usize = 8;
+const MAIN_RUNTIME_THREAD_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(2);
+
 // ── CLI Arguments ───────────────────────────────────────────────────────────
 
 /// Hypercolor lighting daemon — orchestrates RGB devices at up to 60fps.
@@ -36,8 +40,20 @@ struct DaemonArgs {
 
 // ── Entry Point ─────────────────────────────────────────────────────────────
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(MAIN_RUNTIME_WORKERS)
+        .max_blocking_threads(MAIN_RUNTIME_MAX_BLOCKING_THREADS)
+        .thread_keep_alive(MAIN_RUNTIME_THREAD_KEEP_ALIVE)
+        .thread_name("hypercolor-main-rt")
+        .enable_all()
+        .build()
+        .context("failed to initialize daemon runtime")?;
+
+    runtime.block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
     let args = DaemonArgs::parse();
 
     // Load configuration before tracing so we can honor config-driven log

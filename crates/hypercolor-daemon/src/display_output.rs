@@ -31,6 +31,8 @@ use crate::logical_devices::{self, LogicalDevice};
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const DISPLAY_OUTPUT_MAX_FPS: u32 = 15;
 const DISPLAY_RUNTIME_WORKERS: usize = 2;
+const DISPLAY_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
+const DISPLAY_RUNTIME_THREAD_KEEP_ALIVE: Duration = Duration::from_secs(2);
 const JPEG_QUALITY: u8 = 85;
 const JPEG_SUBSAMP: TurboJpegSubsamp = TurboJpegSubsamp::Sub2x2;
 const BILINEAR_WEIGHT_SCALE: u32 = 256;
@@ -255,6 +257,8 @@ impl DisplayOutputThread {
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(DISPLAY_RUNTIME_WORKERS)
+                    .max_blocking_threads(DISPLAY_RUNTIME_MAX_BLOCKING_THREADS)
+                    .thread_keep_alive(DISPLAY_RUNTIME_THREAD_KEEP_ALIVE)
                     .thread_name("hypercolor-display-rt")
                     .enable_all()
                     .build()

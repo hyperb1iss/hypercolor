@@ -60,6 +60,7 @@ fn trimmed_servo_preferences() -> Preferences {
         // Hypercolor effects render a single offscreen document; parallel CSS
         // parsing and extra style workers are wasted overhead here.
         dom_parallel_css_parsing_enabled: false,
+        layout_style_sharing_cache_enabled: false,
         layout_threads: 1,
         // Keep Servo's task pools small for the single-effect embedder case.
         threadpools_async_runtime_workers_max: 1,
@@ -67,6 +68,7 @@ fn trimmed_servo_preferences() -> Preferences {
         threadpools_indexeddb_workers_max: 1,
         threadpools_webstorage_workers_max: 1,
         threadpools_webrender_workers_max: 1,
+        network_http_cache_disabled: true,
         // Disable subsystems Hypercolor does not use.
         devtools_server_enabled: false,
         dom_gamepad_enabled: false,
