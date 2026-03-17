@@ -13,7 +13,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, trace};
 
 use crate::protocol::TransferType;
-use crate::transport::{Transport, TransportError};
+use crate::transport::{Transport, TransportError, spawn_blocking_transport_io};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_millis(1_000);
 const HID_REPORT_SIZE: usize = 65;
@@ -25,7 +25,7 @@ const HID_REPORT_TYPE_FEATURE: u16 = 0x03;
 /// interrupt IN/OUT endpoints.
 pub struct UsbHidTransport {
     _device: nusb::Device,
-    interface: nusb::Interface,
+    interface: Arc<nusb::Interface>,
     interface_number: u8,
     out_endpoint_address: u8,
     in_endpoint_address: u8,
@@ -105,7 +105,7 @@ impl UsbHidTransport {
 
         Ok(Self {
             _device: device,
-            interface,
+            interface: Arc::new(interface),
             interface_number,
             out_endpoint_address: out_address,
             in_endpoint_address: in_address,
@@ -123,113 +123,6 @@ impl UsbHidTransport {
             return Err(TransportError::Closed);
         }
         Ok(())
-    }
-
-    fn send_locked(&self, data: &[u8]) -> Result<(), TransportError> {
-        let packet = normalize_outgoing_packet(data, self.out_max_packet_size);
-        let mut endpoint = lock_mutex(&self.out_endpoint, "OUT endpoint")?;
-
-        trace!(
-            interface_number = self.interface_number,
-            endpoint = format_args!("0x{:02X}", self.out_endpoint_address),
-            packet_len = packet.len(),
-            packet_hex = %format_hex_preview(&packet, 32),
-            "usb hid interrupt send"
-        );
-
-        endpoint
-            .transfer_blocking(packet.into(), DEFAULT_IO_TIMEOUT)
-            .into_result()
-            .map(|_| ())
-            .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
-    }
-
-    fn receive_locked(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
-        let mut endpoint = lock_mutex(&self.in_endpoint, "IN endpoint")?;
-        let response = endpoint
-            .transfer_blocking(Buffer::new(self.in_max_packet_size), timeout)
-            .into_result()
-            .map_err(|error| map_transfer_error(error, timeout))?
-            .into_vec();
-
-        let normalized = normalize_incoming_packet(&response, self.in_max_packet_size);
-
-        trace!(
-            interface_number = self.interface_number,
-            endpoint = format_args!("0x{:02X}", self.in_endpoint_address),
-            response_len = normalized.len(),
-            response_hex = %format_hex_preview(&normalized, 32),
-            "usb hid interrupt receive"
-        );
-
-        Ok(normalized)
-    }
-
-    fn send_feature_report_locked(&self, data: &[u8]) -> Result<(), TransportError> {
-        let Some(&report_id) = data.first() else {
-            return Err(TransportError::IoError {
-                detail: "feature report payload must include a report ID byte".to_owned(),
-            });
-        };
-
-        trace!(
-            interface_number = self.interface_number,
-            report_id = format_args!("0x{report_id:02X}"),
-            packet_len = data.len(),
-            packet_hex = %format_hex_preview(data, 32),
-            "usb hid feature report send"
-        );
-
-        self.interface
-            .control_out(
-                ControlOut {
-                    control_type: ControlType::Class,
-                    recipient: Recipient::Interface,
-                    request: 0x09,
-                    value: feature_w_value(report_id),
-                    index: u16::from(self.interface_number),
-                    data,
-                },
-                DEFAULT_IO_TIMEOUT,
-            )
-            .wait()
-            .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
-    }
-
-    fn receive_feature_report_locked(
-        &self,
-        timeout: Duration,
-        report_id: u8,
-        report_len: usize,
-    ) -> Result<Vec<u8>, TransportError> {
-        let length = u16::try_from(report_len).map_err(|_| TransportError::IoError {
-            detail: "feature report length exceeds u16".to_owned(),
-        })?;
-        let response = self
-            .interface
-            .control_in(
-                ControlIn {
-                    control_type: ControlType::Class,
-                    recipient: Recipient::Interface,
-                    request: 0x01,
-                    value: feature_w_value(report_id),
-                    index: u16::from(self.interface_number),
-                    length,
-                },
-                timeout,
-            )
-            .wait()
-            .map_err(|error| map_transfer_error(error, timeout))?;
-
-        trace!(
-            interface_number = self.interface_number,
-            report_id = format_args!("0x{report_id:02X}"),
-            response_len = response.len(),
-            response_hex = %format_hex_preview(&response, 32),
-            "usb hid feature report receive"
-        );
-
-        Ok(response)
     }
 }
 
@@ -265,8 +158,32 @@ impl Transport for UsbHidTransport {
 
         let _guard = self.op_lock.lock().await;
         match transfer_type {
-            TransferType::Primary | TransferType::Bulk => self.send_locked(data),
-            TransferType::HidReport => self.send_feature_report_locked(data),
+            TransferType::Primary | TransferType::Bulk => {
+                let endpoint = Arc::clone(&self.out_endpoint);
+                let interface_number = self.interface_number;
+                let endpoint_address = self.out_endpoint_address;
+                let max_packet_size = self.out_max_packet_size;
+                let packet = data.to_vec();
+                spawn_blocking_transport_io("usb hid interrupt send", move || {
+                    send_locked(
+                        endpoint.as_ref(),
+                        interface_number,
+                        endpoint_address,
+                        max_packet_size,
+                        &packet,
+                    )
+                })
+                .await
+            }
+            TransferType::HidReport => {
+                let interface = Arc::clone(&self.interface);
+                let interface_number = self.interface_number;
+                let packet = data.to_vec();
+                spawn_blocking_transport_io("usb hid feature report send", move || {
+                    send_feature_report_locked(interface.as_ref(), interface_number, &packet)
+                })
+                .await
+            }
         }
     }
 
@@ -279,7 +196,22 @@ impl Transport for UsbHidTransport {
 
         let _guard = self.op_lock.lock().await;
         match transfer_type {
-            TransferType::Primary | TransferType::Bulk => self.receive_locked(timeout),
+            TransferType::Primary | TransferType::Bulk => {
+                let endpoint = Arc::clone(&self.in_endpoint);
+                let interface_number = self.interface_number;
+                let endpoint_address = self.in_endpoint_address;
+                let max_packet_size = self.in_max_packet_size;
+                spawn_blocking_transport_io("usb hid interrupt receive", move || {
+                    receive_locked(
+                        endpoint.as_ref(),
+                        interface_number,
+                        endpoint_address,
+                        max_packet_size,
+                        timeout,
+                    )
+                })
+                .await
+            }
             TransferType::HidReport => Err(TransportError::UnsupportedTransfer {
                 transport: self.name().to_owned(),
                 transfer_type,
@@ -298,8 +230,31 @@ impl Transport for UsbHidTransport {
         let _guard = self.op_lock.lock().await;
         match transfer_type {
             TransferType::Primary | TransferType::Bulk => {
-                self.send_locked(data)?;
-                self.receive_locked(timeout)
+                let out_endpoint = Arc::clone(&self.out_endpoint);
+                let in_endpoint = Arc::clone(&self.in_endpoint);
+                let interface_number = self.interface_number;
+                let out_endpoint_address = self.out_endpoint_address;
+                let in_endpoint_address = self.in_endpoint_address;
+                let out_max_packet_size = self.out_max_packet_size;
+                let in_max_packet_size = self.in_max_packet_size;
+                let packet = data.to_vec();
+                spawn_blocking_transport_io("usb hid interrupt send_receive", move || {
+                    send_locked(
+                        out_endpoint.as_ref(),
+                        interface_number,
+                        out_endpoint_address,
+                        out_max_packet_size,
+                        &packet,
+                    )?;
+                    receive_locked(
+                        in_endpoint.as_ref(),
+                        interface_number,
+                        in_endpoint_address,
+                        in_max_packet_size,
+                        timeout,
+                    )
+                })
+                .await
             }
             TransferType::HidReport => {
                 let Some(&report_id) = data.first() else {
@@ -307,8 +262,21 @@ impl Transport for UsbHidTransport {
                         detail: "feature report payload must include a report ID byte".to_owned(),
                     });
                 };
-                self.send_feature_report_locked(data)?;
-                self.receive_feature_report_locked(timeout, report_id, data.len())
+                let interface = Arc::clone(&self.interface);
+                let interface_number = self.interface_number;
+                let report_len = data.len();
+                let packet = data.to_vec();
+                spawn_blocking_transport_io("usb hid feature report send_receive", move || {
+                    send_feature_report_locked(interface.as_ref(), interface_number, &packet)?;
+                    receive_feature_report_locked(
+                        interface.as_ref(),
+                        interface_number,
+                        timeout,
+                        report_id,
+                        report_len,
+                    )
+                })
+                .await
             }
         }
     }
@@ -317,6 +285,129 @@ impl Transport for UsbHidTransport {
         self.closed.store(true, Ordering::Release);
         Ok(())
     }
+}
+
+fn send_locked(
+    endpoint: &Mutex<nusb::Endpoint<Interrupt, Out>>,
+    interface_number: u8,
+    endpoint_address: u8,
+    max_packet_size: usize,
+    data: &[u8],
+) -> Result<(), TransportError> {
+    let packet = normalize_outgoing_packet(data, max_packet_size);
+    let mut endpoint = lock_mutex(endpoint, "OUT endpoint")?;
+
+    trace!(
+        interface_number,
+        endpoint = format_args!("0x{endpoint_address:02X}"),
+        packet_len = packet.len(),
+        packet_hex = %format_hex_preview(&packet, 32),
+        "usb hid interrupt send"
+    );
+
+    endpoint
+        .transfer_blocking(packet.into(), DEFAULT_IO_TIMEOUT)
+        .into_result()
+        .map(|_| ())
+        .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
+}
+
+fn receive_locked(
+    endpoint: &Mutex<nusb::Endpoint<Interrupt, In>>,
+    interface_number: u8,
+    endpoint_address: u8,
+    max_packet_size: usize,
+    timeout: Duration,
+) -> Result<Vec<u8>, TransportError> {
+    let mut endpoint = lock_mutex(endpoint, "IN endpoint")?;
+    let response = endpoint
+        .transfer_blocking(Buffer::new(max_packet_size), timeout)
+        .into_result()
+        .map_err(|error| map_transfer_error(error, timeout))?
+        .into_vec();
+
+    let normalized = normalize_incoming_packet(&response, max_packet_size);
+
+    trace!(
+        interface_number,
+        endpoint = format_args!("0x{endpoint_address:02X}"),
+        response_len = normalized.len(),
+        response_hex = %format_hex_preview(&normalized, 32),
+        "usb hid interrupt receive"
+    );
+
+    Ok(normalized)
+}
+
+fn send_feature_report_locked(
+    interface: &nusb::Interface,
+    interface_number: u8,
+    data: &[u8],
+) -> Result<(), TransportError> {
+    let Some(&report_id) = data.first() else {
+        return Err(TransportError::IoError {
+            detail: "feature report payload must include a report ID byte".to_owned(),
+        });
+    };
+
+    trace!(
+        interface_number,
+        report_id = format_args!("0x{report_id:02X}"),
+        packet_len = data.len(),
+        packet_hex = %format_hex_preview(data, 32),
+        "usb hid feature report send"
+    );
+
+    interface
+        .control_out(
+            ControlOut {
+                control_type: ControlType::Class,
+                recipient: Recipient::Interface,
+                request: 0x09,
+                value: feature_w_value(report_id),
+                index: u16::from(interface_number),
+                data,
+            },
+            DEFAULT_IO_TIMEOUT,
+        )
+        .wait()
+        .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
+}
+
+fn receive_feature_report_locked(
+    interface: &nusb::Interface,
+    interface_number: u8,
+    timeout: Duration,
+    report_id: u8,
+    report_len: usize,
+) -> Result<Vec<u8>, TransportError> {
+    let length = u16::try_from(report_len).map_err(|_| TransportError::IoError {
+        detail: "feature report length exceeds u16".to_owned(),
+    })?;
+    let response = interface
+        .control_in(
+            ControlIn {
+                control_type: ControlType::Class,
+                recipient: Recipient::Interface,
+                request: 0x01,
+                value: feature_w_value(report_id),
+                index: u16::from(interface_number),
+                length,
+            },
+            timeout,
+        )
+        .wait()
+        .map_err(|error| map_transfer_error(error, timeout))?;
+
+    trace!(
+        interface_number,
+        report_id = format_args!("0x{report_id:02X}"),
+        response_len = response.len(),
+        response_hex = %format_hex_preview(&response, 32),
+        "usb hid feature report receive"
+    );
+
+    Ok(response)
 }
 
 fn normalize_outgoing_packet(data: &[u8], endpoint_packet_size: usize) -> Vec<u8> {

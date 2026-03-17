@@ -1,8 +1,8 @@
 //! Composite USB MIDI + bulk transport used by Ableton Push 2-class devices.
 
 use std::fmt::Write as _;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -15,7 +15,7 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 use tracing::{debug, trace};
 
 use crate::protocol::TransferType;
-use crate::transport::{Transport, TransportError};
+use crate::transport::{Transport, TransportError, spawn_blocking_transport_io};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_millis(1_000);
 const SYSEX_QUEUE_DEPTH: usize = 32;
@@ -32,8 +32,8 @@ pub struct Push2Transport {
     _device: nusb::Device,
     _display_interface: nusb::Interface,
     bulk_endpoint_address: u8,
-    bulk_endpoint: Mutex<nusb::Endpoint<Bulk, Out>>,
-    bulk_buffer: Mutex<Option<Buffer>>,
+    bulk_endpoint: Arc<Mutex<nusb::Endpoint<Bulk, Out>>>,
+    bulk_buffer: Arc<Mutex<Option<Buffer>>>,
     midi_out: AsyncMutex<MidiOutputConnection>,
     _midi_in: Mutex<Option<MidiInputConnection<()>>>,
     sysex_rx: AsyncMutex<mpsc::Receiver<Vec<u8>>>,
@@ -171,8 +171,8 @@ impl Push2Transport {
             _device: device,
             _display_interface: display_interface_handle,
             bulk_endpoint_address: display_endpoint,
-            bulk_endpoint: Mutex::new(bulk_endpoint),
-            bulk_buffer: Mutex::new(Some(Buffer::new(out_max_packet_size))),
+            bulk_endpoint: Arc::new(Mutex::new(bulk_endpoint)),
+            bulk_buffer: Arc::new(Mutex::new(Some(Buffer::new(out_max_packet_size)))),
             midi_out: AsyncMutex::new(midi_out_connection),
             _midi_in: Mutex::new(Some(midi_in_connection)),
             sysex_rx: AsyncMutex::new(rx),
@@ -211,34 +211,6 @@ impl Push2Transport {
             })?
             .ok_or(TransportError::Closed)
     }
-
-    fn send_bulk(&self, data: &[u8]) -> Result<(), TransportError> {
-        let mut endpoint = lock_mutex(&self.bulk_endpoint, "bulk OUT endpoint")?;
-        let mut scratch = lock_mutex(&self.bulk_buffer, "bulk OUT scratch buffer")?;
-        let mut buffer = scratch.take().unwrap_or_else(|| Buffer::new(data.len()));
-        if buffer.capacity() < data.len() {
-            buffer = Buffer::new(data.len());
-        }
-        buffer.clear();
-        buffer.set_requested_len(data.len());
-        buffer.extend_from_slice(data);
-
-        trace!(
-            endpoint = format_args!("0x{:02X}", self.bulk_endpoint_address),
-            packet_len = data.len(),
-            packet_hex = %format_hex_preview(data, 32),
-            "push2 bulk send"
-        );
-
-        let completion = endpoint.transfer_blocking(buffer, DEFAULT_IO_TIMEOUT);
-        let mut returned_buffer = completion.buffer;
-        returned_buffer.clear();
-        *scratch = Some(returned_buffer);
-
-        completion
-            .status
-            .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
-    }
 }
 
 #[async_trait]
@@ -260,7 +232,21 @@ impl Transport for Push2Transport {
 
         match transfer_type {
             TransferType::Primary => self.send_midi(data).await,
-            TransferType::Bulk => self.send_bulk(data),
+            TransferType::Bulk => {
+                let endpoint = Arc::clone(&self.bulk_endpoint);
+                let scratch = Arc::clone(&self.bulk_buffer);
+                let endpoint_address = self.bulk_endpoint_address;
+                let packet = data.to_vec();
+                spawn_blocking_transport_io("push2 bulk send", move || {
+                    send_bulk_locked(
+                        endpoint.as_ref(),
+                        scratch.as_ref(),
+                        endpoint_address,
+                        &packet,
+                    )
+                })
+                .await
+            }
             TransferType::HidReport => Err(TransportError::UnsupportedTransfer {
                 transport: self.name().to_owned(),
                 transfer_type,
@@ -325,6 +311,39 @@ impl Transport for Push2Transport {
         self.closed.store(true, Ordering::Release);
         Ok(())
     }
+}
+
+fn send_bulk_locked(
+    endpoint: &Mutex<nusb::Endpoint<Bulk, Out>>,
+    scratch: &Mutex<Option<Buffer>>,
+    endpoint_address: u8,
+    data: &[u8],
+) -> Result<(), TransportError> {
+    let mut endpoint = lock_mutex(endpoint, "bulk OUT endpoint")?;
+    let mut scratch = lock_mutex(scratch, "bulk OUT scratch buffer")?;
+    let mut buffer = scratch.take().unwrap_or_else(|| Buffer::new(data.len()));
+    if buffer.capacity() < data.len() {
+        buffer = Buffer::new(data.len());
+    }
+    buffer.clear();
+    buffer.set_requested_len(data.len());
+    buffer.extend_from_slice(data);
+
+    trace!(
+        endpoint = format_args!("0x{endpoint_address:02X}"),
+        packet_len = data.len(),
+        packet_hex = %format_hex_preview(data, 32),
+        "push2 bulk send"
+    );
+
+    let completion = endpoint.transfer_blocking(buffer, DEFAULT_IO_TIMEOUT);
+    let mut returned_buffer = completion.buffer;
+    returned_buffer.clear();
+    *scratch = Some(returned_buffer);
+
+    completion
+        .status
+        .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
 }
 
 fn find_push2_port<T: MidiIO>(

@@ -17,6 +17,21 @@ pub mod serial;
 pub mod smbus;
 pub mod vendor;
 
+pub(crate) async fn spawn_blocking_transport_io<F, T>(
+    operation_name: &'static str,
+    operation: F,
+) -> Result<T, TransportError>
+where
+    F: FnOnce() -> Result<T, TransportError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| TransportError::IoError {
+            detail: format!("{operation_name} task failed: {error}"),
+        })?
+}
+
 /// Async byte-level I/O transport.
 #[async_trait]
 pub trait Transport: Send + Sync {

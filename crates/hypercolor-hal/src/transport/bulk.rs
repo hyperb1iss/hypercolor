@@ -14,7 +14,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, trace};
 
 use crate::protocol::TransferType;
-use crate::transport::{Transport, TransportError};
+use crate::transport::{Transport, TransportError, spawn_blocking_transport_io};
 
 const DEFAULT_IO_TIMEOUT: Duration = Duration::from_millis(1_000);
 const DEFAULT_REPORT_LEN: usize = 32;
@@ -23,7 +23,7 @@ const HID_REPORT_TYPE_FEATURE: u16 = 0x03;
 /// USB bulk transport for high-bandwidth devices with HID sideband control.
 pub struct UsbBulkTransport {
     _device: nusb::Device,
-    interface: nusb::Interface,
+    interface: Arc<nusb::Interface>,
     interface_number: u8,
     report_id: u8,
     out_endpoint_address: u8,
@@ -110,7 +110,7 @@ impl UsbBulkTransport {
 
         Ok(Self {
             _device: device,
-            interface,
+            interface: Arc::new(interface),
             interface_number,
             report_id,
             out_endpoint_address: out_address,
@@ -131,135 +131,6 @@ impl UsbBulkTransport {
         }
 
         Ok(())
-    }
-
-    fn send_bulk_locked(&self, data: &[u8]) -> Result<(), TransportError> {
-        let mut endpoint = lock_mutex(&self.out_endpoint, "bulk OUT endpoint")?;
-        let mut scratch = lock_mutex(&self.out_buffer, "bulk OUT scratch buffer")?;
-        let mut buffer = scratch.take().unwrap_or_else(|| Buffer::new(data.len()));
-        if buffer.capacity() < data.len() {
-            buffer = Buffer::new(data.len());
-        }
-        buffer.clear();
-        buffer.set_requested_len(data.len());
-        buffer.extend_from_slice(data);
-
-        trace!(
-            interface_number = self.interface_number,
-            endpoint = format_args!("0x{:02X}", self.out_endpoint_address),
-            packet_len = data.len(),
-            packet_hex = %format_hex_preview(data, 32),
-            "usb bulk send"
-        );
-
-        let completion = endpoint.transfer_blocking(buffer, DEFAULT_IO_TIMEOUT);
-        let mut returned_buffer = completion.buffer;
-        returned_buffer.clear();
-        *scratch = Some(returned_buffer);
-
-        completion
-            .status
-            .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
-    }
-
-    fn send_bulk_owned_locked(&self, data: Vec<u8>) -> Result<(), TransportError> {
-        let mut endpoint = lock_mutex(&self.out_endpoint, "bulk OUT endpoint")?;
-
-        trace!(
-            interface_number = self.interface_number,
-            endpoint = format_args!("0x{:02X}", self.out_endpoint_address),
-            packet_len = data.len(),
-            packet_hex = %format_hex_preview(&data, 32),
-            "usb bulk send"
-        );
-
-        let completion = endpoint.transfer_blocking(data.into(), DEFAULT_IO_TIMEOUT);
-        let mut returned_buffer = completion.buffer;
-        returned_buffer.clear();
-
-        if let Ok(mut scratch) = self.out_buffer.lock() {
-            *scratch = Some(returned_buffer);
-        }
-
-        completion
-            .status
-            .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
-    }
-
-    fn receive_bulk_locked(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
-        let mut endpoint = lock_mutex(&self.in_endpoint, "bulk IN endpoint")?;
-        let response = endpoint
-            .transfer_blocking(Buffer::new(self.in_max_packet_size), timeout)
-            .into_result()
-            .map_err(|error| map_transfer_error(error, timeout))?
-            .into_vec();
-
-        trace!(
-            interface_number = self.interface_number,
-            endpoint = format_args!("0x{:02X}", self.in_endpoint_address),
-            response_len = response.len(),
-            response_hex = %format_hex_preview(&response, 32),
-            "usb bulk receive"
-        );
-
-        Ok(response)
-    }
-
-    fn send_report_locked(&self, data: &[u8]) -> Result<(), TransportError> {
-        trace!(
-            interface_number = self.interface_number,
-            report_id = format_args!("0x{:02X}", self.report_id),
-            packet_len = data.len(),
-            packet_hex = %format_hex_preview(data, 32),
-            "usb hid report send over bulk transport"
-        );
-
-        self.interface
-            .control_out(
-                ControlOut {
-                    control_type: ControlType::Class,
-                    recipient: Recipient::Interface,
-                    request: 0x09,
-                    value: self.w_value(),
-                    index: u16::from(self.interface_number),
-                    data,
-                },
-                DEFAULT_IO_TIMEOUT,
-            )
-            .wait()
-            .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
-    }
-
-    fn receive_report_locked(&self, timeout: Duration) -> Result<Vec<u8>, TransportError> {
-        let length = u16::try_from(self.report_len).map_err(|_| TransportError::IoError {
-            detail: "configured report length exceeds u16".to_owned(),
-        })?;
-
-        let response = self
-            .interface
-            .control_in(
-                ControlIn {
-                    control_type: ControlType::Class,
-                    recipient: Recipient::Interface,
-                    request: 0x01,
-                    value: self.w_value(),
-                    index: u16::from(self.interface_number),
-                    length,
-                },
-                timeout,
-            )
-            .wait()
-            .map_err(|error| map_transfer_error(error, timeout))?;
-
-        trace!(
-            interface_number = self.interface_number,
-            report_id = format_args!("0x{:02X}", self.report_id),
-            response_len = response.len(),
-            response_hex = %format_hex_preview(&response, 32),
-            "usb hid report receive over bulk transport"
-        );
-
-        Ok(response)
     }
 
     fn w_value(&self) -> u16 {
@@ -286,8 +157,40 @@ impl Transport for UsbBulkTransport {
 
         let _guard = self.op_lock.lock().await;
         match transfer_type {
-            TransferType::Primary | TransferType::Bulk => self.send_bulk_locked(data),
-            TransferType::HidReport => self.send_report_locked(data),
+            TransferType::Primary | TransferType::Bulk => {
+                let endpoint = Arc::clone(&self.out_endpoint);
+                let scratch = Arc::clone(&self.out_buffer);
+                let interface_number = self.interface_number;
+                let endpoint_address = self.out_endpoint_address;
+                let packet = data.to_vec();
+                spawn_blocking_transport_io("usb bulk send", move || {
+                    send_bulk_locked(
+                        endpoint.as_ref(),
+                        scratch.as_ref(),
+                        interface_number,
+                        endpoint_address,
+                        &packet,
+                    )
+                })
+                .await
+            }
+            TransferType::HidReport => {
+                let interface = Arc::clone(&self.interface);
+                let interface_number = self.interface_number;
+                let report_id = self.report_id;
+                let w_value = self.w_value();
+                let packet = data.to_vec();
+                spawn_blocking_transport_io("usb hid report send over bulk transport", move || {
+                    send_report_locked(
+                        interface.as_ref(),
+                        interface_number,
+                        report_id,
+                        w_value,
+                        &packet,
+                    )
+                })
+                .await
+            }
         }
     }
 
@@ -300,8 +203,38 @@ impl Transport for UsbBulkTransport {
 
         let _guard = self.op_lock.lock().await;
         match transfer_type {
-            TransferType::Primary | TransferType::Bulk => self.send_bulk_owned_locked(data),
-            TransferType::HidReport => self.send_report_locked(&data),
+            TransferType::Primary | TransferType::Bulk => {
+                let endpoint = Arc::clone(&self.out_endpoint);
+                let scratch = Arc::clone(&self.out_buffer);
+                let interface_number = self.interface_number;
+                let endpoint_address = self.out_endpoint_address;
+                spawn_blocking_transport_io("usb bulk owned send", move || {
+                    send_bulk_owned_locked(
+                        endpoint.as_ref(),
+                        scratch.as_ref(),
+                        interface_number,
+                        endpoint_address,
+                        data,
+                    )
+                })
+                .await
+            }
+            TransferType::HidReport => {
+                let interface = Arc::clone(&self.interface);
+                let interface_number = self.interface_number;
+                let report_id = self.report_id;
+                let w_value = self.w_value();
+                spawn_blocking_transport_io("usb hid report send over bulk transport", move || {
+                    send_report_locked(
+                        interface.as_ref(),
+                        interface_number,
+                        report_id,
+                        w_value,
+                        &data,
+                    )
+                })
+                .await
+            }
         }
     }
 
@@ -318,8 +251,43 @@ impl Transport for UsbBulkTransport {
 
         let _guard = self.op_lock.lock().await;
         match transfer_type {
-            TransferType::Primary | TransferType::Bulk => self.receive_bulk_locked(timeout),
-            TransferType::HidReport => self.receive_report_locked(timeout),
+            TransferType::Primary | TransferType::Bulk => {
+                let endpoint = Arc::clone(&self.in_endpoint);
+                let interface_number = self.interface_number;
+                let endpoint_address = self.in_endpoint_address;
+                let max_packet_size = self.in_max_packet_size;
+                spawn_blocking_transport_io("usb bulk receive", move || {
+                    receive_bulk_locked(
+                        endpoint.as_ref(),
+                        interface_number,
+                        endpoint_address,
+                        max_packet_size,
+                        timeout,
+                    )
+                })
+                .await
+            }
+            TransferType::HidReport => {
+                let interface = Arc::clone(&self.interface);
+                let interface_number = self.interface_number;
+                let report_id = self.report_id;
+                let report_len = self.report_len;
+                let w_value = self.w_value();
+                spawn_blocking_transport_io(
+                    "usb hid report receive over bulk transport",
+                    move || {
+                        receive_report_locked(
+                            interface.as_ref(),
+                            interface_number,
+                            report_id,
+                            report_len,
+                            w_value,
+                            timeout,
+                        )
+                    },
+                )
+                .await
+            }
         }
     }
 
@@ -343,12 +311,60 @@ impl Transport for UsbBulkTransport {
         let _guard = self.op_lock.lock().await;
         match transfer_type {
             TransferType::Primary | TransferType::Bulk => {
-                self.send_bulk_locked(data)?;
-                self.receive_bulk_locked(timeout)
+                let out_endpoint = Arc::clone(&self.out_endpoint);
+                let in_endpoint = Arc::clone(&self.in_endpoint);
+                let scratch = Arc::clone(&self.out_buffer);
+                let interface_number = self.interface_number;
+                let out_endpoint_address = self.out_endpoint_address;
+                let in_endpoint_address = self.in_endpoint_address;
+                let in_max_packet_size = self.in_max_packet_size;
+                let packet = data.to_vec();
+                spawn_blocking_transport_io("usb bulk send_receive", move || {
+                    send_bulk_locked(
+                        out_endpoint.as_ref(),
+                        scratch.as_ref(),
+                        interface_number,
+                        out_endpoint_address,
+                        &packet,
+                    )?;
+                    receive_bulk_locked(
+                        in_endpoint.as_ref(),
+                        interface_number,
+                        in_endpoint_address,
+                        in_max_packet_size,
+                        timeout,
+                    )
+                })
+                .await
             }
             TransferType::HidReport => {
-                self.send_report_locked(data)?;
-                self.receive_report_locked(timeout)
+                let interface = Arc::clone(&self.interface);
+                let interface_number = self.interface_number;
+                let report_id = self.report_id;
+                let report_len = self.report_len;
+                let w_value = self.w_value();
+                let packet = data.to_vec();
+                spawn_blocking_transport_io(
+                    "usb hid report send_receive over bulk transport",
+                    move || {
+                        send_report_locked(
+                            interface.as_ref(),
+                            interface_number,
+                            report_id,
+                            w_value,
+                            &packet,
+                        )?;
+                        receive_report_locked(
+                            interface.as_ref(),
+                            interface_number,
+                            report_id,
+                            report_len,
+                            w_value,
+                            timeout,
+                        )
+                    },
+                )
+                .await
             }
         }
     }
@@ -357,6 +373,165 @@ impl Transport for UsbBulkTransport {
         self.closed.store(true, Ordering::Release);
         Ok(())
     }
+}
+
+fn send_bulk_locked(
+    endpoint: &Mutex<nusb::Endpoint<Bulk, Out>>,
+    scratch: &Mutex<Option<Buffer>>,
+    interface_number: u8,
+    endpoint_address: u8,
+    data: &[u8],
+) -> Result<(), TransportError> {
+    let mut endpoint = lock_mutex(endpoint, "bulk OUT endpoint")?;
+    let mut scratch = lock_mutex(scratch, "bulk OUT scratch buffer")?;
+    let mut buffer = scratch.take().unwrap_or_else(|| Buffer::new(data.len()));
+    if buffer.capacity() < data.len() {
+        buffer = Buffer::new(data.len());
+    }
+    buffer.clear();
+    buffer.set_requested_len(data.len());
+    buffer.extend_from_slice(data);
+
+    trace!(
+        interface_number,
+        endpoint = format_args!("0x{endpoint_address:02X}"),
+        packet_len = data.len(),
+        packet_hex = %format_hex_preview(data, 32),
+        "usb bulk send"
+    );
+
+    let completion = endpoint.transfer_blocking(buffer, DEFAULT_IO_TIMEOUT);
+    let mut returned_buffer = completion.buffer;
+    returned_buffer.clear();
+    *scratch = Some(returned_buffer);
+
+    completion
+        .status
+        .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
+}
+
+fn send_bulk_owned_locked(
+    endpoint: &Mutex<nusb::Endpoint<Bulk, Out>>,
+    scratch: &Mutex<Option<Buffer>>,
+    interface_number: u8,
+    endpoint_address: u8,
+    data: Vec<u8>,
+) -> Result<(), TransportError> {
+    let mut endpoint = lock_mutex(endpoint, "bulk OUT endpoint")?;
+
+    trace!(
+        interface_number,
+        endpoint = format_args!("0x{endpoint_address:02X}"),
+        packet_len = data.len(),
+        packet_hex = %format_hex_preview(&data, 32),
+        "usb bulk send"
+    );
+
+    let completion = endpoint.transfer_blocking(data.into(), DEFAULT_IO_TIMEOUT);
+    let mut returned_buffer = completion.buffer;
+    returned_buffer.clear();
+
+    if let Ok(mut scratch) = scratch.lock() {
+        *scratch = Some(returned_buffer);
+    }
+
+    completion
+        .status
+        .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
+}
+
+fn receive_bulk_locked(
+    endpoint: &Mutex<nusb::Endpoint<Bulk, In>>,
+    interface_number: u8,
+    endpoint_address: u8,
+    max_packet_size: usize,
+    timeout: Duration,
+) -> Result<Vec<u8>, TransportError> {
+    let mut endpoint = lock_mutex(endpoint, "bulk IN endpoint")?;
+    let response = endpoint
+        .transfer_blocking(Buffer::new(max_packet_size), timeout)
+        .into_result()
+        .map_err(|error| map_transfer_error(error, timeout))?
+        .into_vec();
+
+    trace!(
+        interface_number,
+        endpoint = format_args!("0x{endpoint_address:02X}"),
+        response_len = response.len(),
+        response_hex = %format_hex_preview(&response, 32),
+        "usb bulk receive"
+    );
+
+    Ok(response)
+}
+
+fn send_report_locked(
+    interface: &nusb::Interface,
+    interface_number: u8,
+    report_id: u8,
+    w_value: u16,
+    data: &[u8],
+) -> Result<(), TransportError> {
+    trace!(
+        interface_number,
+        report_id = format_args!("0x{report_id:02X}"),
+        packet_len = data.len(),
+        packet_hex = %format_hex_preview(data, 32),
+        "usb hid report send over bulk transport"
+    );
+
+    interface
+        .control_out(
+            ControlOut {
+                control_type: ControlType::Class,
+                recipient: Recipient::Interface,
+                request: 0x09,
+                value: w_value,
+                index: u16::from(interface_number),
+                data,
+            },
+            DEFAULT_IO_TIMEOUT,
+        )
+        .wait()
+        .map_err(|error| map_transfer_error(error, DEFAULT_IO_TIMEOUT))
+}
+
+fn receive_report_locked(
+    interface: &nusb::Interface,
+    interface_number: u8,
+    report_id: u8,
+    report_len: usize,
+    w_value: u16,
+    timeout: Duration,
+) -> Result<Vec<u8>, TransportError> {
+    let length = u16::try_from(report_len).map_err(|_| TransportError::IoError {
+        detail: "configured report length exceeds u16".to_owned(),
+    })?;
+
+    let response = interface
+        .control_in(
+            ControlIn {
+                control_type: ControlType::Class,
+                recipient: Recipient::Interface,
+                request: 0x01,
+                value: w_value,
+                index: u16::from(interface_number),
+                length,
+            },
+            timeout,
+        )
+        .wait()
+        .map_err(|error| map_transfer_error(error, timeout))?;
+
+    trace!(
+        interface_number,
+        report_id = format_args!("0x{report_id:02X}"),
+        response_len = response.len(),
+        response_hex = %format_hex_preview(&response, 32),
+        "usb hid report receive over bulk transport"
+    );
+
+    Ok(response)
 }
 
 fn lock_mutex<'a, T>(
