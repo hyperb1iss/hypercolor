@@ -1650,8 +1650,10 @@ async fn disconnect_backend_device(
         .disconnect(device_id)
         .await?;
 
-    let mut manager = runtime.backend_manager.lock().await;
-    let _ = manager.remove_device_mappings_for_physical(backend_id, device_id);
+    {
+        let mut manager = runtime.backend_manager.lock().await;
+        let _ = manager.remove_device_mappings_for_physical(backend_id, device_id);
+    }
     runtime.usb_protocol_configs.remove_device(device_id).await;
     Ok(())
 }

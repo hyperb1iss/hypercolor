@@ -143,9 +143,9 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> Response {
         let render_loop = state.render_loop.read().await;
         render_loop_health(render_loop.stats().state).to_owned()
     };
+    let device_count = state.device_registry.len().await;
     let device_backends = {
         let backend_manager = state.backend_manager.lock().await;
-        let device_count = state.device_registry.len().await;
         backend_health(backend_manager.backend_count(), device_count).to_owned()
     };
     let event_bus = event_bus_health(&state.event_bus).to_owned();
