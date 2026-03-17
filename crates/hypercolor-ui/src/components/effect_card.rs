@@ -154,7 +154,7 @@ pub fn EffectCard(
                 </div>
 
                 // Description
-                <p class="text-xs text-fg-secondary/80 line-clamp-2 leading-relaxed mb-3">
+                <p class="text-xs text-fg-secondary/80 line-clamp-3 leading-relaxed mb-3">
                     {description}
                 </p>
 

@@ -370,7 +370,7 @@ fn PresetSelectorRow(
     let selected_label = Memo::new(move |_| {
         let sid = selected_id.get();
         let Some(ref sid) = sid else {
-            return "No preset".to_string();
+            return "Default".to_string();
         };
 
         // Check bundled presets
@@ -389,7 +389,7 @@ fn PresetSelectorRow(
             .iter()
             .find(|p| p.id == *sid)
             .map(|p| p.name.clone())
-            .unwrap_or_else(|| "No preset".to_string())
+            .unwrap_or_else(|| "Default".to_string())
     });
 
     // Click-outside handler — close dropdown when clicking outside
@@ -447,10 +447,10 @@ fn PresetSelectorRow(
                         style="z-index: 9999; margin-top: -1px"
                         on:mousedown=|ev: leptos::ev::MouseEvent| ev.stop_propagation()
                     >
-                        // "No preset" option
+                        // Default preset option — resets controls to effect defaults
                         <DropdownItem
                             value="".to_string()
-                            label="No preset".to_string()
+                            label="Default".to_string()
                             is_selected=Signal::derive(move || selected_id.get().is_none())
                             on_click=Callback::new(move |val: String| {
                                 on_select.run(val);
