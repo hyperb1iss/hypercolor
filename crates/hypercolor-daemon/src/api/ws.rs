@@ -17,6 +17,7 @@ use axum::http::{Method, Request, header};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{RwLock, broadcast, watch};
 use tower::ServiceExt;
 use tracing::{debug, warn};
@@ -588,8 +589,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     let spectrum_rx = state.event_bus.spectrum_receiver();
     let canvas_rx = state.event_bus.canvas_receiver();
 
-    // Split outbound traffic: JSON is lossless, binary is bounded/drop-on-pressure.
-    let (json_tx, mut json_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // Split outbound traffic: both queues are bounded so slow clients cannot
+    // grow daemon memory without limit.
+    let (json_tx, mut json_rx) = tokio::sync::mpsc::channel::<String>(WS_BUFFER_SIZE);
     let (binary_tx, mut binary_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(WS_BUFFER_SIZE);
 
     // Spawn event relay task — shares the subscription set via Arc<RwLock<_>>.
@@ -630,7 +632,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
         tokio::select! {
             biased;
 
-            // Outbound JSON: never dropped (unbounded queue).
+            // Outbound JSON: bounded queue (drop under pressure in producer tasks).
             json_msg = json_rx.recv() => {
                 match json_msg {
                     Some(msg) => {
@@ -709,7 +711,7 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
 /// Drops events when the consumer is slow (backpressure).
 async fn relay_events(
     mut event_rx: broadcast::Receiver<hypercolor_core::bus::TimestampedEvent>,
-    json_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    json_tx: tokio::sync::mpsc::Sender<String>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
     loop {
@@ -733,8 +735,7 @@ async fn relay_events(
                     continue;
                 };
 
-                // If the channel is full, drop the event (backpressure).
-                let _ = json_tx.send(json);
+                let _ = try_enqueue_json(&json_tx, json, "events");
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("WebSocket consumer lagged by {n} events");
@@ -773,7 +774,7 @@ enum FrameRelayMessage {
 /// Relay frame watch updates to the WebSocket client.
 async fn relay_frames(
     mut frame_rx: watch::Receiver<hypercolor_types::event::FrameData>,
-    json_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
@@ -834,7 +835,7 @@ async fn relay_frames(
 
         match outbound {
             FrameRelayMessage::Json(text) => {
-                let _ = json_tx.send(text);
+                let _ = try_enqueue_json(&json_tx, text, "frames");
             }
             FrameRelayMessage::Binary(bytes) => {
                 if binary_tx.try_send(bytes).is_err() {
@@ -849,7 +850,7 @@ async fn relay_frames(
 /// Relay spectrum watch updates to the WebSocket client.
 async fn relay_spectrum(
     mut spectrum_rx: watch::Receiver<hypercolor_types::event::SpectrumData>,
-    json_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
@@ -888,7 +889,7 @@ async fn relay_spectrum(
 /// Relay raw canvas updates to the WebSocket client.
 async fn relay_canvas(
     mut canvas_rx: watch::Receiver<hypercolor_core::bus::CanvasFrame>,
-    json_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    json_tx: tokio::sync::mpsc::Sender<String>,
     binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
@@ -952,7 +953,7 @@ async fn relay_canvas(
 /// Relay periodic metrics snapshots to the WebSocket client.
 async fn relay_metrics(
     state: Arc<AppState>,
-    json_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    json_tx: tokio::sync::mpsc::Sender<String>,
     subscriptions: Arc<RwLock<SubscriptionState>>,
 ) {
     let mut last_total_bytes = WS_TOTAL_BYTES_SENT.load(Ordering::Relaxed);
@@ -995,8 +996,26 @@ async fn relay_metrics(
 
         let message = build_metrics_message(&state, bytes_per_sec).await;
         if let Ok(text) = serde_json::to_string(&message) {
-            let _ = json_tx.send(text);
+            let _ = try_enqueue_json(&json_tx, text, "metrics");
         }
+    }
+}
+
+fn try_enqueue_json(
+    json_tx: &tokio::sync::mpsc::Sender<String>,
+    text: String,
+    stream: &str,
+) -> bool {
+    match json_tx.try_send(text) {
+        Ok(()) => true,
+        Err(TrySendError::Full(_)) => {
+            debug!(
+                stream,
+                "Dropping queued WebSocket JSON message for slow consumer"
+            );
+            false
+        }
+        Err(TrySendError::Closed(_)) => false,
     }
 }
 
@@ -1559,7 +1578,7 @@ fn process_rss_mb() -> Option<f64> {
 }
 
 fn enqueue_backpressure_notice(
-    json_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+    json_tx: &tokio::sync::mpsc::Sender<String>,
     channel: &str,
     current_fps: u32,
 ) {
@@ -1572,7 +1591,7 @@ fn enqueue_backpressure_notice(
     };
 
     if let Ok(text) = serde_json::to_string(&message) {
-        let _ = json_tx.send(text);
+        let _ = try_enqueue_json(json_tx, text, "backpressure");
     }
 }
 
@@ -1730,8 +1749,8 @@ mod tests {
         ChannelConfig, ChannelConfigPatch, ServerMessage, WsChannel, command_response_from_http,
         dispatch_command, encode_canvas_binary, encode_frame_binary, encode_spectrum_binary,
         event_message_parts, filter_frame_zones, normalize_command_path, parse_channels,
-        parse_command_method, should_relay_event, to_snake_case, unique_sorted_channel_names,
-        ws_capabilities,
+        parse_command_method, should_relay_event, to_snake_case, try_enqueue_json,
+        unique_sorted_channel_names, ws_capabilities,
     };
     use crate::api::AppState;
     use axum::response::IntoResponse;
@@ -1880,6 +1899,18 @@ mod tests {
         assert!(capabilities.contains(&"canvas".to_owned()));
         assert!(capabilities.contains(&"metrics".to_owned()));
         assert!(capabilities.contains(&"commands".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn try_enqueue_json_drops_when_queue_is_full() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(1);
+
+        assert!(try_enqueue_json(&tx, "first".to_owned(), "test"));
+        assert!(!try_enqueue_json(&tx, "second".to_owned(), "test"));
+
+        assert_eq!(rx.recv().await.as_deref(), Some("first"));
+        drop(tx);
+        assert!(rx.recv().await.is_none());
     }
 
     #[test]

@@ -33,6 +33,7 @@ pub struct HypercolorWebViewDelegate {
     frame_ready: AtomicBool,
     frame_count: AtomicU64,
     page_loaded: AtomicBool,
+    closed_count: AtomicU64,
     last_url: Mutex<Option<String>>,
     console_messages: Mutex<VecDeque<ConsoleMessage>>,
 }
@@ -45,6 +46,7 @@ impl HypercolorWebViewDelegate {
             frame_ready: AtomicBool::new(false),
             frame_count: AtomicU64::new(0),
             page_loaded: AtomicBool::new(false),
+            closed_count: AtomicU64::new(0),
             last_url: Mutex::new(None),
             console_messages: Mutex::new(VecDeque::with_capacity(MAX_CONSOLE_MESSAGES)),
         }
@@ -65,6 +67,12 @@ impl HypercolorWebViewDelegate {
     #[must_use]
     pub fn frame_count(&self) -> u64 {
         self.frame_count.load(Ordering::Acquire)
+    }
+
+    /// Total number of webview close notifications observed.
+    #[must_use]
+    pub fn closed_count(&self) -> u64 {
+        self.closed_count.load(Ordering::Acquire)
     }
 
     /// Returns whether the page has reached `LoadStatus::Complete`.
@@ -119,6 +127,11 @@ impl HypercolorWebViewDelegate {
     fn on_page_loaded(&self) {
         self.page_loaded.store(true, Ordering::Release);
         info!("Servo page load completed");
+    }
+
+    fn on_closed(&self) {
+        let closed_count = self.closed_count.fetch_add(1, Ordering::AcqRel) + 1;
+        debug!(closed_count, "Servo webview closed");
     }
 
     fn on_url_changed(&self, url: &str) {
@@ -187,6 +200,10 @@ impl WebViewDelegate for HypercolorWebViewDelegate {
         self.on_url_changed(url.as_str());
     }
 
+    fn notify_closed(&self, _webview: WebView) {
+        self.on_closed();
+    }
+
     fn notify_new_frame_ready(&self, _webview: WebView) {
         self.on_new_frame_ready();
     }
@@ -252,6 +269,17 @@ mod tests {
         assert!(delegate.take_page_loaded());
         assert!(!delegate.is_page_loaded());
         assert!(!delegate.take_page_loaded());
+    }
+
+    #[test]
+    fn closed_count_tracks_close_notifications() {
+        let delegate = HypercolorWebViewDelegate::new();
+
+        assert_eq!(delegate.closed_count(), 0);
+        delegate.on_closed();
+        delegate.on_closed();
+
+        assert_eq!(delegate.closed_count(), 2);
     }
 
     #[test]

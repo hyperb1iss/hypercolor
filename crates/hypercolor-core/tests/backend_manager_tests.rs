@@ -2098,8 +2098,7 @@ async fn write_frame_uses_absolute_attachment_coordinates_for_segmented_logical_
 
     let logs = buffer.contents();
     assert_eq!(
-        logs
-            .matches("ignoring attachment segment override because it exceeds the mapped segment")
+        logs.matches("ignoring attachment segment override because it exceeds the mapped segment")
             .count(),
         0
     );
@@ -2172,8 +2171,7 @@ async fn write_frame_uses_mapped_segment_when_attachment_length_already_matches(
 
     let logs = buffer.contents();
     assert_eq!(
-        logs
-            .matches("ignoring attachment segment override because it exceeds the mapped segment")
+        logs.matches("ignoring attachment segment override because it exceeds the mapped segment")
             .count(),
         0
     );

@@ -35,6 +35,7 @@ const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const RENDER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
 const UNLOAD_TIMEOUT: Duration = Duration::from_secs(1);
+const WEBVIEW_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 const RECENT_CONSOLE_SAMPLE_SIZE: usize = 6;
 const CONSOLE_SNIPPET_RADIUS: usize = 1;
 const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
@@ -48,6 +49,47 @@ const MAX_EFFECT_FPS_CAP: u32 = 60;
 static SERVO_WORKER: OnceLock<Mutex<Option<ServoWorker>>> = OnceLock::new();
 thread_local! {
     static SERVO_WORKER_EXIT_GUARD: ServoWorkerExitGuard = const { ServoWorkerExitGuard };
+}
+
+fn trimmed_servo_preferences() -> Preferences {
+    Preferences {
+        js_timers_minimum_duration: JS_TIMER_MIN_DURATION_MS,
+        // Workshop effects require WebGL + OffscreenCanvas composition.
+        dom_webgl2_enabled: true,
+        dom_offscreen_canvas_enabled: true,
+        // Hypercolor effects render a single offscreen document; parallel CSS
+        // parsing and extra style workers are wasted overhead here.
+        dom_parallel_css_parsing_enabled: false,
+        layout_threads: 1,
+        // Keep Servo's task pools small for the single-effect embedder case.
+        threadpools_async_runtime_workers_max: 1,
+        threadpools_image_cache_workers_max: 1,
+        threadpools_indexeddb_workers_max: 1,
+        threadpools_webstorage_workers_max: 1,
+        threadpools_webrender_workers_max: 1,
+        // Disable subsystems Hypercolor does not use.
+        devtools_server_enabled: false,
+        dom_gamepad_enabled: false,
+        dom_indexeddb_enabled: false,
+        dom_serviceworker_enabled: false,
+        dom_webgpu_enabled: false,
+        dom_webrtc_enabled: false,
+        dom_webrtc_transceiver_enabled: false,
+        dom_webxr_enabled: false,
+        dom_webxr_glwindow_enabled: false,
+        dom_webxr_hands_enabled: false,
+        dom_webxr_openxr_enabled: false,
+        dom_worklet_enabled: false,
+        // JIT buys little for short-lived effect scripts and spins up extra
+        // SpiderMonkey helper capacity.
+        js_disable_jit: true,
+        js_baseline_jit_enabled: false,
+        js_ion_enabled: false,
+        js_offthread_compilation_enabled: false,
+        js_ion_offthread_compilation_enabled: false,
+        media_glvideo_enabled: false,
+        ..Preferences::default()
+    }
 }
 
 /// Feature-gated renderer for HTML effects.
@@ -679,7 +721,7 @@ enum WorkerCommand {
 }
 
 struct ServoWorkerRuntime {
-    webview: WebView,
+    webview: Option<WebView>,
     servo: Servo,
     rendering_context: Rc<dyn RenderingContext>,
     delegate: Rc<HypercolorWebViewDelegate>,
@@ -696,18 +738,9 @@ impl ServoWorkerRuntime {
             anyhow!("failed to make Servo rendering context current: {error:?}")
         })?;
 
-        // Avoid one-second timer clamping in embedder-throttled mode.
-        let preferences = Preferences {
-            js_timers_minimum_duration: JS_TIMER_MIN_DURATION_MS,
-            // Workshop effects are Three.js/WebGL + OffscreenCanvas heavy.
-            // Servo defaults these off, which makes WebGL context creation fail
-            // during effect initialization.
-            dom_webgl2_enabled: true,
-            dom_offscreen_canvas_enabled: true,
-            ..Preferences::default()
-        };
-
-        let servo = ServoBuilder::default().preferences(preferences).build();
+        let servo = ServoBuilder::default()
+            .preferences(trimmed_servo_preferences())
+            .build();
         let delegate = Rc::new(HypercolorWebViewDelegate::new());
         let url = Url::parse("about:blank").context("failed to parse about:blank URL")?;
 
@@ -717,7 +750,7 @@ impl ServoWorkerRuntime {
             .build();
 
         let runtime = Self {
-            webview,
+            webview: Some(webview),
             servo,
             rendering_context,
             delegate,
@@ -771,6 +804,52 @@ impl ServoWorkerRuntime {
         drop(servo);
     }
 
+    fn active_webview(&self) -> Result<&WebView> {
+        self.webview
+            .as_ref()
+            .ok_or_else(|| anyhow!("Servo webview is not initialized"))
+    }
+
+    fn build_webview(&self, url: Url) -> WebView {
+        let webview = WebViewBuilder::new(&self.servo, Rc::clone(&self.rendering_context))
+            .delegate(self.delegate.clone())
+            .url(url)
+            .build();
+        webview.set_throttled(true);
+        webview
+    }
+
+    fn close_webview(&mut self) -> Result<()> {
+        let Some(webview) = self.webview.take() else {
+            return Ok(());
+        };
+
+        let closed_before = self.delegate.closed_count();
+        let webview_id = webview.id();
+        drop(webview);
+
+        let deadline = Instant::now() + WEBVIEW_CLOSE_TIMEOUT;
+        while self.delegate.closed_count() == closed_before {
+            self.servo.spin_event_loop();
+            if Instant::now() >= deadline {
+                bail!("timed out waiting for Servo webview close ({webview_id:?})");
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        Ok(())
+    }
+
+    fn replace_webview(&mut self, url: Url, timeout: Duration) -> Result<()> {
+        // Dropping the last handle closes the old webview and lets Servo tear
+        // down page-scoped resources before we build the next one.
+        self.close_webview()
+            .context("failed to close previous Servo webview")?;
+        self.delegate.reset_navigation_state();
+        self.webview = Some(self.build_webview(url.clone()));
+        self.wait_for_load_completion(timeout, Some(url.as_str()))
+    }
+
     fn load_effect(&mut self, html_path: &Path) -> Result<()> {
         if self.loaded_html_path.is_some() {
             self.unload_effect()
@@ -780,10 +859,9 @@ impl ServoWorkerRuntime {
         let url = file_url_for_path(html_path)?;
         self.loaded_html_path = Some(html_path.to_path_buf());
         self.delegate.reset_navigation_state();
-        // Keep the page throttled except for the single daemon-driven render step.
-        self.webview.set_throttled(true);
+        let webview = self.active_webview()?;
         debug!(url = %url, "Loading Servo effect page");
-        self.webview.load(url.clone());
+        webview.load(url.clone());
         self.wait_for_load_completion(LOAD_TIMEOUT, Some(url.as_str()))?;
         let recent_console_entries = self
             .delegate
@@ -812,31 +890,29 @@ impl ServoWorkerRuntime {
         }
 
         let url = Url::parse("about:blank").context("failed to parse about:blank URL")?;
-        self.delegate.reset_navigation_state();
-        self.webview.set_throttled(true);
         debug!("Unloading Servo effect page");
-        self.webview.load(url.clone());
-        self.wait_for_load_completion(UNLOAD_TIMEOUT, Some(url.as_str()))?;
+        self.replace_webview(url.clone(), UNLOAD_TIMEOUT)?;
         self.loaded_html_path = None;
         Ok(())
     }
 
     fn render_frame(&mut self, scripts: &[String], width: u32, height: u32) -> Result<Canvas> {
         let result = (|| {
-            self.resize_if_needed(width, height);
+            self.resize_if_needed(width, height)?;
 
             self.evaluate_scripts(scripts)?;
 
+            let webview = self.active_webview()?;
             // Let timers/RAF advance for one daemon-driven frame after scripts
             // have injected controls/audio for this tick. Leaving the webview
             // unthrottled between ticks lets effect-side RAF/timer loops free-run.
-            self.webview.set_throttled(false);
+            webview.set_throttled(false);
             self.servo.spin_event_loop();
             let frame_ready = self.delegate.take_frame_ready();
             if frame_ready {
                 trace!("Servo delegate signaled new frame");
             }
-            self.webview.paint();
+            webview.paint();
 
             let size = self.rendering_context.size();
             let width_i32 =
@@ -862,7 +938,9 @@ impl ServoWorkerRuntime {
             ))
         })();
 
-        self.webview.set_throttled(true);
+        if let Some(webview) = self.webview.as_ref() {
+            webview.set_throttled(true);
+        }
         result
     }
 
@@ -877,14 +955,15 @@ impl ServoWorkerRuntime {
             .with_context(|| format!("failed to evaluate script batch: {preview}"))
     }
 
-    fn resize_if_needed(&self, width: u32, height: u32) {
+    fn resize_if_needed(&self, width: u32, height: u32) -> Result<()> {
         let new_size = PhysicalSize::new(width, height);
         if self.rendering_context.size() == new_size {
-            return;
+            return Ok(());
         }
 
         self.rendering_context.resize(new_size);
-        self.webview.resize(new_size);
+        self.active_webview()?.resize(new_size);
+        Ok(())
     }
 
     fn evaluate_script(&mut self, script: &str) -> Result<()> {
@@ -892,9 +971,10 @@ impl ServoWorkerRuntime {
             Rc::new(RefCell::new(None));
         let callback_slot = Rc::clone(&result_slot);
 
-        self.webview.evaluate_javascript(script, move |result| {
-            *callback_slot.borrow_mut() = Some(result);
-        });
+        self.active_webview()?
+            .evaluate_javascript(script, move |result| {
+                *callback_slot.borrow_mut() = Some(result);
+            });
 
         let deadline = Instant::now() + SCRIPT_TIMEOUT;
         while result_slot.borrow().is_none() {
@@ -1331,6 +1411,7 @@ fn servo_worker_is_fatal_error(error: &anyhow::Error) -> bool {
     message.contains("disconnected")
         || message.contains("timed out waiting for servo page load")
         || message.contains("timed out waiting for servo page unload")
+        || message.contains("timed out waiting for servo webview close")
         || message.contains("timed out waiting for servo frame response")
         || message.contains("timed out waiting for javascript callback")
         || message.contains("failed to send load command to servo worker")
