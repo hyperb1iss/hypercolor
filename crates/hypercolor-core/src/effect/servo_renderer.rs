@@ -34,8 +34,10 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRIPT_TIMEOUT: Duration = Duration::from_millis(250);
 const WORKER_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const RENDER_RESPONSE_TIMEOUT: Duration = Duration::from_millis(500);
-const UNLOAD_TIMEOUT: Duration = Duration::from_secs(1);
-const WEBVIEW_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
+// Unload closes the current webview and waits for about:blank to load, so the
+// caller-side timeout must exceed the close + load budgets to avoid false
+// fatal worker retirement during normal effect switches.
+const UNLOAD_TIMEOUT: Duration = Duration::from_secs(8);
 const RECENT_CONSOLE_SAMPLE_SIZE: usize = 6;
 const CONSOLE_SNIPPET_RADIUS: usize = 1;
 const CONSOLE_SNIPPET_LINE_MAX_CHARS: usize = 180;
@@ -45,8 +47,9 @@ const MAX_EFFECT_FPS_CAP: u32 = 60;
 
 // Servo initializes process-global options once. Recreating the runtime after a
 // shutdown panics inside libservo, so Hypercolor keeps one shared worker alive
-// for the daemon lifetime and reuses it across HTML effect switches.
-static SERVO_WORKER: OnceLock<Mutex<Option<ServoWorker>>> = OnceLock::new();
+// for the daemon lifetime and reuses it across HTML effect switches. If that
+// worker becomes unrecoverable, HTML effects must fail closed until restart.
+static SERVO_WORKER: OnceLock<Mutex<SharedServoWorkerState>> = OnceLock::new();
 thread_local! {
     static SERVO_WORKER_EXIT_GUARD: ServoWorkerExitGuard = const { ServoWorkerExitGuard };
 }
@@ -222,7 +225,7 @@ impl ServoRenderer {
                         self.warned_fallback_frame = false;
                     }
                     Err(error) => {
-                        retire_shared_servo_worker_if_fatal("Servo frame render failed", &error);
+                        poison_shared_servo_worker_if_fatal("Servo frame render failed", &error);
                         if servo_worker_is_fatal_error(&error) {
                             self.worker = None;
                         }
@@ -248,7 +251,7 @@ impl ServoRenderer {
             Err(TryRecvError::Disconnected) => {
                 self.in_flight_render = None;
                 self.worker = None;
-                retire_shared_servo_worker(
+                poison_shared_servo_worker(
                     "Servo worker disconnected before sending frame response",
                 );
                 warn!("Servo worker disconnected before sending frame response");
@@ -282,7 +285,7 @@ impl ServoRenderer {
             }
             Err(error) => {
                 self.worker = None;
-                retire_shared_servo_worker_if_fatal("Failed to queue Servo frame render", &error);
+                poison_shared_servo_worker_if_fatal("Failed to queue Servo frame render", &error);
                 warn!(%error, "Failed to queue Servo frame render");
                 if !self.warned_fallback_frame {
                     warn!("Falling back to the previous completed frame for this effect");
@@ -304,7 +307,7 @@ impl ServoRenderer {
                 self.warned_stalled_frame = false;
             }
             Ok(Err(error)) => {
-                retire_shared_servo_worker_if_fatal(
+                poison_shared_servo_worker_if_fatal(
                     "Servo frame render failed while draining effect teardown",
                     &error,
                 );
@@ -314,7 +317,7 @@ impl ServoRenderer {
                 warn!(%error, "Servo frame render failed while draining effect teardown");
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                retire_shared_servo_worker(
+                poison_shared_servo_worker(
                     "Timed out waiting for in-flight Servo frame during effect teardown",
                 );
                 warn!(
@@ -323,7 +326,7 @@ impl ServoRenderer {
                 );
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                retire_shared_servo_worker(
+                poison_shared_servo_worker(
                     "Servo worker disconnected while draining effect teardown",
                 );
                 warn!("Servo worker disconnected while draining effect teardown");
@@ -392,7 +395,7 @@ impl EffectRenderer for ServoRenderer {
 
         let worker = acquire_servo_worker(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT)?;
         if let Err(error) = worker.load_effect(&runtime_source) {
-            retire_shared_servo_worker_if_fatal("Servo effect page load failed", &error);
+            poison_shared_servo_worker_if_fatal("Servo effect page load failed", &error);
             return Err(error);
         }
         self.worker = Some(worker);
@@ -435,7 +438,7 @@ impl EffectRenderer for ServoRenderer {
         self.drain_in_flight_render();
         if let Some(worker) = self.worker.as_ref() {
             if let Err(error) = worker.unload_effect() {
-                retire_shared_servo_worker_if_fatal(
+                poison_shared_servo_worker_if_fatal(
                     "Failed to unload Servo effect page during destroy",
                     &error,
                 );
@@ -722,6 +725,12 @@ enum WorkerCommand {
     },
 }
 
+enum SharedServoWorkerState {
+    Vacant,
+    Running(ServoWorker),
+    Poisoned { reason: String },
+}
+
 struct ServoWorkerRuntime {
     webview: Option<WebView>,
     servo: Servo,
@@ -822,23 +831,15 @@ impl ServoWorkerRuntime {
     }
 
     fn close_webview(&mut self) -> Result<()> {
+        // Dropping the last WebView handle synchronously issues Servo's
+        // `CloseWebView` message. `notify_closed` is only documented for
+        // `window.close()`, so waiting on it here just turns every effect
+        // switch into a timeout path.
         let Some(webview) = self.webview.take() else {
             return Ok(());
         };
-
-        let closed_before = self.delegate.closed_count();
-        let webview_id = webview.id();
         drop(webview);
-
-        let deadline = Instant::now() + WEBVIEW_CLOSE_TIMEOUT;
-        while self.delegate.closed_count() == closed_before {
-            self.servo.spin_event_loop();
-            if Instant::now() >= deadline {
-                bail!("timed out waiting for Servo webview close ({webview_id:?})");
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-
+        self.servo.spin_event_loop();
         Ok(())
     }
 
@@ -853,18 +854,20 @@ impl ServoWorkerRuntime {
     }
 
     fn load_effect(&mut self, html_path: &Path) -> Result<()> {
-        if self.loaded_html_path.is_some() {
-            self.unload_effect()
-                .context("failed to unload previous Servo effect page before loading new effect")?;
-        }
-
+        let had_loaded_effect = self.loaded_html_path.is_some();
         let url = file_url_for_path(html_path)?;
         self.loaded_html_path = Some(html_path.to_path_buf());
-        self.delegate.reset_navigation_state();
-        let webview = self.active_webview()?;
         debug!(url = %url, "Loading Servo effect page");
-        webview.load(url.clone());
-        self.wait_for_load_completion(LOAD_TIMEOUT, Some(url.as_str()))?;
+        if had_loaded_effect {
+            self.replace_webview(url.clone(), LOAD_TIMEOUT).context(
+                "failed to replace previous Servo effect page before loading new effect",
+            )?;
+        } else {
+            self.delegate.reset_navigation_state();
+            let webview = self.active_webview()?;
+            webview.load(url.clone());
+            self.wait_for_load_completion(LOAD_TIMEOUT, Some(url.as_str()))?;
+        }
         let recent_console_entries = self
             .delegate
             .recent_console_messages(RECENT_CONSOLE_SAMPLE_SIZE);
@@ -1421,66 +1424,86 @@ fn servo_worker_is_fatal_error(error: &anyhow::Error) -> bool {
         || message.contains("failed to send unload command to servo worker")
 }
 
-fn retire_shared_servo_worker_if_fatal(context: &str, error: &anyhow::Error) {
+fn poison_shared_servo_worker_if_fatal(context: &str, error: &anyhow::Error) {
     if !servo_worker_is_fatal_error(error) {
         return;
     }
     let message = format!("{context}: {error}");
-    retire_shared_servo_worker(&message);
+    poison_shared_servo_worker(&message);
 }
 
-fn retire_shared_servo_worker(reason: &str) {
-    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(None));
+fn poison_shared_servo_worker(reason: &str) {
+    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(SharedServoWorkerState::Vacant));
     let mut guard = match slot.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
 
-    let Some(mut worker) = guard.take() else {
-        return;
-    };
+    let previous = std::mem::replace(
+        &mut *guard,
+        SharedServoWorkerState::Poisoned {
+            reason: reason.to_owned(),
+        },
+    );
     drop(guard);
 
-    let had_command_tx = worker.command_tx.take().is_some();
-    let had_thread_handle = worker.thread_handle.take().is_some();
-    warn!(
-        reason = reason,
-        had_command_tx,
-        had_thread_handle,
-        "Retiring shared Servo worker without shutdown so a fresh worker can be spawned"
-    );
+    match previous {
+        SharedServoWorkerState::Vacant => {
+            warn!(
+                reason = reason,
+                "Marked shared Servo worker unrecoverable; restart the daemon to use HTML effects again"
+            );
+        }
+        SharedServoWorkerState::Running(mut worker) => {
+            let had_command_tx = worker.command_tx.take().is_some();
+            let had_thread_handle = worker.thread_handle.take().is_some();
+            warn!(
+                reason = reason,
+                had_command_tx,
+                had_thread_handle,
+                "Marked shared Servo worker unrecoverable; restart the daemon to use HTML effects again"
+            );
+        }
+        SharedServoWorkerState::Poisoned { .. } => {}
+    }
 }
 
 fn acquire_servo_worker(width: u32, height: u32) -> Result<ServoWorkerClient> {
     SERVO_WORKER_EXIT_GUARD.with(|_| {});
-    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(None));
+    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(SharedServoWorkerState::Vacant));
     let mut guard = match slot.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
 
-    if let Some(worker) = guard.as_ref() {
-        return worker.client();
+    match &mut *guard {
+        SharedServoWorkerState::Running(worker) => return worker.client(),
+        SharedServoWorkerState::Poisoned { reason } => {
+            bail!("Servo runtime is unrecoverable until the daemon restarts: {reason}");
+        }
+        SharedServoWorkerState::Vacant => {}
     }
 
     let worker = ServoWorker::spawn(width, height)?;
     let client = worker.client()?;
-    *guard = Some(worker);
+    *guard = SharedServoWorkerState::Running(worker);
     Ok(client)
 }
 
 fn shutdown_shared_servo_worker() -> Result<()> {
-    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(None));
+    let slot = SERVO_WORKER.get_or_init(|| Mutex::new(SharedServoWorkerState::Vacant));
     let mut guard = match slot.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
 
-    let Some(mut worker) = guard.take() else {
-        return Ok(());
-    };
+    let previous = std::mem::replace(&mut *guard, SharedServoWorkerState::Vacant);
     drop(guard);
-    worker.shutdown()
+
+    match previous {
+        SharedServoWorkerState::Vacant | SharedServoWorkerState::Poisoned { .. } => Ok(()),
+        SharedServoWorkerState::Running(mut worker) => worker.shutdown(),
+    }
 }
 
 #[cfg(test)]
@@ -1495,6 +1518,7 @@ mod tests {
     static SILENCE: LazyLock<AudioData> = LazyLock::new(AudioData::silence);
     static DEFAULT_INTERACTION: LazyLock<crate::input::InteractionData> =
         LazyLock::new(crate::input::InteractionData::default);
+    static SHARED_WORKER_STATE_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[derive(Debug)]
     struct RecordedRenderCommand {
@@ -1655,6 +1679,15 @@ mod tests {
         let mut canvas = Canvas::new(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
         canvas.fill(Rgba::new(r, g, b, 255));
         canvas
+    }
+
+    fn reset_shared_servo_worker_state() {
+        let slot = SERVO_WORKER.get_or_init(|| Mutex::new(SharedServoWorkerState::Vacant));
+        let mut guard = match slot.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = SharedServoWorkerState::Vacant;
     }
 
     #[test]
@@ -1818,6 +1851,61 @@ mod tests {
         assert!(stopped.load(Ordering::SeqCst));
         assert!(worker.command_tx.is_none());
         assert!(worker.thread_handle.is_none());
+    }
+
+    #[test]
+    fn poisoned_shared_worker_requires_daemon_restart() {
+        let _lock = SHARED_WORKER_STATE_TEST_LOCK
+            .lock()
+            .expect("shared worker test lock");
+        reset_shared_servo_worker_state();
+
+        let slot = SERVO_WORKER.get_or_init(|| Mutex::new(SharedServoWorkerState::Vacant));
+        let mut guard = match slot.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = SharedServoWorkerState::Poisoned {
+            reason: "test failure".to_owned(),
+        };
+        drop(guard);
+
+        let result = acquire_servo_worker(DEFAULT_CANVAS_WIDTH, DEFAULT_CANVAS_HEIGHT);
+        assert!(result.is_err(), "poisoned worker should fail closed");
+        let error = result.err().expect("poisoned worker should fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("Servo runtime is unrecoverable until the daemon restarts")
+        );
+
+        reset_shared_servo_worker_state();
+    }
+
+    #[test]
+    fn shutdown_clears_poisoned_shared_worker_state() {
+        let _lock = SHARED_WORKER_STATE_TEST_LOCK
+            .lock()
+            .expect("shared worker test lock");
+        reset_shared_servo_worker_state();
+
+        let slot = SERVO_WORKER.get_or_init(|| Mutex::new(SharedServoWorkerState::Vacant));
+        let mut guard = match slot.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = SharedServoWorkerState::Poisoned {
+            reason: "test failure".to_owned(),
+        };
+        drop(guard);
+
+        shutdown_shared_servo_worker().expect("shutdown should clear poisoned state");
+
+        let guard = match slot.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        assert!(matches!(&*guard, SharedServoWorkerState::Vacant));
     }
 
     #[test]
