@@ -73,8 +73,15 @@ pub struct ParsedHtmlEffectMetadata {
     pub category: EffectCategory,
     pub audio_reactive: bool,
     pub uses_canvas2d: bool,
+    pub uses_webgl: bool,
     pub uses_three_js: bool,
     pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HtmlRendererKind {
+    Canvas2d,
+    Webgl,
 }
 
 /// Parse HTML effect metadata from a raw file string.
@@ -146,14 +153,28 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
 
     let audio_reactive = detect_audio_meta_tag(&sanitized)
         .unwrap_or_else(|| detect_audio_reactivity_heuristic(&lower));
+    let renderer_hint = detect_renderer_meta_tag(&sanitized);
     let uses_three_js = detect_three_js(&lower);
-    let uses_canvas2d = detect_canvas2d(&lower);
+    let detected_webgl = uses_three_js || detect_webgl(&lower);
+    let detected_canvas2d = detect_canvas2d(&lower);
+    let (uses_canvas2d, uses_webgl) = match renderer_hint {
+        Some(HtmlRendererKind::Canvas2d) => (true, false),
+        Some(HtmlRendererKind::Webgl) => (false, true),
+        None => {
+            let uses_webgl = detected_webgl;
+            // Bundled SDK runtime code contains a 2D fallback path for error rendering,
+            // so prefer WebGL when both signatures appear in the same document.
+            let uses_canvas2d = detected_canvas2d && !uses_webgl;
+            (uses_canvas2d, uses_webgl)
+        }
+    };
     let category = infer_category(&lower, &controls, audio_reactive);
     let tags = build_tags(
         &controls,
         category,
         audio_reactive,
         uses_canvas2d,
+        uses_webgl,
         uses_three_js,
     );
 
@@ -166,6 +187,7 @@ pub fn parse_html_effect_metadata(html: &str) -> ParsedHtmlEffectMetadata {
         category,
         audio_reactive,
         uses_canvas2d,
+        uses_webgl,
         uses_three_js,
         tags,
     }
@@ -442,8 +464,38 @@ fn detect_audio_reactivity_heuristic(lower: &str) -> bool {
     AUDIO_MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
+fn detect_renderer_meta_tag(html: &str) -> Option<HtmlRendererKind> {
+    for meta_tag in extract_start_tags(html, "meta") {
+        let attrs = parse_tag_attributes(&meta_tag);
+        let Some(value) = attr_value(&attrs, "renderer") else {
+            continue;
+        };
+
+        match value.trim().to_ascii_lowercase().as_str() {
+            "2d" | "canvas" | "canvas2d" => return Some(HtmlRendererKind::Canvas2d),
+            "webgl" | "webgl2" => return Some(HtmlRendererKind::Webgl),
+            _ => {}
+        }
+    }
+
+    None
+}
+
 fn detect_three_js(lower: &str) -> bool {
     const WEBGL_MARKERS: &[&str] = &["three.", "webglrenderer", "webglrendertarget"];
+    WEBGL_MARKERS.iter().any(|marker| lower.contains(marker))
+}
+
+fn detect_webgl(lower: &str) -> bool {
+    const WEBGL_MARKERS: &[&str] = &[
+        "getcontext(\"webgl\"",
+        "getcontext('webgl'",
+        "getcontext(\"webgl2\"",
+        "getcontext('webgl2'",
+        "experimental-webgl",
+        "webglrenderingcontext",
+        "webgl2renderingcontext",
+    ];
     WEBGL_MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
@@ -538,6 +590,7 @@ fn build_tags(
     category: EffectCategory,
     audio_reactive: bool,
     uses_canvas2d: bool,
+    uses_webgl: bool,
     uses_three_js: bool,
 ) -> Vec<String> {
     let mut tags = BTreeSet::new();
@@ -547,8 +600,10 @@ fn build_tags(
     if uses_canvas2d {
         tags.insert("canvas2d".to_owned());
     }
-    if uses_three_js {
+    if uses_webgl {
         tags.insert("webgl".to_owned());
+    }
+    if uses_three_js {
         tags.insert("threejs".to_owned());
     }
     if audio_reactive {

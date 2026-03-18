@@ -134,7 +134,7 @@ fn webgl_effect_paths(paths: &[PathBuf]) -> Vec<PathBuf> {
             let absolute_path = root.join(relative_path);
             let html = fs::read_to_string(&absolute_path).ok()?;
             let parsed = parse_html_effect_metadata(&html);
-            if parsed.uses_three_js {
+            if parsed.uses_webgl {
                 Some(relative_path.clone())
             } else {
                 None

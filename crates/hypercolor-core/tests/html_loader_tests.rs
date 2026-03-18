@@ -5,7 +5,9 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use hypercolor_core::effect::{EffectRegistry, default_effect_search_paths, register_html_effects};
+use hypercolor_core::effect::{
+    EffectRegistry, default_effect_search_paths, parse_html_effect_metadata, register_html_effects,
+};
 use hypercolor_types::canvas::srgb_to_linear;
 use hypercolor_types::effect::{EffectCategory, EffectSource};
 
@@ -192,4 +194,45 @@ fn register_html_effects_decodes_color_defaults_to_linear_rgba() {
     assert!((g - expected).abs() < 0.0001);
     assert!((b - expected).abs() < 0.0001);
     assert!((a - 1.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn parse_html_effect_metadata_prefers_webgl_when_shared_runtime_contains_2d_fallback() {
+    let html = r#"
+<head>
+  <title>Arc Storm</title>
+  <meta description="Shader effect" />
+</head>
+<script>
+  const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
+  const errorCtx = canvas.getContext('2d');
+</script>
+"#;
+
+    let parsed = parse_html_effect_metadata(html);
+
+    assert!(parsed.uses_webgl);
+    assert!(!parsed.uses_canvas2d);
+    assert!(parsed.tags.contains(&"webgl".to_owned()));
+    assert!(!parsed.tags.contains(&"canvas2d".to_owned()));
+}
+
+#[test]
+fn parse_html_effect_metadata_respects_explicit_renderer_meta() {
+    let html = r#"
+<head>
+  <title>Canvas Override</title>
+  <meta renderer="canvas2d" />
+</head>
+<script>
+  const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
+</script>
+"#;
+
+    let parsed = parse_html_effect_metadata(html);
+
+    assert!(!parsed.uses_webgl);
+    assert!(parsed.uses_canvas2d);
+    assert!(!parsed.tags.contains(&"webgl".to_owned()));
+    assert!(parsed.tags.contains(&"canvas2d".to_owned()));
 }

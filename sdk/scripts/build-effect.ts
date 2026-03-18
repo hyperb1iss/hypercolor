@@ -63,6 +63,7 @@ interface PresetDef {
 }
 
 interface NewApiDef {
+    type?: 'canvas' | 'webgl'
     name: string
     shader?: string
     description?: string
@@ -181,6 +182,7 @@ async function extractMetadata(entryPath: string) {
                     description: def.description ?? '',
                     name: def.name,
                     presets: def.presets ?? [],
+                    renderer: def.type === 'canvas' ? 'canvas2d' : 'webgl',
                 },
             }
         }
@@ -250,11 +252,13 @@ function generateHTML(
     description: string,
     author: string,
     audioReactive: boolean,
+    renderer: string | undefined,
     controlMetas: string[],
     presetMetas: string[],
     jsBundle: string,
 ): string {
     const audioTag = `\n  <meta audio-reactive="${audioReactive}"/>`
+    const rendererTag = renderer ? `\n  <meta renderer="${escapeAttr(renderer)}"/>` : ''
     const presetBlock = presetMetas.length > 0 ? `\n${presetMetas.join('\n')}` : ''
     return `<!DOCTYPE html>
 <html lang="en">
@@ -263,7 +267,7 @@ function generateHTML(
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${escapeAttr(effectName)}</title>
   <meta description="${escapeAttr(description)}"/>
-  <meta publisher="${escapeAttr(author)}"/>${audioTag}
+  <meta publisher="${escapeAttr(author)}"/>${audioTag}${rendererTag}
 ${controlMetas.join('\n')}${presetBlock}
 </head>
 <body style="margin:0;overflow:hidden;background:#000">
@@ -319,6 +323,7 @@ async function buildEffect(entryPath: string, outDir: string) {
     const description = effect?.description ?? ''
     const author = effect?.author ?? 'Hypercolor'
     const audioReactive = effect?.audioReactive ?? false
+    const renderer = effect?.renderer
 
     // 2. Generate control meta tags
     const controlMetas = (controls as ControlDef[]).map(controlToMeta)
@@ -330,7 +335,7 @@ async function buildEffect(entryPath: string, outDir: string) {
     const jsBundle = await bundleEffect(entryPath)
 
     // 5. Generate HTML
-    const html = generateHTML(effectName, description, author, audioReactive, controlMetas, presetMetas, jsBundle)
+    const html = generateHTML(effectName, description, author, audioReactive, renderer, controlMetas, presetMetas, jsBundle)
 
     // 5. Write output
     mkdirSync(outDir, { recursive: true })

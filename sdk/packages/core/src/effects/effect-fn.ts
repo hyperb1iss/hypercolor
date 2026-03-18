@@ -262,6 +262,7 @@ function hexToFloats(hex: string): number[] {
 // ── Metadata Extraction Support ──────────────────────────────────────────
 
 interface EffectDef {
+    type: 'webgl'
     name: string
     shader: string
     controls: ControlMap
@@ -304,6 +305,7 @@ export function effect(name: string, shader: string, controls: ControlMap, optio
             presets: opts.presets,
             resolvedControls: resolved,
             shader,
+            type: 'webgl',
         })
         return
     }
