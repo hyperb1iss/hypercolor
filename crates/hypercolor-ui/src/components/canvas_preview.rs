@@ -211,50 +211,46 @@ pub fn CanvasPreview(
     let presenter = Rc::new(RefCell::new(None::<WebGlPreview>));
     let animation = Rc::new(RefCell::new(None::<Closure<dyn FnMut(f64)>>));
     let last_presented_frame = Rc::new(RefCell::new(None::<u32>));
+    let schedule_present: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
 
-    // Stash the newest frame immediately and let requestAnimationFrame present it.
-    Effect::new({
+    {
+        let canvas_ref = canvas_ref.clone();
         let latest_frame = Rc::clone(&latest_frame);
-        move |_| {
-            *latest_frame.borrow_mut() = frame.get();
-        }
-    });
-
-    // Start a single browser-paced presentation loop when the canvas mounts.
-    Effect::new({
         let presenter = Rc::clone(&presenter);
         let animation = Rc::clone(&animation);
-        let latest_frame = Rc::clone(&latest_frame);
         let last_presented_frame = Rc::clone(&last_presented_frame);
 
-        move |_| {
-            let Some(canvas) = canvas_ref.get() else {
-                return;
-            };
-            if presenter.borrow().is_some() {
+        let schedule = Rc::new(move || {
+            if animation.borrow().is_some() {
                 return;
             }
 
-            *presenter.borrow_mut() = WebGlPreview::new(&canvas);
-            if presenter.borrow().is_none() {
+            let Some(canvas) = canvas_ref.get() else {
                 return;
+            };
+
+            if presenter.borrow().is_none() {
+                *presenter.borrow_mut() = WebGlPreview::new(&canvas);
+                if presenter.borrow().is_none() {
+                    return;
+                }
             }
 
             let Some(window) = web_sys::window() else {
                 return;
             };
-            let loop_window = window.clone();
+
             let animation_handle = Rc::clone(&animation);
             let presenter_handle = Rc::clone(&presenter);
-            let canvas_handle = canvas.clone();
             let latest_frame = Rc::clone(&latest_frame);
             let last_presented_frame = Rc::clone(&last_presented_frame);
+            let canvas_handle = canvas.clone();
 
             let callback = Closure::<dyn FnMut(f64)>::new(move |_| {
                 if !canvas_handle.is_connected() {
-                    animation_handle.borrow_mut().take();
                     presenter_handle.borrow_mut().take();
                     last_presented_frame.borrow_mut().take();
+                    animation_handle.borrow_mut().take();
                     return;
                 }
 
@@ -267,21 +263,50 @@ pub fn CanvasPreview(
                     }
                 }
 
-                if let Some(callback) = animation_handle.borrow().as_ref()
-                    && let Ok(frame_id) =
-                        loop_window.request_animation_frame(callback.as_ref().unchecked_ref())
-                {
-                    let _ = frame_id;
-                }
+                animation_handle.borrow_mut().take();
             });
 
-            *animation.borrow_mut() = Some(callback);
-
-            if let Some(callback) = animation.borrow().as_ref()
-                && let Ok(frame_id) =
-                    window.request_animation_frame(callback.as_ref().unchecked_ref())
+            if window
+                .request_animation_frame(callback.as_ref().unchecked_ref())
+                .is_ok()
             {
-                let _ = frame_id;
+                *animation.borrow_mut() = Some(callback);
+            }
+        });
+
+        *schedule_present.borrow_mut() = Some(schedule);
+    }
+
+    // Stash the newest frame immediately and queue a single browser-timed present.
+    Effect::new({
+        let latest_frame = Rc::clone(&latest_frame);
+        let schedule_present = Rc::clone(&schedule_present);
+        move |_| {
+            let next_frame = frame.get();
+            *latest_frame.borrow_mut() = next_frame.clone();
+
+            if next_frame.is_some()
+                && let Some(schedule) = schedule_present.borrow().as_ref()
+            {
+                schedule();
+            }
+        }
+    });
+
+    // If the canvas mounts after frames have already started arriving, present immediately.
+    Effect::new({
+        let latest_frame = Rc::clone(&latest_frame);
+        let schedule_present = Rc::clone(&schedule_present);
+
+        move |_| {
+            if canvas_ref.get().is_none() {
+                return;
+            }
+
+            if latest_frame.borrow().is_some()
+                && let Some(schedule) = schedule_present.borrow().as_ref()
+            {
+                schedule();
             }
         }
     });

@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use hypercolor_types::canvas::Canvas;
 use hypercolor_types::event::ZoneColors;
-use hypercolor_types::spatial::SpatialLayout;
+use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 
 /// The spatial sampling engine.
 ///
@@ -126,7 +126,16 @@ impl SpatialEngine {
         self.prepared_zones = layout
             .zones
             .iter()
+            .filter(|zone| should_sample_zone(zone))
             .map(|zone| sampler::prepare_zone(zone, layout))
             .collect();
     }
+}
+
+fn should_sample_zone(zone: &DeviceZone) -> bool {
+    // Display devices render through the dedicated display-output pipeline, but
+    // existing layouts still persist those viewport helpers as `zone_name =
+    // "Display"` matrix zones. Skip them here so the LED sampler only prepares
+    // real LED-bearing zones.
+    zone.zone_name.as_deref() != Some("Display")
 }

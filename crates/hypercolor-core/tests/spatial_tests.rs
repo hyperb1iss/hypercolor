@@ -4,11 +4,12 @@
 //! topology position generation, coordinate transforms, and sampling
 //! algorithms produce the expected LED colors.
 
-use hypercolor_core::spatial::{SpatialEngine, generate_positions};
-use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb};
+use hypercolor_core::spatial::{SpatialEngine, generate_positions, sample_led};
+use hypercolor_types::canvas::{Canvas, Rgba, linear_to_srgb, srgb_to_linear};
 use hypercolor_types::event::ZoneColors;
 use hypercolor_types::spatial::{
-    Corner, DeviceZone, LedTopology, NormalizedPosition, SamplingMode, StripDirection, Winding,
+    Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode,
+    StripDirection, Winding,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -135,6 +136,52 @@ fn linear_byte_to_srgb(value: u8) -> u8 {
     (linear_to_srgb(f32::from(value) / 255.0) * 255.0)
         .round()
         .clamp(0.0, 255.0) as u8
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions,
+    clippy::cast_precision_loss
+)]
+fn srgb_byte_to_linear_u16(value: u8) -> u16 {
+    (srgb_to_linear(f32::from(value) / 255.0) * 65535.0)
+        .round()
+        .clamp(0.0, 65535.0) as u16
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::as_conversions,
+    clippy::cast_precision_loss
+)]
+fn linear_u16_to_srgb_byte(value: u16) -> u8 {
+    (linear_to_srgb(f32::from(value) / 65535.0) * 255.0)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
+
+fn expected_bilinear_channel(
+    top_left: u8,
+    top_right: u8,
+    bottom_left: u8,
+    bottom_right: u8,
+    x_upper_weight: u16,
+    y_upper_weight: u16,
+) -> u8 {
+    let x_lower_weight = 256_u16.saturating_sub(x_upper_weight);
+    let y_lower_weight = 256_u16.saturating_sub(y_upper_weight);
+
+    let top = u32::from(srgb_byte_to_linear_u16(top_left)) * u32::from(x_lower_weight)
+        + u32::from(srgb_byte_to_linear_u16(top_right)) * u32::from(x_upper_weight);
+    let bottom = u32::from(srgb_byte_to_linear_u16(bottom_left)) * u32::from(x_lower_weight)
+        + u32::from(srgb_byte_to_linear_u16(bottom_right)) * u32::from(x_upper_weight);
+    let blended = ((u64::from(top) * u64::from(y_lower_weight)
+        + u64::from(bottom) * u64::from(y_upper_weight))
+        >> 16) as u16;
+
+    linear_u16_to_srgb_byte(blended)
 }
 
 // ── Topology Position Generation ────────────────────────────────────────────
@@ -600,6 +647,42 @@ fn multiple_zones_produce_separate_results() {
     assert_eq!(result[1].colors.len(), 8);
 }
 
+#[test]
+fn display_viewport_zones_are_skipped_by_spatial_sampling() {
+    let canvas = solid_canvas(32, 20, Rgba::new(100, 150, 200, 255));
+
+    let led_zone = full_canvas_zone(
+        "strip1",
+        LedTopology::Strip {
+            count: 5,
+            direction: StripDirection::LeftToRight,
+        },
+    );
+    let mut display_zone = full_canvas_zone(
+        "display",
+        LedTopology::Matrix {
+            width: 480,
+            height: 480,
+            serpentine: false,
+            start_corner: Corner::TopLeft,
+        },
+    );
+    display_zone.zone_name = Some("Display".to_owned());
+
+    let layout = test_layout(vec![led_zone, display_zone], 32, 20);
+    let engine = SpatialEngine::new(layout);
+    let result = engine.sample(&canvas);
+
+    assert_eq!(
+        result.len(),
+        1,
+        "display viewport zones should not be sampled"
+    );
+    assert_eq!(result[0].zone_id, "strip1");
+    assert_eq!(result[0].colors.len(), 5);
+    assert_eq!(result[0].colors[0], [100, 150, 200]);
+}
+
 // ── Layout Update Tests ─────────────────────────────────────────────────────
 
 #[test]
@@ -762,6 +845,29 @@ fn zero_led_strip_produces_empty_colors() {
     let result = engine.sample(&canvas);
     assert_eq!(result.len(), 1);
     assert!(result[0].colors.is_empty());
+}
+
+#[test]
+fn bilinear_sampling_blends_corner_channels_in_linear_space() {
+    let mut canvas = Canvas::new(2, 2);
+    canvas.set_pixel(0, 0, Rgba::new(255, 0, 0, 255));
+    canvas.set_pixel(1, 0, Rgba::new(0, 255, 0, 255));
+    canvas.set_pixel(0, 1, Rgba::new(0, 0, 255, 255));
+    canvas.set_pixel(1, 1, Rgba::new(255, 255, 255, 255));
+
+    let zone = full_canvas_zone("point", LedTopology::Point);
+    let color = sample_led(
+        &canvas,
+        NormalizedPosition::new(0.25, 0.75),
+        &zone,
+        &SamplingMode::Bilinear,
+        EdgeBehavior::Clamp,
+    );
+
+    assert_eq!(color.r, expected_bilinear_channel(255, 0, 0, 255, 64, 192));
+    assert_eq!(color.g, expected_bilinear_channel(0, 255, 0, 255, 64, 192));
+    assert_eq!(color.b, expected_bilinear_channel(0, 0, 255, 255, 64, 192));
+    assert_eq!(color.a, 255);
 }
 
 // ── Zone Positioning ────────────────────────────────────────────────────────

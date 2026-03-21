@@ -572,7 +572,7 @@ fn request_preview_subscription(
         "type": "subscribe",
         "channels": ["canvas"],
         "config": {
-            "canvas": { "fps": desired_fps, "format": "rgba" }
+            "canvas": { "fps": desired_fps, "format": "rgb" }
         }
     });
     let _ = ws.send_with_str(&subscribe_msg.to_string());
