@@ -1,0 +1,22 @@
+schema_version = 1
+id = "generic-strip-300-leds"
+name = "Generic Strip - 300 LEDs"
+category = "strip"
+origin = "built_in"
+description = "Generic addressable LED strip, 300 LEDs (standard 5m at 60/m)"
+vendor = "Generic"
+compatible_slots = []
+tags = [
+    "strip",
+    "horizontal",
+    "ws2812",
+]
+
+[default_size]
+width = 0.40
+height = 0.06
+
+[topology]
+type = "strip"
+count = 300
+direction = "left_to_right"

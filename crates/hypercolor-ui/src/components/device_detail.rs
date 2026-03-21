@@ -501,22 +501,24 @@ pub fn DeviceDetail(
                                                                     })}
                                                                 </div>
                                                             </div>
-                                                            // Zone identify button
+                                                            // Channel identify button — flashes only this channel's LEDs
                                                             <button
                                                                 class="w-4 h-4 flex items-center justify-center rounded shrink-0
                                                                        opacity-0 group-hover/zone:opacity-100 transition-opacity
                                                                        text-fg-tertiary/40 hover:text-accent btn-press"
-                                                                title="Identify zone"
+                                                                title="Identify channel"
                                                                 on:click={
                                                                     let dev_id = dev_id.clone();
+                                                                    let zone_id = zone.id.clone();
                                                                     move |ev: web_sys::MouseEvent| {
                                                                         ev.stop_propagation();
                                                                         let did = dev_id.clone();
+                                                                        let zid = zone_id.clone();
                                                                         leptos::task::spawn_local(async move {
-                                                                            if let Err(e) = api::identify_device(&did).await {
+                                                                            if let Err(e) = api::identify_zone(&did, &zid).await {
                                                                                 toasts::toast_error(&format!("Identify failed: {e}"));
                                                                             } else {
-                                                                                toasts::toast_success("Flashing device");
+                                                                                toasts::toast_success("Flashing channel");
                                                                             }
                                                                         });
                                                                     }

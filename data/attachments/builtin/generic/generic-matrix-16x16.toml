@@ -1,0 +1,24 @@
+schema_version = 1
+id = "generic-matrix-16x16"
+name = "Generic Matrix - 16x16"
+category = "matrix"
+origin = "built_in"
+description = "Generic 16x16 LED matrix panel, 256 LEDs, serpentine wiring"
+vendor = "Generic"
+compatible_slots = []
+tags = [
+    "matrix",
+    "panel",
+    "ws2812",
+]
+
+[default_size]
+width = 0.28
+height = 0.28
+
+[topology]
+type = "matrix"
+width = 16
+height = 16
+serpentine = true
+start_corner = "top_left"

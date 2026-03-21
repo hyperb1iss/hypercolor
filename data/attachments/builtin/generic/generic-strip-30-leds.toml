@@ -1,0 +1,22 @@
+schema_version = 1
+id = "generic-strip-30-leds"
+name = "Generic Strip - 30 LEDs"
+category = "strip"
+origin = "built_in"
+description = "Generic addressable LED strip, 30 LEDs (~0.5m at 60/m)"
+vendor = "Generic"
+compatible_slots = []
+tags = [
+    "strip",
+    "horizontal",
+    "ws2812",
+]
+
+[default_size]
+width = 0.18
+height = 0.06
+
+[topology]
+type = "strip"
+count = 30
+direction = "left_to_right"

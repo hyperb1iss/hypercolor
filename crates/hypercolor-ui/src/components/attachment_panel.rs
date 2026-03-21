@@ -510,6 +510,8 @@ fn install_component_combobox_outside_handler(set_open: WriteSignal<bool>) {
         return;
     };
 
+    // Use BUBBLE phase (not capture) so the panel's own stop_propagation()
+    // prevents this handler from firing when clicking inside the portaled panel.
     let _ = use_event_listener_with_options(
         doc,
         ev::mousedown,
@@ -529,26 +531,15 @@ fn install_component_combobox_outside_handler(set_open: WriteSignal<bool>) {
                 set_open.set(false);
             }
         },
-        UseEventListenerOptions::default().capture(true),
+        UseEventListenerOptions::default(),
     );
 }
 
-fn install_component_combobox_scroll_close_handler(set_open: WriteSignal<bool>) {
-    let Some(win) = web_sys::window() else {
-        return;
-    };
-
-    let _ = use_event_listener_with_options(
-        win,
-        ev::scroll,
-        move |_: web_sys::Event| {
-            set_open.set(false);
-        },
-        UseEventListenerOptions::default()
-            .capture(true)
-            .passive(true),
-    );
-}
+// NOTE: Scroll-close handler intentionally removed. It was the root cause of the
+// dropdown repeatedly breaking — it listened for ANY scroll event on the window
+// in capture phase, which fires on sidebar scroll, dropdown internal scroll,
+// layout reflows from slot expansion, and autofocus adjustments. The outside-click
+// handler above is sufficient for dismissal.
 
 fn component_dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
     trigger
@@ -618,7 +609,6 @@ fn ComponentCombobox(
     let has_selection = !selected_id.is_empty();
 
     install_component_combobox_outside_handler(set_open);
-    install_component_combobox_scroll_close_handler(set_open);
 
     let filtered = Memo::new(move |_| {
         let term = search.get().to_lowercase();
@@ -705,7 +695,6 @@ fn ComponentCombobox(
                                             if let Some(el) = target { set_search.set(el.value()); }
                                         }
                                         on:click=move |ev| ev.stop_propagation()
-                                        autofocus=true
                                     />
                                 </div>
                             </div>

@@ -1,0 +1,23 @@
+schema_version = 1
+id = "generic-strip-144-leds"
+name = "Generic Strip - 144 LEDs"
+category = "strip"
+origin = "built_in"
+description = "Generic addressable LED strip, 144 LEDs (high density 1m at 144/m)"
+vendor = "Generic"
+compatible_slots = []
+tags = [
+    "strip",
+    "horizontal",
+    "ws2812",
+    "high-density",
+]
+
+[default_size]
+width = 0.30
+height = 0.06
+
+[topology]
+type = "strip"
+count = 144
+direction = "left_to_right"

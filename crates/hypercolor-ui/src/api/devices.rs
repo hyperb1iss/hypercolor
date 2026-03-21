@@ -391,6 +391,57 @@ pub async fn identify_device(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Identify a single zone by flashing only its LEDs.
+pub async fn identify_zone(device_id: &str, zone_id: &str) -> Result<(), String> {
+    let url = format!("/api/v1/devices/{device_id}/zones/{zone_id}/identify");
+    let body = serde_json::json!({
+        "duration_ms": 2000,
+        "color": "FF06B5",
+    });
+
+    let resp = Request::post(&url)
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&body).map_err(|e| format!("Serialize error: {e}"))?)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
+/// Identify a specific attachment component by flashing its LED range.
+pub async fn identify_attachment(
+    device_id: &str,
+    slot_id: &str,
+    binding_index: Option<usize>,
+) -> Result<(), String> {
+    let url = format!("/api/v1/devices/{device_id}/attachments/{slot_id}/identify");
+    let mut body = serde_json::json!({
+        "duration_ms": 2000,
+        "color": "80FFEA",
+    });
+    if let Some(idx) = binding_index {
+        body["binding_index"] = serde_json::json!(idx);
+    }
+
+    let resp = Request::post(&url)
+        .header("Content-Type", "application/json")
+        .body(serde_json::to_string(&body).map_err(|e| format!("Serialize error: {e}"))?)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    Ok(())
+}
+
 /// Fetch logical devices for a physical device.
 pub async fn fetch_logical_devices(device_id: &str) -> Result<Vec<LogicalDeviceSummary>, String> {
     let url = format!("/api/v1/devices/{device_id}/logical-devices");

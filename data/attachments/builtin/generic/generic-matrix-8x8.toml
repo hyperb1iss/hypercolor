@@ -1,0 +1,24 @@
+schema_version = 1
+id = "generic-matrix-8x8"
+name = "Generic Matrix - 8x8"
+category = "matrix"
+origin = "built_in"
+description = "Generic 8x8 LED matrix panel, 64 LEDs, serpentine wiring"
+vendor = "Generic"
+compatible_slots = []
+tags = [
+    "matrix",
+    "panel",
+    "ws2812",
+]
+
+[default_size]
+width = 0.20
+height = 0.20
+
+[topology]
+type = "matrix"
+width = 8
+height = 8
+serpentine = true
+start_corner = "top_left"
