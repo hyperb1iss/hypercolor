@@ -419,17 +419,17 @@ pub fn DeviceCard(
                         </div>
                         // Type · Connection type · endpoint
                         <div class="flex items-center gap-1 mt-0.5">
-                            <span class="text-[10px] font-medium" style=format!("color: rgba({}, 0.55)", rgb)>
+                            <span class="text-[10px] font-semibold" style=format!("color: rgba({}, 0.7)", rgb)>
                                 {type_label}
                             </span>
-                            <span class="text-[8px] text-fg-tertiary/25">{"\u{b7}"}</span>
-                            <span class="flex items-center gap-0.5 text-[10px] text-fg-tertiary/45">
+                            <span class="text-[8px] text-fg-tertiary/30">{"\u{b7}"}</span>
+                            <span class="flex items-center gap-0.5 text-[10px] text-fg-tertiary/50">
                                 <Icon icon=conn_icon width="9px" height="9px" />
                                 {conn_type}
                             </span>
                             {endpoint.map(|ep| view! {
-                                <span class="text-[8px] text-fg-tertiary/25">{"\u{b7}"}</span>
-                                <span class="text-[9px] font-mono text-fg-tertiary/30 truncate max-w-[90px]">{ep}</span>
+                                <span class="text-[8px] text-fg-tertiary/30">{"\u{b7}"}</span>
+                                <span class="text-[9px] font-mono text-fg-tertiary/40 truncate max-w-[90px]">{ep}</span>
                             })}
                         </div>
                     </div>
@@ -471,7 +471,7 @@ pub fn DeviceCard(
                                          title=format!("{led_count} LEDs")>
                                         <div class="w-3 h-3 shrink-0" style=format!("color: rgba({zr}, 0.5)")
                                              inner_html=format!(r#"<svg viewBox="0 0 16 16" width="12" height="12">{svg}</svg>"#) />
-                                        <span class="text-[8px] font-mono text-fg-tertiary/40 tabular-nums">{led_count}</span>
+                                        <span class="text-[8px] font-mono tabular-nums" style=format!("color: rgba({zr}, 0.45)")>{led_count}</span>
                                     </div>
                                 }
                             }).collect_view()}
@@ -499,12 +499,12 @@ pub fn DeviceCard(
                 // ── Row 3: LED count + firmware + brightness ──────────────
                 <div class="flex items-center justify-between">
                     <div class="flex items-center gap-1.5">
-                        <span class="text-[10px] font-mono tabular-nums" style=format!("color: rgba({}, 0.4)", rgb)>
+                        <span class="text-[10px] font-mono font-semibold tabular-nums" style=format!("color: rgba({}, 0.55)", rgb)>
                             {total_leds} " LEDs"
                         </span>
                         {firmware.map(|fw| view! {
-                            <span class="text-[8px] text-fg-tertiary/20">{"\u{b7}"}</span>
-                            <span class="text-[9px] font-mono text-fg-tertiary/30">"v" {fw}</span>
+                            <span class="text-[8px] text-fg-tertiary/25">{"\u{b7}"}</span>
+                            <span class="text-[9px] font-mono text-fg-tertiary/40">"v" {fw}</span>
                         })}
                     </div>
                     // Mini brightness bar

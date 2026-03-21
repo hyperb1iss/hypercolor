@@ -113,10 +113,14 @@ pub fn WiringPanel(
         }
     });
 
-    let templates = LocalResource::new(move || async move {
-        api::fetch_attachment_templates(None)
-            .await
-            .unwrap_or_default()
+    let (templates_tick, set_templates_tick) = signal(0_u32);
+    let templates = LocalResource::new(move || {
+        templates_tick.get();
+        async move {
+            api::fetch_attachment_templates(None)
+                .await
+                .unwrap_or_default()
+        }
     });
 
     view! {
@@ -427,6 +431,9 @@ pub fn WiringPanel(
                                                                                             });
                                                                                         }
                                                                                     })
+                                                                                    on_refresh_templates=Callback::new(move |()| {
+                                                                                        set_templates_tick.update(|t| *t += 1);
+                                                                                    })
                                                                                 />
 
                                                                                 {placement.map(|p| view! {
@@ -676,43 +683,44 @@ fn ComponentCombobox(
     selected_label: String,
     category_count: usize,
     #[prop(into)] on_select: Callback<String>,
+    #[prop(into)] on_refresh_templates: Callback<()>,
 ) -> impl IntoView {
     let (open, set_open) = signal(false);
     let (search, set_search) = signal(String::new());
+    let (creating, set_creating) = signal(false);
     let trigger_ref = NodeRef::<leptos::html::Button>::new();
     let components_store = StoredValue::new(components);
     let has_selection = !selected_id.is_empty();
-
-    // Custom component creation state
-    #[derive(Clone, Copy, PartialEq)]
-    enum CustomMode { None, Strip, Matrix }
-    let (custom_mode, set_custom_mode) = signal(CustomMode::None);
-    let (custom_name, set_custom_name) = signal(String::new());
-    let (custom_led_count, set_custom_led_count) = signal(60_u32);
-    let (custom_cols, set_custom_cols) = signal(8_u32);
-    let (custom_rows, set_custom_rows) = signal(8_u32);
-    let (custom_serpentine, set_custom_serpentine) = signal(true);
-    let (creating, set_creating) = signal(false);
 
     install_component_combobox_outside_handler(set_open);
 
     let filtered = Memo::new(move |_| {
         let term = search.get().to_lowercase();
         components_store.with_value(|components| {
-            if term.is_empty() {
-                return components.clone();
-            }
-            components
-                .iter()
-                .filter(|t| {
-                    t.name.to_lowercase().contains(&term)
-                        || t.vendor.to_lowercase().contains(&term)
-                        || t.category.as_str().to_lowercase().contains(&term)
-                        || t.description.to_lowercase().contains(&term)
-                        || t.tags.iter().any(|tag| tag.to_lowercase().contains(&term))
-                })
-                .cloned()
-                .collect()
+            let mut results: Vec<_> = if term.is_empty() {
+                components.clone()
+            } else {
+                components
+                    .iter()
+                    .filter(|t| {
+                        t.name.to_lowercase().contains(&term)
+                            || t.vendor.to_lowercase().contains(&term)
+                            || t.category.as_str().to_lowercase().contains(&term)
+                            || t.description.to_lowercase().contains(&term)
+                            || t.tags.iter().any(|tag| tag.to_lowercase().contains(&term))
+                    })
+                    .cloned()
+                    .collect()
+            };
+            // Sort alphabetically within vendor groups (Generic first, then by name)
+            results.sort_by(|a, b| {
+                let a_generic = a.vendor.to_lowercase() == "generic" || a.vendor.to_lowercase() == "custom";
+                let b_generic = b.vendor.to_lowercase() == "generic" || b.vendor.to_lowercase() == "custom";
+                b_generic.cmp(&a_generic)
+                    .then_with(|| a.vendor.cmp(&b.vendor))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            results
         })
     });
 
@@ -789,46 +797,171 @@ fn ComponentCombobox(
                                 {move || {
                                     let results = filtered.get();
                                     let is_searching = !search.get().is_empty();
+                                    let show_custom_at_top = !is_searching && (cat_count == 0 || results.is_empty());
 
-                                    if results.is_empty() {
+                                    // Helper to render a template option
+                                    let render_option = |t: api::TemplateSummary| {
+                                        let svg = category_shape_svg(t.category.as_str(), 16);
+                                        view! { <ComponentOption component=t shape_svg=svg on_click=Callback::new({
+                                            let on_select = on_select; let set_open = set_open;
+                                            move |id: String| { on_select.run(id); set_open.set(false); }
+                                        }) /> }
+                                    };
+
+                                    // Custom creation buttons (appear as list items)
+                                    let custom_items = move || {
+                                        let is_creating = creating.get();
+                                        view! {
+                                            <button
+                                                type="button"
+                                                class="w-full flex items-center gap-2 px-2 py-1.5 mx-1 rounded-lg
+                                                       hover:bg-neon-cyan/5 transition-colors text-left disabled:opacity-30"
+                                                style="width: calc(100% - 8px); color: rgb(128, 255, 234)"
+                                                disabled=is_creating
+                                                on:click={
+                                                    let on_select = on_select;
+                                                    let on_refresh = on_refresh_templates;
+                                                    move |ev: web_sys::MouseEvent| {
+                                                        ev.stop_propagation();
+                                                        set_creating.set(true);
+                                                        let id = format!("custom-strip-60-{}", js_sys::Date::now() as u64);
+                                                        let template = hypercolor_types::attachment::AttachmentTemplate {
+                                                            id: id.clone(),
+                                                            name: "Custom Strip - 60 LEDs".to_string(),
+                                                            category: hypercolor_types::attachment::AttachmentCategory::Strip,
+                                                            origin: hypercolor_types::attachment::AttachmentOrigin::User,
+                                                            description: "Custom LED strip, 60 LEDs".to_string(),
+                                                            vendor: "Custom".to_string(),
+                                                            default_size: hypercolor_types::attachment::AttachmentCanvasSize { width: 0.24, height: 0.06 },
+                                                            topology: hypercolor_types::spatial::LedTopology::Strip {
+                                                                count: 60,
+                                                                direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+                                                            },
+                                                            compatible_slots: Vec::new(),
+                                                            tags: vec!["custom".to_string(), "strip".to_string()],
+                                                            led_names: None, led_mapping: None, image_url: None, physical_size_mm: None,
+                                                        };
+                                                        leptos::task::spawn_local(async move {
+                                                            match api::create_attachment_template(&template).await {
+                                                                Ok(_) => {
+                                                                    on_refresh.run(());
+                                                                    on_select.run(id);
+                                                                    set_open.set(false);
+                                                                    toasts::toast_success("Custom strip created \u{2014} edit LED count in the row");
+                                                                }
+                                                                Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
+                                                            }
+                                                            set_creating.set(false);
+                                                        });
+                                                    }
+                                                }
+                                            >
+                                                <div class="w-4 h-4 shrink-0 flex items-center justify-center">
+                                                    <Icon icon=LuPlus width="12px" height="12px" />
+                                                </div>
+                                                <div class="flex-1 min-w-0">
+                                                    <div class="text-[11px] font-medium leading-tight">"New Custom Strip"</div>
+                                                    <div class="text-[9px] text-neon-cyan/40">"Define your own LED count"</div>
+                                                </div>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                class="w-full flex items-center gap-2 px-2 py-1.5 mx-1 rounded-lg
+                                                       hover:bg-neon-cyan/5 transition-colors text-left disabled:opacity-30"
+                                                style="width: calc(100% - 8px); color: rgb(128, 255, 234)"
+                                                disabled=is_creating
+                                                on:click={
+                                                    let on_select = on_select;
+                                                    let on_refresh = on_refresh_templates;
+                                                    move |ev: web_sys::MouseEvent| {
+                                                        ev.stop_propagation();
+                                                        set_creating.set(true);
+                                                        let id = format!("custom-matrix-8x8-{}", js_sys::Date::now() as u64);
+                                                        let template = hypercolor_types::attachment::AttachmentTemplate {
+                                                            id: id.clone(),
+                                                            name: "Custom Matrix - 8\u{00d7}8".to_string(),
+                                                            category: hypercolor_types::attachment::AttachmentCategory::Matrix,
+                                                            origin: hypercolor_types::attachment::AttachmentOrigin::User,
+                                                            description: "Custom 8\u{00d7}8 LED matrix, 64 LEDs".to_string(),
+                                                            vendor: "Custom".to_string(),
+                                                            default_size: hypercolor_types::attachment::AttachmentCanvasSize { width: 0.24, height: 0.24 },
+                                                            topology: hypercolor_types::spatial::LedTopology::Matrix {
+                                                                width: 8, height: 8, serpentine: true,
+                                                                start_corner: hypercolor_types::spatial::Corner::TopLeft,
+                                                            },
+                                                            compatible_slots: Vec::new(),
+                                                            tags: vec!["custom".to_string(), "matrix".to_string()],
+                                                            led_names: None, led_mapping: None, image_url: None, physical_size_mm: None,
+                                                        };
+                                                        leptos::task::spawn_local(async move {
+                                                            match api::create_attachment_template(&template).await {
+                                                                Ok(_) => {
+                                                                    on_refresh.run(());
+                                                                    on_select.run(id);
+                                                                    set_open.set(false);
+                                                                    toasts::toast_success("Custom matrix created \u{2014} edit dimensions in the row");
+                                                                }
+                                                                Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
+                                                            }
+                                                            set_creating.set(false);
+                                                        });
+                                                    }
+                                                }
+                                            >
+                                                <div class="w-4 h-4 shrink-0 flex items-center justify-center">
+                                                    <Icon icon=LuPlus width="12px" height="12px" />
+                                                </div>
+                                                <div class="flex-1 min-w-0">
+                                                    <div class="text-[11px] font-medium leading-tight">"New Custom Matrix"</div>
+                                                    <div class="text-[9px] text-neon-cyan/40">"Define rows \u{00d7} columns"</div>
+                                                </div>
+                                            </button>
+                                        }
+                                    };
+
+                                    if results.is_empty() && !show_custom_at_top {
                                         return view! {
                                             <div class="px-3 py-4 text-center text-[10px] text-fg-tertiary/40">"No components found"</div>
                                         }.into_any();
                                     }
 
-                                    if is_searching || cat_count == 0 || cat_count >= results.len() {
-                                        results.into_iter().map(|t| {
-                                            let svg = category_shape_svg(t.category.as_str(), 16);
-                                            view! { <ComponentOption component=t shape_svg=svg on_click=Callback::new({
-                                                let on_select = on_select; let set_open = set_open;
-                                                move |id: String| { on_select.run(id); set_open.set(false); }
-                                            }) /> }
-                                        }).collect_view().into_any()
+                                    if show_custom_at_top {
+                                        // No suggestions — custom creation first, then all templates
+                                        view! {
+                                            <div class="px-2 pt-1.5 pb-0.5">
+                                                <div class="text-[9px] font-mono uppercase tracking-wider text-neon-cyan/40 px-1">"Create"</div>
+                                            </div>
+                                            {custom_items()}
+                                            {(!results.is_empty()).then(|| view! {
+                                                <div class="h-px bg-border-subtle/20 mx-2 my-1" />
+                                                <div class="px-2 pt-0.5 pb-0.5">
+                                                    <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/25 px-1">"Templates"</div>
+                                                </div>
+                                                {results.clone().into_iter().map(render_option).collect_view()}
+                                            })}
+                                        }.into_any()
+                                    } else if is_searching || cat_count >= results.len() {
+                                        // Searching or all are suggestions — flat sorted list
+                                        results.into_iter().map(render_option).collect_view().into_any()
                                     } else {
+                                        // Has suggestions — show suggested first, then create, then all
                                         let suggested = results[..cat_count].to_vec();
                                         let others = results[cat_count..].to_vec();
                                         view! {
                                             <div class="px-2 pt-1.5 pb-0.5">
                                                 <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/35 px-1">"Suggested"</div>
                                             </div>
-                                            {suggested.into_iter().map(|t| {
-                                                let svg = category_shape_svg(t.category.as_str(), 16);
-                                                view! { <ComponentOption component=t shape_svg=svg on_click=Callback::new({
-                                                    let on_select = on_select; let set_open = set_open;
-                                                    move |id: String| { on_select.run(id); set_open.set(false); }
-                                                }) /> }
-                                            }).collect_view()}
+                                            {suggested.into_iter().map(render_option).collect_view()}
+                                            <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
+                                            <div class="px-2 pt-1 pb-0.5">
+                                                <div class="text-[9px] font-mono uppercase tracking-wider text-neon-cyan/30 px-1">"Create"</div>
+                                            </div>
+                                            {custom_items()}
                                             <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
                                             <div class="px-2 pt-1 pb-0.5">
                                                 <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/25 px-1">"All"</div>
                                             </div>
-                                            {others.into_iter().map(|t| {
-                                                let svg = category_shape_svg(t.category.as_str(), 16);
-                                                view! { <ComponentOption component=t shape_svg=svg on_click=Callback::new({
-                                                    let on_select = on_select; let set_open = set_open;
-                                                    move |id: String| { on_select.run(id); set_open.set(false); }
-                                                }) /> }
-                                            }).collect_view()}
+                                            {others.into_iter().map(render_option).collect_view()}
                                         }.into_any()
                                     }
                                 }}
@@ -845,274 +978,6 @@ fn ComponentCombobox(
                                     </button>
                                 </div>
                             })}
-
-                            // ── Custom component creation ──────────────
-                            <div class="border-t border-edge-subtle">
-                                {move || match custom_mode.get() {
-                                    CustomMode::None => view! {
-                                        <div class="flex items-center gap-1 p-1.5">
-                                            <button
-                                                type="button"
-                                                class="flex-1 flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-medium
-                                                       text-neon-cyan/60 hover:text-neon-cyan hover:bg-neon-cyan/5 transition-colors"
-                                                on:click=move |ev| { ev.stop_propagation(); set_custom_mode.set(CustomMode::Strip); }
-                                            >
-                                                <Icon icon=LuPlus width="10px" height="10px" />
-                                                "Custom Strip"
-                                            </button>
-                                            <button
-                                                type="button"
-                                                class="flex-1 flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-medium
-                                                       text-neon-cyan/60 hover:text-neon-cyan hover:bg-neon-cyan/5 transition-colors"
-                                                on:click=move |ev| { ev.stop_propagation(); set_custom_mode.set(CustomMode::Matrix); }
-                                            >
-                                                <Icon icon=LuPlus width="10px" height="10px" />
-                                                "Custom Matrix"
-                                            </button>
-                                        </div>
-                                    }.into_any(),
-                                    CustomMode::Strip => {
-                                        let on_select = on_select;
-                                        view! {
-                                        <div class="p-2 space-y-2 animate-fade-in" on:mousedown=|ev: web_sys::MouseEvent| ev.stop_propagation()>
-                                            <div class="flex items-center gap-2">
-                                                <span class="text-[9px] font-mono uppercase tracking-wider text-neon-cyan/50">"Custom Strip"</span>
-                                                <button
-                                                    type="button"
-                                                    class="ml-auto text-[9px] text-fg-tertiary/40 hover:text-fg-tertiary transition-colors"
-                                                    on:click=move |_| set_custom_mode.set(CustomMode::None)
-                                                >"Cancel"</button>
-                                            </div>
-                                            <input
-                                                type="text"
-                                                placeholder="Name (optional)"
-                                                class="w-full bg-surface-base/60 border border-edge-subtle rounded px-2 py-1
-                                                       text-[11px] text-fg-primary placeholder-fg-tertiary/30
-                                                       focus:outline-none focus:border-accent-muted"
-                                                prop:value=move || custom_name.get()
-                                                on:input=move |ev| {
-                                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                    if let Some(el) = target { set_custom_name.set(el.value()); }
-                                                }
-                                                on:click=move |ev| ev.stop_propagation()
-                                            />
-                                            <div class="flex items-center gap-2">
-                                                <label class="text-[10px] text-fg-tertiary/60">"LEDs"</label>
-                                                <input
-                                                    type="number" min="1" max="2000"
-                                                    class="w-20 bg-surface-base/60 border border-edge-subtle rounded px-2 py-1
-                                                           text-[11px] text-fg-primary font-mono tabular-nums
-                                                           focus:outline-none focus:border-accent-muted"
-                                                    prop:value=move || custom_led_count.get().to_string()
-                                                    on:input=move |ev| {
-                                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                        if let Some(el) = target {
-                                                            if let Ok(v) = el.value().parse::<u32>() {
-                                                                set_custom_led_count.set(v.clamp(1, 2000));
-                                                            }
-                                                        }
-                                                    }
-                                                    on:click=move |ev| ev.stop_propagation()
-                                                />
-                                            </div>
-                                            <button
-                                                type="button"
-                                                class="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-medium
-                                                       transition-all btn-press disabled:opacity-30"
-                                                style="background: rgba(128, 255, 234, 0.1); color: rgb(128, 255, 234); border: 1px solid rgba(128, 255, 234, 0.2)"
-                                                disabled=move || creating.get()
-                                                on:click=move |ev| {
-                                                    ev.stop_propagation();
-                                                    set_creating.set(true);
-                                                    let count = custom_led_count.get_untracked();
-                                                    let name = custom_name.get_untracked();
-                                                    let display_name = if name.trim().is_empty() {
-                                                        format!("Custom Strip - {count} LEDs")
-                                                    } else {
-                                                        name.trim().to_string()
-                                                    };
-                                                    let id = format!("custom-strip-{count}-{}", js_sys::Date::now() as u64);
-                                                    let template = hypercolor_types::attachment::AttachmentTemplate {
-                                                        id: id.clone(),
-                                                        name: display_name,
-                                                        category: hypercolor_types::attachment::AttachmentCategory::Strip,
-                                                        origin: hypercolor_types::attachment::AttachmentOrigin::User,
-                                                        description: format!("Custom LED strip, {count} LEDs"),
-                                                        vendor: "Custom".to_string(),
-                                                        default_size: hypercolor_types::attachment::AttachmentCanvasSize {
-                                                            width: 0.24, height: 0.06,
-                                                        },
-                                                        topology: hypercolor_types::spatial::LedTopology::Strip {
-                                                            count,
-                                                            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
-                                                        },
-                                                        compatible_slots: Vec::new(),
-                                                        tags: vec!["custom".to_string(), "strip".to_string()],
-                                                        led_names: None,
-                                                        led_mapping: None,
-                                                        image_url: None,
-                                                        physical_size_mm: None,
-                                                    };
-                                                    leptos::task::spawn_local(async move {
-                                                        match api::create_attachment_template(&template).await {
-                                                            Ok(_) => {
-                                                                on_select.run(id);
-                                                                set_open.set(false);
-                                                                set_custom_mode.set(CustomMode::None);
-                                                                set_custom_name.set(String::new());
-                                                                toasts::toast_success("Custom strip created");
-                                                            }
-                                                            Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
-                                                        }
-                                                        set_creating.set(false);
-                                                    });
-                                                }
-                                            >
-                                                {move || if creating.get() { "Creating..." } else { "Create Strip" }}
-                                            </button>
-                                        </div>
-                                    }.into_any()},
-                                    CustomMode::Matrix => {
-                                        let on_select = on_select;
-                                        view! {
-                                        <div class="p-2 space-y-2 animate-fade-in" on:mousedown=|ev: web_sys::MouseEvent| ev.stop_propagation()>
-                                            <div class="flex items-center gap-2">
-                                                <span class="text-[9px] font-mono uppercase tracking-wider text-neon-cyan/50">"Custom Matrix"</span>
-                                                <button
-                                                    type="button"
-                                                    class="ml-auto text-[9px] text-fg-tertiary/40 hover:text-fg-tertiary transition-colors"
-                                                    on:click=move |_| set_custom_mode.set(CustomMode::None)
-                                                >"Cancel"</button>
-                                            </div>
-                                            <input
-                                                type="text"
-                                                placeholder="Name (optional)"
-                                                class="w-full bg-surface-base/60 border border-edge-subtle rounded px-2 py-1
-                                                       text-[11px] text-fg-primary placeholder-fg-tertiary/30
-                                                       focus:outline-none focus:border-accent-muted"
-                                                prop:value=move || custom_name.get()
-                                                on:input=move |ev| {
-                                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                    if let Some(el) = target { set_custom_name.set(el.value()); }
-                                                }
-                                                on:click=move |ev| ev.stop_propagation()
-                                            />
-                                            <div class="flex items-center gap-2">
-                                                <label class="text-[10px] text-fg-tertiary/60">"Cols"</label>
-                                                <input
-                                                    type="number" min="1" max="64"
-                                                    class="w-14 bg-surface-base/60 border border-edge-subtle rounded px-2 py-1
-                                                           text-[11px] text-fg-primary font-mono tabular-nums
-                                                           focus:outline-none focus:border-accent-muted"
-                                                    prop:value=move || custom_cols.get().to_string()
-                                                    on:input=move |ev| {
-                                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                        if let Some(el) = target {
-                                                            if let Ok(v) = el.value().parse::<u32>() {
-                                                                set_custom_cols.set(v.clamp(1, 64));
-                                                            }
-                                                        }
-                                                    }
-                                                    on:click=move |ev| ev.stop_propagation()
-                                                />
-                                                <span class="text-[10px] text-fg-tertiary/30">{"\u{00d7}"}</span>
-                                                <label class="text-[10px] text-fg-tertiary/60">"Rows"</label>
-                                                <input
-                                                    type="number" min="1" max="64"
-                                                    class="w-14 bg-surface-base/60 border border-edge-subtle rounded px-2 py-1
-                                                           text-[11px] text-fg-primary font-mono tabular-nums
-                                                           focus:outline-none focus:border-accent-muted"
-                                                    prop:value=move || custom_rows.get().to_string()
-                                                    on:input=move |ev| {
-                                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                        if let Some(el) = target {
-                                                            if let Ok(v) = el.value().parse::<u32>() {
-                                                                set_custom_rows.set(v.clamp(1, 64));
-                                                            }
-                                                        }
-                                                    }
-                                                    on:click=move |ev| ev.stop_propagation()
-                                                />
-                                                <span class="text-[9px] font-mono text-fg-tertiary/30">
-                                                    "=" {move || custom_cols.get() * custom_rows.get()}
-                                                </span>
-                                            </div>
-                                            <label class="flex items-center gap-2 cursor-pointer" on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()>
-                                                <input
-                                                    type="checkbox"
-                                                    class="accent-neon-cyan"
-                                                    prop:checked=move || custom_serpentine.get()
-                                                    on:change=move |ev| {
-                                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                                        if let Some(el) = target { set_custom_serpentine.set(el.checked()); }
-                                                    }
-                                                />
-                                                <span class="text-[10px] text-fg-tertiary/60">"Serpentine wiring"</span>
-                                            </label>
-                                            <button
-                                                type="button"
-                                                class="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-medium
-                                                       transition-all btn-press disabled:opacity-30"
-                                                style="background: rgba(128, 255, 234, 0.1); color: rgb(128, 255, 234); border: 1px solid rgba(128, 255, 234, 0.2)"
-                                                disabled=move || creating.get()
-                                                on:click=move |ev| {
-                                                    ev.stop_propagation();
-                                                    set_creating.set(true);
-                                                    let cols = custom_cols.get_untracked();
-                                                    let rows = custom_rows.get_untracked();
-                                                    let serpentine = custom_serpentine.get_untracked();
-                                                    let name = custom_name.get_untracked();
-                                                    let total = cols * rows;
-                                                    let display_name = if name.trim().is_empty() {
-                                                        format!("Custom Matrix - {cols}\u{00d7}{rows}")
-                                                    } else {
-                                                        name.trim().to_string()
-                                                    };
-                                                    let id = format!("custom-matrix-{cols}x{rows}-{}", js_sys::Date::now() as u64);
-                                                    let template = hypercolor_types::attachment::AttachmentTemplate {
-                                                        id: id.clone(),
-                                                        name: display_name,
-                                                        category: hypercolor_types::attachment::AttachmentCategory::Matrix,
-                                                        origin: hypercolor_types::attachment::AttachmentOrigin::User,
-                                                        description: format!("Custom {cols}\u{00d7}{rows} LED matrix, {total} LEDs"),
-                                                        vendor: "Custom".to_string(),
-                                                        default_size: hypercolor_types::attachment::AttachmentCanvasSize {
-                                                            width: 0.24, height: 0.24,
-                                                        },
-                                                        topology: hypercolor_types::spatial::LedTopology::Matrix {
-                                                            width: cols,
-                                                            height: rows,
-                                                            serpentine,
-                                                            start_corner: hypercolor_types::spatial::Corner::TopLeft,
-                                                        },
-                                                        compatible_slots: Vec::new(),
-                                                        tags: vec!["custom".to_string(), "matrix".to_string()],
-                                                        led_names: None,
-                                                        led_mapping: None,
-                                                        image_url: None,
-                                                        physical_size_mm: None,
-                                                    };
-                                                    leptos::task::spawn_local(async move {
-                                                        match api::create_attachment_template(&template).await {
-                                                            Ok(_) => {
-                                                                on_select.run(id);
-                                                                set_open.set(false);
-                                                                set_custom_mode.set(CustomMode::None);
-                                                                set_custom_name.set(String::new());
-                                                                toasts::toast_success("Custom matrix created");
-                                                            }
-                                                            Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
-                                                        }
-                                                        set_creating.set(false);
-                                                    });
-                                                }
-                                            >
-                                                {move || if creating.get() { "Creating..." } else { "Create Matrix" }}
-                                            </button>
-                                        </div>
-                                    }.into_any()},
-                                }}
-                            </div>
                         </div>
                     </Portal>
                 }
