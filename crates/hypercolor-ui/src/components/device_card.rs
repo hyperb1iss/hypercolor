@@ -315,15 +315,28 @@ pub fn DeviceCard(
     let remaining_zones = zone_count.saturating_sub(5);
 
     let accent_gradient = format!(
-        "background: linear-gradient(170deg, rgba({rgb}, 0.12) 0%, rgba({rgb}, 0.03) 40%, transparent 70%)"
+        "background: linear-gradient(170deg, rgba({rgb}, 0.18) 0%, rgba({rgb}, 0.06) 40%, transparent 70%)"
+    );
+    // Secondary radial glow from device-class tint (blends with backend accent)
+    let class_glow = format!(
+        "background: radial-gradient(ellipse at 50% -10%, rgba({type_tint}, 0.10), transparent 65%)"
     );
     let icon_bg = format!(
-        "background: rgba({type_tint}, 0.1); border: 1px solid rgba({type_tint}, 0.15); color: rgba({type_tint}, 0.8)"
+        "background: rgba({type_tint}, 0.12); border: 1px solid rgba({type_tint}, 0.18); color: rgba({type_tint}, 0.85)"
     );
     let dot_style =
-        format!("background: rgb({status_rgb}); box-shadow: 0 0 6px rgba({status_rgb}, 0.5)");
-    let accent_bar =
-        format!("background: linear-gradient(90deg, rgba({rgb}, 0.25), rgba({rgb}, 0.08))");
+        format!("background: rgb({status_rgb}); box-shadow: 0 0 8px rgba({status_rgb}, 0.6)");
+    let accent_bar = format!(
+        "background: linear-gradient(90deg, rgba({rgb}, 0.4), rgba({rgb}, 0.1)); box-shadow: 0 1px 6px rgba({rgb}, 0.15)"
+    );
+    // Active devices get a persistent ambient glow
+    let active_glow = if is_active {
+        Some(format!(
+            "box-shadow: inset 0 0 20px rgba({rgb}, 0.05), 0 0 14px rgba({rgb}, 0.06)"
+        ))
+    } else {
+        None
+    };
 
     let stagger = (index.min(12) + 1).to_string();
 
@@ -344,16 +357,30 @@ pub fn DeviceCard(
             style:--glow-rgb=rgb.clone()
             on:click=move |_| on_select.run(device_id.clone())
         >
-            // Accent bar at top
-            <div class="absolute top-0 left-0 right-0 h-[2px] rounded-t-xl" style=accent_bar />
+            // Accent bar at top (thicker, with glow)
+            <div class="absolute top-0 left-0 right-0 h-[3px] rounded-t-xl" style=accent_bar />
 
             // Device-class texture pattern
-            <div class="absolute inset-0 pointer-events-none rounded-xl opacity-60" style=format!("background-image: {pattern}") />
+            <div
+                class="absolute inset-0 pointer-events-none rounded-xl"
+                style=format!("background-image: {pattern}; opacity: {}", if is_active { 0.8 } else { 0.5 })
+            />
 
-            // Backend accent wash
+            // Backend accent wash (stronger)
             <div class="absolute inset-0 pointer-events-none rounded-xl" style=accent_gradient.clone() />
 
-            // Selected glow
+            // Device-class secondary glow (differentiates types within same backend)
+            <div class="absolute inset-0 pointer-events-none rounded-xl" style=class_glow />
+
+            // Active device ambient glow (persistent, breathing)
+            {active_glow.map(|glow| view! {
+                <div
+                    class="absolute inset-0 rounded-xl pointer-events-none animate-breathe"
+                    style=glow
+                />
+            })}
+
+            // Selected glow (on top of active glow)
             {
                 let glow_rgb = rgb.clone();
                 move || is_selected.get().then(|| {
@@ -362,7 +389,7 @@ pub fn DeviceCard(
                         <div
                             class="absolute inset-0 rounded-xl pointer-events-none animate-breathe"
                             style=format!(
-                                "box-shadow: inset 0 0 24px rgba({r}, 0.06), 0 0 20px rgba({r}, 0.08)"
+                                "box-shadow: inset 0 0 28px rgba({r}, 0.08), 0 0 24px rgba({r}, 0.10)"
                             )
                         />
                     }
@@ -381,7 +408,11 @@ pub fn DeviceCard(
                                 {device_name}
                             </h3>
                             <div
-                                class={if is_active { "w-2 h-2 rounded-full shrink-0 dot-alive" } else { "w-2 h-2 rounded-full shrink-0" }}
+                                class={if is_active {
+                                    "w-2 h-2 rounded-full shrink-0 dot-alive transition-transform duration-150 group-hover:scale-[1.4]"
+                                } else {
+                                    "w-2 h-2 rounded-full shrink-0 transition-transform duration-150 group-hover:scale-[1.3]"
+                                }}
                                 style=dot_style.clone()
                                 title=status
                             />
@@ -434,11 +465,13 @@ pub fn DeviceCard(
                             {zone_previews.into_iter().map(|(svg, led_count)| {
                                 let zr = zone_rgb.clone();
                                 view! {
-                                    <div class="flex items-center gap-0.5 px-1 py-0.5 rounded bg-surface-overlay/20"
+                                    <div class="flex items-center gap-0.5 px-1 py-0.5 rounded transition-all duration-200
+                                                bg-surface-overlay/20 group-hover:bg-surface-overlay/30"
+                                         style=format!("border: 1px solid transparent; transition: border-color 200ms")
                                          title=format!("{led_count} LEDs")>
-                                        <div class="w-3 h-3 shrink-0" style=format!("color: rgba({zr}, 0.4)")
+                                        <div class="w-3 h-3 shrink-0" style=format!("color: rgba({zr}, 0.5)")
                                              inner_html=format!(r#"<svg viewBox="0 0 16 16" width="12" height="12">{svg}</svg>"#) />
-                                        <span class="text-[8px] font-mono text-fg-tertiary/35 tabular-nums">{led_count}</span>
+                                        <span class="text-[8px] font-mono text-fg-tertiary/40 tabular-nums">{led_count}</span>
                                     </div>
                                 }
                             }).collect_view()}
@@ -475,14 +508,16 @@ pub fn DeviceCard(
                         })}
                     </div>
                     // Mini brightness bar
-                    <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
-                        <div class="w-10 h-[3px] rounded-full bg-surface-overlay/30 overflow-hidden">
+                    <div class="flex items-center gap-1 opacity-50 group-hover:opacity-100 transition-opacity duration-200">
+                        <div class="w-12 h-[3px] rounded-full bg-surface-overlay/30 overflow-hidden">
                             <div
-                                class="h-full rounded-full"
-                                style=format!("width: {}%; background: rgba({}, 0.35)", brightness, rgb)
+                                class="h-full rounded-full transition-all duration-200"
+                                style=format!(
+                                    "width: {brightness}%; background: rgba({rgb}, 0.4); box-shadow: 0 0 4px rgba({rgb}, 0.2)"
+                                )
                             />
                         </div>
-                        <span class="text-[8px] font-mono text-fg-tertiary/30 tabular-nums">{brightness} "%"</span>
+                        <span class="text-[8px] font-mono text-fg-tertiary/35 tabular-nums">{brightness} "%"</span>
                     </div>
                 </div>
             </div>

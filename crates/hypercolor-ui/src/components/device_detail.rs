@@ -156,7 +156,7 @@ pub fn DeviceDetail(
                 view! {
                     // ── Header: Name + status + actions ──────────────────────
                     <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow"
-                         style=format!("border-top: 2px solid rgba({rgb_for_border}, 0.2)")>
+                         style=format!("border-top: 3px solid rgba({rgb_for_border}, 0.3); box-shadow: 0 1px 8px rgba({rgb_for_border}, 0.06)")>
                         <div class="px-4 py-3">
                             <div class="flex items-center gap-2.5 mb-2">
                                 <div class="w-2 h-2 rounded-full shrink-0 dot-alive"
