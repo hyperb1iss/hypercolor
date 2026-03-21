@@ -480,48 +480,41 @@ pub fn WiringPanel(
 
                                                             <div class="flex items-center justify-between pt-0.5">
                                                                 <div class="flex items-center gap-1.5">
-                                                                    // Quick-add custom strip
+                                                                    // Quick-add custom strip — adds row + creates template async
                                                                     <button
                                                                         class="text-[9px] font-medium px-2 py-1 rounded transition-all btn-press flex items-center gap-1"
                                                                         style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.1)"
-                                                                        on:click={
-                                                                            let set_rows = set_draft_rows;
-                                                                            let on_refresh = Callback::new(move |()| set_templates_tick.update(|t| *t += 1));
-                                                                            move |ev: web_sys::MouseEvent| {
-                                                                                ev.stop_propagation();
-                                                                                let id = format!("custom-strip-60-{}", js_sys::Date::now() as u64);
-                                                                                let id_for_row = id.clone();
-                                                                                let template = hypercolor_types::attachment::AttachmentTemplate {
-                                                                                    id: id.clone(),
-                                                                                    name: "Custom Strip - 60 LEDs".to_string(),
-                                                                                    category: hypercolor_types::attachment::AttachmentCategory::Strip,
-                                                                                    origin: hypercolor_types::attachment::AttachmentOrigin::User,
-                                                                                    description: "Custom LED strip, 60 LEDs".to_string(),
-                                                                                    vendor: "Custom".to_string(),
-                                                                                    default_size: hypercolor_types::attachment::AttachmentCanvasSize { width: 0.24, height: 0.06 },
-                                                                                    topology: hypercolor_types::spatial::LedTopology::Strip {
-                                                                                        count: 60,
-                                                                                        direction: hypercolor_types::spatial::StripDirection::LeftToRight,
-                                                                                    },
-                                                                                    compatible_slots: Vec::new(),
-                                                                                    tags: vec!["custom".to_string(), "strip".to_string()],
-                                                                                    led_names: None, led_mapping: None, image_url: None, physical_size_mm: None,
-                                                                                };
-                                                                                // Add draft row immediately (will show as incomplete until refresh)
-                                                                                set_rows.update(|rows| rows.push(attachment_editor::AttachmentDraftRow {
-                                                                                    template_id: id_for_row,
-                                                                                    name: None,
-                                                                                }));
-                                                                                leptos::task::spawn_local(async move {
-                                                                                    match api::create_attachment_template(&template).await {
-                                                                                        Ok(_) => {
-                                                                                            on_refresh.run(());
-                                                                                            toasts::toast_success("Custom strip added");
-                                                                                        }
-                                                                                        Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
-                                                                                    }
-                                                                                });
-                                                                            }
+                                                                        on:click=move |_: web_sys::MouseEvent| {
+                                                                            let id = format!("custom-strip-60-{}", js_sys::Date::now() as u64);
+                                                                            let id_for_row = id.clone();
+                                                                            let template = hypercolor_types::attachment::AttachmentTemplate {
+                                                                                id: id.clone(),
+                                                                                name: "Custom Strip - 60 LEDs".to_string(),
+                                                                                category: hypercolor_types::attachment::AttachmentCategory::Strip,
+                                                                                origin: hypercolor_types::attachment::AttachmentOrigin::User,
+                                                                                description: "Custom LED strip, 60 LEDs".to_string(),
+                                                                                vendor: "Custom".to_string(),
+                                                                                default_size: hypercolor_types::attachment::AttachmentCanvasSize { width: 0.24, height: 0.06 },
+                                                                                topology: hypercolor_types::spatial::LedTopology::Strip {
+                                                                                    count: 60,
+                                                                                    direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+                                                                                },
+                                                                                compatible_slots: Vec::new(),
+                                                                                tags: vec!["custom".to_string(), "strip".to_string()],
+                                                                                led_names: None, led_mapping: None, image_url: None, physical_size_mm: None,
+                                                                            };
+                                                                            // Add row immediately
+                                                                            set_draft_rows.update(|rows| rows.push(attachment_editor::AttachmentDraftRow {
+                                                                                template_id: id_for_row,
+                                                                                name: None,
+                                                                            }));
+                                                                            // Create template on daemon + refresh list
+                                                                            leptos::task::spawn_local(async move {
+                                                                                match api::create_attachment_template(&template).await {
+                                                                                    Ok(_) => toasts::toast_success("Custom strip added"),
+                                                                                    Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
+                                                                                }
+                                                                            });
                                                                         }
                                                                     >
                                                                         <Icon icon=LuPlus width="9px" height="9px" />
@@ -531,56 +524,48 @@ pub fn WiringPanel(
                                                                     <button
                                                                         class="text-[9px] font-medium px-2 py-1 rounded transition-all btn-press flex items-center gap-1"
                                                                         style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.1)"
-                                                                        on:click={
-                                                                            let set_rows = set_draft_rows;
-                                                                            let on_refresh = Callback::new(move |()| set_templates_tick.update(|t| *t += 1));
-                                                                            move |ev: web_sys::MouseEvent| {
-                                                                                ev.stop_propagation();
-                                                                                let id = format!("custom-matrix-8x8-{}", js_sys::Date::now() as u64);
-                                                                                let id_for_row = id.clone();
-                                                                                let template = hypercolor_types::attachment::AttachmentTemplate {
-                                                                                    id: id.clone(),
-                                                                                    name: "Custom Matrix - 8\u{00d7}8".to_string(),
-                                                                                    category: hypercolor_types::attachment::AttachmentCategory::Matrix,
-                                                                                    origin: hypercolor_types::attachment::AttachmentOrigin::User,
-                                                                                    description: "Custom 8\u{00d7}8 LED matrix, 64 LEDs".to_string(),
-                                                                                    vendor: "Custom".to_string(),
-                                                                                    default_size: hypercolor_types::attachment::AttachmentCanvasSize { width: 0.24, height: 0.24 },
-                                                                                    topology: hypercolor_types::spatial::LedTopology::Matrix {
-                                                                                        width: 8, height: 8, serpentine: true,
-                                                                                        start_corner: hypercolor_types::spatial::Corner::TopLeft,
-                                                                                    },
-                                                                                    compatible_slots: Vec::new(),
-                                                                                    tags: vec!["custom".to_string(), "matrix".to_string()],
-                                                                                    led_names: None, led_mapping: None, image_url: None, physical_size_mm: None,
-                                                                                };
-                                                                                set_rows.update(|rows| rows.push(attachment_editor::AttachmentDraftRow {
-                                                                                    template_id: id_for_row,
-                                                                                    name: None,
-                                                                                }));
-                                                                                leptos::task::spawn_local(async move {
-                                                                                    match api::create_attachment_template(&template).await {
-                                                                                        Ok(_) => {
-                                                                                            on_refresh.run(());
-                                                                                            toasts::toast_success("Custom matrix added");
-                                                                                        }
-                                                                                        Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
-                                                                                    }
-                                                                                });
-                                                                            }
+                                                                        on:click=move |_: web_sys::MouseEvent| {
+                                                                            let id = format!("custom-matrix-8x8-{}", js_sys::Date::now() as u64);
+                                                                            let id_for_row = id.clone();
+                                                                            let template = hypercolor_types::attachment::AttachmentTemplate {
+                                                                                id: id.clone(),
+                                                                                name: "Custom Matrix - 8\u{00d7}8".to_string(),
+                                                                                category: hypercolor_types::attachment::AttachmentCategory::Matrix,
+                                                                                origin: hypercolor_types::attachment::AttachmentOrigin::User,
+                                                                                description: "Custom 8\u{00d7}8 LED matrix, 64 LEDs".to_string(),
+                                                                                vendor: "Custom".to_string(),
+                                                                                default_size: hypercolor_types::attachment::AttachmentCanvasSize { width: 0.24, height: 0.24 },
+                                                                                topology: hypercolor_types::spatial::LedTopology::Matrix {
+                                                                                    width: 8, height: 8, serpentine: true,
+                                                                                    start_corner: hypercolor_types::spatial::Corner::TopLeft,
+                                                                                },
+                                                                                compatible_slots: Vec::new(),
+                                                                                tags: vec!["custom".to_string(), "matrix".to_string()],
+                                                                                led_names: None, led_mapping: None, image_url: None, physical_size_mm: None,
+                                                                            };
+                                                                            set_draft_rows.update(|rows| rows.push(attachment_editor::AttachmentDraftRow {
+                                                                                template_id: id_for_row,
+                                                                                name: None,
+                                                                            }));
+                                                                            leptos::task::spawn_local(async move {
+                                                                                match api::create_attachment_template(&template).await {
+                                                                                    Ok(_) => toasts::toast_success("Custom matrix added"),
+                                                                                    Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
+                                                                                }
+                                                                            });
                                                                         }
                                                                     >
                                                                         <Icon icon=LuPlus width="9px" height="9px" />
                                                                         "Matrix"
                                                                     </button>
-                                                                    // Add from template library
+                                                                    // Add from component library
                                                                     <button
                                                                         class="text-[9px] font-medium px-2 py-1 rounded transition-all btn-press flex items-center gap-1
                                                                                text-fg-tertiary/50 hover:text-fg-tertiary"
                                                                         on:click=add_row
                                                                     >
                                                                         <Icon icon=LuPlus width="9px" height="9px" />
-                                                                        "Template"
+                                                                        "Other"
                                                                     </button>
                                                                 </div>
                                                                 <div class="flex items-center gap-2">
