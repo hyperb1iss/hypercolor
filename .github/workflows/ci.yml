@@ -24,36 +24,104 @@ env:
     libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
     libgtk-3-dev libappindicator3-dev
 
-jobs:
-  # ── Rust Workspace ───────────────────────────────────────────
-  rust:
-    uses: hyperb1iss/shared-workflows/.github/workflows/rust-ci.yml@main
-    with:
-      change-detection: true
-      change-filters: |
-        rust:
-          - 'crates/**'
-          - 'Cargo.toml'
-          - 'Cargo.lock'
-          - 'rust-toolchain.toml'
-          - 'deny.toml'
-      system-deps: >-
-        libudev-dev libdbus-1-dev libasound2-dev
-        cmake nasm pkg-config lld
-        libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
-        libgtk-3-dev libappindicator3-dev
-      workspace: true
-      all-features: false
-      all-targets: true
-      nextest: true
-      cargo-deny: true
-      nightly-fmt: false
-    permissions:
-      contents: read
-      pull-requests: read
-    secrets: inherit
+permissions:
+  contents: read
 
-  # ── SDK (TypeScript / Bun) ───────────────────────────────────
+jobs:
+  # ── Change Detection ───────────────────────────────────────────
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'deny.toml'
+              - '.github/workflows/ci.yml'
+
+  # ── Rust Check (fmt + clippy) ──────────────────────────────────
+  rust-check:
+    name: Rust Check
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ env.LINUX_DEPS }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: >-
+          cargo clippy --locked --workspace --all-targets
+          -- -D warnings
+
+  # ── Rust Test ──────────────────────────────────────────────────
+  rust-test:
+    name: Rust Test
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ env.LINUX_DEPS }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Run tests
+        run: cargo nextest run --locked --workspace
+
+      - name: Run doc tests
+        run: cargo test --doc --locked --workspace
+
+  # ── Cargo Deny ─────────────────────────────────────────────────
+  rust-deny:
+    name: Cargo Deny
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  # ── SDK (TypeScript / Bun) ─────────────────────────────────────
   sdk:
     name: SDK
     runs-on: ubuntu-latest
@@ -68,7 +136,7 @@ jobs:
       - run: bun run check
       - run: bun run build
 
-  # ── UI (Leptos / Trunk) ──────────────────────────────────────
+  # ── UI (Leptos / Trunk) ────────────────────────────────────────
   ui:
     name: UI
     runs-on: ubuntu-latest
@@ -89,7 +157,40 @@ jobs:
       - run: bun install
       - run: trunk build --release
 
-  # ── Web Assets (built once, shared across release platforms) ─
+  # ── Docs (Zola → GitHub Pages) ─────────────────────────────────
+  docs:
+    name: Docs
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Zola
+        run: |
+          ZOLA_VERSION="0.22.1"
+          curl -fsSL "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar xz -C /usr/local/bin
+
+      - name: Build site
+        working-directory: docs
+        run: zola build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/public
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+  # ── Web Assets (built once, shared across release platforms) ───
   web-assets:
     name: Web Assets
     if: startsWith(github.ref, 'refs/tags/')
@@ -134,10 +235,10 @@ jobs:
           path: staging/
           if-no-files-found: error
 
-  # ── Build Release Tarballs ──────────────────────────────────
+  # ── Build Release Tarballs ────────────────────────────────────
   build-release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [rust, sdk, ui, web-assets]
+    needs: [rust-check, rust-test, rust-deny, sdk, ui, web-assets]
     strategy:
       fail-fast: false
       matrix:
@@ -152,8 +253,6 @@ jobs:
             os: macos-latest
             rust-target: aarch64-apple-darwin
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v6
 
@@ -268,7 +367,7 @@ jobs:
           path: dist/${{ steps.version.outputs.dist_name }}.tar.gz
           if-no-files-found: error
 
-  # ── Create GitHub Release ────────────────────────────────────
+  # ── Create GitHub Release ──────────────────────────────────────
   create-release:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build-release
@@ -281,7 +380,7 @@ jobs:
       actions: read
     secrets: inherit
 
-  # ── Update Homebrew Tap ──────────────────────────────────────
+  # ── Update Homebrew Tap ────────────────────────────────────────
   update-homebrew:
     if: startsWith(github.ref, 'refs/tags/')
     needs: create-release
