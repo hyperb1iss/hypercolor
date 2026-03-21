@@ -2,6 +2,8 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use leptos::html::Canvas;
 use leptos::prelude::*;
@@ -12,6 +14,7 @@ use web_sys::{
     WebGlTexture,
 };
 
+use crate::app::WsContext;
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
 const PREVIEW_VERTEX_SHADER: &str = r#"
@@ -212,6 +215,8 @@ pub fn CanvasPreview(
     let animation = Rc::new(RefCell::new(None::<Closure<dyn FnMut(f64)>>));
     let last_presented_frame = Rc::new(RefCell::new(None::<u32>));
     let schedule_present: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    let ws = use_context::<WsContext>();
+    let preview_registered = Arc::new(AtomicBool::new(false));
 
     {
         let canvas_ref = canvas_ref.clone();
@@ -307,6 +312,32 @@ pub fn CanvasPreview(
                 && let Some(schedule) = schedule_present.borrow().as_ref()
             {
                 schedule();
+            }
+        }
+    });
+
+    Effect::new({
+        let preview_registered = Arc::clone(&preview_registered);
+        move |_| {
+            if canvas_ref.get().is_some()
+                && let Some(ws) = ws
+                && !preview_registered.load(Ordering::Relaxed)
+            {
+                ws.set_preview_consumers
+                    .update(|count| *count = count.saturating_add(1));
+                preview_registered.store(true, Ordering::Relaxed);
+            }
+        }
+    });
+
+    on_cleanup({
+        let preview_registered = Arc::clone(&preview_registered);
+        move || {
+            if let Some(ws) = ws
+                && preview_registered.load(Ordering::Relaxed)
+            {
+                ws.set_preview_consumers
+                    .update(|count| *count = count.saturating_sub(1));
             }
         }
     });
