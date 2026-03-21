@@ -4,7 +4,7 @@ use leptos::prelude::*;
 use leptos_icons::Icon;
 
 use hypercolor_types::config::HypercolorConfig;
-use hypercolor_types::session::SleepBehavior;
+use hypercolor_types::session::{OffOutputBehavior, SleepBehavior};
 
 use crate::api;
 use crate::app::WsContext;
@@ -27,6 +27,14 @@ fn sleep_behavior_value(behavior: SleepBehavior) -> String {
         SleepBehavior::Dim => "dim",
         SleepBehavior::Scene => "scene",
         SleepBehavior::Ignore => "ignore",
+    }
+    .to_owned()
+}
+
+fn off_output_behavior_value(behavior: OffOutputBehavior) -> String {
+    match behavior {
+        OffOutputBehavior::Static => "static",
+        OffOutputBehavior::Release => "release",
     }
     .to_owned()
 }
@@ -408,6 +416,14 @@ pub fn SessionSection(
     let suspend_behavior = Signal::derive(move || {
         read_config(config, |cfg| sleep_behavior_value(cfg.session.on_suspend))
     });
+    let off_output_behavior = Signal::derive(move || {
+        read_config(config, |cfg| {
+            off_output_behavior_value(cfg.session.off_output_behavior)
+        })
+    });
+    let off_output_color = Signal::derive(move || {
+        read_config(config, |cfg| cfg.session.off_output_color.clone())
+    });
 
     let screen_behavior_options = Signal::stored(vec![
         ("ignore".to_string(), "Ignore".to_string()),
@@ -418,6 +434,10 @@ pub fn SessionSection(
         ("ignore".to_string(), "Ignore".to_string()),
         ("off".to_string(), "Turn Off".to_string()),
         ("dim".to_string(), "Fade Black".to_string()),
+    ]);
+    let off_output_behavior_options = Signal::stored(vec![
+        ("static".to_string(), "Hold Static".to_string()),
+        ("release".to_string(), "Release Device".to_string()),
     ]);
 
     view! {
@@ -456,6 +476,24 @@ pub fn SessionSection(
                 options=suspend_behavior_options
                 on_change=on_change
             />
+            <SettingDropdown
+                label="Off Output Behavior"
+                description="When a session event turns output off, either hold a static frame/color or release devices back to firmware"
+                key="session.off_output_behavior"
+                value=off_output_behavior
+                options=off_output_behavior_options
+                on_change=on_change
+            />
+            <Show when=move || off_output_behavior.get() == "static">
+                <SettingTextInput
+                    label="Off Hold Color"
+                    description="Hex RGB color used for static hold mode, including LCD pause frames"
+                    key="session.off_output_color"
+                    value=off_output_color
+                    on_change=on_change
+                    placeholder="#000000"
+                />
+            </Show>
             <SettingToggle
                 label="Idle Detection"
                 description="Dim or turn off LEDs after a period of inactivity"

@@ -5,7 +5,7 @@ use hypercolor_types::config::{
     FeatureFlags, HueConfig, HypercolorConfig, LogLevel, McpConfig, NanoleafConfig, NetworkConfig,
     ShutdownBehavior, TuiConfig, WebConfig, WledConfig, WledProtocolConfig,
 };
-use hypercolor_types::session::SessionConfig;
+use hypercolor_types::session::{OffOutputBehavior, SessionConfig};
 
 // ─── Default Value Tests ─────────────────────────────────────────────────────
 
@@ -140,6 +140,17 @@ fn feature_flags_all_false_by_default() {
     assert!(!f.wasm_plugins);
     assert!(!f.hue_entertainment);
     assert!(!f.midi_input);
+}
+
+#[test]
+fn session_defaults_match_spec() {
+    let session = SessionConfig::default();
+    assert!(session.enabled);
+    assert!(session.idle_enabled);
+    assert_eq!(session.idle_dim_timeout_secs, 120);
+    assert_eq!(session.idle_off_timeout_secs, 600);
+    assert_eq!(session.off_output_behavior, OffOutputBehavior::Static);
+    assert_eq!(session.off_output_color, "#000000");
 }
 
 // ─── TOML Roundtrip Tests ────────────────────────────────────────────────────

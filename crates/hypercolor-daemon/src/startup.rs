@@ -54,7 +54,9 @@ use hypercolor_types::spatial::{EdgeBehavior, SamplingMode, SpatialLayout};
 
 use crate::attachment_profiles::AttachmentProfileStore;
 use crate::device_settings::DeviceSettingsStore;
-use crate::display_output::{DisplayOutputState, DisplayOutputThread};
+use crate::display_output::{
+    DEFAULT_STATIC_HOLD_REFRESH_INTERVAL, DisplayOutputState, DisplayOutputThread,
+};
 use crate::effect_layouts;
 use crate::layout_auto_exclusions;
 use crate::logical_devices::LogicalDevice;
@@ -659,6 +661,8 @@ impl DaemonState {
             spatial_engine: Arc::clone(&self.spatial_engine),
             logical_devices: Arc::clone(&self.logical_devices),
             event_bus: Arc::clone(&self.event_bus),
+            power_state: self.power_state.subscribe(),
+            static_hold_refresh_interval: DEFAULT_STATIC_HOLD_REFRESH_INTERVAL,
         }));
 
         // Publish a startup event so subscribers know the daemon is alive.

@@ -1,6 +1,8 @@
 //! Mapping from raw session events to sleep and wake actions.
 
-use crate::types::session::{SessionConfig, SessionEvent, SleepAction, SleepBehavior, WakeAction};
+use crate::types::session::{
+    OffOutputBehavior, SessionConfig, SessionEvent, SleepAction, SleepBehavior, WakeAction,
+};
 
 const IDLE_DIM_BRIGHTNESS: f32 = 0.3;
 const IDLE_DIM_FADE_MS: u64 = 3_000;
@@ -24,18 +26,24 @@ impl SleepPolicy {
     pub fn sleep_action(&self, event: &SessionEvent) -> Option<SleepAction> {
         match event {
             SessionEvent::ScreenLocked => Some(sleep_action_from_behavior(
+                self.config.off_output_behavior,
+                &self.config.off_output_color,
                 self.config.on_screen_lock,
                 self.config.screen_lock_brightness,
                 &self.config.screen_lock_scene,
                 self.config.screen_lock_fade_ms,
             )),
             SessionEvent::Suspending => Some(sleep_action_from_behavior(
+                self.config.off_output_behavior,
+                &self.config.off_output_color,
                 self.config.on_suspend,
                 0.0,
                 "",
                 self.config.suspend_fade_ms,
             )),
             SessionEvent::LidClosed => Some(sleep_action_from_behavior(
+                self.config.off_output_behavior,
+                &self.config.off_output_color,
                 self.config.on_lid_close,
                 self.config.lid_close_brightness,
                 &self.config.lid_close_scene,
@@ -50,6 +58,8 @@ impl SleepPolicy {
                 if idle_secs >= self.config.idle_off_timeout_secs {
                     Some(SleepAction::Off {
                         fade_ms: IDLE_OFF_FADE_MS,
+                        output_behavior: self.config.off_output_behavior,
+                        static_color: parse_static_color(&self.config.off_output_color),
                     })
                 } else if idle_secs >= self.config.idle_dim_timeout_secs {
                     Some(SleepAction::Dim {
@@ -95,6 +105,8 @@ impl SleepPolicy {
 }
 
 fn sleep_action_from_behavior(
+    off_output_behavior: OffOutputBehavior,
+    off_output_color: &str,
     behavior: SleepBehavior,
     brightness: f32,
     scene_name: &str,
@@ -102,7 +114,11 @@ fn sleep_action_from_behavior(
 ) -> SleepAction {
     match behavior {
         SleepBehavior::Ignore => SleepAction::Ignore,
-        SleepBehavior::Off => SleepAction::Off { fade_ms },
+        SleepBehavior::Off => SleepAction::Off {
+            fade_ms,
+            output_behavior: off_output_behavior,
+            static_color: parse_static_color(off_output_color),
+        },
         SleepBehavior::Dim => SleepAction::Dim {
             brightness: brightness.clamp(0.0, 1.0),
             fade_ms,
@@ -120,13 +136,47 @@ fn sleep_action_from_behavior(
     }
 }
 
+fn parse_static_color(raw: &str) -> [u8; 3] {
+    let trimmed = raw.trim();
+    let hex = trimmed.strip_prefix('#').unwrap_or(trimmed);
+    match hex.len() {
+        3 => {
+            let bytes = hex.as_bytes();
+            [
+                parse_nibble(bytes[0]).map_or(0, |value| (value << 4) | value),
+                parse_nibble(bytes[1]).map_or(0, |value| (value << 4) | value),
+                parse_nibble(bytes[2]).map_or(0, |value| (value << 4) | value),
+            ]
+        }
+        6 => [
+            parse_byte(&hex[0..2]).unwrap_or(0),
+            parse_byte(&hex[2..4]).unwrap_or(0),
+            parse_byte(&hex[4..6]).unwrap_or(0),
+        ],
+        _ => [0, 0, 0],
+    }
+}
+
+fn parse_byte(raw: &str) -> Option<u8> {
+    u8::from_str_radix(raw, 16).ok()
+}
+
+fn parse_nibble(raw: u8) -> Option<u8> {
+    match raw {
+        b'0'..=b'9' => Some(raw - b'0'),
+        b'a'..=b'f' => Some(raw - b'a' + 10),
+        b'A'..=b'F' => Some(raw - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::SleepPolicy;
     use crate::types::session::{
-        SessionConfig, SessionEvent, SleepAction, SleepBehavior, WakeAction,
+        OffOutputBehavior, SessionConfig, SessionEvent, SleepAction, SleepBehavior, WakeAction,
     };
 
     #[test]
@@ -186,7 +236,11 @@ mod tests {
             policy.sleep_action(&SessionEvent::IdleEntered {
                 idle_duration: Duration::from_secs(600),
             }),
-            Some(SleepAction::Off { fade_ms: 5_000 })
+            Some(SleepAction::Off {
+                fade_ms: 5_000,
+                output_behavior: OffOutputBehavior::Static,
+                static_color: [0, 0, 0],
+            })
         );
     }
 }

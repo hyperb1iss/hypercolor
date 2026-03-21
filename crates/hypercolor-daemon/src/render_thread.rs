@@ -32,6 +32,7 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_core::types::audio::AudioData;
 use hypercolor_core::types::canvas::{Canvas, Rgba, linear_to_srgb_u8, srgb_u8_to_linear};
 use hypercolor_core::types::event::{FrameData, FrameTiming, HypercolorEvent, SpectrumData};
+use hypercolor_types::session::OffOutputBehavior;
 
 use crate::device_settings::DeviceSettingsStore;
 use crate::discovery::{DiscoveryRuntime, handle_async_write_failures};
@@ -653,7 +654,24 @@ async fn maybe_sleep_throttle(
         });
     }
 
-    let canvas = Canvas::new(state.canvas_width, state.canvas_height);
+    if power_state.off_output_behavior == OffOutputBehavior::Release {
+        {
+            let mut rl = state.render_loop.write().await;
+            let _ = rl.frame_complete();
+        }
+
+        *sleep_black_pushed = true;
+        return Some(FrameExecution {
+            next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
+            next_skip_decision: SkipDecision::None,
+        });
+    }
+
+    let canvas = static_hold_canvas(
+        state.canvas_width,
+        state.canvas_height,
+        power_state.off_output_color,
+    );
     let sample_start = Instant::now();
     let (zone_colors, layout) = {
         let spatial = state.spatial_engine.read().await;
@@ -729,6 +747,14 @@ async fn maybe_sleep_throttle(
         next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),
         next_skip_decision: SkipDecision::None,
     })
+}
+
+fn static_hold_canvas(width: u32, height: u32, color: [u8; 3]) -> Canvas {
+    let mut canvas = Canvas::new(width, height);
+    if color != [0, 0, 0] {
+        canvas.fill(Rgba::new(color[0], color[1], color[2], 255));
+    }
+    canvas
 }
 
 fn should_idle_throttle(effect_running: bool, screen_capture_enabled: bool) -> bool {

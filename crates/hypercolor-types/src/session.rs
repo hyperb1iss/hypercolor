@@ -39,6 +39,8 @@ pub struct SessionConfig {
     pub idle_backend: IdleBackend,
     pub idle_dim_timeout_secs: u64,
     pub idle_off_timeout_secs: u64,
+    pub off_output_behavior: OffOutputBehavior,
+    pub off_output_color: String,
     pub on_screen_lock: SleepBehavior,
     pub screen_lock_brightness: f32,
     pub screen_lock_scene: String,
@@ -62,6 +64,8 @@ impl Default for SessionConfig {
             idle_backend: IdleBackend::Auto,
             idle_dim_timeout_secs: 120,
             idle_off_timeout_secs: 600,
+            off_output_behavior: OffOutputBehavior::Static,
+            off_output_color: "#000000".to_owned(),
             on_screen_lock: SleepBehavior::Ignore,
             screen_lock_brightness: 0.0,
             screen_lock_scene: String::new(),
@@ -90,6 +94,17 @@ pub enum SleepBehavior {
     Ignore,
 }
 
+/// What Hypercolor should do with devices after an `off`-style sleep action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OffOutputBehavior {
+    /// Hold a static frame/color on the device while sleeping.
+    #[default]
+    Static,
+    /// Disconnect and let the device return to its native firmware behavior.
+    Release,
+}
+
 /// Preferred idle-detection backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -110,8 +125,12 @@ pub enum SleepAction {
     Ignore,
     /// Dim output to a target multiplier.
     Dim { brightness: f32, fade_ms: u64 },
-    /// Fade to black and stop sending output frames.
-    Off { fade_ms: u64 },
+    /// Fade to black (or a static hold color) and stop normal output frames.
+    Off {
+        fade_ms: u64,
+        output_behavior: OffOutputBehavior,
+        static_color: [u8; 3],
+    },
     /// Activate a named scene instead of dimming output directly.
     Scene { scene_name: String, fade_ms: u64 },
 }

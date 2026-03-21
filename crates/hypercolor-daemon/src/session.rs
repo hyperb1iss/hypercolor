@@ -13,7 +13,7 @@ use hypercolor_core::effect::EffectEngine;
 use hypercolor_core::session::{SessionWatcher, SleepPolicy};
 use hypercolor_network::DriverRegistry;
 use hypercolor_types::event::HypercolorEvent;
-use hypercolor_types::session::{SessionEvent, SleepAction, WakeAction};
+use hypercolor_types::session::{OffOutputBehavior, SessionEvent, SleepAction, WakeAction};
 
 use crate::discovery::{self, DiscoveryBackend, DiscoveryRuntime};
 use crate::network::DaemonDriverHost;
@@ -26,6 +26,8 @@ pub struct OutputPowerState {
     pub global_brightness: f32,
     pub session_brightness: f32,
     pub sleeping: bool,
+    pub off_output_behavior: OffOutputBehavior,
+    pub off_output_color: [u8; 3],
 }
 
 impl Default for OutputPowerState {
@@ -34,6 +36,8 @@ impl Default for OutputPowerState {
             global_brightness: 1.0,
             session_brightness: 1.0,
             sleeping: false,
+            off_output_behavior: OffOutputBehavior::Static,
+            off_output_color: [0, 0, 0],
         }
     }
 }
@@ -151,21 +155,14 @@ fn spawn_sleep_transition(runtime: SessionRuntime, action: SleepAction) -> Optio
             ensure_awake(&runtime).await;
             fade_session_to(&runtime.power_tx, brightness, fade_ms).await;
         })),
-        SleepAction::Off { fade_ms } => Some(tokio::spawn(async move {
+        SleepAction::Off {
+            fade_ms,
+            output_behavior,
+            static_color,
+        } => Some(tokio::spawn(async move {
             ensure_awake(&runtime).await;
             fade_session_to(&runtime.power_tx, 0.0, fade_ms).await;
-            {
-                let mut engine = runtime.effect_engine.lock().await;
-                engine.pause();
-            }
-            set_power_state(
-                &runtime.power_tx,
-                OutputPowerState {
-                    global_brightness: current_power_state(&runtime.power_tx).global_brightness,
-                    session_brightness: 0.0,
-                    sleeping: true,
-                },
-            );
+            pause_output(&runtime, output_behavior, static_color).await;
         })),
         SleepAction::Scene {
             scene_name,
@@ -189,6 +186,12 @@ fn spawn_wake_transition(
     match action {
         WakeAction::Restore { fade_ms } => Some(tokio::spawn(async move {
             let current = current_power_state(&runtime.power_tx);
+            if current.sleeping && current.off_output_behavior == OffOutputBehavior::Release {
+                run_full_reconnect_scan(&runtime).await;
+            } else if matches!(event, SessionEvent::Resumed) {
+                run_usb_resume_scan(&runtime).await;
+            }
+
             if current.sleeping {
                 set_power_state(
                     &runtime.power_tx,
@@ -196,12 +199,10 @@ fn spawn_wake_transition(
                         global_brightness: current.global_brightness,
                         session_brightness: current.session_brightness,
                         sleeping: false,
+                        off_output_behavior: current.off_output_behavior,
+                        off_output_color: current.off_output_color,
                     },
                 );
-            }
-
-            if matches!(event, SessionEvent::Resumed) {
-                run_usb_resume_scan(&runtime).await;
             }
 
             {
@@ -230,6 +231,10 @@ async fn ensure_awake(runtime: &SessionRuntime) {
         return;
     }
 
+    if current.off_output_behavior == OffOutputBehavior::Release {
+        run_full_reconnect_scan(runtime).await;
+    }
+
     {
         let mut engine = runtime.effect_engine.lock().await;
         engine.resume();
@@ -240,6 +245,8 @@ async fn ensure_awake(runtime: &SessionRuntime) {
             global_brightness: current.global_brightness,
             session_brightness: current.session_brightness,
             sleeping: false,
+            off_output_behavior: current.off_output_behavior,
+            off_output_color: current.off_output_color,
         },
     );
 }
@@ -265,6 +272,66 @@ async fn run_usb_resume_scan(runtime: &SessionRuntime) {
     );
 }
 
+async fn run_full_reconnect_scan(runtime: &SessionRuntime) {
+    let config_guard = runtime.config_manager.get();
+    let config = Arc::clone(&*config_guard);
+    let backends = match discovery::resolve_backends(None, &config, &runtime.driver_registry) {
+        Ok(backends) => backends,
+        Err(error) => {
+            warn!(%error, "Failed to resolve backends for output reconnect scan");
+            return;
+        }
+    };
+
+    let result = discovery::execute_discovery_scan(
+        runtime.discovery_runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
+        config,
+        backends,
+        discovery::default_timeout(),
+    )
+    .await;
+
+    debug!(
+        found = result.new_devices.len() + result.reappeared_devices.len(),
+        vanished = result.vanished_devices.len(),
+        duration_ms = result.duration_ms,
+        "Output reconnect scan finished"
+    );
+}
+
+async fn pause_output(
+    runtime: &SessionRuntime,
+    output_behavior: OffOutputBehavior,
+    static_color: [u8; 3],
+) {
+    let current = current_power_state(&runtime.power_tx);
+    set_power_state(
+        &runtime.power_tx,
+        OutputPowerState {
+            global_brightness: current.global_brightness,
+            session_brightness: 0.0,
+            sleeping: true,
+            off_output_behavior: output_behavior,
+            off_output_color: static_color,
+        },
+    );
+
+    {
+        let mut engine = runtime.effect_engine.lock().await;
+        engine.pause();
+    }
+
+    if output_behavior == OffOutputBehavior::Release {
+        let released = discovery::release_renderable_devices(&runtime.discovery_runtime).await;
+        debug!(
+            released,
+            "Temporarily released renderable devices for session sleep"
+        );
+    }
+}
+
 async fn fade_session_to(power_tx: &watch::Sender<OutputPowerState>, target: f32, fade_ms: u64) {
     let target = target.clamp(0.0, 1.0);
     let current = current_power_state(power_tx);
@@ -277,6 +344,8 @@ async fn fade_session_to(power_tx: &watch::Sender<OutputPowerState>, target: f32
                 global_brightness: current.global_brightness,
                 session_brightness: target,
                 sleeping: current.sleeping,
+                off_output_behavior: current.off_output_behavior,
+                off_output_color: current.off_output_color,
             },
         );
         return;
@@ -294,6 +363,8 @@ async fn fade_session_to(power_tx: &watch::Sender<OutputPowerState>, target: f32
                 global_brightness: current.global_brightness,
                 session_brightness: brightness,
                 sleeping: false,
+                off_output_behavior: current.off_output_behavior,
+                off_output_color: current.off_output_color,
             },
         );
         tokio::time::sleep(step_delay).await;
@@ -305,6 +376,8 @@ async fn fade_session_to(power_tx: &watch::Sender<OutputPowerState>, target: f32
             global_brightness: current.global_brightness,
             session_brightness: target,
             sleeping: false,
+            off_output_behavior: current.off_output_behavior,
+            off_output_color: current.off_output_color,
         },
     );
 }
@@ -317,6 +390,8 @@ pub fn set_global_brightness(power_tx: &watch::Sender<OutputPowerState>, brightn
             global_brightness: brightness.clamp(0.0, 1.0),
             session_brightness: current.session_brightness,
             sleeping: current.sleeping,
+            off_output_behavior: current.off_output_behavior,
+            off_output_color: current.off_output_color,
         },
     );
 }

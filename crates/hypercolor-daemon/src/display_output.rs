@@ -23,13 +23,16 @@ use hypercolor_core::bus::{CanvasFrame, HypercolorBus};
 use hypercolor_core::device::{BackendIo, BackendManager, DeviceRegistry};
 use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_types::device::{DeviceId, DeviceTopologyHint};
+use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{EdgeBehavior, NormalizedPosition, SpatialLayout};
 
 use crate::discovery::backend_id_for_device;
 use crate::logical_devices::{self, LogicalDevice};
+use crate::session::OutputPowerState;
 
 const DISPLAY_ERROR_WARN_INTERVAL: Duration = Duration::from_secs(5);
 const DISPLAY_OUTPUT_MAX_FPS: u32 = 15;
+pub const DEFAULT_STATIC_HOLD_REFRESH_INTERVAL: Duration = Duration::from_secs(20);
 const DISPLAY_RUNTIME_WORKERS: usize = 2;
 const DISPLAY_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
 const DISPLAY_RUNTIME_THREAD_KEEP_ALIVE: Duration = Duration::from_secs(2);
@@ -57,6 +60,10 @@ pub struct DisplayOutputState {
     pub logical_devices: Arc<RwLock<HashMap<String, LogicalDevice>>>,
     /// Event bus canvas stream produced by the render thread.
     pub event_bus: Arc<HypercolorBus>,
+    /// Session power policy used to decide whether static hold refresh is active.
+    pub power_state: watch::Receiver<OutputPowerState>,
+    /// How often unchanged display frames should be reasserted during static hold.
+    pub static_hold_refresh_interval: Duration,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -216,7 +223,12 @@ impl DisplayFrameInputState {
 }
 
 impl DisplayWorkerHandle {
-    fn spawn(target: &DisplayTarget, backend_io: BackendIo) -> Self {
+    fn spawn(
+        target: &DisplayTarget,
+        backend_io: BackendIo,
+        power_state: watch::Receiver<OutputPowerState>,
+        static_hold_refresh_interval: Duration,
+    ) -> Self {
         let (tx, rx) = watch::channel(None::<Arc<DisplayWorkItem>>);
         let worker_backend_id = target.backend_id.clone();
         let worker_device_id = target.device_id;
@@ -227,6 +239,8 @@ impl DisplayWorkerHandle {
             worker_device_id,
             target_fps,
             rx,
+            power_state,
+            static_hold_refresh_interval,
         ));
 
         Self {
@@ -409,7 +423,15 @@ async fn reconcile_display_workers(
 
         match backend_io {
             Some(backend_io) => {
-                workers.insert(key, DisplayWorkerHandle::spawn(target, backend_io));
+                workers.insert(
+                    key,
+                    DisplayWorkerHandle::spawn(
+                        target,
+                        backend_io,
+                        state.power_state.clone(),
+                        state.static_hold_refresh_interval,
+                    ),
+                );
             }
             None => {
                 warn!(
@@ -433,11 +455,15 @@ async fn run_display_worker(
     device_id: DeviceId,
     target_fps: u32,
     mut rx: watch::Receiver<Option<Arc<DisplayWorkItem>>>,
+    mut power_state: watch::Receiver<OutputPowerState>,
+    static_hold_refresh_interval: Duration,
 ) {
     let send_interval = target_interval_for_fps(target_fps);
     let mut next_send_at = Instant::now();
     let mut last_warned_at = None::<Instant>;
     let mut last_delivered_input = None::<DisplayFrameInputState>;
+    let mut last_delivered_work = None::<DisplayWorkItem>;
+    let mut next_hold_refresh_at = None::<Instant>;
     let mut encode_state = match DisplayEncodeState::new() {
         Ok(state) => state,
         Err(error) => {
@@ -454,10 +480,50 @@ async fn run_display_worker(
 
     loop {
         if pending.is_none() {
-            if rx.changed().await.is_err() {
-                break;
+            if let Some(hold_deadline) = next_hold_refresh_at {
+                tokio::select! {
+                    changed = rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        pending.clone_from(&rx.borrow_and_update());
+                    }
+                    changed = power_state.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let _ = power_state.borrow_and_update();
+                    }
+                    () = tokio::time::sleep_until(tokio::time::Instant::from_std(hold_deadline)) => {
+                        if should_refresh_static_hold(&power_state) {
+                            if let Some(work) = last_delivered_work.clone() {
+                                pending = Some(Arc::new(work));
+                                last_delivered_input = None;
+                            }
+                        }
+                    }
+                }
+            } else {
+                tokio::select! {
+                    changed = rx.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        pending.clone_from(&rx.borrow_and_update());
+                    }
+                    changed = power_state.changed() => {
+                        if changed.is_err() {
+                            break;
+                        }
+                        let _ = power_state.borrow_and_update();
+                    }
+                }
             }
-            pending.clone_from(&rx.borrow_and_update());
+            next_hold_refresh_at = static_hold_refresh_deadline(
+                &power_state,
+                &last_delivered_work,
+                static_hold_refresh_interval,
+            );
             continue;
         }
 
@@ -560,6 +626,12 @@ async fn run_display_worker(
         last_delivered_input = Some(DisplayFrameInputState::capture(
             &source, &viewport, &geometry, brightness,
         ));
+        last_delivered_work = Some((*work).clone());
+        next_hold_refresh_at = static_hold_refresh_deadline(
+            &power_state,
+            &last_delivered_work,
+            static_hold_refresh_interval,
+        );
 
         trace!(
             device = %target.name,
@@ -593,6 +665,23 @@ fn advance_deadline(previous_deadline: Instant, interval: Duration, now: Instant
         .checked_add(interval)
         .unwrap_or(now)
         .max(now)
+}
+
+fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -> bool {
+    let state = *power_state.borrow();
+    state.sleeping && state.off_output_behavior == OffOutputBehavior::Static
+}
+
+fn static_hold_refresh_deadline(
+    power_state: &watch::Receiver<OutputPowerState>,
+    last_delivered_work: &Option<DisplayWorkItem>,
+    refresh_interval: Duration,
+) -> Option<Instant> {
+    if !should_refresh_static_hold(power_state) || last_delivered_work.is_none() {
+        return None;
+    }
+
+    Instant::now().checked_add(refresh_interval)
 }
 
 async fn display_targets(
