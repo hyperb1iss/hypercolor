@@ -14,6 +14,7 @@ use hypercolor_types::spatial::{
 use crate::api;
 use crate::app::DevicesContext;
 use crate::components::attachment_editor;
+use crate::components::device_card::topology_shape_svg;
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::toasts;
@@ -120,10 +121,10 @@ pub fn WiringPanel(
 
     view! {
         <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-visible edge-glow">
-            <div class="flex items-center justify-between px-4 py-2 border-b border-edge-subtle">
+            <div class="flex items-center justify-between px-4 py-2.5 border-b border-edge-subtle">
                 <div class="flex items-center gap-2">
-                    <Icon icon=LuCable width="12px" height="12px" style="color: rgba(128, 255, 234, 0.7)" />
-                    <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Components"</h3>
+                    <Icon icon=LuLayers width="12px" height="12px" style="color: rgba(128, 255, 234, 0.7)" />
+                    <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Channels"</h3>
                 </div>
             </div>
 
@@ -134,6 +135,7 @@ pub fn WiringPanel(
                     {move || {
                         let all_templates = templates.get().map(|loaded| loaded.to_vec()).unwrap_or_default();
                         let did = device_id.get();
+                        let device_zones = device.get().map(|d| d.zones.clone()).unwrap_or_default();
 
                         attachments.get().map(|result| match result {
                             Ok(profile) => {
@@ -152,12 +154,19 @@ pub fn WiringPanel(
                                     <div class="space-y-1">
                                         {slots.into_iter().map(|slot| {
                                             let slot_id = slot.id.clone();
+                                            // Match this slot to a device zone for topology info
+                                            let zone_match = device_zones.iter()
+                                                .find(|z| z.name == slot.name || z.id == slot.id)
+                                                .cloned();
+                                            let zone_topology_svg = zone_match.as_ref()
+                                                .map(|z| topology_shape_svg(&z.topology))
+                                                .unwrap_or_else(|| topology_shape_svg("strip"));
+                                            let zone_id_for_identify = zone_match.as_ref().map(|z| z.id.clone());
                                             let slot_bindings = bindings
                                                 .iter()
                                                 .filter(|b| b.slot_id == slot.id)
                                                 .cloned()
                                                 .collect::<Vec<_>>();
-                                            let used_leds: u32 = slot_bindings.iter().map(|b| b.effective_led_count).sum();
                                             let attachment_count: u32 = slot_bindings.iter().map(|b| b.instances.max(1)).sum();
 
                                             // Editable channel name (localStorage override)
@@ -243,15 +252,19 @@ pub fn WiringPanel(
                                             }).collect();
 
                                             view! {
-                                                <div class="rounded-lg border border-edge-subtle bg-surface-overlay/15 overflow-visible transition-all">
-                                                    // Channel header
+                                                <div class="rounded-lg border border-edge-subtle bg-surface-overlay/15 overflow-visible transition-all group/slot">
+                                                    // Channel header — topology icon + name + LED count + identify + expand
                                                     <button
-                                                        class="w-full px-2.5 py-1.5 text-left hover:bg-surface-hover/20 transition-colors"
+                                                        class="w-full px-2.5 py-2 text-left hover:bg-surface-hover/20 transition-colors"
                                                         on:click=toggle_slot
                                                     >
-                                                        <div class="flex items-center justify-between gap-2">
-                                                            <div class="flex items-center gap-2 min-w-0">
-                                                                // Editable channel name
+                                                        <div class="flex items-center gap-2">
+                                                            // Topology shape icon
+                                                            <div class="w-4 h-4 shrink-0" style="color: rgba(128, 255, 234, 0.5)"
+                                                                 inner_html=format!(r#"<svg viewBox="0 0 16 16" width="16" height="16">{zone_topology_svg}</svg>"#) />
+
+                                                            // Editable channel name (single-click to edit)
+                                                            <div class="flex-1 min-w-0">
                                                                 {move || if editing_channel.get() {
                                                                     view! {
                                                                         <input
@@ -281,8 +294,8 @@ pub fn WiringPanel(
                                                                 } else {
                                                                     view! {
                                                                         <span
-                                                                            class="text-[11px] font-medium text-fg-primary group/ch flex items-center gap-1 cursor-text"
-                                                                            on:dblclick={
+                                                                            class="text-[11px] font-medium text-fg-primary flex items-center gap-1 cursor-text"
+                                                                            on:click={
                                                                                 move |ev: web_sys::MouseEvent| {
                                                                                     ev.stop_propagation();
                                                                                     set_channel_input.set(channel_name.get_untracked());
@@ -291,18 +304,51 @@ pub fn WiringPanel(
                                                                             }
                                                                         >
                                                                             {move || channel_name.get()}
-                                                                            <span class="w-2.5 h-2.5 text-fg-tertiary/30 opacity-0 group-hover/ch:opacity-100 transition-opacity shrink-0">
+                                                                            <span class="w-2.5 h-2.5 text-fg-tertiary/25 shrink-0">
                                                                                 <Icon icon=LuPencil width="10px" height="10px" />
                                                                             </span>
                                                                         </span>
                                                                     }.into_any()
                                                                 }}
-                                                                {(used_leds > 0).then(|| view! {
-                                                                    <span class="text-[9px] font-mono text-fg-tertiary/40 tabular-nums shrink-0">
-                                                                        {used_leds} "/" {slot.led_count}
-                                                                    </span>
-                                                                })}
                                                             </div>
+
+                                                            // LED count
+                                                            <span class="text-[9px] font-mono text-fg-tertiary/40 tabular-nums shrink-0">
+                                                                {slot.led_count} " LEDs"
+                                                            </span>
+
+                                                            // Identify channel button
+                                                            {zone_id_for_identify.clone().map(|zid| {
+                                                                let dev_id = did.clone();
+                                                                view! {
+                                                                    <button
+                                                                        class="w-5 h-5 flex items-center justify-center rounded shrink-0
+                                                                               opacity-0 group-hover/slot:opacity-100 transition-opacity
+                                                                               text-fg-tertiary/40 hover:text-accent btn-press"
+                                                                        title="Identify channel"
+                                                                        on:click={
+                                                                            let dev_id = dev_id.clone();
+                                                                            let zid = zid.clone();
+                                                                            move |ev: web_sys::MouseEvent| {
+                                                                                ev.stop_propagation();
+                                                                                let did = dev_id.clone();
+                                                                                let zid = zid.clone();
+                                                                                leptos::task::spawn_local(async move {
+                                                                                    if let Err(e) = api::identify_zone(&did, &zid).await {
+                                                                                        toasts::toast_error(&format!("Identify failed: {e}"));
+                                                                                    } else {
+                                                                                        toasts::toast_success("Flashing channel");
+                                                                                    }
+                                                                                });
+                                                                            }
+                                                                        }
+                                                                    >
+                                                                        <Icon icon=LuZap width="10px" height="10px" />
+                                                                    </button>
+                                                                }
+                                                            })}
+
+                                                            // Expand/collapse chevron
                                                             <div class="shrink-0">
                                                                 {if is_expanded() {
                                                                     view! { <Icon icon=LuChevronUp width="11px" height="11px" style="color: rgba(139, 133, 160, 0.5)" /> }.into_any()
@@ -316,7 +362,7 @@ pub fn WiringPanel(
                                                         {(!is_expanded() && attachment_count > 0).then(|| {
                                                             let shapes = bound_shapes.clone();
                                                             view! {
-                                                                <div class="flex items-center gap-2 mt-1" style="color: rgba(128, 255, 234, 0.5)">
+                                                                <div class="flex items-center gap-2 mt-1 pl-6" style="color: rgba(128, 255, 234, 0.5)">
                                                                     {shapes.into_iter().map(|(cat, name, instances)| {
                                                                         let svg = category_shape_svg(&cat, 16);
                                                                         let label = if instances > 1 { format!("{name} \u{00d7}{instances}") } else { name };
@@ -336,6 +382,8 @@ pub fn WiringPanel(
                                                     {
                                                     let slot_for_save = StoredValue::new(slot.clone());
                                                     let slot_id_for_save = StoredValue::new(slot_id.clone());
+                                                    let did_for_identify = StoredValue::new(did.clone());
+                                                    let slot_id_for_identify = StoredValue::new(slot_id.clone());
                                                     view! {
                                                     <Show when=is_expanded>
                                                         <div class="px-2.5 pb-2 space-y-1.5 border-t border-edge-subtle bg-surface-sunken/20 animate-fade-in">
@@ -387,6 +435,33 @@ pub fn WiringPanel(
                                                                                     </span>
                                                                                 })}
 
+                                                                                // Identify component
+                                                                                <button
+                                                                                    class="w-4 h-4 flex items-center justify-center rounded shrink-0
+                                                                                           opacity-0 group-hover/row:opacity-100 transition-opacity
+                                                                                           text-fg-tertiary/40 hover:text-accent btn-press"
+                                                                                    title="Identify component"
+                                                                                    on:click={
+                                                                                        let did = did_for_identify.get_value();
+                                                                                        let sid = slot_id_for_identify.get_value();
+                                                                                        move |ev: web_sys::MouseEvent| {
+                                                                                            ev.stop_propagation();
+                                                                                            let did = did.clone();
+                                                                                            let sid = sid.clone();
+                                                                                            leptos::task::spawn_local(async move {
+                                                                                                if let Err(e) = api::identify_attachment(&did, &sid, Some(index)).await {
+                                                                                                    toasts::toast_error(&format!("Identify failed: {e}"));
+                                                                                                } else {
+                                                                                                    toasts::toast_success("Flashing component");
+                                                                                                }
+                                                                                            });
+                                                                                        }
+                                                                                    }
+                                                                                >
+                                                                                    <Icon icon=LuZap width="9px" height="9px" />
+                                                                                </button>
+
+                                                                                // Delete component
                                                                                 <button
                                                                                     class="w-4 h-4 flex items-center justify-center rounded shrink-0
                                                                                            opacity-0 group-hover/row:opacity-100 transition-opacity
@@ -608,6 +683,17 @@ fn ComponentCombobox(
     let components_store = StoredValue::new(components);
     let has_selection = !selected_id.is_empty();
 
+    // Custom component creation state
+    #[derive(Clone, Copy, PartialEq)]
+    enum CustomMode { None, Strip, Matrix }
+    let (custom_mode, set_custom_mode) = signal(CustomMode::None);
+    let (custom_name, set_custom_name) = signal(String::new());
+    let (custom_led_count, set_custom_led_count) = signal(60_u32);
+    let (custom_cols, set_custom_cols) = signal(8_u32);
+    let (custom_rows, set_custom_rows) = signal(8_u32);
+    let (custom_serpentine, set_custom_serpentine) = signal(true);
+    let (creating, set_creating) = signal(false);
+
     install_component_combobox_outside_handler(set_open);
 
     let filtered = Memo::new(move |_| {
@@ -759,6 +845,274 @@ fn ComponentCombobox(
                                     </button>
                                 </div>
                             })}
+
+                            // ── Custom component creation ──────────────
+                            <div class="border-t border-edge-subtle">
+                                {move || match custom_mode.get() {
+                                    CustomMode::None => view! {
+                                        <div class="flex items-center gap-1 p-1.5">
+                                            <button
+                                                type="button"
+                                                class="flex-1 flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-medium
+                                                       text-neon-cyan/60 hover:text-neon-cyan hover:bg-neon-cyan/5 transition-colors"
+                                                on:click=move |ev| { ev.stop_propagation(); set_custom_mode.set(CustomMode::Strip); }
+                                            >
+                                                <Icon icon=LuPlus width="10px" height="10px" />
+                                                "Custom Strip"
+                                            </button>
+                                            <button
+                                                type="button"
+                                                class="flex-1 flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-medium
+                                                       text-neon-cyan/60 hover:text-neon-cyan hover:bg-neon-cyan/5 transition-colors"
+                                                on:click=move |ev| { ev.stop_propagation(); set_custom_mode.set(CustomMode::Matrix); }
+                                            >
+                                                <Icon icon=LuPlus width="10px" height="10px" />
+                                                "Custom Matrix"
+                                            </button>
+                                        </div>
+                                    }.into_any(),
+                                    CustomMode::Strip => {
+                                        let on_select = on_select;
+                                        view! {
+                                        <div class="p-2 space-y-2 animate-fade-in" on:mousedown=|ev: web_sys::MouseEvent| ev.stop_propagation()>
+                                            <div class="flex items-center gap-2">
+                                                <span class="text-[9px] font-mono uppercase tracking-wider text-neon-cyan/50">"Custom Strip"</span>
+                                                <button
+                                                    type="button"
+                                                    class="ml-auto text-[9px] text-fg-tertiary/40 hover:text-fg-tertiary transition-colors"
+                                                    on:click=move |_| set_custom_mode.set(CustomMode::None)
+                                                >"Cancel"</button>
+                                            </div>
+                                            <input
+                                                type="text"
+                                                placeholder="Name (optional)"
+                                                class="w-full bg-surface-base/60 border border-edge-subtle rounded px-2 py-1
+                                                       text-[11px] text-fg-primary placeholder-fg-tertiary/30
+                                                       focus:outline-none focus:border-accent-muted"
+                                                prop:value=move || custom_name.get()
+                                                on:input=move |ev| {
+                                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                    if let Some(el) = target { set_custom_name.set(el.value()); }
+                                                }
+                                                on:click=move |ev| ev.stop_propagation()
+                                            />
+                                            <div class="flex items-center gap-2">
+                                                <label class="text-[10px] text-fg-tertiary/60">"LEDs"</label>
+                                                <input
+                                                    type="number" min="1" max="2000"
+                                                    class="w-20 bg-surface-base/60 border border-edge-subtle rounded px-2 py-1
+                                                           text-[11px] text-fg-primary font-mono tabular-nums
+                                                           focus:outline-none focus:border-accent-muted"
+                                                    prop:value=move || custom_led_count.get().to_string()
+                                                    on:input=move |ev| {
+                                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                        if let Some(el) = target {
+                                                            if let Ok(v) = el.value().parse::<u32>() {
+                                                                set_custom_led_count.set(v.clamp(1, 2000));
+                                                            }
+                                                        }
+                                                    }
+                                                    on:click=move |ev| ev.stop_propagation()
+                                                />
+                                            </div>
+                                            <button
+                                                type="button"
+                                                class="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-medium
+                                                       transition-all btn-press disabled:opacity-30"
+                                                style="background: rgba(128, 255, 234, 0.1); color: rgb(128, 255, 234); border: 1px solid rgba(128, 255, 234, 0.2)"
+                                                disabled=move || creating.get()
+                                                on:click=move |ev| {
+                                                    ev.stop_propagation();
+                                                    set_creating.set(true);
+                                                    let count = custom_led_count.get_untracked();
+                                                    let name = custom_name.get_untracked();
+                                                    let display_name = if name.trim().is_empty() {
+                                                        format!("Custom Strip - {count} LEDs")
+                                                    } else {
+                                                        name.trim().to_string()
+                                                    };
+                                                    let id = format!("custom-strip-{count}-{}", js_sys::Date::now() as u64);
+                                                    let template = hypercolor_types::attachment::AttachmentTemplate {
+                                                        id: id.clone(),
+                                                        name: display_name,
+                                                        category: hypercolor_types::attachment::AttachmentCategory::Strip,
+                                                        origin: hypercolor_types::attachment::AttachmentOrigin::User,
+                                                        description: format!("Custom LED strip, {count} LEDs"),
+                                                        vendor: "Custom".to_string(),
+                                                        default_size: hypercolor_types::attachment::AttachmentCanvasSize {
+                                                            width: 0.24, height: 0.06,
+                                                        },
+                                                        topology: hypercolor_types::spatial::LedTopology::Strip {
+                                                            count,
+                                                            direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+                                                        },
+                                                        compatible_slots: Vec::new(),
+                                                        tags: vec!["custom".to_string(), "strip".to_string()],
+                                                        led_names: None,
+                                                        led_mapping: None,
+                                                        image_url: None,
+                                                        physical_size_mm: None,
+                                                    };
+                                                    leptos::task::spawn_local(async move {
+                                                        match api::create_attachment_template(&template).await {
+                                                            Ok(_) => {
+                                                                on_select.run(id);
+                                                                set_open.set(false);
+                                                                set_custom_mode.set(CustomMode::None);
+                                                                set_custom_name.set(String::new());
+                                                                toasts::toast_success("Custom strip created");
+                                                            }
+                                                            Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
+                                                        }
+                                                        set_creating.set(false);
+                                                    });
+                                                }
+                                            >
+                                                {move || if creating.get() { "Creating..." } else { "Create Strip" }}
+                                            </button>
+                                        </div>
+                                    }.into_any()},
+                                    CustomMode::Matrix => {
+                                        let on_select = on_select;
+                                        view! {
+                                        <div class="p-2 space-y-2 animate-fade-in" on:mousedown=|ev: web_sys::MouseEvent| ev.stop_propagation()>
+                                            <div class="flex items-center gap-2">
+                                                <span class="text-[9px] font-mono uppercase tracking-wider text-neon-cyan/50">"Custom Matrix"</span>
+                                                <button
+                                                    type="button"
+                                                    class="ml-auto text-[9px] text-fg-tertiary/40 hover:text-fg-tertiary transition-colors"
+                                                    on:click=move |_| set_custom_mode.set(CustomMode::None)
+                                                >"Cancel"</button>
+                                            </div>
+                                            <input
+                                                type="text"
+                                                placeholder="Name (optional)"
+                                                class="w-full bg-surface-base/60 border border-edge-subtle rounded px-2 py-1
+                                                       text-[11px] text-fg-primary placeholder-fg-tertiary/30
+                                                       focus:outline-none focus:border-accent-muted"
+                                                prop:value=move || custom_name.get()
+                                                on:input=move |ev| {
+                                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                    if let Some(el) = target { set_custom_name.set(el.value()); }
+                                                }
+                                                on:click=move |ev| ev.stop_propagation()
+                                            />
+                                            <div class="flex items-center gap-2">
+                                                <label class="text-[10px] text-fg-tertiary/60">"Cols"</label>
+                                                <input
+                                                    type="number" min="1" max="64"
+                                                    class="w-14 bg-surface-base/60 border border-edge-subtle rounded px-2 py-1
+                                                           text-[11px] text-fg-primary font-mono tabular-nums
+                                                           focus:outline-none focus:border-accent-muted"
+                                                    prop:value=move || custom_cols.get().to_string()
+                                                    on:input=move |ev| {
+                                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                        if let Some(el) = target {
+                                                            if let Ok(v) = el.value().parse::<u32>() {
+                                                                set_custom_cols.set(v.clamp(1, 64));
+                                                            }
+                                                        }
+                                                    }
+                                                    on:click=move |ev| ev.stop_propagation()
+                                                />
+                                                <span class="text-[10px] text-fg-tertiary/30">{"\u{00d7}"}</span>
+                                                <label class="text-[10px] text-fg-tertiary/60">"Rows"</label>
+                                                <input
+                                                    type="number" min="1" max="64"
+                                                    class="w-14 bg-surface-base/60 border border-edge-subtle rounded px-2 py-1
+                                                           text-[11px] text-fg-primary font-mono tabular-nums
+                                                           focus:outline-none focus:border-accent-muted"
+                                                    prop:value=move || custom_rows.get().to_string()
+                                                    on:input=move |ev| {
+                                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                        if let Some(el) = target {
+                                                            if let Ok(v) = el.value().parse::<u32>() {
+                                                                set_custom_rows.set(v.clamp(1, 64));
+                                                            }
+                                                        }
+                                                    }
+                                                    on:click=move |ev| ev.stop_propagation()
+                                                />
+                                                <span class="text-[9px] font-mono text-fg-tertiary/30">
+                                                    "=" {move || custom_cols.get() * custom_rows.get()}
+                                                </span>
+                                            </div>
+                                            <label class="flex items-center gap-2 cursor-pointer" on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()>
+                                                <input
+                                                    type="checkbox"
+                                                    class="accent-neon-cyan"
+                                                    prop:checked=move || custom_serpentine.get()
+                                                    on:change=move |ev| {
+                                                        let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                        if let Some(el) = target { set_custom_serpentine.set(el.checked()); }
+                                                    }
+                                                />
+                                                <span class="text-[10px] text-fg-tertiary/60">"Serpentine wiring"</span>
+                                            </label>
+                                            <button
+                                                type="button"
+                                                class="w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-medium
+                                                       transition-all btn-press disabled:opacity-30"
+                                                style="background: rgba(128, 255, 234, 0.1); color: rgb(128, 255, 234); border: 1px solid rgba(128, 255, 234, 0.2)"
+                                                disabled=move || creating.get()
+                                                on:click=move |ev| {
+                                                    ev.stop_propagation();
+                                                    set_creating.set(true);
+                                                    let cols = custom_cols.get_untracked();
+                                                    let rows = custom_rows.get_untracked();
+                                                    let serpentine = custom_serpentine.get_untracked();
+                                                    let name = custom_name.get_untracked();
+                                                    let total = cols * rows;
+                                                    let display_name = if name.trim().is_empty() {
+                                                        format!("Custom Matrix - {cols}\u{00d7}{rows}")
+                                                    } else {
+                                                        name.trim().to_string()
+                                                    };
+                                                    let id = format!("custom-matrix-{cols}x{rows}-{}", js_sys::Date::now() as u64);
+                                                    let template = hypercolor_types::attachment::AttachmentTemplate {
+                                                        id: id.clone(),
+                                                        name: display_name,
+                                                        category: hypercolor_types::attachment::AttachmentCategory::Matrix,
+                                                        origin: hypercolor_types::attachment::AttachmentOrigin::User,
+                                                        description: format!("Custom {cols}\u{00d7}{rows} LED matrix, {total} LEDs"),
+                                                        vendor: "Custom".to_string(),
+                                                        default_size: hypercolor_types::attachment::AttachmentCanvasSize {
+                                                            width: 0.24, height: 0.24,
+                                                        },
+                                                        topology: hypercolor_types::spatial::LedTopology::Matrix {
+                                                            width: cols,
+                                                            height: rows,
+                                                            serpentine,
+                                                            start_corner: hypercolor_types::spatial::Corner::TopLeft,
+                                                        },
+                                                        compatible_slots: Vec::new(),
+                                                        tags: vec!["custom".to_string(), "matrix".to_string()],
+                                                        led_names: None,
+                                                        led_mapping: None,
+                                                        image_url: None,
+                                                        physical_size_mm: None,
+                                                    };
+                                                    leptos::task::spawn_local(async move {
+                                                        match api::create_attachment_template(&template).await {
+                                                            Ok(_) => {
+                                                                on_select.run(id);
+                                                                set_open.set(false);
+                                                                set_custom_mode.set(CustomMode::None);
+                                                                set_custom_name.set(String::new());
+                                                                toasts::toast_success("Custom matrix created");
+                                                            }
+                                                            Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
+                                                        }
+                                                        set_creating.set(false);
+                                                    });
+                                                }
+                                            >
+                                                {move || if creating.get() { "Creating..." } else { "Create Matrix" }}
+                                            </button>
+                                        </div>
+                                    }.into_any()},
+                                }}
+                            </div>
                         </div>
                     </Portal>
                 }

@@ -442,6 +442,31 @@ pub async fn identify_attachment(
     Ok(())
 }
 
+/// Create a user-authored attachment template (custom strip, matrix, etc.).
+pub async fn create_attachment_template(
+    template: &hypercolor_types::attachment::AttachmentTemplate,
+) -> Result<TemplateSummary, String> {
+    let body = serde_json::to_string(template).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::post("/api/v1/attachments/templates")
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 && resp.status() != 201 {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {text}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<TemplateSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
 /// Fetch logical devices for a physical device.
 pub async fn fetch_logical_devices(device_id: &str) -> Result<Vec<LogicalDeviceSummary>, String> {
     let url = format!("/api/v1/devices/{device_id}/logical-devices");

@@ -1,4 +1,4 @@
-//! Device detail sidebar — hardware spec sheet with visual zones and components.
+//! Device detail sidebar — hardware spec sheet with channels and components.
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -10,7 +10,7 @@ use crate::app::DevicesContext;
 use crate::components::attachment_panel::WiringPanel;
 use crate::components::device_card::{
     ALL_DEVICE_CLASSES, backend_accent_rgb, classify_device, device_class_icon, device_class_label,
-    save_category_override, topology_shape_svg,
+    save_category_override,
 };
 use crate::components::device_pairing_modal::needs_pairing;
 use crate::icons::*;
@@ -438,106 +438,7 @@ pub fn DeviceDetail(
                         }
                     })}
 
-                    // ── Zones (expanded by default, animated collapse) ──────
-                    {(!dev.zones.is_empty()).then(|| {
-                        let zones = dev.zones.clone();
-                        let zone_rgb = rgb.clone();
-                        let zone_count = zones.len();
-                        let (zones_open, set_zones_open) = signal(true);
-                        let dev_id_for_zone = dev.id.clone();
-                        view! {
-                            <div class="rounded-xl bg-surface-raised border border-edge-subtle overflow-hidden edge-glow">
-                                <button
-                                    class="w-full px-4 py-2.5 flex items-center gap-2 hover:bg-surface-hover/20 transition-colors"
-                                    on:click=move |_| set_zones_open.update(|v| *v = !*v)
-                                >
-                                    <Icon icon=LuGrid2x2 width="12px" height="12px" style="color: rgba(139, 133, 160, 0.6)" />
-                                    <h3 class="text-[10px] font-mono uppercase tracking-[0.12em] text-fg-tertiary">"Zones"</h3>
-                                    <span class="text-[9px] font-mono text-fg-tertiary/40 ml-auto">{zone_count}</span>
-                                    <span class="w-3 h-3 flex items-center justify-center transition-transform duration-200"
-                                          class:rotate-180=move || !zones_open.get()>
-                                        <Icon icon=LuChevronDown width="11px" height="11px" style="color: rgba(139, 133, 160, 0.4)" />
-                                    </span>
-                                </button>
-                                // Animated expand/collapse via grid-template-rows
-                                <div
-                                    class="transition-[grid-template-rows] duration-200 ease-out"
-                                    style=move || if zones_open.get() {
-                                        "display: grid; grid-template-rows: 1fr"
-                                    } else {
-                                        "display: grid; grid-template-rows: 0fr"
-                                    }
-                                >
-                                    <div style="overflow: hidden">
-                                        <div class="px-3 pb-3">
-                                            <div class="grid grid-cols-2 gap-1.5">
-                                                {zones.into_iter().map(|zone| {
-                                                    let zr = zone_rgb.clone();
-                                                    let svg = topology_shape_svg(&zone.topology);
-                                                    let zone_name = zone.name.clone();
-                                                    let dev_id = dev_id_for_zone.clone();
-
-                                                    // Display metadata from topology hint
-                                                    let display_info = zone.topology_hint.as_ref().and_then(|h| {
-                                                        if let api::ZoneTopologySummary::Display { width, height, circular } = h {
-                                                            Some((*width, *height, *circular))
-                                                        } else { None }
-                                                    });
-
-                                                    view! {
-                                                        <div class="flex items-center gap-2 px-2 py-1.5 rounded-md
-                                                                    bg-surface-overlay/15 hover:bg-surface-hover/30 transition-colors group/zone">
-                                                            <div class="w-4 h-4 shrink-0" style=format!("color: rgba({zr}, 0.5)")
-                                                                 inner_html=format!(r#"<svg viewBox="0 0 16 16" width="16" height="16">{svg}</svg>"#) />
-                                                            <div class="min-w-0 flex-1">
-                                                                <div class="text-[11px] text-fg-primary leading-tight">{zone_name}</div>
-                                                                <div class="flex items-center gap-1.5">
-                                                                    <span class="text-[9px] font-mono text-fg-tertiary/50">{zone.led_count} " LEDs"</span>
-                                                                    {display_info.map(|(w, h, circular)| {
-                                                                        let label = if circular { format!("{w}\u{00d7}{h} \u{25cb}") } else { format!("{w}\u{00d7}{h}") };
-                                                                        view! {
-                                                                            <span class="text-[8px] font-mono text-fg-tertiary/30">{label}</span>
-                                                                        }
-                                                                    })}
-                                                                </div>
-                                                            </div>
-                                                            // Channel identify button — flashes only this channel's LEDs
-                                                            <button
-                                                                class="w-4 h-4 flex items-center justify-center rounded shrink-0
-                                                                       opacity-0 group-hover/zone:opacity-100 transition-opacity
-                                                                       text-fg-tertiary/40 hover:text-accent btn-press"
-                                                                title="Identify channel"
-                                                                on:click={
-                                                                    let dev_id = dev_id.clone();
-                                                                    let zone_id = zone.id.clone();
-                                                                    move |ev: web_sys::MouseEvent| {
-                                                                        ev.stop_propagation();
-                                                                        let did = dev_id.clone();
-                                                                        let zid = zone_id.clone();
-                                                                        leptos::task::spawn_local(async move {
-                                                                            if let Err(e) = api::identify_zone(&did, &zid).await {
-                                                                                toasts::toast_error(&format!("Identify failed: {e}"));
-                                                                            } else {
-                                                                                toasts::toast_success("Flashing channel");
-                                                                            }
-                                                                        });
-                                                                    }
-                                                                }
-                                                            >
-                                                                <Icon icon=LuZap width="9px" height="9px" />
-                                                            </button>
-                                                        </div>
-                                                    }
-                                                }).collect_view()}
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        }
-                    })}
-
-                    // ── Components ────────────────────────────────────────────
+                    // ── Channels (unified: zone info + component editor) ─────
                     <WiringPanel device_id=device_id device=device_signal />
                 }
             })}
