@@ -92,7 +92,6 @@ pub fn WiringPanel(
     #[prop(into)] device: Signal<Option<api::DeviceSummary>>,
 ) -> impl IntoView {
     let ctx = expect_context::<DevicesContext>();
-    let (expanded_slot, set_expanded_slot) = signal(Option::<String>::None);
     let (save_in_flight, set_save_in_flight) = signal(false);
     let (refetch_tick, set_refetch_tick) = signal(0_u32);
 
@@ -166,13 +165,6 @@ pub fn WiringPanel(
                                                 .map(|z| topology_shape_svg(&z.topology))
                                                 .unwrap_or_else(|| topology_shape_svg("strip"));
                                             let zone_id_for_identify = zone_match.as_ref().map(|z| z.id.clone());
-                                            let slot_bindings = bindings
-                                                .iter()
-                                                .filter(|b| b.slot_id == slot.id)
-                                                .cloned()
-                                                .collect::<Vec<_>>();
-                                            let attachment_count: u32 = slot_bindings.iter().map(|b| b.instances.max(1)).sum();
-
                                             // Editable channel name (localStorage override)
                                             let default_name = slot.name.clone();
                                             let stored_name = load_channel_name(&did, &slot.id);
@@ -195,23 +187,6 @@ pub fn WiringPanel(
                                                     };
                                                     save_channel_name(&did, &slot_id, &name);
                                                     set_channel_name.set(name);
-                                                }
-                                            };
-
-                                            let is_expanded = {
-                                                let slot_id = slot_id.clone();
-                                                move || expanded_slot.get().as_deref() == Some(&slot_id)
-                                            };
-                                            let toggle_slot = {
-                                                let slot_id = slot_id.clone();
-                                                move |_: web_sys::MouseEvent| {
-                                                    set_expanded_slot.update(|current| {
-                                                        if current.as_deref() == Some(&slot_id) {
-                                                            *current = None;
-                                                        } else {
-                                                            *current = Some(slot_id.clone());
-                                                        }
-                                                    });
                                                 }
                                             };
 
@@ -246,22 +221,10 @@ pub fn WiringPanel(
                                                 set_draft_rows.update(|rows| rows.push(attachment_editor::AttachmentDraftRow::empty()));
                                             };
 
-                                            // Collapsed summary shapes
-                                            let bound_shapes: Vec<(String, String, u32)> = slot_bindings.iter().map(|b| {
-                                                let cat = all_templates.iter().find(|t| t.id == b.template_id)
-                                                    .map(|t| t.category.as_str().to_string())
-                                                    .unwrap_or_else(|| "other".to_string());
-                                                let name = b.name.clone().unwrap_or_else(|| b.template_name.clone());
-                                                (cat, name, b.instances)
-                                            }).collect();
-
                                             view! {
                                                 <div class="rounded-lg border border-edge-subtle bg-surface-overlay/15 overflow-visible transition-all group/slot">
-                                                    // Channel header — topology icon + name + LED count + identify + expand
-                                                    <button
-                                                        class="w-full px-2.5 py-2 text-left hover:bg-surface-hover/20 transition-colors"
-                                                        on:click=toggle_slot
-                                                    >
+                                                    // Channel header — topology icon + name + LED count + identify
+                                                    <div class="px-2.5 py-2">
                                                         <div class="flex items-center gap-2">
                                                             // Topology shape icon
                                                             <div class="w-4 h-4 shrink-0" style="color: rgba(128, 255, 234, 0.5)"
@@ -352,44 +315,16 @@ pub fn WiringPanel(
                                                                 }
                                                             })}
 
-                                                            // Expand/collapse chevron
-                                                            <div class="shrink-0">
-                                                                {if is_expanded() {
-                                                                    view! { <Icon icon=LuChevronUp width="11px" height="11px" style="color: rgba(139, 133, 160, 0.5)" /> }.into_any()
-                                                                } else {
-                                                                    view! { <Icon icon=LuChevronDown width="11px" height="11px" style="color: rgba(139, 133, 160, 0.5)" /> }.into_any()
-                                                                }}
-                                                            </div>
                                                         </div>
+                                                    </div>
 
-                                                        // Collapsed: attached component shapes
-                                                        {(!is_expanded() && attachment_count > 0).then(|| {
-                                                            let shapes = bound_shapes.clone();
-                                                            view! {
-                                                                <div class="flex items-center gap-2 mt-1 pl-6" style="color: rgba(128, 255, 234, 0.5)">
-                                                                    {shapes.into_iter().map(|(cat, name, instances)| {
-                                                                        let svg = category_shape_svg(&cat, 16);
-                                                                        let label = if instances > 1 { format!("{name} \u{00d7}{instances}") } else { name };
-                                                                        view! {
-                                                                            <div class="flex items-center gap-1">
-                                                                                <div class="w-4 h-4 shrink-0" inner_html=svg />
-                                                                                <span class="text-[10px] text-fg-tertiary/60">{label}</span>
-                                                                            </div>
-                                                                        }
-                                                                    }).collect_view()}
-                                                                </div>
-                                                            }
-                                                        })}
-                                                    </button>
-
-                                                    // Expanded: component rows with searchable picker
+                                                    // Component rows with searchable picker (always visible)
                                                     {
                                                     let slot_for_save = StoredValue::new(slot.clone());
                                                     let slot_id_for_save = StoredValue::new(slot_id.clone());
                                                     let did_for_identify = StoredValue::new(did.clone());
                                                     let slot_id_for_identify = StoredValue::new(slot_id.clone());
                                                     view! {
-                                                    <Show when=is_expanded>
                                                         <div class="px-2.5 pb-2 space-y-1.5 border-t border-edge-subtle bg-surface-sunken/20 animate-fade-in">
                                                             <div class="pt-1.5 space-y-1">
                                                                 {move || {
@@ -623,7 +558,6 @@ pub fn WiringPanel(
                                                                 </div>
                                                             </div>
                                                         </div>
-                                                    </Show>
                                                     }}
                                                 </div>
                                             }
@@ -854,7 +788,6 @@ fn ComponentCombobox(
                                 {move || {
                                     let results = filtered.get();
                                     let is_searching = !search.get().is_empty();
-                                    let show_custom_at_top = !is_searching && (cat_count == 0 || results.is_empty());
 
                                     // Helper to render a template option
                                     let render_option = |t: api::TemplateSummary| {
@@ -976,49 +909,48 @@ fn ComponentCombobox(
                                         }
                                     };
 
-                                    if results.is_empty() && !show_custom_at_top {
-                                        return view! {
-                                            <div class="px-3 py-4 text-center text-[10px] text-fg-tertiary/40">"No components found"</div>
-                                        }.into_any();
-                                    }
-
-                                    if show_custom_at_top {
-                                        // No suggestions — custom creation first, then all templates
+                                    if is_searching {
+                                        // Searching — just show filtered results, no create buttons
+                                        if results.is_empty() {
+                                            return view! {
+                                                <div class="px-3 py-4 text-center text-[10px] text-fg-tertiary/40">"No components found"</div>
+                                            }.into_any();
+                                        }
+                                        results.into_iter().map(render_option).collect_view().into_any()
+                                    } else {
+                                        // Not searching — always show Create at the top, then templates
                                         view! {
                                             <div class="px-2 pt-1.5 pb-0.5">
                                                 <div class="text-[9px] font-mono uppercase tracking-wider text-neon-cyan/40 px-1">"Create"</div>
                                             </div>
                                             {custom_items()}
-                                            {(!results.is_empty()).then(|| view! {
-                                                <div class="h-px bg-border-subtle/20 mx-2 my-1" />
-                                                <div class="px-2 pt-0.5 pb-0.5">
-                                                    <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/25 px-1">"Templates"</div>
-                                                </div>
-                                                {results.clone().into_iter().map(render_option).collect_view()}
+                                            {(!results.is_empty()).then(|| {
+                                                let has_suggestions = cat_count > 0 && cat_count < results.len();
+                                                if has_suggestions {
+                                                    let suggested = results[..cat_count].to_vec();
+                                                    let others = results[cat_count..].to_vec();
+                                                    view! {
+                                                        <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
+                                                        <div class="px-2 pt-1 pb-0.5">
+                                                            <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/35 px-1">"Suggested"</div>
+                                                        </div>
+                                                        {suggested.into_iter().map(render_option).collect_view()}
+                                                        <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
+                                                        <div class="px-2 pt-1 pb-0.5">
+                                                            <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/25 px-1">"All"</div>
+                                                        </div>
+                                                        {others.into_iter().map(render_option).collect_view()}
+                                                    }.into_any()
+                                                } else {
+                                                    view! {
+                                                        <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
+                                                        <div class="px-2 pt-1 pb-0.5">
+                                                            <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/25 px-1">"Templates"</div>
+                                                        </div>
+                                                        {results.into_iter().map(render_option).collect_view()}
+                                                    }.into_any()
+                                                }
                                             })}
-                                        }.into_any()
-                                    } else if is_searching || cat_count >= results.len() {
-                                        // Searching or all are suggestions — flat sorted list
-                                        results.into_iter().map(render_option).collect_view().into_any()
-                                    } else {
-                                        // Has suggestions — show suggested first, then create, then all
-                                        let suggested = results[..cat_count].to_vec();
-                                        let others = results[cat_count..].to_vec();
-                                        view! {
-                                            <div class="px-2 pt-1.5 pb-0.5">
-                                                <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/35 px-1">"Suggested"</div>
-                                            </div>
-                                            {suggested.into_iter().map(render_option).collect_view()}
-                                            <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
-                                            <div class="px-2 pt-1 pb-0.5">
-                                                <div class="text-[9px] font-mono uppercase tracking-wider text-neon-cyan/30 px-1">"Create"</div>
-                                            </div>
-                                            {custom_items()}
-                                            <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
-                                            <div class="px-2 pt-1 pb-0.5">
-                                                <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/25 px-1">"All"</div>
-                                            </div>
-                                            {others.into_iter().map(render_option).collect_view()}
                                         }.into_any()
                                     }
                                 }}
