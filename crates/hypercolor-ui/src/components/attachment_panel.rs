@@ -371,9 +371,6 @@ pub fn WiringPanel(
                                                                                             });
                                                                                         }
                                                                                     })
-                                                                                    on_refresh_templates=Callback::new(move |()| {
-                                                                                        set_templates_tick.update(|t| *t += 1);
-                                                                                    })
                                                                                 />
 
                                                                                 // LED count: editable for user templates, static for built-in
@@ -481,15 +478,111 @@ pub fn WiringPanel(
                                                                 }}
                                                             </div>
 
-                                                            <div class="flex items-center justify-between">
-                                                                <button
-                                                                    class="text-[9px] font-medium px-1.5 py-0.5 rounded transition-all btn-press flex items-center gap-1"
-                                                                    style="color: rgba(128, 255, 234, 0.6)"
-                                                                    on:click=add_row
-                                                                >
-                                                                    <Icon icon=LuPlus width="9px" height="9px" />
-                                                                    "Add"
-                                                                </button>
+                                                            <div class="flex items-center justify-between pt-0.5">
+                                                                <div class="flex items-center gap-1.5">
+                                                                    // Quick-add custom strip
+                                                                    <button
+                                                                        class="text-[9px] font-medium px-2 py-1 rounded transition-all btn-press flex items-center gap-1"
+                                                                        style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.1)"
+                                                                        on:click={
+                                                                            let set_rows = set_draft_rows;
+                                                                            let on_refresh = Callback::new(move |()| set_templates_tick.update(|t| *t += 1));
+                                                                            move |ev: web_sys::MouseEvent| {
+                                                                                ev.stop_propagation();
+                                                                                let id = format!("custom-strip-60-{}", js_sys::Date::now() as u64);
+                                                                                let id_for_row = id.clone();
+                                                                                let template = hypercolor_types::attachment::AttachmentTemplate {
+                                                                                    id: id.clone(),
+                                                                                    name: "Custom Strip - 60 LEDs".to_string(),
+                                                                                    category: hypercolor_types::attachment::AttachmentCategory::Strip,
+                                                                                    origin: hypercolor_types::attachment::AttachmentOrigin::User,
+                                                                                    description: "Custom LED strip, 60 LEDs".to_string(),
+                                                                                    vendor: "Custom".to_string(),
+                                                                                    default_size: hypercolor_types::attachment::AttachmentCanvasSize { width: 0.24, height: 0.06 },
+                                                                                    topology: hypercolor_types::spatial::LedTopology::Strip {
+                                                                                        count: 60,
+                                                                                        direction: hypercolor_types::spatial::StripDirection::LeftToRight,
+                                                                                    },
+                                                                                    compatible_slots: Vec::new(),
+                                                                                    tags: vec!["custom".to_string(), "strip".to_string()],
+                                                                                    led_names: None, led_mapping: None, image_url: None, physical_size_mm: None,
+                                                                                };
+                                                                                // Add draft row immediately (will show as incomplete until refresh)
+                                                                                set_rows.update(|rows| rows.push(attachment_editor::AttachmentDraftRow {
+                                                                                    template_id: id_for_row,
+                                                                                    name: None,
+                                                                                }));
+                                                                                leptos::task::spawn_local(async move {
+                                                                                    match api::create_attachment_template(&template).await {
+                                                                                        Ok(_) => {
+                                                                                            on_refresh.run(());
+                                                                                            toasts::toast_success("Custom strip added");
+                                                                                        }
+                                                                                        Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
+                                                                                    }
+                                                                                });
+                                                                            }
+                                                                        }
+                                                                    >
+                                                                        <Icon icon=LuPlus width="9px" height="9px" />
+                                                                        "Strip"
+                                                                    </button>
+                                                                    // Quick-add custom matrix
+                                                                    <button
+                                                                        class="text-[9px] font-medium px-2 py-1 rounded transition-all btn-press flex items-center gap-1"
+                                                                        style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.1)"
+                                                                        on:click={
+                                                                            let set_rows = set_draft_rows;
+                                                                            let on_refresh = Callback::new(move |()| set_templates_tick.update(|t| *t += 1));
+                                                                            move |ev: web_sys::MouseEvent| {
+                                                                                ev.stop_propagation();
+                                                                                let id = format!("custom-matrix-8x8-{}", js_sys::Date::now() as u64);
+                                                                                let id_for_row = id.clone();
+                                                                                let template = hypercolor_types::attachment::AttachmentTemplate {
+                                                                                    id: id.clone(),
+                                                                                    name: "Custom Matrix - 8\u{00d7}8".to_string(),
+                                                                                    category: hypercolor_types::attachment::AttachmentCategory::Matrix,
+                                                                                    origin: hypercolor_types::attachment::AttachmentOrigin::User,
+                                                                                    description: "Custom 8\u{00d7}8 LED matrix, 64 LEDs".to_string(),
+                                                                                    vendor: "Custom".to_string(),
+                                                                                    default_size: hypercolor_types::attachment::AttachmentCanvasSize { width: 0.24, height: 0.24 },
+                                                                                    topology: hypercolor_types::spatial::LedTopology::Matrix {
+                                                                                        width: 8, height: 8, serpentine: true,
+                                                                                        start_corner: hypercolor_types::spatial::Corner::TopLeft,
+                                                                                    },
+                                                                                    compatible_slots: Vec::new(),
+                                                                                    tags: vec!["custom".to_string(), "matrix".to_string()],
+                                                                                    led_names: None, led_mapping: None, image_url: None, physical_size_mm: None,
+                                                                                };
+                                                                                set_rows.update(|rows| rows.push(attachment_editor::AttachmentDraftRow {
+                                                                                    template_id: id_for_row,
+                                                                                    name: None,
+                                                                                }));
+                                                                                leptos::task::spawn_local(async move {
+                                                                                    match api::create_attachment_template(&template).await {
+                                                                                        Ok(_) => {
+                                                                                            on_refresh.run(());
+                                                                                            toasts::toast_success("Custom matrix added");
+                                                                                        }
+                                                                                        Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
+                                                                                    }
+                                                                                });
+                                                                            }
+                                                                        }
+                                                                    >
+                                                                        <Icon icon=LuPlus width="9px" height="9px" />
+                                                                        "Matrix"
+                                                                    </button>
+                                                                    // Add from template library
+                                                                    <button
+                                                                        class="text-[9px] font-medium px-2 py-1 rounded transition-all btn-press flex items-center gap-1
+                                                                               text-fg-tertiary/50 hover:text-fg-tertiary"
+                                                                        on:click=add_row
+                                                                    >
+                                                                        <Icon icon=LuPlus width="9px" height="9px" />
+                                                                        "Template"
+                                                                    </button>
+                                                                </div>
                                                                 <div class="flex items-center gap-2">
                                                                     {move || {
                                                                         let summary = draft_summary.get();
@@ -674,11 +767,9 @@ fn ComponentCombobox(
     selected_label: String,
     category_count: usize,
     #[prop(into)] on_select: Callback<String>,
-    #[prop(into)] on_refresh_templates: Callback<()>,
 ) -> impl IntoView {
     let (open, set_open) = signal(false);
     let (search, set_search) = signal(String::new());
-    let (creating, set_creating) = signal(false);
     let trigger_ref = NodeRef::<leptos::html::Button>::new();
     let components_store = StoredValue::new(components);
     let has_selection = !selected_id.is_empty();
@@ -798,159 +889,29 @@ fn ComponentCombobox(
                                         }) /> }
                                     };
 
-                                    // Custom creation buttons (appear as list items)
-                                    let custom_items = move || {
-                                        let is_creating = creating.get();
-                                        view! {
-                                            <button
-                                                type="button"
-                                                class="w-full flex items-center gap-2 px-2 py-1.5 mx-1 rounded-lg
-                                                       hover:bg-neon-cyan/5 transition-colors text-left disabled:opacity-30"
-                                                style="width: calc(100% - 8px); color: rgb(128, 255, 234)"
-                                                disabled=is_creating
-                                                on:click={
-                                                    let on_select = on_select;
-                                                    let on_refresh = on_refresh_templates;
-                                                    move |ev: web_sys::MouseEvent| {
-                                                        ev.stop_propagation();
-                                                        set_creating.set(true);
-                                                        let id = format!("custom-strip-60-{}", js_sys::Date::now() as u64);
-                                                        let template = hypercolor_types::attachment::AttachmentTemplate {
-                                                            id: id.clone(),
-                                                            name: "Custom Strip - 60 LEDs".to_string(),
-                                                            category: hypercolor_types::attachment::AttachmentCategory::Strip,
-                                                            origin: hypercolor_types::attachment::AttachmentOrigin::User,
-                                                            description: "Custom LED strip, 60 LEDs".to_string(),
-                                                            vendor: "Custom".to_string(),
-                                                            default_size: hypercolor_types::attachment::AttachmentCanvasSize { width: 0.24, height: 0.06 },
-                                                            topology: hypercolor_types::spatial::LedTopology::Strip {
-                                                                count: 60,
-                                                                direction: hypercolor_types::spatial::StripDirection::LeftToRight,
-                                                            },
-                                                            compatible_slots: Vec::new(),
-                                                            tags: vec!["custom".to_string(), "strip".to_string()],
-                                                            led_names: None, led_mapping: None, image_url: None, physical_size_mm: None,
-                                                        };
-                                                        leptos::task::spawn_local(async move {
-                                                            match api::create_attachment_template(&template).await {
-                                                                Ok(_) => {
-                                                                    on_refresh.run(());
-                                                                    on_select.run(id);
-                                                                    set_open.set(false);
-                                                                    toasts::toast_success("Custom strip created \u{2014} edit LED count in the row");
-                                                                }
-                                                                Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
-                                                            }
-                                                            set_creating.set(false);
-                                                        });
-                                                    }
-                                                }
-                                            >
-                                                <div class="w-4 h-4 shrink-0 flex items-center justify-center">
-                                                    <Icon icon=LuPlus width="12px" height="12px" />
-                                                </div>
-                                                <div class="flex-1 min-w-0">
-                                                    <div class="text-[11px] font-medium leading-tight">"New Custom Strip"</div>
-                                                    <div class="text-[9px] text-neon-cyan/40">"Define your own LED count"</div>
-                                                </div>
-                                            </button>
-                                            <button
-                                                type="button"
-                                                class="w-full flex items-center gap-2 px-2 py-1.5 mx-1 rounded-lg
-                                                       hover:bg-neon-cyan/5 transition-colors text-left disabled:opacity-30"
-                                                style="width: calc(100% - 8px); color: rgb(128, 255, 234)"
-                                                disabled=is_creating
-                                                on:click={
-                                                    let on_select = on_select;
-                                                    let on_refresh = on_refresh_templates;
-                                                    move |ev: web_sys::MouseEvent| {
-                                                        ev.stop_propagation();
-                                                        set_creating.set(true);
-                                                        let id = format!("custom-matrix-8x8-{}", js_sys::Date::now() as u64);
-                                                        let template = hypercolor_types::attachment::AttachmentTemplate {
-                                                            id: id.clone(),
-                                                            name: "Custom Matrix - 8\u{00d7}8".to_string(),
-                                                            category: hypercolor_types::attachment::AttachmentCategory::Matrix,
-                                                            origin: hypercolor_types::attachment::AttachmentOrigin::User,
-                                                            description: "Custom 8\u{00d7}8 LED matrix, 64 LEDs".to_string(),
-                                                            vendor: "Custom".to_string(),
-                                                            default_size: hypercolor_types::attachment::AttachmentCanvasSize { width: 0.24, height: 0.24 },
-                                                            topology: hypercolor_types::spatial::LedTopology::Matrix {
-                                                                width: 8, height: 8, serpentine: true,
-                                                                start_corner: hypercolor_types::spatial::Corner::TopLeft,
-                                                            },
-                                                            compatible_slots: Vec::new(),
-                                                            tags: vec!["custom".to_string(), "matrix".to_string()],
-                                                            led_names: None, led_mapping: None, image_url: None, physical_size_mm: None,
-                                                        };
-                                                        leptos::task::spawn_local(async move {
-                                                            match api::create_attachment_template(&template).await {
-                                                                Ok(_) => {
-                                                                    on_refresh.run(());
-                                                                    on_select.run(id);
-                                                                    set_open.set(false);
-                                                                    toasts::toast_success("Custom matrix created \u{2014} edit dimensions in the row");
-                                                                }
-                                                                Err(e) => toasts::toast_error(&format!("Create failed: {e}")),
-                                                            }
-                                                            set_creating.set(false);
-                                                        });
-                                                    }
-                                                }
-                                            >
-                                                <div class="w-4 h-4 shrink-0 flex items-center justify-center">
-                                                    <Icon icon=LuPlus width="12px" height="12px" />
-                                                </div>
-                                                <div class="flex-1 min-w-0">
-                                                    <div class="text-[11px] font-medium leading-tight">"New Custom Matrix"</div>
-                                                    <div class="text-[9px] text-neon-cyan/40">"Define rows \u{00d7} columns"</div>
-                                                </div>
-                                            </button>
-                                        }
-                                    };
+                                    if results.is_empty() {
+                                        return view! {
+                                            <div class="px-3 py-4 text-center text-[10px] text-fg-tertiary/40">"No components found"</div>
+                                        }.into_any();
+                                    }
 
-                                    if is_searching {
-                                        // Searching — just show filtered results, no create buttons
-                                        if results.is_empty() {
-                                            return view! {
-                                                <div class="px-3 py-4 text-center text-[10px] text-fg-tertiary/40">"No components found"</div>
-                                            }.into_any();
-                                        }
+                                    if is_searching || cat_count == 0 || cat_count >= results.len() {
+                                        // Flat sorted list (searching, no suggestions, or all are suggestions)
                                         results.into_iter().map(render_option).collect_view().into_any()
                                     } else {
-                                        // Not searching — always show Create at the top, then templates
+                                        // Has suggestions — show suggested first, then all
+                                        let suggested = results[..cat_count].to_vec();
+                                        let others = results[cat_count..].to_vec();
                                         view! {
                                             <div class="px-2 pt-1.5 pb-0.5">
-                                                <div class="text-[9px] font-mono uppercase tracking-wider text-neon-cyan/40 px-1">"Create"</div>
+                                                <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/35 px-1">"Suggested"</div>
                                             </div>
-                                            {custom_items()}
-                                            {(!results.is_empty()).then(|| {
-                                                let has_suggestions = cat_count > 0 && cat_count < results.len();
-                                                if has_suggestions {
-                                                    let suggested = results[..cat_count].to_vec();
-                                                    let others = results[cat_count..].to_vec();
-                                                    view! {
-                                                        <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
-                                                        <div class="px-2 pt-1 pb-0.5">
-                                                            <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/35 px-1">"Suggested"</div>
-                                                        </div>
-                                                        {suggested.into_iter().map(render_option).collect_view()}
-                                                        <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
-                                                        <div class="px-2 pt-1 pb-0.5">
-                                                            <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/25 px-1">"All"</div>
-                                                        </div>
-                                                        {others.into_iter().map(render_option).collect_view()}
-                                                    }.into_any()
-                                                } else {
-                                                    view! {
-                                                        <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
-                                                        <div class="px-2 pt-1 pb-0.5">
-                                                            <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/25 px-1">"Templates"</div>
-                                                        </div>
-                                                        {results.into_iter().map(render_option).collect_view()}
-                                                    }.into_any()
-                                                }
-                                            })}
+                                            {suggested.into_iter().map(render_option).collect_view()}
+                                            <div class="h-px bg-border-subtle/20 mx-2 my-0.5" />
+                                            <div class="px-2 pt-1 pb-0.5">
+                                                <div class="text-[9px] font-mono uppercase tracking-wider text-fg-tertiary/25 px-1">"All"</div>
+                                            </div>
+                                            {others.into_iter().map(render_option).collect_view()}
                                         }.into_any()
                                     }
                                 }}
