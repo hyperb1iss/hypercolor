@@ -255,6 +255,8 @@ pub struct TemplateSummary {
     pub name: String,
     pub vendor: String,
     pub category: hypercolor_types::attachment::AttachmentCategory,
+    #[serde(default)]
+    pub origin: Option<hypercolor_types::attachment::AttachmentOrigin>,
     pub led_count: u32,
     pub description: String,
     #[serde(default)]
@@ -465,6 +467,53 @@ pub async fn create_attachment_template(
         resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
 
     Ok(envelope.data)
+}
+
+/// Update a user-authored attachment template (change LED count, dimensions, etc.).
+pub async fn update_attachment_template(
+    template: &hypercolor_types::attachment::AttachmentTemplate,
+) -> Result<TemplateSummary, String> {
+    let url = format!("/api/v1/attachments/templates/{}", template.id);
+    let body = serde_json::to_string(template).map_err(|e| format!("Serialize error: {e}"))?;
+
+    let resp = Request::put(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .map_err(|e| format!("Request error: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {text}", resp.status()));
+    }
+
+    let envelope: ApiEnvelope<TemplateSummary> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    Ok(envelope.data)
+}
+
+/// Fetch a single attachment template by ID.
+pub async fn fetch_attachment_template(
+    id: &str,
+) -> Result<hypercolor_types::attachment::AttachmentTemplate, String> {
+    let url = format!("/api/v1/attachments/templates/{id}");
+    let resp = Request::get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    if resp.status() != 200 {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    // The detail response includes topology — parse just the fields we need
+    let envelope: ApiEnvelope<serde_json::Value> =
+        resp.json().await.map_err(|e| format!("Parse error: {e}"))?;
+
+    serde_json::from_value(envelope.data).map_err(|e| format!("Parse template: {e}"))
 }
 
 /// Fetch logical devices for a physical device.

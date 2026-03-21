@@ -408,6 +408,11 @@ pub fn WiringPanel(
                                                                         let options = templates_store.with_value(|ts| ts.clone());
                                                                         let cat_str = template_info.as_ref().map(|t| t.category.as_str().to_string()).unwrap_or_else(|| "other".to_string());
                                                                         let shape_svg = category_shape_svg(&cat_str, 18);
+                                                                        let is_user_template = template_info.as_ref()
+                                                                            .map(|t| t.origin == Some(hypercolor_types::attachment::AttachmentOrigin::User))
+                                                                            .unwrap_or(false);
+                                                                        let template_led_count = template_info.as_ref().map(|t| t.led_count).unwrap_or(0);
+                                                                        let template_id_for_edit = row.template_id.clone();
                                                                         let selected_name = template_info.as_ref()
                                                                             .map(|t| format!("{} \u{2014} {} LEDs", t.name, t.led_count))
                                                                             .unwrap_or_default();
@@ -436,11 +441,63 @@ pub fn WiringPanel(
                                                                                     })
                                                                                 />
 
-                                                                                {placement.map(|p| view! {
-                                                                                    <span class="text-[8px] font-mono text-fg-tertiary/30 tabular-nums shrink-0 w-10 text-right">
-                                                                                        {p.led_offset} "-" {p.led_end.saturating_sub(1)}
-                                                                                    </span>
-                                                                                })}
+                                                                                // LED count: editable for user templates, static for built-in
+                                                                                {if is_user_template {
+                                                                                    let tid = template_id_for_edit.clone();
+                                                                                    view! {
+                                                                                        <input
+                                                                                            type="number" min="1" max="2000"
+                                                                                            class="w-12 bg-surface-base/40 border border-edge-subtle rounded px-1 py-0.5
+                                                                                                   text-[9px] font-mono tabular-nums text-neon-cyan/70
+                                                                                                   focus:outline-none focus:border-neon-cyan/30 shrink-0 text-right"
+                                                                                            title="Edit LED count"
+                                                                                            prop:value=template_led_count.to_string()
+                                                                                            on:change={
+                                                                                                let tid = tid.clone();
+                                                                                                move |ev| {
+                                                                                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
+                                                                                                    if let Some(el) = target {
+                                                                                                        if let Ok(new_count) = el.value().parse::<u32>() {
+                                                                                                            let new_count = new_count.clamp(1, 2000);
+                                                                                                            let tid = tid.clone();
+                                                                                                            leptos::task::spawn_local(async move {
+                                                                                                                match api::fetch_attachment_template(&tid).await {
+                                                                                                                    Ok(mut tmpl) => {
+                                                                                                                        // Update the topology's LED count
+                                                                                                                        tmpl.topology = match tmpl.topology {
+                                                                                                                            hypercolor_types::spatial::LedTopology::Strip { direction, .. } =>
+                                                                                                                                hypercolor_types::spatial::LedTopology::Strip { count: new_count, direction },
+                                                                                                                            hypercolor_types::spatial::LedTopology::Matrix { serpentine, start_corner, .. } =>
+                                                                                                                                // For matrix, interpret new_count as total and keep aspect
+                                                                                                                                hypercolor_types::spatial::LedTopology::Matrix {
+                                                                                                                                    width: new_count, height: 1, serpentine, start_corner,
+                                                                                                                                },
+                                                                                                                            other => other,
+                                                                                                                        };
+                                                                                                                        tmpl.name = format!("Custom Strip - {new_count} LEDs");
+                                                                                                                        if let Err(e) = api::update_attachment_template(&tmpl).await {
+                                                                                                                            toasts::toast_error(&format!("Update failed: {e}"));
+                                                                                                                        } else {
+                                                                                                                            set_templates_tick.update(|t| *t += 1);
+                                                                                                                        }
+                                                                                                                    }
+                                                                                                                    Err(e) => toasts::toast_error(&format!("Fetch failed: {e}")),
+                                                                                                                }
+                                                                                                            });
+                                                                                                        }
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                            on:click=move |ev: web_sys::MouseEvent| ev.stop_propagation()
+                                                                                        />
+                                                                                    }.into_any()
+                                                                                } else {
+                                                                                    placement.map(|p| view! {
+                                                                                        <span class="text-[8px] font-mono text-fg-tertiary/30 tabular-nums shrink-0 w-10 text-right">
+                                                                                            {p.led_offset} "-" {p.led_end.saturating_sub(1)}
+                                                                                        </span>
+                                                                                    }).into_any()
+                                                                                }}
 
                                                                                 // Identify component
                                                                                 <button
