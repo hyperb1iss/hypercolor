@@ -30,6 +30,7 @@
   <a href="#-features">Features</a> •
   <a href="#-quickstart">Quickstart</a> •
   <a href="#-the-ui">The UI</a> •
+  <a href="#️-the-tui">The TUI</a> •
   <a href="#-architecture">Architecture</a> •
   <a href="#-contributing">Contributing</a>
 </p>
@@ -59,12 +60,16 @@ Write an effect in TypeScript. Watch it run on your keyboard.
 │  (TS/GLSL)   │     │  320 × 200   │     │   Sampler     │
 └──────────────┘     └──────────────┘     └──────┬───────┘
                                                   │
-                     ┌───────────┬────────────────┐
-                     ▼           ▼                ▼
-               ┌──────────┐ ┌──────────┐  ┌──────────┐
-               │  Razer   │ │   WLED   │  │ PrismRGB │
-               │  USB/HID │ │  UDP/DDP │  │  USB/HID │
-               └──────────┘ └──────────┘  └──────────┘
+               ┌───────────┬──────────┬───────────┐
+               ▼           ▼          ▼           ▼
+         ┌──────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+         │  Razer   │ │Corsair │ │  ASUS  │ │  WLED  │
+         │  USB/HID │ │USB/HID │ │USB/I2C │ │UDP/DDP │
+         └──────────┘ └────────┘ └────────┘ └────────┘
+         ┌──────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+         │ PrismRGB │ │  Hue   │ │Nanoleaf│ │  QMK   │
+         │  USB/HID │ │  REST  │ │  REST  │ │USB/HID │
+         └──────────┘ └────────┘ └────────┘ └────────┘
 ```
 
 1. **Effects render to a virtual canvas** — a 320×200 pixel buffer, using HTML Canvas, WebGL, or native GLSL shaders
@@ -135,7 +140,7 @@ const data = audio()  // → { bass, mid, treble, beat, bpm, spectrum... } | nul
 
 ### 🎨 Built-In Effects
 
-Hypercolor ships with **23+ handcrafted effects** spanning ambient, audio-reactive, generative,
+Hypercolor ships with **30+ handcrafted effects** spanning ambient, audio-reactive, generative,
 and interactive categories:
 
 | | | | |
@@ -155,8 +160,15 @@ Every effect is open source, well-documented, and serves as a reference for writ
 | Backend | Protocol | Devices |
 |---------|----------|---------|
 | **Razer** | USB HID (reverse-engineered) | Huntsman V2, Basilisk V3, Blade 14/15, Seiren Emote |
+| **Corsair** | USB HID (Link / Lighting Node / LCD) | iCUE LINK System Hub, Lighting Node, LCD displays |
+| **ASUS** | USB HID / SMBus I2C | Aura motherboards, GPUs, DRAM |
 | **WLED** | UDP DDP + mDNS discovery | Any WLED-compatible LED strip or controller |
 | **PrismRGB** | USB HID | PrismRGB 8/S/Mini controllers |
+| **Philips Hue** | REST / mDNS | Hue Bridge-connected lights |
+| **Nanoleaf** | REST / mDNS | Light Panels, Canvas, Shapes |
+| **Dygma Defy** | USB HID | Dygma Defy split keyboard |
+| **QMK** | USB HID (raw) | Any QMK-compatible keyboard |
+| **Ableton Push 2** | USB Bulk | Push 2 pad/button grid |
 
 ### 🖥️ Dual Render Path
 
@@ -300,6 +312,40 @@ A **Leptos 0.8 CSR** web app compiled to WASM, served directly by the daemon.
 - **Dark/light themes** — dark by default, because the light is the hero
 - **Command palette** (⌘K) for keyboard-driven navigation
 
+## 🖥️ The TUI
+
+A **Ratatui** terminal UI with true-color LED preview, audio visualization, and fullscreen effect rendering.
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="docs/images/tui-dashboard.png" alt="TUI Dashboard" width="400"><br>
+      <sub>Dashboard with live preview, device table, and quick actions</sub>
+    </td>
+    <td align="center">
+      <img src="docs/images/tui-effects.png" alt="TUI Effects Browser" width="400"><br>
+      <sub>Effects browser with control sliders and presets</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/images/tui-fullscreen-bubbles.png" alt="Fullscreen Preview — Bubble Garden" width="400"><br>
+      <sub>Fullscreen preview — Bubble Garden</sub>
+    </td>
+    <td align="center">
+      <img src="docs/images/tui-fullscreen-cymatics.png" alt="Fullscreen Preview — Cymatics" width="400"><br>
+      <sub>Fullscreen preview — Cymatics</sub>
+    </td>
+  </tr>
+</table>
+
+- **Live effect preview** — the active effect rendered in true-color half-block characters
+- **Fullscreen mode** (F11) — effect preview fills the entire terminal
+- **Effects browser** — search, navigate categories, switch effects with presets
+- **Audio spectrum** — real-time level meter and beat indicators in the status bar
+- **Device overview** — connected devices with LED counts, types, and status
+- **Quick actions** — number keys for instant effect switching
+
 ## 🏗️ Architecture
 
 ```
@@ -349,20 +395,20 @@ captured from a live instance with real hardware.
 
 **What works today:**
 - Daemon with 60fps render loop
-- 23+ SDK effects (shader + canvas)
-- Razer USB/HID, WLED UDP, PrismRGB USB/HID backends
+- 30+ SDK effects (shader + canvas)
+- 10 device backends: Razer, Corsair, ASUS, PrismRGB, WLED, Hue, Nanoleaf, Dygma, QMK, Push 2
 - Leptos web UI with live effect preview
+- Ratatui TUI with fullscreen preview and audio spectrum
 - REST API + WebSocket
+- MCP server for AI assistant integration
 - CLI with all subcommands
-- Spatial layout engine
-- Audio-reactive pipeline
+- Spatial layout engine with visual editor
+- Audio-reactive pipeline with beat detection
 - Hot-reload for effects
 
 **Coming soon:**
-- Corsair and Lian Li device support
-- TUI (Ratatui)
+- Lian Li Uni Hub device support
 - Scene automation engine
-- MCP server for AI integration
 - Effect marketplace
 - Wasmtime plugin system for community backends
 
