@@ -31,6 +31,14 @@ interface GlassPalette {
     glint: Rgb
 }
 
+interface RasterSurface {
+    canvas: HTMLCanvasElement
+    ctx: CanvasRenderingContext2D
+    image: ImageData
+    width: number
+    height: number
+}
+
 type PaletteName = 'Custom' | 'Prism' | 'Solar' | 'Rose Quartz' | 'Lagoon' | 'Glacier'
 
 const PALETTE_NAMES: PaletteName[] = ['Prism', 'Lagoon', 'Glacier', 'Rose Quartz', 'Solar', 'Custom']
@@ -39,6 +47,9 @@ const DEFAULT_BACKGROUND = '#050913'
 const DEFAULT_COLOR_1 = '#22f0ff'
 const DEFAULT_COLOR_2 = '#ff46c8'
 const DEFAULT_COLOR_3 = '#3659ff'
+const RASTER_SCALE = 0.5
+const MIN_RASTER_WIDTH = 96
+const MIN_RASTER_HEIGHT = 60
 
 const PALETTES: Record<Exclude<PaletteName, 'Custom'>, GlassPalette> = {
     Glacier: {
@@ -222,8 +233,10 @@ export default canvas.stateful(
     () => {
         const seeds: GlassSeed[] = []
         let seedCount = 0
-        let frame: ImageData | null = null
-        let frameKey = ''
+        let rasterCanvas: HTMLCanvasElement | null = null
+        let rasterCtx: CanvasRenderingContext2D | null = null
+        let rasterFrame: ImageData | null = null
+        let rasterKey = ''
 
         function ensureSeedCount(count: number): void {
             const target = clamp(Math.round(count), 6, 20)
@@ -240,16 +253,44 @@ export default canvas.stateful(
             seedCount = target
         }
 
-        function ensureFrame(ctx: CanvasRenderingContext2D): ImageData {
-            const { width, height } = ctx.canvas
+        // Full-resolution brute-force Voronoi is expensive in Servo. Rasterize the
+        // cell field to a smaller buffer, then scale it up before the glow passes.
+        function ensureRasterSurface(ctx: CanvasRenderingContext2D): RasterSurface | null {
+            const width = Math.min(
+                ctx.canvas.width,
+                Math.max(MIN_RASTER_WIDTH, Math.round(ctx.canvas.width * RASTER_SCALE)),
+            )
+            const height = Math.min(
+                ctx.canvas.height,
+                Math.max(MIN_RASTER_HEIGHT, Math.round(ctx.canvas.height * RASTER_SCALE)),
+            )
             const key = `${width}:${height}`
 
-            if (!frame || frameKey !== key) {
-                frame = ctx.createImageData(width, height)
-                frameKey = key
+            if (!rasterCanvas) {
+                rasterCanvas = document.createElement('canvas')
             }
 
-            return frame
+            if (!rasterCtx) {
+                const nextCtx = rasterCanvas.getContext('2d')
+                if (!nextCtx) return null
+                rasterCtx = nextCtx
+                rasterCtx.imageSmoothingEnabled = true
+            }
+
+            if (!rasterFrame || rasterKey !== key) {
+                rasterCanvas.width = width
+                rasterCanvas.height = height
+                rasterFrame = rasterCtx.createImageData(width, height)
+                rasterKey = key
+            }
+
+            return {
+                canvas: rasterCanvas,
+                ctx: rasterCtx,
+                image: rasterFrame,
+                width,
+                height,
+            }
         }
 
         return (ctx, time, c) => {
@@ -274,10 +315,16 @@ export default canvas.stateful(
 
             if (w === 0 || h === 0) return
 
+            const raster = ensureRasterSurface(ctx)
+            if (!raster) return
+
+            const rw = raster.width
+            const rh = raster.height
+
             ensureSeedCount(6 + Math.round(densityMix * 12))
             if (seeds.length === 0) return
 
-            const image = ensureFrame(ctx)
+            const image = raster.image
             const data = image.data
             const positions: SeedPosition[] = new Array(seeds.length)
 
@@ -297,21 +344,21 @@ export default canvas.stateful(
                 positions[i] = {
                     colorIndex: Math.floor(seed.colorBias * palette.colors.length) % palette.colors.length,
                     phase: seed.phase,
-                    x: clamp(0.08 + seed.baseX * 0.84 + orbitX, 0.04, 0.96) * w,
-                    y: clamp(0.08 + seed.baseY * 0.84 + orbitY, 0.04, 0.96) * h,
+                    x: clamp(0.08 + seed.baseX * 0.84 + orbitX, 0.04, 0.96) * rw,
+                    y: clamp(0.08 + seed.baseY * 0.84 + orbitY, 0.04, 0.96) * rh,
                 }
             }
 
-            const cellRadius = Math.sqrt((w * h) / positions.length) * (0.7 + (1 - densityMix) * 0.18)
+            const cellRadius = Math.sqrt((rw * rh) / positions.length) * (0.7 + (1 - densityMix) * 0.18)
             const edgeWidth = cellRadius * (0.1 + edgeGlowMix * 0.1 + contrastMix * 0.05)
 
             let offset = 0
 
-            for (let y = 0; y < h; y++) {
-                const cy = (y - h * 0.5) / Math.max(1, h * 0.5)
+            for (let y = 0; y < rh; y++) {
+                const cy = (y - rh * 0.5) / Math.max(1, rh * 0.5)
 
-                for (let x = 0; x < w; x++) {
-                    const cx = (x - w * 0.5) / Math.max(1, w * 0.5)
+                for (let x = 0; x < rw; x++) {
+                    const cx = (x - rw * 0.5) / Math.max(1, rw * 0.5)
 
                     let nearest2 = Number.POSITIVE_INFINITY
                     let second2 = Number.POSITIVE_INFINITY
@@ -396,7 +443,10 @@ export default canvas.stateful(
                 }
             }
 
-            ctx.putImageData(image, 0, 0)
+            raster.ctx.putImageData(image, 0, 0)
+            ctx.clearRect(0, 0, w, h)
+            ctx.imageSmoothingEnabled = true
+            ctx.drawImage(raster.canvas, 0, 0, w, h)
 
             ctx.save()
             ctx.globalCompositeOperation = 'lighter'

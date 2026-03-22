@@ -65,6 +65,20 @@ float saturate(float x) {
     return clamp(x, 0.0, 1.0);
 }
 
+float maxChannel(vec3 color) {
+    return max(color.r, max(color.g, color.b));
+}
+
+float minChannel(vec3 color) {
+    return min(color.r, min(color.g, color.b));
+}
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
 vec3 acesToneMap(vec3 x) {
     x = max(vec3(0.0), x);
     return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
@@ -75,6 +89,30 @@ vec3 preserveSaturation(vec3 color, float strength) {
     vec3 delta = color - vec3(luma);
     float amt = clamp(strength, 0.0, 1.0);
     return clamp(vec3(luma) + delta * (1.0 + amt * 0.65), 0.0, 1.4);
+}
+
+// Keep bright colors out of the neutral "all channels high" zone so LEDs stay vivid.
+vec3 limitWhitenessRatio(vec3 color, float maxRatio, float engageAt) {
+    float peak = maxChannel(color);
+    if (peak <= 0.00001) {
+        return color;
+    }
+
+    float floor = minChannel(color);
+    float ratio = floor / peak;
+    float engage = smoothstep(engageAt, 1.0, peak) * smoothstep(maxRatio, 1.0, ratio);
+    if (engage <= 0.0) {
+        return color;
+    }
+
+    float targetFloor = peak * mix(ratio, maxRatio, engage);
+    float spread = peak - floor;
+    if (spread <= 0.00001) {
+        return color * mix(1.0, 0.82, engage);
+    }
+
+    float remap = (peak - targetFloor) / spread;
+    return max((color - vec3(floor)) * remap + vec3(targetFloor), 0.0);
 }
 
 float blendDetail(float derivative) {
@@ -250,45 +288,38 @@ vec3 getSolarStorm(float g, float l, float t) {
     return base * (0.4 + l * 0.45);
 }
 
-// Circle of Fifths harmonic color scheme
-vec3 hsl2rgb(float h, float s, float l) {
-    vec3 rgb = clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
-    return l + s * (rgb - 0.5) * (1.0 - abs(2.0 * l - 1.0));
-}
-
 vec3 getHarmonic(float g, float l, float t) {
     // Base hue from chromagram analysis (circle of fifths mapped)
     float baseHue = iAudioHarmonicHue;
 
     // Shift hue across the geometry for variation
     float roughness = iAudioSpectralFlux * 0.7;
-    float hueSpread = 0.15 + roughness * 0.1;
+    float hueSpread = 0.13 + roughness * 0.08;
     float hue = fract(baseHue + g * hueSpread);
 
-    // Saturation: higher on beats, reduced during minor chords for moodiness
-    float sat = 0.6 + iBeatFlashOnset * 0.25 + iAudioFluxBands.y * 0.15;
-    sat *= 0.85 + iAudioChordMood * 0.15;
-    sat = clamp(sat, 0.3, 0.95);
+    // LED-safe harmonic mapping: stay in HSV with high saturation and restrained value.
+    float sat = 0.82 + iBeatFlashOnset * 0.1 + iAudioFluxBands.y * 0.08;
+    sat *= 0.92 + iAudioChordMood * 0.08;
+    sat = clamp(sat, 0.78, 1.0);
 
-    // Lightness: brighter core, modulated by spectral brightness
-    float lit = 0.35 + l * 0.25 + iAudioBrightness * 0.15;
-    lit += iBeatFlashOnset * 0.15;
-    lit = clamp(lit, 0.2, 0.7);
+    float val = 0.34 + l * 0.16 + iAudioBrightness * 0.09;
+    val += iBeatFlashOnset * 0.08;
+    val = clamp(val, 0.28, 0.72);
 
-    vec3 col = hsl2rgb(hue, sat, lit);
+    vec3 col = hsv2rgb(vec3(hue, sat, val));
 
     // Warm/cool temperature shift based on chord mood
-    vec3 warm = vec3(1.1, 0.95, 0.85);
-    vec3 cool = vec3(0.85, 0.95, 1.1);
+    vec3 warm = vec3(1.06, 0.96, 0.88);
+    vec3 cool = vec3(0.86, 0.95, 1.08);
     vec3 temperature = mix(cool, warm, iAudioChordMood * 0.5 + 0.5);
     col *= temperature;
 
     // Add complementary accent on treble transients
     float complement = fract(hue + 0.5);
-    vec3 accentCol = hsl2rgb(complement, 0.7, 0.5);
-    col += accentCol * iAudioFluxBands.z * 0.2;
+    vec3 accentCol = hsv2rgb(vec3(complement, 0.95, 0.72));
+    col += accentCol * iAudioFluxBands.z * 0.14;
 
-    return col;
+    return limitWhitenessRatio(col, 0.26, 0.42);
 }
 
 vec3 getSchemeColor(float g, float l, float t) {
@@ -432,14 +463,20 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
 
     // Use onset pulse for crisp beat response
     float beatPush = (0.05 + iAudioOnsetPulse * (0.15 + beatMix * 0.95) + iAudioBass * 0.22) * (0.35 + flowDrive);
+    float accent = clamp(iColorAccent, 0.45, 2.4);
+    float accentNorm = saturate((accent - 0.45) / 1.95);
 
     float paletteShift = iAudioOnsetPulse * (0.02 + beatMix * 0.12) + iAudioMomentum * 0.08 + iAudioHarmonicHue * 0.02;
     // Use gFlowed for streaming color bands
     vec3 rgb = getSchemeColor(fract(gFlowed + paletteShift), l * (1.0 + bassEnergy * 0.3), t + iAudioMid * 0.4);
+    rgb = preserveSaturation(rgb, 0.2 + accentNorm * 0.28 + fluxEnergy * 0.18);
+    rgb = limitWhitenessRatio(rgb, mix(0.36, 0.26, accentNorm), 0.42);
 
     // Audio boost with onset pulse for punch and spectral brightness for shimmer
     float audioBoost = 0.65 + iAudioLevel * 0.75 + beatFlash * 0.6 + energyMix * 0.35 + iAudioBrightness * 0.2;
+    audioBoost = min(audioBoost, 2.05);
     rgb *= audioBoost;
+    rgb = limitWhitenessRatio(rgb, mix(0.4, 0.3, accentNorm), 0.78);
 
     float bandSharp = clamp(iBandSharpness, 0.25, 3.6);
     float w = (0.025 + iAudioOnsetPulse * (0.02 + beatMix * 0.14) + iAudioFluxBands.x * 0.08) * bandSharp;
@@ -532,8 +569,6 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
     vec3 aberrated = vec3(fringeR.r, c.g, fringeB.b);
     c = mix(c, aberrated, 0.25 + iAudioFluxBands.z * 0.3);
 
-    float accent = clamp(iColorAccent, 0.45, 2.4);
-    float accentNorm = saturate((accent - 0.45) / 1.95);
     float contrast = mix(0.85, 2.45, accentNorm);
     float pivot = dot(c, vec3(0.2126, 0.7152, 0.0722));
     c = max((c - vec3(pivot)) * contrast + vec3(pivot), 0.0);
@@ -573,6 +608,7 @@ void mainImage(out vec4 outColor, vec2 fragCoord) {
     float vignette = smoothstep(1.35, 0.2, length(uv));
     c *= mix(0.65, 1.0, vignette);
     c = acesToneMap(c);
+    c = limitWhitenessRatio(c, mix(0.42, 0.3, accentNorm), 0.74);
     c = clamp(c, 0.0, 1.0);
 
     outColor = vec4(c, 1.0);
