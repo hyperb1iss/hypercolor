@@ -15,7 +15,7 @@ use hypercolor_types::spatial::{
 use crate::api;
 use crate::app::DevicesContext;
 use crate::components::attachment_editor;
-use crate::components::channel_editor::ChannelEditor;
+use crate::components::component_picker::ComponentPicker;
 use crate::components::device_card::topology_shape_svg;
 use crate::icons::*;
 use crate::layout_geometry;
@@ -250,18 +250,88 @@ pub fn WiringPanel(
                                                         })}
                                                     </div>
 
-                                                    // Component editor
-                                                    <div class="border-t border-edge-subtle/50 px-3 py-2">
-                                                        <div class="text-[10px] text-fg-tertiary/50">"Editor placeholder — " {initial_drafts.len()} " existing components"</div>
-                                                        <ChannelEditor
-                                                            slot=slot
-                                                            initial_drafts=initial_drafts
-                                                            all_templates=all_templates.clone()
-                                                            device_id=device_id
-                                                            device=device
-                                                            on_saved=on_saved
-                                                        />
+                                                    // Inline component editor
+                                                    {
+                                                        let (drafts, set_drafts) = signal(initial_drafts);
+                                                        let add_strip = move |_: web_sys::MouseEvent| {
+                                                            set_drafts.update(|rows| rows.push(attachment_editor::DraftRow::new_strip(60)));
+                                                        };
+                                                        let add_matrix = move |_: web_sys::MouseEvent| {
+                                                            set_drafts.update(|rows| rows.push(attachment_editor::DraftRow::new_matrix(8, 8)));
+                                                        };
+                                                        let on_component_selected = Callback::new(move |(template_id, name): (String, String)| {
+                                                            set_drafts.update(|rows| {
+                                                                rows.push(attachment_editor::DraftRow::from_component(template_id, name));
+                                                            });
+                                                        });
+                                                        let picker_templates = all_templates.clone();
+                                                    view! {
+                                                    <div class="border-t border-edge-subtle/50 px-3 py-2 space-y-2">
+                                                        {move || {
+                                                            let rows = drafts.get();
+                                                            if rows.is_empty() {
+                                                                view! {
+                                                                    <div class="text-[10px] text-fg-tertiary/40 text-center py-2">"No components"</div>
+                                                                }.into_any()
+                                                            } else {
+                                                                rows.into_iter().enumerate().map(|(i, row)| {
+                                                                    let led_display = match &row.kind {
+                                                                        attachment_editor::ComponentDraft::Strip { led_count } => format!("{led_count} LEDs"),
+                                                                        attachment_editor::ComponentDraft::Matrix { cols, rows } => format!("{cols}\u{00d7}{rows}"),
+                                                                        attachment_editor::ComponentDraft::Component { template_id } => {
+                                                                            format!("Component: {}", &template_id[..template_id.len().min(16)])
+                                                                        }
+                                                                    };
+                                                                    let name = if row.name.is_empty() {
+                                                                        match &row.kind {
+                                                                            attachment_editor::ComponentDraft::Strip { .. } => "Strip".to_string(),
+                                                                            attachment_editor::ComponentDraft::Matrix { .. } => "Matrix".to_string(),
+                                                                            attachment_editor::ComponentDraft::Component { .. } => "Component".to_string(),
+                                                                        }
+                                                                    } else {
+                                                                        row.name.clone()
+                                                                    };
+                                                                    view! {
+                                                                        <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-overlay/10 border border-edge-subtle/50 group/row">
+                                                                            <span class="text-[11px] text-fg-primary flex-1">{name}</span>
+                                                                            <span class="text-[10px] font-mono tabular-nums shrink-0" style="color: rgba(128, 255, 234, 0.6)">{led_display}</span>
+                                                                            <button
+                                                                                class="w-4 h-4 flex items-center justify-center rounded shrink-0
+                                                                                       opacity-0 group-hover/row:opacity-100 transition-opacity
+                                                                                       text-fg-tertiary/40 hover:text-error-red"
+                                                                                on:click=move |_| { set_drafts.update(|rows| { if i < rows.len() { rows.remove(i); } }); }
+                                                                            >
+                                                                                <Icon icon=LuX width="10px" height="10px" />
+                                                                            </button>
+                                                                        </div>
+                                                                    }
+                                                                }).collect_view().into_any()
+                                                            }
+                                                        }}
+                                                        <div class="flex items-center gap-1.5 pt-1">
+                                                            <button
+                                                                class="text-[10px] font-medium px-2.5 py-1 rounded-lg transition-all btn-press flex items-center gap-1"
+                                                                style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.12)"
+                                                                on:click=add_strip
+                                                            >
+                                                                <Icon icon=LuPlus width="10px" height="10px" />
+                                                                "Strip"
+                                                            </button>
+                                                            <button
+                                                                class="text-[10px] font-medium px-2.5 py-1 rounded-lg transition-all btn-press flex items-center gap-1"
+                                                                style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.12)"
+                                                                on:click=add_matrix
+                                                            >
+                                                                <Icon icon=LuPlus width="10px" height="10px" />
+                                                                "Matrix"
+                                                            </button>
+                                                            <ComponentPicker
+                                                                components=picker_templates
+                                                                on_select=on_component_selected
+                                                            />
+                                                        </div>
                                                     </div>
+                                                    }}
                                                 </div>
                                             }
                                         }).collect_view()}
