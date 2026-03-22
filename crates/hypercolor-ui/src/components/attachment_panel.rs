@@ -51,6 +51,7 @@ pub fn WiringPanel(
     #[prop(into)] device_id: Signal<String>,
     #[prop(into)] device: Signal<Option<api::DeviceSummary>>,
 ) -> impl IntoView {
+    let ctx = expect_context::<DevicesContext>();
     let (refetch_tick, set_refetch_tick) = signal(0_u32);
 
     let attachments = LocalResource::new(move || {
@@ -250,7 +251,8 @@ pub fn WiringPanel(
                                                     </div>
 
                                                     // Component editor
-                                                    <div class="border-t border-edge-subtle/50">
+                                                    <div class="border-t border-edge-subtle/50 px-3 py-2">
+                                                        <div class="text-[10px] text-fg-tertiary/50">"Editor placeholder — " {initial_drafts.len()} " existing components"</div>
                                                         <ChannelEditor
                                                             slot=slot
                                                             initial_drafts=initial_drafts
