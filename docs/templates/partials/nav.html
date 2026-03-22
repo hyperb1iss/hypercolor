@@ -1,7 +1,7 @@
 <nav class="site-nav" aria-label="Main navigation">
   <div class="nav-container">
-    <a class="nav-title" href="{{ config.base_url }}/" aria-label="Hypercolor home">
-      Hypercolor
+    <a class="nav-title" href="{{ get_url(path='@/_index.md') }}" aria-label="Hypercolor home">
+      <span class="nav-title__hyper">hyper</span><span class="nav-title__color">color</span>
     </a>
 
     <button class="nav-hamburger" id="nav-hamburger" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="nav-links">
@@ -12,11 +12,11 @@
 
     <div class="nav-links" id="nav-links" role="menubar">
       {% set cp = current_path | default(value="") %}
-      <a class="nav-link{% if cp is starting_with('/guide/') %} nav-link--active{% endif %}" href="/guide/" role="menuitem">Guide</a>
-      <a class="nav-link{% if cp is starting_with('/effects/') %} nav-link--active{% endif %}" href="/effects/" role="menuitem">Effects</a>
-      <a class="nav-link{% if cp is starting_with('/api/') %} nav-link--active{% endif %}" href="/api/" role="menuitem">API</a>
-      <a class="nav-link{% if cp is starting_with('/hardware/') %} nav-link--active{% endif %}" href="/hardware/" role="menuitem">Hardware</a>
-      <a class="nav-link{% if cp is starting_with('/architecture/') %} nav-link--active{% endif %}" href="/architecture/" role="menuitem">Architecture</a>
+      <a class="nav-link{% if cp is starting_with('/guide/') %} nav-link--active{% endif %}" href="{{ get_url(path='@/guide/_index.md') }}" role="menuitem">Guide</a>
+      <a class="nav-link{% if cp is starting_with('/effects/') %} nav-link--active{% endif %}" href="{{ get_url(path='@/effects/_index.md') }}" role="menuitem">Effects</a>
+      <a class="nav-link{% if cp is starting_with('/api/') %} nav-link--active{% endif %}" href="{{ get_url(path='@/api/_index.md') }}" role="menuitem">API</a>
+      <a class="nav-link{% if cp is starting_with('/hardware/') %} nav-link--active{% endif %}" href="{{ get_url(path='@/hardware/_index.md') }}" role="menuitem">Hardware</a>
+      <a class="nav-link{% if cp is starting_with('/architecture/') %} nav-link--active{% endif %}" href="{{ get_url(path='@/architecture/_index.md') }}" role="menuitem">Architecture</a>
     </div>
 
     <div class="nav-actions">

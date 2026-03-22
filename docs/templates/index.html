@@ -2,11 +2,17 @@
 
 {% block title %}{{ config.title }} — {{ config.description }}{% endblock title %}
 
+{% block head_extra %}
+<style>.hero-shader--fallback{background:radial-gradient(ellipse at 50% 40%,oklch(0.35 0.18 320) 0%,oklch(0.20 0.10 300) 30%,oklch(0.11 0.02 280) 70%)}</style>
+{% endblock head_extra %}
+
 {% block content %}
 <main id="main-content">
   <section class="hero">
+    <div class="hero-shader" id="hero-shader"></div>
+    <div class="hero-shader__overlay"></div>
     <h1 class="hero__title gradient-text">Hypercolor</h1>
-    <p class="hero__tagline">RGB lighting orchestration for Linux &mdash; open source, Rust-powered, endlessly extensible.</p>
+    <p class="hero__tagline">RGB lighting orchestration for Linux. Open source, Rust-powered, endlessly extensible.</p>
     <div class="hero__actions">
       <a class="btn btn--primary" href="{{ get_url(path='@/guide/_index.md') }}">Get Started</a>
       <a class="btn btn--secondary" href="{{ config.extra.github_url }}" target="_blank" rel="noopener noreferrer">GitHub</a>
@@ -38,14 +44,18 @@
       <div class="feature-card">
         <div class="feature-card__icon">&#128421;</div>
         <h3 class="feature-card__title">Linux Native</h3>
-        <p class="feature-card__desc">Built for Linux from day one. D-Bus, systemd, Wayland &mdash; first-class integration.</p>
+        <p class="feature-card__desc">Built for Linux from day one. D-Bus, systemd, Wayland: first-class integration.</p>
       </div>
       <div class="feature-card">
         <div class="feature-card__icon">&#9889;</div>
-        <h3 class="feature-card__title">Blazing Fast</h3>
+        <h3 class="feature-card__title">Wicked Fast</h3>
         <p class="feature-card__desc">60fps render loop in Rust. Zero-copy frame encoding. Sub-millisecond latency.</p>
       </div>
     </div>
   </section>
 </main>
 {% endblock content %}
+
+{% block body_extra %}
+<script src="{{ get_url(path='js/nebula-shader.js') }}"></script>
+{% endblock body_extra %}

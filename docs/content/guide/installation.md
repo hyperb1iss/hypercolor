@@ -7,7 +7,7 @@ template = "page.html"
 
 ## Prerequisites
 
-Hypercolor requires **Rust 1.85+** (Edition 2024) and a handful of system libraries for USB/HID device communication and audio capture.
+Hypercolor needs **Rust 1.85+** (Edition 2024) and a few system libraries to talk to your hardware and capture audio.
 
 ### System Dependencies
 
@@ -60,7 +60,7 @@ cd hypercolor
 
 ### Using the Justfile (Recommended)
 
-Hypercolor uses [just](https://github.com/casey/just) as its command runner. Install it if you haven't:
+Hypercolor uses [just](https://github.com/casey/just) as its command runner (way nicer than Makefiles). Grab it if you haven't:
 
 ```bash
 cargo install just
@@ -71,7 +71,8 @@ Then build:
 ```bash
 just build          # Debug build
 just release        # Release build (optimized)
-just verify         # Format + lint + test — run this after changes
+just check          # Type-check without building
+just verify         # Format check + lint + test — run this after changes
 ```
 
 ### Direct Cargo Commands
@@ -95,7 +96,7 @@ This copies the rules to `/etc/udev/rules.d/` and triggers a reload. You may nee
 
 ## Full Setup
 
-For a one-shot setup that installs Rust targets, Bun (for the SDK), and all frontend dependencies:
+One command to set up everything (Rust WASM target, Bun for the SDK, and all frontend dependencies):
 
 ```bash
 just setup

@@ -65,16 +65,15 @@ Browse and control effects.
 
 ```bash
 hyper effects list              # List all available effects
-hyper effects apply <id>        # Apply an effect
+hyper effects activate <id>     # Activate an effect
 hyper effects stop              # Stop the current effect
-hyper effects active            # Show the active effect and its controls
-hyper effects rescan            # Rescan the effects directory
+hyper effects info              # Show the active effect and its controls
 ```
 
 Apply with custom controls:
 
 ```bash
-hyper effects apply borealis --control speed=7 --control palette=SilkCircuit
+hyper effects activate borealis --param speed=7 --param palette=SilkCircuit
 ```
 
 ### `hyper scenes`
@@ -114,9 +113,9 @@ hyper library playlists         # List playlists
 Spatial layout management.
 
 ```bash
-hyper layouts list              # List layouts
-hyper layouts active            # Show the active layout
-hyper layouts apply <id>        # Apply a layout
+hyper layouts list              # List all layouts
+hyper layouts show <id>         # Show layout details
+hyper layouts update <id>       # Update a layout
 ```
 
 ### `hyper config`
@@ -147,6 +146,24 @@ hyper diagnose
 
 Checks device connectivity, audio capture status, effect engine health, USB permissions, and configuration validity. Outputs a diagnostic report with pass/fail status for each check.
 
+### `hyper servers`
+
+Discover Hypercolor daemons on the local network.
+
+```bash
+hyper servers discover          # Find daemons via mDNS
+```
+
+### `hyper completions`
+
+Generate shell completions.
+
+```bash
+hyper completions bash          # Bash completions
+hyper completions zsh           # Zsh completions
+hyper completions fish          # Fish completions
+```
+
 ## Output Formats
 
 The `--format` flag controls how results are rendered:
@@ -169,5 +186,3 @@ echo "Found $EFFECT_COUNT effects"
 | Variable | Description |
 |---|---|
 | `HYPERCOLOR_API_KEY` | API key for authenticated requests |
-| `HYPERCOLOR_HOST` | Daemon host (overrides default `localhost`) |
-| `HYPERCOLOR_PORT` | Daemon port (overrides default `9420`) |

@@ -6,7 +6,7 @@ sort_by = "weight"
 template = "section.html"
 +++
 
-Hypercolor is open source under the Apache-2.0 license. Contributions are welcome — bug fixes, new device drivers, effects, documentation improvements, and feature work.
+Hypercolor is open source under the Apache-2.0 license, and we love contributions from everyone. Whether it's bug fixes, new device drivers, effects, documentation improvements, or feature work, there's always room for more magic.
 
 ## Development Setup
 
@@ -78,7 +78,7 @@ test(hal): add PrismRGB frame encoding roundtrip tests
 docs(api): document WebSocket binary frame format
 ```
 
-Scopes match crate names: `core`, `hal`, `daemon`, `cli`, `tui`, `ui`, `sdk`, `types`.
+Scopes match crate names: `core`, `hal`, `daemon`, `cli`, `tui`, `ui`, `sdk`, `types`, `driver-api`, `driver-wled`, `driver-hue`, `driver-nanoleaf`, `network`.
 
 ## Crate Boundaries
 

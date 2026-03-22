@@ -12,15 +12,17 @@ Hypercolor controls RGB devices through a Hardware Abstraction Layer (HAL) that 
 | Brand | Transport | Protocol | Status |
 |---|---|---|---|
 | **Razer** | USB HID | Chroma HID protocol | Implemented |
+| **Corsair** | USB HID | Link / Lighting Node / LCD | Implemented |
+| **ASUS** | USB HID / I2C | Aura protocol | Implemented |
 | **PrismRGB / Nollie** | USB HID | Custom chunked protocol | Implemented |
 | **WLED** | Network (UDP) | DDP / E1.31 (sACN) | Implemented |
-| **Lian Li** | USB HID | Uni Hub protocol | Implemented |
-| **ASUS** | USB HID / I2C | Aura protocol | Implemented |
-| **Ableton Push 2** | USB Bulk | Pad/button RGB protocol | Implemented |
-| **ROLI Blocks** | USB HID | Lightpad protocol | In progress |
+| **Philips Hue** | Network (REST) | Hue Bridge API | Implemented |
+| **Nanoleaf** | Network (REST) | Nanoleaf OpenAPI | Implemented |
 | **Dygma Defy** | USB HID | Custom keyboard protocol | Implemented |
 | **QMK** | USB HID | QMK raw HID | Implemented |
-| **Corsair** | USB HID | iCUE protocol | Planned |
+| **Ableton Push 2** | USB Bulk | Pad/button RGB protocol | Implemented |
+| **Lian Li** | USB HID | Uni Hub protocol | Planned |
+| **ROLI Blocks** | USB HID | Lightpad protocol | Planned |
 
 ## Architecture
 
@@ -32,16 +34,21 @@ graph TD
     B -->|per-zone colors| C[Device Registry]
     C --> D[Output Queue]
     D --> E1[Razer Driver]
-    D --> E2[PrismRGB Driver]
-    D --> E3[WLED Driver]
-    D --> E4[ASUS Driver]
-    D --> E5[Push 2 Driver]
-    E1 -->|USB HID| F1[Razer Keyboard]
-    E1 -->|USB HID| F2[Razer Mouse]
-    E2 -->|USB HID| F3[Lian Li Strimer]
-    E3 -->|UDP DDP| F4[WLED Strip]
-    E4 -->|USB/I2C| F5[ASUS Motherboard]
-    E5 -->|USB Bulk| F6[Ableton Push 2]
+    D --> E2[Corsair Driver]
+    D --> E3[ASUS Driver]
+    D --> E4[PrismRGB Driver]
+    D --> E5[WLED Driver]
+    D --> E6[Hue Driver]
+    D --> E7[Nanoleaf Driver]
+    D --> E8[Dygma / QMK]
+    E1 -->|USB HID| F1[Razer Peripherals]
+    E2 -->|USB HID| F2[Corsair Devices]
+    E3 -->|USB/I2C| F3[ASUS Motherboard/GPU]
+    E4 -->|USB HID| F4[Lian Li Strimer]
+    E5 -->|UDP DDP| F5[WLED Strips]
+    E6 -->|REST| F6[Hue Bridge]
+    E7 -->|REST| F7[Nanoleaf Panels]
+    E8 -->|USB HID| F8[Custom Keyboards]
 {% end %}
 
 ### Key Abstractions

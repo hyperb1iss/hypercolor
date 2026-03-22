@@ -10,7 +10,7 @@ template = "page.html"
 Hypercolor stores its configuration in TOML format:
 
 ```
-~/.config/hypercolor/config.toml
+~/.config/hypercolor/hypercolor.toml
 ```
 
 The daemon creates a default config on first run. You can also view the current configuration via the API:
@@ -28,7 +28,7 @@ curl http://localhost:9420/api/v1/config | jq
 bind = "127.0.0.1:9420"    # Listen address and port
 log_level = "info"          # trace, debug, info, warn, error
 
-[daemon.mcp]
+[mcp]
 enabled = true              # Enable MCP server for AI integration
 base_path = "/mcp"          # MCP endpoint path
 ```
@@ -50,31 +50,21 @@ device_name = "Monitor of Built-in Audio"
 ```bash
 # List available audio capture devices
 curl http://localhost:9420/api/v1/audio/devices | jq
-
-# Update audio settings
-curl -X PUT http://localhost:9420/api/v1/settings/brightness \
-  -H "Content-Type: application/json" \
-  -d '{"brightness": 0.8}'
 ```
 
-### Security
+### Authentication
 
-```toml
-[security]
-api_key = ""                # Set a key to require authentication
-```
-
-When an API key is configured, all requests must include it:
+When the `HYPERCOLOR_API_KEY` environment variable is set, all API requests must include it:
 
 ```bash
 curl -H "Authorization: Bearer <your-key>" http://localhost:9420/api/v1/status
 ```
 
-The CLI can pass it via `--api-key` or the `HYPERCOLOR_API_KEY` environment variable.
+The CLI can pass it via `--api-key` or the same `HYPERCOLOR_API_KEY` environment variable.
 
 ## Profile System
 
-Profiles save the entire lighting state — active effect, control values, device assignments, brightness, and spatial layout — so you can switch between configurations instantly.
+Profiles save your entire lighting state (active effect, control values, device assignments, brightness, and spatial layout) so you can switch between configurations instantly.
 
 ### Creating a Profile
 
@@ -112,7 +102,7 @@ hyper profiles delete <id>
 
 ## Scenes
 
-Scenes build on profiles by adding **triggers** — conditions that automatically activate a lighting state. A scene might activate a calmer effect when it's late at night, or switch to an audio-reactive mode when music starts playing.
+Scenes build on profiles by adding **triggers**: conditions that automatically activate a lighting state. A scene might activate a calmer effect when it's late at night, or switch to an audio-reactive mode when music starts playing.
 
 ```bash
 # List scenes

@@ -5,7 +5,7 @@ weight = 2
 template = "page.html"
 +++
 
-Designing colors for physical RGB LEDs is fundamentally different from designing for screens. LEDs are point light sources viewed directly — the human eye sees the raw emitted spectrum, not reflected light. Understanding these differences is the gap between effects that look stunning and effects that look like a washed-out mess.
+Designing colors for physical RGB LEDs is fundamentally different from designing for screens. LEDs are point light sources viewed directly; the human eye sees the raw emitted spectrum, not reflected light. Understanding these differences is the gap between effects that look stunning and effects that look like a washed-out mess.
 
 ## LEDs Are Not Screens
 

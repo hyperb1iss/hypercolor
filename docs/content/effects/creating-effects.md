@@ -5,7 +5,7 @@ weight = 1
 template = "page.html"
 +++
 
-Effects are self-contained visual programs that render to a canvas. The `@hypercolor/sdk` provides a concise API for defining effects with controls, metadata, and render logic. Effects compile to single-file HTML that the daemon loads and renders headlessly.
+Effects are self-contained visual programs that render to a canvas. One function call stands between your idea and a running light show. The `@hypercolor/sdk` provides a concise API for defining effects with controls, metadata, and render logic, and the build system compiles them to single-file HTML that the daemon loads and renders headlessly.
 
 ## Effect Lifecycle
 
@@ -56,7 +56,6 @@ export default canvas('Color Pulse', {
 }, {
     description: 'Gentle color cycling with brightness pulse',
     author: 'You',
-    tags: ['ambient', 'simple'],
 })
 ```
 
@@ -108,7 +107,7 @@ export default effect('Borealis', shader, {
 })
 ```
 
-Numeric controls are automatically mapped to GLSL uniforms with the same name. The SDK also provides built-in uniforms:
+Numeric controls are automatically mapped to GLSL uniforms with an `i` prefix and PascalCase naming (`speed` becomes `iSpeed`, `warpStrength` becomes `iWarpStrength`). The SDK also provides built-in uniforms:
 
 ```glsl
 uniform float iTime;           // Elapsed seconds
@@ -171,8 +170,7 @@ Effect metadata helps with discovery and categorization:
 export default effect('My Effect', shader, controls, {
     description: 'A brief description of what this effect does',
     author: 'Your Name',
-    tags: ['audio-reactive', 'ambient', 'particles'],
-    audioReactive: true,
+    audio: true,
 })
 ```
 

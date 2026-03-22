@@ -16,7 +16,7 @@ MCP is an open protocol that standardizes how AI applications connect to externa
 Enable the MCP server in your Hypercolor config:
 
 ```toml
-[daemon.mcp]
+[mcp]
 enabled = true
 base_path = "/mcp"        # Endpoint path
 sse_keep_alive_secs = 30  # SSE keepalive interval
@@ -75,6 +75,7 @@ Resources provide contextual data that AI assistants can read:
 | `hypercolor://effects` | Effect catalog with metadata |
 | `hypercolor://devices` | Connected device information |
 | `hypercolor://audio` | Current audio analysis data |
+| `hypercolor://profiles` | Saved profiles and their configurations |
 
 {% callout(type="tip", title="Start with state") %}
 The server instructions tell AI assistants to read `hypercolor://state` or call `get_status` before making changes. This ensures the assistant understands the current lighting state before issuing commands.
@@ -84,9 +85,9 @@ The server instructions tell AI assistants to read `hypercolor://state` or call 
 
 The MCP server includes prompt templates that guide AI assistants toward effective lighting control:
 
-- **Effect selection** — Helps the assistant choose effects based on mood, activity, or audio characteristics
-- **Scene creation** — Guides scene setup with appropriate transitions and triggers
-- **Diagnostics** — Structured prompts for troubleshooting device or audio issues
+- **`mood_lighting`** — Helps the assistant choose effects based on mood, activity, or audio characteristics
+- **`setup_automation`** — Guides scene setup with appropriate transitions and triggers
+- **`troubleshoot`** — Structured prompts for troubleshooting device or audio issues
 
 ## Example Interactions
 

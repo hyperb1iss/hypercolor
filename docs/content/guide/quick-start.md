@@ -43,7 +43,7 @@ You can still browse and preview effects through the web UI without physical dev
 
 ## 3. Browse Effects
 
-Hypercolor ships with a library of built-in effects — audio-reactive visualizers, ambient gradients, particle systems, and more.
+Hypercolor ships with a library of 30+ built-in effects: audio-reactive visualizers, ambient gradients, particle systems, and more.
 
 **Via CLI:**
 
@@ -68,7 +68,7 @@ Pick an effect ID from the list and apply it:
 **Via CLI:**
 
 ```bash
-hyper effects apply <effect-id>
+hyper effects activate <effect-id>
 ```
 
 **Via REST API:**
@@ -97,7 +97,7 @@ curl -X PATCH http://localhost:9420/api/v1/effects/current/controls \
   -d '{"speed": 3, "palette": "SilkCircuit"}'
 ```
 
-Changes apply immediately — the render loop picks up new control values on the next frame.
+Changes apply immediately. The render loop picks up new control values on the next frame.
 
 ## 6. Connect via WebSocket
 
@@ -107,7 +107,7 @@ For real-time state updates, connect to the WebSocket endpoint:
 websocat ws://localhost:9420/api/v1/ws
 ```
 
-You'll receive JSON messages whenever the system state changes — effects applied, devices connected/disconnected, control values updated. The web UI and TUI both use this channel for live updates.
+You'll receive JSON messages whenever the system state changes: effects applied, devices connected/disconnected, control values updated. The web UI and TUI both use this channel for live updates.
 
 ## What's Next
 

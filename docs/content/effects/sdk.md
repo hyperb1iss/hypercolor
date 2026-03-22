@@ -5,7 +5,7 @@ weight = 3
 template = "page.html"
 +++
 
-The `@hypercolor/sdk` package provides everything needed to author, preview, and build Hypercolor effects. Effects compile to single-file HTML that the daemon renders headlessly at 60fps.
+The `@hypercolor/sdk` package provides everything you need to turn ideas into running light shows. Effects compile to single-file HTML that the daemon renders headlessly at 60fps.
 
 ## Architecture Overview
 
@@ -41,7 +41,7 @@ export default effect('Borealis', shader, {
 - `name` — Display name for the effect
 - `shader` — GLSL fragment shader source (imported as string)
 - `controls` — Optional control definitions (see [Controls API](#controls-api))
-- `options` — Optional metadata (description, author, tags, audioReactive)
+- `options` — Optional metadata (description, author, audio)
 
 ### `canvas(name, controls?, renderFn, options?)`
 
@@ -164,9 +164,9 @@ export default effect('My Shader', shader, {
 ```
 
 ```glsl
-// GLSL — these uniforms are auto-injected
-uniform float speed;      // Current slider value
-uniform float intensity;  // Current slider value
+// GLSL — these uniforms are auto-injected with i + PascalCase naming
+uniform float iSpeed;      // from control key "speed"
+uniform float iIntensity;  // from control key "intensity"
 ```
 
 ## Audio Input Data

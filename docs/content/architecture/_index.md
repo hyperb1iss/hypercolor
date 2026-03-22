@@ -30,10 +30,12 @@ graph TB
 
     subgraph Device Backends
         F1[Razer USB HID]
-        F2[PrismRGB USB HID]
-        F3[WLED UDP DDP]
-        F4[ASUS USB/I2C]
-        F5[Push 2 USB Bulk]
+        F2[Corsair USB HID]
+        F3[ASUS USB/I2C]
+        F4[PrismRGB USB HID]
+        F5[WLED UDP DDP]
+        F6[Hue / Nanoleaf REST]
+        F7[Dygma / QMK USB HID]
     end
 
     subgraph Client Interfaces
@@ -56,6 +58,8 @@ graph TB
     E --> F3
     E --> F4
     E --> F5
+    E --> F6
+    E --> F7
 
     D <--> G1
     D <--> G2

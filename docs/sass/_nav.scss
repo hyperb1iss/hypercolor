@@ -25,16 +25,50 @@
   max-width: 100%;
 }
 
-// ── Nav Title — gradient text, purple → cyan ─────────────────
+// ── Nav Title — animated gradient "hyper" + static "color" ───
 
 .nav-title {
-  background: linear-gradient(135deg, var(--accent), oklch(0.88 0.18 175));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
   font-weight: 700;
   font-size: 1.1rem;
   letter-spacing: -0.01em;
+  display: inline-flex;
+
+  &__hyper {
+    background: linear-gradient(
+      135deg,
+      oklch(0.70 0.30 320) 0%,
+      oklch(0.88 0.18 175) 50%,
+      oklch(0.65 0.30 320) 100%
+    );
+    background-size: 200% 200%;
+    animation: oracle-flow 8s ease infinite;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  &__color {
+    color: var(--text-primary);
+    transition: color var(--duration-medium) var(--ease-smooth);
+  }
+
+  &:hover {
+    .nav-title__hyper {
+      filter: drop-shadow(0 0 8px oklch(0.65 0.30 320 / 0.40));
+      animation-duration: 3s;
+    }
+
+    .nav-title__color {
+      color: oklch(0.88 0.18 175);
+      text-shadow: 0 0 12px oklch(0.88 0.18 175 / 0.30);
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-title__hyper {
+    animation: none;
+  }
 }
 
 // ── Nav Links ────────────────────────────────────────────────
