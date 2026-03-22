@@ -499,7 +499,7 @@ pub fn WiringPanel(
                                                                                     }.into_any()
                                                                                 }
                                                                                 attachment_editor::ComponentDraft::Component { template_id } => {
-                                                                                    let count = all_templates.iter().find(|t| t.id == *template_id).map(|t| t.led_count).unwrap_or(0);
+                                                                                    let count = templates_for_summary.with_value(|ts| ts.iter().find(|t| t.id == *template_id).map(|t| t.led_count)).unwrap_or(0);
                                                                                     view! {
                                                                                         <span class="text-[10px] font-mono tabular-nums shrink-0 px-1.5 py-0.5 rounded bg-surface-overlay/20"
                                                                                               style="color: rgba(128, 255, 234, 0.5)">
