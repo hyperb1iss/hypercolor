@@ -4,6 +4,8 @@
 set dotenv-load := false
 set positional-arguments := true
 
+workspace_args := "--workspace --exclude hypercolor-desktop"
+
 # Show available recipes (default when running `just` with no arguments)
 [private]
 default:
@@ -25,25 +27,25 @@ verify: fmt-check lint test
 
 # Build the workspace
 build *args='':
-    ./scripts/cargo-cache-build.sh cargo build --workspace {{ args }}
+    ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} {{ args }}
 
 # Build with the runtime-tuned preview profile
 build-preview *args='':
-    ./scripts/cargo-cache-build.sh cargo build --workspace --profile preview {{ args }}
+    ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} --profile preview {{ args }}
 
 # Build in release mode
 release *args='':
-    ./scripts/cargo-cache-build.sh cargo build --workspace --release {{ args }}
+    ./scripts/cargo-cache-build.sh cargo build {{ workspace_args }} --release {{ args }}
 
 # Type-check without building
 check *args='':
-    ./scripts/cargo-cache-build.sh cargo check --workspace {{ args }}
+    ./scripts/cargo-cache-build.sh cargo check {{ workspace_args }} {{ args }}
 
 # ─── Testing ──────────────────────────────────────────────
 
 # Run all tests
 test *args='':
-    ./scripts/cargo-cache-build.sh cargo test --workspace {{ args }}
+    ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ args }}
 
 # Run tests for a specific crate
 test-crate crate *args='':
@@ -51,17 +53,17 @@ test-crate crate *args='':
 
 # Run a specific test by name
 test-one name *args='':
-    ./scripts/cargo-cache-build.sh cargo test --workspace {{ name }} {{ args }}
+    ./scripts/cargo-cache-build.sh cargo test {{ workspace_args }} {{ name }} {{ args }}
 
 # ─── Linting & Formatting ────────────────────────────────
 
 # Run clippy with deny warnings
 lint *args='':
-    ./scripts/cargo-cache-build.sh cargo clippy --workspace --all-targets -- -D warnings {{ args }}
+    ./scripts/cargo-cache-build.sh cargo clippy {{ workspace_args }} --all-targets -- -D warnings {{ args }}
 
 # Fix clippy suggestions automatically
 lint-fix *args='':
-    ./scripts/cargo-cache-build.sh cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged {{ args }}
+    ./scripts/cargo-cache-build.sh cargo clippy {{ workspace_args }} --all-targets --fix --allow-dirty --allow-staged {{ args }}
 
 # Format all code
 fmt:
@@ -81,7 +83,7 @@ deny *args='':
 
 # Build docs for all crates
 doc *args='':
-    ./scripts/cargo-cache-build.sh cargo doc --workspace --no-deps {{ args }}
+    ./scripts/cargo-cache-build.sh cargo doc {{ workspace_args }} --no-deps {{ args }}
 
 # Build and open docs in browser
 doc-open: (doc "--open")
