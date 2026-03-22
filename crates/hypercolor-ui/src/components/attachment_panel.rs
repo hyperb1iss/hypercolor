@@ -252,7 +252,25 @@ pub fn WiringPanel(
 
                                                     // Inline component editor
                                                     {
+                                                        let initial_store = StoredValue::new(initial_drafts.clone());
                                                         let (drafts, set_drafts) = signal(initial_drafts);
+                                                        let templates_for_summary = StoredValue::new(all_templates.clone());
+                                                        let slot_for_save = StoredValue::new(slot.clone());
+                                                        let slot_id_for_save = StoredValue::new(slot_id.clone());
+                                                        let did_for_save = StoredValue::new(did.clone());
+                                                        let did_for_identify = StoredValue::new(did.clone());
+                                                        let slot_id_for_identify = StoredValue::new(slot_id.clone());
+                                                        let (save_in_flight, set_save_in_flight) = signal(false);
+
+                                                        let is_dirty = Signal::derive(move || {
+                                                            initial_store.with_value(|saved| drafts.get() != *saved)
+                                                        });
+                                                        let summary = Signal::derive(move || {
+                                                            let s = slot_for_save.get_value();
+                                                            let rows = drafts.get();
+                                                            templates_for_summary.with_value(|ts| attachment_editor::summarize_channel(&s, &rows, ts))
+                                                        });
+
                                                         let add_strip = move |_: web_sys::MouseEvent| {
                                                             set_drafts.update(|rows| rows.push(attachment_editor::DraftRow::new_strip(60)));
                                                         };
@@ -265,8 +283,93 @@ pub fn WiringPanel(
                                                             });
                                                         });
                                                         let picker_templates = all_templates.clone();
+
+                                                        // Save handler — creates templates for custom strips/matrices, then saves bindings
+                                                        let layouts_resource = ctx.layouts_resource;
+                                                        let do_save = move |_: web_sys::MouseEvent| {
+                                                            let rows = drafts.get_untracked();
+                                                            let slot_id = slot_id_for_save.get_value();
+                                                            let did = did_for_save.get_value();
+                                                            let device_for_sync = device.get_untracked();
+                                                            let templates = templates_for_summary.with_value(|ts| ts.clone());
+                                                            set_save_in_flight.set(true);
+                                                            leptos::task::spawn_local(async move {
+                                                                let result = async {
+                                                                    // Create templates for inline strips/matrices
+                                                                    let mut template_ids: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
+                                                                    for (i, row) in rows.iter().enumerate() {
+                                                                        if !row.needs_template_creation() { continue; }
+                                                                        let (name, cat, topo, desc) = match &row.kind {
+                                                                            attachment_editor::ComponentDraft::Strip { led_count } => {
+                                                                                let n = if row.name.is_empty() { format!("Custom Strip - {led_count} LEDs") } else { row.name.clone() };
+                                                                                (n, hypercolor_types::attachment::AttachmentCategory::Strip,
+                                                                                 hypercolor_types::spatial::LedTopology::Strip { count: *led_count, direction: hypercolor_types::spatial::StripDirection::LeftToRight },
+                                                                                 format!("Custom strip, {led_count} LEDs"))
+                                                                            }
+                                                                            attachment_editor::ComponentDraft::Matrix { cols, rows } => {
+                                                                                let n = if row.name.is_empty() { format!("Custom Matrix - {cols}\u{00d7}{rows}") } else { row.name.clone() };
+                                                                                (n, hypercolor_types::attachment::AttachmentCategory::Matrix,
+                                                                                 hypercolor_types::spatial::LedTopology::Matrix { width: *cols, height: *rows, serpentine: true, start_corner: hypercolor_types::spatial::Corner::TopLeft },
+                                                                                 format!("Custom {cols}\u{00d7}{rows} matrix"))
+                                                                            }
+                                                                            _ => continue,
+                                                                        };
+                                                                        let id = format!("custom-{}-{}-{}", cat.as_str(), js_sys::Date::now() as u64, i);
+                                                                        let tmpl = hypercolor_types::attachment::AttachmentTemplate {
+                                                                            id: id.clone(), name, category: cat,
+                                                                            origin: hypercolor_types::attachment::AttachmentOrigin::User,
+                                                                            description: desc, vendor: "Custom".to_string(),
+                                                                            default_size: hypercolor_types::attachment::AttachmentCanvasSize { width: 0.24, height: 0.08 },
+                                                                            topology: topo, compatible_slots: Vec::new(),
+                                                                            tags: vec!["custom".to_string()],
+                                                                            led_names: None, led_mapping: None, image_url: None, physical_size_mm: None,
+                                                                        };
+                                                                        api::create_attachment_template(&tmpl).await?;
+                                                                        template_ids.insert(i, id);
+                                                                    }
+                                                                    // Build bindings
+                                                                    let current = api::fetch_device_attachments(&did).await?;
+                                                                    let mut bindings: Vec<api::AttachmentBindingRequest> = current.bindings.iter()
+                                                                        .filter(|b| b.slot_id != slot_id)
+                                                                        .map(|b| api::AttachmentBindingRequest {
+                                                                            slot_id: b.slot_id.clone(), template_id: b.template_id.clone(),
+                                                                            name: b.name.clone(), enabled: b.enabled, instances: b.instances, led_offset: b.led_offset,
+                                                                        }).collect();
+                                                                    let mut offset = 0_u32;
+                                                                    for (i, row) in rows.iter().enumerate() {
+                                                                        let tid = match &row.kind {
+                                                                            attachment_editor::ComponentDraft::Component { template_id } => template_id.clone(),
+                                                                            _ => template_ids.get(&i).cloned().unwrap_or_default(),
+                                                                        };
+                                                                        let count = row.led_count(&templates).unwrap_or(0);
+                                                                        bindings.push(api::AttachmentBindingRequest {
+                                                                            slot_id: slot_id.clone(), template_id: tid,
+                                                                            name: if row.name.is_empty() { None } else { Some(row.name.clone()) },
+                                                                            enabled: true, instances: 1, led_offset: offset,
+                                                                        });
+                                                                        offset += count;
+                                                                    }
+                                                                    api::update_device_attachments(&did, &api::UpdateAttachmentsRequest { bindings }).await
+                                                                }.await;
+                                                                set_save_in_flight.set(false);
+                                                                match result {
+                                                                    Ok(updated) => {
+                                                                        toasts::toast_success("Saved");
+                                                                        set_refetch_tick.update(|t| *t += 1);
+                                                                        if let Some(dev) = device_for_sync {
+                                                                            if !updated.suggested_zones.is_empty() {
+                                                                                sync_wiring_to_layout(dev, updated.suggested_zones, layouts_resource);
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(e) => toasts::toast_error(&format!("Save failed: {e}")),
+                                                                }
+                                                            });
+                                                        };
+
                                                     view! {
-                                                    <div class="border-t border-edge-subtle/50 px-3 py-2 space-y-2">
+                                                    <div class="border-t border-edge-subtle/50 px-3 py-2.5 space-y-2">
+                                                        // Component rows with inline editing
                                                         {move || {
                                                             let rows = drafts.get();
                                                             if rows.is_empty() {
@@ -274,31 +377,164 @@ pub fn WiringPanel(
                                                                     <div class="text-[10px] text-fg-tertiary/40 text-center py-2">"No components"</div>
                                                                 }.into_any()
                                                             } else {
+                                                                let did_id = did_for_identify.get_value();
+                                                                let sid_id = slot_id_for_identify.get_value();
                                                                 rows.into_iter().enumerate().map(|(i, row)| {
-                                                                    let led_display = match &row.kind {
-                                                                        attachment_editor::ComponentDraft::Strip { led_count } => format!("{led_count} LEDs"),
-                                                                        attachment_editor::ComponentDraft::Matrix { cols, rows } => format!("{cols}\u{00d7}{rows}"),
-                                                                        attachment_editor::ComponentDraft::Component { template_id } => {
-                                                                            format!("Component: {}", &template_id[..template_id.len().min(16)])
-                                                                        }
+                                                                    let is_custom = row.needs_template_creation();
+                                                                    let type_label = match &row.kind {
+                                                                        attachment_editor::ComponentDraft::Strip { .. } => "Strip",
+                                                                        attachment_editor::ComponentDraft::Matrix { .. } => "Matrix",
+                                                                        attachment_editor::ComponentDraft::Component { .. } => "Component",
                                                                     };
-                                                                    let name = if row.name.is_empty() {
-                                                                        match &row.kind {
-                                                                            attachment_editor::ComponentDraft::Strip { .. } => "Strip".to_string(),
-                                                                            attachment_editor::ComponentDraft::Matrix { .. } => "Matrix".to_string(),
-                                                                            attachment_editor::ComponentDraft::Component { .. } => "Component".to_string(),
-                                                                        }
-                                                                    } else {
-                                                                        row.name.clone()
-                                                                    };
+                                                                    let placeholder = if row.name.is_empty() { type_label.to_string() } else { row.name.clone() };
+                                                                    let did_c = did_id.clone();
+                                                                    let sid_c = sid_id.clone();
+
                                                                     view! {
-                                                                        <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-surface-overlay/10 border border-edge-subtle/50 group/row">
-                                                                            <span class="text-[11px] text-fg-primary flex-1">{name}</span>
-                                                                            <span class="text-[10px] font-mono tabular-nums shrink-0" style="color: rgba(128, 255, 234, 0.6)">{led_display}</span>
+                                                                        <div class="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-overlay/10
+                                                                                    border border-edge-subtle/50 hover:border-edge-subtle transition-all group/row">
+                                                                            // Type icon
+                                                                            <div class="w-5 h-5 rounded flex items-center justify-center shrink-0"
+                                                                                 style="color: rgba(128, 255, 234, 0.6)">
+                                                                                <Icon icon={match &row.kind {
+                                                                                    attachment_editor::ComponentDraft::Strip { .. } => LuMinus,
+                                                                                    attachment_editor::ComponentDraft::Matrix { .. } => LuGrid2x2,
+                                                                                    attachment_editor::ComponentDraft::Component { .. } => LuCircleDot,
+                                                                                }} width="14px" height="14px" />
+                                                                            </div>
+
+                                                                            // Name field
+                                                                            {if is_custom {
+                                                                                view! {
+                                                                                    <input
+                                                                                        type="text"
+                                                                                        placeholder=placeholder
+                                                                                        class="flex-1 min-w-0 bg-transparent text-[12px] text-fg-primary
+                                                                                               placeholder-fg-tertiary/30 focus:outline-none border-none p-0"
+                                                                                        prop:value=row.name.clone()
+                                                                                        on:change=move |ev| {
+                                                                                            let val = event_target_value(&ev);
+                                                                                            set_drafts.update(|rows| {
+                                                                                                if let Some(r) = rows.get_mut(i) { r.name = val; }
+                                                                                            });
+                                                                                        }
+                                                                                    />
+                                                                                }.into_any()
+                                                                            } else {
+                                                                                view! {
+                                                                                    <span class="flex-1 min-w-0 text-[12px] text-fg-primary truncate">{placeholder}</span>
+                                                                                }.into_any()
+                                                                            }}
+
+                                                                            // LED count / dimensions (editable for custom, static for library)
+                                                                            {match &row.kind {
+                                                                                attachment_editor::ComponentDraft::Strip { led_count } => {
+                                                                                    let count = *led_count;
+                                                                                    view! {
+                                                                                        <input
+                                                                                            type="number" min="1" max="2000"
+                                                                                            class="w-14 bg-surface-base/40 border border-edge-subtle rounded px-1.5 py-0.5
+                                                                                                   text-[11px] font-mono tabular-nums text-right shrink-0
+                                                                                                   focus:outline-none focus:border-neon-cyan/30"
+                                                                                            style="color: rgba(128, 255, 234, 0.8)"
+                                                                                            prop:value=count.to_string()
+                                                                                            on:change=move |ev| {
+                                                                                                if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                                                    let v = v.clamp(1, 2000);
+                                                                                                    set_drafts.update(|rows| {
+                                                                                                        if let Some(r) = rows.get_mut(i) {
+                                                                                                            r.kind = attachment_editor::ComponentDraft::Strip { led_count: v };
+                                                                                                        }
+                                                                                                    });
+                                                                                                }
+                                                                                            }
+                                                                                        />
+                                                                                    }.into_any()
+                                                                                }
+                                                                                attachment_editor::ComponentDraft::Matrix { cols, rows } => {
+                                                                                    let c = *cols;
+                                                                                    let r = *rows;
+                                                                                    view! {
+                                                                                        <div class="flex items-center gap-0.5 shrink-0">
+                                                                                            <input
+                                                                                                type="number" min="1" max="64"
+                                                                                                class="w-10 bg-surface-base/40 border border-edge-subtle rounded px-1 py-0.5
+                                                                                                       text-[11px] font-mono tabular-nums text-right
+                                                                                                       focus:outline-none focus:border-neon-cyan/30"
+                                                                                                style="color: rgba(128, 255, 234, 0.8)"
+                                                                                                prop:value=c.to_string()
+                                                                                                on:change=move |ev| {
+                                                                                                    if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                                                        set_drafts.update(|rows| {
+                                                                                                            if let Some(r) = rows.get_mut(i) {
+                                                                                                                if let attachment_editor::ComponentDraft::Matrix { cols, .. } = &mut r.kind {
+                                                                                                                    *cols = v.clamp(1, 64);
+                                                                                                                }
+                                                                                                            }
+                                                                                                        });
+                                                                                                    }
+                                                                                                }
+                                                                                            />
+                                                                                            <span class="text-[9px] text-fg-tertiary/30">{"\u{00d7}"}</span>
+                                                                                            <input
+                                                                                                type="number" min="1" max="64"
+                                                                                                class="w-10 bg-surface-base/40 border border-edge-subtle rounded px-1 py-0.5
+                                                                                                       text-[11px] font-mono tabular-nums text-right
+                                                                                                       focus:outline-none focus:border-neon-cyan/30"
+                                                                                                style="color: rgba(128, 255, 234, 0.8)"
+                                                                                                prop:value=r.to_string()
+                                                                                                on:change=move |ev| {
+                                                                                                    if let Ok(v) = event_target_value(&ev).parse::<u32>() {
+                                                                                                        set_drafts.update(|rows| {
+                                                                                                            if let Some(r) = rows.get_mut(i) {
+                                                                                                                if let attachment_editor::ComponentDraft::Matrix { rows, .. } = &mut r.kind {
+                                                                                                                    *rows = v.clamp(1, 64);
+                                                                                                                }
+                                                                                                            }
+                                                                                                        });
+                                                                                                    }
+                                                                                                }
+                                                                                            />
+                                                                                        </div>
+                                                                                    }.into_any()
+                                                                                }
+                                                                                attachment_editor::ComponentDraft::Component { template_id } => {
+                                                                                    let count = all_templates.iter().find(|t| t.id == *template_id).map(|t| t.led_count).unwrap_or(0);
+                                                                                    view! {
+                                                                                        <span class="text-[10px] font-mono tabular-nums shrink-0 px-1.5 py-0.5 rounded bg-surface-overlay/20"
+                                                                                              style="color: rgba(128, 255, 234, 0.5)">
+                                                                                            {count} " LEDs"
+                                                                                        </span>
+                                                                                    }.into_any()
+                                                                                }
+                                                                            }}
+
+                                                                            // Identify
                                                                             <button
-                                                                                class="w-4 h-4 flex items-center justify-center rounded shrink-0
+                                                                                class="w-5 h-5 flex items-center justify-center rounded shrink-0
                                                                                        opacity-0 group-hover/row:opacity-100 transition-opacity
-                                                                                       text-fg-tertiary/40 hover:text-error-red"
+                                                                                       text-fg-tertiary/40 hover:text-accent btn-press"
+                                                                                title="Identify component"
+                                                                                on:click=move |_| {
+                                                                                    let d = did_c.clone();
+                                                                                    let s = sid_c.clone();
+                                                                                    leptos::task::spawn_local(async move {
+                                                                                        if let Err(e) = api::identify_attachment(&d, &s, Some(i)).await {
+                                                                                            toasts::toast_error(&format!("Identify failed: {e}"));
+                                                                                        } else {
+                                                                                            toasts::toast_success("Flashing component");
+                                                                                        }
+                                                                                    });
+                                                                                }
+                                                                            >
+                                                                                <Icon icon=LuZap width="10px" height="10px" />
+                                                                            </button>
+
+                                                                            // Delete
+                                                                            <button
+                                                                                class="w-5 h-5 flex items-center justify-center rounded shrink-0
+                                                                                       opacity-0 group-hover/row:opacity-100 transition-opacity
+                                                                                       text-fg-tertiary/40 hover:text-error-red btn-press"
                                                                                 on:click=move |_| { set_drafts.update(|rows| { if i < rows.len() { rows.remove(i); } }); }
                                                                             >
                                                                                 <Icon icon=LuX width="10px" height="10px" />
@@ -308,27 +544,53 @@ pub fn WiringPanel(
                                                                 }).collect_view().into_any()
                                                             }
                                                         }}
-                                                        <div class="flex items-center gap-1.5 pt-1">
-                                                            <button
-                                                                class="text-[10px] font-medium px-2.5 py-1 rounded-lg transition-all btn-press flex items-center gap-1"
-                                                                style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.12)"
-                                                                on:click=add_strip
-                                                            >
-                                                                <Icon icon=LuPlus width="10px" height="10px" />
-                                                                "Strip"
-                                                            </button>
-                                                            <button
-                                                                class="text-[10px] font-medium px-2.5 py-1 rounded-lg transition-all btn-press flex items-center gap-1"
-                                                                style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.12)"
-                                                                on:click=add_matrix
-                                                            >
-                                                                <Icon icon=LuPlus width="10px" height="10px" />
-                                                                "Matrix"
-                                                            </button>
-                                                            <ComponentPicker
-                                                                components=picker_templates
-                                                                on_select=on_component_selected
-                                                            />
+
+                                                        // Add + save buttons
+                                                        <div class="flex items-center justify-between pt-1">
+                                                            <div class="flex items-center gap-1.5">
+                                                                <button
+                                                                    class="text-[10px] font-medium px-2.5 py-1 rounded-lg transition-all btn-press flex items-center gap-1"
+                                                                    style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.12)"
+                                                                    on:click=add_strip
+                                                                >
+                                                                    <Icon icon=LuPlus width="10px" height="10px" />
+                                                                    "Strip"
+                                                                </button>
+                                                                <button
+                                                                    class="text-[10px] font-medium px-2.5 py-1 rounded-lg transition-all btn-press flex items-center gap-1"
+                                                                    style="color: rgba(128, 255, 234, 0.7); background: rgba(128, 255, 234, 0.06); border: 1px solid rgba(128, 255, 234, 0.12)"
+                                                                    on:click=add_matrix
+                                                                >
+                                                                    <Icon icon=LuPlus width="10px" height="10px" />
+                                                                    "Matrix"
+                                                                </button>
+                                                                <ComponentPicker
+                                                                    components=picker_templates
+                                                                    on_select=on_component_selected
+                                                                />
+                                                            </div>
+                                                            <div class="flex items-center gap-2">
+                                                                {move || {
+                                                                    let s = summary.get();
+                                                                    (s.overflow_leds > 0).then(|| view! {
+                                                                        <span class="text-[9px] font-mono" style="color: rgb(255, 99, 99)">
+                                                                            {s.overflow_leds} " over"
+                                                                        </span>
+                                                                    })
+                                                                }}
+                                                                <Show when=move || is_dirty.get()>
+                                                                    <button
+                                                                        class="text-[10px] font-medium px-2.5 py-1 rounded-lg transition-all btn-press disabled:opacity-30
+                                                                               flex items-center gap-1"
+                                                                        style="color: rgba(128, 255, 234, 0.8); background: rgba(128, 255, 234, 0.1); border: 1px solid rgba(128, 255, 234, 0.2)"
+                                                                        disabled=move || { let s = summary.get(); save_in_flight.get() || !s.is_valid() }
+                                                                        on:click=do_save
+                                                                    >
+                                                                        <Icon icon=LuCheck width="10px" height="10px" />
+                                                                        {move || if save_in_flight.get() { "Saving..." } else { "Save" }}
+                                                                    </button>
+                                                                </Show>
+                                                            </div>
                                                         </div>
                                                     </div>
                                                     }}
