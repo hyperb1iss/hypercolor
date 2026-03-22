@@ -514,7 +514,7 @@ async fn daemon_start_restores_persisted_active_layout_from_disk() {
         canvas_width: 640,
         canvas_height: 360,
         zones: vec![],
-        groups: vec![],
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -568,7 +568,7 @@ async fn daemon_initialize_inserts_missing_default_layout_into_store() {
         canvas_width: 640,
         canvas_height: 360,
         zones: vec![],
-        groups: vec![],
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -705,7 +705,7 @@ fn collect_unmapped_prefixed_layout_targets_returns_only_missing_matching_prefix
             test_zone("zone_wled_missing_dup", "wled:wall"),
             test_zone("zone_hue", "hue:bridge"),
         ],
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -750,7 +750,7 @@ fn collect_unmapped_prefixed_layout_targets_ignores_unmatched_prefixes() {
             test_zone("zone_usb", "usb:laptop"),
             test_zone("zone_hue", "hue:bridge"),
         ],
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -780,7 +780,6 @@ fn test_zone(id: &str, device_id: &str) -> DeviceZone {
         name: id.to_owned(),
         device_id: device_id.to_owned(),
         zone_name: None,
-        group_id: None,
         position: NormalizedPosition { x: 0.5, y: 0.5 },
         size: NormalizedPosition { x: 0.25, y: 0.1 },
         rotation: 0.0,
@@ -827,7 +826,7 @@ fn append_auto_layout_zones_for_device_adds_default_strip_zone() {
         canvas_width: 320,
         canvas_height: 200,
         zones: Vec::new(),
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -885,7 +884,7 @@ fn append_auto_layout_zones_for_device_skips_display_only_devices() {
         canvas_width: 320,
         canvas_height: 200,
         zones: Vec::new(),
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -924,7 +923,7 @@ fn append_auto_layout_zones_for_seiren_v3_uses_custom_mic_geometry() {
         canvas_width: 320,
         canvas_height: 200,
         zones: Vec::new(),
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -974,7 +973,7 @@ fn append_auto_layout_zones_for_basilisk_v3_uses_custom_mouse_geometry() {
         canvas_width: 320,
         canvas_height: 200,
         zones: Vec::new(),
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -1056,7 +1055,7 @@ fn append_auto_layout_zones_for_dense_matrix_device_clamps_height_without_panick
         canvas_width: 320,
         canvas_height: 200,
         zones: Vec::new(),
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -1112,7 +1111,7 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
             name: "Razer Seiren V3 Chroma".to_owned(),
             device_id: "usb:1532:056f:test".to_owned(),
             zone_name: Some("Main".to_owned()),
-            group_id: None,
+
             position: NormalizedPosition::new(0.5, 0.5),
             size: NormalizedPosition::new(0.26, 0.1),
             rotation: 0.0,
@@ -1131,7 +1130,7 @@ fn reconcile_auto_layout_zones_for_device_updates_existing_seiren_auto_zone() {
             attachment: None,
             led_mapping: None,
         }],
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -1183,7 +1182,7 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
                 name: "PrismRGB Prism S: ATX Strimer".to_owned(),
                 device_id: "usb:prism-s:test".to_owned(),
                 zone_name: Some("ATX Strimer".to_owned()),
-                group_id: None,
+    
                 position: NormalizedPosition::new(0.5, 0.5),
                 size: NormalizedPosition::new(0.25, 0.1),
                 rotation: 0.0,
@@ -1209,7 +1208,7 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
                 name: "PrismRGB Prism S: GPU Strimer".to_owned(),
                 device_id: "usb:prism-s:test".to_owned(),
                 zone_name: Some("GPU Strimer".to_owned()),
-                group_id: None,
+    
                 position: NormalizedPosition::new(0.5, 0.5),
                 size: NormalizedPosition::new(0.25, 0.1),
                 rotation: 0.0,
@@ -1231,7 +1230,7 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
                 led_mapping: None,
             },
         ],
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,

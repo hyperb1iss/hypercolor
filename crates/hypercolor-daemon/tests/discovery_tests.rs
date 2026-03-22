@@ -107,7 +107,7 @@ fn empty_layout() -> SpatialLayout {
         canvas_width: 320,
         canvas_height: 200,
         zones: Vec::new(),
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -239,7 +239,7 @@ fn layout_with_device(layout_device_id: &str) -> SpatialLayout {
             name: "Main".into(),
             device_id: layout_device_id.to_owned(),
             zone_name: None,
-            group_id: None,
+
             position: NormalizedPosition { x: 0.5, y: 0.5 },
             size: NormalizedPosition { x: 1.0, y: 1.0 },
             rotation: 0.0,
@@ -258,7 +258,7 @@ fn layout_with_device(layout_device_id: &str) -> SpatialLayout {
             shape_preset: None,
             attachment: None,
         }],
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,

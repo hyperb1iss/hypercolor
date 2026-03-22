@@ -4,15 +4,13 @@
 //! This module provides CRUD operations against an in-memory store
 //! of [`SpatialLayout`] objects.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::Response;
-use hypercolor_types::spatial::{DeviceZone, SpatialLayout, ZoneGroup};
+use hypercolor_types::spatial::{DeviceZone, SpatialLayout};
 use serde::{Deserialize, Serialize};
-use tracing::warn;
 
 use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
@@ -35,7 +33,6 @@ pub struct LayoutSummary {
     pub canvas_width: u32,
     pub canvas_height: u32,
     pub zone_count: usize,
-    pub group_count: usize,
     pub is_active: bool,
 }
 
@@ -54,7 +51,6 @@ pub struct UpdateLayoutRequest {
     pub canvas_width: Option<u32>,
     pub canvas_height: Option<u32>,
     pub zones: Option<Vec<DeviceZone>>,
-    pub groups: Option<Vec<ZoneGroup>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -95,7 +91,6 @@ pub async fn list_layouts(
             canvas_width: layout.canvas_width,
             canvas_height: layout.canvas_height,
             zone_count: layout.zones.len(),
-            group_count: layout.groups.len(),
             is_active: layout.id == active_layout_id,
         })
         .collect();
@@ -174,7 +169,6 @@ pub async fn create_layout(
         canvas_width,
         canvas_height,
         zones: Vec::new(),
-        groups: Vec::new(),
         default_sampling_mode: hypercolor_types::spatial::SamplingMode::Bilinear,
         default_edge_behavior: hypercolor_types::spatial::EdgeBehavior::Clamp,
         spaces: None,
@@ -187,7 +181,6 @@ pub async fn create_layout(
         canvas_width: layout.canvas_width,
         canvas_height: layout.canvas_height,
         zone_count: 0,
-        group_count: 0,
         is_active: false,
     };
 
@@ -221,8 +214,7 @@ pub async fn update_layout(
         description,
         canvas_width,
         canvas_height,
-        mut zones,
-        groups,
+        zones,
     } = body;
     let previous_zones = zones.as_ref().map(|_| existing.zones.clone());
     let updated_zones_for_exclusions = zones.clone();
@@ -247,19 +239,6 @@ pub async fn update_layout(
         return ApiError::validation(error);
     }
 
-    let groups_replaced = if let Some(groups) = groups {
-        existing.groups = groups;
-        true
-    } else {
-        false
-    };
-
-    if let Some(zones) = zones.as_mut() {
-        sanitize_group_membership(&existing.groups, zones);
-    } else if groups_replaced {
-        sanitize_group_membership(&existing.groups, &mut existing.zones);
-    }
-
     if let Some(zones) = zones {
         existing.zones = zones;
     }
@@ -274,7 +253,6 @@ pub async fn update_layout(
         canvas_width: existing.canvas_width,
         canvas_height: existing.canvas_height,
         zone_count: existing.zones.len(),
-        group_count: existing.groups.len(),
         is_active: existing.id == active_layout_id,
     };
 
@@ -324,10 +302,8 @@ pub async fn apply_layout(State(state): State<Arc<AppState>>, Path(id): Path<Str
 /// Used by the layout editor for live preview while dragging zones.
 pub async fn preview_layout(
     State(state): State<Arc<AppState>>,
-    Json(mut layout): Json<SpatialLayout>,
+    Json(layout): Json<SpatialLayout>,
 ) -> Response {
-    sanitize_group_membership(&layout.groups, &mut layout.zones);
-
     {
         let mut spatial = state.spatial_engine.write().await;
         spatial.update_layout(layout);
@@ -432,7 +408,6 @@ fn empty_default_layout(previous: &SpatialLayout) -> SpatialLayout {
         canvas_width: previous.canvas_width,
         canvas_height: previous.canvas_height,
         zones: Vec::new(),
-        groups: Vec::new(),
         default_sampling_mode: previous.default_sampling_mode.clone(),
         default_edge_behavior: previous.default_edge_behavior,
         spaces: previous.spaces.clone(),
@@ -476,22 +451,3 @@ fn validate_canvas_dimensions(width: u32, height: u32) -> Result<(), String> {
     Ok(())
 }
 
-fn sanitize_group_membership(groups: &[ZoneGroup], zones: &mut [DeviceZone]) {
-    let valid_group_ids: HashSet<&str> = groups.iter().map(|group| group.id.as_str()).collect();
-
-    for zone in zones.iter_mut() {
-        let Some(group_id) = zone.group_id.as_ref() else {
-            continue;
-        };
-        if valid_group_ids.contains(group_id.as_str()) {
-            continue;
-        }
-
-        warn!(
-            zone_id = %zone.id,
-            group_id = %group_id,
-            "Clearing orphaned layout zone group reference"
-        );
-        zone.group_id = None;
-    }
-}

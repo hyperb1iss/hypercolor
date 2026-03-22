@@ -7,8 +7,6 @@ use wasm_bindgen::JsCast;
 use crate::app::DevicesContext;
 use crate::icons::*;
 use crate::layout_geometry::{self, SizeAxis};
-use crate::style_utils::hex_to_rgb;
-
 /// Zone properties editor (bottom panel of layout builder).
 #[component]
 pub fn LayoutZoneProperties() -> impl IntoView {
@@ -40,16 +38,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 return None;
             }
             l.zones.iter().find(|z| z.id == id).cloned()
-        })
-    });
-
-    // Derive available groups
-    let available_groups = Signal::derive(move || {
-        layout.with(|current| {
-            current
-                .as_ref()
-                .map(|l| l.groups.clone())
-                .unwrap_or_default()
         })
     });
 
@@ -132,7 +120,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 let scale = zone.scale;
                 let led_count = zone.topology.led_count();
                 let topology_label = topology_name(&zone.topology);
-                let current_group_id = zone.group_id.clone();
                 let attachment = zone.attachment.clone();
 
                 let default_name = {
@@ -170,7 +157,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 let zid_rotation_input = zone_id.clone();
                 let zid_scale = zone_id.clone();
                 let zid_scale_input = zone_id.clone();
-                let zid_group = zone_id.clone();
                 let zid_front = zone_id.clone();
                 let zid_up = zone_id.clone();
                 let zid_down = zone_id.clone();
@@ -184,7 +170,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 view! {
                     <div class="space-y-2">
                         // ── Row 1: Identity · Metadata · Assignment · Layer · Actions ──
-                        <div class="flex items-center gap-4 min-w-0">
+                        <div class="flex items-center gap-3 min-w-0">
                             // Name + Channel
                             <div class="flex items-center gap-1.5 min-w-0 shrink">
                                 <input
@@ -222,7 +208,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                 <input
                                     type="text"
                                     placeholder="\u{2014}"
-                                    class="w-20 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1
+                                    class="w-16 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1
                                            text-xs text-fg-primary font-mono placeholder-fg-tertiary/20
                                            focus:outline-none focus:border-accent-muted glow-ring transition-colors"
                                     prop:value=channel_name.clone().unwrap_or_default()
@@ -239,7 +225,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                             </div>
 
                             // Metadata — condensed inline
-                            <div class="flex items-center gap-1.5 shrink-0 text-[10px] font-mono text-fg-tertiary/40">
+                            <div class="flex items-center gap-1.5 min-w-0 text-[10px] font-mono text-fg-tertiary/40">
                                 <span class="truncate max-w-32 cursor-default" title=device_id_title>{device_id_display}</span>
                                 <span class="text-fg-tertiary/20">{"\u{00b7}"}</span>
                                 <span class="whitespace-nowrap">{topology_label}</span>
@@ -262,34 +248,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     }
                                 })}
                             </div>
-
-                            // Group assignment
-                            <select
-                                class="shrink-0 bg-surface-sunken border border-edge-subtle rounded-md px-2 py-1
-                                       text-xs text-fg-primary focus:outline-none focus:border-accent-muted glow-ring transition-colors"
-                                on:change=move |ev| {
-                                    let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok());
-                                    if let Some(el) = target {
-                                        let val = el.value();
-                                        let group_id = if val.is_empty() { None } else { Some(val) };
-                                        let zid = zid_group.clone();
-                                        update_zone(zid, Box::new(move |z| z.group_id = group_id));
-                                    }
-                                }
-                            >
-                                <option value="" selected=current_group_id.is_none()>"No group"</option>
-                                {available_groups.get().into_iter().map(|group| {
-                                    let gid = group.id.clone();
-                                    let is_current = current_group_id.as_deref() == Some(&gid);
-                                    let color = group.color.clone().unwrap_or_else(|| "#e135ff".to_string());
-                                    let rgb = hex_to_rgb(&color);
-                                    view! {
-                                        <option value=gid selected=is_current style=format!("color: rgb({rgb})")>
-                                            {group.name}
-                                        </option>
-                                    }
-                                }).collect_view()}
-                            </select>
 
                             <div class="flex-1" />
 
@@ -446,7 +404,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                     );
                                                     zone.rotation = 0.0;
                                                     zone.scale = 1.0;
-                                                    zone.group_id = None;
                                                 }
                                         });
                                         set_is_dirty.set(true);
@@ -478,9 +435,9 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                         </div>
 
                         // ── Row 2: Transform controls in pill sections ──
-                        <div class="flex items-center gap-2">
+                        <div class="flex items-center gap-1.5">
                             // Position
-                            <div class="flex items-center gap-1.5 rounded-lg px-2.5 py-1"
+                            <div class="flex items-center gap-1.5 shrink-0 rounded-lg px-2 py-1"
                                  style="background: rgba(255, 255, 255, 0.02)">
                                 <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 w-5">"Pos"</span>
                                 {zone_pixel_input("X", pos_x_px, "1", 0, cw, {
@@ -564,7 +521,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                             </div>
 
                             // Size
-                            <div class="flex items-center gap-1.5 rounded-lg px-2.5 py-1"
+                            <div class="flex items-center gap-1.5 shrink-0 rounded-lg px-2 py-1"
                                  style="background: rgba(255, 255, 255, 0.02)">
                                 <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0 w-6">"Size"</span>
                                 {zone_pixel_input("W", size_w_px, "1", 0, cw, {
@@ -616,7 +573,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                             </div>
 
                             // Rotation
-                            <div class="flex items-center gap-1.5 flex-1 min-w-32 rounded-lg px-2.5 py-1"
+                            <div class="flex items-center gap-1.5 flex-1 min-w-28 rounded-lg px-2 py-1"
                                  style="background: rgba(255, 255, 255, 0.02)">
                                 <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0">"Rot"</span>
                                 <input
@@ -657,7 +614,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                             </div>
 
                             // Scale
-                            <div class="flex items-center gap-1.5 flex-1 min-w-32 rounded-lg px-2.5 py-1"
+                            <div class="flex items-center gap-1.5 flex-1 min-w-28 rounded-lg px-2 py-1"
                                  style="background: rgba(255, 255, 255, 0.02)">
                                 <span class="text-[9px] text-fg-tertiary/40 font-mono uppercase tracking-wider shrink-0">"Scale"</span>
                                 <input

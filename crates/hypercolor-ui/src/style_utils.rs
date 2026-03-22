@@ -26,19 +26,7 @@ pub fn category_accent_rgb(category: &str) -> &'static str {
     category_style(category).1
 }
 
-/// Convert a hex color like "#e135ff" to "225, 53, 255" RGB string.
-pub fn hex_to_rgb(hex: &str) -> String {
-    let hex = hex.trim_start_matches('#');
-    if hex.len() < 6 {
-        return "225, 53, 255".to_string();
-    }
-    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(225);
-    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(53);
-    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(255);
-    format!("{r}, {g}, {b}")
-}
-
-/// Generate a short pseudo-random hex ID (suitable for zone/group IDs in the editor).
+/// Generate a short pseudo-random hex ID (suitable for zone IDs in the editor).
 pub fn uuid_v4_hex() -> String {
     let r = js_sys::Math::random();
     #[allow(

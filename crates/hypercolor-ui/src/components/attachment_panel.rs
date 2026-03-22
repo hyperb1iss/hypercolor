@@ -643,7 +643,6 @@ pub fn sync_wiring_to_layout(
                 canvas_width: None,
                 canvas_height: None,
                 zones: Some(layout.zones),
-                groups: Some(layout.groups),
             };
             api::update_layout(&layout_id, &req).await?;
             api::apply_layout(&layout_id).await?;
@@ -695,7 +694,6 @@ fn sync_channel_name_to_active_layout(
                 canvas_width: None,
                 canvas_height: None,
                 zones: Some(layout.zones),
-                groups: Some(layout.groups),
             };
             api::update_layout(&layout_id, &req).await?;
             api::apply_layout(&layout_id).await?;

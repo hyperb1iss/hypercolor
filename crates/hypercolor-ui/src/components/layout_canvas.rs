@@ -1,4 +1,4 @@
-//! Layout canvas — live effect preview with draggable zone overlays and group containers.
+//! Layout canvas — live effect preview with draggable zone overlays.
 
 use leptos::ev;
 use leptos::prelude::*;
@@ -7,10 +7,10 @@ use crate::app::WsContext;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
-use crate::style_utils::{device_accent_colors, hex_to_rgb};
+use crate::style_utils::device_accent_colors;
 use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout, ZoneShape};
 
-/// Canvas viewport with zone overlay divs and group containers.
+/// Canvas viewport with zone overlay divs.
 #[component]
 pub fn LayoutCanvas() -> impl IntoView {
     let editor = expect_context::<crate::components::layout_builder::LayoutEditorContext>();
@@ -72,69 +72,6 @@ pub fn LayoutCanvas() -> impl IntoView {
                     sorted.into_iter().map(|(id, _, _)| id).collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
-        })
-    });
-
-    // Derive group data for rendering group containers (excludes fully hidden groups)
-    let group_bounds = Memo::new(move |_| {
-        let hidden = hidden_zones.get();
-        let suppressed = suppressed_zone_ids.get();
-        layout.with(|current| {
-            let Some(l) = current.as_ref() else {
-                return Vec::new();
-            };
-            l.groups
-                .iter()
-                .filter_map(|group| {
-                    // Only include visible member zones in the bounding box
-                    let member_zones: Vec<_> = l
-                        .zones
-                        .iter()
-                        .filter(|z| {
-                            z.group_id.as_deref() == Some(&group.id)
-                                && !hidden.contains(&z.id)
-                                && !suppressed.contains(&z.id)
-                        })
-                        .collect();
-                    if member_zones.is_empty() {
-                        return None;
-                    }
-                    let representative_zone_id =
-                        layout_utils::representative_zone_id_for_group(l, &group.id)?;
-                    // Compute bounding box of member zones
-                    let mut min_x = f32::MAX;
-                    let mut min_y = f32::MAX;
-                    let mut max_x = f32::MIN;
-                    let mut max_y = f32::MIN;
-                    for z in &member_zones {
-                        let left = z.position.x - z.size.x * 0.5;
-                        let right = z.position.x + z.size.x * 0.5;
-                        let top = z.position.y - z.size.y * 0.5;
-                        let bottom = z.position.y + z.size.y * 0.5;
-                        min_x = min_x.min(left);
-                        min_y = min_y.min(top);
-                        max_x = max_x.max(right);
-                        max_y = max_y.max(bottom);
-                    }
-                    // Add padding
-                    let pad = 0.02;
-                    min_x = (min_x - pad).max(0.0);
-                    min_y = (min_y - pad).max(0.0);
-                    max_x = (max_x + pad).min(1.0);
-                    max_y = (max_y + pad).min(1.0);
-                    Some(GroupBounds {
-                        id: group.id.clone(),
-                        name: group.name.clone(),
-                        color: group.color.clone().unwrap_or_else(|| "#e135ff".to_string()),
-                        representative_zone_id,
-                        left: min_x,
-                        top: min_y,
-                        width: max_x - min_x,
-                        height: max_y - min_y,
-                        zone_count: member_zones.len(),
-                    })
-                })
-                .collect()
         })
     });
 
@@ -254,19 +191,11 @@ pub fn LayoutCanvas() -> impl IntoView {
                         set_layout.update(|l| {
                             if let Some(layout) = l {
                                 let desired_position = NormalizedPosition::new(norm_x, norm_y);
-                                let _ = if drag.use_group_center {
-                                    layout_geometry::set_zone_position(
-                                        layout,
-                                        &zone_id,
-                                        desired_position,
-                                    )
-                                } else {
-                                    layout_geometry::drag_zone_to_position(
-                                        layout,
-                                        &zone_id,
-                                        desired_position,
-                                    )
-                                };
+                                let _ = layout_geometry::drag_zone_to_position(
+                                    layout,
+                                    &zone_id,
+                                    desired_position,
+                                );
                             }
                         });
                     }
@@ -276,13 +205,18 @@ pub fn LayoutCanvas() -> impl IntoView {
                         set_layout.update(|l| {
                             if let Some(layout) = l
                                 && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                                    // Force locked aspect ratio for circular shapes
+                                    let force_locked = matches!(
+                                        zone.shape,
+                                        Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
+                                    );
                                     let (position, size) = layout_geometry::resize_zone_from_handle(
                                         resize.start_center,
                                         resize.start_size,
                                         resize.start_mouse,
                                         resize.handle,
                                         mouse_norm,
-                                        keep_ratio,
+                                        keep_ratio || force_locked,
                                         resize.rotation,
                                     );
                                     zone.position = position;
@@ -325,84 +259,12 @@ pub fn LayoutCanvas() -> impl IntoView {
                     // Subtle border around the viewport
                     <div class="absolute inset-0 rounded-lg border border-edge-subtle/30 pointer-events-none" />
 
-                    // Group containers — rendered behind zones
-                    {move || {
-                        group_bounds.get().into_iter().map(|group| {
-                            let left_pct = group.left * 100.0;
-                            let top_pct = group.top * 100.0;
-                            let w_pct = group.width * 100.0;
-                            let h_pct = group.height * 100.0;
-                            let group_center_x = group.left + group.width * 0.5;
-                            let group_center_y = group.top + group.height * 0.5;
-                            let color = group.color.clone();
-                            let rgb = hex_to_rgb(&color);
-                            view! {
-                                <div
-                                    class="absolute rounded-lg cursor-move"
-                                    style=format!(
-                                        "left: {left_pct:.2}%; top: {top_pct:.2}%; width: {w_pct:.2}%; height: {h_pct:.2}%; \
-                                         border: 2px solid rgba({rgb}, 0.6); \
-                                         background: linear-gradient(180deg, rgba({rgb}, 0.12) 0%, rgba({rgb}, 0.04) 100%); \
-                                         box-shadow: 0 0 16px rgba({rgb}, 0.15), inset 0 0 12px rgba({rgb}, 0.05);"
-                                    )
-                                    on:mousedown={
-                                        let representative_zone_id = group.representative_zone_id.clone();
-                                        move |ev| {
-                                            ev.stop_propagation();
-                                            ev.prevent_default();
-                                            set_selected_zone_id.set(Some(representative_zone_id.clone()));
-
-                                            let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
-                                                return;
-                                            };
-                                            let rect = viewport.get_bounding_client_rect();
-                                            let cw = rect.width();
-                                            let ch = rect.height();
-                                            if cw <= 0.0 || ch <= 0.0 {
-                                                return;
-                                            }
-
-                                            #[allow(clippy::cast_possible_truncation)]
-                                            let mouse_norm_x = ((f64::from(ev.client_x()) - rect.left()) / cw) as f32;
-                                            #[allow(clippy::cast_possible_truncation)]
-                                            let mouse_norm_y = ((f64::from(ev.client_y()) - rect.top()) / ch) as f32;
-
-                                            set_interaction.set(Some(InteractionState::Drag(DragState {
-                                                zone_id: representative_zone_id.clone(),
-                                                offset_x: mouse_norm_x - group_center_x,
-                                                offset_y: mouse_norm_y - group_center_y,
-                                                use_group_center: true,
-                                            })));
-                                        }
-                                    }
-                                >
-                                    // Top accent bar
-                                    <div
-                                        class="absolute top-0 left-2 right-2 h-px"
-                                        style=format!("background: linear-gradient(90deg, transparent, rgba({rgb}, 0.6), transparent)")
-                                    />
-                                    // Group name label
-                                    <div
-                                        class="absolute -top-3.5 left-2 text-[10px] font-semibold font-mono px-2 py-0.5 rounded-md whitespace-nowrap"
-                                        style=format!(
-                                            "color: rgb({rgb}); background: rgba(0, 0, 0, 0.7); \
-                                             border: 1px solid rgba({rgb}, 0.4); \
-                                             text-shadow: 0 0 8px rgba({rgb}, 0.5); backdrop-filter: blur(4px)"
-                                        )
-                                    >
-                                        {group.name} " (" {group.zone_count} ")"
-                                    </div>
-                                </div>
-                            }
-                        }).collect::<Vec<_>>()
-                    }}
-
                     // Zone overlays — keyed on zone IDs sorted by display_order
                     {move || {
                         let ids = zone_ids.get();
                         let zone_count = ids.len();
                         ids.into_iter().enumerate().map(|(render_index, zone_id)| {
-                        let base_z_index = render_index + 10; // 10+ to stay above groups
+                        let base_z_index = render_index + 10;
                         let elevated_z_index = zone_count + 100; // selected zone always on top
                         let _ = base_z_index; // used below in style closure
                             let zid = zone_id.clone();
@@ -428,27 +290,29 @@ pub fn LayoutCanvas() -> impl IntoView {
                                         let rotation = zone.rotation.to_degrees();
                                         let scale = zone.scale;
 
-                                        // Use group color if available, else unique per-device color
-                                        let (primary, secondary) = zone
-                                            .group_id
-                                            .as_deref()
-                                            .and_then(|gid| {
-                                                layout.groups.iter().find(|g| g.id == gid)
-                                            })
-                                            .and_then(|g| g.color.as_deref())
-                                            .map(|hex| {
-                                                let rgb = hex_to_rgb(hex);
-                                                (rgb.clone(), rgb)
-                                            })
-                                            .unwrap_or_else(|| {
-                                                device_accent_colors(&zone.device_id)
-                                            });
+                                        let (primary, secondary) = device_accent_colors(&zone.device_id);
 
-                                        Some(ZoneRenderData {
-                                            position_style: format!(
+                                        // For Ring/Arc zones, omit explicit height and use
+                                        // aspect-ratio: 1 so the browser enforces a perfect
+                                        // circle regardless of canvas aspect ratio.
+                                        let is_circular = matches!(
+                                            zone.shape,
+                                            Some(ZoneShape::Ring) | Some(ZoneShape::Arc { .. })
+                                        );
+                                        let position_style = if is_circular {
+                                            format!(
+                                                "left: {x_pct:.2}%; top: {y_pct:.2}%; width: {w_pct:.2}%; aspect-ratio: 1; \
+                                                 transform: translate(-50%, -50%) rotate({rotation:.1}deg) scale({scale:.3})"
+                                            )
+                                        } else {
+                                            format!(
                                                 "left: {x_pct:.2}%; top: {y_pct:.2}%; width: {w_pct:.2}%; height: {h_pct:.2}%; \
                                                  transform: translate(-50%, -50%) rotate({rotation:.1}deg) scale({scale:.3})"
-                                            ),
+                                            )
+                                        };
+
+                                        Some(ZoneRenderData {
+                                            position_style,
                                             primary_rgb: primary,
                                             secondary_rgb: secondary,
                                             name: zone.name.clone(),
@@ -552,7 +416,6 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 zone_id: zid_drag2.clone(),
                                                 offset_x: mouse_norm_x - zx,
                                                 offset_y: mouse_norm_y - zy,
-                                                use_group_center: false,
                                             })));
                                         }
                                     }
@@ -774,25 +637,11 @@ struct ZoneRenderData {
     shape: Option<ZoneShape>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct GroupBounds {
-    id: String,
-    name: String,
-    color: String,
-    representative_zone_id: String,
-    left: f32,
-    top: f32,
-    width: f32,
-    height: f32,
-    zone_count: usize,
-}
-
 #[derive(Clone, Debug)]
 struct DragState {
     zone_id: String,
     offset_x: f32,
     offset_y: f32,
-    use_group_center: bool,
 }
 
 #[derive(Clone, Debug)]

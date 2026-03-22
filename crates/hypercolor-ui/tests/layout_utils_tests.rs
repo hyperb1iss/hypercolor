@@ -33,7 +33,7 @@ mod layout_utils;
 
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
-    ZoneAttachment, ZoneGroup, ZoneShape,
+    ZoneAttachment, ZoneShape,
 };
 use std::collections::HashMap;
 
@@ -42,7 +42,6 @@ fn ring_zone(
     name: &str,
     device_id: &str,
     zone_name: Option<&str>,
-    group_id: Option<&str>,
     display_order: i32,
     attachment: Option<ZoneAttachment>,
 ) -> DeviceZone {
@@ -51,7 +50,6 @@ fn ring_zone(
         name: name.to_owned(),
         device_id: device_id.to_owned(),
         zone_name: zone_name.map(str::to_owned),
-        group_id: group_id.map(str::to_owned),
         position: NormalizedPosition::new(0.5, 0.5),
         size: NormalizedPosition::new(0.12, 0.12),
         rotation: 0.0,
@@ -86,7 +84,6 @@ fn prism_attachment_layout() -> SpatialLayout {
                 "Prism 8 · Channel 1",
                 "usb:prism8:test",
                 Some("Channel 1"),
-                None,
                 0,
                 None,
             ),
@@ -95,7 +92,6 @@ fn prism_attachment_layout() -> SpatialLayout {
                 "Front Fan 1",
                 "usb:prism8:test",
                 Some("channel-1"),
-                Some("group-channel-1"),
                 1,
                 Some(ZoneAttachment {
                     template_id: "fan-template-1".to_owned(),
@@ -111,7 +107,6 @@ fn prism_attachment_layout() -> SpatialLayout {
                 "Front Fan 2",
                 "usb:prism8:test",
                 Some("channel-1"),
-                Some("group-channel-1"),
                 2,
                 Some(ZoneAttachment {
                     template_id: "fan-template-2".to_owned(),
@@ -123,11 +118,6 @@ fn prism_attachment_layout() -> SpatialLayout {
                 }),
             ),
         ],
-        groups: vec![ZoneGroup {
-            id: "group-channel-1".to_owned(),
-            name: "Prism 8 · Channel 1".to_owned(),
-            color: Some("#80ffea".to_owned()),
-        }],
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -137,18 +127,12 @@ fn prism_attachment_layout() -> SpatialLayout {
 
 fn prism_seeded_attachment_layout() -> layout_geometry::SeededAttachmentLayout {
     layout_geometry::SeededAttachmentLayout {
-        groups: vec![ZoneGroup {
-            id: "group-channel-1".to_owned(),
-            name: "Prism 8 · Channel 1".to_owned(),
-            color: Some("#80ffea".to_owned()),
-        }],
         zones: vec![
             ring_zone(
                 "front-fan-1",
                 "Front Fan 1",
                 "usb:prism8:test",
                 Some("channel-1"),
-                Some("group-channel-1"),
                 1,
                 Some(ZoneAttachment {
                     template_id: "fan-template-1".to_owned(),
@@ -164,7 +148,6 @@ fn prism_seeded_attachment_layout() -> layout_geometry::SeededAttachmentLayout {
                 "Front Fan 2",
                 "usb:prism8:test",
                 Some("channel-1"),
-                Some("group-channel-1"),
                 2,
                 Some(ZoneAttachment {
                     template_id: "fan-template-2".to_owned(),
@@ -239,7 +222,7 @@ fn selected_zone_matches_device_slot_when_attachment_alias_is_selected() {
 }
 
 #[test]
-fn apply_slot_display_names_to_seeded_attachment_layout_renames_matching_groups() {
+fn apply_slot_display_names_to_seeded_attachment_layout_renames_matching_zones() {
     let mut seeded = prism_seeded_attachment_layout();
     let slot_display_names = HashMap::from([("channel-1".to_owned(), "Radiator".to_owned())]);
 
@@ -249,13 +232,12 @@ fn apply_slot_display_names_to_seeded_attachment_layout_renames_matching_groups(
         &slot_display_names,
     );
 
-    assert_eq!(seeded.groups[0].name, "Prism 8 · Radiator");
-    assert_eq!(seeded.zones[0].name, "Front Fan 1");
+    assert_eq!(seeded.zones[0].name, "Radiator");
     assert_eq!(seeded.zones[0].zone_name.as_deref(), Some("channel-1"));
 }
 
 #[test]
-fn sync_channel_display_name_in_layout_updates_slot_zone_and_group_name_only() {
+fn sync_channel_display_name_in_layout_updates_slot_zone_name() {
     let mut layout = prism_attachment_layout();
 
     assert!(layout_utils::sync_channel_display_name_in_layout(
@@ -275,6 +257,5 @@ fn sync_channel_display_name_in_layout_updates_slot_zone_and_group_name_only() {
         .expect("source slot zone should exist");
     assert_eq!(source_zone.name, "Prism 8 · Radiator");
     assert_eq!(source_zone.zone_name.as_deref(), Some("Channel 1"));
-    assert_eq!(layout.groups[0].name, "Prism 8 · Radiator");
     assert_eq!(layout.zones[1].name, "Front Fan 1");
 }

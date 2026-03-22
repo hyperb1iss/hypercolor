@@ -252,7 +252,7 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
             name: "Desk Strip".to_owned(),
             device_id: format!("device:{device_id}"),
             zone_name: Some("Main".to_owned()),
-            group_id: None,
+
             position: NormalizedPosition::new(0.5, 0.5),
             size: NormalizedPosition::new(0.4, 0.1),
             rotation: 0.0,
@@ -271,7 +271,7 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
             display_order: 0,
             attachment: None,
         }],
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,

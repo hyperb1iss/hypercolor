@@ -230,7 +230,7 @@ pub fn LayoutBuilder() -> impl IntoView {
         let current = layout.get();
         let saved = saved_layout.get();
         match (current, saved) {
-            (Some(c), Some(s)) => c.zones != s.zones || c.groups != s.groups,
+            (Some(c), Some(s)) => c.zones != s.zones,
             _ => false,
         }
     });
@@ -315,16 +315,11 @@ pub fn LayoutBuilder() -> impl IntoView {
 
     // Push live preview to spatial engine whenever the layout changes (debounced).
     Effect::new(
-        move |prev_snapshot: Option<
-            Option<(
-                Vec<hypercolor_types::spatial::DeviceZone>,
-                Vec<hypercolor_types::spatial::ZoneGroup>,
-            )>,
-        >| {
+        move |prev_snapshot: Option<Option<Vec<hypercolor_types::spatial::DeviceZone>>>| {
             let current = layout.get();
             let current_snapshot = current
                 .as_ref()
-                .map(|current| (current.zones.clone(), current.groups.clone()));
+                .map(|current| current.zones.clone());
 
             // Only push preview if spatial data actually changed (avoid initial no-op).
             if current_snapshot != prev_snapshot.flatten()
@@ -344,7 +339,6 @@ pub fn LayoutBuilder() -> impl IntoView {
         };
         let id = l.id.clone();
         let zones = l.zones.clone();
-        let groups = l.groups.clone();
         let saved_copy = l.clone();
         let layouts_resource = ctx.layouts_resource;
         leptos::task::spawn_local(async move {
@@ -354,7 +348,6 @@ pub fn LayoutBuilder() -> impl IntoView {
                 canvas_width: None,
                 canvas_height: None,
                 zones: Some(zones),
-                groups: Some(groups),
             };
             if api::update_layout(&id, &req).await.is_ok() {
                 toasts::toast_success("Layout saved");
@@ -511,7 +504,6 @@ pub fn LayoutBuilder() -> impl IntoView {
                 canvas_width: None,
                 canvas_height: None,
                 zones: None,
-                groups: None,
             };
             match api::update_layout(&id, &req).await {
                 Ok(_) => {
@@ -536,14 +528,13 @@ pub fn LayoutBuilder() -> impl IntoView {
         });
     };
 
-    // Duplicate handler — creates a copy of the current layout with zones + groups
+    // Duplicate handler — creates a copy of the current layout with zones
     let duplicate_layout = move || {
         let Some(current) = layout.get_untracked() else {
             return;
         };
         let new_name = format!("{} (copy)", current.name);
         let zones = current.zones.clone();
-        let groups = current.groups.clone();
         let canvas_width = current.canvas_width;
         let canvas_height = current.canvas_height;
         let layouts_resource = ctx.layouts_resource;
@@ -557,14 +548,13 @@ pub fn LayoutBuilder() -> impl IntoView {
             };
             match api::create_layout(&req).await {
                 Ok(summary) => {
-                    // Update the new layout with zones + groups from the original
+                    // Update the new layout with zones from the original
                     let update_req = api::UpdateLayoutApiRequest {
                         name: None,
                         description: None,
                         canvas_width: None,
                         canvas_height: None,
                         zones: Some(zones),
-                        groups: Some(groups),
                     };
                     let _ = api::update_layout(&summary.id, &update_req).await;
                     toasts::toast_success("Layout duplicated");

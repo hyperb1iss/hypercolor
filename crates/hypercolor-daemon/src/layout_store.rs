@@ -87,7 +87,7 @@ mod tests {
 
     use hypercolor_types::spatial::{
         DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
-        StripDirection, ZoneGroup,
+        StripDirection,
     };
     use tempfile::TempDir;
 
@@ -105,7 +105,6 @@ mod tests {
                 name: "Desk Strip".into(),
                 device_id: "wled:desk".into(),
                 zone_name: None,
-                group_id: Some("desk".into()),
                 position: NormalizedPosition::new(0.5, 0.5),
                 size: NormalizedPosition::new(0.4, 0.1),
                 rotation: 0.0,
@@ -123,11 +122,6 @@ mod tests {
                 shape: None,
                 shape_preset: None,
                 attachment: None,
-            }],
-            groups: vec![ZoneGroup {
-                id: "desk".into(),
-                name: "Desk".into(),
-                color: Some("#80ffea".into()),
             }],
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
@@ -147,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn save_and_load_round_trip_layouts_with_groups() {
+    fn save_and_load_round_trip_layouts() {
         let tempdir = TempDir::new().expect("tempdir");
         let path = tempdir.path().join("layouts.json");
         let layout = sample_layout();
@@ -161,8 +155,6 @@ mod tests {
             .expect("saved layout should round-trip");
 
         assert_eq!(recovered.name, layout.name);
-        assert_eq!(recovered.groups.len(), 1);
-        assert_eq!(recovered.groups[0].id, "desk");
-        assert_eq!(recovered.zones[0].group_id.as_deref(), Some("desk"));
+        assert_eq!(recovered.zones.len(), 1);
     }
 }

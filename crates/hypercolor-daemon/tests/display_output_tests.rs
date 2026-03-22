@@ -160,7 +160,7 @@ fn layout_with_zones(zones: Vec<DeviceZone>) -> SpatialLayout {
         canvas_width: 320,
         canvas_height: 200,
         zones,
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -178,7 +178,7 @@ fn display_zone(
         name: "Display Zone".to_owned(),
         device_id: device_id.to_owned(),
         zone_name: None,
-        group_id: None,
+
         position,
         size,
         rotation: 0.0,
@@ -215,7 +215,7 @@ fn led_zone(
         name: zone_name.to_owned(),
         device_id: device_id.to_owned(),
         zone_name: Some(zone_name.to_owned()),
-        group_id: None,
+
         position,
         size,
         rotation: 0.0,

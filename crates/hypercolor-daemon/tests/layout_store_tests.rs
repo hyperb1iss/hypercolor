@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use hypercolor_daemon::layout_store;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
-    StripDirection, ZoneGroup,
+    StripDirection,
 };
 
 fn sample_layout() -> SpatialLayout {
@@ -18,7 +18,7 @@ fn sample_layout() -> SpatialLayout {
             name: "Desk Strip".into(),
             device_id: "wled:desk".into(),
             zone_name: None,
-            group_id: Some("group-1".into()),
+
             position: NormalizedPosition::new(0.5, 0.5),
             size: NormalizedPosition::new(0.4, 0.1),
             rotation: 0.0,
@@ -37,11 +37,8 @@ fn sample_layout() -> SpatialLayout {
             display_order: 0,
             attachment: None,
         }],
-        groups: vec![ZoneGroup {
-            id: "group-1".into(),
-            name: "Desk".into(),
-            color: Some("#80ffea".into()),
-        }],
+
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -74,8 +71,6 @@ fn save_and_load_roundtrip_preserves_layouts() {
         .expect("saved layout should be present after load");
 
     assert_eq!(restored.name, layout.name);
-    assert_eq!(restored.groups, layout.groups);
-    assert_eq!(restored.zones[0].group_id, layout.zones[0].group_id);
     assert_eq!(restored.canvas_width, layout.canvas_width);
     assert_eq!(restored.canvas_height, layout.canvas_height);
 }
@@ -90,7 +85,8 @@ fn ensure_default_layout_inserts_missing_default_entry_once() {
         canvas_width: 320,
         canvas_height: 200,
         zones: vec![],
-        groups: vec![],
+
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,

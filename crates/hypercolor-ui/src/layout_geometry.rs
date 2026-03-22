@@ -9,7 +9,7 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use hypercolor_types::attachment::{AttachmentCategory, AttachmentSuggestedZone};
 use hypercolor_types::spatial::{
     Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, Orientation, SamplingMode,
-    SpatialLayout, StripDirection, Winding, ZoneAttachment, ZoneGroup, ZoneShape,
+    SpatialLayout, StripDirection, Winding, ZoneAttachment, ZoneShape,
 };
 
 use crate::api::{ZoneSummary, ZoneTopologySummary};
@@ -31,10 +31,8 @@ const PUSH2_FOOTPRINT_GRID: VisualUnits = VisualUnits::new(1393.0, 1123.0);
 const PUSH2_FOOTPRINT_MIN_SIZE: NormalizedPosition = NormalizedPosition::new(0.42, 0.36);
 const PUSH2_FOOTPRINT_MAX_SIZE: NormalizedPosition = NormalizedPosition::new(0.72, 0.82);
 const PUSH2_FOOTPRINT_CENTER: NormalizedPosition = NormalizedPosition::new(0.5, 0.5);
-const PUSH2_GROUP_COLOR: &str = "#80ffea";
 const PUSH2_TRANSPORT_RECT: FootprintRect = FootprintRect::new(16.0, 74.0, 130.0, 959.0);
 const PUSH2_WHITE_BUTTONS_RECT: FootprintRect = FootprintRect::new(16.0, 128.0, 1334.0, 903.0);
-const ATTACHMENT_GROUP_COLOR: &str = "#80ffea";
 const ATTACHMENT_SLOT_GAP_FRACTION: f32 = 0.06;
 
 const BASILISK_V3_POINTS: &[(u32, u32)] = &[
@@ -92,15 +90,11 @@ pub(crate) struct ZoneVisualDefaults {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SeededDeviceLayout {
-    pub group_id: String,
-    pub group_name: String,
-    pub group_color: String,
     pub zones: Vec<DeviceZone>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SeededAttachmentLayout {
-    pub groups: Vec<ZoneGroup>,
     pub zones: Vec<DeviceZone>,
 }
 
@@ -214,7 +208,6 @@ pub(crate) fn seeded_device_layout(
         PUSH2_FOOTPRINT_MAX_SIZE,
         canvas_aspect,
     );
-    let group_id = format!("device_{}", sanitize_layout_identifier(device_id));
     let mut zones_by_name = zones
         .iter()
         .map(|zone| (zone.name.as_str(), zone))
@@ -256,7 +249,6 @@ pub(crate) fn seeded_device_layout(
             name: format!("{device_name} · {zone_name}"),
             device_id: device_id.to_owned(),
             zone_name: Some(zone_name.to_string()),
-            group_id: Some(group_id.clone()),
             position,
             size,
             rotation: 0.0,
@@ -280,9 +272,6 @@ pub(crate) fn seeded_device_layout(
     }
 
     Some(SeededDeviceLayout {
-        group_id,
-        group_name: device_name.to_owned(),
-        group_color: PUSH2_GROUP_COLOR.to_owned(),
         zones: seeded_zones,
     })
 }
@@ -313,13 +302,12 @@ pub(crate) fn attachment_zone_shape(category: &AttachmentCategory) -> Option<Zon
 #[allow(clippy::cast_precision_loss)]
 pub(crate) fn seeded_attachment_layout(
     device_id: &str,
-    device_name: &str,
+    _device_name: &str,
     suggested_zones: &[AttachmentSuggestedZone],
     display_order_start: i32,
 ) -> SeededAttachmentLayout {
     if suggested_zones.is_empty() {
         return SeededAttachmentLayout {
-            groups: Vec::new(),
             zones: Vec::new(),
         };
     }
@@ -352,10 +340,9 @@ pub(crate) fn seeded_attachment_layout(
     let cell_width = 0.78 / columns as f32;
     let cell_height = 0.68 / rows as f32;
 
-    let mut groups = Vec::new();
     let mut zones = Vec::new();
 
-    for (slot_index, (slot_id, slot_zones)) in slots.into_iter().enumerate() {
+    for (slot_index, (_slot_id, slot_zones)) in slots.into_iter().enumerate() {
         let row = slot_index / columns;
         let column = slot_index % columns;
         let cell_center = NormalizedPosition::new(
@@ -363,21 +350,6 @@ pub(crate) fn seeded_attachment_layout(
             0.18 + cell_height * (row as f32 + 0.5),
         );
         let max_size = NormalizedPosition::new(cell_width * 0.86, cell_height * 0.82);
-        let group_id = (slot_zones.len() > 1).then(|| {
-            format!(
-                "attachment_{}_{}",
-                sanitize_layout_identifier(device_id),
-                sanitize_layout_identifier(&slot_id)
-            )
-        });
-
-        if let Some(group_id) = &group_id {
-            groups.push(ZoneGroup {
-                id: group_id.clone(),
-                name: format!("{device_name} · {}", humanize_slot_id(&slot_id)),
-                color: Some(ATTACHMENT_GROUP_COLOR.to_owned()),
-            });
-        }
 
         let placements = attachment_slot_placements(&slot_zones, cell_center, max_size);
         let slot_display_order_start =
@@ -393,7 +365,6 @@ pub(crate) fn seeded_attachment_layout(
                 name: suggested.name.clone(),
                 device_id: device_id.to_owned(),
                 zone_name: Some(suggested.slot_id.clone()),
-                group_id: group_id.clone(),
                 position,
                 size,
                 rotation: 0.0,
@@ -424,7 +395,7 @@ pub(crate) fn seeded_attachment_layout(
         }
     }
 
-    SeededAttachmentLayout { groups, zones }
+    SeededAttachmentLayout { zones }
 }
 
 pub(crate) fn normalize_layout_for_editor(mut layout: SpatialLayout) -> SpatialLayout {
@@ -473,6 +444,10 @@ pub(crate) fn normalize_zone_size_for_editor(
 ) -> NormalizedPosition {
     match topology {
         LedTopology::Strip { direction, .. } => clamp_strip_size(position, size, *direction),
+        LedTopology::Ring { .. } => {
+            let side = size.x.min(size.y).max(RESIZE_MIN_SIZE);
+            NormalizedPosition::new(side, side)
+        }
         _ => size,
     }
 }
@@ -486,27 +461,16 @@ pub(crate) fn drag_zone_to_position(
         desired_position.x.clamp(0.0, 1.0),
         desired_position.y.clamp(0.0, 1.0),
     );
-    let Some((zone_index, member_indices)) = grouped_zone_member_indices(layout, zone_id) else {
+    let Some(zone_index) = layout.zones.iter().position(|zone| zone.id == zone_id) else {
         return false;
     };
 
-    let current_position = layout.zones[zone_index].position;
-
-    if member_indices.len() <= 1 {
-        let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
-        if current_position == clamped {
-            return false;
-        }
-        layout.zones[zone_index].position = clamped;
-        return true;
+    let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
+    if layout.zones[zone_index].position == clamped {
+        return false;
     }
-
-    translate_group_members(
-        layout,
-        &member_indices,
-        desired_position.x - current_position.x,
-        desired_position.y - current_position.y,
-    )
+    layout.zones[zone_index].position = clamped;
+    true
 }
 
 pub(crate) fn set_zone_position(
@@ -518,93 +482,27 @@ pub(crate) fn set_zone_position(
         desired_position.x.clamp(0.0, 1.0),
         desired_position.y.clamp(0.0, 1.0),
     );
-    let Some((zone_index, member_indices)) = grouped_zone_member_indices(layout, zone_id) else {
+    let Some(zone_index) = layout.zones.iter().position(|zone| zone.id == zone_id) else {
         return false;
     };
 
-    if member_indices.len() <= 1 {
-        let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
-        if layout.zones[zone_index].position == clamped {
-            return false;
-        }
-        layout.zones[zone_index].position = clamped;
-        return true;
+    let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
+    if layout.zones[zone_index].position == clamped {
+        return false;
     }
-
-    let current_center = group_rotation_pivot(layout, &member_indices);
-    translate_group_members(
-        layout,
-        &member_indices,
-        desired_position.x - current_center.x,
-        desired_position.y - current_center.y,
-    )
+    layout.zones[zone_index].position = clamped;
+    true
 }
 
 pub(crate) fn zone_transform_anchor(
     layout: &SpatialLayout,
     zone_id: &str,
 ) -> Option<NormalizedPosition> {
-    let (zone_index, member_indices) = grouped_zone_member_indices(layout, zone_id)?;
-    if member_indices.len() <= 1 {
-        return Some(layout.zones[zone_index].position);
-    }
-    Some(group_rotation_pivot(layout, &member_indices))
-}
-
-fn grouped_zone_member_indices(
-    layout: &SpatialLayout,
-    zone_id: &str,
-) -> Option<(usize, Vec<usize>)> {
-    let zone_index = layout.zones.iter().position(|zone| zone.id == zone_id)?;
-
-    let Some(group_id) = layout.zones[zone_index].group_id.clone() else {
-        return Some((zone_index, vec![zone_index]));
-    };
-
-    let member_indices = layout
+    layout
         .zones
         .iter()
-        .enumerate()
-        .filter_map(|(index, zone)| {
-            (zone.group_id.as_deref() == Some(group_id.as_str())).then_some(index)
-        })
-        .collect::<Vec<_>>();
-
-    Some((zone_index, member_indices))
-}
-
-fn translate_group_members(
-    layout: &mut SpatialLayout,
-    member_indices: &[usize],
-    desired_dx: f32,
-    desired_dy: f32,
-) -> bool {
-    let mut min_dx = f32::NEG_INFINITY;
-    let mut max_dx = f32::INFINITY;
-    let mut min_dy = f32::NEG_INFINITY;
-    let mut max_dy = f32::INFINITY;
-
-    for index in member_indices {
-        let zone = &layout.zones[*index];
-        min_dx = min_dx.max(zone.size.x * 0.5 - zone.position.x);
-        max_dx = max_dx.min(1.0 - zone.size.x * 0.5 - zone.position.x);
-        min_dy = min_dy.max(zone.size.y * 0.5 - zone.position.y);
-        max_dy = max_dy.min(1.0 - zone.size.y * 0.5 - zone.position.y);
-    }
-
-    let clamped_dx = desired_dx.clamp(min_dx, max_dx);
-    let clamped_dy = desired_dy.clamp(min_dy, max_dy);
-    if clamped_dx.abs() <= GRID_EPSILON && clamped_dy.abs() <= GRID_EPSILON {
-        return false;
-    }
-
-    for index in member_indices {
-        let zone = &mut layout.zones[*index];
-        zone.position =
-            NormalizedPosition::new(zone.position.x + clamped_dx, zone.position.y + clamped_dy);
-    }
-
-    true
+        .find(|zone| zone.id == zone_id)
+        .map(|zone| zone.position)
 }
 
 pub(crate) fn set_zone_rotation(layout: &mut SpatialLayout, zone_id: &str, rotation: f32) -> bool {
@@ -618,42 +516,7 @@ pub(crate) fn set_zone_rotation(layout: &mut SpatialLayout, zone_id: &str, rotat
         return false;
     }
 
-    let Some(group_id) = layout.zones[zone_index].group_id.clone() else {
-        layout.zones[zone_index].rotation = normalize_rotation(rotation);
-        return true;
-    };
-
-    let member_indices = layout
-        .zones
-        .iter()
-        .enumerate()
-        .filter_map(|(index, zone)| {
-            (zone.group_id.as_deref() == Some(group_id.as_str())).then_some(index)
-        })
-        .collect::<Vec<_>>();
-
-    if member_indices.len() <= 1 {
-        layout.zones[zone_index].rotation = normalize_rotation(rotation);
-        return true;
-    }
-
-    let pivot = group_rotation_pivot(layout, &member_indices);
-    let cos_delta = delta.cos();
-    let sin_delta = delta.sin();
-
-    for index in member_indices {
-        let zone = &mut layout.zones[index];
-        let dx = zone.position.x - pivot.x;
-        let dy = zone.position.y - pivot.y;
-        let rotated = NormalizedPosition::new(
-            pivot.x + dx.mul_add(cos_delta, -dy * sin_delta),
-            pivot.y + dx.mul_add(sin_delta, dy * cos_delta),
-        );
-
-        zone.position = clamp_zone_center(rotated, zone.size);
-        zone.rotation = normalize_rotation(zone.rotation + delta);
-    }
-
+    layout.zones[zone_index].rotation = normalize_rotation(rotation);
     true
 }
 
@@ -1625,28 +1488,6 @@ fn distance_sq(left: NormalizedPosition, right: NormalizedPosition) -> f32 {
     let dx = left.x - right.x;
     let dy = left.y - right.y;
     dx * dx + dy * dy
-}
-
-fn group_rotation_pivot(layout: &SpatialLayout, member_indices: &[usize]) -> NormalizedPosition {
-    let bounds = member_indices.iter().fold(
-        (
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-        ),
-        |(min_x, max_x, min_y, max_y), index| {
-            let zone = &layout.zones[*index];
-            (
-                min_x.min(zone.position.x - zone.size.x * 0.5),
-                max_x.max(zone.position.x + zone.size.x * 0.5),
-                min_y.min(zone.position.y - zone.size.y * 0.5),
-                max_y.max(zone.position.y + zone.size.y * 0.5),
-            )
-        },
-    );
-
-    NormalizedPosition::new((bounds.0 + bounds.1) * 0.5, (bounds.2 + bounds.3) * 0.5)
 }
 
 fn normalize_rotation(rotation: f32) -> f32 {

@@ -294,7 +294,6 @@ impl DaemonState {
             canvas_width: config.daemon.canvas_width,
             canvas_height: config.daemon.canvas_height,
             zones: Vec::new(),
-            groups: Vec::new(),
             default_sampling_mode: SamplingMode::Bilinear,
             default_edge_behavior: EdgeBehavior::Clamp,
             spaces: None,

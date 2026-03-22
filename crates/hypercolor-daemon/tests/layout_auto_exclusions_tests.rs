@@ -13,7 +13,7 @@ fn make_zone(id: &str, device_id: &str) -> DeviceZone {
         name: id.to_owned(),
         device_id: device_id.to_owned(),
         zone_name: None,
-        group_id: None,
+
         position: NormalizedPosition::new(0.5, 0.5),
         size: NormalizedPosition::new(0.25, 0.1),
         rotation: 0.0,

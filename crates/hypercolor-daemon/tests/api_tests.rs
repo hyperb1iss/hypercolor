@@ -886,7 +886,7 @@ async fn set_layout_targeting_device(state: &AppState, layout_device_id: &str, l
             name: "Main".into(),
             device_id: layout_device_id.into(),
             zone_name: None,
-            group_id: None,
+
             position: NormalizedPosition::new(0.5, 0.5),
             size: NormalizedPosition::new(1.0, 0.1),
             rotation: 0.0,
@@ -905,7 +905,7 @@ async fn set_layout_targeting_device(state: &AppState, layout_device_id: &str, l
             shape_preset: None,
             attachment: None,
         }],
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -2165,7 +2165,7 @@ async fn profile_crud_lifecycle() {
         canvas_width: 320,
         canvas_height: 200,
         zones: Vec::new(),
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -2178,7 +2178,7 @@ async fn profile_crud_lifecycle() {
         canvas_width: 320,
         canvas_height: 200,
         zones: Vec::new(),
-        groups: Vec::new(),
+
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -2424,7 +2424,6 @@ async fn layout_crud_lifecycle() {
     let json = body_json(response).await;
     assert_eq!(json["data"]["name"], "Main Setup");
     assert_eq!(json["data"]["canvas_width"], 320);
-    assert_eq!(json["data"]["group_count"], 0);
     let layout_id = json["data"]["id"]
         .as_str()
         .expect("id should be a string")
@@ -2459,7 +2458,6 @@ async fn layout_crud_lifecycle() {
     assert_eq!(response.status(), StatusCode::OK);
     let json = body_json(response).await;
     assert_eq!(json["data"]["pagination"]["total"], 1);
-    assert_eq!(json["data"]["items"][0]["group_count"], 0);
 
     // Update layout
     let app = test_app_with_state(Arc::clone(&state));
@@ -2686,199 +2684,12 @@ async fn layout_create_validates_input() {
     );
 }
 
-#[tokio::test]
-async fn layout_groups_roundtrip_persist_and_preview() {
-    let (state, _tmp) = test_state_with_temp_layout_store();
-    let app = test_app_with_state(Arc::clone(&state));
-
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/layouts")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"Grouped Layout"}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-    let create_json = body_json(create_response).await;
-    let layout_id = create_json["data"]["id"]
-        .as_str()
-        .expect("layout id should be string")
-        .to_owned();
-
-    let update_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/layouts/{layout_id}"))
-                .header("content-type", "application/json")
-                .body(Body::from(grouped_layout_update_payload()))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(update_response.status(), StatusCode::OK);
-    let update_json = body_json(update_response).await;
-    assert_eq!(update_json["data"]["group_count"], 1);
-    assert_eq!(update_json["data"]["zone_count"], 1);
-
-    let get_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/layouts/{layout_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(get_response.status(), StatusCode::OK);
-    let get_json = body_json(get_response).await;
-    assert_eq!(get_json["data"]["groups"][0]["id"], "g1");
-    assert_eq!(get_json["data"]["zones"][0]["group_id"], "g1");
-
-    let persisted_raw =
-        std::fs::read_to_string(&state.layouts_path).expect("layout persistence file should exist");
-    let persisted: serde_json::Value =
-        serde_json::from_str(&persisted_raw).expect("layout store should be valid JSON");
-    assert_eq!(persisted[0]["groups"][0]["id"], "g1");
-    assert_eq!(persisted[0]["zones"][0]["group_id"], "g1");
-
-    let preview_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri("/api/v1/layouts/active/preview")
-                .header("content-type", "application/json")
-                .body(Body::from(grouped_layout_preview_payload()))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(preview_response.status(), StatusCode::OK);
-
-    let active_response = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/layouts/active")
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(active_response.status(), StatusCode::OK);
-    let active_json = body_json(active_response).await;
-    assert_eq!(active_json["data"]["groups"][0]["id"], "g1");
-    assert_eq!(active_json["data"]["zones"][0]["group_id"], "g1");
-}
-
-#[tokio::test]
-async fn layout_update_cleans_orphaned_group_ids() {
-    let app = test_app();
-
-    let create_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/layouts")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"name":"Cleanup Layout"}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(create_response.status(), StatusCode::CREATED);
-    let create_json = body_json(create_response).await;
-    let layout_id = create_json["data"]["id"]
-        .as_str()
-        .expect("layout id should be string")
-        .to_owned();
-
-    let orphan_update = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/layouts/{layout_id}"))
-                .header("content-type", "application/json")
-                .body(Body::from(orphan_group_update_payload()))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(orphan_update.status(), StatusCode::OK);
-
-    let get_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/layouts/{layout_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(get_response.status(), StatusCode::OK);
-    let get_json = body_json(get_response).await;
-    assert_eq!(
-        get_json["data"]["zones"][0]["group_id"],
-        serde_json::Value::Null
-    );
-
-    let delete_group_update = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/layouts/{layout_id}"))
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"groups":[]}"#))
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(delete_group_update.status(), StatusCode::OK);
-    let delete_group_json = body_json(delete_group_update).await;
-    assert_eq!(delete_group_json["data"]["group_count"], 0);
-
-    let final_get_response = app
-        .oneshot(
-            Request::builder()
-                .uri(format!("/api/v1/layouts/{layout_id}"))
-                .body(Body::empty())
-                .expect("failed to build request"),
-        )
-        .await
-        .expect("failed to execute request");
-    assert_eq!(final_get_response.status(), StatusCode::OK);
-    let final_get_json = body_json(final_get_response).await;
-    assert_eq!(
-        final_get_json["data"]["zones"][0]["group_id"],
-        serde_json::Value::Null
-    );
-    assert_eq!(final_get_json["data"]["groups"], serde_json::json!([]));
-}
-
 // ── Effect Layout Associations ──────────────────────────────────────────
 
 fn test_state_with_temp_effect_layout_store() -> (Arc<AppState>, tempfile::TempDir) {
     let mut state = isolated_state();
     let dir = tempfile::tempdir().expect("tempdir should be created");
     state.effect_layout_links_path = dir.path().join("effect-layouts.json");
-    (Arc::new(state), dir)
-}
-
-fn test_state_with_temp_layout_store() -> (Arc<AppState>, tempfile::TempDir) {
-    let mut state = isolated_state();
-    let dir = tempfile::tempdir().expect("tempdir should be created");
-    state.layouts_path = dir.path().join("layouts.json");
     (Arc::new(state), dir)
 }
 
@@ -2898,84 +2709,6 @@ fn test_state_with_temp_output_store() -> (Arc<AppState>, tempfile::TempDir) {
     )));
     state.runtime_state_path = dir.path().join("runtime-state.json");
     (Arc::new(state), dir)
-}
-
-fn grouped_layout_update_payload() -> &'static str {
-    r##"{
-        "groups":[{"id":"g1","name":"PC Case","color":"#e135ff"}],
-        "zones":[{
-            "id":"zone-1",
-            "name":"Desk Strip",
-            "device_id":"wled:desk",
-            "zone_name":null,
-            "group_id":"g1",
-            "position":{"x":0.5,"y":0.5},
-            "size":{"x":0.4,"y":0.1},
-            "rotation":0.0,
-            "scale":1.0,
-            "orientation":null,
-            "topology":{"type":"strip","count":30,"direction":"left_to_right"},
-            "sampling_mode":null,
-            "edge_behavior":null,
-            "shape":null,
-            "shape_preset":null
-        }]
-    }"##
-}
-
-fn grouped_layout_preview_payload() -> &'static str {
-    r##"{
-        "id":"preview-layout",
-        "name":"Preview Layout",
-        "description":null,
-        "canvas_width":320,
-        "canvas_height":200,
-        "zones":[{
-            "id":"zone-preview",
-            "name":"Preview Strip",
-            "device_id":"wled:preview",
-            "zone_name":null,
-            "group_id":"g1",
-            "position":{"x":0.4,"y":0.6},
-            "size":{"x":0.3,"y":0.1},
-            "rotation":0.0,
-            "scale":1.0,
-            "orientation":null,
-            "topology":{"type":"point"},
-            "sampling_mode":null,
-            "edge_behavior":null,
-            "shape":null,
-            "shape_preset":null
-        }],
-        "groups":[{"id":"g1","name":"Preview Group","color":"#80ffea"}],
-        "default_sampling_mode":{"type":"bilinear"},
-        "default_edge_behavior":"clamp",
-        "spaces":null,
-        "version":1
-    }"##
-}
-
-fn orphan_group_update_payload() -> &'static str {
-    r##"{
-        "groups":[{"id":"valid","name":"Valid Group","color":"#ff6ac1"}],
-        "zones":[{
-            "id":"zone-1",
-            "name":"Orphan Zone",
-            "device_id":"wled:orphan",
-            "zone_name":null,
-            "group_id":"missing",
-            "position":{"x":0.5,"y":0.5},
-            "size":{"x":0.2,"y":0.2},
-            "rotation":0.0,
-            "scale":1.0,
-            "orientation":null,
-            "topology":{"type":"point"},
-            "sampling_mode":null,
-            "edge_behavior":null,
-            "shape":null,
-            "shape_preset":null
-        }]
-    }"##
 }
 
 #[tokio::test]

@@ -2120,7 +2120,6 @@ pub fn append_auto_layout_zones_for_device(
             name: zone_name,
             device_id: layout_device_id.to_owned(),
             zone_name: Some(zone_info.name.clone()),
-            group_id: None,
             position,
             size,
             rotation: 0.0,

@@ -10,7 +10,7 @@ use crate::channel_names;
 use crate::layout_geometry;
 use crate::style_utils::uuid_v4_hex;
 use crate::toasts;
-use hypercolor_types::spatial::{DeviceZone, NormalizedPosition, SpatialLayout, ZoneGroup};
+use hypercolor_types::spatial::{DeviceZone, NormalizedPosition, SpatialLayout};
 
 /// Type alias for the removed-zone stash, keyed by (device_id, zone_name).
 pub type ZoneCache = std::collections::HashMap<(String, Option<String>), DeviceZone>;
@@ -84,7 +84,6 @@ pub fn create_default_zone(
         edge_behavior: None,
         shape: defaults.shape,
         shape_preset: defaults.shape_preset,
-        group_id: None,
         attachment: None,
         display_order,
     }
@@ -113,7 +112,6 @@ pub fn remove_device_zone(
                     cache.insert(key, removed);
                 });
             }
-            prune_empty_groups(layout);
         }
     });
     set_selected_zone_id.set(None);
@@ -138,7 +136,6 @@ pub fn remove_all_device_zones(
                 }
             });
             layout.zones.retain(|z| z.device_id != device_id);
-            prune_empty_groups(layout);
         }
     });
     set_selected_zone_id.set(None);
@@ -190,17 +187,6 @@ pub fn add_all_device_zones(
             let selected_zone_id = seed.zones.first().map(|zone| zone.id.clone());
             set_layout.update(|l| {
                 if let Some(current_layout) = l {
-                    if !current_layout
-                        .groups
-                        .iter()
-                        .any(|group| group.id == seed.group_id)
-                    {
-                        current_layout.groups.push(ZoneGroup {
-                            id: seed.group_id.clone(),
-                            name: seed.group_name.clone(),
-                            color: Some(seed.group_color.clone()),
-                        });
-                    }
                     current_layout.zones.extend(seed.zones.clone());
                 }
             });
@@ -262,18 +248,6 @@ pub fn add_all_device_zones(
     set_is_dirty.set(true);
 }
 
-/// Remove groups that have no zones assigned to them.
-pub fn prune_empty_groups(layout: &mut SpatialLayout) {
-    let active_group_ids = layout
-        .zones
-        .iter()
-        .filter_map(|zone| zone.group_id.as_deref())
-        .collect::<std::collections::HashSet<_>>();
-    layout
-        .groups
-        .retain(|group| active_group_ids.contains(group.id.as_str()));
-}
-
 pub fn prefixed_channel_display_name(device_name: &str, channel_name: &str) -> String {
     if channel_name.eq_ignore_ascii_case(device_name) {
         device_name.to_owned()
@@ -284,34 +258,21 @@ pub fn prefixed_channel_display_name(device_name: &str, channel_name: &str) -> S
 
 pub fn apply_slot_display_names_to_seeded_attachment_layout(
     seeded: &mut layout_geometry::SeededAttachmentLayout,
-    device_name: &str,
+    _device_name: &str,
     slot_display_names: &std::collections::HashMap<String, String>,
 ) {
     if slot_display_names.is_empty() {
         return;
     }
 
-    let group_display_names = seeded
-        .zones
-        .iter()
-        .filter_map(|zone| {
-            let group_id = zone.group_id.as_ref()?;
-            let slot_id = zone
-                .attachment
-                .as_ref()
-                .map(|attachment| attachment.slot_id.as_str())
-                .or(zone.zone_name.as_deref())?;
-            let display_name = slot_display_names.get(slot_id)?;
-            Some((
-                group_id.clone(),
-                prefixed_channel_display_name(device_name, display_name),
-            ))
-        })
-        .collect::<std::collections::HashMap<_, _>>();
-
-    for group in &mut seeded.groups {
-        if let Some(display_name) = group_display_names.get(&group.id) {
-            group.name.clone_from(display_name);
+    for zone in &mut seeded.zones {
+        let slot_id = zone
+            .attachment
+            .as_ref()
+            .map(|attachment| attachment.slot_id.as_str())
+            .or(zone.zone_name.as_deref());
+        if let Some(display_name) = slot_id.and_then(|id| slot_display_names.get(id)) {
+            zone.name.clone_from(display_name);
         }
     }
 }
@@ -333,17 +294,6 @@ pub fn sync_channel_display_name_in_layout(
     .collect::<HashSet<_>>();
     let new_layout_name = prefixed_channel_display_name(device_name, new_display_name);
 
-    let matching_group_ids = layout
-        .zones
-        .iter()
-        .filter_map(|zone| {
-            let attachment = zone.attachment.as_ref()?;
-            (zone.device_id == layout_device_id && attachment.slot_id == slot_id)
-                .then(|| zone.group_id.clone())
-                .flatten()
-        })
-        .collect::<HashSet<_>>();
-
     let mut changed = false;
 
     for zone in &mut layout.zones {
@@ -355,15 +305,6 @@ pub fn sync_channel_display_name_in_layout(
         }
         if expected_old_names.contains(zone.name.as_str()) {
             zone.name.clone_from(&new_layout_name);
-            changed = true;
-        }
-    }
-
-    for group in &mut layout.groups {
-        if matching_group_ids.contains(&group.id)
-            && expected_old_names.contains(group.name.as_str())
-        {
-            group.name.clone_from(&new_layout_name);
             changed = true;
         }
     }
@@ -380,18 +321,7 @@ pub fn replace_attachment_layout(
         .zones
         .retain(|zone| !(zone.device_id == device_id && zone.attachment.is_some()));
 
-    let seeded_group_ids = seeded
-        .groups
-        .iter()
-        .map(|group| group.id.clone())
-        .collect::<HashSet<_>>();
-    layout
-        .groups
-        .retain(|group| !seeded_group_ids.contains(&group.id));
-
     layout.zones.extend(seeded.zones);
-    layout.groups.extend(seeded.groups);
-    prune_empty_groups(layout);
 }
 
 /// Import a device's attachment zones into the active layout.
@@ -445,7 +375,6 @@ pub fn import_device_attachments(
                 canvas_width: None,
                 canvas_height: None,
                 zones: Some(layout.zones),
-                groups: Some(layout.groups),
             };
             api::update_layout(&layout_id, &req).await?;
             api::apply_layout(&layout_id).await?;
@@ -550,18 +479,6 @@ pub fn selected_zone_matches_device_slot(
             zone.device_id == device_id
                 && zone_name_matches_slot_alias(zone.zone_name.as_deref(), zone_name)
         })
-}
-
-pub fn representative_zone_id_for_group(layout: &SpatialLayout, group_id: &str) -> Option<String> {
-    let suppressed = suppressed_attachment_source_zone_ids(layout);
-    representative_zone_id_with_filter(layout, |zone| {
-        zone.group_id.as_deref() == Some(group_id) && !suppressed.contains(&zone.id)
-    })
-    .or_else(|| {
-        representative_zone_id_with_filter(layout, |zone| {
-            zone.group_id.as_deref() == Some(group_id)
-        })
-    })
 }
 
 pub fn suppressed_attachment_source_zone_ids(layout: &SpatialLayout) -> HashSet<String> {
