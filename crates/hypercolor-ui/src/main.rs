@@ -1,5 +1,6 @@
 mod api;
 mod app;
+mod channel_names;
 mod components;
 mod icons;
 mod layout_geometry;

@@ -67,9 +67,10 @@ pub fn parse_device_class(label: &str) -> Option<DeviceClass> {
 pub fn classify_device(device: &DeviceSummary) -> DeviceClass {
     // Check localStorage override first
     if let Some(override_label) = load_category_override(&device.id)
-        && let Some(class) = parse_device_class(&override_label) {
-            return class;
-        }
+        && let Some(class) = parse_device_class(&override_label)
+    {
+        return class;
+    }
 
     let name = device.name.to_lowercase();
     let backend = device.backend.to_lowercase();

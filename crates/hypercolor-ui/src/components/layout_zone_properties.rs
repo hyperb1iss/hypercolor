@@ -34,9 +34,12 @@ pub fn LayoutZoneProperties() -> impl IntoView {
     let zone_snapshot = Signal::derive(move || {
         let id = selected_zone_id.get()?;
         layout.with(|current| {
-            current
-                .as_ref()
-                .and_then(|l| l.zones.iter().find(|z| z.id == id).cloned())
+            let l = current.as_ref()?;
+            let suppressed = crate::layout_utils::suppressed_attachment_source_zone_ids(l);
+            if suppressed.contains(&id) {
+                return None;
+            }
+            l.zones.iter().find(|z| z.id == id).cloned()
         })
     });
 
@@ -56,14 +59,42 @@ pub fn LayoutZoneProperties() -> impl IntoView {
               updater: Box<dyn FnOnce(&mut hypercolor_types::spatial::DeviceZone)>| {
             set_layout.update(|l| {
                 if let Some(layout) = l
-                    && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
-                        updater(zone);
-                        zone.size = layout_geometry::normalize_zone_size_for_editor(
-                            zone.position,
-                            zone.size,
-                            &zone.topology,
-                        );
-                    }
+                    && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id)
+                {
+                    updater(zone);
+                    zone.size = layout_geometry::normalize_zone_size_for_editor(
+                        zone.position,
+                        zone.size,
+                        &zone.topology,
+                    );
+                }
+            });
+            set_is_dirty.set(true);
+        };
+
+    let update_zone_rotation = move |zone_id: String, rotation_radians: f32| {
+        set_layout.update(|l| {
+            if let Some(layout) = l {
+                let changed =
+                    layout_geometry::set_zone_rotation(layout, &zone_id, rotation_radians);
+                if changed && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                    zone.size = layout_geometry::normalize_zone_size_for_editor(
+                        zone.position,
+                        zone.size,
+                        &zone.topology,
+                    );
+                }
+            }
+        });
+        set_is_dirty.set(true);
+    };
+
+    let move_zone_to_position =
+        move |zone_id: String, desired_position: hypercolor_types::spatial::NormalizedPosition| {
+            set_layout.update(|l| {
+                if let Some(layout) = l {
+                    let _ = layout_geometry::set_zone_position(layout, &zone_id, desired_position);
+                }
             });
             set_is_dirty.set(true);
         };
@@ -88,8 +119,13 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                 let device_id_title = zone.device_id.clone();
                 let channel_name = zone.zone_name.clone();
                 let (cw, ch) = canvas_dims.get_untracked();
-                let pos_x_px = zone.position.x * cw;
-                let pos_y_px = zone.position.y * ch;
+                let transform_anchor = layout.with_untracked(|current| {
+                    current.as_ref().and_then(|layout| {
+                        layout_geometry::zone_transform_anchor(layout, &zone.id)
+                    })
+                }).unwrap_or(zone.position);
+                let pos_x_px = transform_anchor.x * cw;
+                let pos_y_px = transform_anchor.y * ch;
                 let size_w_px = zone.size.x * cw;
                 let size_h_px = zone.size.y * ch;
                 let rotation_deg = zone.rotation.to_degrees();
@@ -452,7 +488,18 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     move |px: f32| {
                                         let (cw, _) = canvas_dims.get_untracked();
                                         let norm = (px / cw).clamp(0.0, 1.0);
-                                        update_zone(zid.clone(), Box::new(move |z| z.position.x = norm))
+                                        let anchor = layout.with_untracked(|current| {
+                                            current.as_ref().and_then(|layout| {
+                                                layout_geometry::zone_transform_anchor(layout, &zid)
+                                            })
+                                        });
+                                        let Some(anchor) = anchor else {
+                                            return;
+                                        };
+                                        move_zone_to_position(
+                                            zid.clone(),
+                                            hypercolor_types::spatial::NormalizedPosition::new(norm, anchor.y),
+                                        );
                                     }
                                 })}
                                 {zone_pixel_input("Y", pos_y_px, "1", 0, ch, {
@@ -460,7 +507,18 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     move |px: f32| {
                                         let (_, ch) = canvas_dims.get_untracked();
                                         let norm = (px / ch).clamp(0.0, 1.0);
-                                        update_zone(zid.clone(), Box::new(move |z| z.position.y = norm))
+                                        let anchor = layout.with_untracked(|current| {
+                                            current.as_ref().and_then(|layout| {
+                                                layout_geometry::zone_transform_anchor(layout, &zid)
+                                            })
+                                        });
+                                        let Some(anchor) = anchor else {
+                                            return;
+                                        };
+                                        move_zone_to_position(
+                                            zid.clone(),
+                                            hypercolor_types::spatial::NormalizedPosition::new(anchor.x, norm),
+                                        );
                                     }
                                 })}
                                 <button
@@ -468,7 +526,17 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     title="Center horizontally"
                                     on:click=move |_| {
                                         let zid = zid_center_h.clone();
-                                        update_zone(zid, Box::new(|z| z.position.x = 0.5));
+                                        let anchor = layout.with_untracked(|current| {
+                                            current.as_ref().and_then(|layout| {
+                                                layout_geometry::zone_transform_anchor(layout, &zid)
+                                            })
+                                        });
+                                        if let Some(anchor) = anchor {
+                                            move_zone_to_position(
+                                                zid,
+                                                hypercolor_types::spatial::NormalizedPosition::new(0.5, anchor.y),
+                                            );
+                                        }
                                     }
                                 >
                                     <Icon icon=LuAlignCenterHorizontal width="11px" height="11px" />
@@ -478,7 +546,17 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     title="Center vertically"
                                     on:click=move |_| {
                                         let zid = zid_center_v.clone();
-                                        update_zone(zid, Box::new(|z| z.position.y = 0.5));
+                                        let anchor = layout.with_untracked(|current| {
+                                            current.as_ref().and_then(|layout| {
+                                                layout_geometry::zone_transform_anchor(layout, &zid)
+                                            })
+                                        });
+                                        if let Some(anchor) = anchor {
+                                            move_zone_to_position(
+                                                zid,
+                                                hypercolor_types::spatial::NormalizedPosition::new(anchor.x, 0.5),
+                                            );
+                                        }
                                     }
                                 >
                                     <Icon icon=LuAlignCenterVertical width="11px" height="11px" />
@@ -552,7 +630,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                             && let Ok(deg) = el.value().parse::<f32>() {
                                                 let rad = deg.to_radians();
                                                 let zid = zid_rotation.clone();
-                                                update_zone(zid, Box::new(move |z| z.rotation = rad));
+                                                update_zone_rotation(zid, rad);
                                             }
                                     }
                                 />
@@ -570,7 +648,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                 && let Ok(deg) = el.value().parse::<f32>() {
                                                     let rad = deg.to_radians();
                                                     let zid = zid_rotation_input.clone();
-                                                    update_zone(zid, Box::new(move |z| z.rotation = rad));
+                                                    update_zone_rotation(zid, rad);
                                                 }
                                         }
                                     />

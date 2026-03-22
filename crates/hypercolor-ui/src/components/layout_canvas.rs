@@ -6,6 +6,7 @@ use leptos::prelude::*;
 use crate::app::WsContext;
 use crate::components::canvas_preview::CanvasPreview;
 use crate::layout_geometry::{self, ResizeHandle};
+use crate::layout_utils;
 use crate::style_utils::{device_accent_colors, hex_to_rgb};
 use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout, ZoneShape};
 
@@ -44,7 +45,17 @@ pub fn LayoutCanvas() -> impl IntoView {
 
     // Derive zone IDs sorted by display_order — only re-renders when zones are added/removed
     // or their stacking order changes, NOT when positions change during drag.
+    let suppressed_zone_ids = Memo::new(move |_| {
+        layout.with(|current| {
+            current
+                .as_ref()
+                .map(layout_utils::suppressed_attachment_source_zone_ids)
+                .unwrap_or_default()
+        })
+    });
+
     let zone_ids = Memo::new(move |_| {
+        let suppressed = suppressed_zone_ids.get();
         layout.with(|current| {
             current
                 .as_ref()
@@ -52,6 +63,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                     let mut sorted: Vec<_> = l
                         .zones
                         .iter()
+                        .filter(|zone| !suppressed.contains(&zone.id))
                         .enumerate()
                         .map(|(i, z)| (z.id.clone(), z.display_order, i))
                         .collect();
@@ -66,6 +78,7 @@ pub fn LayoutCanvas() -> impl IntoView {
     // Derive group data for rendering group containers (excludes fully hidden groups)
     let group_bounds = Memo::new(move |_| {
         let hidden = hidden_zones.get();
+        let suppressed = suppressed_zone_ids.get();
         layout.with(|current| {
             let Some(l) = current.as_ref() else {
                 return Vec::new();
@@ -78,12 +91,16 @@ pub fn LayoutCanvas() -> impl IntoView {
                         .zones
                         .iter()
                         .filter(|z| {
-                            z.group_id.as_deref() == Some(&group.id) && !hidden.contains(&z.id)
+                            z.group_id.as_deref() == Some(&group.id)
+                                && !hidden.contains(&z.id)
+                                && !suppressed.contains(&z.id)
                         })
                         .collect();
                     if member_zones.is_empty() {
                         return None;
                     }
+                    let representative_zone_id =
+                        layout_utils::representative_zone_id_for_group(l, &group.id)?;
                     // Compute bounding box of member zones
                     let mut min_x = f32::MAX;
                     let mut min_y = f32::MAX;
@@ -109,6 +126,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                         id: group.id.clone(),
                         name: group.name.clone(),
                         color: group.color.clone().unwrap_or_else(|| "#e135ff".to_string()),
+                        representative_zone_id,
                         left: min_x,
                         top: min_y,
                         width: max_x - min_x,
@@ -235,11 +253,20 @@ pub fn LayoutCanvas() -> impl IntoView {
                         let zone_id = drag.zone_id.clone();
                         set_layout.update(|l| {
                             if let Some(layout) = l {
-                                let _ = layout_geometry::drag_zone_to_position(
-                                    layout,
-                                    &zone_id,
-                                    NormalizedPosition::new(norm_x, norm_y),
-                                );
+                                let desired_position = NormalizedPosition::new(norm_x, norm_y);
+                                let _ = if drag.use_group_center {
+                                    layout_geometry::set_zone_position(
+                                        layout,
+                                        &zone_id,
+                                        desired_position,
+                                    )
+                                } else {
+                                    layout_geometry::drag_zone_to_position(
+                                        layout,
+                                        &zone_id,
+                                        desired_position,
+                                    )
+                                };
                             }
                         });
                     }
@@ -305,17 +332,49 @@ pub fn LayoutCanvas() -> impl IntoView {
                             let top_pct = group.top * 100.0;
                             let w_pct = group.width * 100.0;
                             let h_pct = group.height * 100.0;
+                            let group_center_x = group.left + group.width * 0.5;
+                            let group_center_y = group.top + group.height * 0.5;
                             let color = group.color.clone();
                             let rgb = hex_to_rgb(&color);
                             view! {
                                 <div
-                                    class="absolute rounded-lg pointer-events-none"
+                                    class="absolute rounded-lg cursor-move"
                                     style=format!(
                                         "left: {left_pct:.2}%; top: {top_pct:.2}%; width: {w_pct:.2}%; height: {h_pct:.2}%; \
                                          border: 2px solid rgba({rgb}, 0.6); \
                                          background: linear-gradient(180deg, rgba({rgb}, 0.12) 0%, rgba({rgb}, 0.04) 100%); \
                                          box-shadow: 0 0 16px rgba({rgb}, 0.15), inset 0 0 12px rgba({rgb}, 0.05);"
                                     )
+                                    on:mousedown={
+                                        let representative_zone_id = group.representative_zone_id.clone();
+                                        move |ev| {
+                                            ev.stop_propagation();
+                                            ev.prevent_default();
+                                            set_selected_zone_id.set(Some(representative_zone_id.clone()));
+
+                                            let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
+                                                return;
+                                            };
+                                            let rect = viewport.get_bounding_client_rect();
+                                            let cw = rect.width();
+                                            let ch = rect.height();
+                                            if cw <= 0.0 || ch <= 0.0 {
+                                                return;
+                                            }
+
+                                            #[allow(clippy::cast_possible_truncation)]
+                                            let mouse_norm_x = ((f64::from(ev.client_x()) - rect.left()) / cw) as f32;
+                                            #[allow(clippy::cast_possible_truncation)]
+                                            let mouse_norm_y = ((f64::from(ev.client_y()) - rect.top()) / ch) as f32;
+
+                                            set_interaction.set(Some(InteractionState::Drag(DragState {
+                                                zone_id: representative_zone_id.clone(),
+                                                offset_x: mouse_norm_x - group_center_x,
+                                                offset_y: mouse_norm_y - group_center_y,
+                                                use_group_center: true,
+                                            })));
+                                        }
+                                    }
                                 >
                                     // Top accent bar
                                     <div
@@ -493,6 +552,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                 zone_id: zid_drag2.clone(),
                                                 offset_x: mouse_norm_x - zx,
                                                 offset_y: mouse_norm_y - zy,
+                                                use_group_center: false,
                                             })));
                                         }
                                     }
@@ -719,6 +779,7 @@ struct GroupBounds {
     id: String,
     name: String,
     color: String,
+    representative_zone_id: String,
     left: f32,
     top: f32,
     width: f32,
@@ -731,6 +792,7 @@ struct DragState {
     zone_id: String,
     offset_x: f32,
     offset_y: f32,
+    use_group_center: bool,
 }
 
 #[derive(Clone, Debug)]

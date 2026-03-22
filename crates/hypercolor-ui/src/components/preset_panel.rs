@@ -375,12 +375,13 @@ fn PresetSelectorRow(
 
         // Check bundled presets
         if let Some(idx_str) = sid.strip_prefix("bundled:")
-            && let Ok(idx) = idx_str.parse::<usize>() {
-                let bp = bundled_presets.get();
-                if let Some(template) = bp.get(idx) {
-                    return format!("\u{2726} {}", template.name);
-                }
+            && let Ok(idx) = idx_str.parse::<usize>()
+        {
+            let bp = bundled_presets.get();
+            if let Some(template) = bp.get(idx) {
+                return format!("\u{2726} {}", template.name);
             }
+        }
 
         // Check user presets
         effect_presets

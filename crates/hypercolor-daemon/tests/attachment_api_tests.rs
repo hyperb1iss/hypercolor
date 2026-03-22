@@ -141,6 +141,37 @@ async fn insert_test_device(state: &Arc<AppState>, name: &str) -> DeviceId {
     id
 }
 
+async fn insert_prism_8_test_device(state: &Arc<AppState>) -> DeviceId {
+    let id = DeviceId::new();
+    let info = DeviceInfo {
+        id,
+        name: "PrismRGB Prism 8".to_owned(),
+        vendor: "PrismRGB".to_owned(),
+        family: DeviceFamily::PrismRgb,
+        model: Some("prism_8".to_owned()),
+        connection_type: ConnectionType::Usb,
+        zones: vec![ZoneInfo {
+            name: "Channel 1".to_owned(),
+            led_count: 126,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Grb,
+        }],
+        firmware_version: Some("0.1.0".to_owned()),
+        capabilities: DeviceCapabilities {
+            led_count: 126,
+            supports_direct: true,
+            supports_brightness: false,
+            has_display: false,
+            display_resolution: None,
+            max_fps: 60,
+            color_space: hypercolor_types::device::DeviceColorSpace::default(),
+            features: DeviceFeatures::default(),
+        },
+    };
+    let _ = state.device_registry.add(info).await;
+    id
+}
+
 async fn send_json(
     app: &axum::Router,
     method: &str,
@@ -625,6 +656,35 @@ async fn multiple_same_slot_bindings_are_named_and_suggested_distinctly() {
     assert_eq!(suggested_zones[1]["led_start"], 12);
     assert_eq!(suggested_zones[0]["name"], "Stacked Strip 1");
     assert_eq!(suggested_zones[1]["name"], "Stacked Strip 2");
+}
+
+#[tokio::test]
+async fn prism_8_channel_slots_accept_fan_templates() {
+    let _guard = TestDataDirGuard::new().await;
+    let state = Arc::new(AppState::new());
+    let app = test_app_with_state(state.clone());
+    let device_id = insert_prism_8_test_device(&state).await;
+
+    let update_response = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": [{
+                "slot_id": "channel-1",
+                "template_id": "generic-argb-fan-16-leds",
+                "instances": 1,
+                "led_offset": 0
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(update_response.status(), StatusCode::OK);
+    let update_json = body_json(update_response).await;
+    assert_eq!(
+        update_json["data"]["bindings"][0]["template_id"],
+        "generic-argb-fan-16-leds"
+    );
 }
 
 #[tokio::test]

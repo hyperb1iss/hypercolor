@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::device::{DeviceInfo, DeviceTopologyHint};
+use crate::device::{DeviceFamily, DeviceInfo, DeviceTopologyHint, ZoneInfo};
 use crate::spatial::LedTopology;
 
 const CURRENT_ATTACHMENT_SCHEMA_VERSION: u32 = 1;
@@ -445,7 +445,7 @@ impl DeviceInfo {
                     name: zone.name.clone(),
                     led_start,
                     led_count: zone.led_count,
-                    suggested_categories: suggested_categories(&zone.topology),
+                    suggested_categories: slot_suggested_categories(self, zone),
                     allowed_templates: Vec::new(),
                     allow_custom: true,
                 };
@@ -461,6 +461,35 @@ impl DeviceInfo {
             suggested_zones: Vec::new(),
         }
     }
+}
+
+fn slot_suggested_categories(device: &DeviceInfo, zone: &ZoneInfo) -> Vec<AttachmentCategory> {
+    let mut categories = suggested_categories(&zone.topology);
+
+    if is_prismrgb_channel_slot(device, zone) {
+        for category in [
+            AttachmentCategory::Fan,
+            AttachmentCategory::Aio,
+            AttachmentCategory::Heatsink,
+            AttachmentCategory::Ring,
+        ] {
+            if !categories.contains(&category) {
+                categories.push(category);
+            }
+        }
+    }
+
+    categories
+}
+
+fn is_prismrgb_channel_slot(device: &DeviceInfo, zone: &ZoneInfo) -> bool {
+    device.family == DeviceFamily::PrismRgb
+        && matches!(
+            device.model.as_deref(),
+            Some("prism_8" | "nollie_8_v2" | "prism_mini")
+        )
+        && matches!(zone.topology, DeviceTopologyHint::Strip)
+        && zone.name.starts_with("Channel ")
 }
 
 fn matches_filter(filters: &[String], value: &str) -> bool {

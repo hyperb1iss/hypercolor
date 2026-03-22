@@ -6,6 +6,7 @@ use wasm_bindgen::JsCast;
 
 use crate::api::{self, ZoneTopologySummary};
 use crate::app::DevicesContext;
+use crate::channel_names;
 use crate::icons::*;
 use crate::layout_utils;
 use crate::style_utils::{device_accent_colors, hex_to_rgb, uuid_v4_hex};
@@ -110,9 +111,10 @@ pub fn LayoutPalette() -> impl IntoView {
     let assign_zone_to_group = move |zone_id: String, group_id: Option<String>| {
         set_layout.update(|l| {
             if let Some(layout) = l
-                && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
-                    zone.group_id = group_id;
-                }
+                && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id)
+            {
+                zone.group_id = group_id;
+            }
         });
         set_is_dirty.set(true);
     };
@@ -125,9 +127,10 @@ pub fn LayoutPalette() -> impl IntoView {
         }
         set_layout.update(|l| {
             if let Some(layout) = l
-                && let Some(group) = layout.groups.iter_mut().find(|g| g.id == group_id) {
-                    group.name = name;
-                }
+                && let Some(group) = layout.groups.iter_mut().find(|g| g.id == group_id)
+            {
+                group.name = name;
+            }
         });
         set_is_dirty.set(true);
         set_editing_group_id.set(None);
@@ -202,10 +205,14 @@ pub fn LayoutPalette() -> impl IntoView {
                                         let gid_visibility = group.id.clone();
                                         let gid_rename = group.id.clone();
                                         let gid_rename2 = group.id.clone();
+                                        let gid_select = group.id.clone();
                                         let gid_drop = group.id.clone();
                                         let gid_dragover = group.id.clone();
                                         let gid_dragleave = group.id.clone();
+                                        let gid_hidden = group.id.clone();
+                                        let gid_edit_trigger = group.id.clone();
                                         let group_name = group.name.clone();
+                                        let group_name_display = group.name.clone();
                                         let color = group.color.clone().unwrap_or_else(|| "#e135ff".to_string());
                                         let rgb = hex_to_rgb(&color);
                                         let count = counts.get(&group.id).copied().unwrap_or(0);
@@ -225,7 +232,7 @@ pub fn LayoutPalette() -> impl IntoView {
 
                                         // Check if all zones in this group are hidden
                                         let group_all_hidden = {
-                                            let gid = group.id.clone();
+                                            let gid = gid_hidden.clone();
                                             Signal::derive(move || {
                                                 let hidden = hidden_zones.get();
                                                 layout.with(|current| {
@@ -256,6 +263,19 @@ pub fn LayoutPalette() -> impl IntoView {
                                                         "color: rgb({rgb}); border-color: rgba({rgb}, {border_opacity}); \
                                                          background: rgba({rgb}, {bg_opacity}); --glow-rgb: {rgb}; {shadow}"
                                                     )
+                                                }
+                                                on:click={
+                                                    let gid_select = gid_select.clone();
+                                                    move |_| {
+                                                        let selected = layout.with_untracked(|current| {
+                                                            current.as_ref().and_then(|l| {
+                                                                layout_utils::representative_zone_id_for_group(l, &gid_select)
+                                                            })
+                                                        });
+                                                        if let Some(zone_id) = selected {
+                                                            set_selected_zone_id.set(Some(zone_id));
+                                                        }
+                                                    }
                                                 }
                                                 on:dragover=move |ev: web_sys::DragEvent| {
                                                     ev.prevent_default();
@@ -316,8 +336,8 @@ pub fn LayoutPalette() -> impl IntoView {
                                                             />
                                                         }.into_any()
                                                     } else {
-                                                        let gid = group.id.clone();
-                                                        let name = group.name.clone();
+                                                        let gid = gid_edit_trigger.clone();
+                                                        let name = group_name_display.clone();
                                                         view! {
                                                             <span
                                                                 class="cursor-text select-none"
@@ -520,11 +540,9 @@ pub fn LayoutPalette() -> impl IntoView {
                                             let did = device_id.clone();
                                             Signal::derive(move || {
                                                 layout.with(|current| {
-                                                    current
-                                                        .as_ref()
-                                                        .and_then(|l| {
-                                                            l.zones.iter().find(|z| z.device_id == did).map(|z| z.id.clone())
-                                                        })
+                                                    current.as_ref().and_then(|l| {
+                                                        layout_utils::representative_zone_id_for_device(l, &did)
+                                                    })
                                                 })
                                             })
                                         };
@@ -555,6 +573,7 @@ pub fn LayoutPalette() -> impl IntoView {
                                         let rgb_for_zones = primary_rgb.clone();
                                         let rgb = primary_rgb.clone();
                                         let rgb2 = secondary_rgb.clone();
+                                        let palette_device_id = device_id.clone();
                                         let mut entries: Vec<(
                                             Option<api::ZoneSummary>,
                                             String,
@@ -565,7 +584,12 @@ pub fn LayoutPalette() -> impl IntoView {
                                                 .cloned()
                                                 .map(|zone| {
                                                     let leds = zone.led_count;
-                                                    (Some(zone.clone()), zone.name, leds)
+                                                    let display_name = channel_names::effective_channel_name(
+                                                        &palette_device_id,
+                                                        &zone.id,
+                                                        &zone.name,
+                                                    );
+                                                    (Some(zone), display_name, leds)
                                                 })
                                                 .collect()
                                         } else {
@@ -1027,24 +1051,14 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                                 move || {
                                                                                     layout.with(
                                                                                     |current| {
-                                                                                        current
-                                                                                            .as_ref()
-                                                                                            .map(
-                                                                                                |l| {
-                                                                                                    l.zones.iter().any(|z| {
-                                                                                                        if z.device_id != did {
-                                                                                                            return false;
-                                                                                                        }
-                                                                                                        match zone_name.as_deref() {
-                                                                                                            Some(name) => z.zone_name.as_deref() == Some(name),
-                                                                                                            None => z.zone_name.is_none(),
-                                                                                                        }
-                                                                                                    })
-                                                                                                },
+                                                                                        current.as_ref().is_some_and(|l| {
+                                                                                            layout_utils::representative_zone_id_for_device_slot(
+                                                                                                l,
+                                                                                                &did,
+                                                                                                zone_name.as_deref(),
                                                                                             )
-                                                                                            .unwrap_or(
-                                                                                                false,
-                                                                                            )
+                                                                                            .is_some()
+                                                                                        })
                                                                                     },
                                                                                 )
                                                                                 },
@@ -1060,11 +1074,14 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                                     return false;
                                                                                 };
                                                                                 layout.with(|current| {
-                                                                                    current.as_ref()
-                                                                                        .and_then(|l| l.zones.iter().find(|z| z.id == sel))
-                                                                                        .is_some_and(|z| {
-                                                                                            z.device_id == did && z.zone_name.as_deref() == zn.as_deref()
-                                                                                        })
+                                                                                    current.as_ref().is_some_and(|l| {
+                                                                                        layout_utils::selected_zone_matches_device_slot(
+                                                                                            l,
+                                                                                            &sel,
+                                                                                            &did,
+                                                                                            zn.as_deref(),
+                                                                                        )
+                                                                                    })
                                                                                 })
                                                                             })
                                                                         };
@@ -1076,9 +1093,11 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                             Signal::derive(move || {
                                                                                 layout.with(|current| {
                                                                                     current.as_ref().and_then(|l| {
-                                                                                        l.zones.iter().find(|z| {
-                                                                                            z.device_id == did && z.zone_name.as_deref() == zn.as_deref()
-                                                                                        }).map(|z| z.id.clone())
+                                                                                        layout_utils::representative_zone_id_for_device_slot(
+                                                                                            l,
+                                                                                            &did,
+                                                                                            zn.as_deref(),
+                                                                                        )
                                                                                     })
                                                                                 })
                                                                             })
@@ -1109,9 +1128,13 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                             Signal::derive(move || {
                                                                                 layout.with(|current| {
                                                                                     let l = current.as_ref()?;
-                                                                                    let zone = l.zones.iter().find(|z| {
-                                                                                        z.device_id == did && z.zone_name.as_deref() == zn.as_deref()
-                                                                                    })?;
+                                                                                    let zone_id =
+                                                                                        layout_utils::representative_zone_id_for_device_slot(
+                                                                                            l,
+                                                                                            &did,
+                                                                                            zn.as_deref(),
+                                                                                        )?;
+                                                                                    let zone = l.zones.iter().find(|z| z.id == zone_id)?;
                                                                                     let gid = zone.group_id.as_ref()?;
                                                                                     let group = l.groups.iter().find(|g| &g.id == gid)?;
                                                                                     group.color.clone()
@@ -1120,7 +1143,10 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                         };
 
                                                                         // Attachment binding for this zone/slot
-                                                                        let binding_zone_name = display_name.clone();
+                                                                        let binding_slot_id = zone_summary
+                                                                            .as_ref()
+                                                                            .map(|zone| zone.id.clone())
+                                                                            .unwrap_or_else(|| display_name.clone());
                                                                         let binding_device_id = device_id.clone();
                                                                         let zone_bindings = Signal::derive(move || {
                                                                             let cache = attachment_cache.get();
@@ -1129,10 +1155,7 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                                     bindings
                                                                                         .iter()
                                                                                         .filter(|binding| {
-                                                                                            layout_utils::slot_id_matches_zone_name(
-                                                                                                &binding.slot_id,
-                                                                                                &binding_zone_name,
-                                                                                            )
+                                                                                            binding.slot_id == binding_slot_id
                                                                                         })
                                                                                         .cloned()
                                                                                         .collect::<Vec<_>>()

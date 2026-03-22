@@ -4,7 +4,7 @@
     reason = "Some helpers are pre-built for upcoming editor features."
 )]
 
-use std::f32::consts::FRAC_PI_2;
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use hypercolor_types::attachment::{AttachmentCategory, AttachmentSuggestedZone};
 use hypercolor_types::spatial::{
@@ -482,23 +482,83 @@ pub(crate) fn drag_zone_to_position(
     zone_id: &str,
     desired_position: NormalizedPosition,
 ) -> bool {
-    let Some(zone_index) = layout.zones.iter().position(|zone| zone.id == zone_id) else {
-        return false;
-    };
-
-    let current_position = layout.zones[zone_index].position;
     let desired_position = NormalizedPosition::new(
         desired_position.x.clamp(0.0, 1.0),
         desired_position.y.clamp(0.0, 1.0),
     );
+    let Some((zone_index, member_indices)) = grouped_zone_member_indices(layout, zone_id) else {
+        return false;
+    };
 
-    let Some(group_id) = layout.zones[zone_index].group_id.clone() else {
+    let current_position = layout.zones[zone_index].position;
+
+    if member_indices.len() <= 1 {
         let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
         if current_position == clamped {
             return false;
         }
         layout.zones[zone_index].position = clamped;
         return true;
+    }
+
+    translate_group_members(
+        layout,
+        &member_indices,
+        desired_position.x - current_position.x,
+        desired_position.y - current_position.y,
+    )
+}
+
+pub(crate) fn set_zone_position(
+    layout: &mut SpatialLayout,
+    zone_id: &str,
+    desired_position: NormalizedPosition,
+) -> bool {
+    let desired_position = NormalizedPosition::new(
+        desired_position.x.clamp(0.0, 1.0),
+        desired_position.y.clamp(0.0, 1.0),
+    );
+    let Some((zone_index, member_indices)) = grouped_zone_member_indices(layout, zone_id) else {
+        return false;
+    };
+
+    if member_indices.len() <= 1 {
+        let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
+        if layout.zones[zone_index].position == clamped {
+            return false;
+        }
+        layout.zones[zone_index].position = clamped;
+        return true;
+    }
+
+    let current_center = group_rotation_pivot(layout, &member_indices);
+    translate_group_members(
+        layout,
+        &member_indices,
+        desired_position.x - current_center.x,
+        desired_position.y - current_center.y,
+    )
+}
+
+pub(crate) fn zone_transform_anchor(
+    layout: &SpatialLayout,
+    zone_id: &str,
+) -> Option<NormalizedPosition> {
+    let (zone_index, member_indices) = grouped_zone_member_indices(layout, zone_id)?;
+    if member_indices.len() <= 1 {
+        return Some(layout.zones[zone_index].position);
+    }
+    Some(group_rotation_pivot(layout, &member_indices))
+}
+
+fn grouped_zone_member_indices(
+    layout: &SpatialLayout,
+    zone_id: &str,
+) -> Option<(usize, Vec<usize>)> {
+    let zone_index = layout.zones.iter().position(|zone| zone.id == zone_id)?;
+
+    let Some(group_id) = layout.zones[zone_index].group_id.clone() else {
+        return Some((zone_index, vec![zone_index]));
     };
 
     let member_indices = layout
@@ -510,23 +570,21 @@ pub(crate) fn drag_zone_to_position(
         })
         .collect::<Vec<_>>();
 
-    if member_indices.len() <= 1 {
-        let clamped = clamp_zone_center(desired_position, layout.zones[zone_index].size);
-        if current_position == clamped {
-            return false;
-        }
-        layout.zones[zone_index].position = clamped;
-        return true;
-    }
+    Some((zone_index, member_indices))
+}
 
-    let desired_dx = desired_position.x - current_position.x;
-    let desired_dy = desired_position.y - current_position.y;
+fn translate_group_members(
+    layout: &mut SpatialLayout,
+    member_indices: &[usize],
+    desired_dx: f32,
+    desired_dy: f32,
+) -> bool {
     let mut min_dx = f32::NEG_INFINITY;
     let mut max_dx = f32::INFINITY;
     let mut min_dy = f32::NEG_INFINITY;
     let mut max_dy = f32::INFINITY;
 
-    for index in &member_indices {
+    for index in member_indices {
         let zone = &layout.zones[*index];
         min_dx = min_dx.max(zone.size.x * 0.5 - zone.position.x);
         max_dx = max_dx.min(1.0 - zone.size.x * 0.5 - zone.position.x);
@@ -541,9 +599,59 @@ pub(crate) fn drag_zone_to_position(
     }
 
     for index in member_indices {
-        let zone = &mut layout.zones[index];
+        let zone = &mut layout.zones[*index];
         zone.position =
             NormalizedPosition::new(zone.position.x + clamped_dx, zone.position.y + clamped_dy);
+    }
+
+    true
+}
+
+pub(crate) fn set_zone_rotation(layout: &mut SpatialLayout, zone_id: &str, rotation: f32) -> bool {
+    let Some(zone_index) = layout.zones.iter().position(|zone| zone.id == zone_id) else {
+        return false;
+    };
+
+    let current_rotation = layout.zones[zone_index].rotation;
+    let delta = normalize_rotation_delta(rotation - current_rotation);
+    if delta.abs() <= GRID_EPSILON {
+        return false;
+    }
+
+    let Some(group_id) = layout.zones[zone_index].group_id.clone() else {
+        layout.zones[zone_index].rotation = normalize_rotation(rotation);
+        return true;
+    };
+
+    let member_indices = layout
+        .zones
+        .iter()
+        .enumerate()
+        .filter_map(|(index, zone)| {
+            (zone.group_id.as_deref() == Some(group_id.as_str())).then_some(index)
+        })
+        .collect::<Vec<_>>();
+
+    if member_indices.len() <= 1 {
+        layout.zones[zone_index].rotation = normalize_rotation(rotation);
+        return true;
+    }
+
+    let pivot = group_rotation_pivot(layout, &member_indices);
+    let cos_delta = delta.cos();
+    let sin_delta = delta.sin();
+
+    for index in member_indices {
+        let zone = &mut layout.zones[index];
+        let dx = zone.position.x - pivot.x;
+        let dy = zone.position.y - pivot.y;
+        let rotated = NormalizedPosition::new(
+            pivot.x + dx.mul_add(cos_delta, -dy * sin_delta),
+            pivot.y + dx.mul_add(sin_delta, dy * cos_delta),
+        );
+
+        zone.position = clamp_zone_center(rotated, zone.size);
+        zone.rotation = normalize_rotation(zone.rotation + delta);
     }
 
     true
@@ -1517,4 +1625,34 @@ fn distance_sq(left: NormalizedPosition, right: NormalizedPosition) -> f32 {
     let dx = left.x - right.x;
     let dy = left.y - right.y;
     dx * dx + dy * dy
+}
+
+fn group_rotation_pivot(layout: &SpatialLayout, member_indices: &[usize]) -> NormalizedPosition {
+    let bounds = member_indices.iter().fold(
+        (
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ),
+        |(min_x, max_x, min_y, max_y), index| {
+            let zone = &layout.zones[*index];
+            (
+                min_x.min(zone.position.x - zone.size.x * 0.5),
+                max_x.max(zone.position.x + zone.size.x * 0.5),
+                min_y.min(zone.position.y - zone.size.y * 0.5),
+                max_y.max(zone.position.y + zone.size.y * 0.5),
+            )
+        },
+    );
+
+    NormalizedPosition::new((bounds.0 + bounds.1) * 0.5, (bounds.2 + bounds.3) * 0.5)
+}
+
+fn normalize_rotation(rotation: f32) -> f32 {
+    rotation.rem_euclid(TAU)
+}
+
+fn normalize_rotation_delta(delta: f32) -> f32 {
+    (delta + PI).rem_euclid(TAU) - PI
 }

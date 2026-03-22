@@ -227,6 +227,38 @@ fn device_info_default_attachment_profile_deduplicates_slot_ids() {
 }
 
 #[test]
+fn prism_8_channel_slots_allow_fan_attachments() {
+    let device = DeviceInfo {
+        name: "Prism 8".into(),
+        model: Some("prism_8".into()),
+        zones: vec![ZoneInfo {
+            name: "Channel 1".into(),
+            led_count: 126,
+            topology: DeviceTopologyHint::Strip,
+            color_format: DeviceColorFormat::Rgb,
+        }],
+        ..sample_device()
+    };
+
+    let profile = device.default_attachment_profile();
+    assert!(
+        profile.slots[0]
+            .suggested_categories
+            .contains(&AttachmentCategory::Strip)
+    );
+    assert!(
+        profile.slots[0]
+            .suggested_categories
+            .contains(&AttachmentCategory::Fan)
+    );
+    assert!(
+        profile.slots[0]
+            .suggested_categories
+            .contains(&AttachmentCategory::Ring)
+    );
+}
+
+#[test]
 fn attachment_compatibility_matches_family_model_and_slot() {
     let compatibility = AttachmentCompatibility {
         families: vec!["prismrgb".into()],

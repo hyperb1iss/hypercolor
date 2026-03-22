@@ -253,9 +253,10 @@ pub fn ColorWheel(
         if let Some(canvas) = canvas_ref.get() {
             let el: &web_sys::HtmlCanvasElement = &canvas;
             if let Ok(Some(ctx)) = el.get_context("2d")
-                && let Ok(ctx) = ctx.dyn_into::<web_sys::CanvasRenderingContext2d>() {
-                    let _ = render_wheel(&ctx, current_hsv);
-                }
+                && let Ok(ctx) = ctx.dyn_into::<web_sys::CanvasRenderingContext2d>()
+            {
+                let _ = render_wheel(&ctx, current_hsv);
+            }
         }
     });
 
@@ -296,17 +297,19 @@ pub fn ColorWheel(
 
     let on_pointer_down = move |client_x: f64, client_y: f64| {
         if let Some((x, y)) = get_canvas_coords(client_x, client_y)
-            && let Some(region) = hit_test(x, y) {
-                set_dragging.set(Some(region));
-                update_from_pos(x, y, region);
-            }
+            && let Some(region) = hit_test(x, y)
+        {
+            set_dragging.set(Some(region));
+            update_from_pos(x, y, region);
+        }
     };
 
     let on_pointer_move = move |client_x: f64, client_y: f64| {
         if let Some(region) = dragging.get_untracked()
-            && let Some((x, y)) = get_canvas_coords(client_x, client_y) {
-                update_from_pos(x, y, region);
-            }
+            && let Some((x, y)) = get_canvas_coords(client_x, client_y)
+        {
+            update_from_pos(x, y, region);
+        }
     };
 
     view! {

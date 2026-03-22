@@ -11,34 +11,13 @@ use hypercolor_types::attachment::AttachmentSuggestedZone;
 
 use crate::api;
 use crate::app::DevicesContext;
+use crate::channel_names;
 use crate::components::attachment_editor;
 use crate::components::component_picker::ComponentPicker;
 use crate::components::device_card::topology_shape_svg;
 use crate::icons::*;
 use crate::layout_geometry;
 use crate::toasts;
-
-// ── LocalStorage helpers for channel name overrides ─────────────────────────
-
-fn ls_channel_key(device_id: &str, slot_id: &str) -> String {
-    format!("hc-channel-name-{device_id}-{slot_id}")
-}
-
-fn load_channel_name(device_id: &str, slot_id: &str) -> Option<String> {
-    web_sys::window()
-        .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| {
-            s.get_item(&ls_channel_key(device_id, slot_id))
-                .ok()
-                .flatten()
-        })
-}
-
-fn save_channel_name(device_id: &str, slot_id: &str, name: &str) {
-    if let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
-        let _ = storage.set_item(&ls_channel_key(device_id, slot_id), name);
-    }
-}
 
 // ── Channel panel ───────────────────────────────────────────────────────────
 
@@ -124,8 +103,8 @@ pub fn WiringPanel(
 
                                             // Channel name (localStorage override)
                                             let default_name = slot.name.clone();
-                                            let stored_name = load_channel_name(&did, &slot.id);
-                                            let display_name = stored_name.unwrap_or_else(|| default_name.clone());
+                                            let display_name =
+                                                channel_names::effective_channel_name(&did, &slot.id, &default_name);
                                             let (channel_name, set_channel_name) = signal(display_name);
                                             let (editing, set_editing) = signal(false);
                                             let (name_input, set_name_input) = signal(String::new());
@@ -134,16 +113,32 @@ pub fn WiringPanel(
                                                 let did = did.clone();
                                                 let slot_id = slot_id.clone();
                                                 let default_name = default_name.clone();
+                                                let device = device;
                                                 move || {
                                                     set_editing.set(false);
+                                                    let previous_name = channel_name.get_untracked();
                                                     let new_name = name_input.get();
-                                                    let name = if new_name.trim().is_empty() || new_name.trim() == default_name {
+                                                    let name = if new_name.trim().is_empty() {
                                                         default_name.clone()
                                                     } else {
                                                         new_name.trim().to_string()
                                                     };
-                                                    save_channel_name(&did, &slot_id, &name);
-                                                    set_channel_name.set(name);
+                                                    channel_names::save_channel_name(
+                                                        &did,
+                                                        &slot_id,
+                                                        &default_name,
+                                                        &name,
+                                                    );
+                                                    set_channel_name.set(name.clone());
+                                                    if let Some(device) = device.get_untracked() {
+                                                        sync_channel_name_to_active_layout(
+                                                            device,
+                                                            slot_id.clone(),
+                                                            default_name.clone(),
+                                                            previous_name,
+                                                            name,
+                                                        );
+                                                    }
                                                 }
                                             };
 
@@ -618,11 +613,23 @@ pub fn sync_wiring_to_layout(
         let result: Result<usize, String> = async {
             let mut layout = api::fetch_active_layout().await?;
             let layout_id = layout.id.clone();
-            let seeded = layout_geometry::seeded_attachment_layout(
+            let mut seeded = layout_geometry::seeded_attachment_layout(
                 &device.layout_device_id,
                 &device.name,
                 &suggested_zones,
                 0,
+            );
+            let slot_display_names = suggested_zones
+                .iter()
+                .filter_map(|zone| {
+                    channel_names::load_channel_name(&device.id, &zone.slot_id)
+                        .map(|display_name| (zone.slot_id.clone(), display_name))
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+            crate::layout_utils::apply_slot_display_names_to_seeded_attachment_layout(
+                &mut seeded,
+                &device.name,
+                &slot_display_names,
             );
             let imported_count = seeded.zones.len();
             crate::layout_utils::replace_attachment_layout(
@@ -650,6 +657,54 @@ pub fn sync_wiring_to_layout(
             layouts_resource.refetch();
             let noun = if count == 1 { "zone" } else { "zones" };
             toasts::toast_info(&format!("Layout synced ({count} {noun})"));
+        }
+    });
+}
+
+fn sync_channel_name_to_active_layout(
+    device: api::DeviceSummary,
+    slot_id: String,
+    default_name: String,
+    previous_name: String,
+    new_name: String,
+) {
+    if previous_name == new_name {
+        return;
+    }
+
+    leptos::task::spawn_local(async move {
+        let result: Result<bool, String> = async {
+            let mut layout = api::fetch_active_layout().await?;
+            let layout_id = layout.id.clone();
+            let changed = crate::layout_utils::sync_channel_display_name_in_layout(
+                &mut layout,
+                &device.layout_device_id,
+                &device.name,
+                &slot_id,
+                &default_name,
+                &previous_name,
+                &new_name,
+            );
+            if !changed {
+                return Ok(false);
+            }
+
+            let req = api::UpdateLayoutApiRequest {
+                name: None,
+                description: None,
+                canvas_width: None,
+                canvas_height: None,
+                zones: Some(layout.zones),
+                groups: Some(layout.groups),
+            };
+            api::update_layout(&layout_id, &req).await?;
+            api::apply_layout(&layout_id).await?;
+            Ok(true)
+        }
+        .await;
+
+        if let Err(error) = result {
+            toasts::toast_error(&format!("Channel rename sync failed: {error}"));
         }
     });
 }

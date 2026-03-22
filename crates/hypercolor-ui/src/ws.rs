@@ -404,21 +404,22 @@ impl WsManager {
 
                 // JSON message (String)
                 if let Some(text) = event.data().as_string()
-                    && let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
-                        handle_json_message(
-                            &msg,
-                            &set_active_effect,
-                            metrics,
-                            &set_metrics,
-                            backpressure_notice,
-                            &set_backpressure_notice,
-                            &set_last_device_event,
-                            &set_audio_level,
-                            &set_engine_preview_target,
-                            &set_preview_target_fps,
-                            &set_preview_transport_cap,
-                        );
-                    }
+                    && let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text)
+                {
+                    handle_json_message(
+                        &msg,
+                        &set_active_effect,
+                        metrics,
+                        &set_metrics,
+                        backpressure_notice,
+                        &set_backpressure_notice,
+                        &set_last_device_event,
+                        &set_audio_level,
+                        &set_engine_preview_target,
+                        &set_preview_target_fps,
+                        &set_preview_transport_cap,
+                    );
+                }
             });
             ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
             on_message.forget();

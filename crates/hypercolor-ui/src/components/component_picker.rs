@@ -4,7 +4,7 @@
 use leptos::{ev, portal::Portal, prelude::*};
 use leptos_icons::Icon;
 use leptos_use::{UseEventListenerOptions, use_event_listener_with_options};
-use wasm_bindgen::JsCast;
+use wasm_bindgen::{JsCast, closure::Closure};
 
 use crate::api;
 use crate::icons::*;
@@ -112,6 +112,76 @@ fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
         .unwrap_or_default()
 }
 
+pub(crate) fn filter_components(
+    components: &[api::TemplateSummary],
+    term: &str,
+) -> Vec<api::TemplateSummary> {
+    let normalized = term.trim().to_lowercase();
+    let mut results: Vec<_> = if normalized.is_empty() {
+        components.to_vec()
+    } else {
+        components
+            .iter()
+            .filter(|template| {
+                template.name.to_lowercase().contains(&normalized)
+                    || template.vendor.to_lowercase().contains(&normalized)
+                    || template
+                        .category
+                        .as_str()
+                        .to_lowercase()
+                        .contains(&normalized)
+                    || template.description.to_lowercase().contains(&normalized)
+                    || template
+                        .tags
+                        .iter()
+                        .any(|tag| tag.to_lowercase().contains(&normalized))
+            })
+            .cloned()
+            .collect()
+    };
+    results.sort_by(|left, right| {
+        left.vendor
+            .cmp(&right.vendor)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    results
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn selected_result_index(
+    results: &[api::TemplateSummary],
+    selected_template_id: Option<&str>,
+) -> Option<usize> {
+    let selected_template_id = selected_template_id?;
+    results
+        .iter()
+        .position(|template| template.id == selected_template_id)
+}
+
+fn restore_selected_component_scroll(
+    list_ref: NodeRef<leptos::html::Div>,
+    selected_template_id: Option<String>,
+) {
+    let Some(selected_template_id) = selected_template_id else {
+        return;
+    };
+    let Some(list_el) = list_ref.get() else {
+        return;
+    };
+
+    let items = list_el.get_elements_by_tag_name("button");
+    for index in 0..items.length() {
+        let Some(item) = items.item(index) else {
+            continue;
+        };
+        if item.get_attribute("data-template-id").as_deref() == Some(selected_template_id.as_str())
+        {
+            item.scroll_into_view();
+            break;
+        }
+    }
+}
+
 // ── Picker component ────────────────────────────────────────────────────────
 
 /// Component library picker — opens a searchable dropdown of known hardware components.
@@ -123,32 +193,37 @@ pub fn ComponentPicker(
 ) -> impl IntoView {
     let (open, set_open) = signal(false);
     let (search, set_search) = signal(String::new());
+    let (selected_template_id, set_selected_template_id) = signal(None::<String>);
     let trigger_ref = NodeRef::<leptos::html::Button>::new();
+    let search_ref = NodeRef::<leptos::html::Input>::new();
+    let list_ref = NodeRef::<leptos::html::Div>::new();
     let components_store = StoredValue::new(components);
 
     install_outside_click_handler(set_open);
 
     let filtered = Memo::new(move |_| {
-        let term = search.get().to_lowercase();
-        components_store.with_value(|components| {
-            let mut results: Vec<_> = if term.is_empty() {
-                components.clone()
-            } else {
-                components
-                    .iter()
-                    .filter(|t| {
-                        t.name.to_lowercase().contains(&term)
-                            || t.vendor.to_lowercase().contains(&term)
-                            || t.category.as_str().to_lowercase().contains(&term)
-                            || t.description.to_lowercase().contains(&term)
-                            || t.tags.iter().any(|tag| tag.to_lowercase().contains(&term))
-                    })
-                    .cloned()
-                    .collect()
-            };
-            results.sort_by(|a, b| a.vendor.cmp(&b.vendor).then_with(|| a.name.cmp(&b.name)));
-            results
-        })
+        let term = search.get();
+        components_store.with_value(|components| filter_components(components, &term))
+    });
+
+    Effect::new(move |_| {
+        if !open.get() {
+            return;
+        }
+
+        let search_ref = search_ref.clone();
+        let list_ref = list_ref.clone();
+        let selected_template_id = selected_template_id.get_untracked();
+        if let Some(window) = web_sys::window() {
+            let cb = Closure::once(move || {
+                if let Some(input) = search_ref.get() {
+                    let _ = input.focus();
+                }
+                restore_selected_component_scroll(list_ref, selected_template_id);
+            });
+            let _ = window.set_timeout_with_callback(cb.as_ref().unchecked_ref());
+            cb.forget();
+        }
     });
 
     view! {
@@ -161,7 +236,6 @@ pub fn ComponentPicker(
                 on:click=move |ev: web_sys::MouseEvent| {
                     ev.stop_propagation();
                     if open.get_untracked() { set_open.set(false); return; }
-                    set_search.set(String::new());
                     set_open.set(true);
                 }
             >
@@ -185,6 +259,7 @@ pub fn ComponentPicker(
                                     </span>
                                     <input
                                         type="text"
+                                        node_ref=search_ref
                                         placeholder="Search components..."
                                         class="w-full bg-surface-base/60 border border-edge-subtle rounded-lg pl-6 pr-2 py-1
                                                text-[11px] text-fg-primary placeholder-fg-tertiary/40
@@ -199,7 +274,10 @@ pub fn ComponentPicker(
                                 </div>
                             </div>
 
-                            <div class="flex-1 overflow-y-auto scrollbar-dropdown">
+                            <div
+                                node_ref=list_ref
+                                class="flex-1 overflow-y-auto scrollbar-dropdown"
+                            >
                                 {move || {
                                     let results = filtered.get();
                                     if results.is_empty() {
@@ -207,7 +285,12 @@ pub fn ComponentPicker(
                                             <div class="px-3 py-4 text-center text-[10px] text-fg-tertiary/40">"No components found"</div>
                                         }.into_any();
                                     }
-                                    results.into_iter().map(|t| {
+                                    let selected_index = selected_result_index(
+                                        &results,
+                                        selected_template_id.get().as_deref(),
+                                    );
+                                    results.into_iter().enumerate().map(|(index, t)| {
+                                        let is_selected = selected_index == Some(index);
                                         let svg = category_shape_svg(t.category.as_str(), 16);
                                         let tid = t.id.clone();
                                         let tname = t.name.clone();
@@ -218,14 +301,19 @@ pub fn ComponentPicker(
                                         view! {
                                             <button
                                                 type="button"
-                                                class="w-full flex items-center gap-2 px-2 py-1.5 mx-1 rounded-lg
-                                                       hover:bg-surface-hover/40 transition-colors text-left"
+                                                data-template-id=tid.clone()
+                                                class=if is_selected {
+                                                    "w-full flex items-center gap-2 px-2 py-1.5 mx-1 rounded-lg bg-surface-hover/30 ring-1 ring-neon-cyan/20 transition-colors text-left"
+                                                } else {
+                                                    "w-full flex items-center gap-2 px-2 py-1.5 mx-1 rounded-lg hover:bg-surface-hover/40 transition-colors text-left"
+                                                }
                                                 style="width: calc(100% - 8px)"
                                                 on:click={
                                                     let tid = tid.clone();
                                                     let tname = tname.clone();
                                                     move |ev: web_sys::MouseEvent| {
                                                         ev.stop_propagation();
+                                                        set_selected_template_id.set(Some(tid.clone()));
                                                         on_select.run((tid.clone(), tname.clone()));
                                                         set_open.set(false);
                                                     }

@@ -264,10 +264,11 @@ pub fn CanvasPreview(
 
                 if let Some(frame) = latest_frame.borrow().clone()
                     && Some(frame.frame_number) != *last_presented_frame.borrow()
-                    && let Some(presenter) = presenter_handle.borrow_mut().as_mut() {
-                        presenter.render(&canvas_handle, &frame);
-                        *last_presented_frame.borrow_mut() = Some(frame.frame_number);
-                    }
+                    && let Some(presenter) = presenter_handle.borrow_mut().as_mut()
+                {
+                    presenter.render(&canvas_handle, &frame);
+                    *last_presented_frame.borrow_mut() = Some(frame.frame_number);
+                }
 
                 animation_handle.borrow_mut().take();
             });

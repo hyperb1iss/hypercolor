@@ -403,6 +403,268 @@ fn drag_zone_to_position_unlocks_independent_movement_and_clamps_group_bounds() 
 }
 
 #[test]
+fn set_zone_rotation_rotates_grouped_attachment_footprint() {
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![
+            DeviceZone {
+                id: "zone-a".to_owned(),
+                name: "A".to_owned(),
+                device_id: "usb:a".to_owned(),
+                zone_name: Some("A".to_owned()),
+                group_id: Some("bank".to_owned()),
+                position: NormalizedPosition::new(0.3, 0.5),
+                size: NormalizedPosition::new(0.12, 0.12),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Custom {
+                    positions: vec![NormalizedPosition::new(0.0, 0.0)],
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: None,
+                edge_behavior: None,
+                shape: Some(ZoneShape::Ring),
+                shape_preset: None,
+                display_order: 0,
+                attachment: None,
+            },
+            DeviceZone {
+                id: "zone-b".to_owned(),
+                name: "B".to_owned(),
+                device_id: "usb:a".to_owned(),
+                zone_name: Some("B".to_owned()),
+                group_id: Some("bank".to_owned()),
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(0.12, 0.12),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Custom {
+                    positions: vec![NormalizedPosition::new(0.0, 0.0)],
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: None,
+                edge_behavior: None,
+                shape: Some(ZoneShape::Ring),
+                shape_preset: None,
+                display_order: 1,
+                attachment: None,
+            },
+            DeviceZone {
+                id: "zone-c".to_owned(),
+                name: "C".to_owned(),
+                device_id: "usb:a".to_owned(),
+                zone_name: Some("C".to_owned()),
+                group_id: Some("bank".to_owned()),
+                position: NormalizedPosition::new(0.7, 0.5),
+                size: NormalizedPosition::new(0.12, 0.12),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Custom {
+                    positions: vec![NormalizedPosition::new(0.0, 0.0)],
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: None,
+                edge_behavior: None,
+                shape: Some(ZoneShape::Ring),
+                shape_preset: None,
+                display_order: 2,
+                attachment: None,
+            },
+        ],
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    let quarter_turn = 90.0_f32.to_radians();
+    assert!(layout_geometry::set_zone_rotation(
+        &mut layout,
+        "zone-a",
+        quarter_turn,
+    ));
+
+    assert!((layout.zones[0].position.x - 0.5).abs() < 0.001);
+    assert!((layout.zones[0].position.y - 0.3).abs() < 0.001);
+    assert!((layout.zones[1].position.x - 0.5).abs() < 0.001);
+    assert!((layout.zones[1].position.y - 0.5).abs() < 0.001);
+    assert!((layout.zones[2].position.x - 0.5).abs() < 0.001);
+    assert!((layout.zones[2].position.y - 0.7).abs() < 0.001);
+    assert!(
+        layout
+            .zones
+            .iter()
+            .all(|zone| (zone.rotation - quarter_turn).abs() < 0.001)
+    );
+}
+
+#[test]
+fn set_zone_rotation_updates_single_zone_without_moving_it() {
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![DeviceZone {
+            id: "zone-a".to_owned(),
+            name: "A".to_owned(),
+            device_id: "usb:a".to_owned(),
+            zone_name: Some("A".to_owned()),
+            group_id: None,
+            position: NormalizedPosition::new(0.4, 0.6),
+            size: NormalizedPosition::new(0.14, 0.1),
+            rotation: 0.0,
+            scale: 1.0,
+            orientation: None,
+            topology: LedTopology::Strip {
+                count: 8,
+                direction: StripDirection::LeftToRight,
+            },
+            led_positions: Vec::new(),
+            led_mapping: None,
+            sampling_mode: None,
+            edge_behavior: None,
+            shape: Some(ZoneShape::Rectangle),
+            shape_preset: None,
+            display_order: 0,
+            attachment: None,
+        }],
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    let rotation = 180.0_f32.to_radians();
+    assert!(layout_geometry::set_zone_rotation(
+        &mut layout,
+        "zone-a",
+        rotation,
+    ));
+
+    assert!((layout.zones[0].position.x - 0.4).abs() < 0.001);
+    assert!((layout.zones[0].position.y - 0.6).abs() < 0.001);
+    assert!((layout.zones[0].rotation - rotation).abs() < 0.001);
+}
+
+#[test]
+fn set_zone_position_moves_group_by_combined_center() {
+    let mut layout = SpatialLayout {
+        id: "default".to_owned(),
+        name: "Default".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: vec![
+            DeviceZone {
+                id: "zone-a".to_owned(),
+                name: "A".to_owned(),
+                device_id: "usb:a".to_owned(),
+                zone_name: Some("A".to_owned()),
+                group_id: Some("bank".to_owned()),
+                position: NormalizedPosition::new(0.3, 0.5),
+                size: NormalizedPosition::new(0.12, 0.12),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Custom {
+                    positions: vec![NormalizedPosition::new(0.0, 0.0)],
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: None,
+                edge_behavior: None,
+                shape: Some(ZoneShape::Ring),
+                shape_preset: None,
+                display_order: 0,
+                attachment: None,
+            },
+            DeviceZone {
+                id: "zone-b".to_owned(),
+                name: "B".to_owned(),
+                device_id: "usb:a".to_owned(),
+                zone_name: Some("B".to_owned()),
+                group_id: Some("bank".to_owned()),
+                position: NormalizedPosition::new(0.5, 0.5),
+                size: NormalizedPosition::new(0.12, 0.12),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Custom {
+                    positions: vec![NormalizedPosition::new(0.0, 0.0)],
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: None,
+                edge_behavior: None,
+                shape: Some(ZoneShape::Ring),
+                shape_preset: None,
+                display_order: 1,
+                attachment: None,
+            },
+            DeviceZone {
+                id: "zone-c".to_owned(),
+                name: "C".to_owned(),
+                device_id: "usb:a".to_owned(),
+                zone_name: Some("C".to_owned()),
+                group_id: Some("bank".to_owned()),
+                position: NormalizedPosition::new(0.7, 0.5),
+                size: NormalizedPosition::new(0.12, 0.12),
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: None,
+                topology: LedTopology::Custom {
+                    positions: vec![NormalizedPosition::new(0.0, 0.0)],
+                },
+                led_positions: Vec::new(),
+                led_mapping: None,
+                sampling_mode: None,
+                edge_behavior: None,
+                shape: Some(ZoneShape::Ring),
+                shape_preset: None,
+                display_order: 2,
+                attachment: None,
+            },
+        ],
+        groups: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+
+    assert!(layout_geometry::set_zone_position(
+        &mut layout,
+        "zone-a",
+        NormalizedPosition::new(0.35, 0.4),
+    ));
+
+    assert!((layout.zones[0].position.x - 0.15).abs() < 0.001);
+    assert!((layout.zones[0].position.y - 0.4).abs() < 0.001);
+    assert!((layout.zones[1].position.x - 0.35).abs() < 0.001);
+    assert!((layout.zones[1].position.y - 0.4).abs() < 0.001);
+    assert!((layout.zones[2].position.x - 0.55).abs() < 0.001);
+    assert!((layout.zones[2].position.y - 0.4).abs() < 0.001);
+    let anchor = layout_geometry::zone_transform_anchor(&layout, "zone-b")
+        .expect("group anchor should resolve");
+    assert!((anchor.x - 0.35).abs() < 0.001);
+    assert!((anchor.y - 0.4).abs() < 0.001);
+}
+
+#[test]
 fn repair_legacy_lcd_defaults_updates_untouched_square_display_zone() {
     let mut layout = SpatialLayout {
         id: "default".to_owned(),
