@@ -121,6 +121,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          arguments: ""
 
   # ── SDK (TypeScript / Bun) ─────────────────────────────────────
   sdk:
