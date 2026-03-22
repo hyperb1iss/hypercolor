@@ -25,10 +25,18 @@ pub(crate) enum ComponentDraft {
 }
 
 /// A row in the channel component editor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PersistedAttachmentTarget {
+    pub binding_index: usize,
+    pub instance: u32,
+}
+
+/// A row in the channel component editor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DraftRow {
     pub kind: ComponentDraft,
     pub name: String,
+    pub persisted_target: Option<PersistedAttachmentTarget>,
 }
 
 impl DraftRow {
@@ -36,6 +44,7 @@ impl DraftRow {
         Self {
             kind: ComponentDraft::Strip { led_count },
             name: String::new(),
+            persisted_target: None,
         }
     }
 
@@ -43,6 +52,7 @@ impl DraftRow {
         Self {
             kind: ComponentDraft::Matrix { cols, rows },
             name: String::new(),
+            persisted_target: None,
         }
     }
 
@@ -50,6 +60,7 @@ impl DraftRow {
         Self {
             kind: ComponentDraft::Component { template_id },
             name,
+            persisted_target: None,
         }
     }
 
@@ -110,17 +121,20 @@ pub(crate) fn expand_bindings_to_drafts(
 ) -> Vec<DraftRow> {
     let mut relevant: Vec<_> = bindings
         .iter()
-        .filter(|b| b.slot_id == slot_id)
-        .cloned()
+        .enumerate()
+        .filter(|(_, binding)| binding.slot_id == slot_id)
+        .map(|(binding_index, binding)| (binding_index, binding.clone()))
         .collect();
     relevant.sort_by(|a, b| {
-        a.led_offset
-            .cmp(&b.led_offset)
-            .then_with(|| a.template_name.cmp(&b.template_name))
+        a.1.led_offset
+            .cmp(&b.1.led_offset)
+            .then_with(|| a.1.template_name.cmp(&b.1.template_name))
+            .then_with(|| a.1.template_id.cmp(&b.1.template_id))
+            .then_with(|| a.0.cmp(&b.0))
     });
 
     let mut rows = Vec::new();
-    for binding in relevant {
+    for (binding_index, binding) in relevant {
         for instance in 0..binding.instances.max(1) {
             let base_name = binding
                 .name
@@ -155,6 +169,10 @@ pub(crate) fn expand_bindings_to_drafts(
                                 rows: total.div_ceil(side).max(1),
                             },
                             name: base_name,
+                            persisted_target: Some(PersistedAttachmentTarget {
+                                binding_index,
+                                instance,
+                            }),
                         });
                     }
                     _ => {
@@ -163,14 +181,20 @@ pub(crate) fn expand_bindings_to_drafts(
                                 led_count: binding.effective_led_count,
                             },
                             name: base_name,
+                            persisted_target: Some(PersistedAttachmentTarget {
+                                binding_index,
+                                instance,
+                            }),
                         });
                     }
                 }
             } else {
-                rows.push(DraftRow::from_component(
-                    binding.template_id.clone(),
-                    base_name,
-                ));
+                let mut row = DraftRow::from_component(binding.template_id.clone(), base_name);
+                row.persisted_target = Some(PersistedAttachmentTarget {
+                    binding_index,
+                    instance,
+                });
+                rows.push(row);
             }
         }
     }

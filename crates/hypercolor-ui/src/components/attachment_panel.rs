@@ -372,6 +372,7 @@ pub fn WiringPanel(
                                                                 let did_id = did_for_identify.get_value();
                                                                 let sid_id = slot_id_for_identify.get_value();
                                                                 rows.into_iter().enumerate().map(|(i, row)| {
+                                                                    let identify_target = row.persisted_target;
                                                                     let is_custom = row.needs_template_creation();
                                                                     let type_label = match &row.kind {
                                                                         attachment_editor::ComponentDraft::Strip { .. } => "Strip",
@@ -508,8 +509,13 @@ pub fn WiringPanel(
                                                                                 on:click=move |_| {
                                                                                     let d = did_c.clone();
                                                                                     let s = sid_c.clone();
+                                                                                    let binding_index = identify_target
+                                                                                        .map(|target| target.binding_index)
+                                                                                        .or(Some(i));
+                                                                                    let instance =
+                                                                                        identify_target.map(|target| target.instance);
                                                                                     leptos::task::spawn_local(async move {
-                                                                                        if let Err(e) = api::identify_attachment(&d, &s, Some(i)).await {
+                                                                                        if let Err(e) = api::identify_attachment(&d, &s, binding_index, instance).await {
                                                                                             toasts::toast_error(&format!("Identify failed: {e}"));
                                                                                         } else {
                                                                                             toasts::toast_success("Flashing component");
@@ -639,10 +645,11 @@ pub fn sync_wiring_to_layout(
         .await;
 
         if let Ok(count) = result
-            && count > 0 {
-                layouts_resource.refetch();
-                let noun = if count == 1 { "zone" } else { "zones" };
-                toasts::toast_info(&format!("Layout synced ({count} {noun})"));
-            }
+            && count > 0
+        {
+            layouts_resource.refetch();
+            let noun = if count == 1 { "zone" } else { "zones" };
+            toasts::toast_info(&format!("Layout synced ({count} {noun})"));
+        }
     });
 }

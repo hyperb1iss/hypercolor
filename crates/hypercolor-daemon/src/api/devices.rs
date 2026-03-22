@@ -60,6 +60,7 @@ pub struct IdentifyAttachmentRequest {
     #[serde(flatten)]
     pub base: IdentifyRequest,
     pub binding_index: Option<usize>,
+    pub instance: Option<u32>,
 }
 
 pub type GenericPairDeviceRequest = hypercolor_driver_api::PairDeviceRequest;
@@ -1086,6 +1087,7 @@ pub async fn identify_attachment(
     let identify_color = scale_rgb(identify_rgb, identify_brightness);
 
     let binding_index = body.as_ref().and_then(|b| b.binding_index).unwrap_or(0);
+    let instance = body.as_ref().and_then(|b| b.instance);
 
     let on_frame = {
         let profiles = state.attachment_profiles.read().await;
@@ -1096,6 +1098,7 @@ pub async fn identify_attachment(
             device_id,
             &slot_id,
             binding_index,
+            instance,
             total_leds,
             identify_color,
         ) {
@@ -1139,6 +1142,7 @@ pub async fn identify_attachment(
         device = %tracked.info.name,
         slot_id = %slot_id,
         binding_index,
+        instance,
         backend = %backend_id,
         duration_ms,
         color = ?identify_rgb,
@@ -1157,6 +1161,7 @@ pub async fn identify_attachment(
         "device_id": device_id.to_string(),
         "slot_id": slot_id,
         "binding_index": binding_index,
+        "instance": instance,
         "identifying": true,
         "duration_ms": duration_ms,
         "color": color,
@@ -2773,13 +2778,14 @@ fn build_zone_identify_frame(info: &DeviceInfo, zone_index: usize, color: [u8; 3
     frame
 }
 
-/// Build a full-device LED frame with only a single attachment binding lit.
+/// Build a full-device LED frame with only a single attachment component lit.
 fn build_attachment_identify_frame(
     profiles: &crate::attachment_profiles::AttachmentProfileStore,
     registry: &hypercolor_core::attachment::AttachmentRegistry,
     device_id: DeviceId,
     slot_id: &str,
     binding_index: usize,
+    instance: Option<u32>,
     total_leds: usize,
     color: [u8; 3],
 ) -> Result<Vec<[u8; 3]>, String> {
@@ -2804,30 +2810,27 @@ fn build_attachment_identify_frame(
             )
         })?;
 
-    let slot_bindings: Vec<&AttachmentBinding> = profile
+    let slot_bindings: Vec<(usize, &AttachmentBinding)> = profile
         .bindings
         .iter()
-        .filter(|b| b.slot_id == slot_id && b.enabled)
+        .enumerate()
+        .filter(|(_, binding)| binding.slot_id == slot_id && binding.enabled)
         .collect();
 
     if slot_bindings.is_empty() {
         return Err(format!("No enabled bindings in slot '{slot_id}'"));
     }
-    let binding = slot_bindings.get(binding_index).ok_or_else(|| {
-        format!(
-            "Binding index {binding_index} out of range (slot '{slot_id}' has {} binding(s))",
-            slot_bindings.len()
-        )
-    })?;
-
-    let template = registry
-        .get(&binding.template_id)
-        .ok_or_else(|| format!("Attachment template '{}' not found", binding.template_id))?;
-
-    let led_count = usize::try_from(binding.effective_led_count(template)).unwrap_or_default();
-    let slot_start = usize::try_from(slot.led_start).unwrap_or_default();
-    let binding_offset = usize::try_from(binding.led_offset).unwrap_or_default();
-    let start = slot_start + binding_offset;
+    let (start, led_count) = if let Some(instance_index) = instance {
+        resolve_attachment_instance_range(
+            registry,
+            slot_bindings.as_slice(),
+            slot,
+            binding_index,
+            instance_index,
+        )?
+    } else {
+        resolve_attachment_component_range(registry, slot_bindings.as_slice(), slot, binding_index)?
+    };
     let end = (start + led_count).min(total_leds);
 
     let mut frame = vec![[0_u8; 3]; total_leds];
@@ -2836,4 +2839,97 @@ fn build_attachment_identify_frame(
     }
 
     Ok(frame)
+}
+
+fn resolve_attachment_instance_range(
+    registry: &hypercolor_core::attachment::AttachmentRegistry,
+    slot_bindings: &[(usize, &AttachmentBinding)],
+    slot: &AttachmentSlot,
+    binding_index: usize,
+    instance_index: u32,
+) -> Result<(usize, usize), String> {
+    let available = slot_bindings
+        .iter()
+        .map(|(index, _)| index.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (_, binding) = slot_bindings
+        .iter()
+        .find(|(index, _)| *index == binding_index)
+        .ok_or_else(|| {
+            format!(
+                "Binding index {binding_index} not found in slot '{slot_id}' (available: {available})",
+                slot_id = slot.id
+            )
+        })?;
+
+    let template = registry
+        .get(&binding.template_id)
+        .ok_or_else(|| format!("Attachment template '{}' not found", binding.template_id))?;
+    let total_instances = binding.instances.max(1);
+    if instance_index >= total_instances {
+        return Err(format!(
+            "Instance {instance_index} out of range for binding {binding_index} in slot '{slot_id}' (instances: {total_instances})",
+            slot_id = slot.id
+        ));
+    }
+
+    let slot_start = usize::try_from(slot.led_start).unwrap_or_default();
+    let binding_offset = usize::try_from(binding.led_offset).unwrap_or_default();
+    let instance_stride = usize::try_from(template.led_count()).unwrap_or_default();
+    let instance_offset = usize::try_from(instance_index).unwrap_or_default();
+
+    Ok((
+        slot_start + binding_offset + instance_offset.saturating_mul(instance_stride),
+        instance_stride,
+    ))
+}
+
+fn resolve_attachment_component_range(
+    registry: &hypercolor_core::attachment::AttachmentRegistry,
+    slot_bindings: &[(usize, &AttachmentBinding)],
+    slot: &AttachmentSlot,
+    component_index: usize,
+) -> Result<(usize, usize), String> {
+    let mut sorted = slot_bindings
+        .iter()
+        .map(|(binding_index, binding)| {
+            let template = registry.get(&binding.template_id).ok_or_else(|| {
+                format!("Attachment template '{}' not found", binding.template_id)
+            })?;
+            Ok((*binding_index, *binding, template))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    sorted.sort_by(|left, right| {
+        left.1
+            .led_offset
+            .cmp(&right.1.led_offset)
+            .then_with(|| left.2.name.cmp(&right.2.name))
+            .then_with(|| left.2.id.cmp(&right.2.id))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    let mut remaining = component_index;
+    for (_, binding, template) in sorted {
+        let instances = usize::try_from(binding.instances.max(1)).unwrap_or(usize::MAX);
+        let instance_stride = usize::try_from(template.led_count()).unwrap_or_default();
+        if remaining < instances {
+            let slot_start = usize::try_from(slot.led_start).unwrap_or_default();
+            let binding_offset = usize::try_from(binding.led_offset).unwrap_or_default();
+            return Ok((
+                slot_start + binding_offset + remaining.saturating_mul(instance_stride),
+                instance_stride,
+            ));
+        }
+        remaining = remaining.saturating_sub(instances);
+    }
+
+    let available = slot_bindings
+        .iter()
+        .map(|(_, binding)| usize::try_from(binding.instances.max(1)).unwrap_or(usize::MAX))
+        .fold(0_usize, usize::saturating_add);
+    Err(format!(
+        "Component index {component_index} out of range for slot '{slot_id}' (available components: {available})",
+        slot_id = slot.id
+    ))
 }

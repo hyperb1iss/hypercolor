@@ -45,6 +45,7 @@ pub fn ComponentRow(
     let is_editable = row.needs_template_creation();
     let initial_name = row.name.clone();
     let initial_kind = row.kind.clone();
+    let persisted_target = row.persisted_target;
 
     // Local editing state
     let (name_value, set_name_value) = signal(initial_name.clone());
@@ -78,7 +79,14 @@ pub fn ComponentRow(
                 template_id: template_id.clone(),
             },
         };
-        on_update.run((index, DraftRow { kind, name }));
+        on_update.run((
+            index,
+            DraftRow {
+                kind,
+                name,
+                persisted_target,
+            },
+        ));
     };
     let push_update = StoredValue::new(push_update);
 
@@ -200,11 +208,17 @@ pub fn ComponentRow(
                 on:click={
                     let did = dev_id.clone();
                     let sid = sid.clone();
+                    let binding_index = persisted_target
+                        .map(|target| target.binding_index)
+                        .or(Some(index));
+                    let instance = persisted_target.map(|target| target.instance);
                     move |_| {
                         let did = did.clone();
                         let sid = sid.clone();
                         leptos::task::spawn_local(async move {
-                            if let Err(e) = api::identify_attachment(&did, &sid, Some(index)).await {
+                            if let Err(e) =
+                                api::identify_attachment(&did, &sid, binding_index, instance).await
+                            {
                                 toasts::toast_error(&format!("Identify failed: {e}"));
                             } else {
                                 toasts::toast_success("Flashing component");

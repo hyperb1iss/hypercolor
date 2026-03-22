@@ -5,7 +5,8 @@ mod attachment_editor;
 
 use api::{AttachmentBindingSummary, TemplateSummary};
 use attachment_editor::{
-    AttachmentDraftRow, expand_slot_bindings, pack_slot_rows, summarize_slot_rows,
+    AttachmentDraftRow, expand_bindings_to_drafts, expand_slot_bindings, pack_slot_rows,
+    summarize_slot_rows,
 };
 use hypercolor_types::attachment::{AttachmentCategory, AttachmentSlot};
 
@@ -72,6 +73,42 @@ fn expand_slot_bindings_splits_multi_instance_bindings_into_rows() {
     assert_eq!(rows[0].template_id, "lian-li-sl-unifan-fan");
     assert_eq!(rows[0].name.as_deref(), Some("Top Fan 1"));
     assert_eq!(rows[2].name.as_deref(), Some("Top Fan 3"));
+}
+
+#[test]
+fn expand_bindings_to_drafts_tracks_saved_binding_targets_per_instance() {
+    let rows = expand_bindings_to_drafts(
+        "channel-1",
+        &[
+            binding("channel-1", "rear-fan", "Rear Fan", 1, 16, Some("Rear")),
+            binding("channel-1", "front-fan", "Front Fan", 2, 0, Some("Front")),
+        ],
+        &[],
+    );
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].name, "Front 1");
+    assert_eq!(
+        rows[0]
+            .persisted_target
+            .expect("saved rows should carry a persisted target")
+            .binding_index,
+        1
+    );
+    assert_eq!(
+        rows[1]
+            .persisted_target
+            .expect("second instance should carry a persisted target")
+            .instance,
+        1
+    );
+    assert_eq!(
+        rows[2]
+            .persisted_target
+            .expect("later bindings should preserve their original index")
+            .binding_index,
+        0
+    );
 }
 
 #[test]

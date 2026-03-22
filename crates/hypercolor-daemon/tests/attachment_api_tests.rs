@@ -1,8 +1,9 @@
 //! Integration tests for attachment template and profile endpoints.
 
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 
+use anyhow::Result;
 use axum::body::Body;
 use http::{Request, StatusCode};
 use serde_json::{Value, json};
@@ -10,10 +11,11 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 use hypercolor_core::config::ConfigManager;
+use hypercolor_core::device::{BackendInfo, DeviceBackend};
 use hypercolor_daemon::api::{self, AppState};
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures, DeviceId,
-    DeviceInfo, DeviceTopologyHint, ZoneInfo,
+    DeviceInfo, DeviceState, DeviceTopologyHint, ZoneInfo,
 };
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
@@ -58,6 +60,47 @@ impl Drop for TestDataDirGuard {
 
 fn test_app_with_state(state: Arc<AppState>) -> axum::Router {
     api::build_router(state, None)
+}
+
+struct RecordingBackend {
+    writes: Arc<StdMutex<Vec<Vec<[u8; 3]>>>>,
+}
+
+impl RecordingBackend {
+    fn new(writes: Arc<StdMutex<Vec<Vec<[u8; 3]>>>>) -> Self {
+        Self { writes }
+    }
+}
+
+#[async_trait::async_trait]
+impl DeviceBackend for RecordingBackend {
+    fn info(&self) -> BackendInfo {
+        BackendInfo {
+            id: "wled".to_owned(),
+            name: "Recording Backend".to_owned(),
+            description: "Captures attachment identify writes".to_owned(),
+        }
+    }
+
+    async fn discover(&mut self) -> Result<Vec<DeviceInfo>> {
+        Ok(Vec::new())
+    }
+
+    async fn connect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&mut self, _id: &DeviceId) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_colors(&mut self, _id: &DeviceId, colors: &[[u8; 3]]) -> Result<()> {
+        self.writes
+            .lock()
+            .expect("recording backend mutex should not be poisoned")
+            .push(colors.to_vec());
+        Ok(())
+    }
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -206,6 +249,14 @@ async fn set_active_layout_for_device(state: &Arc<AppState>, device_id: DeviceId
 
     let mut spatial = state.spatial_engine.write().await;
     spatial.update_layout(layout);
+}
+
+async fn register_recording_backend(
+    state: &Arc<AppState>,
+    writes: Arc<StdMutex<Vec<Vec<[u8; 3]>>>>,
+) {
+    let mut manager = state.backend_manager.lock().await;
+    manager.register_backend(Box::new(RecordingBackend::new(writes)));
 }
 
 #[tokio::test]
@@ -574,4 +625,70 @@ async fn multiple_same_slot_bindings_are_named_and_suggested_distinctly() {
     assert_eq!(suggested_zones[1]["led_start"], 12);
     assert_eq!(suggested_zones[0]["name"], "Stacked Strip 1");
     assert_eq!(suggested_zones[1]["name"], "Stacked Strip 2");
+}
+
+#[tokio::test]
+async fn attachment_identify_indexes_multi_instance_rows_individually() {
+    let _guard = TestDataDirGuard::new().await;
+    let state = Arc::new(AppState::new());
+    let writes = Arc::new(StdMutex::new(Vec::new()));
+    register_recording_backend(&state, Arc::clone(&writes)).await;
+    let app = test_app_with_state(Arc::clone(&state));
+    let device_id = insert_test_device(&state, "Desk Strip").await;
+    let _ = state
+        .device_registry
+        .set_state(&device_id, DeviceState::Connected)
+        .await;
+
+    create_template(&app, "identify-test-fan", "Identify Test Fan", 6).await;
+    let update_response = send_json(
+        &app,
+        "PUT",
+        format!("/api/v1/devices/{device_id}/attachments"),
+        json!({
+            "bindings": [{
+                "slot_id": "main",
+                "template_id": "identify-test-fan",
+                "instances": 3,
+                "led_offset": 0
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(update_response.status(), StatusCode::OK);
+
+    let identify_response = send_json(
+        &app,
+        "POST",
+        format!("/api/v1/devices/{device_id}/attachments/main/identify"),
+        json!({
+            "binding_index": 1,
+            "duration_ms": 2000,
+            "color": "80FFEA"
+        }),
+    )
+    .await;
+    assert_eq!(identify_response.status(), StatusCode::OK);
+    let identify_json = body_json(identify_response).await;
+    assert_eq!(identify_json["data"]["binding_index"], 1);
+    assert_eq!(identify_json["data"]["instance"], Value::Null);
+
+    let recorded = writes
+        .lock()
+        .expect("recording backend mutex should not be poisoned");
+    let frame = recorded
+        .first()
+        .expect("identify should issue an immediate on-frame");
+    assert_eq!(frame.len(), 60);
+
+    let lit_indices = frame
+        .iter()
+        .enumerate()
+        .filter_map(|(index, color)| (*color != [0, 0, 0]).then_some(index))
+        .collect::<Vec<_>>();
+    assert_eq!(lit_indices, (6..12).collect::<Vec<_>>());
+
+    let lit_color = frame[6];
+    assert_ne!(lit_color, [0, 0, 0]);
+    assert!(frame[6..12].iter().all(|color| *color == lit_color));
 }

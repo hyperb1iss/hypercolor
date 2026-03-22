@@ -420,6 +420,7 @@ pub async fn identify_attachment(
     device_id: &str,
     slot_id: &str,
     binding_index: Option<usize>,
+    instance: Option<u32>,
 ) -> Result<(), String> {
     let url = format!("/api/v1/devices/{device_id}/attachments/{slot_id}/identify");
     let mut body = serde_json::json!({
@@ -428,6 +429,9 @@ pub async fn identify_attachment(
     });
     if let Some(idx) = binding_index {
         body["binding_index"] = serde_json::json!(idx);
+    }
+    if let Some(instance) = instance {
+        body["instance"] = serde_json::json!(instance);
     }
 
     let resp = Request::post(&url)
