@@ -59,11 +59,6 @@ struct SeirenV3Report {
 pub struct SeirenV3Protocol;
 
 impl SeirenV3Protocol {
-    fn encode_color(color: [u8; 3]) -> [u8; 3] {
-        // The Seiren V3 ring expects RBG channel order on the wire.
-        [color[0], color[2], color[1]]
-    }
-
     fn seiren_crc(report: &SeirenV3Report) -> u8 {
         let bytes = report.as_bytes();
         bytes[1..61].iter().fold(0_u8, |acc, byte| acc ^ byte)
@@ -149,10 +144,12 @@ impl Protocol for SeirenV3Protocol {
             }
         }
 
-        let mut args = Vec::with_capacity(34);
-        args.extend_from_slice(&[0x00, 0x00, 0x00, 0x09]);
+        let mut args = Vec::with_capacity(35);
+        // Match the known-good SignalRGB packet layout:
+        // [zone_hi, zone_lo, packet_idx, reserved, last_led_index, rgb...]
+        args.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x09]);
         for color in ordered {
-            args.extend_from_slice(&Self::encode_color(color));
+            args.extend_from_slice(&color);
         }
 
         let mut encoder = CommandBuffer::new(commands);

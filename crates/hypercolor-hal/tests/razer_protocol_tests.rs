@@ -293,7 +293,7 @@ fn huntsman_v2_protocol_initializes_custom_mode_once_and_streams_write_only_fram
 }
 
 #[test]
-fn seiren_v3_protocol_uses_report_id_07_payload_shape() {
+fn seiren_v3_protocol_matches_signalrgb_frame_layout() {
     let protocol = build_seiren_v3_protocol();
     let init = protocol.init_sequence();
     assert_eq!(init.len(), 2);
@@ -328,11 +328,11 @@ fn seiren_v3_protocol_uses_report_id_07_payload_shape() {
     assert_eq!(frame[0].data[5], 0x23);
     assert_eq!(frame[0].data[6], 0x0F);
     assert_eq!(frame[0].data[7], 0x03);
-    assert_eq!(&frame[0].data[8..12], &[0x00, 0x00, 0x00, 0x09]);
-    assert_eq!(&frame[0].data[12..15], &[8, 28, 18]);
-    assert_eq!(&frame[0].data[15..18], &[6, 26, 16]);
-    assert_eq!(&frame[0].data[18..21], &[5, 25, 15]);
-    assert_eq!(&frame[0].data[39..42], &[4, 24, 14]);
+    assert_eq!(&frame[0].data[8..13], &[0x00, 0x00, 0x00, 0x00, 0x09]);
+    assert_eq!(&frame[0].data[13..16], &[8, 18, 28]);
+    assert_eq!(&frame[0].data[16..19], &[6, 16, 26]);
+    assert_eq!(&frame[0].data[19..22], &[5, 15, 25]);
+    assert_eq!(&frame[0].data[40..43], &[4, 14, 24]);
 }
 
 #[test]
