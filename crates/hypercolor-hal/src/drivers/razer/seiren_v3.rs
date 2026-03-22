@@ -145,7 +145,6 @@ impl Protocol for SeirenV3Protocol {
         }
 
         let mut args = Vec::with_capacity(35);
-        // Match the known-good SignalRGB packet layout:
         // [zone_hi, zone_lo, packet_idx, reserved, last_led_index, rgb...]
         args.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x09]);
         for color in ordered {
