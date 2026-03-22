@@ -909,6 +909,10 @@ pub async fn identify_device(
 }
 
 /// `POST /api/v1/devices/:id/zones/:zone_id/identify` — Flash a single zone.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the handler intentionally keeps validation, direct-control orchestration, and response shaping together"
+)]
 pub async fn identify_zone(
     State(state): State<Arc<AppState>>,
     Path((id, zone_id)): Path<(String, String)>,
@@ -1026,6 +1030,10 @@ pub async fn identify_zone(
 
 /// `POST /api/v1/devices/:id/attachments/:slot_id/identify` — Flash a single
 /// attachment component within a slot.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the handler intentionally keeps validation, direct-control orchestration, and response shaping together"
+)]
 pub async fn identify_attachment(
     State(state): State<Arc<AppState>>,
     Path((id, slot_id)): Path<(String, String)>,
@@ -2706,21 +2714,24 @@ fn parse_hex_rgb(raw: &str) -> Option<[u8; 3]> {
 // ── Identify helpers ─────────────────────────────────────────────────────
 
 /// Resolve a zone specifier (`"zone_0"`, `"0"`, or zone name) to an index.
+#[allow(
+    clippy::result_large_err,
+    reason = "API helpers return ready-made HTTP responses for ergonomic handler control flow"
+)]
 fn resolve_zone_index(info: &DeviceInfo, zone_id: &str) -> Result<usize, Response> {
     // Try "zone_N" format
-    if let Some(stripped) = zone_id.strip_prefix("zone_") {
-        if let Ok(index) = stripped.parse::<usize>() {
-            if index < info.zones.len() {
-                return Ok(index);
-            }
-        }
+    if let Some(stripped) = zone_id.strip_prefix("zone_")
+        && let Ok(index) = stripped.parse::<usize>()
+        && index < info.zones.len()
+    {
+        return Ok(index);
     }
 
     // Try bare numeric index
-    if let Ok(index) = zone_id.parse::<usize>() {
-        if index < info.zones.len() {
-            return Ok(index);
-        }
+    if let Ok(index) = zone_id.parse::<usize>()
+        && index < info.zones.len()
+    {
+        return Ok(index);
     }
 
     // Try name match (case-insensitive)

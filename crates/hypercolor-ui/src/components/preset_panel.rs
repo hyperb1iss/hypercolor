@@ -374,14 +374,13 @@ fn PresetSelectorRow(
         };
 
         // Check bundled presets
-        if let Some(idx_str) = sid.strip_prefix("bundled:") {
-            if let Ok(idx) = idx_str.parse::<usize>() {
+        if let Some(idx_str) = sid.strip_prefix("bundled:")
+            && let Ok(idx) = idx_str.parse::<usize>() {
                 let bp = bundled_presets.get();
                 if let Some(template) = bp.get(idx) {
                     return format!("\u{2726} {}", template.name);
                 }
             }
-        }
 
         // Check user presets
         effect_presets
@@ -463,7 +462,10 @@ fn PresetSelectorRow(
                             let bp = bundled_presets.get();
                             let has_user = !effect_presets.get().is_empty();
                             if bp.is_empty() {
-                                return view! { <></> }.into_any();
+                                return {
+                                    let _: () = view! { <></> };
+                                    ().into_any()
+                                };
                             }
                             view! {
                                 <>
@@ -499,7 +501,10 @@ fn PresetSelectorRow(
                             let user = effect_presets.get();
                             let has_bundled = !bundled_presets.get().is_empty();
                             if user.is_empty() {
-                                return view! { <></> }.into_any();
+                                return {
+                                    let _: () = view! { <></> };
+                                    ().into_any()
+                                };
                             }
                             view! {
                                 <>

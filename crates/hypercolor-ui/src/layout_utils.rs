@@ -1,6 +1,8 @@
 //! Shared layout zone CRUD helpers — used by layout palette, zone properties,
 //! and anywhere zones are added, removed, or restored from cache.
 
+use std::collections::HashSet;
+
 use leptos::prelude::*;
 
 use crate::api::{self, ZoneSummary};
@@ -274,6 +276,29 @@ pub fn prune_empty_groups(layout: &mut SpatialLayout) {
         .retain(|group| active_group_ids.contains(group.id.as_str()));
 }
 
+pub fn replace_attachment_layout(
+    layout: &mut SpatialLayout,
+    device_id: &str,
+    seeded: layout_geometry::SeededAttachmentLayout,
+) {
+    layout
+        .zones
+        .retain(|zone| !(zone.device_id == device_id && zone.attachment.is_some()));
+
+    let seeded_group_ids = seeded
+        .groups
+        .iter()
+        .map(|group| group.id.clone())
+        .collect::<HashSet<_>>();
+    layout
+        .groups
+        .retain(|group| !seeded_group_ids.contains(&group.id));
+
+    layout.zones.extend(seeded.zones);
+    layout.groups.extend(seeded.groups);
+    prune_empty_groups(layout);
+}
+
 /// Import a device's attachment zones into the active layout.
 pub fn import_device_attachments(
     device_id: String,
@@ -297,16 +322,14 @@ pub fn import_device_attachments(
             let mut layout = api::fetch_active_layout().await?;
             let layout_name = layout.name.clone();
             let layout_id = layout.id.clone();
-            let imported_zones = crate::components::attachment_panel::build_attachment_layout_zones(
-                &device,
+            let seeded = layout_geometry::seeded_attachment_layout(
+                &device.layout_device_id,
+                &device.name,
                 &attachments.suggested_zones,
+                0,
             );
-            let imported_count = imported_zones.len();
-
-            layout.zones.retain(|zone| {
-                !(zone.device_id == device.layout_device_id && zone.attachment.is_some())
-            });
-            layout.zones.extend(imported_zones);
+            let imported_count = seeded.zones.len();
+            replace_attachment_layout(&mut layout, &device.layout_device_id, seeded);
 
             let req = api::UpdateLayoutApiRequest {
                 name: None,
@@ -314,7 +337,7 @@ pub fn import_device_attachments(
                 canvas_width: None,
                 canvas_height: None,
                 zones: Some(layout.zones),
-                groups: None,
+                groups: Some(layout.groups),
             };
             api::update_layout(&layout_id, &req).await?;
             api::apply_layout(&layout_id).await?;

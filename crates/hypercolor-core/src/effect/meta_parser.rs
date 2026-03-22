@@ -64,6 +64,10 @@ pub struct HtmlPresetMetadata {
 
 /// Parsed metadata summary for a single HTML effect file.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "effect metadata naturally carries several independent renderer and capability flags"
+)]
 pub struct ParsedHtmlEffectMetadata {
     pub title: String,
     pub description: String,
@@ -585,6 +589,10 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
 
+#[allow(
+    clippy::fn_params_excessive_bools,
+    reason = "tag generation depends on a fixed set of independent effect capability flags"
+)]
 fn build_tags(
     controls: &[HtmlControlMetadata],
     category: EffectCategory,

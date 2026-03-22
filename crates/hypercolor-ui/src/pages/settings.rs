@@ -68,8 +68,8 @@ fn setup_scroll_spy(set_active: WriteSignal<String>) {
                 .ok()
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if is_intersecting {
-                if let Ok(target) = js_sys::Reflect::get(&entry, &"target".into()) {
+            if is_intersecting
+                && let Ok(target) = js_sys::Reflect::get(&entry, &"target".into()) {
                     let id = js_sys::Reflect::get(&target, &"id".into())
                         .ok()
                         .and_then(|v| v.as_string())
@@ -78,7 +78,6 @@ fn setup_scroll_spy(set_active: WriteSignal<String>) {
                         set_active.set(section.to_string());
                     }
                 }
-            }
         }
     }) as Box<dyn FnMut(wasm_bindgen::JsValue)>);
 
@@ -94,8 +93,8 @@ fn setup_scroll_spy(set_active: WriteSignal<String>) {
     .ok()
     .and_then(|v| v.dyn_into::<js_sys::Function>().ok());
 
-    if let Some(ctor) = ctor {
-        if let Ok(observer) =
+    if let Some(ctor) = ctor
+        && let Ok(observer) =
             js_sys::Reflect::construct(&ctor, &js_sys::Array::of2(callback.as_ref(), &opts))
         {
             let observe_fn = js_sys::Reflect::get(&observer, &"observe".into())
@@ -110,7 +109,6 @@ fn setup_scroll_spy(set_active: WriteSignal<String>) {
                 }
             }
         }
-    }
 
     callback.forget();
 }
@@ -120,11 +118,10 @@ fn scroll_element_into_view(el: &web_sys::Element) {
     let opts = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&opts, &"behavior".into(), &"smooth".into());
     let _ = js_sys::Reflect::set(&opts, &"block".into(), &"start".into());
-    if let Ok(func) = js_sys::Reflect::get(el, &"scrollIntoView".into()) {
-        if let Ok(func) = func.dyn_into::<js_sys::Function>() {
+    if let Ok(func) = js_sys::Reflect::get(el, &"scrollIntoView".into())
+        && let Ok(func) = func.dyn_into::<js_sys::Function>() {
             let _ = func.call1(el, &opts);
         }
-    }
 }
 
 #[component]
@@ -215,13 +212,11 @@ pub fn SettingsPage() -> impl IntoView {
     // Scroll to section on tab click
     let scroll_to = move |id: &str| {
         set_active_section.set(id.to_string());
-        if let Some(window) = web_sys::window() {
-            if let Some(doc) = window.document() {
-                if let Some(el) = doc.get_element_by_id(&format!("section-{id}")) {
+        if let Some(window) = web_sys::window()
+            && let Some(doc) = window.document()
+                && let Some(el) = doc.get_element_by_id(&format!("section-{id}")) {
                     scroll_element_into_view(&el);
                 }
-            }
-        }
     };
 
     // Tab data

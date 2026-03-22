@@ -1,5 +1,7 @@
-//! Shared styling utilities — color conversions, accent generation, and badge
-//! classes used across effect cards, sidebar, layout editor, and dashboard.
+//! Shared styling utilities — color conversions, accent generation, badge
+//! classes, and reusable UI primitives used across the app.
+
+use leptos::prelude::*;
 
 /// Category -> (badge Tailwind classes, accent RGB triplet for inline styles).
 pub fn category_style(category: &str) -> (&'static str, &'static str) {
@@ -93,4 +95,39 @@ fn hsl_to_rgb_string(h: f32, s: f32, l: f32) -> String {
     let g = ((g1 + m) * 255.0).round() as u8;
     let b = ((b1 + m) * 255.0).round() as u8;
     format!("{r}, {g}, {b}")
+}
+
+// ── Shared UI primitives ────────────────────────────────────────────────────
+
+/// Render a row of filter chips with active/inactive states.
+///
+/// Each chip is a `(label, rgb)` pair. The `current` signal holds the active
+/// label; clicking a chip updates it via `set_current`.
+pub fn filter_chips(
+    chips: &'static [(&'static str, &'static str)],
+    current: ReadSignal<String>,
+    set_current: WriteSignal<String>,
+) -> impl IntoView {
+    chips
+        .iter()
+        .map(|&(label, rgb)| {
+            let is_active = Memo::new(move |_| current.get() == label);
+            let active_style = format!(
+                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); \
+                 box-shadow: 0 0 8px rgba({rgb}, 0.15)"
+            );
+            let inactive_style = format!(
+                "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
+            );
+            view! {
+                <button
+                    class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
+                    style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
+                    on:click=move |_| set_current.set(label.to_string())
+                >
+                    {label}
+                </button>
+            }
+        })
+        .collect_view()
 }

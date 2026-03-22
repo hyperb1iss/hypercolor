@@ -145,13 +145,12 @@ pub fn Shell(children: Children) -> impl IntoView {
             }
             set_last_hue_update.set(now);
 
-            if let Some(hue) = extract_dominant_hue(&frame) {
-                if let Some(el) = shell_ref.get() {
+            if let Some(hue) = extract_dominant_hue(&frame)
+                && let Some(el) = shell_ref.get() {
                     let html_el: &web_sys::HtmlElement = &el;
                     let style = html_el.style();
                     let _ = style.set_property("--ambient-hue", &format!("{hue:.0}"));
                 }
-            }
         });
     }
 

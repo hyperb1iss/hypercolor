@@ -4,7 +4,9 @@
 //! - **Strip**: inline definition with editable LED count (no template needed until save)
 //! - **Matrix**: inline definition with editable rows × cols
 //! - **Component**: reference to a known component definition from the library (TOML)
+#![cfg_attr(test, allow(dead_code))]
 
+#[cfg(test)]
 use std::collections::HashMap;
 
 use hypercolor_types::attachment::AttachmentSlot;
@@ -56,15 +58,19 @@ impl DraftRow {
         match &self.kind {
             ComponentDraft::Strip { led_count } => Some(*led_count),
             ComponentDraft::Matrix { cols, rows } => Some(cols * rows),
-            ComponentDraft::Component { template_id } => {
-                templates.iter().find(|t| t.id == *template_id).map(|t| t.led_count)
-            }
+            ComponentDraft::Component { template_id } => templates
+                .iter()
+                .find(|t| t.id == *template_id)
+                .map(|t| t.led_count),
         }
     }
 
     /// Whether this row needs a template to be created before saving.
     pub(crate) fn needs_template_creation(&self) -> bool {
-        matches!(self.kind, ComponentDraft::Strip { .. } | ComponentDraft::Matrix { .. })
+        matches!(
+            self.kind,
+            ComponentDraft::Strip { .. } | ComponentDraft::Matrix { .. }
+        )
     }
 
     /// Whether this row is complete (has enough info to save).
@@ -203,12 +209,14 @@ pub(crate) fn summarize_channel(
 // ── Legacy compatibility ──────────────────────────────────────────────────
 
 /// Old draft row type — kept for the transition period.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AttachmentDraftRow {
     pub template_id: String,
     pub name: Option<String>,
 }
 
+#[cfg(test)]
 impl AttachmentDraftRow {
     #[must_use]
     pub(crate) fn empty() -> Self {
@@ -219,6 +227,7 @@ impl AttachmentDraftRow {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AttachmentRowPlacement {
     pub template_id: String,
@@ -229,6 +238,7 @@ pub(crate) struct AttachmentRowPlacement {
     pub led_end: u32,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SlotDraftSummary {
     pub total_leds: u32,
@@ -238,6 +248,7 @@ pub(crate) struct SlotDraftSummary {
     pub rows: Vec<Option<AttachmentRowPlacement>>,
 }
 
+#[cfg(test)]
 impl SlotDraftSummary {
     #[must_use]
     pub(crate) fn is_valid(&self) -> bool {
@@ -245,6 +256,7 @@ impl SlotDraftSummary {
     }
 }
 
+#[cfg(test)]
 #[must_use]
 pub(crate) fn expand_slot_bindings(
     slot_id: &str,
@@ -282,6 +294,7 @@ pub(crate) fn expand_slot_bindings(
     rows
 }
 
+#[cfg(test)]
 #[must_use]
 pub(crate) fn summarize_slot_rows(
     slot: &AttachmentSlot,
@@ -334,6 +347,7 @@ pub(crate) fn summarize_slot_rows(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn pack_slot_rows(
     slot: &AttachmentSlot,
     rows: &[AttachmentDraftRow],

@@ -183,13 +183,12 @@ pub fn LayoutCanvas() -> impl IntoView {
                         InteractionState::Resize(r) => r.zone_id.clone(),
                     };
                     set_layout.update(|l| {
-                        if let Some(layout) = l {
-                            if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                        if let Some(layout) = l
+                            && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
                                 zone.size = layout_geometry::normalize_zone_size_for_editor(
                                     zone.position, zone.size, &zone.topology,
                                 );
                             }
-                        }
                     });
                 }
                 set_interaction.set(None);
@@ -201,13 +200,12 @@ pub fn LayoutCanvas() -> impl IntoView {
                         InteractionState::Resize(r) => r.zone_id.clone(),
                     };
                     set_layout.update(|l| {
-                        if let Some(layout) = l {
-                            if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                        if let Some(layout) = l
+                            && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
                                 zone.size = layout_geometry::normalize_zone_size_for_editor(
                                     zone.position, zone.size, &zone.topology,
                                 );
                             }
-                        }
                     });
                 }
                 set_interaction.set(None);
@@ -249,8 +247,8 @@ pub fn LayoutCanvas() -> impl IntoView {
                         let zone_id = resize.zone_id.clone();
                         let keep_ratio = keep_aspect_ratio.get_untracked();
                         set_layout.update(|l| {
-                            if let Some(layout) = l {
-                                if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                            if let Some(layout) = l
+                                && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
                                     let (position, size) = layout_geometry::resize_zone_from_handle(
                                         resize.start_center,
                                         resize.start_size,
@@ -265,7 +263,6 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     // strip aspect enforcement from fighting the user mid-drag.
                                     zone.size = size;
                                 }
-                            }
                         });
                     }
                 }

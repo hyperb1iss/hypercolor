@@ -53,6 +53,32 @@ fn push2_zone_summaries() -> Vec<ZoneSummary> {
     ]
 }
 
+fn suggested_attachment(
+    slot_id: &str,
+    name: &str,
+    instance: u32,
+    led_start: u32,
+    category: AttachmentCategory,
+    topology: LedTopology,
+) -> AttachmentSuggestedZone {
+    AttachmentSuggestedZone {
+        slot_id: slot_id.to_owned(),
+        template_id: format!("{slot_id}-{instance}"),
+        template_name: name.to_owned(),
+        name: name.to_owned(),
+        instance,
+        led_start,
+        led_count: topology.led_count(),
+        category,
+        default_size: AttachmentCanvasSize {
+            width: 0.24,
+            height: 0.24,
+        },
+        topology,
+        led_mapping: None,
+    }
+}
+
 #[test]
 fn basilisk_v3_uses_signal_sparse_layout_instead_of_flat_matrix() {
     let zone = zone_summary(
@@ -479,6 +505,93 @@ fn attachment_fan_size_prefers_ring_footprint_over_strip_topology() {
 
     assert!((size.x - size.y).abs() < 0.01);
     assert!(size.x > 0.17);
+}
+
+#[test]
+fn seeded_attachment_layout_groups_multi_fan_slots_into_horizontal_rows() {
+    let seeded = layout_geometry::seeded_attachment_layout(
+        "usb:prism8:test",
+        "Prism 8",
+        &[
+            suggested_attachment(
+                "channel-1",
+                "Front Fan 1",
+                0,
+                0,
+                AttachmentCategory::Fan,
+                LedTopology::Ring {
+                    count: 20,
+                    start_angle: 0.0,
+                    direction: hypercolor_types::spatial::Winding::Clockwise,
+                },
+            ),
+            suggested_attachment(
+                "channel-1",
+                "Front Fan 2",
+                1,
+                20,
+                AttachmentCategory::Fan,
+                LedTopology::Ring {
+                    count: 20,
+                    start_angle: 0.0,
+                    direction: hypercolor_types::spatial::Winding::Clockwise,
+                },
+            ),
+            suggested_attachment(
+                "channel-1",
+                "Front Fan 3",
+                2,
+                40,
+                AttachmentCategory::Fan,
+                LedTopology::Ring {
+                    count: 20,
+                    start_angle: 0.0,
+                    direction: hypercolor_types::spatial::Winding::Clockwise,
+                },
+            ),
+        ],
+        7,
+    );
+
+    assert_eq!(seeded.groups.len(), 1);
+    assert_eq!(seeded.zones.len(), 3);
+    assert!(
+        seeded
+            .zones
+            .iter()
+            .all(|zone| zone.group_id == Some(seeded.groups[0].id.clone()))
+    );
+    assert!(seeded.zones[0].position.x < seeded.zones[1].position.x);
+    assert!(seeded.zones[1].position.x < seeded.zones[2].position.x);
+    assert!((seeded.zones[0].position.y - seeded.zones[1].position.y).abs() < 0.001);
+    assert!((seeded.zones[1].position.y - seeded.zones[2].position.y).abs() < 0.001);
+    assert_eq!(seeded.zones[0].display_order, 7);
+    assert_eq!(seeded.zones[2].display_order, 9);
+}
+
+#[test]
+fn seeded_attachment_layout_leaves_single_slot_attachments_ungrouped() {
+    let seeded = layout_geometry::seeded_attachment_layout(
+        "wled:desk",
+        "Desk Controller",
+        &[suggested_attachment(
+            "main",
+            "Desk Strip",
+            0,
+            0,
+            AttachmentCategory::Strip,
+            LedTopology::Strip {
+                count: 60,
+                direction: StripDirection::LeftToRight,
+            },
+        )],
+        3,
+    );
+
+    assert!(seeded.groups.is_empty());
+    assert_eq!(seeded.zones.len(), 1);
+    assert_eq!(seeded.zones[0].group_id, None);
+    assert_eq!(seeded.zones[0].display_order, 3);
 }
 
 #[test]

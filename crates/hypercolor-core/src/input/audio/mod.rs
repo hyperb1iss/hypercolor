@@ -1050,6 +1050,8 @@ fn build_linux_pulse_capture_stream(
 #[cfg(target_os = "linux")]
 #[allow(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
     reason = "worker startup passes a fixed set of runtime parameters into the capture thread"
 )]
 fn run_linux_pulse_capture(

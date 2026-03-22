@@ -55,8 +55,8 @@ pub fn LayoutZoneProperties() -> impl IntoView {
         move |zone_id: String,
               updater: Box<dyn FnOnce(&mut hypercolor_types::spatial::DeviceZone)>| {
             set_layout.update(|l| {
-                if let Some(layout) = l {
-                    if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+                if let Some(layout) = l
+                    && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
                         updater(zone);
                         zone.size = layout_geometry::normalize_zone_size_for_editor(
                             zone.position,
@@ -64,7 +64,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                             &zone.topology,
                         );
                     }
-                }
             });
             set_is_dirty.set(true);
         };
@@ -401,8 +400,8 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                             canvas_height,
                                         );
                                         set_layout.update(|l| {
-                                            if let Some(layout) = l {
-                                                if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
+                                            if let Some(layout) = l
+                                                && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zid) {
                                                     zone.position = hypercolor_types::spatial::NormalizedPosition::new(0.5, 0.5);
                                                     zone.size = crate::layout_geometry::normalize_zone_size_for_editor(
                                                         zone.position,
@@ -413,7 +412,6 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                     zone.scale = 1.0;
                                                     zone.group_id = None;
                                                 }
-                                            }
                                         });
                                         set_is_dirty.set(true);
                                     }
@@ -427,13 +425,12 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     on:click=move |_| {
                                         let zid = zid_remove.clone();
                                         set_layout.update(|l| {
-                                            if let Some(layout) = l {
-                                                if let Some(pos) = layout.zones.iter().position(|z| z.id == zid) {
+                                            if let Some(layout) = l
+                                                && let Some(pos) = layout.zones.iter().position(|z| z.id == zid) {
                                                     let removed = layout.zones.remove(pos);
                                                     let key = (removed.device_id.clone(), removed.zone_name.clone());
                                                     editor.set_removed_zone_cache.update(|c| { c.insert(key, removed); });
                                                 }
-                                            }
                                         });
                                         set_selected_zone_id.set(None);
                                         set_is_dirty.set(true);
@@ -551,13 +548,12 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     prop:value=format!("{rotation_deg:.0}")
                                     on:input=move |ev| {
                                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target {
-                                            if let Ok(deg) = el.value().parse::<f32>() {
+                                        if let Some(el) = target
+                                            && let Ok(deg) = el.value().parse::<f32>() {
                                                 let rad = deg.to_radians();
                                                 let zid = zid_rotation.clone();
                                                 update_zone(zid, Box::new(move |z| z.rotation = rad));
                                             }
-                                        }
                                     }
                                 />
                                 <div class="flex items-center gap-0.5 shrink-0">
@@ -570,13 +566,12 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                         prop:value=format!("{rotation_deg:.0}")
                                         on:change=move |ev| {
                                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                            if let Some(el) = target {
-                                                if let Ok(deg) = el.value().parse::<f32>() {
+                                            if let Some(el) = target
+                                                && let Ok(deg) = el.value().parse::<f32>() {
                                                     let rad = deg.to_radians();
                                                     let zid = zid_rotation_input.clone();
                                                     update_zone(zid, Box::new(move |z| z.rotation = rad));
                                                 }
-                                            }
                                         }
                                     />
                                     <span class="text-[11px] font-mono text-fg-tertiary/30">{"\u{00b0}"}</span>
@@ -594,12 +589,11 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                     prop:value=format!("{scale:.1}")
                                     on:input=move |ev| {
                                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                        if let Some(el) = target {
-                                            if let Ok(s) = el.value().parse::<f32>() {
+                                        if let Some(el) = target
+                                            && let Ok(s) = el.value().parse::<f32>() {
                                                 let zid = zid_scale.clone();
                                                 update_zone(zid, Box::new(move |z| z.scale = s));
                                             }
-                                        }
                                     }
                                 />
                                 <div class="flex items-center gap-0.5 shrink-0">
@@ -612,12 +606,11 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                         prop:value=format!("{scale:.1}")
                                         on:change=move |ev| {
                                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                            if let Some(el) = target {
-                                                if let Ok(s) = el.value().parse::<f32>() {
+                                            if let Some(el) = target
+                                                && let Ok(s) = el.value().parse::<f32>() {
                                                     let zid = zid_scale_input.clone();
                                                     update_zone(zid, Box::new(move |z| z.scale = s));
                                                 }
-                                            }
                                         }
                                     />
                                     <span class="text-[11px] font-mono text-fg-tertiary/30">"x"</span>
@@ -674,11 +667,10 @@ fn zone_number_input(
                 on:change=move |ev| {
                     let on_change = on_change.clone();
                     let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                    if let Some(el) = target {
-                        if let Ok(v) = el.value().parse::<f32>() {
+                    if let Some(el) = target
+                        && let Ok(v) = el.value().parse::<f32>() {
                             on_change(v);
                         }
-                    }
                 }
             />
         </div>
@@ -710,11 +702,10 @@ fn zone_pixel_input(
                 on:change=move |ev| {
                     let on_change = on_change.clone();
                     let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                    if let Some(el) = target {
-                        if let Ok(v) = el.value().parse::<f32>() {
+                    if let Some(el) = target
+                        && let Ok(v) = el.value().parse::<f32>() {
                             on_change(v);
                         }
-                    }
                 }
             />
         </div>

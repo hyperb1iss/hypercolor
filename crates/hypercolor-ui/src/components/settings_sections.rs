@@ -421,9 +421,8 @@ pub fn SessionSection(
             off_output_behavior_value(cfg.session.off_output_behavior)
         })
     });
-    let off_output_color = Signal::derive(move || {
-        read_config(config, |cfg| cfg.session.off_output_color.clone())
-    });
+    let off_output_color =
+        Signal::derive(move || read_config(config, |cfg| cfg.session.off_output_color.clone()));
 
     let screen_behavior_options = Signal::stored(vec![
         ("ignore".to_string(), "Ignore".to_string()),

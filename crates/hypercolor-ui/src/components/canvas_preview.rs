@@ -17,6 +17,9 @@ use web_sys::{
 use crate::app::WsContext;
 use crate::ws::{CanvasFrame, CanvasPixelFormat};
 
+type PresentCallback = Rc<dyn Fn()>;
+type PresentScheduler = Rc<RefCell<Option<PresentCallback>>>;
+
 const PREVIEW_VERTEX_SHADER: &str = r#"
 attribute vec2 a_position;
 attribute vec2 a_tex_coord;
@@ -214,12 +217,12 @@ pub fn CanvasPreview(
     let presenter = Rc::new(RefCell::new(None::<WebGlPreview>));
     let animation = Rc::new(RefCell::new(None::<Closure<dyn FnMut(f64)>>));
     let last_presented_frame = Rc::new(RefCell::new(None::<u32>));
-    let schedule_present: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    let schedule_present: PresentScheduler = Rc::new(RefCell::new(None));
     let ws = use_context::<WsContext>();
     let preview_registered = Arc::new(AtomicBool::new(false));
 
     {
-        let canvas_ref = canvas_ref.clone();
+        let schedule_canvas_ref = canvas_ref;
         let latest_frame = Rc::clone(&latest_frame);
         let presenter = Rc::clone(&presenter);
         let animation = Rc::clone(&animation);
@@ -230,7 +233,7 @@ pub fn CanvasPreview(
                 return;
             }
 
-            let Some(canvas) = canvas_ref.get() else {
+            let Some(canvas) = schedule_canvas_ref.get() else {
                 return;
             };
 
@@ -261,12 +264,10 @@ pub fn CanvasPreview(
 
                 if let Some(frame) = latest_frame.borrow().clone()
                     && Some(frame.frame_number) != *last_presented_frame.borrow()
-                {
-                    if let Some(presenter) = presenter_handle.borrow_mut().as_mut() {
+                    && let Some(presenter) = presenter_handle.borrow_mut().as_mut() {
                         presenter.render(&canvas_handle, &frame);
                         *last_presented_frame.borrow_mut() = Some(frame.frame_number);
                     }
-                }
 
                 animation_handle.borrow_mut().take();
             });

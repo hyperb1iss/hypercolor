@@ -9,7 +9,7 @@ use std::f32::consts::FRAC_PI_2;
 use hypercolor_types::attachment::{AttachmentCategory, AttachmentSuggestedZone};
 use hypercolor_types::spatial::{
     Corner, DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, Orientation, SamplingMode,
-    SpatialLayout, StripDirection, Winding, ZoneShape,
+    SpatialLayout, StripDirection, Winding, ZoneAttachment, ZoneGroup, ZoneShape,
 };
 
 use crate::api::{ZoneSummary, ZoneTopologySummary};
@@ -34,6 +34,8 @@ const PUSH2_FOOTPRINT_CENTER: NormalizedPosition = NormalizedPosition::new(0.5, 
 const PUSH2_GROUP_COLOR: &str = "#80ffea";
 const PUSH2_TRANSPORT_RECT: FootprintRect = FootprintRect::new(16.0, 74.0, 130.0, 959.0);
 const PUSH2_WHITE_BUTTONS_RECT: FootprintRect = FootprintRect::new(16.0, 128.0, 1334.0, 903.0);
+const ATTACHMENT_GROUP_COLOR: &str = "#80ffea";
+const ATTACHMENT_SLOT_GAP_FRACTION: f32 = 0.06;
 
 const BASILISK_V3_POINTS: &[(u32, u32)] = &[
     (3, 5),
@@ -93,6 +95,12 @@ pub(crate) struct SeededDeviceLayout {
     pub group_id: String,
     pub group_name: String,
     pub group_color: String,
+    pub zones: Vec<DeviceZone>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SeededAttachmentLayout {
+    pub groups: Vec<ZoneGroup>,
     pub zones: Vec<DeviceZone>,
 }
 
@@ -300,6 +308,123 @@ pub(crate) fn attachment_zone_shape(category: &AttachmentCategory) -> Option<Zon
         | AttachmentCategory::Matrix => Some(ZoneShape::Rectangle),
         AttachmentCategory::Bulb | AttachmentCategory::Other(_) => None,
     }
+}
+
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn seeded_attachment_layout(
+    device_id: &str,
+    device_name: &str,
+    suggested_zones: &[AttachmentSuggestedZone],
+    display_order_start: i32,
+) -> SeededAttachmentLayout {
+    if suggested_zones.is_empty() {
+        return SeededAttachmentLayout {
+            groups: Vec::new(),
+            zones: Vec::new(),
+        };
+    }
+
+    let mut slots = suggested_zones
+        .iter()
+        .cloned()
+        .fold(
+            std::collections::BTreeMap::<String, Vec<AttachmentSuggestedZone>>::new(),
+            |mut acc, zone| {
+                acc.entry(zone.slot_id.clone()).or_default().push(zone);
+                acc
+            },
+        )
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    for (_, zones) in &mut slots {
+        zones.sort_by(|left, right| {
+            left.led_start
+                .cmp(&right.led_start)
+                .then_with(|| left.instance.cmp(&right.instance))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+    }
+
+    let slot_count = slots.len();
+    let columns = slot_count.clamp(1, 3);
+    let rows = slot_count.div_ceil(columns);
+    let cell_width = 0.78 / columns as f32;
+    let cell_height = 0.68 / rows as f32;
+
+    let mut groups = Vec::new();
+    let mut zones = Vec::new();
+
+    for (slot_index, (slot_id, slot_zones)) in slots.into_iter().enumerate() {
+        let row = slot_index / columns;
+        let column = slot_index % columns;
+        let cell_center = NormalizedPosition::new(
+            0.12 + cell_width * (column as f32 + 0.5),
+            0.18 + cell_height * (row as f32 + 0.5),
+        );
+        let max_size = NormalizedPosition::new(cell_width * 0.86, cell_height * 0.82);
+        let group_id = (slot_zones.len() > 1).then(|| {
+            format!(
+                "attachment_{}_{}",
+                sanitize_layout_identifier(device_id),
+                sanitize_layout_identifier(&slot_id)
+            )
+        });
+
+        if let Some(group_id) = &group_id {
+            groups.push(ZoneGroup {
+                id: group_id.clone(),
+                name: format!("{device_name} · {}", humanize_slot_id(&slot_id)),
+                color: Some(ATTACHMENT_GROUP_COLOR.to_owned()),
+            });
+        }
+
+        let placements = attachment_slot_placements(&slot_zones, cell_center, max_size);
+        let slot_display_order_start =
+            display_order_start + i32::try_from(zones.len()).unwrap_or(i32::MAX);
+        for (slot_offset, (suggested, (position, size))) in slot_zones
+            .into_iter()
+            .zip(placements.into_iter())
+            .enumerate()
+        {
+            let shape = attachment_zone_shape(&suggested.category);
+            zones.push(DeviceZone {
+                id: attachment_zone_id(device_id, &suggested),
+                name: suggested.name.clone(),
+                device_id: device_id.to_owned(),
+                zone_name: Some(suggested.slot_id.clone()),
+                group_id: group_id.clone(),
+                position,
+                size,
+                rotation: 0.0,
+                scale: 1.0,
+                orientation: if matches!(shape, Some(ZoneShape::Ring)) {
+                    Some(Orientation::Radial)
+                } else {
+                    orientation_for_attachment_topology(&suggested.topology)
+                },
+                topology: suggested.topology.clone(),
+                led_positions: Vec::new(),
+                led_mapping: suggested.led_mapping.clone(),
+                sampling_mode: None,
+                edge_behavior: None,
+                shape,
+                shape_preset: None,
+                display_order: slot_display_order_start
+                    + i32::try_from(slot_offset).unwrap_or(i32::MAX),
+                attachment: Some(ZoneAttachment {
+                    template_id: suggested.template_id.clone(),
+                    slot_id: suggested.slot_id.clone(),
+                    instance: suggested.instance,
+                    led_start: Some(suggested.led_start),
+                    led_count: Some(suggested.led_count),
+                    led_mapping: suggested.led_mapping.clone(),
+                }),
+            });
+        }
+    }
+
+    SeededAttachmentLayout { groups, zones }
 }
 
 pub(crate) fn normalize_layout_for_editor(mut layout: SpatialLayout) -> SpatialLayout {
@@ -966,6 +1091,106 @@ fn attachment_visual_units(suggested: &AttachmentSuggestedZone) -> VisualUnits {
         | AttachmentCategory::Radiator
         | AttachmentCategory::Other(_) => topology_visual_units(&suggested.topology),
     }
+}
+
+fn attachment_slot_placements(
+    zones: &[AttachmentSuggestedZone],
+    center: NormalizedPosition,
+    max_size: NormalizedPosition,
+) -> Vec<(NormalizedPosition, NormalizedPosition)> {
+    if zones.len() <= 1 {
+        return zones
+            .iter()
+            .map(|zone| {
+                let size = normalize_zone_size_for_editor(
+                    center,
+                    attachment_zone_size(zone, max_size),
+                    &zone.topology,
+                );
+                (center, size)
+            })
+            .collect();
+    }
+
+    let slot_gap = (max_size.x * ATTACHMENT_SLOT_GAP_FRACTION).clamp(0.012, 0.03);
+    let aspects = zones
+        .iter()
+        .map(|zone| attachment_visual_units(zone).aspect_ratio())
+        .collect::<Vec<_>>();
+    let total_aspect = aspects.iter().sum::<f32>().max(GRID_EPSILON);
+    let total_gap = slot_gap * (zones.len().saturating_sub(1) as f32);
+    let usable_width = (max_size.x - total_gap).max(GRID_EPSILON);
+    let row_height = (usable_width / total_aspect)
+        .min(max_size.y)
+        .max(GRID_EPSILON);
+
+    let widths = aspects
+        .iter()
+        .map(|aspect| (row_height * *aspect).max(GRID_EPSILON))
+        .collect::<Vec<_>>();
+    let total_width = widths.iter().sum::<f32>() + total_gap;
+    let mut cursor = center.x - total_width * 0.5;
+
+    zones
+        .iter()
+        .zip(widths)
+        .map(|(zone, width)| {
+            let position = NormalizedPosition::new(cursor + width * 0.5, center.y);
+            let size = normalize_zone_size_for_editor(
+                position,
+                NormalizedPosition::new(width, row_height),
+                &zone.topology,
+            );
+            cursor += width + slot_gap;
+            (position, size)
+        })
+        .collect()
+}
+
+fn orientation_for_attachment_topology(topology: &LedTopology) -> Option<Orientation> {
+    match topology {
+        LedTopology::Strip { .. } => Some(Orientation::Horizontal),
+        LedTopology::Ring { .. } | LedTopology::ConcentricRings { .. } | LedTopology::Point => {
+            Some(Orientation::Radial)
+        }
+        LedTopology::Matrix { .. }
+        | LedTopology::PerimeterLoop { .. }
+        | LedTopology::Custom { .. } => None,
+    }
+}
+
+fn attachment_zone_id(device_id: &str, suggested: &AttachmentSuggestedZone) -> String {
+    format!(
+        "attachment-{}-{}-{}-{}",
+        sanitize_layout_identifier(device_id),
+        sanitize_layout_identifier(&suggested.slot_id),
+        suggested.led_start,
+        suggested.instance
+    )
+}
+
+fn humanize_slot_id(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut previous_space = true;
+
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if previous_space {
+                out.push(ch.to_ascii_uppercase());
+            } else {
+                out.push(ch);
+            }
+            previous_space = false;
+            continue;
+        }
+
+        if !previous_space {
+            out.push(' ');
+            previous_space = true;
+        }
+    }
+
+    out.trim().to_owned()
 }
 
 fn grid_points(points: &[(u32, u32)], grid: VisualUnits) -> Vec<NormalizedPosition> {

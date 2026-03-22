@@ -403,8 +403,8 @@ impl WsManager {
                 }
 
                 // JSON message (String)
-                if let Some(text) = event.data().as_string() {
-                    if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(text) = event.data().as_string()
+                    && let Ok(msg) = serde_json::from_str::<serde_json::Value>(&text) {
                         handle_json_message(
                             &msg,
                             &set_active_effect,
@@ -419,7 +419,6 @@ impl WsManager {
                             &set_preview_transport_cap,
                         );
                     }
-                }
             });
             ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
             on_message.forget();

@@ -411,12 +411,11 @@ fn ControlWidget(
                         on:input=move |ev| {
                             use wasm_bindgen::JsCast;
                             let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                            if let Some(el) = target {
-                                if let Ok(v) = el.value().parse::<f32>() {
+                            if let Some(el) = target
+                                && let Ok(v) = el.value().parse::<f32>() {
                                     set_slider_value.set(v);
                                     on_change.run((control_name.clone(), json!(v)));
                                 }
-                            }
                         }
                     />
                     <span class="text-[10px] font-mono tabular-nums w-[36px] text-right shrink-0 px-1.5 py-0.5 rounded"

@@ -1,4 +1,5 @@
 //! Channel editor — manages components for a single device channel (slot).
+#![allow(dead_code)]
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -6,14 +7,9 @@ use leptos_icons::Icon;
 use hypercolor_types::attachment::AttachmentSlot;
 
 use crate::api;
-use crate::components::attachment_editor::{
-    self, ComponentDraft, DraftRow,
-};
-use crate::components::attachment_panel;
+use crate::components::attachment_editor::{ComponentDraft, DraftRow};
 use crate::components::component_picker::ComponentPicker;
-use crate::components::component_row::ComponentRow;
 use crate::icons::*;
-use crate::toasts;
 
 /// Editor for a single channel's components.
 #[component]
@@ -25,9 +21,7 @@ pub fn ChannelEditor(
     #[prop(into)] device: Signal<Option<api::DeviceSummary>>,
     #[prop(into)] on_saved: Callback<()>,
 ) -> impl IntoView {
-    let num = initial_drafts.len();
-    let slot_name = slot.name.clone();
-    let slot_leds = slot.led_count;
+    let _ = (&slot, &device_id, &device, &on_saved);
 
     let (drafts, set_drafts) = signal(initial_drafts);
 

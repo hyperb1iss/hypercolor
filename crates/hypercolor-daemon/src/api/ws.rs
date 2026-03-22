@@ -444,7 +444,7 @@ struct MetricsFps {
 }
 
 #[derive(Debug, Serialize)]
-#[expect(
+#[allow(
     clippy::struct_field_names,
     reason = "JSON keys mirror protocol field names from the WebSocket spec"
 )]
@@ -456,7 +456,7 @@ struct MetricsFrameTime {
 }
 
 #[derive(Debug, Serialize)]
-#[expect(
+#[allow(
     clippy::struct_field_names,
     reason = "JSON keys mirror protocol field names from the WebSocket spec"
 )]
@@ -471,7 +471,7 @@ struct MetricsStages {
 }
 
 #[derive(Debug, Serialize)]
-#[expect(
+#[allow(
     clippy::struct_field_names,
     reason = "JSON keys mirror protocol field names from the WebSocket spec"
 )]

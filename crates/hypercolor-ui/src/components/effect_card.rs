@@ -74,7 +74,7 @@ pub fn EffectCard(
     view! {
         <div
             class=move || {
-                let base = "relative rounded-2xl border text-left w-full group overflow-hidden \
+                let base = "relative rounded-xl border text-left w-full group overflow-hidden \
                             card-hover animate-fade-in-up flex flex-col content-auto-card";
                 let state = if is_active.get() {
                     "border-accent-muted bg-surface-overlay animate-breathe"
@@ -88,12 +88,12 @@ pub fn EffectCard(
             style:--glow-rgb=accent_rgb.clone()
         >
             // Category accent gradient overlay
-            <div class="absolute inset-0 pointer-events-none rounded-2xl" style=accent_gradient />
+            <div class="absolute inset-0 pointer-events-none rounded-xl" style=accent_gradient />
 
             // Active electric glow
             {move || is_active.get().then(|| view! {
                 <div
-                    class="absolute inset-0 rounded-2xl pointer-events-none"
+                    class="absolute inset-0 rounded-xl pointer-events-none"
                     style="background: radial-gradient(ellipse at 50% -20%, rgba(225, 53, 255, 0.15) 0%, transparent 65%); \
                            box-shadow: inset 0 1px 0 rgba(225, 53, 255, 0.2)"
                 />
@@ -135,7 +135,7 @@ pub fn EffectCard(
 
             // Clickable card body
             <button
-                class="relative flex flex-col flex-1 px-4 pt-4 pb-3 text-left"
+                class="relative flex flex-col flex-1 px-4 py-3 text-left"
                 disabled=!runnable
                 on:click=move |_| {
                     if runnable {
@@ -145,7 +145,7 @@ pub fn EffectCard(
             >
                 // Header: name + category badge
                 <div class="flex items-start justify-between gap-3 pr-6 mb-2">
-                    <h3 class="text-[15px] font-medium text-fg-primary group-hover:text-fg-primary line-clamp-2 transition-colors duration-200 leading-snug">
+                    <h3 class="text-[14px] font-medium text-fg-primary group-hover:text-fg-primary line-clamp-2 transition-colors duration-200 leading-snug">
                         {name}
                     </h3>
                     <span class=format!("shrink-0 text-[9px] font-mono tracking-wide px-2 py-0.5 rounded-full capitalize {badge_class}")>
@@ -162,7 +162,7 @@ pub fn EffectCard(
                 <div class="flex items-center gap-1.5 mb-3 flex-wrap">
                     // Audio reactive badge
                     {audio_reactive.then(|| view! {
-                        <span class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded \
+                        <span class="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full \
                                      bg-coral/8 text-coral/80 border border-coral/10">
                             <Icon icon=LuAudioLines width="10px" height="10px" />
                             "Audio"
@@ -172,7 +172,7 @@ pub fn EffectCard(
                     // Source type badge
                     {(!is_native).then(|| view! {
                         <span class=format!(
-                            "inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded {}",
+                            "inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full {}",
                             source_badge_class
                         )>
                             {if source == "html" {
@@ -191,7 +191,7 @@ pub fn EffectCard(
                     <div class="flex gap-1.5 overflow-hidden">
                         {tags.into_iter().take(3).map(|tag| {
                             view! {
-                                <span class="text-[9px] font-mono text-fg-tertiary/70 bg-surface-overlay/30 px-1.5 py-0.5 rounded whitespace-nowrap">
+                                <span class="text-[9px] font-mono text-fg-tertiary/70 bg-surface-overlay/30 px-1.5 py-0.5 rounded-full whitespace-nowrap">
                                     {tag}
                                 </span>
                             }

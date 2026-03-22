@@ -142,10 +142,10 @@ fn audio_device_options(current: &str) -> Vec<AudioDeviceInfo> {
 
 fn enumerate_audio_input_devices() -> anyhow::Result<Vec<AudioDeviceInfo>> {
     #[cfg(target_os = "linux")]
-    if let Ok(devices) = enumerate_linux_audio_input_devices() {
-        if !devices.is_empty() {
-            return Ok(devices);
-        }
+    if let Ok(devices) = enumerate_linux_audio_input_devices()
+        && !devices.is_empty()
+    {
+        return Ok(devices);
     }
 
     enumerate_cpal_audio_input_devices()

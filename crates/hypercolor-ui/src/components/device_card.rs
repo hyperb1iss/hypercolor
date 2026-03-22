@@ -66,11 +66,10 @@ pub fn parse_device_class(label: &str) -> Option<DeviceClass> {
 /// Classify a device by name/zone heuristics (auto-detection).
 pub fn classify_device(device: &DeviceSummary) -> DeviceClass {
     // Check localStorage override first
-    if let Some(override_label) = load_category_override(&device.id) {
-        if let Some(class) = parse_device_class(&override_label) {
+    if let Some(override_label) = load_category_override(&device.id)
+        && let Some(class) = parse_device_class(&override_label) {
             return class;
         }
-    }
 
     let name = device.name.to_lowercase();
     let backend = device.backend.to_lowercase();
@@ -396,7 +395,7 @@ pub fn DeviceCard(
                 })
             }
 
-            <div class="relative flex flex-col justify-between h-full px-3.5 py-3">
+            <div class="relative flex flex-col justify-between h-full px-4 py-3">
                 // ── Row 1: Icon + Name + Type + Status ────────────────────
                 <div class="flex items-start gap-2.5">
                     <div class="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 mt-0.5" style=icon_bg>
@@ -404,7 +403,7 @@ pub fn DeviceCard(
                     </div>
                     <div class="flex-1 min-w-0">
                         <div class="flex items-center gap-2">
-                            <h3 class="text-[13px] font-medium text-fg-primary truncate leading-tight">
+                            <h3 class="text-[14px] font-medium text-fg-primary truncate leading-tight">
                                 {device_name}
                             </h3>
                             <div
@@ -441,7 +440,7 @@ pub fn DeviceCard(
                     view! {
                         <div class="flex items-center gap-1.5 mt-0.5">
                             <button
-                                class="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium transition-all btn-press"
+                                class="flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium transition-all btn-press"
                                 style=format!(
                                     "background: rgba({badge_rgb}, 0.1); color: rgb({badge_rgb}); border: 1px solid rgba({badge_rgb}, 0.15)"
                                 )
@@ -465,7 +464,7 @@ pub fn DeviceCard(
                             {zone_previews.into_iter().map(|(svg, led_count)| {
                                 let zr = zone_rgb.clone();
                                 view! {
-                                    <div class="flex items-center gap-0.5 px-1 py-0.5 rounded transition-all duration-200
+                                    <div class="flex items-center gap-0.5 px-1.5 py-0.5 rounded-full transition-all duration-200
                                                 bg-surface-overlay/20 group-hover:bg-surface-overlay/30"
                                          style=format!("border: 1px solid transparent; transition: border-color 200ms")
                                          title=format!("{led_count} LEDs")>
@@ -484,7 +483,7 @@ pub fn DeviceCard(
                     }.into_any())
                 } else if device.backend.to_lowercase() == "hue" {
                     Some(view! {
-                        <div class="flex items-center gap-1.5 mt-1 px-2 py-1.5 rounded-md"
+                        <div class="flex items-center gap-1.5 mt-1 px-2 py-1.5 rounded-lg"
                              style="background: rgba(255, 183, 77, 0.05); border: 1px solid rgba(255, 183, 77, 0.08)">
                             <Icon icon=LuInfo width="10px" height="10px" style="color: rgba(255, 183, 77, 0.5); flex-shrink: 0" />
                             <span class="text-[9px] leading-tight" style="color: rgba(255, 183, 77, 0.55)">

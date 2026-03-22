@@ -15,7 +15,7 @@ use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
 use hypercolor_types::effect::{ControlDefinition, ControlType, ControlValue};
 
-use crate::style_utils::category_accent_rgb;
+use crate::style_utils::{category_accent_rgb, filter_chips};
 
 const EFFECTS_PREVIEW_FPS_CAP: u32 = 24;
 const MIN_DETAIL_WIDTH: f64 = 260.0;
@@ -23,16 +23,16 @@ const MAX_DETAIL_WIDTH: f64 = 1200.0;
 const MIN_CONTROLS_WIDTH: f64 = 220.0;
 const MAX_CONTROLS_WIDTH: f64 = 800.0;
 
-/// Category filter options.
-const CATEGORIES: &[&str] = &[
-    "all",
-    "ambient",
-    "gaming",
-    "reactive",
-    "generative",
-    "interactive",
-    "productivity",
-    "utility",
+/// Category filter chips — (label, accent RGB).
+const CATEGORY_CHIPS: &[(&str, &str)] = &[
+    ("all", "225, 53, 255"),
+    ("ambient", "128, 255, 234"),
+    ("gaming", "225, 53, 255"),
+    ("reactive", "241, 250, 140"),
+    ("generative", "80, 250, 123"),
+    ("interactive", "130, 170, 255"),
+    ("productivity", "255, 153, 255"),
+    ("utility", "139, 133, 160"),
 ];
 
 /// Effects browse page with compact grid, search, category filtering, and live preview.
@@ -344,7 +344,7 @@ pub fn EffectsPage() -> impl IntoView {
                                     on:click=move |_| set_filter_dropdown_open.set(false)
                                 />
                                 <div
-                                    class="absolute top-full right-0 mt-1 z-30 w-[260px] max-h-[400px] overflow-y-auto
+                                    class="absolute top-full right-0 mt-1 z-30 w-[240px] max-h-[360px] overflow-y-auto
                                            rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
                                            py-1.5 animate-fade-in animate-glow-reveal scrollbar-dropdown"
                                 >
@@ -352,30 +352,7 @@ pub fn EffectsPage() -> impl IntoView {
                                     <div class="px-3 pt-1 pb-1.5">
                                         <div class="text-[10px] font-medium uppercase tracking-wider text-fg-tertiary/50 mb-1.5">"Category"</div>
                                         <div class="flex gap-1 flex-wrap">
-                                            {CATEGORIES.iter().map(|cat| {
-                                                let cat = cat.to_string();
-                                                let cat_clone = cat.clone();
-                                                let rgb = if cat == "all" { "225, 53, 255" } else { category_accent_rgb(&cat) }.to_string();
-                                                let is_active = {
-                                                    let cat = cat.clone();
-                                                    Memo::new(move |_| category_filter.get() == cat)
-                                                };
-                                                let active_style = format!(
-                                                    "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 8px rgba({rgb}, 0.15)"
-                                                );
-                                                let inactive_style = format!(
-                                                    "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
-                                                );
-                                                view! {
-                                                    <button
-                                                        class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
-                                                        style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
-                                                        on:click=move |_| set_category_filter.set(cat_clone.clone())
-                                                    >
-                                                        {cat.clone()}
-                                                    </button>
-                                                }
-                                            }).collect_view()}
+                                            {filter_chips(CATEGORY_CHIPS, category_filter, set_category_filter)}
                                         </div>
                                     </div>
 
@@ -529,9 +506,9 @@ pub fn EffectsPage() -> impl IntoView {
                                 }.into_any()
                             } else {
                                 let grid_class = if has_active.get() {
-                                    "grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-3"
+                                    "grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-2.5"
                                 } else {
-                                    "grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4"
+                                    "grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3"
                                 };
                                 view! {
                                     <div class=grid_class>
@@ -979,10 +956,10 @@ fn persist_to_storage(key: &str, value: &str) {
 #[component]
 fn LoadingSkeleton() -> impl IntoView {
     view! {
-        <div class="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
+        <div class="grid grid-cols-[repeat(auto-fill,minmax(280px,1fr))] gap-3">
             {(0..12).map(|_| {
                 view! {
-                    <div class="rounded-2xl border border-edge-subtle bg-surface-overlay/40 px-4 py-4 animate-pulse space-y-3">
+                    <div class="rounded-xl border border-edge-subtle bg-surface-overlay/40 px-4 py-3 animate-pulse space-y-3">
                         <div class="flex justify-between">
                             <div class="h-4 w-28 bg-surface-overlay/40 rounded" />
                             <div class="h-4 w-14 bg-surface-overlay/40 rounded-full" />

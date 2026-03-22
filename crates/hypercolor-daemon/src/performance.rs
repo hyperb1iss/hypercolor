@@ -105,6 +105,10 @@ impl PerformanceTracker {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "the `_ms` suffix keeps the internal pacing summary units explicit"
+)]
 struct ShortSummary {
     avg_ms: f64,
     p95_ms: f64,

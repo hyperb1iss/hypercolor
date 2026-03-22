@@ -99,7 +99,7 @@ fn dropdown_panel_style(trigger: Option<web_sys::HtmlButtonElement>) -> String {
             let below = (vh - rect.bottom() - margin).max(0.0);
             let above = (rect.top() - margin).max(0.0);
             let open_up = below < 180.0 && above > below;
-            let max_h = if open_up { above } else { below }.min(340.0).max(120.0);
+            let max_h = (if open_up { above } else { below }).clamp(120.0, 340.0);
 
             if open_up {
                 let bottom = (vh - rect.top() + 4.0).max(margin);

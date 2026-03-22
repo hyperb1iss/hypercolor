@@ -27,6 +27,7 @@ fn template(id: &str, name: &str, category: AttachmentCategory, led_count: u32) 
         name: name.to_owned(),
         vendor: "Lian Li".to_owned(),
         category,
+        origin: None,
         led_count,
         description: String::new(),
         tags: Vec::new(),

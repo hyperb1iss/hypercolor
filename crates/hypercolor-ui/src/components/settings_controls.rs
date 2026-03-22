@@ -123,8 +123,8 @@ pub fn SettingSlider(
                     step=step.to_string()
                     on:change=move |ev| {
                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                        if let Some(el) = target {
-                            if let Ok(val) = el.value().parse::<f64>() {
+                        if let Some(el) = target
+                            && let Ok(val) = el.value().parse::<f64>() {
                                 let json_val = if integer {
                                     serde_json::json!(val as i64)
                                 } else {
@@ -132,7 +132,6 @@ pub fn SettingSlider(
                                 };
                                 on_change.run((key_owned.clone(), json_val));
                             }
-                        }
                     }
                 />
                 <span class="text-xs font-mono text-fg-tertiary tabular-nums w-12 text-right">
@@ -294,12 +293,11 @@ pub fn SettingNumberInput(
                     step=step.to_string()
                     on:change=move |ev| {
                         let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                        if let Some(el) = target {
-                            if let Ok(v) = el.value().parse::<f64>() {
+                        if let Some(el) = target
+                            && let Ok(v) = el.value().parse::<f64>() {
                                 let val = commit(v);
                                 on_change.run((key_owned.clone(), val));
                             }
-                        }
                     }
                 />
                 <button

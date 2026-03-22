@@ -734,8 +734,10 @@ fn sample_bilinear_linear_channel(
     let bottom = u32::from(decode_srgb_byte(bytes[bottom_left + channel])) * x_lower_weight
         + u32::from(decode_srgb_byte(bytes[bottom_right + channel])) * x_upper_weight;
 
-    ((u64::from(top) * y_lower_weight + u64::from(bottom) * y_upper_weight) >> BILINEAR_SHIFT)
-        as u16
+    u16::try_from(
+        (u64::from(top) * y_lower_weight + u64::from(bottom) * y_upper_weight) >> BILINEAR_SHIFT,
+    )
+    .expect("bilinear interpolation result fits in u16")
 }
 
 #[must_use]
@@ -746,7 +748,8 @@ fn attenuate_linear_channel(channel: u16, attenuation: u16) -> u16 {
     }
 
     let attenuation = u32::from(attenuation);
-    ((u32::from(channel) * attenuation + 128) / u32::from(ATTENUATION_ONE)) as u16
+    u16::try_from((u32::from(channel) * attenuation + 128) / u32::from(ATTENUATION_ONE))
+        .expect("attenuated channel fits in u16")
 }
 
 #[must_use]

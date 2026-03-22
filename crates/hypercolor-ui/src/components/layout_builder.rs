@@ -327,11 +327,10 @@ pub fn LayoutBuilder() -> impl IntoView {
                 .map(|current| (current.zones.clone(), current.groups.clone()));
 
             // Only push preview if spatial data actually changed (avoid initial no-op).
-            if current_snapshot != prev_snapshot.flatten() {
-                if let Some(layout) = current.as_ref() {
+            if current_snapshot != prev_snapshot.flatten()
+                && let Some(layout) = current.as_ref() {
                     preview_layout(layout.clone());
                 }
-            }
 
             current_snapshot
         },

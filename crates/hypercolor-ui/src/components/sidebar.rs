@@ -286,13 +286,11 @@ pub fn Sidebar() -> impl IntoView {
         let current = fx.active_effect_id.get();
         let rand = js_sys::Math::random();
         let mut idx = (rand * list.len() as f64) as usize;
-        if list.len() > 1 {
-            if let Some(ref cur) = current {
-                if list.get(idx).is_some_and(|e| &e.id == cur) {
+        if list.len() > 1
+            && let Some(ref cur) = current
+                && list.get(idx).is_some_and(|e| &e.id == cur) {
                     idx = (idx + 1) % list.len();
                 }
-            }
-        }
         if let Some(effect) = list.get(idx) {
             fx.apply_effect(effect.id.clone());
         }

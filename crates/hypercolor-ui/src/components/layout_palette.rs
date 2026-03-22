@@ -109,11 +109,10 @@ pub fn LayoutPalette() -> impl IntoView {
     // Assign a zone to a group (or ungroup if group_id is None)
     let assign_zone_to_group = move |zone_id: String, group_id: Option<String>| {
         set_layout.update(|l| {
-            if let Some(layout) = l {
-                if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
+            if let Some(layout) = l
+                && let Some(zone) = layout.zones.iter_mut().find(|z| z.id == zone_id) {
                     zone.group_id = group_id;
                 }
-            }
         });
         set_is_dirty.set(true);
     };
@@ -125,11 +124,10 @@ pub fn LayoutPalette() -> impl IntoView {
             return;
         }
         set_layout.update(|l| {
-            if let Some(layout) = l {
-                if let Some(group) = layout.groups.iter_mut().find(|g| g.id == group_id) {
+            if let Some(layout) = l
+                && let Some(group) = layout.groups.iter_mut().find(|g| g.id == group_id) {
                     group.name = name;
                 }
-            }
         });
         set_is_dirty.set(true);
         set_editing_group_id.set(None);
@@ -272,13 +270,11 @@ pub fn LayoutPalette() -> impl IntoView {
                                                 on:drop=move |ev: web_sys::DragEvent| {
                                                     ev.prevent_default();
                                                     set_drag_over_group_id.set(None);
-                                                    if let Some(dt) = ev.data_transfer() {
-                                                        if let Ok(zone_id) = dt.get_data("application/x-hypercolor-zone") {
-                                                            if !zone_id.is_empty() {
+                                                    if let Some(dt) = ev.data_transfer()
+                                                        && let Ok(zone_id) = dt.get_data("application/x-hypercolor-zone")
+                                                            && !zone_id.is_empty() {
                                                                 assign_zone_to_group(zone_id, Some(gid_drop.clone()));
                                                             }
-                                                        }
-                                                    }
                                                 }
                                             >
                                                 <div
@@ -415,13 +411,11 @@ pub fn LayoutPalette() -> impl IntoView {
                                     on:drop=move |ev: web_sys::DragEvent| {
                                         ev.prevent_default();
                                         set_drag_over_group_id.set(None);
-                                        if let Some(dt) = ev.data_transfer() {
-                                            if let Ok(zone_id) = dt.get_data("application/x-hypercolor-zone") {
-                                                if !zone_id.is_empty() {
+                                        if let Some(dt) = ev.data_transfer()
+                                            && let Ok(zone_id) = dt.get_data("application/x-hypercolor-zone")
+                                                && !zone_id.is_empty() {
                                                     assign_zone_to_group(zone_id, None);
                                                 }
-                                            }
-                                        }
                                     }
                                 >
                                     <Icon icon=LuUnlink width="10px" height="10px" />
@@ -590,14 +584,12 @@ pub fn LayoutPalette() -> impl IntoView {
                                                 }
                                                 on:dragstart=move |ev: web_sys::DragEvent| {
                                                     // Single-zone devices: drag the whole card
-                                                    if !has_multi_zones {
-                                                        if let Some(zid) = first_zone_id_in_layout.get_untracked() {
-                                                            if let Some(dt) = ev.data_transfer() {
+                                                    if !has_multi_zones
+                                                        && let Some(zid) = first_zone_id_in_layout.get_untracked()
+                                                            && let Some(dt) = ev.data_transfer() {
                                                                 let _ = dt.set_data("application/x-hypercolor-zone", &zid);
                                                                 dt.set_effect_allowed("move");
                                                             }
-                                                        }
-                                                    }
                                                 }
                                                 style=move || {
                                                     let active = device_is_active.get();
@@ -1164,12 +1156,11 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                                     }
                                                                                 }
                                                                                 on:dragstart=move |ev: web_sys::DragEvent| {
-                                                                                    if let Some(zid) = zone_id_for_drag.get_untracked() {
-                                                                                        if let Some(dt) = ev.data_transfer() {
+                                                                                    if let Some(zid) = zone_id_for_drag.get_untracked()
+                                                                                        && let Some(dt) = ev.data_transfer() {
                                                                                             let _ = dt.set_data("application/x-hypercolor-zone", &zid);
                                                                                             dt.set_effect_allowed("move");
                                                                                         }
-                                                                                    }
                                                                                 }
                                                                                 on:click=move |_| {
                                                                                     if let Some(zid) = zone_id_for_select.get_untracked() {

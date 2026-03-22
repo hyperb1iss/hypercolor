@@ -1,4 +1,5 @@
 //! Single component row — inline editor for strip, matrix, or library component.
+#![allow(dead_code)]
 
 use leptos::prelude::*;
 use leptos_icons::Icon;
@@ -34,9 +35,7 @@ pub fn ComponentRow(
         }
         ComponentDraft::Component { template_id } => {
             let tmpl = templates.iter().find(|t| t.id == *template_id);
-            let label = tmpl
-                .map(|t| t.name.as_str())
-                .unwrap_or("Unknown");
+            let label = tmpl.map(|t| t.name.as_str()).unwrap_or("Unknown");
             let count = tmpl.map(|t| t.led_count).unwrap_or(0);
             (LuCircleDot, label, format!("{count}"))
         }
@@ -134,11 +133,10 @@ pub fn ComponentRow(
                             prop:value=move || led_count.get().to_string()
                             on:input=move |ev| {
                                 let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                if let Some(el) = target {
-                                    if let Ok(v) = el.value().parse::<u32>() {
+                                if let Some(el) = target
+                                    && let Ok(v) = el.value().parse::<u32>() {
                                         set_led_count.set(v.clamp(1, 2000));
                                     }
-                                }
                             }
                             on:blur=move |_| push_update.with_value(|f| f())
                         />
@@ -156,11 +154,10 @@ pub fn ComponentRow(
                             prop:value=move || matrix_cols.get().to_string()
                             on:input=move |ev| {
                                 let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                if let Some(el) = target {
-                                    if let Ok(v) = el.value().parse::<u32>() {
+                                if let Some(el) = target
+                                    && let Ok(v) = el.value().parse::<u32>() {
                                         set_matrix_cols.set(v.clamp(1, 64));
                                     }
-                                }
                             }
                             on:blur=move |_| push_update.with_value(|f| f())
                         />
@@ -174,11 +171,10 @@ pub fn ComponentRow(
                             prop:value=move || matrix_rows.get().to_string()
                             on:input=move |ev| {
                                 let target = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok());
-                                if let Some(el) = target {
-                                    if let Ok(v) = el.value().parse::<u32>() {
+                                if let Some(el) = target
+                                    && let Ok(v) = el.value().parse::<u32>() {
                                         set_matrix_rows.set(v.clamp(1, 64));
                                     }
-                                }
                             }
                             on:blur=move |_| push_update.with_value(|f| f())
                         />

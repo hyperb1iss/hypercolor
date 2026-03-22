@@ -8,9 +8,6 @@ use leptos_icons::Icon;
 use wasm_bindgen::JsCast;
 
 use hypercolor_types::attachment::AttachmentSuggestedZone;
-use hypercolor_types::spatial::{
-    DeviceZone, LedTopology, NormalizedPosition, Orientation, ZoneAttachment,
-};
 
 use crate::api;
 use crate::app::DevicesContext;
@@ -78,10 +75,6 @@ pub fn WiringPanel(
                 .await
                 .unwrap_or_default()
         }
-    });
-
-    let on_saved = Callback::new(move |()| {
-        set_refetch_tick.update(|t| *t += 1);
     });
 
     view! {
@@ -356,11 +349,10 @@ pub fn WiringPanel(
                                                                     Ok(updated) => {
                                                                         toasts::toast_success("Saved");
                                                                         set_refetch_tick.update(|t| *t += 1);
-                                                                        if let Some(dev) = device_for_sync {
-                                                                            if !updated.suggested_zones.is_empty() {
+                                                                        if let Some(dev) = device_for_sync
+                                                                            && !updated.suggested_zones.is_empty() {
                                                                                 sync_wiring_to_layout(dev, updated.suggested_zones, layouts_resource);
                                                                             }
-                                                                        }
                                                                     }
                                                                     Err(e) => toasts::toast_error(&format!("Save failed: {e}")),
                                                                 }
@@ -466,11 +458,10 @@ pub fn WiringPanel(
                                                                                                 on:change=move |ev| {
                                                                                                     if let Ok(v) = event_target_value(&ev).parse::<u32>() {
                                                                                                         set_drafts.update(|rows| {
-                                                                                                            if let Some(r) = rows.get_mut(i) {
-                                                                                                                if let attachment_editor::ComponentDraft::Matrix { cols, .. } = &mut r.kind {
+                                                                                                            if let Some(r) = rows.get_mut(i)
+                                                                                                                && let attachment_editor::ComponentDraft::Matrix { cols, .. } = &mut r.kind {
                                                                                                                     *cols = v.clamp(1, 64);
                                                                                                                 }
-                                                                                                            }
                                                                                                         });
                                                                                                     }
                                                                                                 }
@@ -486,11 +477,10 @@ pub fn WiringPanel(
                                                                                                 on:change=move |ev| {
                                                                                                     if let Ok(v) = event_target_value(&ev).parse::<u32>() {
                                                                                                         set_drafts.update(|rows| {
-                                                                                                            if let Some(r) = rows.get_mut(i) {
-                                                                                                                if let attachment_editor::ComponentDraft::Matrix { rows, .. } = &mut r.kind {
+                                                                                                            if let Some(r) = rows.get_mut(i)
+                                                                                                                && let attachment_editor::ComponentDraft::Matrix { rows, .. } = &mut r.kind {
                                                                                                                     *rows = v.clamp(1, 64);
                                                                                                                 }
-                                                                                                            }
                                                                                                         });
                                                                                                     }
                                                                                                 }
@@ -622,19 +612,25 @@ pub fn sync_wiring_to_layout(
         let result: Result<usize, String> = async {
             let mut layout = api::fetch_active_layout().await?;
             let layout_id = layout.id.clone();
-            let imported_zones = build_attachment_layout_zones(&device, &suggested_zones);
-            let imported_count = imported_zones.len();
-            layout
-                .zones
-                .retain(|z| !(z.device_id == device.layout_device_id && z.attachment.is_some()));
-            layout.zones.extend(imported_zones);
+            let seeded = layout_geometry::seeded_attachment_layout(
+                &device.layout_device_id,
+                &device.name,
+                &suggested_zones,
+                0,
+            );
+            let imported_count = seeded.zones.len();
+            crate::layout_utils::replace_attachment_layout(
+                &mut layout,
+                &device.layout_device_id,
+                seeded,
+            );
             let req = api::UpdateLayoutApiRequest {
                 name: None,
                 description: None,
                 canvas_width: None,
                 canvas_height: None,
                 zones: Some(layout.zones),
-                groups: None,
+                groups: Some(layout.groups),
             };
             api::update_layout(&layout_id, &req).await?;
             api::apply_layout(&layout_id).await?;
@@ -642,119 +638,11 @@ pub fn sync_wiring_to_layout(
         }
         .await;
 
-        if let Ok(count) = result {
-            if count > 0 {
+        if let Ok(count) = result
+            && count > 0 {
                 layouts_resource.refetch();
                 let noun = if count == 1 { "zone" } else { "zones" };
                 toasts::toast_info(&format!("Layout synced ({count} {noun})"));
             }
-        }
     });
-}
-
-#[allow(clippy::cast_precision_loss)]
-pub fn build_attachment_layout_zones(
-    device: &api::DeviceSummary,
-    suggested_zones: &[AttachmentSuggestedZone],
-) -> Vec<DeviceZone> {
-    if suggested_zones.is_empty() {
-        return Vec::new();
-    }
-
-    let columns = suggested_zones.len().clamp(1, 3);
-    let rows = suggested_zones.len().div_ceil(columns);
-    let cell_width = 0.78 / columns as f32;
-    let cell_height = 0.68 / rows as f32;
-
-    suggested_zones
-        .iter()
-        .enumerate()
-        .map(|(index, suggested)| {
-            let row = index / columns;
-            let column = index % columns;
-            let position = NormalizedPosition::new(
-                0.12 + cell_width * (column as f32 + 0.5),
-                0.18 + cell_height * (row as f32 + 0.5),
-            );
-            let max_size = NormalizedPosition::new(cell_width * 0.82, cell_height * 0.82);
-            let shape = layout_geometry::attachment_zone_shape(&suggested.category);
-            let size = layout_geometry::normalize_zone_size_for_editor(
-                position,
-                layout_geometry::attachment_zone_size(suggested, max_size),
-                &suggested.topology,
-            );
-
-            DeviceZone {
-                id: attachment_zone_id(&device.layout_device_id, suggested),
-                name: suggested.name.clone(),
-                device_id: device.layout_device_id.clone(),
-                zone_name: Some(suggested.slot_id.clone()),
-                group_id: None,
-                position,
-                size,
-                rotation: 0.0,
-                scale: 1.0,
-                orientation: if matches!(shape, Some(hypercolor_types::spatial::ZoneShape::Ring)) {
-                    Some(Orientation::Radial)
-                } else {
-                    orientation_for_topology(&suggested.topology)
-                },
-                topology: suggested.topology.clone(),
-                led_positions: Vec::new(),
-                led_mapping: suggested.led_mapping.clone(),
-                sampling_mode: None,
-                edge_behavior: None,
-                shape,
-                shape_preset: None,
-                display_order: 0,
-                attachment: Some(ZoneAttachment {
-                    template_id: suggested.template_id.clone(),
-                    slot_id: suggested.slot_id.clone(),
-                    instance: suggested.instance,
-                    led_start: Some(suggested.led_start),
-                    led_count: Some(suggested.led_count),
-                    led_mapping: suggested.led_mapping.clone(),
-                }),
-            }
-        })
-        .collect()
-}
-
-fn orientation_for_topology(topology: &LedTopology) -> Option<Orientation> {
-    match topology {
-        LedTopology::Strip { .. } => Some(Orientation::Horizontal),
-        LedTopology::Ring { .. } | LedTopology::ConcentricRings { .. } | LedTopology::Point => {
-            Some(Orientation::Radial)
-        }
-        LedTopology::Matrix { .. }
-        | LedTopology::PerimeterLoop { .. }
-        | LedTopology::Custom { .. } => None,
-    }
-}
-
-fn attachment_zone_id(layout_device_id: &str, suggested: &AttachmentSuggestedZone) -> String {
-    format!(
-        "attachment-{}-{}-{}-{}",
-        slugify(layout_device_id),
-        slugify(&suggested.slot_id),
-        suggested.led_start,
-        suggested.instance
-    )
-}
-
-fn slugify(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    let mut previous_dash = false;
-    for ch in raw.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            previous_dash = false;
-            continue;
-        }
-        if !out.is_empty() && !previous_dash {
-            out.push('-');
-            previous_dash = true;
-        }
-    }
-    out.trim_matches('-').to_owned()
 }

@@ -177,9 +177,11 @@ fn expected_bilinear_channel(
         + u32::from(srgb_byte_to_linear_u16(top_right)) * u32::from(x_upper_weight);
     let bottom = u32::from(srgb_byte_to_linear_u16(bottom_left)) * u32::from(x_lower_weight)
         + u32::from(srgb_byte_to_linear_u16(bottom_right)) * u32::from(x_upper_weight);
-    let blended = ((u64::from(top) * u64::from(y_lower_weight)
-        + u64::from(bottom) * u64::from(y_upper_weight))
-        >> 16) as u16;
+    let blended = u16::try_from(
+        (u64::from(top) * u64::from(y_lower_weight) + u64::from(bottom) * u64::from(y_upper_weight))
+            >> 16,
+    )
+    .expect("bilinear blend stays within u16 range");
 
     linear_u16_to_srgb_byte(blended)
 }

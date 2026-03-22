@@ -1,4 +1,4 @@
-//! Linux PulseAudio / PipeWire source discovery helpers.
+//! Linux `PulseAudio` / `PipeWire` source discovery helpers.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -11,7 +11,7 @@ use pulse::context::{Context, FlagSet as ContextFlagSet, State as ContextState};
 use pulse::mainloop::standard::{IterateResult, Mainloop};
 use pulse::operation::{Operation, State as OperationState};
 
-/// Linux PulseAudio / PipeWire source snapshot used for deterministic tests.
+/// Linux `PulseAudio` / `PipeWire` source snapshot used for deterministic tests.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PulseSourceSnapshot {
     /// Pulse source name, e.g. `alsa_output.pci-0000_00_1f.3.analog-stereo.monitor`.
@@ -44,11 +44,11 @@ pub struct LinuxNamedAudioSource {
     pub is_default_monitor: bool,
 }
 
-/// Enumerate Linux PipeWire / PulseAudio sources suitable for named selection.
+/// Enumerate Linux `PipeWire` / `PulseAudio` sources suitable for named selection.
 ///
 /// # Errors
 ///
-/// Returns an error if the PulseAudio compatibility server cannot be queried.
+/// Returns an error if the `PulseAudio` compatibility server cannot be queried.
 pub fn enumerate_named_audio_sources() -> anyhow::Result<Vec<LinuxNamedAudioSource>> {
     let pulse_state = query_pulse_state()?;
     Ok(build_named_audio_sources(
@@ -61,7 +61,7 @@ pub fn enumerate_named_audio_sources() -> anyhow::Result<Vec<LinuxNamedAudioSour
 ///
 /// # Errors
 ///
-/// Returns an error if the PulseAudio compatibility server cannot be queried.
+/// Returns an error if the `PulseAudio` compatibility server cannot be queried.
 pub fn default_monitor_source_name() -> anyhow::Result<Option<String>> {
     let pulse_state = query_pulse_state()?;
     Ok(default_monitor_source_name_from_snapshots(
@@ -70,11 +70,11 @@ pub fn default_monitor_source_name() -> anyhow::Result<Option<String>> {
     ))
 }
 
-/// Check whether a PulseAudio / PipeWire source exists by exact name.
+/// Check whether a `PulseAudio` / `PipeWire` source exists by exact name.
 ///
 /// # Errors
 ///
-/// Returns an error if the PulseAudio compatibility server cannot be queried.
+/// Returns an error if the `PulseAudio` compatibility server cannot be queried.
 pub fn pulse_source_exists(source_name: &str) -> anyhow::Result<bool> {
     let wanted = source_name.trim();
     if wanted.is_empty() {
@@ -245,7 +245,7 @@ impl PulseSession {
                 OperationState::Cancelled => {
                     return Err(anyhow!("PulseAudio operation was cancelled"));
                 }
-                _ => self.iterate(true)?,
+                OperationState::Running => self.iterate(true)?,
             }
         }
     }

@@ -628,6 +628,10 @@ async fn maybe_idle_throttle(
     None
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "sleep-throttle execution is easier to audit when frame synthesis, output, and telemetry stay in one async block"
+)]
 async fn maybe_sleep_throttle(
     state: &RenderThreadState,
     power_state: OutputPowerState,

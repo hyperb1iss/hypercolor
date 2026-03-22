@@ -495,11 +495,10 @@ async fn run_display_worker(
                         let _ = power_state.borrow_and_update();
                     }
                     () = tokio::time::sleep_until(tokio::time::Instant::from_std(hold_deadline)) => {
-                        if should_refresh_static_hold(&power_state) {
-                            if let Some(work) = last_delivered_work.clone() {
-                                pending = Some(Arc::new(work));
-                                last_delivered_input = None;
-                            }
+                        if should_refresh_static_hold(&power_state)
+                            && let Some(work) = last_delivered_work.clone() {
+                            pending = Some(Arc::new(work));
+                            last_delivered_input = None;
                         }
                     }
                 }
@@ -521,7 +520,7 @@ async fn run_display_worker(
             }
             next_hold_refresh_at = static_hold_refresh_deadline(
                 &power_state,
-                &last_delivered_work,
+                last_delivered_work.as_ref(),
                 static_hold_refresh_interval,
             );
             continue;
@@ -629,7 +628,7 @@ async fn run_display_worker(
         last_delivered_work = Some((*work).clone());
         next_hold_refresh_at = static_hold_refresh_deadline(
             &power_state,
-            &last_delivered_work,
+            last_delivered_work.as_ref(),
             static_hold_refresh_interval,
         );
 
@@ -674,7 +673,7 @@ fn should_refresh_static_hold(power_state: &watch::Receiver<OutputPowerState>) -
 
 fn static_hold_refresh_deadline(
     power_state: &watch::Receiver<OutputPowerState>,
-    last_delivered_work: &Option<DisplayWorkItem>,
+    last_delivered_work: Option<&DisplayWorkItem>,
     refresh_interval: Duration,
 ) -> Option<Instant> {
     if !should_refresh_static_hold(power_state) || last_delivered_work.is_none() {

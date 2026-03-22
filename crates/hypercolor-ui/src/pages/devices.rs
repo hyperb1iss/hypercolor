@@ -13,6 +13,7 @@ use crate::components::device_detail::DeviceDetail;
 use crate::components::device_pairing_modal::{DevicePairingModal, ForgetCredentialsModal};
 use crate::components::resize_handle::ResizeHandle;
 use crate::icons::*;
+use crate::style_utils::filter_chips;
 use crate::toasts;
 
 // ── LocalStorage keys + helpers ─────────────────────────────────────────────
@@ -69,34 +70,6 @@ const BACKEND_CHIPS: &[(&str, &str)] = &[
     ("hue", "255, 183, 77"),
     ("nanoleaf", "100, 220, 160"),
 ];
-
-fn filter_chips(
-    chips: &'static [(&'static str, &'static str)],
-    current: ReadSignal<String>,
-    set_current: WriteSignal<String>,
-) -> impl IntoView {
-    chips
-        .iter()
-        .map(|&(label, rgb)| {
-            let is_active = Memo::new(move |_| current.get() == label);
-            let active_style = format!(
-                "background: rgba({rgb}, 0.15); color: rgb({rgb}); border-color: rgba({rgb}, 0.3); box-shadow: 0 0 8px rgba({rgb}, 0.15)"
-            );
-            let inactive_style = format!(
-                "color: rgba({rgb}, 0.5); border-color: rgba({rgb}, 0.08); background: transparent"
-            );
-            view! {
-                <button
-                    class="px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border transition-all"
-                    style=move || if is_active.get() { active_style.clone() } else { inactive_style.clone() }
-                    on:click=move |_| set_current.set(label.to_string())
-                >
-                    {label}
-                </button>
-            }
-        })
-        .collect_view()
-}
 
 // ── Page component ──────────────────────────────────────────────────────────
 
@@ -305,7 +278,7 @@ pub fn DevicesPage() -> impl IntoView {
 
                         {move || filter_dropdown_open.get().then(|| view! {
                             <div class="fixed inset-0 z-20" on:click=move |_| set_filter_dropdown_open.set(false) />
-                            <div class="absolute top-full right-0 mt-1 z-30 w-[220px] max-h-[320px] overflow-y-auto
+                            <div class="absolute top-full right-0 mt-1 z-30 w-[240px] max-h-[360px] overflow-y-auto
                                        rounded-xl border border-edge-subtle bg-surface-overlay dropdown-glow
                                        py-1.5 animate-fade-in animate-glow-reveal scrollbar-dropdown">
                                 <div class="px-3 pt-1 pb-1.5">
@@ -453,7 +426,7 @@ fn DevicesLoadingSkeleton() -> impl IntoView {
                 let stagger = format!("animation-delay: {}ms", i * 60);
                 view! {
                     <div class="rounded-xl border border-edge-subtle/50 bg-surface-overlay/30 h-[140px] animate-pulse" style=stagger>
-                        <div class="px-3.5 py-3 space-y-3">
+                        <div class="px-4 py-3 space-y-3">
                             <div class="flex items-center gap-2.5">
                                 <div class="w-9 h-9 bg-surface-overlay/30 rounded-lg" />
                                 <div class="space-y-1.5 flex-1">
@@ -462,8 +435,8 @@ fn DevicesLoadingSkeleton() -> impl IntoView {
                                 </div>
                             </div>
                             <div class="flex gap-1.5">
-                                <div class="w-10 h-5 bg-surface-overlay/15 rounded" />
-                                <div class="w-10 h-5 bg-surface-overlay/15 rounded" />
+                                <div class="w-10 h-5 bg-surface-overlay/15 rounded-full" />
+                                <div class="w-10 h-5 bg-surface-overlay/15 rounded-full" />
                             </div>
                             <div class="flex justify-between items-center">
                                 <div class="h-2.5 w-16 bg-surface-overlay/15 rounded" />
