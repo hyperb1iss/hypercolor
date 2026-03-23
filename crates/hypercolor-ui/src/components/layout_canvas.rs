@@ -5,6 +5,7 @@ use leptos::prelude::*;
 
 use crate::app::WsContext;
 use crate::components::canvas_preview::CanvasPreview;
+use crate::compound_selection::{self, CompoundDepth};
 use crate::layout_geometry::{self, ResizeHandle};
 use crate::layout_utils;
 use crate::style_utils::device_accent_colors;
@@ -15,10 +16,12 @@ use hypercolor_types::spatial::{NormalizedPosition, SpatialLayout, ZoneShape};
 pub fn LayoutCanvas() -> impl IntoView {
     let editor = expect_context::<crate::components::layout_builder::LayoutEditorContext>();
     let layout = editor.layout;
-    let selected_zone_id = editor.selected_zone_id;
+    let selected_zone_ids = editor.selected_zone_ids;
+    let compound_depth = editor.compound_depth;
     let keep_aspect_ratio = editor.keep_aspect_ratio;
     let hidden_zones = editor.hidden_zones;
-    let set_selected_zone_id = editor.set_selected_zone_id;
+    let set_selected_zone_ids = editor.set_selected_zone_ids;
+    let set_compound_depth = editor.set_compound_depth;
     let set_layout = editor.set_layout;
     let set_is_dirty = editor.set_is_dirty;
 
@@ -185,19 +188,47 @@ pub fn LayoutCanvas() -> impl IntoView {
 
                 match interaction_state {
                     InteractionState::Drag(drag) => {
-                        let norm_x = (mouse_norm.x - drag.offset_x).clamp(0.0, 1.0);
-                        let norm_y = (mouse_norm.y - drag.offset_y).clamp(0.0, 1.0);
-                        let zone_id = drag.zone_id.clone();
-                        set_layout.update(|l| {
-                            if let Some(layout) = l {
-                                let desired_position = NormalizedPosition::new(norm_x, norm_y);
-                                let _ = layout_geometry::drag_zone_to_position(
-                                    layout,
-                                    &zone_id,
-                                    desired_position,
-                                );
-                            }
-                        });
+                        if drag.initial_positions.len() > 1 {
+                            // Compound drag: compute delta from primary zone's initial position
+                            let primary_initial = drag.initial_positions
+                                .iter()
+                                .find(|(id, _)| *id == drag.zone_id)
+                                .map(|(_, pos)| *pos)
+                                .unwrap_or(NormalizedPosition::new(0.5, 0.5));
+                            let desired_primary = NormalizedPosition::new(
+                                (mouse_norm.x - drag.offset_x).clamp(0.0, 1.0),
+                                (mouse_norm.y - drag.offset_y).clamp(0.0, 1.0),
+                            );
+                            let delta = NormalizedPosition::new(
+                                desired_primary.x - primary_initial.x,
+                                desired_primary.y - primary_initial.y,
+                            );
+                            let initial_positions = drag.initial_positions.clone();
+                            set_layout.update(|l| {
+                                if let Some(layout) = l {
+                                    let _ = layout_geometry::translate_zones(
+                                        layout,
+                                        &initial_positions,
+                                        delta,
+                                    );
+                                }
+                            });
+                        } else {
+                            // Single zone drag
+                            let norm_x = (mouse_norm.x - drag.offset_x).clamp(0.0, 1.0);
+                            let norm_y = (mouse_norm.y - drag.offset_y).clamp(0.0, 1.0);
+                            let zone_id = drag.zone_id.clone();
+                            set_layout.update(|l| {
+                                if let Some(layout) = l {
+                                    let desired_position = NormalizedPosition::new(norm_x, norm_y);
+                                    let _ = layout_geometry::drag_zone_to_position(
+                                        layout,
+                                        &zone_id,
+                                        desired_position,
+                                    );
+                                }
+                            });
+                        }
                     }
                     InteractionState::Resize(resize) => {
                         let zone_id = resize.zone_id.clone();
@@ -242,8 +273,33 @@ pub fn LayoutCanvas() -> impl IntoView {
                     node_ref=viewport_ref
                     style=move || viewport_style.get()
                     on:click=move |_| {
-                        set_selected_zone_id.set(None);
+                        set_selected_zone_ids.set(std::collections::HashSet::new());
+                        set_compound_depth.set(CompoundDepth::Root);
                     }
+                    on:keydown=move |ev| {
+                        if ev.key() == "Escape" {
+                            let depth = compound_depth.get_untracked();
+                            match depth {
+                                CompoundDepth::Slot { device_id, .. } => {
+                                    // Exit slot → back to device level, select device compound
+                                    set_compound_depth.set(CompoundDepth::Device { device_id: device_id.clone() });
+                                    layout.with_untracked(|l| {
+                                        if let Some(l) = l.as_ref() {
+                                            set_selected_zone_ids.set(compound_selection::device_compound_ids(l, &device_id));
+                                        }
+                                    });
+                                }
+                                CompoundDepth::Device { .. } => {
+                                    set_compound_depth.set(CompoundDepth::Root);
+                                    set_selected_zone_ids.set(std::collections::HashSet::new());
+                                }
+                                CompoundDepth::Root => {
+                                    set_selected_zone_ids.set(std::collections::HashSet::new());
+                                }
+                            }
+                        }
+                    }
+                    tabindex="0"
                 >
                     // Live effect canvas background
                     <div class="absolute inset-0 pointer-events-none">
@@ -269,6 +325,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                         let _ = base_z_index; // used below in style closure
                             let zid = zone_id.clone();
                             let zid_select = zone_id.clone();
+                            let zid_dblclick = zone_id.clone();
                             let zid_drag = zone_id.clone();
                             let zid_drag2 = zone_id.clone();
                             let zid_resize_nw = zone_id.clone();
@@ -325,7 +382,7 @@ pub fn LayoutCanvas() -> impl IntoView {
 
                             let is_selected = {
                                 let zid = zid.clone();
-                                Signal::derive(move || selected_zone_id.get().as_deref() == Some(&zid))
+                                Signal::derive(move || selected_zone_ids.with(|ids| ids.contains(&zid)))
                             };
 
                             let is_hidden = {
@@ -391,7 +448,44 @@ pub fn LayoutCanvas() -> impl IntoView {
                                     on:mousedown=move |ev| {
                                         ev.stop_propagation();
                                         ev.prevent_default();
-                                        set_selected_zone_id.set(Some(zid_select.clone()));
+
+                                        // Compound-aware selection
+                                        let depth = compound_depth.get_untracked();
+                                        let (ids, clicked_different_device) = layout.with_untracked(|l| {
+                                            let Some(l) = l.as_ref() else {
+                                                return (std::collections::HashSet::new(), false);
+                                            };
+                                            let ids = compound_selection::resolve_click(l, &zid_select, &depth);
+                                            // Check if clicked zone is from a different device than entered
+                                            let different = match &depth {
+                                                CompoundDepth::Device { device_id } | CompoundDepth::Slot { device_id, .. } => {
+                                                    l.zones.iter()
+                                                        .find(|z| z.id == zid_select)
+                                                        .is_some_and(|z| z.device_id != *device_id)
+                                                }
+                                                CompoundDepth::Root => false,
+                                            };
+                                            (ids, different)
+                                        });
+
+                                        // Reset depth if clicked outside entered compound
+                                        if clicked_different_device {
+                                            set_compound_depth.set(CompoundDepth::Root);
+                                        }
+
+                                        let is_shift = ev.shift_key();
+                                        if is_shift {
+                                            // Shift+click: toggle compound in/out of selection (no drag)
+                                            let mut current = selected_zone_ids.get_untracked();
+                                            for id in &ids {
+                                                if !current.remove(id) {
+                                                    current.insert(id.clone());
+                                                }
+                                            }
+                                            set_selected_zone_ids.set(current);
+                                            return; // Don't start drag on shift+click
+                                        }
+                                        set_selected_zone_ids.set(ids);
 
                                         let Some(viewport) = viewport_ref.try_get_untracked().flatten() else {
                                             return;
@@ -412,12 +506,71 @@ pub fn LayoutCanvas() -> impl IntoView {
                                             .and_then(|l| l.zones.iter().find(|z| z.id == zid_drag).map(|z| (z.position.x, z.position.y)));
 
                                         if let Some((zx, zy)) = zone_pos {
+                                            // Snapshot positions of all selected zones for compound drag
+                                            let initial_positions = layout.with_untracked(|l| {
+                                                let ids = selected_zone_ids.get_untracked();
+                                                l.as_ref()
+                                                    .map(|l| {
+                                                        l.zones
+                                                            .iter()
+                                                            .filter(|z| ids.contains(&z.id))
+                                                            .map(|z| (z.id.clone(), z.position))
+                                                            .collect::<Vec<_>>()
+                                                    })
+                                                    .unwrap_or_default()
+                                            });
                                             set_interaction.set(Some(InteractionState::Drag(DragState {
                                                 zone_id: zid_drag2.clone(),
                                                 offset_x: mouse_norm_x - zx,
                                                 offset_y: mouse_norm_y - zy,
+                                                initial_positions,
                                             })));
                                         }
+                                    }
+                                    on:dblclick=move |ev| {
+                                        ev.stop_propagation();
+                                        let depth = compound_depth.get_untracked();
+                                        layout.with_untracked(|l| {
+                                            let Some(l) = l.as_ref() else { return; };
+                                            let Some(zone) = l.zones.iter().find(|z| z.id == zid_dblclick) else { return; };
+                                            match &depth {
+                                                CompoundDepth::Root => {
+                                                    // Enter device
+                                                    let device_id = zone.device_id.clone();
+                                                    set_compound_depth.set(CompoundDepth::Device { device_id: device_id.clone() });
+                                                    // Select the clicked zone's slot compound or individual zone
+                                                    let inner_depth = CompoundDepth::Device { device_id };
+                                                    set_selected_zone_ids.set(compound_selection::resolve_click(l, &zid_dblclick, &inner_depth));
+                                                }
+                                                CompoundDepth::Device { device_id } => {
+                                                    if zone.device_id != *device_id {
+                                                        // Different device — enter that device instead
+                                                        let new_did = zone.device_id.clone();
+                                                        set_compound_depth.set(CompoundDepth::Device { device_id: new_did.clone() });
+                                                        let inner = CompoundDepth::Device { device_id: new_did };
+                                                        set_selected_zone_ids.set(compound_selection::resolve_click(l, &zid_dblclick, &inner));
+                                                    } else if let Some(slot_id) = zone.attachment.as_ref().map(|a| a.slot_id.clone()) {
+                                                        // Enter slot
+                                                        set_compound_depth.set(CompoundDepth::Slot {
+                                                            device_id: device_id.clone(),
+                                                            slot_id,
+                                                        });
+                                                        set_selected_zone_ids.set(std::collections::HashSet::from([zid_dblclick.clone()]));
+                                                    }
+                                                    // No attachment → already at individual level, no-op
+                                                }
+                                                CompoundDepth::Slot { device_id, .. } => {
+                                                    if zone.device_id != *device_id {
+                                                        // Different device — enter that device
+                                                        let new_did = zone.device_id.clone();
+                                                        set_compound_depth.set(CompoundDepth::Device { device_id: new_did.clone() });
+                                                        let inner = CompoundDepth::Device { device_id: new_did };
+                                                        set_selected_zone_ids.set(compound_selection::resolve_click(l, &zid_dblclick, &inner));
+                                                    }
+                                                    // Same device, same/different slot — already at deepest level
+                                                }
+                                            }
+                                        });
                                     }
                                     on:click=move |ev| {
                                         ev.stop_propagation();
@@ -534,7 +687,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                     ev.prevent_default();
                                                     let zone_id = zid_resize_nw.clone();
                                                     begin_resize(
-                                                        &viewport_ref, &layout, &set_selected_zone_id, &set_interaction,
+                                                        &viewport_ref, &layout, &set_selected_zone_ids, &set_interaction,
                                                         &zone_id, ResizeHandle::NorthWest, ev.client_x(), ev.client_y(),
                                                     );
                                                 }
@@ -547,7 +700,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                     ev.prevent_default();
                                                     let zone_id = zid_resize_ne.clone();
                                                     begin_resize(
-                                                        &viewport_ref, &layout, &set_selected_zone_id, &set_interaction,
+                                                        &viewport_ref, &layout, &set_selected_zone_ids, &set_interaction,
                                                         &zone_id, ResizeHandle::NorthEast, ev.client_x(), ev.client_y(),
                                                     );
                                                 }
@@ -560,7 +713,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                     ev.prevent_default();
                                                     let zone_id = zid_resize_sw.clone();
                                                     begin_resize(
-                                                        &viewport_ref, &layout, &set_selected_zone_id, &set_interaction,
+                                                        &viewport_ref, &layout, &set_selected_zone_ids, &set_interaction,
                                                         &zone_id, ResizeHandle::SouthWest, ev.client_x(), ev.client_y(),
                                                     );
                                                 }
@@ -573,7 +726,7 @@ pub fn LayoutCanvas() -> impl IntoView {
                                                     ev.prevent_default();
                                                     let zone_id = zid_resize_se.clone();
                                                     begin_resize(
-                                                        &viewport_ref, &layout, &set_selected_zone_id, &set_interaction,
+                                                        &viewport_ref, &layout, &set_selected_zone_ids, &set_interaction,
                                                         &zone_id, ResizeHandle::SouthEast, ev.client_x(), ev.client_y(),
                                                     );
                                                 }
@@ -611,6 +764,40 @@ pub fn LayoutCanvas() -> impl IntoView {
                         }).collect::<Vec<_>>()
                     }}
 
+                    // Compound bounding box outline — shown when multiple zones are selected
+                    {move || {
+                        let ids = selected_zone_ids.get();
+                        if ids.len() <= 1 {
+                            return None;
+                        }
+                        layout.with(|l| {
+                            let layout = l.as_ref()?;
+                            let bounds = layout_geometry::compound_bounding_box(layout, &ids)?;
+                            let depth = compound_depth.get();
+                            let entered = !matches!(depth, CompoundDepth::Root);
+
+                            let x_pct = (bounds.center.x - bounds.size.x * 0.5) * 100.0;
+                            let y_pct = (bounds.center.y - bounds.size.y * 0.5) * 100.0;
+                            let w_pct = bounds.size.x * 100.0;
+                            let h_pct = bounds.size.y * 100.0;
+
+                            let opacity = if entered { "0.2" } else { "1" };
+                            let style = format!(
+                                "left: {x_pct:.2}%; top: {y_pct:.2}%; width: {w_pct:.2}%; height: {h_pct:.2}%; \
+                                 opacity: {opacity}; \
+                                 border: 1.5px dashed rgba(128, 255, 234, 0.4); \
+                                 border-radius: 8px; \
+                                 box-shadow: 0 0 16px rgba(128, 255, 234, 0.08); \
+                                 pointer-events: none; \
+                                 transition: opacity 0.15s ease"
+                            );
+
+                            Some(view! {
+                                <div class="absolute" style=style />
+                            })
+                        })
+                    }}
+
                     // Empty canvas hint — shown over the live effect when no zones are placed
                     <Show when=move || !has_zones.get()>
                         <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -642,6 +829,8 @@ struct DragState {
     zone_id: String,
     offset_x: f32,
     offset_y: f32,
+    /// Snapshot of all selected zone positions at drag start for compound drag.
+    initial_positions: Vec<(String, NormalizedPosition)>,
 }
 
 #[derive(Clone, Debug)]
@@ -664,7 +853,7 @@ enum InteractionState {
 fn begin_resize(
     viewport_ref: &NodeRef<leptos::html::Div>,
     layout: &Signal<Option<SpatialLayout>>,
-    set_selected_zone_id: &WriteSignal<Option<String>>,
+    set_selected_zone_ids: &WriteSignal<std::collections::HashSet<String>>,
     set_interaction: &WriteSignal<Option<InteractionState>>,
     zone_id: &str,
     handle: ResizeHandle,
@@ -699,7 +888,7 @@ fn begin_resize(
         return;
     };
 
-    set_selected_zone_id.set(Some(zone_id.to_owned()));
+    set_selected_zone_ids.set(std::collections::HashSet::from([zone_id.to_owned()]));
     set_interaction.set(Some(InteractionState::Resize(ResizeState {
         zone_id: zone_id.to_owned(),
         handle,

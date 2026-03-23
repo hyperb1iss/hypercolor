@@ -567,3 +567,136 @@ fn locked_resize_can_shrink_long_strip_below_old_aspect_floor() {
     assert!((size.x - 0.05).abs() < 0.001);
     assert!((size.y - (0.05 / 60.0)).abs() < 0.0002);
 }
+
+// ── Compound bounding box ────────────────────────────────────────────────
+
+fn plain_zone(id: &str, device_id: &str, x: f32, y: f32, w: f32, h: f32) -> DeviceZone {
+    DeviceZone {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        device_id: device_id.to_owned(),
+        zone_name: None,
+        position: NormalizedPosition::new(x, y),
+        size: NormalizedPosition::new(w, h),
+        rotation: 0.0,
+        scale: 1.0,
+        display_order: 0,
+        orientation: None,
+        topology: LedTopology::Strip {
+            count: 10,
+            direction: StripDirection::LeftToRight,
+        },
+        led_positions: Vec::new(),
+        led_mapping: None,
+        sampling_mode: None,
+        edge_behavior: None,
+        shape: None,
+        shape_preset: None,
+        attachment: None,
+    }
+}
+
+fn simple_layout(zones: Vec<DeviceZone>) -> SpatialLayout {
+    SpatialLayout {
+        id: "test".to_owned(),
+        name: "Test".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones,
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    }
+}
+
+#[test]
+fn compound_bounding_box_two_zones() {
+    // Zone A: center (0.3, 0.4), size (0.2, 0.1) -> spans x [0.2, 0.4], y [0.35, 0.45]
+    // Zone B: center (0.7, 0.6), size (0.2, 0.1) -> spans x [0.6, 0.8], y [0.55, 0.65]
+    // Combined AABB: x [0.2, 0.8], y [0.35, 0.65]
+    // Expected center: (0.5, 0.5), size: (0.6, 0.3)
+    let layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.3, 0.4, 0.2, 0.1),
+        plain_zone("b", "dev", 0.7, 0.6, 0.2, 0.1),
+    ]);
+
+    let ids: std::collections::HashSet<String> =
+        ["a".to_owned(), "b".to_owned()].into_iter().collect();
+    let bounds = layout_geometry::compound_bounding_box(&layout, &ids)
+        .expect("should produce bounds for two zones");
+
+    assert!((bounds.center.x - 0.5).abs() < 0.001);
+    assert!((bounds.center.y - 0.5).abs() < 0.001);
+    assert!((bounds.size.x - 0.6).abs() < 0.001);
+    assert!((bounds.size.y - 0.3).abs() < 0.001);
+}
+
+#[test]
+fn compound_bounding_box_single_zone() {
+    let layout = simple_layout(vec![plain_zone("solo", "dev", 0.5, 0.5, 0.2, 0.1)]);
+
+    let ids: std::collections::HashSet<String> = ["solo".to_owned()].into_iter().collect();
+    let bounds = layout_geometry::compound_bounding_box(&layout, &ids)
+        .expect("should produce bounds for single zone");
+
+    assert!((bounds.center.x - 0.5).abs() < 0.001);
+    assert!((bounds.center.y - 0.5).abs() < 0.001);
+    assert!((bounds.size.x - 0.2).abs() < 0.001);
+    assert!((bounds.size.y - 0.1).abs() < 0.001);
+}
+
+#[test]
+fn compound_bounding_box_empty_returns_none() {
+    let layout = simple_layout(vec![plain_zone("a", "dev", 0.5, 0.5, 0.2, 0.1)]);
+
+    let ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    assert!(layout_geometry::compound_bounding_box(&layout, &ids).is_none());
+}
+
+// ── Translate zones ──────────────────────────────────────────────────────
+
+#[test]
+fn translate_zones_preserves_relative_positions() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.3, 0.3, 0.1, 0.1),
+        plain_zone("b", "dev", 0.5, 0.3, 0.1, 0.1),
+    ]);
+
+    let initial_positions = vec![
+        ("a".to_owned(), NormalizedPosition::new(0.3, 0.3)),
+        ("b".to_owned(), NormalizedPosition::new(0.5, 0.3)),
+    ];
+    let delta = NormalizedPosition::new(0.1, 0.2);
+
+    layout_geometry::translate_zones(&mut layout, &initial_positions, delta);
+
+    let a = layout.zones.iter().find(|z| z.id == "a").expect("zone a");
+    let b = layout.zones.iter().find(|z| z.id == "b").expect("zone b");
+
+    // Relative offset between a and b should be preserved (0.2 horizontal, 0.0 vertical)
+    assert!((b.position.x - a.position.x - 0.2).abs() < 0.001);
+    assert!((b.position.y - a.position.y).abs() < 0.001);
+}
+
+#[test]
+fn translate_zones_clamps_to_canvas() {
+    let mut layout = simple_layout(vec![
+        plain_zone("a", "dev", 0.5, 0.5, 0.1, 0.1),
+    ]);
+
+    let initial_positions = vec![
+        ("a".to_owned(), NormalizedPosition::new(0.5, 0.5)),
+    ];
+    // Large delta that would push past [0, 1]
+    let delta = NormalizedPosition::new(5.0, 5.0);
+
+    layout_geometry::translate_zones(&mut layout, &initial_positions, delta);
+
+    let a = &layout.zones[0];
+    assert!(a.position.x <= 1.0);
+    assert!(a.position.y <= 1.0);
+    assert!(a.position.x >= 0.0);
+    assert!(a.position.y >= 0.0);
+}

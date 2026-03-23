@@ -1497,3 +1497,69 @@ fn normalize_rotation(rotation: f32) -> f32 {
 fn normalize_rotation_delta(delta: f32) -> f32 {
     (delta + PI).rem_euclid(TAU) - PI
 }
+
+// ── Compound geometry ────────────────────────────────────────────────────
+
+/// Axis-aligned bounding box enclosing a set of zones.
+#[derive(Debug, Clone)]
+pub(crate) struct CompoundBounds {
+    pub center: NormalizedPosition,
+    pub size: NormalizedPosition,
+}
+
+/// Compute the axis-aligned bounding box of all zones in `zone_ids`.
+pub(crate) fn compound_bounding_box(
+    layout: &SpatialLayout,
+    zone_ids: &std::collections::HashSet<String>,
+) -> Option<CompoundBounds> {
+    let mut min_x = f32::MAX;
+    let mut min_y = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut max_y = f32::MIN;
+    let mut found = false;
+
+    for zone in &layout.zones {
+        if !zone_ids.contains(&zone.id) {
+            continue;
+        }
+        found = true;
+        let half_w = zone.size.x * 0.5;
+        let half_h = zone.size.y * 0.5;
+        min_x = min_x.min(zone.position.x - half_w);
+        min_y = min_y.min(zone.position.y - half_h);
+        max_x = max_x.max(zone.position.x + half_w);
+        max_y = max_y.max(zone.position.y + half_h);
+    }
+
+    if !found {
+        return None;
+    }
+
+    Some(CompoundBounds {
+        center: NormalizedPosition::new((min_x + max_x) * 0.5, (min_y + max_y) * 0.5),
+        size: NormalizedPosition::new(max_x - min_x, max_y - min_y),
+    })
+}
+
+/// Translate all zones by a delta from their initial positions, clamping each to canvas bounds.
+pub(crate) fn translate_zones(
+    layout: &mut SpatialLayout,
+    initial_positions: &[(String, NormalizedPosition)],
+    delta: NormalizedPosition,
+) -> bool {
+    let mut changed = false;
+    for (id, initial_pos) in initial_positions {
+        if let Some(zone) = layout.zones.iter_mut().find(|z| z.id == *id) {
+            let desired = NormalizedPosition::new(
+                (initial_pos.x + delta.x).clamp(0.0, 1.0),
+                (initial_pos.y + delta.y).clamp(0.0, 1.0),
+            );
+            let clamped = clamp_zone_center(desired, zone.size);
+            if zone.position != clamped {
+                zone.position = clamped;
+                changed = true;
+            }
+        }
+    }
+    changed
+}

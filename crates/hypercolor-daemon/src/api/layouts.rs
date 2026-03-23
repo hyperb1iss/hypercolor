@@ -450,4 +450,3 @@ fn validate_canvas_dimensions(width: u32, height: u32) -> Result<(), String> {
     }
     Ok(())
 }
-

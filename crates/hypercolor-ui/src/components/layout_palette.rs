@@ -6,6 +6,7 @@ use leptos_icons::Icon;
 use crate::api::{self, ZoneTopologySummary};
 use crate::app::DevicesContext;
 use crate::channel_names;
+use crate::compound_selection::{self, CompoundDepth};
 use crate::icons::*;
 use crate::layout_utils;
 use crate::style_utils::{device_accent_colors, uuid_v4_hex};
@@ -16,12 +17,14 @@ pub fn LayoutPalette() -> impl IntoView {
     let devices_ctx = expect_context::<DevicesContext>();
     let ctx = expect_context::<crate::components::layout_builder::LayoutEditorContext>();
     let layout = ctx.layout;
-    let selected_zone_id = ctx.selected_zone_id;
+    let selected_zone_ids = ctx.selected_zone_ids;
     let hidden_zones = ctx.hidden_zones;
     let set_layout = ctx.set_layout;
-    let set_selected_zone_id = ctx.set_selected_zone_id;
+    let set_selected_zone_ids = ctx.set_selected_zone_ids;
     let set_is_dirty = ctx.set_is_dirty;
     let set_hidden_zones = ctx.set_hidden_zones;
+    let compound_depth = ctx.compound_depth;
+    let set_compound_depth = ctx.set_compound_depth;
     let removed_zone_cache = ctx.removed_zone_cache;
     let set_removed_zone_cache = ctx.set_removed_zone_cache;
 
@@ -143,14 +146,19 @@ pub fn LayoutPalette() -> impl IntoView {
                                         let device_is_active = {
                                             let did = device_id.clone();
                                             Signal::derive(move || {
-                                                let Some(sel_zone) = selected_zone_id.get() else {
-                                                    return false;
-                                                };
-                                                layout.with(|current| {
-                                                    current
-                                                        .as_ref()
-                                                        .and_then(|l| l.zones.iter().find(|z| z.id == sel_zone))
-                                                        .is_some_and(|z| z.device_id == did)
+                                                selected_zone_ids.with(|ids| {
+                                                    if ids.is_empty() {
+                                                        return false;
+                                                    }
+                                                    layout.with(|current| {
+                                                        current
+                                                            .as_ref()
+                                                            .is_some_and(|l| {
+                                                                l.zones.iter().any(|z| {
+                                                                    z.device_id == did && ids.contains(&z.id)
+                                                                })
+                                                            })
+                                                    })
                                                 })
                                             })
                                         };
@@ -261,10 +269,16 @@ pub fn LayoutPalette() -> impl IntoView {
                                                            hover:bg-white/[0.03]"
                                                     on:click=move |_| {
                                                         if has_multi_zones {
-                                                            // Select first zone in layout (if any)
-                                                            if let Some(zid) = first_zone_id_in_layout.get_untracked() {
-                                                                set_selected_zone_id.set(Some(zid));
-                                                            }
+                                                            // Select all zones from this device as a compound
+                                                            set_compound_depth.set(CompoundDepth::Root);
+                                                            layout.with_untracked(|l| {
+                                                                if let Some(l) = l.as_ref() {
+                                                                    let ids = compound_selection::device_compound_ids(l, &palette_device_id);
+                                                                    if !ids.is_empty() {
+                                                                        set_selected_zone_ids.set(ids);
+                                                                    }
+                                                                }
+                                                            });
                                                             // Toggle collapse + fetch attachments on expand
                                                             let was_collapsed = collapsed_devices.get_untracked().contains(&collapse_key2);
                                                             set_collapsed_devices.update(
@@ -287,10 +301,16 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                 fetch_attachments(collapse_key.clone());
                                                             }
                                                         } else {
-                                                            // Select zone on canvas if it's in layout
-                                                            if let Some(zid) = first_zone_id_in_layout.get_untracked() {
-                                                                set_selected_zone_id.set(Some(zid));
-                                                            }
+                                                            // Single-zone device: select as compound
+                                                            set_compound_depth.set(CompoundDepth::Root);
+                                                            layout.with_untracked(|l| {
+                                                                if let Some(l) = l.as_ref() {
+                                                                    let ids = compound_selection::device_compound_ids(l, &palette_device_id);
+                                                                    if !ids.is_empty() {
+                                                                        set_selected_zone_ids.set(ids);
+                                                                    }
+                                                                }
+                                                            });
                                                         }
                                                     }
                                                 >
@@ -426,7 +446,7 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                                     layout_utils::remove_all_device_zones(
                                                                                         &did,
                                                                                         &set_layout,
-                                                                                        &set_selected_zone_id,
+                                                                                        &set_selected_zone_ids,
                                                                                         &set_is_dirty,
                                                                                         &set_removed_zone_cache,
                                                                                     );
@@ -453,7 +473,7 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                                         fallback_leds,
                                                                                         &layout,
                                                                                         &set_layout,
-                                                                                        &set_selected_zone_id,
+                                                                                        &set_selected_zone_ids,
                                                                                         &set_is_dirty,
                                                                                         &removed_zone_cache,
                                                                                         &set_removed_zone_cache,
@@ -569,7 +589,7 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                                         &did,
                                                                                         zone.as_ref().map(|z| z.name.as_str()),
                                                                                         &set_layout,
-                                                                                        &set_selected_zone_id,
+                                                                                        &set_selected_zone_ids,
                                                                                         &set_is_dirty,
                                                                                         &set_removed_zone_cache,
                                                                                     );
@@ -616,7 +636,7 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                                             layout.zones.push(new_zone);
                                                                                         }
                                                                                     });
-                                                                                    set_selected_zone_id.set(Some(zone_id));
+                                                                                    set_selected_zone_ids.set(std::collections::HashSet::from([zone_id]));
                                                                                     set_is_dirty.set(true);
                                                                                 }
                                                                             >
@@ -690,17 +710,21 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                             let did = device_id.clone();
                                                                             let zn = zone_name_key.clone();
                                                                             Signal::derive(move || {
-                                                                                let Some(sel) = selected_zone_id.get() else {
-                                                                                    return false;
-                                                                                };
-                                                                                layout.with(|current| {
-                                                                                    current.as_ref().is_some_and(|l| {
-                                                                                        layout_utils::selected_zone_matches_device_slot(
-                                                                                            l,
-                                                                                            &sel,
-                                                                                            &did,
-                                                                                            zn.as_deref(),
-                                                                                        )
+                                                                                selected_zone_ids.with(|ids| {
+                                                                                    if ids.is_empty() {
+                                                                                        return false;
+                                                                                    }
+                                                                                    layout.with(|current| {
+                                                                                        current.as_ref().is_some_and(|l| {
+                                                                                            ids.iter().any(|sel| {
+                                                                                                layout_utils::selected_zone_matches_device_slot(
+                                                                                                    l,
+                                                                                                    sel,
+                                                                                                    &did,
+                                                                                                    zn.as_deref(),
+                                                                                                )
+                                                                                            })
+                                                                                        })
                                                                                     })
                                                                                 })
                                                                             })
@@ -785,7 +809,13 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                                 }
                                                                                 on:click=move |_| {
                                                                                     if let Some(zid) = zone_id_for_select.get_untracked() {
-                                                                                        set_selected_zone_id.set(Some(zid));
+                                                                                        let depth = compound_depth.get_untracked();
+                                                                                        layout.with_untracked(|l| {
+                                                                                            if let Some(l) = l.as_ref() {
+                                                                                                let ids = compound_selection::resolve_click(l, &zid, &depth);
+                                                                                                set_selected_zone_ids.set(ids);
+                                                                                            }
+                                                                                        });
                                                                                     }
                                                                                 }
                                                                             >
@@ -910,7 +940,7 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                                                         &did,
                                                                                                         zn.as_deref(),
                                                                                                         &set_layout,
-                                                                                                        &set_selected_zone_id,
+                                                                                                        &set_selected_zone_ids,
                                                                                                         &set_is_dirty,
                                                                                                         &set_removed_zone_cache,
                                                                                                     );
@@ -956,7 +986,7 @@ pub fn LayoutPalette() -> impl IntoView {
                                                                                                             layout.zones.push(new_zone);
                                                                                                         }
                                                                                                     });
-                                                                                                    set_selected_zone_id.set(Some(zone_id));
+                                                                                                    set_selected_zone_ids.set(std::collections::HashSet::from([zone_id]));
                                                                                                     set_is_dirty.set(true);
                                                                                                 }
                                                                                             >
@@ -1144,7 +1174,7 @@ pub fn LayoutPalette() -> impl IntoView {
                                                             layout.zones.retain(|z| z.device_id != did);
                                                         }
                                                     });
-                                                    set_selected_zone_id.set(None);
+                                                    set_selected_zone_ids.set(std::collections::HashSet::new());
                                                     set_is_dirty.set(true);
                                                 }
                                             >

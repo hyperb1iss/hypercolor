@@ -95,7 +95,7 @@ pub fn remove_device_zone(
     device_id: &str,
     zone_name: Option<&str>,
     set_layout: &WriteSignal<Option<SpatialLayout>>,
-    set_selected_zone_id: &WriteSignal<Option<String>>,
+    set_selected_zone_ids: &WriteSignal<HashSet<String>>,
     set_is_dirty: &WriteSignal<bool>,
     set_removed_zone_cache: &WriteSignal<ZoneCache>,
 ) {
@@ -114,7 +114,7 @@ pub fn remove_device_zone(
             }
         }
     });
-    set_selected_zone_id.set(None);
+    set_selected_zone_ids.set(HashSet::new());
     set_is_dirty.set(true);
 }
 
@@ -123,7 +123,7 @@ pub fn remove_device_zone(
 pub fn remove_all_device_zones(
     device_id: &str,
     set_layout: &WriteSignal<Option<SpatialLayout>>,
-    set_selected_zone_id: &WriteSignal<Option<String>>,
+    set_selected_zone_ids: &WriteSignal<HashSet<String>>,
     set_is_dirty: &WriteSignal<bool>,
     set_removed_zone_cache: &WriteSignal<ZoneCache>,
 ) {
@@ -138,7 +138,7 @@ pub fn remove_all_device_zones(
             layout.zones.retain(|z| z.device_id != device_id);
         }
     });
-    set_selected_zone_id.set(None);
+    set_selected_zone_ids.set(HashSet::new());
     set_is_dirty.set(true);
 }
 
@@ -151,7 +151,7 @@ pub fn add_all_device_zones(
     total_leds: usize,
     layout: &Signal<Option<SpatialLayout>>,
     set_layout: &WriteSignal<Option<SpatialLayout>>,
-    set_selected_zone_id: &WriteSignal<Option<String>>,
+    set_selected_zone_ids: &WriteSignal<HashSet<String>>,
     set_is_dirty: &WriteSignal<bool>,
     removed_zone_cache: &Signal<ZoneCache>,
     set_removed_zone_cache: &WriteSignal<ZoneCache>,
@@ -192,7 +192,7 @@ pub fn add_all_device_zones(
             });
 
             if let Some(zone_id) = selected_zone_id {
-                set_selected_zone_id.set(Some(zone_id));
+                set_selected_zone_ids.set(HashSet::from([zone_id]));
             }
             set_is_dirty.set(true);
             return;
@@ -243,7 +243,7 @@ pub fn add_all_device_zones(
     });
 
     if let Some(id) = first_new_id {
-        set_selected_zone_id.set(Some(id));
+        set_selected_zone_ids.set(HashSet::from([id]));
     }
     set_is_dirty.set(true);
 }

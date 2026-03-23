@@ -38,7 +38,6 @@ fn sample_layout() -> SpatialLayout {
             attachment: None,
         }],
 
-
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,
         spaces: None,
@@ -85,7 +84,6 @@ fn ensure_default_layout_inserts_missing_default_entry_once() {
         canvas_width: 320,
         canvas_height: 200,
         zones: vec![],
-
 
         default_sampling_mode: SamplingMode::Bilinear,
         default_edge_behavior: EdgeBehavior::Clamp,

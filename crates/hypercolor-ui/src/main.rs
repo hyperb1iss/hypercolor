@@ -2,6 +2,7 @@ mod api;
 mod app;
 mod channel_names;
 mod components;
+mod compound_selection;
 mod icons;
 mod layout_geometry;
 mod layout_utils;

@@ -1182,7 +1182,7 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
                 name: "PrismRGB Prism S: ATX Strimer".to_owned(),
                 device_id: "usb:prism-s:test".to_owned(),
                 zone_name: Some("ATX Strimer".to_owned()),
-    
+
                 position: NormalizedPosition::new(0.5, 0.5),
                 size: NormalizedPosition::new(0.25, 0.1),
                 rotation: 0.0,
@@ -1208,7 +1208,7 @@ fn reconcile_auto_layout_zones_for_device_removes_stale_auto_zones() {
                 name: "PrismRGB Prism S: GPU Strimer".to_owned(),
                 device_id: "usb:prism-s:test".to_owned(),
                 zone_name: Some("GPU Strimer".to_owned()),
-    
+
                 position: NormalizedPosition::new(0.5, 0.5),
                 size: NormalizedPosition::new(0.25, 0.1),
                 rotation: 0.0,

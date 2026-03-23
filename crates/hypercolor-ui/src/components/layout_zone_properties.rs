@@ -12,11 +12,11 @@ use crate::layout_geometry::{self, SizeAxis};
 pub fn LayoutZoneProperties() -> impl IntoView {
     let editor = expect_context::<crate::components::layout_builder::LayoutEditorContext>();
     let layout = editor.layout;
-    let selected_zone_id = editor.selected_zone_id;
+    let selected_zone_ids = editor.selected_zone_ids;
     let keep_aspect_ratio = editor.keep_aspect_ratio;
     let set_layout = editor.set_layout;
     let set_keep_aspect_ratio = editor.set_keep_aspect_ratio;
-    let set_selected_zone_id = editor.set_selected_zone_id;
+    let set_selected_zone_ids = editor.set_selected_zone_ids;
     let set_is_dirty = editor.set_is_dirty;
     // Canvas pixel dimensions for display conversion
     let canvas_dims = Signal::derive(move || {
@@ -28,16 +28,20 @@ pub fn LayoutZoneProperties() -> impl IntoView {
         })
     });
 
-    // Derive selected zone snapshot for display
+    // Derive selected zone snapshot for display (single-selection only for Phase 1)
     let zone_snapshot = Signal::derive(move || {
-        let id = selected_zone_id.get()?;
+        let ids = selected_zone_ids.get();
+        if ids.len() != 1 {
+            return None;
+        }
+        let id = ids.iter().next()?;
         layout.with(|current| {
             let l = current.as_ref()?;
             let suppressed = crate::layout_utils::suppressed_attachment_source_zone_ids(l);
-            if suppressed.contains(&id) {
+            if suppressed.contains(id) {
                 return None;
             }
-            l.zones.iter().find(|z| z.id == id).cloned()
+            l.zones.iter().find(|z| z.id == *id).cloned()
         })
     });
 
@@ -90,6 +94,20 @@ pub fn LayoutZoneProperties() -> impl IntoView {
     view! {
         <div class="h-full px-5 py-2.5 overflow-y-auto">
             {move || {
+                let ids = selected_zone_ids.get();
+                if ids.len() > 1 {
+                    let count = ids.len();
+                    return view! {
+                        <div class="h-full flex flex-col items-center justify-center gap-2.5">
+                            <span class="text-xs text-fg-tertiary/50 font-mono">
+                                {format!("{count} zones selected")}
+                            </span>
+                            <span class="text-[10px] text-fg-tertiary/30">
+                                "Double-click canvas to enter compound"
+                            </span>
+                        </div>
+                    }.into_any();
+                }
                 let Some(zone) = zone_snapshot.get() else {
                     return view! {
                         <div class="flex items-center justify-center h-full gap-2.5">
@@ -425,7 +443,7 @@ pub fn LayoutZoneProperties() -> impl IntoView {
                                                     editor.set_removed_zone_cache.update(|c| { c.insert(key, removed); });
                                                 }
                                         });
-                                        set_selected_zone_id.set(None);
+                                        set_selected_zone_ids.set(std::collections::HashSet::new());
                                         set_is_dirty.set(true);
                                     }
                                 >

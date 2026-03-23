@@ -91,11 +91,13 @@ fn replacement_layout_name(layouts: &[api::LayoutSummary]) -> String {
 #[derive(Clone, Copy)]
 pub(crate) struct LayoutEditorContext {
     pub layout: Signal<Option<SpatialLayout>>,
-    pub selected_zone_id: Signal<Option<String>>,
+    pub selected_zone_ids: Signal<std::collections::HashSet<String>>,
     pub hidden_zones: Signal<std::collections::HashSet<String>>,
     pub keep_aspect_ratio: Signal<bool>,
     pub set_layout: WriteSignal<Option<SpatialLayout>>,
-    pub set_selected_zone_id: WriteSignal<Option<String>>,
+    pub set_selected_zone_ids: WriteSignal<std::collections::HashSet<String>>,
+    pub compound_depth: Signal<crate::compound_selection::CompoundDepth>,
+    pub set_compound_depth: WriteSignal<crate::compound_selection::CompoundDepth>,
     pub set_is_dirty: WriteSignal<bool>,
     pub set_hidden_zones: WriteSignal<std::collections::HashSet<String>>,
     pub set_keep_aspect_ratio: WriteSignal<bool>,
@@ -111,7 +113,8 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (selected_layout_id, set_selected_layout_id) = signal(None::<String>);
     let (layout, set_layout) = signal(None::<SpatialLayout>);
     let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
-    let (selected_zone_id, set_selected_zone_id) = signal(None::<String>);
+    let (selected_zone_ids, set_selected_zone_ids) = signal(std::collections::HashSet::<String>::new());
+    let (compound_depth, set_compound_depth) = signal(crate::compound_selection::CompoundDepth::Root);
     let (creating, set_creating) = signal(false);
     let (new_layout_name, set_new_layout_name) = signal(String::new());
     let (renaming, set_renaming) = signal(false);
@@ -128,21 +131,24 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (_dirty_marker, set_is_dirty) = signal(false);
 
     let layout_signal = Signal::derive(move || layout.get());
-    let zone_id_signal = Signal::derive(move || selected_zone_id.get());
+    let zone_ids_signal = Signal::derive(move || selected_zone_ids.get());
+    let compound_depth_signal = Signal::derive(move || compound_depth.get());
     let keep_aspect_ratio_signal = Signal::derive(move || keep_aspect_ratio.get());
     let hidden_zones_signal = Signal::derive(move || hidden_zones.get());
     let has_layout = Signal::derive(move || layout.with(|current| current.is_some()));
 
     provide_context(LayoutEditorContext {
         layout: layout_signal,
-        selected_zone_id: zone_id_signal,
+        selected_zone_ids: zone_ids_signal,
         hidden_zones: hidden_zones_signal,
         keep_aspect_ratio: keep_aspect_ratio_signal,
         set_layout,
-        set_selected_zone_id,
+        set_selected_zone_ids,
         set_is_dirty,
         set_hidden_zones,
         set_keep_aspect_ratio,
+        compound_depth: compound_depth_signal,
+        set_compound_depth,
         removed_zone_cache: removed_zone_cache.into(),
         set_removed_zone_cache,
     });
@@ -310,7 +316,8 @@ pub fn LayoutBuilder() -> impl IntoView {
             set_layout.set(None);
             set_saved_layout.set(None);
         }
-        set_selected_zone_id.set(None);
+        set_selected_zone_ids.set(std::collections::HashSet::new());
+        set_compound_depth.set(crate::compound_selection::CompoundDepth::Root);
     });
 
     // Push live preview to spatial engine whenever the layout changes (debounced).
