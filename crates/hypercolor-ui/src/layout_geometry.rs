@@ -307,9 +307,7 @@ pub(crate) fn seeded_attachment_layout(
     display_order_start: i32,
 ) -> SeededAttachmentLayout {
     if suggested_zones.is_empty() {
-        return SeededAttachmentLayout {
-            zones: Vec::new(),
-        };
+        return SeededAttachmentLayout { zones: Vec::new() };
     }
 
     let mut slots = suggested_zones

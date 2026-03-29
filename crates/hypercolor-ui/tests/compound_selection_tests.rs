@@ -5,10 +5,7 @@ mod compound_selection;
 
 use std::collections::HashSet;
 
-use compound_selection::{
-    device_compound_ids, device_has_slot_compounds, resolve_click, slot_compound_ids,
-    CompoundDepth,
-};
+use compound_selection::{CompoundDepth, device_compound_ids, resolve_click, slot_compound_ids};
 use hypercolor_types::spatial::{
     DeviceZone, LedTopology, NormalizedPosition, SpatialLayout, StripDirection, ZoneAttachment,
 };
@@ -96,10 +93,7 @@ fn slot_compound_ids_returns_attachment_zones_for_slot() {
     ]);
 
     let ids = slot_compound_ids(&layout, "controller", "channel-1");
-    assert_eq!(
-        ids,
-        HashSet::from(["fan-0".to_owned(), "fan-1".to_owned()])
-    );
+    assert_eq!(ids, HashSet::from(["fan-0".to_owned(), "fan-1".to_owned()]));
 }
 
 #[test]
@@ -173,26 +167,4 @@ fn resolve_click_at_slot_depth_returns_single_zone() {
     };
     let selected = resolve_click(&layout, "fan-0", &depth);
     assert_eq!(selected, HashSet::from(["fan-0".to_owned()]));
-}
-
-// ── device_has_slot_compounds ────────────────────────────────────────────
-
-#[test]
-fn device_has_slot_compounds_true_for_attachment_device() {
-    let layout = test_layout(vec![
-        test_zone("fan-0", "ctrl", Some(("ch1", 0))),
-        test_zone("plain", "ctrl", None),
-    ]);
-
-    assert!(device_has_slot_compounds(&layout, "ctrl"));
-}
-
-#[test]
-fn device_has_slot_compounds_false_for_plain_device() {
-    let layout = test_layout(vec![
-        test_zone("z1", "keyboard", None),
-        test_zone("z2", "keyboard", None),
-    ]);
-
-    assert!(!device_has_slot_compounds(&layout, "keyboard"));
 }

@@ -113,8 +113,10 @@ pub fn LayoutBuilder() -> impl IntoView {
     let (selected_layout_id, set_selected_layout_id) = signal(None::<String>);
     let (layout, set_layout) = signal(None::<SpatialLayout>);
     let (saved_layout, set_saved_layout) = signal(None::<SpatialLayout>);
-    let (selected_zone_ids, set_selected_zone_ids) = signal(std::collections::HashSet::<String>::new());
-    let (compound_depth, set_compound_depth) = signal(crate::compound_selection::CompoundDepth::Root);
+    let (selected_zone_ids, set_selected_zone_ids) =
+        signal(std::collections::HashSet::<String>::new());
+    let (compound_depth, set_compound_depth) =
+        signal(crate::compound_selection::CompoundDepth::Root);
     let (creating, set_creating) = signal(false);
     let (new_layout_name, set_new_layout_name) = signal(String::new());
     let (renaming, set_renaming) = signal(false);
@@ -324,9 +326,7 @@ pub fn LayoutBuilder() -> impl IntoView {
     Effect::new(
         move |prev_snapshot: Option<Option<Vec<hypercolor_types::spatial::DeviceZone>>>| {
             let current = layout.get();
-            let current_snapshot = current
-                .as_ref()
-                .map(|current| current.zones.clone());
+            let current_snapshot = current.as_ref().map(|current| current.zones.clone());
 
             // Only push preview if spatial data actually changed (avoid initial no-op).
             if current_snapshot != prev_snapshot.flatten()

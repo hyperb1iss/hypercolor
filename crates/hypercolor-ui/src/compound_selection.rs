@@ -41,10 +41,7 @@ pub(crate) fn slot_compound_ids(
         .zones
         .iter()
         .filter(|z| {
-            z.device_id == device_id
-                && z.attachment
-                    .as_ref()
-                    .is_some_and(|a| a.slot_id == slot_id)
+            z.device_id == device_id && z.attachment.as_ref().is_some_and(|a| a.slot_id == slot_id)
         })
         .map(|z| z.id.clone())
         .collect()
@@ -105,30 +102,4 @@ pub(crate) fn resolve_click(
             set
         }
     }
-}
-
-/// Whether a device has any attachment zones that form slot sub-compounds.
-pub(crate) fn device_has_slot_compounds(layout: &SpatialLayout, device_id: &str) -> bool {
-    layout
-        .zones
-        .iter()
-        .any(|z| z.device_id == device_id && z.attachment.is_some())
-}
-
-/// Get the device_id for a zone.
-pub(crate) fn device_id_for_zone(layout: &SpatialLayout, zone_id: &str) -> Option<String> {
-    layout
-        .zones
-        .iter()
-        .find(|z| z.id == zone_id)
-        .map(|z| z.device_id.clone())
-}
-
-/// Get the attachment slot_id for a zone, if it has one.
-pub(crate) fn slot_id_for_zone(layout: &SpatialLayout, zone_id: &str) -> Option<String> {
-    layout
-        .zones
-        .iter()
-        .find(|z| z.id == zone_id)
-        .and_then(|z| z.attachment.as_ref().map(|a| a.slot_id.clone()))
 }

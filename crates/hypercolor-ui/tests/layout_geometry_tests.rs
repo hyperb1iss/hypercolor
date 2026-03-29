@@ -232,7 +232,6 @@ fn seeded_push2_layout_creates_device_footprint() {
     assert!(display.size.x > pads.size.x);
 }
 
-
 #[test]
 fn set_zone_rotation_updates_single_zone_without_moving_it() {
     let mut layout = SpatialLayout {
@@ -682,13 +681,9 @@ fn translate_zones_preserves_relative_positions() {
 
 #[test]
 fn translate_zones_clamps_to_canvas() {
-    let mut layout = simple_layout(vec![
-        plain_zone("a", "dev", 0.5, 0.5, 0.1, 0.1),
-    ]);
+    let mut layout = simple_layout(vec![plain_zone("a", "dev", 0.5, 0.5, 0.1, 0.1)]);
 
-    let initial_positions = vec![
-        ("a".to_owned(), NormalizedPosition::new(0.5, 0.5)),
-    ];
+    let initial_positions = vec![("a".to_owned(), NormalizedPosition::new(0.5, 0.5))];
     // Large delta that would push past [0, 1]
     let delta = NormalizedPosition::new(5.0, 5.0);
 
