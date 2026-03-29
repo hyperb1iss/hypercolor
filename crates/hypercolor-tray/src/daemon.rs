@@ -320,21 +320,30 @@ impl DaemonClient {
         match command {
             TrayCommand::ApplyEffect(id) => {
                 let url = format!("{}/api/v1/effects/{}/apply", self.base_url, id);
-                if let Err(error) = self.auth_request(self.http.post(&url)).send().await {
+                if let Err(error) = self
+                    .send_command(self.auth_request(self.http.post(&url)), "apply effect")
+                    .await
+                {
                     error!("Failed to apply effect {id}: {error}");
                 }
                 false
             }
             TrayCommand::ApplyProfile(id) => {
                 let url = format!("{}/api/v1/profiles/{}/apply", self.base_url, id);
-                if let Err(error) = self.auth_request(self.http.post(&url)).send().await {
+                if let Err(error) = self
+                    .send_command(self.auth_request(self.http.post(&url)), "apply profile")
+                    .await
+                {
                     error!("Failed to apply profile {id}: {error}");
                 }
                 false
             }
             TrayCommand::StopEffect => {
                 let url = format!("{}/api/v1/effects/stop", self.base_url);
-                if let Err(error) = self.auth_request(self.http.post(&url)).send().await {
+                if let Err(error) = self
+                    .send_command(self.auth_request(self.http.post(&url)), "stop effect")
+                    .await
+                {
                     error!("Failed to stop effect: {error}");
                 }
                 false
@@ -343,9 +352,10 @@ impl DaemonClient {
                 let url = format!("{}/api/v1/settings/brightness", self.base_url);
                 let body = serde_json::json!({ "brightness": value });
                 if let Err(error) = self
-                    .auth_request(self.http.put(&url))
-                    .json(&body)
-                    .send()
+                    .send_command(
+                        self.auth_request(self.http.put(&url)).json(&body),
+                        "set brightness",
+                    )
                     .await
                 {
                     error!("Failed to set brightness: {error}");
@@ -442,6 +452,29 @@ impl DaemonClient {
         }
 
         request
+    }
+
+    async fn send_command(
+        &self,
+        request: reqwest::RequestBuilder,
+        action: &str,
+    ) -> anyhow::Result<()> {
+        let response = request.send().await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+
+        let body = response
+            .text()
+            .await
+            .ok()
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty());
+        match body {
+            Some(body) => Err(anyhow::anyhow!("{action} returned HTTP {status}: {body}")),
+            None => Err(anyhow::anyhow!("{action} returned HTTP {status}")),
+        }
     }
 }
 

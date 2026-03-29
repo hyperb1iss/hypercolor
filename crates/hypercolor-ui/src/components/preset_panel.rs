@@ -42,6 +42,7 @@ pub fn PresetToolbar(
     let (bundled_presets, set_bundled_presets) = signal(Vec::<PresetTemplate>::new());
     let (selected_id, set_selected_id) = signal(Option::<String>::None);
     let (mode, set_mode) = signal(ToolbarMode::Idle);
+    let fetch_generation = StoredValue::new(0_u64);
 
     // Fetch user presets + bundled presets whenever effect_id *actually* changes.
     //
@@ -58,19 +59,21 @@ pub fn PresetToolbar(
 
         set_selected_id.set(None);
         let fetch_eid = eid.clone();
+        let request_generation = fetch_generation.get_value().saturating_add(1);
+        fetch_generation.set_value(request_generation);
         leptos::task::spawn_local(async move {
-            match api::fetch_presets().await {
-                Ok(all) => set_presets.set(all),
-                Err(_) => set_presets.set(Vec::new()),
-            }
-            // Fetch bundled presets from effect detail
-            if let Some(ref id) = fetch_eid {
-                match api::fetch_bundled_presets(id).await {
-                    Ok(bp) => set_bundled_presets.set(bp),
-                    Err(_) => set_bundled_presets.set(Vec::new()),
-                }
+            let next_presets = api::fetch_presets().await.unwrap_or_default();
+            let next_bundled = if let Some(ref id) = fetch_eid {
+                api::fetch_bundled_presets(id).await.unwrap_or_default()
             } else {
-                set_bundled_presets.set(Vec::new());
+                Vec::new()
+            };
+
+            if fetch_generation.get_value() == request_generation
+                && effect_id.get_untracked() == fetch_eid
+            {
+                set_presets.set(next_presets);
+                set_bundled_presets.set(next_bundled);
             }
         });
         eid
@@ -150,11 +153,16 @@ pub fn PresetToolbar(
     let on_select_value = move |val: String| {
         if val.is_empty() {
             // "No preset" selected — reset controls to defaults
+            let previous_selection = selected_id.get_untracked();
             set_selected_id.set(None);
             let on_applied = on_preset_applied;
             leptos::task::spawn_local(async move {
-                if api::reset_controls().await.is_ok() {
-                    on_applied.run(());
+                match api::reset_controls().await {
+                    Ok(()) => on_applied.run(()),
+                    Err(error) => {
+                        set_selected_id.set(previous_selection);
+                        toasts::toast_error(&format!("Failed to reset controls: {error}"));
+                    }
                 }
             });
             return;
@@ -166,12 +174,19 @@ pub fn PresetToolbar(
                 let bp = bundled_presets.get();
                 if let Some(template) = bp.get(idx) {
                     let controls_json = bundled_preset_to_json(&template.controls);
+                    let previous_selection = selected_id.get_untracked();
                     set_selected_id.set(Some(val));
                     set_mode.set(ToolbarMode::Idle);
                     let on_applied = on_preset_applied;
                     leptos::task::spawn_local(async move {
-                        if api::update_controls(&controls_json).await.is_ok() {
-                            on_applied.run(());
+                        match api::update_controls(&controls_json).await {
+                            Ok(()) => on_applied.run(()),
+                            Err(error) => {
+                                set_selected_id.set(previous_selection);
+                                toasts::toast_error(&format!(
+                                    "Failed to apply bundled preset: {error}"
+                                ));
+                            }
                         }
                     });
                 }
@@ -179,12 +194,17 @@ pub fn PresetToolbar(
             return;
         }
 
+        let previous_selection = selected_id.get_untracked();
         set_selected_id.set(Some(val.clone()));
         set_mode.set(ToolbarMode::Idle);
         let on_applied = on_preset_applied;
         leptos::task::spawn_local(async move {
-            if api::apply_preset(&val).await.is_ok() {
-                on_applied.run(());
+            match api::apply_preset(&val).await {
+                Ok(()) => on_applied.run(()),
+                Err(error) => {
+                    set_selected_id.set(previous_selection);
+                    toasts::toast_error(&format!("Failed to apply preset: {error}"));
+                }
             }
         });
     };
@@ -273,14 +293,21 @@ pub fn PresetToolbar(
         let Some(preset) = selected_preset.get() else {
             return;
         };
+        let previous_selection = selected_id.get_untracked();
         let pid = preset.id.clone();
         let refresh = refresh_presets;
         set_selected_id.set(None);
         set_mode.set(ToolbarMode::Idle);
         leptos::task::spawn_local(async move {
-            if api::delete_preset(&pid).await.is_ok() {
-                toasts::toast_info("Preset deleted");
-                refresh();
+            match api::delete_preset(&pid).await {
+                Ok(()) => {
+                    toasts::toast_info("Preset deleted");
+                    refresh();
+                }
+                Err(error) => {
+                    set_selected_id.set(previous_selection);
+                    toasts::toast_error(&format!("Failed to delete preset: {error}"));
+                }
             }
         });
     };

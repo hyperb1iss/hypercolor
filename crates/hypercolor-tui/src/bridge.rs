@@ -36,6 +36,7 @@ pub async fn spawn_data_bridge(
     // disconnection. Prevents spamming DaemonDisconnected on every
     // reconnection attempt.
     let mut notified_disconnect = false;
+    let mut latest_daemon_state = None::<DaemonState>;
 
     let _ = action_tx.send(Action::DaemonReconnecting);
 
@@ -46,7 +47,8 @@ pub async fn spawn_data_bridge(
 
         // Phase 1: REST bootstrap — fetch effects, devices, favorites, status
         let rest_ok = match bootstrap_rest(&client, &action_tx).await {
-            Ok(()) => {
+            Ok(state) => {
+                latest_daemon_state = Some(state);
                 notified_disconnect = false;
                 true
             }
@@ -88,6 +90,7 @@ pub async fn spawn_data_bridge(
                         match msg {
                             Some(WsMessage::Hello(state)) => {
                                 if let Some(daemon_state) = parse_hello_state(&state) {
+                                    latest_daemon_state = Some(daemon_state.clone());
                                     let _ = action_tx.send(Action::DaemonConnected(Box::new(daemon_state)));
                                 }
                             }
@@ -98,12 +101,17 @@ pub async fn spawn_data_bridge(
                                 let _ = action_tx.send(Action::SpectrumUpdated(Arc::new(snapshot)));
                             }
                             Some(WsMessage::Event(event)) => {
-                                if let Err(error) = refresh_for_event(&client, &action_tx, &event).await {
+                                if let Err(error) = refresh_for_event(&client, &action_tx, &event, &mut latest_daemon_state).await {
                                     tracing::debug!(%error, "Failed to refresh TUI state after daemon event");
                                 }
                             }
-                            Some(WsMessage::Metrics(_metrics)) => {
-                                // TODO: parse metrics and update state
+                            Some(WsMessage::Metrics(metrics)) => {
+                                if let Some(next_state) =
+                                    merge_metrics_into_daemon_state(latest_daemon_state.as_ref(), &metrics)
+                                {
+                                    latest_daemon_state = Some(next_state.clone());
+                                    let _ = action_tx.send(Action::DaemonStateUpdated(Box::new(next_state)));
+                                }
                             }
                             Some(WsMessage::Closed) | None => {
                                 if !notified_disconnect {
@@ -136,33 +144,34 @@ pub async fn spawn_data_bridge(
 async fn bootstrap_rest(
     client: &DaemonClient,
     action_tx: &mpsc::UnboundedSender<Action>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<DaemonState> {
     let status = client.get_status().await?;
-    let _ = action_tx.send(Action::DaemonConnected(Box::new(status)));
+    let _ = action_tx.send(Action::DaemonConnected(Box::new(status.clone())));
 
     refresh_effects(client, action_tx).await;
     refresh_devices(client, action_tx).await;
     refresh_favorites(client, action_tx).await;
 
-    Ok(())
+    Ok(status)
 }
 
 async fn refresh_for_event(
     client: &DaemonClient,
     action_tx: &mpsc::UnboundedSender<Action>,
     event: &serde_json::Value,
+    latest_daemon_state: &mut Option<DaemonState>,
 ) -> anyhow::Result<()> {
     match event_name(event).unwrap_or_default() {
         name if name.starts_with("device_") => {
-            refresh_status(client, action_tx).await?;
+            *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
             refresh_devices(client, action_tx).await;
         }
         name if name.starts_with("effect_") => {
-            refresh_status(client, action_tx).await?;
+            *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
             refresh_effects(client, action_tx).await;
         }
         name if name.starts_with("profile_") || name == "session_changed" => {
-            refresh_status(client, action_tx).await?;
+            *latest_daemon_state = Some(refresh_status(client, action_tx).await?);
         }
         _ => {}
     }
@@ -173,10 +182,10 @@ async fn refresh_for_event(
 async fn refresh_status(
     client: &DaemonClient,
     action_tx: &mpsc::UnboundedSender<Action>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<DaemonState> {
     let status = client.get_status().await?;
-    let _ = action_tx.send(Action::DaemonStateUpdated(Box::new(status)));
-    Ok(())
+    let _ = action_tx.send(Action::DaemonStateUpdated(Box::new(status.clone())));
+    Ok(status)
 }
 
 async fn refresh_effects(client: &DaemonClient, action_tx: &mpsc::UnboundedSender<Action>) {
@@ -217,6 +226,48 @@ fn event_name(event: &serde_json::Value) -> Option<&str> {
         .get("event")
         .and_then(serde_json::Value::as_str)
         .or_else(|| event.get("event_type").and_then(serde_json::Value::as_str))
+}
+
+fn merge_metrics_into_daemon_state(
+    current: Option<&DaemonState>,
+    metrics: &serde_json::Value,
+) -> Option<DaemonState> {
+    let data = metrics.get("data").unwrap_or(metrics);
+    let fps = data.get("fps")?;
+    let mut next = current.cloned().unwrap_or_else(|| DaemonState {
+        running: true,
+        brightness: 100,
+        fps_target: 0.0,
+        fps_actual: 0.0,
+        effect_name: None,
+        effect_id: None,
+        profile_name: None,
+        device_count: 0,
+        total_leds: 0,
+    });
+
+    next.fps_target = fps
+        .get("target")
+        .and_then(serde_json::Value::as_f64)
+        .map_or(next.fps_target, |value| value as f32);
+    next.fps_actual = fps
+        .get("actual")
+        .and_then(serde_json::Value::as_f64)
+        .map_or(next.fps_actual, |value| value as f32);
+    next.device_count = data
+        .get("devices")
+        .and_then(|devices| devices.get("connected"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(next.device_count);
+    next.total_leds = data
+        .get("devices")
+        .and_then(|devices| devices.get("total_leds"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(next.total_leds);
+
+    Some(next)
 }
 
 /// Parse the daemon state from the WebSocket hello message.

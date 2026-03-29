@@ -17,6 +17,16 @@ const HIDDEN_TAB_PREVIEW_FPS_CAP: u32 = 6;
 const RECONNECT_BASE_MS: i32 = 500;
 const RECONNECT_MAX_MS: i32 = 15_000;
 
+const EFFECT_STARTED_EVENTS: &[&str] = &["effect_started", "effect_activated", "effect_changed"];
+const EFFECT_STOPPED_EVENTS: &[&str] = &["effect_stopped", "effect_deactivated"];
+const DEVICE_LIFECYCLE_EVENTS: &[&str] = &[
+    "device_connected",
+    "device_discovered",
+    "device_disconnected",
+    "device_state_changed",
+    "device_discovery_completed",
+];
+
 // ── Connection State ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +289,7 @@ impl WsManager {
 
         // Shared WebSocket handle for preview subscription effect.
         let ws_handle: StoredValue<Option<web_sys::WebSocket>> = StoredValue::new(None);
+        let reconnect_timeout_id: StoredValue<Option<i32>> = StoredValue::new(None);
 
         // Reconnection attempt counter for exponential backoff.
         let reconnect_attempts = StoredValue::new(0_u32);
@@ -295,6 +306,8 @@ impl WsManager {
         let connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage> = StoredValue::new_local(None);
 
         let connect_fn: Rc<dyn Fn()> = Rc::new(move || {
+            clear_reconnect_timer(reconnect_timeout_id);
+            dispose_existing_socket(ws_handle);
             set_connection_state.set(ConnectionState::Connecting);
 
             // Reset frame-tracking state so FPS doesn't glitch after reconnect
@@ -309,7 +322,7 @@ impl WsManager {
                 Ok(ws) => ws,
                 Err(_) => {
                     set_connection_state.set(ConnectionState::Error);
-                    schedule_reconnect(reconnect_attempts, connect);
+                    schedule_reconnect(reconnect_attempts, reconnect_timeout_id, connect);
                     return;
                 }
             };
@@ -321,6 +334,7 @@ impl WsManager {
             let on_open = Closure::<dyn FnMut()>::new(move || {
                 set_connection_state.set(ConnectionState::Connected);
                 reconnect_attempts.set_value(0);
+                clear_reconnect_timer(reconnect_timeout_id);
 
                 let subscribe_msg = serde_json::json!({
                     "type": "subscribe",
@@ -337,13 +351,14 @@ impl WsManager {
             // onclose — schedule reconnect with backoff
             let on_close = Closure::<dyn FnMut()>::new(move || {
                 set_connection_state.set(ConnectionState::Disconnected);
+                ws_handle.set_value(None);
                 clear_preview_subscription(
                     requested_preview_fps,
                     &set_preview_target_fps,
                     &set_preview_fps,
                     &set_canvas_frame,
                 );
-                schedule_reconnect(reconnect_attempts, connect);
+                schedule_reconnect(reconnect_attempts, reconnect_timeout_id, connect);
             });
             ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
             on_close.forget();
@@ -351,6 +366,7 @@ impl WsManager {
             // onerror (browser fires close after error, so reconnect triggers there)
             let on_error = Closure::<dyn FnMut()>::new(move || {
                 set_connection_state.set(ConnectionState::Error);
+                ws_handle.set_value(None);
             });
             ws.set_onerror(Some(on_error.as_ref().unchecked_ref()));
             on_error.forget();
@@ -496,8 +512,10 @@ impl WsManager {
 /// Schedule a reconnection attempt with exponential backoff + jitter.
 fn schedule_reconnect(
     reconnect_attempts: StoredValue<u32>,
+    reconnect_timeout_id: StoredValue<Option<i32>>,
     connect: StoredValue<Option<Rc<dyn Fn()>>, LocalStorage>,
 ) {
+    clear_reconnect_timer(reconnect_timeout_id);
     let attempt = reconnect_attempts.get_value();
     reconnect_attempts.set_value(attempt.saturating_add(1));
 
@@ -517,15 +535,41 @@ fn schedule_reconnect(
     });
 
     if let Some(window) = web_sys::window() {
-        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+        if let Ok(timeout_id) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
             callback.as_ref().unchecked_ref(),
             final_delay,
-        );
+        ) {
+            reconnect_timeout_id.set_value(Some(timeout_id));
+        }
     }
     callback.forget();
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+fn clear_reconnect_timer(reconnect_timeout_id: StoredValue<Option<i32>>) {
+    let Some(timeout_id) = reconnect_timeout_id.get_value() else {
+        return;
+    };
+
+    if let Some(window) = web_sys::window() {
+        window.clear_timeout_with_handle(timeout_id);
+    }
+    reconnect_timeout_id.set_value(None);
+}
+
+fn dispose_existing_socket(ws_handle: StoredValue<Option<web_sys::WebSocket>>) {
+    let Some(existing_ws) = ws_handle.get_value() else {
+        return;
+    };
+
+    existing_ws.set_onopen(None);
+    existing_ws.set_onclose(None);
+    existing_ws.set_onerror(None);
+    existing_ws.set_onmessage(None);
+    let _ = existing_ws.close();
+    ws_handle.set_value(None);
+}
 
 /// Build WS URL from current page origin.
 ///
@@ -691,13 +735,7 @@ fn handle_json_message(
         "hello" => {
             // Extract active effect from hello state
             if let Some(state) = msg.get("state") {
-                if let Some(active) = state.get("effect").or_else(|| state.get("active_effect")) {
-                    let name = active
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .map(String::from);
-                    set_active.set(name);
-                }
+                set_active.set(extract_active_effect_name(state));
 
                 let target = state
                     .get("fps")
@@ -770,14 +808,11 @@ fn handle_json_message(
         }
         "event" => {
             if let Some(event_type) = msg.get("event").and_then(|e| e.as_str()) {
-                if event_type == "effect_activated" || event_type == "effect_changed" {
-                    let name = msg
-                        .get("data")
-                        .and_then(|d| d.get("name"))
-                        .and_then(|n| n.as_str())
-                        .map(String::from);
-                    set_active.set(name);
-                } else if event_type == "effect_deactivated" || event_type == "effect_stopped" {
+                if EFFECT_STARTED_EVENTS.contains(&event_type) {
+                    set_active.set(extract_effect_name_from_event(
+                        msg.get("data").unwrap_or(&serde_json::Value::Null),
+                    ));
+                } else if EFFECT_STOPPED_EVENTS.contains(&event_type) {
                     set_active.set(None);
                 } else if event_type == "audio_level_update" {
                     if let Some(data) = msg.get("data") {
@@ -790,31 +825,62 @@ fn handle_json_message(
                             beat: data.get("beat").and_then(|v| v.as_bool()).unwrap_or(false),
                         });
                     }
-                } else if matches!(
-                    event_type,
-                    "device_discovered"
-                        | "device_disconnected"
-                        | "device_state_changed"
-                        | "device_discovery_completed"
-                ) {
-                    let device_id = msg
-                        .get("data")
-                        .and_then(|data| data.get("device_id"))
-                        .and_then(|id| id.as_str())
-                        .map(String::from);
-                    let found_count = msg
-                        .get("data")
-                        .and_then(|data| data.get("found"))
-                        .and_then(|found| found.as_array())
-                        .map(std::vec::Vec::len);
-                    set_last_device_event.set(Some(DeviceEventHint {
-                        event_type: event_type.to_owned(),
-                        device_id,
-                        found_count,
-                    }));
+                } else if DEVICE_LIFECYCLE_EVENTS.contains(&event_type)
+                    && let Some(hint) = extract_device_event_hint(event_type, msg.get("data"))
+                {
+                    set_last_device_event.set(Some(hint));
                 }
             }
         }
         _ => {}
     }
+}
+
+fn extract_active_effect_name(state: &serde_json::Value) -> Option<String> {
+    let active = state.get("effect").or_else(|| state.get("active_effect"))?;
+    active
+        .get("name")
+        .or_else(|| active.get("effect_name"))
+        .and_then(serde_json::Value::as_str)
+        .map(String::from)
+        .or_else(|| active.as_str().map(String::from))
+}
+
+fn extract_effect_name_from_event(data: &serde_json::Value) -> Option<String> {
+    data.get("name")
+        .or_else(|| data.get("effect_name"))
+        .or_else(|| data.get("effect").and_then(|effect| effect.get("name")))
+        .or_else(|| data.get("current").and_then(|effect| effect.get("name")))
+        .and_then(serde_json::Value::as_str)
+        .map(String::from)
+        .or_else(|| {
+            data.get("effect")
+                .and_then(serde_json::Value::as_str)
+                .map(String::from)
+        })
+}
+
+fn extract_device_event_hint(
+    event_type: &str,
+    data: Option<&serde_json::Value>,
+) -> Option<DeviceEventHint> {
+    let data = data.unwrap_or(&serde_json::Value::Null);
+    let device_id = data
+        .get("device_id")
+        .or_else(|| data.get("id"))
+        .or_else(|| data.get("device").and_then(|device| device.get("id")))
+        .and_then(serde_json::Value::as_str)
+        .map(String::from);
+    let found_count = data.get("found").and_then(|found| {
+        found
+            .as_array()
+            .map(std::vec::Vec::len)
+            .or_else(|| found.as_u64().and_then(|count| usize::try_from(count).ok()))
+    });
+
+    Some(DeviceEventHint {
+        event_type: event_type.to_owned(),
+        device_id,
+        found_count,
+    })
 }

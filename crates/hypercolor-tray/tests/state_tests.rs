@@ -176,6 +176,46 @@ fn parse_ws_event_effect_started() {
 }
 
 #[test]
+fn parse_ws_event_effect_changed() {
+    let raw = json!({
+        "type": "event",
+        "event": "effect_changed",
+        "timestamp": "2026-03-10T12:00:00Z",
+        "data": {
+            "previous": { "id": "abc-123", "name": "Aurora Borealis" },
+            "current": { "id": "def-456", "name": "Cosmic Wave" },
+            "trigger": "api"
+        }
+    });
+
+    let msg: WsEventMessage = serde_json::from_value(raw).expect("should parse event");
+    assert_eq!(msg.msg_type, "event");
+    assert_eq!(msg.event, "effect_changed");
+    assert_eq!(msg.data["current"]["id"], "def-456");
+    assert_eq!(msg.data["current"]["name"], "Cosmic Wave");
+}
+
+#[test]
+fn parse_ws_event_device_connected() {
+    let raw = json!({
+        "type": "event",
+        "event": "device_connected",
+        "timestamp": "2026-03-10T12:00:00Z",
+        "data": {
+            "device_id": "razer-blackwidow-v4-001",
+            "name": "Razer BlackWidow V4",
+            "backend": "razer",
+            "led_count": 126
+        }
+    });
+
+    let msg: WsEventMessage = serde_json::from_value(raw).expect("should parse event");
+    assert_eq!(msg.event, "device_connected");
+    assert_eq!(msg.data["device_id"], "razer-blackwidow-v4-001");
+    assert_eq!(msg.data["led_count"], 126);
+}
+
+#[test]
 fn parse_ws_event_brightness_changed() {
     let raw = json!({
         "type": "event",

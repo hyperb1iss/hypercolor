@@ -20,6 +20,16 @@ use crate::ws::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
+struct ActiveEffectSnapshot {
+    id: Option<String>,
+    name: Option<String>,
+    category: String,
+    controls: Vec<ControlDefinition>,
+    control_values: HashMap<String, ControlValue>,
+    preset_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct IndexedEffect {
     pub effect: api::EffectSummary,
     search_text: String,
@@ -148,6 +158,7 @@ impl EffectsContext {
             return;
         }
 
+        let previous = capture_active_effect_state(self);
         let selected_effect = self.effect_summary(&id);
         self.set_active_effect_id.set(Some(id.clone()));
         self.set_active_effect_name
@@ -166,6 +177,8 @@ impl EffectsContext {
         leptos::task::spawn_local(async move {
             if api::apply_effect(&id).await.is_ok() {
                 ctx.refresh_active_effect();
+            } else {
+                restore_active_effect_state(&ctx, previous);
             }
         });
     }
@@ -179,8 +192,13 @@ impl EffectsContext {
             set_favorites.update(|ids| {
                 ids.remove(&effect_id);
             });
+            let revert_id = effect_id.clone();
             leptos::task::spawn_local(async move {
-                let _ = api::remove_favorite(&effect_id).await;
+                if api::remove_favorite(&effect_id).await.is_err() {
+                    set_favorites.update(|ids| {
+                        ids.insert(revert_id);
+                    });
+                }
             });
         } else {
             set_favorites.update({
@@ -189,8 +207,13 @@ impl EffectsContext {
                     ids.insert(id);
                 }
             });
+            let revert_id = effect_id.clone();
             leptos::task::spawn_local(async move {
-                let _ = api::add_favorite(&effect_id).await;
+                if api::add_favorite(&effect_id).await.is_err() {
+                    set_favorites.update(|ids| {
+                        ids.remove(&revert_id);
+                    });
+                }
             });
         }
     }
@@ -237,6 +260,31 @@ fn clear_active_effect_state(ctx: &EffectsContext) {
     ctx.set_active_control_values.set(HashMap::new());
     ctx.set_active_effect_category.set(String::new());
     ctx.set_active_preset_id.set(None);
+}
+
+fn capture_active_effect_state(ctx: &EffectsContext) -> ActiveEffectSnapshot {
+    ActiveEffectSnapshot {
+        id: ctx.active_effect_id.get_untracked(),
+        name: ctx.active_effect_name.get_untracked(),
+        category: ctx.active_effect_category.get_untracked(),
+        controls: ctx.active_controls.get_untracked(),
+        control_values: ctx.active_control_values.get_untracked(),
+        preset_id: ctx.active_preset_id.get_untracked(),
+    }
+}
+
+fn restore_active_effect_state(ctx: &EffectsContext, snapshot: ActiveEffectSnapshot) {
+    match snapshot.id {
+        Some(id) => {
+            ctx.set_active_effect_id.set(Some(id));
+            ctx.set_active_effect_name.set(snapshot.name);
+            ctx.set_active_effect_category.set(snapshot.category);
+            ctx.set_active_controls.set(snapshot.controls);
+            ctx.set_active_control_values.set(snapshot.control_values);
+            ctx.set_active_preset_id.set(snapshot.preset_id);
+        }
+        None => clear_active_effect_state(ctx),
+    }
 }
 
 #[component]
@@ -340,9 +388,11 @@ pub fn App() -> impl IntoView {
             .unwrap_or_default();
 
         let should_refetch = match event.event_type.as_str() {
-            "device_discovered" => event.device_id.as_ref().is_some_and(|device_id| {
-                !current_devices.iter().any(|device| &device.id == device_id)
-            }),
+            "device_connected" | "device_discovered" => {
+                event.device_id.as_ref().is_some_and(|device_id| {
+                    !current_devices.iter().any(|device| &device.id == device_id)
+                })
+            }
             "device_disconnected" | "device_state_changed" => {
                 event.device_id.as_ref().is_some_and(|device_id| {
                     current_devices.iter().any(|device| &device.id == device_id)
@@ -373,6 +423,23 @@ pub fn App() -> impl IntoView {
         } else if let Some(Ok(None)) = active_resource.get() {
             clear_active_effect_state(&effects_ctx);
         }
+    });
+
+    // Keep the detailed active effect state aligned with daemon WS lifecycle
+    // events, including externally triggered effect switches/stops.
+    Effect::new(move |previous_effect_name: Option<Option<String>>| {
+        let current_effect_name = ws_ctx.active_effect.get();
+        if previous_effect_name.as_ref() == Some(&current_effect_name) {
+            return current_effect_name;
+        }
+
+        if current_effect_name.is_some() {
+            effects_ctx.refresh_active_effect();
+        } else {
+            clear_active_effect_state(&effects_ctx);
+        }
+
+        current_effect_name
     });
 
     view! {
