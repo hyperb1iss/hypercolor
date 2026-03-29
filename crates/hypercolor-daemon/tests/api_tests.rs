@@ -23,7 +23,8 @@ use uuid::Uuid;
 
 use hypercolor_core::effect::EffectEntry;
 use hypercolor_daemon::api::{self, AppState};
-use hypercolor_daemon::session::set_global_brightness;
+use hypercolor_daemon::profile_store::Profile;
+use hypercolor_daemon::session::{current_global_brightness, set_global_brightness};
 use hypercolor_types::config::HypercolorConfig;
 use hypercolor_types::device::{
     ConnectionType, DeviceCapabilities, DeviceColorFormat, DeviceFamily, DeviceFeatures,
@@ -2537,6 +2538,233 @@ async fn profile_crud_lifecycle() {
         .expect("failed to execute request");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn create_profile_rejects_duplicate_names_without_force_and_force_overwrites() {
+    let state = Arc::new(isolated_state());
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let first_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"Gaming Mode","brightness":72}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(first_response.status(), StatusCode::CREATED);
+    let first_json = body_json(first_response).await;
+    let first_id = first_json["data"]["id"]
+        .as_str()
+        .expect("profile id should be present")
+        .to_owned();
+
+    let duplicate_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"name":"gaming mode","brightness":15}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(duplicate_response.status(), StatusCode::CONFLICT);
+    let duplicate_json = body_json(duplicate_response).await;
+    assert_eq!(duplicate_json["error"]["code"], "conflict");
+
+    let forced_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"gaming mode","brightness":15,"force":true}"#,
+                ))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(forced_response.status(), StatusCode::OK);
+    let forced_json = body_json(forced_response).await;
+    assert_eq!(forced_json["data"]["id"], first_id);
+    assert_eq!(forced_json["data"]["brightness"], 15);
+
+    let list_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/profiles")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_json = body_json(list_response).await;
+    assert_eq!(list_json["data"]["pagination"]["total"], 1);
+}
+
+#[tokio::test]
+async fn profile_lookup_returns_conflict_for_ambiguous_name() {
+    let state = Arc::new(isolated_state());
+    {
+        let mut profiles = state.profiles.write().await;
+        profiles.insert(Profile {
+            id: "prof_alpha".to_owned(),
+            name: "Evening".to_owned(),
+            ..Profile::default()
+        });
+        profiles.insert(Profile {
+            id: "prof_beta".to_owned(),
+            name: "evening".to_owned(),
+            ..Profile::default()
+        });
+    }
+
+    let app = test_app_with_state(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/profiles/evening")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "conflict");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("ambiguous"),
+    );
+}
+
+#[tokio::test]
+async fn apply_profile_rejects_unimplemented_transition_requests() {
+    let state = Arc::new(isolated_state());
+    {
+        let mut profiles = state.profiles.write().await;
+        profiles.insert(Profile {
+            id: "prof_evening".to_owned(),
+            name: "Evening".to_owned(),
+            ..Profile::default()
+        });
+    }
+
+    let app = test_app_with_state(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles/prof_evening/apply")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"transition_ms":250}"#))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let json = body_json(response).await;
+    assert_eq!(json["error"]["code"], "bad_request");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("only immediate apply is supported"),
+    );
+}
+
+#[tokio::test]
+async fn failed_profile_apply_does_not_mutate_layout_or_brightness() {
+    let state = Arc::new(isolated_state());
+    let current_layout = SpatialLayout {
+        id: "layout_current".to_owned(),
+        name: "Current Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    let profile_layout = SpatialLayout {
+        id: "layout_profile".to_owned(),
+        name: "Profile Layout".to_owned(),
+        description: None,
+        canvas_width: 320,
+        canvas_height: 200,
+        zones: Vec::new(),
+        default_sampling_mode: SamplingMode::Bilinear,
+        default_edge_behavior: EdgeBehavior::Clamp,
+        spaces: None,
+        version: 1,
+    };
+    {
+        let mut layouts = state.layouts.write().await;
+        layouts.insert(current_layout.id.clone(), current_layout.clone());
+        layouts.insert(profile_layout.id.clone(), profile_layout);
+    }
+    {
+        let mut spatial = state.spatial_engine.write().await;
+        spatial.update_layout(current_layout.clone());
+    }
+    set_global_brightness(&state.power_state, 0.8);
+    {
+        let mut profiles = state.profiles.write().await;
+        profiles.insert(Profile {
+            id: "prof_broken".to_owned(),
+            name: "Broken".to_owned(),
+            brightness: Some(25),
+            effect_id: Some("missing_effect".to_owned()),
+            effect_name: Some("missing_effect".to_owned()),
+            layout_id: Some("layout_profile".to_owned()),
+            ..Profile::default()
+        });
+    }
+
+    let app = test_app_with_state(Arc::clone(&state));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/profiles/prof_broken/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let json = body_json(response).await;
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("profile effect not found"),
+    );
+
+    let active_layout = {
+        let spatial = state.spatial_engine.read().await;
+        spatial.layout().id.clone()
+    };
+    assert_eq!(active_layout, current_layout.id);
+    assert!((current_global_brightness(&state.power_state) - 0.8).abs() < f32::EPSILON);
 }
 
 // ── Layouts ──────────────────────────────────────────────────────────────
