@@ -30,6 +30,8 @@ const TL_PACKET_LEN: usize = 64;
 const TL_PAYLOAD_LEN: usize = 58;
 const TL_SET_LIGHT_LEN: usize = 20;
 const TL_LEDS_PER_FAN: usize = 26;
+const TL_LEDS_PER_FAN_U8: u8 = 26;
+const TL_LEDS_PER_FAN_U32: u32 = 26;
 const TL_MAX_PORTS: usize = 4;
 const TL_MAX_FANS_PER_PORT: usize = 10;
 const TL_MAX_TOTAL_FANS: usize = 16;
@@ -192,7 +194,7 @@ impl LianLiHubVariant {
     pub const fn leds_per_fan(self) -> u8 {
         match self {
             Self::Al | Self::AlV2 | Self::SlInfinity => 20,
-            Self::TlFan => TL_LEDS_PER_FAN as u8,
+            Self::TlFan => TL_LEDS_PER_FAN_U8,
             _ => 16,
         }
     }
@@ -323,7 +325,7 @@ impl Ene6k77Protocol {
     /// selected hub variant.
     pub fn parse_rpm_response(&self, data: &[u8]) -> Result<[u16; 4], ProtocolError> {
         let payload = strip_optional_report_id(data, ENE_REPORT_ID);
-        let offset = if self.variant.is_v2() { 1 } else { 0 };
+        let offset = usize::from(self.variant.is_v2());
         let expected_len = if self.variant.is_v2() { 9 } else { 8 };
 
         if payload.len() < expected_len {
@@ -404,7 +406,7 @@ impl Ene6k77Protocol {
         match self.variant {
             LianLiHubVariant::SlInfinity => {
                 let group = logical_channel / 2 + 1;
-                let ring = if logical_channel % 2 == 0 {
+                let ring = if logical_channel.is_multiple_of(2) {
                     "Inner"
                 } else {
                     "Outer"
@@ -420,9 +422,11 @@ impl Ene6k77Protocol {
             LianLiHubVariant::Sl | LianLiHubVariant::SlV2 | LianLiHubVariant::SlRedragon => {
                 DeviceTopologyHint::Strip
             }
-            LianLiHubVariant::Al | LianLiHubVariant::AlV2 => DeviceTopologyHint::Custom,
+            LianLiHubVariant::Al | LianLiHubVariant::AlV2 | LianLiHubVariant::TlFan => {
+                DeviceTopologyHint::Custom
+            }
             LianLiHubVariant::SlInfinity => {
-                if logical_channel % 2 == 0 {
+                if logical_channel.is_multiple_of(2) {
                     DeviceTopologyHint::Ring {
                         count: u32::from(self.zone_leds_per_fan(logical_channel)),
                     }
@@ -430,14 +434,13 @@ impl Ene6k77Protocol {
                     DeviceTopologyHint::Strip
                 }
             }
-            LianLiHubVariant::TlFan => DeviceTopologyHint::Custom,
         }
     }
 
     fn zone_leds_per_fan(&self, logical_channel: usize) -> u8 {
         match self.variant {
             LianLiHubVariant::SlInfinity => {
-                if logical_channel % 2 == 0 {
+                if logical_channel.is_multiple_of(2) {
                     8
                 } else {
                     12
@@ -454,7 +457,6 @@ impl Ene6k77Protocol {
     }
 
     fn push_feature_packet11(
-        &self,
         encoder: &mut CommandBuffer<'_>,
         command: u8,
         subcommand: u8,
@@ -475,7 +477,6 @@ impl Ene6k77Protocol {
     }
 
     fn push_feature_packet65(
-        &self,
         encoder: &mut CommandBuffer<'_>,
         command: u8,
         subcommand: u8,
@@ -499,14 +500,14 @@ impl Ene6k77Protocol {
 
     fn push_activate(&self, encoder: &mut CommandBuffer<'_>, group: u8, fan_count: u8) {
         match self.variant {
-            LianLiHubVariant::Sl | LianLiHubVariant::SlRedragon => self.push_feature_packet11(
+            LianLiHubVariant::Sl | LianLiHubVariant::SlRedragon => Self::push_feature_packet11(
                 encoder,
                 0x10,
                 self.variant.activate_subcommand(),
                 (group << 4) | (fan_count & 0x0F),
             ),
             LianLiHubVariant::Al | LianLiHubVariant::AlV2 | LianLiHubVariant::SlInfinity => {
-                self.push_feature_packet65(
+                Self::push_feature_packet65(
                     encoder,
                     0x10,
                     self.variant.activate_subcommand(),
@@ -514,7 +515,7 @@ impl Ene6k77Protocol {
                     fan_count,
                 );
             }
-            LianLiHubVariant::SlV2 => self.push_feature_packet65(
+            LianLiHubVariant::SlV2 => Self::push_feature_packet65(
                 encoder,
                 0x10,
                 self.variant.activate_subcommand(),
@@ -565,9 +566,9 @@ impl Ene6k77Protocol {
     fn push_frame_commit(&self, encoder: &mut CommandBuffer<'_>) {
         match self.variant {
             LianLiHubVariant::Sl | LianLiHubVariant::SlRedragon => {
-                self.push_feature_packet11(encoder, 0x60, 0x00, 0x01);
+                Self::push_feature_packet11(encoder, 0x60, 0x00, 0x01);
             }
-            _ => self.push_feature_packet65(encoder, 0x60, 0x00, 0x01, 0x00),
+            _ => Self::push_feature_packet65(encoder, 0x60, 0x00, 0x01, 0x00),
         }
     }
 
@@ -615,7 +616,6 @@ impl Ene6k77Protocol {
     }
 
     fn push_large_color_data(
-        &self,
         encoder: &mut CommandBuffer<'_>,
         port: u8,
         fill: impl FnOnce(&mut [u8]),
@@ -666,7 +666,7 @@ impl Ene6k77Protocol {
                     group_colors,
                     fan_count * leds_per_fan,
                 ),
-                LianLiHubVariant::SlV2 => self.push_large_color_data(
+                LianLiHubVariant::SlV2 => Self::push_large_color_data(
                     &mut encoder,
                     u8::try_from(group).expect("group index should fit in u8"),
                     |payload| {
@@ -675,7 +675,7 @@ impl Ene6k77Protocol {
                             group_colors,
                             fan_count * leds_per_fan,
                             self.variant,
-                        )
+                        );
                     },
                 ),
                 _ => {}
@@ -723,15 +723,15 @@ impl Ene6k77Protocol {
                         self.push_al_color_data(&mut encoder, port, group_colors, fan_count, ring);
                     }
                     LianLiHubVariant::AlV2 => {
-                        self.push_large_color_data(&mut encoder, port, |payload| {
+                        Self::push_large_color_data(&mut encoder, port, |payload| {
                             write_dual_ring_payload(
                                 payload,
                                 group_colors,
                                 fan_count,
                                 ring,
                                 self.variant,
-                            )
-                        })
+                            );
+                        });
                     }
                     _ => {}
                 }
@@ -784,14 +784,14 @@ impl Ene6k77Protocol {
             let fan_count_u8 = u8::try_from(fan_count).expect("fan count should fit in u8");
 
             self.push_activate(&mut encoder, group_u8, fan_count_u8);
-            self.push_large_color_data(&mut encoder, group_u8 * 2, |payload| {
-                write_single_ring_payload(payload, inner, fan_count * 8, self.variant)
+            Self::push_large_color_data(&mut encoder, group_u8 * 2, |payload| {
+                write_single_ring_payload(payload, inner, fan_count * 8, self.variant);
             });
             self.push_commit(&mut encoder, group_u8 * 2);
 
             self.push_activate(&mut encoder, group_u8, fan_count_u8);
-            self.push_large_color_data(&mut encoder, group_u8 * 2 + 1, |payload| {
-                write_single_ring_payload(payload, outer, fan_count * 12, self.variant)
+            Self::push_large_color_data(&mut encoder, group_u8 * 2 + 1, |payload| {
+                write_single_ring_payload(payload, outer, fan_count * 12, self.variant);
             });
             self.push_commit(&mut encoder, group_u8 * 2 + 1);
         }
@@ -947,10 +947,11 @@ impl TlFanProtocol {
     fn command(&self, command: u8, payload: &[u8], expects_response: bool) -> ProtocolCommand {
         let mut packet = TlPacket::new_zeroed();
         let packet_number = self.next_packet_number();
+        let [packet_hi, packet_lo] = packet_number.to_be_bytes();
         packet.report_id = TL_REPORT_ID;
         packet.command = command;
-        packet.packet_hi = (packet_number >> 8) as u8;
-        packet.packet_lo = (packet_number & 0xFF) as u8;
+        packet.packet_hi = packet_hi;
+        packet.packet_lo = packet_lo;
         packet.data_len = u8::try_from(payload.len()).expect("TL payload length should fit in u8");
         packet.payload[..payload.len()].copy_from_slice(payload);
 
@@ -1048,10 +1049,11 @@ impl Protocol for TlFanProtocol {
 
                 let mut packet = TlPacket::new_zeroed();
                 let packet_number = self.next_packet_number();
+                let [packet_hi, packet_lo] = packet_number.to_be_bytes();
                 packet.report_id = TL_REPORT_ID;
                 packet.command = 0xA3;
-                packet.packet_hi = (packet_number >> 8) as u8;
-                packet.packet_lo = (packet_number & 0xFF) as u8;
+                packet.packet_hi = packet_hi;
+                packet.packet_lo = packet_lo;
                 packet.data_len =
                     u8::try_from(TL_SET_LIGHT_LEN).expect("TL light payload length should fit");
                 packet.payload[..TL_SET_LIGHT_LEN].copy_from_slice(&payload);
@@ -1146,15 +1148,14 @@ impl Protocol for TlFanProtocol {
         let counts = self.port_fan_counts();
         let total_fans: usize = counts.iter().map(|count| usize::from(*count)).sum();
         let mut zones = Vec::with_capacity(total_fans);
+        let led_count = TL_LEDS_PER_FAN_U32;
 
         for (port, fan_count) in counts.into_iter().enumerate() {
             for fan_index in 0..fan_count {
                 zones.push(ProtocolZone {
                     name: format!("Port {} Fan {}", port + 1, fan_index + 1),
-                    led_count: TL_LEDS_PER_FAN as u32,
-                    topology: DeviceTopologyHint::Ring {
-                        count: TL_LEDS_PER_FAN as u32,
-                    },
+                    led_count,
+                    topology: DeviceTopologyHint::Ring { count: led_count },
                     color_format: DeviceColorFormat::Rgb,
                 });
             }
@@ -1205,11 +1206,12 @@ pub fn apply_sum_white_limit([r, g, b]: [u8; 3]) -> [u8; 3] {
         return [r, g, b];
     }
 
-    let scale = WHITE_LIMIT_THRESHOLD as f32 / sum as f32;
+    let threshold = u32::from(WHITE_LIMIT_THRESHOLD);
+    let sum = u32::from(sum);
     [
-        (f32::from(r) * scale) as u8,
-        (f32::from(g) * scale) as u8,
-        (f32::from(b) * scale) as u8,
+        u8::try_from(u32::from(r) * threshold / sum).expect("scaled red should fit in u8"),
+        u8::try_from(u32::from(g) * threshold / sum).expect("scaled green should fit in u8"),
+        u8::try_from(u32::from(b) * threshold / sum).expect("scaled blue should fit in u8"),
     ]
 }
 
@@ -1229,7 +1231,7 @@ pub fn firmware_version_from_fine_tune(fine_tune: u8) -> String {
     if fine_tune < 8 {
         "1.0".to_owned()
     } else {
-        let version = ((fine_tune >> 4) * 10 + (fine_tune & 0x0F) + 2) as f32 / 10.0;
+        let version = f32::from((fine_tune >> 4) * 10 + (fine_tune & 0x0F) + 2) / 10.0;
         format!("{version:.1}")
     }
 }
@@ -1288,21 +1290,24 @@ fn duty_byte(variant: LianLiHubVariant, percent: u8) -> u8 {
             if percent == 0 {
                 0x28
             } else {
-                ((800_u32 + 11_u32 * u32::from(percent)) / 19_u32) as u8
+                u8::try_from((800_u32 + 11_u32 * u32::from(percent)) / 19_u32)
+                    .expect("duty byte should fit in u8")
             }
         }
         LianLiHubVariant::SlInfinity => {
             if percent == 0 {
                 0x0A
             } else {
-                ((500_u32 + 35_u32 * u32::from(percent)) / 40_u32) as u8
+                u8::try_from((500_u32 + 35_u32 * u32::from(percent)) / 40_u32)
+                    .expect("duty byte should fit in u8")
             }
         }
         LianLiHubVariant::SlV2 | LianLiHubVariant::AlV2 => {
             if percent == 0 {
                 0x07
             } else {
-                ((200_u32 + 19_u32 * u32::from(percent)) / 21_u32) as u8
+                u8::try_from((200_u32 + 19_u32 * u32::from(percent)) / 21_u32)
+                    .expect("duty byte should fit in u8")
             }
         }
         LianLiHubVariant::TlFan => percent,

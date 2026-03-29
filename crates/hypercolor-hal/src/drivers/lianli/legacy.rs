@@ -13,6 +13,7 @@ use super::protocol::apply_al_white_limit;
 
 const LEGACY_GROUP_COUNT: usize = 4;
 const LEGACY_MAX_FANS_PER_GROUP: usize = 4;
+const LEGACY_MAX_FANS_PER_GROUP_U8: u8 = 4;
 const ORIGINAL_LEDS_PER_FAN: usize = 16;
 const AL10_LEDS_PER_FAN: usize = 20;
 
@@ -144,7 +145,7 @@ impl LegacyUniHubProtocol {
     pub fn original() -> Self {
         Self {
             model: LegacyHubModel::Original,
-            fan_counts: [LEGACY_MAX_FANS_PER_GROUP as u8; LEGACY_GROUP_COUNT],
+            fan_counts: [LEGACY_MAX_FANS_PER_GROUP_U8; LEGACY_GROUP_COUNT],
         }
     }
 
@@ -153,7 +154,7 @@ impl LegacyUniHubProtocol {
     pub fn al10() -> Self {
         Self {
             model: LegacyHubModel::Al10,
-            fan_counts: [LEGACY_MAX_FANS_PER_GROUP as u8; LEGACY_GROUP_COUNT],
+            fan_counts: [LEGACY_MAX_FANS_PER_GROUP_U8; LEGACY_GROUP_COUNT],
         }
     }
 
@@ -205,7 +206,7 @@ impl LegacyUniHubProtocol {
     }
 
     #[must_use]
-    fn color_format(&self) -> DeviceColorFormat {
+    fn color_format() -> DeviceColorFormat {
         DeviceColorFormat::Rbg
     }
 
@@ -218,9 +219,9 @@ impl LegacyUniHubProtocol {
     }
 
     #[must_use]
-    fn firmware_query_command(&self) -> ProtocolCommand {
-        self.vendor_command(
-            vec![
+    fn firmware_query_command() -> ProtocolCommand {
+        Self::vendor_command(
+            &[
                 Self::read_register(LEGACY_FIRMWARE_REGISTER, 5),
                 Self::delay_op(),
             ],
@@ -229,11 +230,10 @@ impl LegacyUniHubProtocol {
     }
 
     fn vendor_command(
-        &self,
-        operations: Vec<VendorControlOperation>,
+        operations: &[VendorControlOperation],
         expects_response: bool,
     ) -> ProtocolCommand {
-        let data = encode_vendor_ops(&operations)
+        let data = encode_vendor_ops(operations)
             .expect("legacy vendor operation sequence should fit transport framing");
 
         ProtocolCommand {
@@ -288,7 +288,7 @@ impl LegacyUniHubProtocol {
 
     #[must_use]
     fn configured_fan_count(&self, group: usize) -> u8 {
-        self.fan_counts[group].min(LEGACY_MAX_FANS_PER_GROUP as u8)
+        self.fan_counts[group].min(LEGACY_MAX_FANS_PER_GROUP_U8)
     }
 
     fn append_init_operations(&self, operations: &mut Vec<VendorControlOperation>) {
@@ -444,7 +444,7 @@ impl Protocol for LegacyUniHubProtocol {
     fn init_sequence(&self) -> Vec<ProtocolCommand> {
         let mut operations = Vec::new();
         self.append_init_operations(&mut operations);
-        vec![self.vendor_command(operations, false)]
+        vec![Self::vendor_command(&operations, false)]
     }
 
     fn shutdown_sequence(&self) -> Vec<ProtocolCommand> {
@@ -476,14 +476,14 @@ impl Protocol for LegacyUniHubProtocol {
                     );
                 }
             }
-            commands.push(self.vendor_command(operations, false));
+            commands.push(Self::vendor_command(&operations, false));
         }
 
         commands
     }
 
     fn connection_diagnostics(&self) -> Vec<ProtocolCommand> {
-        vec![self.firmware_query_command()]
+        vec![Self::firmware_query_command()]
     }
 
     fn parse_response(&self, data: &[u8]) -> Result<ProtocolResponse, ProtocolError> {
@@ -513,7 +513,7 @@ impl Protocol for LegacyUniHubProtocol {
                     * u32::try_from(self.leds_per_fan())
                         .expect("legacy LEDs per fan should fit in u32"),
                 topology: self.zone_topology(),
-                color_format: self.color_format(),
+                color_format: Self::color_format(),
             })
             .collect()
     }

@@ -181,7 +181,7 @@ fn legacy_original_frame_writes_rbg_color_mode_and_commit_registers() {
             index: 0xE300,
             data,
             ..
-        } if data.len() == 192 && &data[..3] == [10, 30, 20]
+        } if data.len() == 192 && data[..3] == [10, 30, 20]
     ));
     assert!(matches!(
         &operations[2],
@@ -228,7 +228,7 @@ fn legacy_al10_frame_splits_inner_and_outer_ring_packets() {
             index: 0xE500,
             data,
             ..
-        } if data.len() == 24 && &data[..3] == [10, 30, 20]
+        } if data.len() == 24 && data[..3] == [10, 30, 20]
     ));
     assert!(matches!(
         &operations[8],
@@ -244,7 +244,7 @@ fn legacy_al10_frame_splits_inner_and_outer_ring_packets() {
             index: 0xE518,
             data,
             ..
-        } if data.len() == 36 && &data[..3] == [153, 153, 153]
+        } if data.len() == 36 && data[..3] == [153, 153, 153]
     ));
     assert!(matches!(
         &operations[18],
