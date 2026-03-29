@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 
 use hypercolor_types::effect::ControlValue;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveProfileError {
+    AmbiguousName(String),
+}
+
 /// Serializable lighting profile snapshot.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -114,16 +119,30 @@ impl ProfileStore {
         self.profiles.get(key)
     }
 
-    #[must_use]
-    pub fn resolve_key(&self, id_or_name: &str) -> Option<String> {
+    pub fn resolve_key(&self, id_or_name: &str) -> Result<Option<String>, ResolveProfileError> {
         if self.profiles.contains_key(id_or_name) {
-            return Some(id_or_name.to_owned());
+            return Ok(Some(id_or_name.to_owned()));
         }
 
-        self.profiles
-            .iter()
-            .find(|(_, profile)| profile.name.eq_ignore_ascii_case(id_or_name))
-            .map(|(id, _)| id.clone())
+        let matches = self.matching_name_keys(id_or_name, None);
+        match matches.as_slice() {
+            [] => Ok(None),
+            [key] => Ok(Some(key.clone())),
+            _ => Err(ResolveProfileError::AmbiguousName(id_or_name.to_owned())),
+        }
+    }
+
+    pub fn find_existing_name_key(
+        &self,
+        name: &str,
+        excluding_id: Option<&str>,
+    ) -> Result<Option<String>, ResolveProfileError> {
+        let matches = self.matching_name_keys(name, excluding_id);
+        match matches.as_slice() {
+            [] => Ok(None),
+            [key] => Ok(Some(key.clone())),
+            _ => Err(ResolveProfileError::AmbiguousName(name.to_owned())),
+        }
     }
 
     pub fn insert(&mut self, profile: Profile) {
@@ -140,5 +159,16 @@ impl ProfileStore {
             *profile = profile.clone().normalized();
             !profile.id.is_empty() && !profile.name.is_empty()
         });
+    }
+
+    fn matching_name_keys(&self, name: &str, excluding_id: Option<&str>) -> Vec<String> {
+        self.profiles
+            .iter()
+            .filter(|(id, profile)| {
+                profile.name.eq_ignore_ascii_case(name)
+                    && excluding_id.is_none_or(|excluded| excluded != id.as_str())
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 }

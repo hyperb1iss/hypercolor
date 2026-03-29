@@ -17,7 +17,7 @@ use crate::api::AppState;
 use crate::api::envelope::{ApiError, ApiResponse};
 use crate::api::{effects, persist_runtime_session};
 use crate::discovery;
-use crate::profile_store::Profile;
+use crate::profile_store::{Profile, ResolveProfileError};
 use crate::session::{current_global_brightness, set_global_brightness};
 
 // ── Request / Response Types ─────────────────────────────────────────────
@@ -27,6 +27,8 @@ pub struct CreateProfileRequest {
     pub name: String,
     pub description: Option<String>,
     pub brightness: Option<u8>,
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +36,11 @@ pub struct UpdateProfileRequest {
     pub name: String,
     pub description: Option<String>,
     pub brightness: Option<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApplyProfileRequest {
+    pub transition_ms: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -69,8 +76,12 @@ pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Response {
 /// `GET /api/v1/profiles/:id` — Get a single profile.
 pub async fn get_profile(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let profiles = state.profiles.read().await;
-    let Some(key) = profiles.resolve_key(&id) else {
-        return ApiError::not_found(format!("Profile not found: {id}"));
+    let key = match resolve_profile_key(&profiles, &id) {
+        Ok(Some(key)) => key,
+        Ok(None) => return ApiError::not_found(format!("Profile not found: {id}")),
+        Err(ResolveProfileError::AmbiguousName(name)) => {
+            return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+        }
     };
 
     let profile = profiles.get(&key).expect("resolved profile key must exist");
@@ -82,20 +93,42 @@ pub async fn create_profile(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateProfileRequest>,
 ) -> Response {
-    let id = format!("prof_{}", Uuid::now_v7());
-    let profile =
-        match snapshot_profile(&state, id, body.name, body.description, body.brightness).await {
-            Ok(profile) => profile,
-            Err(error) => return ApiError::validation(error),
-        };
+    let mut profile = match snapshot_profile(
+        &state,
+        format!("prof_{}", Uuid::now_v7()),
+        body.name,
+        body.description,
+        body.brightness,
+    )
+    .await
+    {
+        Ok(profile) => profile,
+        Err(error) => return ApiError::validation(error),
+    };
 
     let mut profiles = state.profiles.write().await;
+    match profiles.find_existing_name_key(&profile.name, None) {
+        Ok(Some(existing_id)) if body.force => {
+            profile.id = existing_id;
+        }
+        Ok(Some(_)) => {
+            return ApiError::conflict(format!("Profile already exists: {}", profile.name));
+        }
+        Ok(None) => {}
+        Err(ResolveProfileError::AmbiguousName(name)) => {
+            return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+        }
+    }
     profiles.insert(profile.clone());
     if let Err(error) = profiles.save() {
         return ApiError::internal(format!("Failed to persist profile store: {error}"));
     }
 
-    ApiResponse::created(profile)
+    if body.force {
+        ApiResponse::ok(profile)
+    } else {
+        ApiResponse::created(profile)
+    }
 }
 
 /// `PUT /api/v1/profiles/:id` — Update a profile (full replacement).
@@ -106,10 +139,13 @@ pub async fn update_profile(
 ) -> Response {
     let profile_id = {
         let profiles = state.profiles.read().await;
-        let Some(key) = profiles.resolve_key(&id) else {
-            return ApiError::not_found(format!("Profile not found: {id}"));
-        };
-        key
+        match resolve_profile_key(&profiles, &id) {
+            Ok(Some(key)) => key,
+            Ok(None) => return ApiError::not_found(format!("Profile not found: {id}")),
+            Err(ResolveProfileError::AmbiguousName(name)) => {
+                return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+            }
+        }
     };
 
     let profile = match snapshot_profile(
@@ -126,6 +162,15 @@ pub async fn update_profile(
     };
 
     let mut profiles = state.profiles.write().await;
+    match profiles.find_existing_name_key(&profile.name, Some(&profile_id)) {
+        Ok(Some(_)) => {
+            return ApiError::conflict(format!("Profile already exists: {}", profile.name));
+        }
+        Ok(None) => {}
+        Err(ResolveProfileError::AmbiguousName(name)) => {
+            return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+        }
+    }
     profiles.insert(profile.clone());
     if let Err(error) = profiles.save() {
         return ApiError::internal(format!("Failed to persist profile store: {error}"));
@@ -140,8 +185,12 @@ pub async fn delete_profile(
     Path(id): Path<String>,
 ) -> Response {
     let mut profiles = state.profiles.write().await;
-    let Some(key) = profiles.resolve_key(&id) else {
-        return ApiError::not_found(format!("Profile not found: {id}"));
+    let key = match resolve_profile_key(&profiles, &id) {
+        Ok(Some(key)) => key,
+        Ok(None) => return ApiError::not_found(format!("Profile not found: {id}")),
+        Err(ResolveProfileError::AmbiguousName(name)) => {
+            return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+        }
     };
 
     profiles.remove(&key);
@@ -156,11 +205,23 @@ pub async fn delete_profile(
 }
 
 /// `POST /api/v1/profiles/:id/apply` — Apply a profile.
-pub async fn apply_profile(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+pub async fn apply_profile(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Option<Json<ApplyProfileRequest>>,
+) -> Response {
+    if let Err(error) = validate_apply_request(body.as_ref()) {
+        return ApiError::bad_request(error);
+    }
+
     let profile = {
         let profiles = state.profiles.read().await;
-        let Some(key) = profiles.resolve_key(&id) else {
-            return ApiError::not_found(format!("Profile not found: {id}"));
+        let key = match resolve_profile_key(&profiles, &id) {
+            Ok(Some(key)) => key,
+            Ok(None) => return ApiError::not_found(format!("Profile not found: {id}")),
+            Err(ResolveProfileError::AmbiguousName(name)) => {
+                return ApiError::conflict(format!("Profile name is ambiguous: {name}"));
+            }
         };
         profiles
             .get(&key)
@@ -191,36 +252,20 @@ pub(crate) async fn apply_profile_snapshot(
     state: &AppState,
     profile: &Profile,
 ) -> Result<(), String> {
-    if let Some(brightness) = profile.brightness {
-        let normalized = f32::from(brightness) / 100.0;
-        let mut settings = state.device_settings.write().await;
-        settings.set_global_brightness(normalized);
-        settings
-            .save()
-            .map_err(|error| format!("failed to persist global brightness: {error}"))?;
-        drop(settings);
-        set_global_brightness(&state.power_state, normalized);
-    }
-
-    if let Some(layout_id) = profile.layout_id.as_deref() {
-        let layout = {
-            let layouts = state.layouts.read().await;
+    let brightness = profile.brightness.map(|value| f32::from(value) / 100.0);
+    let layout = if let Some(layout_id) = profile.layout_id.as_deref() {
+        let layouts = state.layouts.read().await;
+        Some(
             layouts
                 .get(layout_id)
                 .cloned()
-                .ok_or_else(|| format!("profile layout not found: {layout_id}"))?
-        };
+                .ok_or_else(|| format!("profile layout not found: {layout_id}"))?,
+        )
+    } else {
+        None
+    };
 
-        {
-            let mut spatial = state.spatial_engine.write().await;
-            spatial.update_layout(layout);
-        }
-
-        let runtime = super::discovery_runtime(state);
-        discovery::sync_active_layout_connectivity(&runtime, None).await;
-    }
-
-    if let Some(effect_id) = profile.effect_id.as_deref() {
+    let prepared_effect = if let Some(effect_id) = profile.effect_id.as_deref() {
         let metadata = {
             let registry = state.effect_registry.read().await;
             effects::resolve_effect_metadata(&registry, effect_id)
@@ -234,6 +279,12 @@ pub(crate) async fn apply_profile_snapshot(
             )
         })?;
 
+        Some((metadata, renderer))
+    } else {
+        None
+    };
+
+    if let Some((metadata, renderer)) = prepared_effect {
         let mut engine = state.effect_engine.lock().await;
         engine
             .activate(renderer, metadata.clone())
@@ -262,6 +313,26 @@ pub(crate) async fn apply_profile_snapshot(
                 "Profile apply skipped one or more invalid control values"
             );
         }
+    }
+
+    if let Some(layout) = layout {
+        {
+            let mut spatial = state.spatial_engine.write().await;
+            spatial.update_layout(layout);
+        }
+
+        let runtime = super::discovery_runtime(state);
+        discovery::sync_active_layout_connectivity(&runtime, None).await;
+    }
+
+    if let Some(normalized) = brightness {
+        let mut settings = state.device_settings.write().await;
+        settings.set_global_brightness(normalized);
+        settings
+            .save()
+            .map_err(|error| format!("failed to persist global brightness: {error}"))?;
+        drop(settings);
+        set_global_brightness(&state.power_state, normalized);
     }
 
     Ok(())
@@ -326,4 +397,23 @@ fn brightness_percent(brightness: f32) -> u8 {
     } else {
         scaled as u8
     }
+}
+
+fn resolve_profile_key(
+    profiles: &crate::profile_store::ProfileStore,
+    id_or_name: &str,
+) -> Result<Option<String>, ResolveProfileError> {
+    profiles.resolve_key(id_or_name)
+}
+
+fn validate_apply_request(body: Option<&Json<ApplyProfileRequest>>) -> Result<(), String> {
+    let transition_ms = body.and_then(|payload| payload.transition_ms).unwrap_or(0);
+    if transition_ms == 0 {
+        return Ok(());
+    }
+
+    Err(
+        "Profile transitions are not implemented yet; only immediate apply is supported today."
+            .to_owned(),
+    )
 }

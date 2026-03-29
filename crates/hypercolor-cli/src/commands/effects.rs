@@ -65,7 +65,7 @@ pub struct EffectActivateArgs {
     pub intensity: Option<u32>,
 
     /// Crossfade transition duration in milliseconds.
-    #[arg(long, default_value = "500")]
+    #[arg(long, default_value = "0")]
     pub transition: u32,
 }
 
@@ -82,6 +82,10 @@ fn parse_key_value(s: &str) -> Result<(String, String), String> {
         .find('=')
         .ok_or_else(|| format!("invalid KEY=VALUE: no '=' found in '{s}'"))?;
     Ok((s[..pos].to_string(), s[pos + 1..].to_string()))
+}
+
+fn parse_control_value(raw: &str) -> serde_json::Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| serde_json::Value::String(raw.to_owned()))
 }
 
 /// Execute the `effects` subcommand tree.
@@ -170,7 +174,7 @@ async fn execute_activate(
 ) -> Result<()> {
     let mut controls = serde_json::Map::new();
     for (key, value) in &args.param {
-        controls.insert(key.clone(), serde_json::Value::String(value.clone()));
+        controls.insert(key.clone(), parse_control_value(value));
     }
     if let Some(speed) = args.speed {
         controls.insert("speed".to_string(), serde_json::Value::from(speed));
@@ -182,7 +186,7 @@ async fn execute_activate(
     let body = serde_json::json!({
         "controls": controls,
         "transition": {
-            "type": "crossfade",
+            "type": if args.transition == 0 { "cut" } else { "crossfade" },
             "duration_ms": args.transition,
         },
     });

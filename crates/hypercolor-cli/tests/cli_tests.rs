@@ -130,11 +130,7 @@ fn build_cmd() -> clap::Command {
                         .arg(Arg::new("effect").required(true))
                         .arg(Arg::new("speed").long("speed"))
                         .arg(Arg::new("intensity").long("intensity"))
-                        .arg(
-                            Arg::new("transition")
-                                .long("transition")
-                                .default_value("500"),
-                        ),
+                        .arg(Arg::new("transition").long("transition").default_value("0")),
                 )
                 .subcommand(Command::new("stop").about("Stop effect"))
                 .subcommand(
@@ -188,11 +184,7 @@ fn build_cmd() -> clap::Command {
                     Command::new("apply")
                         .about("Apply profile")
                         .arg(Arg::new("name").required(true))
-                        .arg(
-                            Arg::new("transition")
-                                .long("transition")
-                                .default_value("500"),
-                        ),
+                        .arg(Arg::new("transition").long("transition").default_value("0")),
                 )
                 .subcommand(
                     Command::new("delete")

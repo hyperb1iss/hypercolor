@@ -50,7 +50,7 @@ pub struct ProfileApplyArgs {
     pub name: String,
 
     /// Crossfade transition duration in milliseconds.
-    #[arg(long, default_value = "500")]
+    #[arg(long, default_value = "0")]
     pub transition: u32,
 }
 
