@@ -659,11 +659,34 @@ async fn maybe_sleep_throttle(
     }
 
     if power_state.off_output_behavior == OffOutputBehavior::Release {
+        recycled_frame.zones.clear();
+        let (frame_number, elapsed_ms, budget_us) = frame_snapshot(state).await;
+        let frame_num_u32 = u64_to_u32(frame_number);
+        let publish_us = publish_frame_updates(
+            state,
+            recycled_frame,
+            &AudioData::silence(),
+            Canvas::new(state.canvas_width, state.canvas_height),
+            frame_num_u32,
+            elapsed_ms,
+            last_audio_level_update_ms,
+            FrameTiming {
+                render_us: 0,
+                sample_us: 0,
+                push_us: 0,
+                total_us: 0,
+                budget_us,
+            },
+        );
         {
             let mut rl = state.render_loop.write().await;
             let _ = rl.frame_complete();
         }
 
+        trace!(
+            publish_us,
+            "published cleared frame/canvas for release sleep"
+        );
         *sleep_black_pushed = true;
         return Some(FrameExecution {
             next_wake: NextWake::Delay(SESSION_SLEEP_THROTTLE_SLEEP),

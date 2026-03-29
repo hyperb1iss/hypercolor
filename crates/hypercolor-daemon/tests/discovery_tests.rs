@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use hypercolor_core::attachment::AttachmentRegistry;
@@ -20,9 +20,9 @@ use hypercolor_core::spatial::SpatialEngine;
 use hypercolor_daemon::attachment_profiles::AttachmentProfileStore;
 use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_daemon::discovery::{
-    DiscoveryBackend, DiscoveryRuntime, execute_discovery_scan, resolve_hue_probe_bridges,
-    resolve_wled_probe_ips, resolve_wled_probe_targets, sync_active_layout_connectivity,
-    sync_active_layout_for_renderable_devices,
+    DiscoveryBackend, DiscoveryRuntime, execute_discovery_scan, execute_discovery_scan_if_idle,
+    resolve_hue_probe_bridges, resolve_wled_probe_ips, resolve_wled_probe_targets,
+    sync_active_layout_connectivity, sync_active_layout_for_renderable_devices,
 };
 use hypercolor_daemon::logical_devices::LogicalDevice;
 use hypercolor_daemon::network::{self, DaemonDriverHost};
@@ -348,6 +348,51 @@ fn make_runtime(
         driver_host,
         driver_registry,
     }
+}
+
+#[tokio::test]
+async fn execute_discovery_scan_if_idle_respects_existing_scan_owner() {
+    let device_registry = DeviceRegistry::new();
+    let lifecycle_manager = Arc::new(Mutex::new(DeviceLifecycleManager::new()));
+    let temp_dir = tempfile::tempdir().expect("tempdir should be created");
+    let runtime = make_runtime(
+        device_registry,
+        lifecycle_manager,
+        temp_dir.path().join("layouts.json"),
+        temp_dir.path().join("runtime-state.json"),
+    );
+
+    runtime.runtime.in_progress.store(false, Ordering::Release);
+    let result = execute_discovery_scan_if_idle(
+        runtime.runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
+        Arc::new(HypercolorConfig::default()),
+        Vec::new(),
+        Duration::from_millis(50),
+    )
+    .await;
+    assert!(result.is_some(), "idle scan should be allowed to run");
+    assert!(
+        !runtime.runtime.in_progress.load(Ordering::Acquire),
+        "completed scan should release the in-progress flag"
+    );
+
+    runtime.runtime.in_progress.store(true, Ordering::Release);
+    let skipped = execute_discovery_scan_if_idle(
+        runtime.runtime.clone(),
+        Arc::clone(&runtime.driver_registry),
+        Arc::clone(&runtime.driver_host),
+        Arc::new(HypercolorConfig::default()),
+        Vec::new(),
+        Duration::from_millis(50),
+    )
+    .await;
+    assert!(skipped.is_none(), "overlapping scan should be skipped");
+    assert!(
+        runtime.runtime.in_progress.load(Ordering::Acquire),
+        "skipped scan must not clear another caller's in-progress flag"
+    );
 }
 
 #[tokio::test]

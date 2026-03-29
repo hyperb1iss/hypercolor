@@ -222,6 +222,39 @@ pub const fn default_timeout() -> Duration {
     Duration::from_millis(DEFAULT_DISCOVERY_TIMEOUT_MS)
 }
 
+/// Execute a discovery scan only when no other scan currently owns the
+/// shared in-progress slot.
+///
+/// Returns `None` when another caller is already scanning.
+pub async fn execute_discovery_scan_if_idle(
+    runtime: DiscoveryRuntime,
+    driver_registry: Arc<DriverRegistry>,
+    driver_host: Arc<DaemonDriverHost>,
+    config: Arc<HypercolorConfig>,
+    backends: Vec<DiscoveryBackend>,
+    timeout: Duration,
+) -> Option<DiscoveryScanResult> {
+    if runtime
+        .in_progress
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return None;
+    }
+
+    Some(
+        execute_discovery_scan(
+            runtime,
+            driver_registry,
+            driver_host,
+            config,
+            backends,
+            timeout,
+        )
+        .await,
+    )
+}
+
 /// Clamp API-provided timeout values to a safe operational range.
 #[must_use]
 pub fn normalize_timeout_ms(timeout_ms: Option<u64>) -> Duration {

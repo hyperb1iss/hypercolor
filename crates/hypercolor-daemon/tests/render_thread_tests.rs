@@ -29,6 +29,7 @@ use hypercolor_daemon::device_settings::DeviceSettingsStore;
 use hypercolor_types::audio::AudioData;
 use hypercolor_types::device::{DeviceId, DeviceState};
 use hypercolor_types::event::{HypercolorEvent, InputButtonState, InputEvent, ZoneColors};
+use hypercolor_types::session::OffOutputBehavior;
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -1148,5 +1149,99 @@ async fn idle_pipeline_throttles_even_with_watch_receivers() {
     assert!(
         !got_extra_frame,
         "expected idle pipeline to stop publishing repeated frames"
+    );
+}
+
+#[tokio::test]
+async fn release_sleep_clears_published_frame_and_canvas_once() {
+    let layout = test_layout(vec![strip_zone("zone_0", "mock:strip", 8)]);
+    let mut effect_engine = EffectEngine::new();
+    effect_engine
+        .activate(
+            Box::new(MockEffectRenderer::solid(255, 0, 0)),
+            MockEffectRenderer::sample_metadata("release-sleep"),
+        )
+        .expect("activate");
+
+    let (power_tx, power_state) = watch::channel(OutputPowerState::default());
+    let state = RenderThreadState {
+        effect_engine: Arc::new(Mutex::new(effect_engine)),
+        spatial_engine: Arc::new(RwLock::new(SpatialEngine::new(layout))),
+        backend_manager: Arc::new(Mutex::new(BackendManager::new())),
+        performance: Arc::new(RwLock::new(PerformanceTracker::default())),
+        discovery_runtime: None,
+        event_bus: Arc::new(HypercolorBus::new()),
+        render_loop: Arc::new(RwLock::new(RenderLoop::new(60))),
+        input_manager: Arc::new(Mutex::new(InputManager::new())),
+        power_state,
+        device_settings: Arc::new(RwLock::new(DeviceSettingsStore::new(PathBuf::from(
+            "device-settings.json",
+        )))),
+        canvas_width: 320,
+        canvas_height: 200,
+        screen_capture_enabled: false,
+    };
+
+    let mut frame_rx = state.event_bus.frame_receiver();
+    let mut canvas_rx = state.event_bus.canvas_receiver();
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.start();
+    }
+
+    let mut rt = RenderThread::spawn(state.clone());
+
+    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
+        .await
+        .expect("timed out waiting for initial frame")
+        .expect("frame sender should remain connected");
+    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+        .await
+        .expect("timed out waiting for initial canvas")
+        .expect("canvas sender should remain connected");
+
+    assert!(
+        !frame_rx.borrow().zones.is_empty(),
+        "initial render should publish sampled zone colors"
+    );
+
+    power_tx.send_replace(OutputPowerState {
+        sleeping: true,
+        session_brightness: 0.0,
+        off_output_behavior: OffOutputBehavior::Release,
+        ..OutputPowerState::default()
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), frame_rx.changed())
+        .await
+        .expect("timed out waiting for cleared frame")
+        .expect("frame sender should remain connected");
+    tokio::time::timeout(Duration::from_secs(2), canvas_rx.changed())
+        .await
+        .expect("timed out waiting for cleared canvas")
+        .expect("canvas sender should remain connected");
+
+    {
+        let mut rl = state.render_loop.write().await;
+        rl.stop();
+    }
+    rt.shutdown().await.expect("shutdown");
+
+    let cleared_frame = frame_rx.borrow().clone();
+    assert!(
+        cleared_frame.zones.is_empty(),
+        "release sleep should clear the published zone frame"
+    );
+
+    let cleared_canvas = canvas_rx.borrow().clone();
+    assert_eq!(cleared_canvas.width, 320);
+    assert_eq!(cleared_canvas.height, 200);
+    assert!(
+        cleared_canvas
+            .rgba_bytes()
+            .chunks_exact(4)
+            .all(|pixel| pixel[0] == 0 && pixel[1] == 0 && pixel[2] == 0),
+        "release sleep should publish a blank canvas instead of the stale preview"
     );
 }

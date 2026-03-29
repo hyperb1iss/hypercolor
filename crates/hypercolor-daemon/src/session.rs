@@ -1,6 +1,7 @@
 //! Daemon-side session power orchestration.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use tokio::sync::{Mutex, watch};
@@ -254,7 +255,7 @@ async fn ensure_awake(runtime: &SessionRuntime) {
 async fn run_usb_resume_scan(runtime: &SessionRuntime) {
     let config_guard = runtime.config_manager.get();
     let config = Arc::clone(&*config_guard);
-    let result = discovery::execute_discovery_scan(
+    let Some(result) = discovery::execute_discovery_scan_if_idle(
         runtime.discovery_runtime.clone(),
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
@@ -262,7 +263,17 @@ async fn run_usb_resume_scan(runtime: &SessionRuntime) {
         vec![DiscoveryBackend::Usb, DiscoveryBackend::SmBus],
         discovery::default_timeout(),
     )
-    .await;
+    .await
+    else {
+        debug!(
+            in_progress = runtime
+                .discovery_runtime
+                .in_progress
+                .load(Ordering::Acquire),
+            "Skipping USB resume recovery scan because discovery is already running"
+        );
+        return;
+    };
 
     debug!(
         found = result.new_devices.len() + result.reappeared_devices.len(),
@@ -283,7 +294,7 @@ async fn run_full_reconnect_scan(runtime: &SessionRuntime) {
         }
     };
 
-    let result = discovery::execute_discovery_scan(
+    let Some(result) = discovery::execute_discovery_scan_if_idle(
         runtime.discovery_runtime.clone(),
         Arc::clone(&runtime.driver_registry),
         Arc::clone(&runtime.driver_host),
@@ -291,7 +302,17 @@ async fn run_full_reconnect_scan(runtime: &SessionRuntime) {
         backends,
         discovery::default_timeout(),
     )
-    .await;
+    .await
+    else {
+        debug!(
+            in_progress = runtime
+                .discovery_runtime
+                .in_progress
+                .load(Ordering::Acquire),
+            "Skipping output reconnect scan because discovery is already running"
+        );
+        return;
+    };
 
     debug!(
         found = result.new_devices.len() + result.reappeared_devices.len(),

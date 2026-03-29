@@ -6,7 +6,7 @@
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, bail};
 use axum::body::Body;
@@ -33,6 +33,7 @@ use hypercolor_types::effect::{
     ControlDefinition, ControlKind, ControlType, ControlValue, EffectCategory, EffectId,
     EffectMetadata, EffectSource, EffectState,
 };
+use hypercolor_types::event::{ChangeTrigger, EffectStopReason, HypercolorEvent};
 use hypercolor_types::spatial::{
     DeviceZone, EdgeBehavior, LedTopology, NormalizedPosition, SamplingMode, SpatialLayout,
     StripDirection,
@@ -212,6 +213,32 @@ async fn health_check_returns_200() {
 }
 
 #[tokio::test]
+async fn health_check_reports_stopped_render_loop_as_degraded() {
+    let state = Arc::new(isolated_state());
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.stop();
+    }
+
+    let app = test_app_with_state(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let json = body_json(response).await;
+    assert_eq!(json["status"], "degraded");
+    assert_eq!(json["checks"]["render_loop"], "degraded");
+}
+
+#[tokio::test]
 async fn spa_fallback_serves_index_html_for_client_routes() {
     let tempdir = tempfile::tempdir().expect("tempdir should build");
     let index_path = tempdir.path().join("index.html");
@@ -294,6 +321,31 @@ async fn status_returns_200_with_envelope() {
         "audio_available should be a bool"
     );
     assert_eq!(json["data"]["capture_available"], serde_json::json!(false));
+}
+
+#[tokio::test]
+async fn status_reports_stopped_render_loop_as_not_running() {
+    let state = Arc::new(isolated_state());
+    {
+        let mut render_loop = state.render_loop.write().await;
+        render_loop.stop();
+    }
+
+    let app = test_app_with_state(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/status")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let json = body_json(response).await;
+    assert_eq!(json["data"]["running"], serde_json::json!(false));
+    assert_eq!(json["data"]["render_loop"]["state"], "stopped");
 }
 
 #[tokio::test]
@@ -1352,6 +1404,95 @@ async fn update_current_controls_updates_active_effect() {
     assert_eq!(active_response.status(), StatusCode::OK);
     let active_json = body_json(active_response).await;
     assert_eq!(active_json["data"]["control_values"]["speed"]["float"], 7.5);
+}
+
+#[tokio::test]
+async fn rest_effect_lifecycle_publishes_started_and_stopped_events() {
+    let state = Arc::new(isolated_state());
+    insert_test_effect(&state, "solid_color").await;
+    let mut events = state.event_bus.subscribe_all();
+    let app = test_app_with_state(Arc::clone(&state));
+
+    let apply_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/solid_color/apply")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(apply_response.status(), StatusCode::OK);
+
+    let started = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::EffectStarted {
+                        effect,
+                        trigger,
+                        previous,
+                        transition,
+                    } = timestamped.event
+                    {
+                        break (effect, trigger, previous, transition);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before effect start event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for effect start event");
+
+    assert_eq!(started.0.name, "solid_color");
+    assert_eq!(started.1, ChangeTrigger::Api);
+    assert!(
+        started.2.is_none(),
+        "first activation should have no previous effect"
+    );
+    assert!(
+        started.3.is_none(),
+        "REST effect apply should mirror MCP transition semantics"
+    );
+
+    let stop_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/effects/stop")
+                .body(Body::empty())
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("failed to execute request");
+    assert_eq!(stop_response.status(), StatusCode::OK);
+
+    let stopped = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(timestamped) => {
+                    if let HypercolorEvent::EffectStopped { effect, reason } = timestamped.event {
+                        break (effect, reason);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus closed before effect stop event arrived");
+                }
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for effect stop event");
+
+    assert_eq!(stopped.0.name, "solid_color");
+    assert_eq!(stopped.1, EffectStopReason::Stopped);
 }
 
 // ── Library ──────────────────────────────────────────────────────────────

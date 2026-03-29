@@ -13,6 +13,7 @@ use hypercolor_core::effect::{EffectRegistry, create_renderer_for_metadata};
 use hypercolor_types::effect::{
     ControlDefinition, ControlValue, EffectId, EffectMetadata, EffectSource, PresetTemplate,
 };
+use hypercolor_types::event::{ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent};
 use hypercolor_types::spatial::SpatialLayout;
 
 use crate::api::AppState;
@@ -370,11 +371,11 @@ pub async fn apply_effect(
 
     let controls = extract_request_controls(body.as_ref());
     let mut dropped_controls = Vec::new();
-    let previous_effect: Option<String>;
+    let previous_effect: Option<EffectRef>;
 
     {
         let mut engine = state.effect_engine.lock().await;
-        previous_effect = engine.active_metadata().map(|meta| meta.name.clone());
+        previous_effect = engine.active_metadata().map(effect_ref);
         if let Err(e) = engine.activate(renderer, metadata.clone()) {
             warn!(
                 effect_id = %metadata.id,
@@ -400,11 +401,17 @@ pub async fn apply_effect(
     }
 
     log_effect_apply_completion(
-        previous_effect.as_deref(),
+        previous_effect.as_ref().map(|effect| effect.name.as_str()),
         &metadata.name,
         controls.len(),
         &dropped_controls,
     );
+    state.event_bus.publish(HypercolorEvent::EffectStarted {
+        effect: effect_ref(&metadata),
+        trigger: ChangeTrigger::Api,
+        previous: previous_effect,
+        transition: None,
+    });
     let applied_layout = apply_associated_layout(&state, &metadata.id.to_string()).await;
     super::persist_runtime_session(&state).await;
 
@@ -444,12 +451,16 @@ pub async fn get_active_effect(State(state): State<Arc<AppState>>) -> Response {
 pub async fn stop_effect(State(state): State<Arc<AppState>>) -> Response {
     let mut engine = state.effect_engine.lock().await;
 
-    if engine.active_metadata().is_none() {
+    let Some(previous_effect) = engine.active_metadata().cloned() else {
         return ApiError::not_found("No effect is currently active");
-    }
+    };
 
     engine.deactivate();
     drop(engine);
+    state.event_bus.publish(HypercolorEvent::EffectStopped {
+        effect: effect_ref(&previous_effect),
+        reason: EffectStopReason::Stopped,
+    });
     super::persist_runtime_session(&state).await;
 
     ApiResponse::ok(serde_json::json!({
@@ -661,6 +672,14 @@ fn log_effect_apply_completion(
             dropped_controls = ?dropped_controls,
             "Ignored unsupported control value payloads"
         );
+    }
+}
+
+fn effect_ref(metadata: &EffectMetadata) -> EffectRef {
+    EffectRef {
+        id: metadata.id.to_string(),
+        name: metadata.name.clone(),
+        engine: "servo".to_owned(),
     }
 }
 

@@ -99,6 +99,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
             total_frames: snapshot.total_frames,
         }
     };
+    let running = render_loop_is_operational(render_loop_status.state.as_str());
 
     let uptime_seconds = state.start_time.elapsed().as_secs();
     let config_path = config_path(&state).display().to_string();
@@ -106,7 +107,7 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Response {
     let cache_dir = ConfigManager::cache_dir().display().to_string();
 
     ApiResponse::ok(SystemStatus {
-        running: true,
+        running,
         version: env!("CARGO_PKG_VERSION").to_owned(),
         server: state.server_identity.clone(),
         config_path,
@@ -155,14 +156,20 @@ pub async fn health_check(State(state): State<Arc<AppState>>) -> Response {
         event_bus,
     };
 
+    let health = overall_health(&checks);
     let resp = HealthResponse {
-        status: overall_health(&checks).to_owned(),
+        status: health.to_owned(),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         uptime_seconds,
         checks,
     };
 
-    (axum::http::StatusCode::OK, axum::Json(resp)).into_response()
+    let status = match health {
+        "healthy" => axum::http::StatusCode::OK,
+        _ => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    };
+
+    (status, axum::Json(resp)).into_response()
 }
 
 fn config_path(state: &AppState) -> PathBuf {
@@ -192,7 +199,8 @@ fn brightness_percent(brightness: f32) -> u8 {
 fn render_loop_health(state: RenderLoopState) -> &'static str {
     match state {
         RenderLoopState::Running => "ok",
-        RenderLoopState::Created | RenderLoopState::Paused | RenderLoopState::Stopped => "idle",
+        RenderLoopState::Created | RenderLoopState::Paused => "idle",
+        RenderLoopState::Stopped => "degraded",
     }
 }
 
@@ -230,4 +238,8 @@ fn overall_health(checks: &HealthChecks) -> &'static str {
     } else {
         "healthy"
     }
+}
+
+fn render_loop_is_operational(state: &str) -> bool {
+    state != "stopped"
 }
