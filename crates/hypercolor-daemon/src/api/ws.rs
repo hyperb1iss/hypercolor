@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{State, WebSocketUpgrade};
+use axum::extract::{Extension, State, WebSocketUpgrade};
 use axum::http::{Method, Request, header};
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,7 @@ use tower::ServiceExt;
 use tracing::{debug, warn};
 
 use crate::api::AppState;
+use crate::api::security::RequestAuthContext;
 use crate::performance::FrameTimeSummary as RenderFrameTimeSummary;
 use hypercolor_types::server::ServerIdentity;
 
@@ -551,9 +552,16 @@ impl WsProtocolError {
 // ── Handler ──────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/ws` — Upgrade to WebSocket.
-pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
+pub(crate) async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    auth_context: Option<Extension<RequestAuthContext>>,
+) -> Response {
+    let auth_context = auth_context
+        .map(|Extension(context)| context)
+        .unwrap_or_else(RequestAuthContext::unsecured);
     ws.protocols(["hypercolor-v1"])
-        .on_upgrade(move |socket| handle_socket(socket, state))
+        .on_upgrade(move |socket| handle_socket(socket, state, auth_context))
 }
 
 /// Process a single WebSocket connection.
@@ -561,7 +569,11 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>
     clippy::too_many_lines,
     reason = "Socket loop coordinates handshake, heartbeats, relay queues, and client messages"
 )]
-async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
+async fn handle_socket(
+    mut socket: WebSocket,
+    state: Arc<AppState>,
+    auth_context: RequestAuthContext,
+) {
     let _client_guard = WsClientGuard::register();
 
     // Default subscriptions: events only.
@@ -678,7 +690,14 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
             msg = socket.recv() => {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        handle_client_message(&text, &state, &subscriptions, &mut socket).await;
+                        handle_client_message(
+                            &text,
+                            &state,
+                            auth_context,
+                            &subscriptions,
+                            &mut socket,
+                        )
+                        .await;
                     }
                     Some(Ok(Message::Pong(_))) => {
                         awaiting_pong = false;
@@ -1023,6 +1042,7 @@ fn try_enqueue_json(
 async fn handle_client_message(
     text: &str,
     state: &Arc<AppState>,
+    auth_context: RequestAuthContext,
     subscriptions: &Arc<RwLock<SubscriptionState>>,
     socket: &mut WebSocket,
 ) {
@@ -1097,7 +1117,7 @@ async fn handle_client_message(
             path,
             body,
         } => {
-            let response = dispatch_command(state, id, method, path, body).await;
+            let response = dispatch_command(state, auth_context, id, method, path, body).await;
             let _ = send_json(socket, &response).await;
         }
     }
@@ -1105,6 +1125,7 @@ async fn handle_client_message(
 
 async fn dispatch_command(
     state: &Arc<AppState>,
+    auth_context: RequestAuthContext,
     id: String,
     method_raw: String,
     path_raw: String,
@@ -1143,7 +1164,7 @@ async fn dispatch_command(
         request_builder = request_builder.header(header::CONTENT_TYPE, "application/json");
     }
 
-    let request = match request_builder.body(axum::body::Body::from(body_bytes)) {
+    let mut request = match request_builder.body(axum::body::Body::from(body_bytes)) {
         Ok(request) => request,
         Err(error) => {
             return ServerMessage::Response {
@@ -1156,6 +1177,7 @@ async fn dispatch_command(
             };
         }
     };
+    request.extensions_mut().insert(auth_context);
 
     let response = crate::api::build_router(Arc::clone(state), None)
         .oneshot(request)
@@ -1753,6 +1775,7 @@ mod tests {
         unique_sorted_channel_names, ws_capabilities,
     };
     use crate::api::AppState;
+    use crate::api::security::{RequestAuthContext, SecurityState};
     use axum::response::IntoResponse;
     use hypercolor_core::bus::CanvasFrame;
     use hypercolor_types::canvas::{Canvas, Rgba};
@@ -1761,6 +1784,13 @@ mod tests {
     };
     use std::collections::HashSet;
     use std::sync::Arc;
+
+    fn secured_state() -> Arc<AppState> {
+        let mut state = AppState::new();
+        state.security_state =
+            SecurityState::with_keys(Some("hc_ak_control_test"), Some("hc_ak_r_read_test"));
+        Arc::new(state)
+    }
 
     #[test]
     fn parse_channels_accepts_supported_channel() {
@@ -2000,6 +2030,7 @@ mod tests {
         let state = Arc::new(AppState::new());
         let message = dispatch_command(
             &state,
+            RequestAuthContext::unsecured(),
             "cmd_status".to_owned(),
             "GET".to_owned(),
             "/status".to_owned(),
@@ -2029,6 +2060,7 @@ mod tests {
         let state = Arc::new(AppState::new());
         let message = dispatch_command(
             &state,
+            RequestAuthContext::unsecured(),
             "cmd_bad_method".to_owned(),
             "BREW".to_owned(),
             "/status".to_owned(),
@@ -2049,6 +2081,66 @@ mod tests {
                 assert_eq!(
                     error.and_then(|value| value.get("code").cloned()),
                     Some(serde_json::json!("invalid_request"))
+                );
+            }
+            _ => panic!("expected command response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_command_preserves_secured_ws_auth_context() {
+        let state = secured_state();
+        let message = dispatch_command(
+            &state,
+            RequestAuthContext::read_only(),
+            "cmd_status".to_owned(),
+            "GET".to_owned(),
+            "/status".to_owned(),
+            None,
+        )
+        .await;
+
+        match message {
+            ServerMessage::Response {
+                id,
+                status,
+                data,
+                error,
+            } => {
+                assert_eq!(id, "cmd_status");
+                assert_eq!(status, 200);
+                assert!(data.is_some());
+                assert!(error.is_none());
+            }
+            _ => panic!("expected command response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_command_requires_auth_context_when_security_is_enabled() {
+        let state = secured_state();
+        let message = dispatch_command(
+            &state,
+            RequestAuthContext::unsecured(),
+            "cmd_status".to_owned(),
+            "GET".to_owned(),
+            "/status".to_owned(),
+            None,
+        )
+        .await;
+
+        match message {
+            ServerMessage::Response {
+                status,
+                data,
+                error,
+                ..
+            } => {
+                assert_eq!(status, 401);
+                assert!(data.is_none());
+                assert_eq!(
+                    error.and_then(|value| value.get("code").cloned()),
+                    Some(serde_json::json!("unauthorized"))
                 );
             }
             _ => panic!("expected command response"),

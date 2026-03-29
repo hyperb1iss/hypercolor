@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
-use axum::http::{HeaderName, HeaderValue, Method, Request};
+use axum::http::{HeaderName, HeaderValue, Method, Request, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use serde_json::json;
@@ -36,6 +36,54 @@ const HEADER_RETRY_AFTER: HeaderName = HeaderName::from_static("retry-after");
 pub struct SecurityState {
     auth: AuthConfig,
     rate_limiter: Arc<Mutex<RateLimiter>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestAuthContext {
+    security_enabled: bool,
+    granted_tier: Option<AccessTier>,
+}
+
+impl RequestAuthContext {
+    #[must_use]
+    pub(crate) const fn unsecured() -> Self {
+        Self {
+            security_enabled: false,
+            granted_tier: None,
+        }
+    }
+
+    #[must_use]
+    const fn preflight() -> Self {
+        Self {
+            security_enabled: true,
+            granted_tier: None,
+        }
+    }
+
+    #[must_use]
+    const fn authenticated(granted_tier: AccessTier) -> Self {
+        Self {
+            security_enabled: true,
+            granted_tier: Some(granted_tier),
+        }
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) const fn read_only() -> Self {
+        Self::authenticated(AccessTier::Read)
+    }
+
+    #[must_use]
+    pub(crate) const fn security_enabled(self) -> bool {
+        self.security_enabled
+    }
+
+    #[must_use]
+    const fn granted_tier(self) -> Option<AccessTier> {
+        self.granted_tier
+    }
 }
 
 impl SecurityState {
@@ -78,7 +126,7 @@ pub fn control_api_key_configured_from_env() -> bool {
 
 #[cfg(test)]
 impl SecurityState {
-    fn with_keys(control_key: Option<&str>, read_key: Option<&str>) -> Self {
+    pub(crate) fn with_keys(control_key: Option<&str>, read_key: Option<&str>) -> Self {
         Self {
             auth: AuthConfig {
                 control_key: control_key.map(ToOwned::to_owned),
@@ -225,28 +273,50 @@ pub async fn enforce_security(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    let mut request = request;
+
     if is_exempt_path(request.uri().path()) {
+        request
+            .extensions_mut()
+            .insert(RequestAuthContext::unsecured());
         return next.run(request).await;
     }
 
     if !state.security_enabled() {
+        request
+            .extensions_mut()
+            .insert(RequestAuthContext::unsecured());
         return next.run(request).await;
     }
 
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
+    let mut granted_tier = request
+        .extensions()
+        .get::<RequestAuthContext>()
+        .copied()
+        .filter(|context| context.security_enabled())
+        .and_then(RequestAuthContext::granted_tier);
 
     if method != Method::OPTIONS {
         let required_tier = required_tier_for_method(&method);
-        let Some(token) = extract_token(&request) else {
-            return ApiError::unauthorized("Missing API key. Use Authorization: Bearer <token>.");
-        };
+        let granted = if let Some(granted_tier) = granted_tier {
+            granted_tier
+        } else {
+            let Some(token) = extract_token(&request) else {
+                return ApiError::unauthorized(
+                    "Missing API key. Use Authorization: Bearer <token>.",
+                );
+            };
 
-        let Some(granted_tier) = resolve_token_tier(&token, &state.auth) else {
-            return ApiError::unauthorized("Invalid API key");
+            let Some(granted_tier) = resolve_token_tier(&token, &state.auth) else {
+                return ApiError::unauthorized("Invalid API key");
+            };
+            granted_tier
         };
+        granted_tier = Some(granted);
 
-        if !tier_satisfies(granted_tier, required_tier) {
+        if !tier_satisfies(granted, required_tier) {
             return ApiError::forbidden_with_details(
                 "Read-only API key cannot perform write operations",
                 json!({
@@ -256,6 +326,12 @@ pub async fn enforce_security(
             );
         }
     }
+
+    request.extensions_mut().insert(
+        granted_tier
+            .map(RequestAuthContext::authenticated)
+            .unwrap_or_else(RequestAuthContext::preflight),
+    );
 
     let operation = classify_operation(&method, &path);
     let client_id = client_identity(&request);
@@ -369,7 +445,11 @@ fn extract_token(request: &Request<Body>) -> Option<String> {
         }
     }
 
-    token_from_query(request.uri().query())
+    if allows_query_token(request) {
+        return token_from_query(request.uri().query());
+    }
+
+    None
 }
 
 fn parse_bearer_header(value: &str) -> Option<&str> {
@@ -392,14 +472,40 @@ fn token_from_query(query: Option<&str>) -> Option<String> {
     None
 }
 
+fn allows_query_token(request: &Request<Body>) -> bool {
+    matches!(request.uri().path(), "/ws" | "/api/v1/ws")
+        && request.method() == Method::GET
+        && request
+            .headers()
+            .get(header::UPGRADE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
+
 fn client_identity(request: &Request<Body>) -> String {
+    if let Some(ConnectInfo(socket_addr)) = request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+    {
+        if socket_addr.ip().is_loopback()
+            && let Some(forwarded_client) = forwarded_client_ip(request)
+        {
+            return forwarded_client;
+        }
+        return socket_addr.ip().to_string();
+    }
+
+    "unknown".to_owned()
+}
+
+fn forwarded_client_ip(request: &Request<Body>) -> Option<String> {
     if let Some(forwarded) = request.headers().get("x-forwarded-for")
         && let Ok(value) = forwarded.to_str()
         && let Some(first) = value.split(',').next()
     {
         let trimmed = first.trim();
         if !trimmed.is_empty() {
-            return trimmed.to_owned();
+            return Some(trimmed.to_owned());
         }
     }
 
@@ -408,18 +514,11 @@ fn client_identity(request: &Request<Body>) -> String {
     {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
-            return trimmed.to_owned();
+            return Some(trimmed.to_owned());
         }
     }
 
-    if let Some(ConnectInfo(socket_addr)) = request
-        .extensions()
-        .get::<ConnectInfo<std::net::SocketAddr>>()
-    {
-        return socket_addr.ip().to_string();
-    }
-
-    "unknown".to_owned()
+    None
 }
 
 fn apply_rate_headers(response: &mut Response, decision: &RateDecision) {
@@ -456,6 +555,9 @@ fn unix_now_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use axum::extract::ConnectInfo;
     use axum::http::header::AUTHORIZATION;
     use axum::routing::{get, post};
     use axum::{Router, body::Body};
@@ -474,6 +576,7 @@ mod tests {
         Router::new()
             .route("/health", get(|| async { StatusCode::OK }))
             .route("/api/v1/status", get(|| async { StatusCode::OK }))
+            .route("/api/v1/ws", get(|| async { StatusCode::OK }))
             .route("/api/v1/scenes", post(|| async { StatusCode::CREATED }))
             .route(
                 "/api/v1/devices/discover",
@@ -498,6 +601,13 @@ mod tests {
 
     fn with_bearer(request: http::request::Builder, token: &str) -> http::request::Builder {
         request.header(AUTHORIZATION, format!("Bearer {token}"))
+    }
+
+    fn with_connect_info(mut request: Request<Body>, ip: IpAddr, port: u16) -> Request<Body> {
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(ip, port)));
+        request
     }
 
     #[tokio::test]
@@ -594,12 +704,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn supports_query_token_authentication() {
+    async fn rejects_query_token_authentication_for_http_endpoints() {
         let app = secured_test_router();
         let response = app
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/v1/status?token={READ_KEY}"))
+                    .body(Body::empty())
+                    .expect("failed to build request"),
+            )
+            .await
+            .expect("request failed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn websocket_upgrade_allows_query_token_authentication() {
+        let app = secured_test_router();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/ws?token={READ_KEY}"))
+                    .header("upgrade", "websocket")
                     .body(Body::empty())
                     .expect("failed to build request"),
             )
@@ -615,48 +742,51 @@ mod tests {
 
         let first = app
             .clone()
-            .oneshot(
+            .oneshot(with_connect_info(
                 with_bearer(
                     Request::builder()
                         .method("POST")
-                        .uri("/api/v1/devices/discover")
-                        .header("x-forwarded-for", "10.0.0.1"),
+                        .uri("/api/v1/devices/discover"),
                     CONTROL_KEY,
                 )
                 .body(Body::empty())
                 .expect("failed to build request"),
-            )
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                1001,
+            ))
             .await
             .expect("first request failed");
 
         let second = app
             .clone()
-            .oneshot(
+            .oneshot(with_connect_info(
                 with_bearer(
                     Request::builder()
                         .method("POST")
-                        .uri("/api/v1/devices/discover")
-                        .header("x-forwarded-for", "10.0.0.2"),
+                        .uri("/api/v1/devices/discover"),
                     CONTROL_KEY,
                 )
                 .body(Body::empty())
                 .expect("failed to build request"),
-            )
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                1002,
+            ))
             .await
             .expect("second request failed");
 
         let third = app
-            .oneshot(
+            .oneshot(with_connect_info(
                 with_bearer(
                     Request::builder()
                         .method("POST")
-                        .uri("/api/v1/devices/discover")
-                        .header("x-forwarded-for", "10.0.0.3"),
+                        .uri("/api/v1/devices/discover"),
                     CONTROL_KEY,
                 )
                 .body(Body::empty())
                 .expect("failed to build request"),
-            )
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3)),
+                1003,
+            ))
             .await
             .expect("third request failed");
 
@@ -678,34 +808,36 @@ mod tests {
         for _ in 0..super::PAIRING_LIMIT_PER_MIN {
             let response = app
                 .clone()
-                .oneshot(
+                .oneshot(with_connect_info(
                     with_bearer(
                         Request::builder()
                             .method("POST")
-                            .uri("/api/v1/devices/device-1/pair")
-                            .header("x-forwarded-for", "10.0.0.10"),
+                            .uri("/api/v1/devices/device-1/pair"),
                         CONTROL_KEY,
                     )
                     .body(Body::empty())
                     .expect("failed to build request"),
-                )
+                    IpAddr::V4(Ipv4Addr::new(10, 0, 0, 10)),
+                    1010,
+                ))
                 .await
                 .expect("pairing request failed");
             assert_eq!(response.status(), StatusCode::OK);
         }
 
         let limited = app
-            .oneshot(
+            .oneshot(with_connect_info(
                 with_bearer(
                     Request::builder()
                         .method("DELETE")
-                        .uri("/api/v1/devices/device-1/pair")
-                        .header("x-forwarded-for", "10.0.0.10"),
+                        .uri("/api/v1/devices/device-1/pair"),
                     CONTROL_KEY,
                 )
                 .body(Body::empty())
                 .expect("failed to build request"),
-            )
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 10)),
+                1010,
+            ))
             .await
             .expect("limited pairing request failed");
 
@@ -754,5 +886,29 @@ mod tests {
             super::classify_operation(&Method::DELETE, "/api/v1/devices/abc123/pair"),
             super::OperationClass::Pairing
         );
+    }
+
+    #[test]
+    fn forwarded_headers_are_ignored_for_non_loopback_peers() {
+        let request = Request::builder()
+            .uri("/api/v1/status")
+            .header("x-forwarded-for", "203.0.113.50")
+            .body(Body::empty())
+            .expect("failed to build request");
+        let request = with_connect_info(request, IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3)), 9420);
+
+        assert_eq!(super::client_identity(&request), "10.1.2.3");
+    }
+
+    #[test]
+    fn forwarded_headers_are_honored_for_loopback_proxy_peers() {
+        let request = Request::builder()
+            .uri("/api/v1/status")
+            .header("x-forwarded-for", "203.0.113.50")
+            .body(Body::empty())
+            .expect("failed to build request");
+        let request = with_connect_info(request, IpAddr::V4(Ipv4Addr::LOCALHOST), 9420);
+
+        assert_eq!(super::client_identity(&request), "203.0.113.50");
     }
 }

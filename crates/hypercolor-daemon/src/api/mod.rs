@@ -22,6 +22,7 @@ pub mod system;
 pub mod ws;
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -29,9 +30,10 @@ use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use axum::Router;
+use axum::http::{HeaderValue, Method, header};
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 use tracing::warn;
@@ -190,6 +192,9 @@ pub struct AppState {
 
     /// Stable network identity exposed by API and discovery surfaces.
     pub server_identity: ServerIdentity,
+
+    /// Shared API auth and rate-limiting state for HTTP and WS command dispatch.
+    pub security_state: security::SecurityState,
 }
 
 impl AppState {
@@ -365,6 +370,7 @@ impl AppState {
                 instance_name: "hypercolor".to_owned(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
             },
+            security_state: security::SecurityState::from_env(),
         }
     }
 
@@ -437,6 +443,7 @@ impl AppState {
             playlist_runtime: Arc::new(Mutex::new(PlaylistRuntimeState::new())),
             start_time: daemon.start_time,
             server_identity: daemon.server_identity.clone(),
+            security_state: security::SecurityState::from_env(),
         }
     }
 }
@@ -511,7 +518,7 @@ pub(crate) fn discovery_runtime(state: &AppState) -> crate::discovery::Discovery
 /// fallback (all non-API, non-asset paths return `index.html`).
 #[expect(clippy::too_many_lines)]
 pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
-    let security_state = security::SecurityState::from_env();
+    let security_state = state.security_state.clone();
     let mcp_config: McpConfig = state
         .config_manager
         .as_ref()
@@ -775,10 +782,43 @@ pub fn build_router(state: Arc<AppState>, ui_dir: Option<&Path>) -> Router {
         ))
         .layer(
             CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
+                .allow_origin(loopback_cors_origins())
+                .allow_methods([
+                    Method::GET,
+                    Method::HEAD,
+                    Method::OPTIONS,
+                    Method::POST,
+                    Method::PUT,
+                    Method::PATCH,
+                    Method::DELETE,
+                ])
+                .allow_headers([header::ACCEPT, header::AUTHORIZATION, header::CONTENT_TYPE]),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+fn loopback_cors_origins() -> AllowOrigin {
+    AllowOrigin::predicate(|origin: &HeaderValue, _| is_loopback_origin(origin))
+}
+
+fn is_loopback_origin(origin: &HeaderValue) -> bool {
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    let Ok(uri) = origin.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    if !matches!(uri.scheme_str(), Some("http" | "https")) {
+        return false;
+    }
+
+    let Some(host) = uri.host() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+
+    host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
