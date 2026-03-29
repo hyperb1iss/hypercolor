@@ -8,6 +8,10 @@ use hypercolor_hal::drivers::corsair::{
     PID_NAUTILUS_RS_LCD, PID_XC7_RGB_ELITE_LCD, PID_XD6_ELITE_LCD,
 };
 use hypercolor_hal::drivers::dygma::{DYGMA_VENDOR_ID, PID_DEFY_WIRED, PID_DEFY_WIRELESS};
+use hypercolor_hal::drivers::lianli::{
+    LIANLI_ENE_INTERFACE, LIANLI_ENE_VENDOR_ID, LIANLI_TL_USAGE_PAGE, LIANLI_TL_VENDOR_ID,
+    PID_TL_FAN_HUB, PID_UNI_HUB_SL_INFINITY, TL_REPORT_ID,
+};
 use hypercolor_hal::drivers::prismrgb::{
     NOLLIE_VENDOR_ID, PID_NOLLIE_8_V2, PID_PRISM_8, PID_PRISM_MINI, PID_PRISM_S,
     PRISM_GCS_VENDOR_ID, PRISM_VENDOR_ID,
@@ -96,6 +100,52 @@ fn lookup_returns_prism_8_descriptor() {
     assert_eq!(protocol.name(), "PrismRGB Prism 8");
     assert_eq!(protocol.total_leds(), 1_008);
     assert_eq!(protocol.zones().len(), 8);
+}
+
+#[test]
+fn lookup_returns_lianli_sl_infinity_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(LIANLI_ENE_VENDOR_ID, PID_UNI_HUB_SL_INFINITY)
+        .expect("Lian Li SL Infinity descriptor should exist");
+
+    assert_eq!(descriptor.name, "Lian Li Uni Hub - SL Infinity");
+    assert_eq!(descriptor.family, DeviceFamily::LianLi);
+    assert_eq!(descriptor.protocol.id, "lianli/sl-infinity");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbHid {
+            interface: LIANLI_ENE_INTERFACE,
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Lian Li UNI Hub SL Infinity");
+    assert_eq!(protocol.total_leds(), 320);
+    assert_eq!(protocol.zones().len(), 8);
+}
+
+#[test]
+fn lookup_returns_lianli_tl_fan_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(LIANLI_TL_VENDOR_ID, PID_TL_FAN_HUB)
+        .expect("Lian Li TL Fan descriptor should exist");
+
+    assert_eq!(descriptor.name, "Lian Li TL Fan Hub");
+    assert_eq!(descriptor.family, DeviceFamily::LianLi);
+    assert_eq!(descriptor.protocol.id, "lianli/tl-fan");
+    assert_eq!(
+        descriptor.transport,
+        TransportType::UsbHidApi {
+            interface: None,
+            report_id: TL_REPORT_ID,
+            report_mode: HidRawReportMode::OutputReport,
+            usage_page: Some(LIANLI_TL_USAGE_PAGE),
+            usage: None,
+        }
+    );
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Lian Li TL Fan Hub");
+    assert_eq!(protocol.total_leds(), 0);
+    assert!(protocol.zones().is_empty());
 }
 
 #[test]
@@ -632,6 +682,8 @@ fn known_vid_pid_contains_razer_entries() {
     assert!(pairs.contains(&(CORSAIR_VID, PID_COMMANDER_PRO)));
     assert!(pairs.contains(&(DYGMA_VENDOR_ID, PID_DEFY_WIRED)));
     assert!(pairs.contains(&(DYGMA_VENDOR_ID, PID_DEFY_WIRELESS)));
+    assert!(pairs.contains(&(LIANLI_ENE_VENDOR_ID, PID_UNI_HUB_SL_INFINITY)));
+    assert!(pairs.contains(&(LIANLI_TL_VENDOR_ID, PID_TL_FAN_HUB)));
     assert!(pairs.contains(&(PRISM_VENDOR_ID, PID_PRISM_8)));
     assert!(pairs.contains(&(NOLLIE_VENDOR_ID, PID_NOLLIE_8_V2)));
     assert!(pairs.contains(&(PRISM_GCS_VENDOR_ID, PID_PRISM_S)));
