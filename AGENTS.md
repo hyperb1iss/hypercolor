@@ -43,8 +43,8 @@ Each crate has clear boundaries. Do NOT create cross-crate circular dependencies
 | Crate | Depends On | Responsibility |
 |-------|-----------|----------------|
 | `hypercolor-types` | (none) | Shared vocabulary — import from here, never sibling internals |
-| `hypercolor-core` | `types` | Traits, engine logic, effect registry, audio pipeline |
-| `hypercolor-hal` | `types`, `core` | USB/HID device drivers, protocol implementations |
+| `hypercolor-core` | `types`, `hal` | Traits, engine logic, effect registry, audio pipeline |
+| `hypercolor-hal` | `types` | USB/HID device drivers — must NEVER depend on `core` (circular) |
 | `hypercolor-daemon` | `core`, `hal` | HTTP/WS server, REST API, daemon lifecycle |
 | `hypercolor-cli` | `core` | CLI parsing, output formatting, IPC client |
 | `hypercolor-ui` | (standalone) | Leptos WASM app, excluded from workspace — see UI section |
@@ -102,14 +102,17 @@ sources) only, then regenerate locally as needed for verification.
 
 ## API Surface
 
-The daemon exposes a REST + WebSocket API on `:9420`:
+The daemon exposes a REST + WebSocket API on `:9420` (Axum, path params use `{id}` syntax):
 
-- `GET /api/v1/effects` — List all effects (returns `EffectSummary[]`)
-- `GET /api/v1/effects/:id` — Effect detail with controls
-- `POST /api/v1/effects/:id/apply` — Apply effect to devices
-- `GET/POST/DELETE /api/v1/library/favorites` — Favorites CRUD
+- `GET /api/v1/effects` — List all effects
+- `POST /api/v1/effects/{id}/apply` — Apply effect to devices
+- `PATCH /api/v1/effects/current/controls` — Update live controls
 - `GET /api/v1/devices` — Connected devices
-- `WebSocket /api/v1/ws` — Real-time state updates
+- `GET/POST/DELETE /api/v1/library/favorites` — Favorites CRUD
+- `GET/POST /api/v1/scenes` + `POST /api/v1/scenes/{id}/activate` — Scene management
+- `GET/POST /api/v1/layouts` — Spatial layout CRUD
+- `GET/POST /api/v1/profiles` — Profile save/load
+- `WebSocket /api/v1/ws` — Real-time state updates (events, canvas frames, metrics, spectrum)
 
 ## Agent Coordination
 
@@ -123,9 +126,34 @@ Multiple agents may work simultaneously. Follow these rules:
 6. **Never edit generated code** — especially anything under `effects/hypercolor/`; generated files are
    build artifacts, not source files
 
+## Agent Skills & Agents
+
+Domain-specific knowledge for AI agents lives in `.agents/`:
+
+```
+.agents/
+  skills/
+    rgb-effect-design/        # LED color science, HTML effect design
+    hal-driver-development/   # Protocol trait, zerocopy, CommandBuffer, wire formats
+    protocol-research/        # OpenRGB mining, USB capture, spec writing
+    leptos-ui-development/    # Leptos 0.8 signals, WebSocket, SilkCircuit tokens
+    native-effect-authoring/  # EffectRenderer contract, AudioData, Canvas API
+    daemon-development/       # AppState, REST API, event bus, render pipeline
+  agents/
+    driver-porter/            # End-to-end driver porting (research → spec → implement → test)
+    effect-reviewer/          # Validates effects against LED hardware best practices
+```
+
+Skills trigger automatically based on the work being done. Each skill's `SKILL.md` contains
+the core knowledge; `references/` subdirectories hold detailed deep-dives.
+
 ## HAL Driver Best Practices
 
-When writing or modifying device drivers in `hypercolor-hal`, follow these patterns:
+When writing or modifying device drivers in `hypercolor-hal`, follow these patterns.
+Detailed guidance is in the `hal-driver-development` and `protocol-research` skills.
+
+**Current driver families:** Razer, Lian Li (ENE/TL), ASUS Aura, Corsair (Lighting Node/LINK/LCD),
+Dygma, Ableton Push 2, QMK, PrismRGB.
 
 ### Wire-Format Structs with `zerocopy`
 
