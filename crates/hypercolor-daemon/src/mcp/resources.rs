@@ -6,6 +6,7 @@
 use serde_json::{Value, json};
 
 use crate::api::AppState;
+use crate::session::current_global_brightness;
 
 /// Definition of a single MCP resource.
 #[derive(Debug, Clone)]
@@ -183,12 +184,10 @@ async fn read_state_with_state(state: &AppState) -> Value {
         let render_loop = state.render_loop.read().await;
         render_loop.stats()
     };
-    let avg_frame_secs = render_stats.avg_frame_time.as_secs_f32();
-    let actual_fps = if avg_frame_secs > 0.0 {
-        1.0 / avg_frame_secs
-    } else {
-        0.0
-    };
+    let target_fps = render_stats.tier.fps();
+    let actual_fps = super::tools::capped_fps(&render_stats);
+    let brightness =
+        super::tools::brightness_percent(current_global_brightness(&state.power_state));
 
     let active_effect = {
         let engine = state.effect_engine.lock().await;
@@ -231,13 +230,12 @@ async fn read_state_with_state(state: &AppState) -> Value {
     json!({
         "running": matches!(render_stats.state, hypercolor_core::engine::RenderLoopState::Running),
         "paused": matches!(render_stats.state, hypercolor_core::engine::RenderLoopState::Paused),
-        "brightness": null,
+        "brightness": brightness,
         "fps": {
-            "target": render_stats.tier.fps(),
+            "target": target_fps,
             "actual": actual_fps
         },
         "effect": active_effect,
-        "profile": null,
         "devices": {
             "connected": connected,
             "total": devices.len(),
@@ -337,15 +335,22 @@ async fn read_profiles_with_state(state: &AppState) -> Value {
 
 fn read_audio_with_state(state: &AppState) -> Value {
     let spectrum = state.event_bus.spectrum_receiver().borrow().clone();
-    let enabled = state
-        .config_manager
-        .as_ref()
-        .is_some_and(|config_manager| config_manager.get().audio.enabled);
+    let (enabled, device, sample_rate) = if let Some(config_manager) = state.config_manager.as_ref()
+    {
+        let config = config_manager.get();
+        (
+            config.audio.enabled,
+            Some(config.audio.device.clone()),
+            Some(config.audio.fft_size),
+        )
+    } else {
+        (false, None, None)
+    };
 
     json!({
         "enabled": enabled,
-        "source": null,
-        "sample_rate": null,
+        "source": device,
+        "sample_rate": sample_rate,
         "levels": {
             "overall": spectrum.level,
             "bass": spectrum.bass,

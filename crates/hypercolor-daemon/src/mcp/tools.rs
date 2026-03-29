@@ -8,9 +8,10 @@ use std::cmp::min;
 use serde_json::{Map, Value, json};
 
 use crate::api::AppState;
+use crate::session::{current_global_brightness, set_global_brightness};
 use hypercolor_core::scene::make_scene;
 use hypercolor_types::effect::ControlValue;
-use hypercolor_types::event::{ChangeTrigger, HypercolorEvent};
+use hypercolor_types::event::{ChangeTrigger, EffectRef, EffectStopReason, HypercolorEvent};
 use hypercolor_types::scene::TransitionSpec;
 
 /// Definition of a single MCP tool.
@@ -916,8 +917,13 @@ async fn handle_set_effect_with_state(
         }));
     };
 
-    {
+    let previous_effect = {
         let mut engine = state.effect_engine.lock().await;
+        let previous = engine.active_metadata().map(|m| EffectRef {
+            id: m.id.to_string(),
+            name: m.name.clone(),
+            engine: "servo".into(),
+        });
         engine
             .activate_metadata(best_match.effect.clone())
             .map_err(|error| ToolError::Internal(format!("failed to activate effect: {error}")))?;
@@ -925,7 +931,19 @@ async fn handle_set_effect_with_state(
         if let Some(controls) = params.get("controls").and_then(Value::as_object) {
             apply_controls(&mut engine, controls);
         }
-    }
+        previous
+    };
+
+    state.event_bus.publish(HypercolorEvent::EffectStarted {
+        effect: EffectRef {
+            id: best_match.effect.id.to_string(),
+            name: best_match.effect.name.clone(),
+            engine: "servo".into(),
+        },
+        trigger: ChangeTrigger::Api,
+        previous: previous_effect,
+        transition: None,
+    });
 
     Ok(json!({
         "matched_effect": {
@@ -1062,6 +1080,17 @@ async fn handle_stop_effect_with_state(
         previous
     };
 
+    if let Some(ref metadata) = stopped_effect {
+        state.event_bus.publish(HypercolorEvent::EffectStopped {
+            effect: EffectRef {
+                id: metadata.id.to_string(),
+                name: metadata.name.clone(),
+                engine: "servo".into(),
+            },
+            reason: EffectStopReason::Stopped,
+        });
+    }
+
     Ok(json!({
         "stopped": stopped_effect.is_some(),
         "transition_ms": transition_ms,
@@ -1088,11 +1117,18 @@ async fn handle_set_color_with_state(params: &Value, state: &AppState) -> Result
         .await
         .ok_or_else(|| ToolError::Internal("solid color effect is not registered".into()))?;
 
-    {
+    let previous_effect = {
         let mut engine = state.effect_engine.lock().await;
-        engine.activate_metadata(solid_effect).map_err(|error| {
-            ToolError::Internal(format!("failed to activate solid color: {error}"))
-        })?;
+        let previous = engine.active_metadata().map(|m| EffectRef {
+            id: m.id.to_string(),
+            name: m.name.clone(),
+            engine: "servo".into(),
+        });
+        engine
+            .activate_metadata(solid_effect.clone())
+            .map_err(|error| {
+                ToolError::Internal(format!("failed to activate solid color: {error}"))
+            })?;
         engine.set_control(
             "color",
             &ControlValue::Color([
@@ -1114,7 +1150,19 @@ async fn handle_set_color_with_state(params: &Value, state: &AppState) -> Result
             let brightness = f32::from(brightness_u16) / 100.0;
             engine.set_control("brightness", &ControlValue::Float(brightness));
         }
-    }
+        previous
+    };
+
+    state.event_bus.publish(HypercolorEvent::EffectStarted {
+        effect: EffectRef {
+            id: solid_effect.id.to_string(),
+            name: solid_effect.name.clone(),
+            engine: "servo".into(),
+        },
+        trigger: ChangeTrigger::Api,
+        previous: previous_effect,
+        transition: None,
+    });
 
     let device_count = state.device_registry.len().await;
     Ok(json!({
@@ -1202,12 +1250,24 @@ async fn handle_set_brightness_with_state(
         });
     }
 
+    let previous = brightness_percent(current_global_brightness(&state.power_state));
+
     let brightness_u16 = u16::try_from(brightness).unwrap_or(100);
     let normalized = f32::from(brightness_u16) / 100.0;
+
+    set_global_brightness(&state.power_state, normalized);
     {
-        let mut engine = state.effect_engine.lock().await;
-        engine.set_control("brightness", &ControlValue::Float(normalized));
+        let mut settings = state.device_settings.write().await;
+        settings.set_global_brightness(normalized);
+        if let Err(error) = settings.save() {
+            tracing::warn!(%error, "Failed to persist global brightness");
+        }
     }
+
+    state.event_bus.publish(HypercolorEvent::BrightnessChanged {
+        old: previous,
+        new_value: brightness_percent(normalized),
+    });
 
     let device_id = params.get("device_id").and_then(Value::as_str);
     let scope = if device_id.is_some() {
@@ -1220,7 +1280,7 @@ async fn handle_set_brightness_with_state(
         "brightness": brightness,
         "scope": scope,
         "device_id": device_id,
-        "previous_brightness": null
+        "previous_brightness": previous
     }))
 }
 
@@ -1229,12 +1289,10 @@ async fn handle_get_status_with_state(state: &AppState) -> Result<Value, ToolErr
         let render_loop = state.render_loop.read().await;
         render_loop.stats()
     };
-    let avg_frame_secs = render_stats.avg_frame_time.as_secs_f32();
-    let actual_fps = if avg_frame_secs > 0.0 {
-        1.0 / avg_frame_secs
-    } else {
-        0.0
-    };
+    let target_fps = render_stats.tier.fps();
+    let actual_fps = capped_fps(&render_stats);
+
+    let brightness = brightness_percent(current_global_brightness(&state.power_state));
 
     let active_effect = {
         let engine = state.effect_engine.lock().await;
@@ -1275,9 +1333,9 @@ async fn handle_get_status_with_state(state: &AppState) -> Result<Value, ToolErr
     Ok(json!({
         "running": matches!(render_stats.state, hypercolor_core::engine::RenderLoopState::Running),
         "paused": matches!(render_stats.state, hypercolor_core::engine::RenderLoopState::Paused),
-        "brightness": null,
+        "brightness": brightness,
         "fps": {
-            "target": render_stats.tier.fps(),
+            "target": target_fps,
             "actual": actual_fps
         },
         "effect": active_effect.map(|metadata| json!({
@@ -1393,6 +1451,16 @@ async fn handle_create_scene_with_state(
         .get("profile_id")
         .and_then(Value::as_str)
         .ok_or_else(|| ToolError::MissingParam("profile_id".into()))?;
+
+    {
+        let profiles = state.profiles.read().await;
+        if profiles.get(profile_id).is_none() {
+            return Err(ToolError::InvalidParam {
+                param: "profile_id".into(),
+                reason: format!("profile '{profile_id}' not found"),
+            });
+        }
+    }
 
     let trigger = params
         .get("trigger")
@@ -1537,26 +1605,52 @@ async fn handle_get_layout_with_state(state: &AppState) -> Result<Value, ToolErr
 
 async fn handle_diagnose_with_state(_params: &Value, state: &AppState) -> Result<Value, ToolError> {
     let render_stats = state.render_loop.read().await.stats();
-    let avg_frame_secs = render_stats.avg_frame_time.as_secs_f32();
-    let fps = if avg_frame_secs > 0.0 {
-        1.0 / avg_frame_secs
-    } else {
-        0.0
-    };
-    let device_count = state.device_registry.len().await;
+    let fps = capped_fps(&render_stats);
+    let target_fps = render_stats.tier.fps();
+    let consecutive_misses = render_stats.consecutive_misses;
+    let render_time_ms = render_stats.avg_frame_time.as_secs_f64() * 1000.0;
 
-    let status = if device_count == 0 {
+    let devices = state.device_registry.list().await;
+    let device_count = devices.len();
+    let connected_count = devices.iter().filter(|d| d.state.is_renderable()).count();
+    let disconnected_count = device_count - connected_count;
+
+    let mut findings = Vec::new();
+
+    if device_count == 0 {
+        findings.push(json!({
+            "severity": "warning",
+            "message": "No devices discovered. Check backend configuration and network visibility."
+        }));
+    } else if disconnected_count > 0 {
+        findings.push(json!({
+            "severity": "info",
+            "message": format!("{disconnected_count} of {device_count} devices are disconnected.")
+        }));
+    }
+
+    if consecutive_misses > 5 {
+        findings.push(json!({
+            "severity": "warning",
+            "message": format!("Render loop has {consecutive_misses} consecutive frame budget misses — effects may stutter.")
+        }));
+    }
+
+    let is_running = matches!(
+        render_stats.state,
+        hypercolor_core::engine::RenderLoopState::Running
+    );
+    if !is_running {
+        findings.push(json!({
+            "severity": "warning",
+            "message": format!("Render loop is {:?}, not running.", render_stats.state)
+        }));
+    }
+
+    let status = if findings.iter().any(|f| f["severity"] == "warning") {
         "warning"
     } else {
         "healthy"
-    };
-    let findings = if device_count == 0 {
-        vec![json!({
-            "severity": "warning",
-            "message": "No devices discovered. Check backend configuration and network visibility."
-        })]
-    } else {
-        Vec::new()
     };
 
     Ok(json!({
@@ -1564,9 +1658,11 @@ async fn handle_diagnose_with_state(_params: &Value, state: &AppState) -> Result
         "findings": findings,
         "metrics": {
             "fps": fps,
-            "frame_drop_rate": 0.0,
-            "avg_latency_ms": render_stats.avg_frame_time.as_secs_f64() * 1000.0,
-            "device_error_count": 0,
+            "target_fps": target_fps,
+            "consecutive_misses": consecutive_misses,
+            "avg_render_time_ms": render_time_ms,
+            "device_count": device_count,
+            "connected_devices": connected_count,
             "uptime_seconds": state.start_time.elapsed().as_secs()
         }
     }))
@@ -1596,6 +1692,40 @@ fn apply_controls(
             engine.set_control(name, &control_value);
         }
     }
+}
+
+/// Convert a 0.0–1.0 brightness float to a 0–100 percentage.
+pub(crate) fn brightness_percent(brightness: f32) -> u8 {
+    let scaled = (brightness.clamp(0.0, 1.0) * 100.0).round();
+    if scaled <= 0.0 {
+        0
+    } else if scaled >= 100.0 {
+        100
+    } else {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::as_conversions
+        )]
+        let result = scaled as u8;
+        result
+    }
+}
+
+/// Compute actual delivery FPS, capped at the target tier rate.
+///
+/// The EWMA frame time measures render *work* only (excluding the sleep between
+/// frames), so `1/avg_frame_time` gives theoretical throughput. The real delivery
+/// rate is bounded by the FPS tier.
+pub(crate) fn capped_fps(stats: &hypercolor_core::engine::RenderLoopStats) -> f32 {
+    let avg_secs = stats.avg_frame_time.as_secs_f32();
+    if avg_secs <= 0.0 {
+        return 0.0;
+    }
+    let throughput = 1.0 / avg_secs;
+    #[expect(clippy::cast_precision_loss, clippy::as_conversions)]
+    let target = stats.tier.fps() as f32;
+    throughput.min(target)
 }
 
 fn control_value_from_json(value: &Value) -> Option<ControlValue> {
