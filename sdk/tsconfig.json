@@ -32,5 +32,6 @@
             "@hypercolor/sdk/*": ["packages/core/src/*"]
         }
     },
-    "include": ["packages"]
+    "include": ["src/**/*.ts", "src/**/*.d.ts"],
+    "exclude": ["node_modules", "packages/*/dist"]
 }

@@ -1,11 +1,10 @@
 [build]
 rustdocflags = ["--cfg", "docsrs"]
 
+# Keep the shared repo config portable. Release artifacts are built from this
+# config in CI, so host-specific CPU tuning must stay opt-in outside the repo.
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "target-cpu=native"]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
 [target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "target-cpu=native"]
-
-[target.aarch64-apple-darwin]
-rustflags = ["-C", "target-cpu=native"]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]

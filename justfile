@@ -203,20 +203,24 @@ dev *args='':
     trap 'kill 0' EXIT
     ./scripts/servo-cache-build.sh cargo run -p hypercolor-daemon --bin hypercolor --profile preview --features servo -- --log-level debug --bind 127.0.0.1:9420 {{ args }} &
     sleep 2
-    cd crates/hypercolor-ui && trunk serve --dist .dist-dev &
+    cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev &
     wait
 
 # Start the UI dev server (Trunk + hot reload on :9430)
 ui-dev:
-    cd crates/hypercolor-ui && trunk serve --dist .dist-dev
+    cd crates/hypercolor-ui && env -u NO_COLOR trunk serve --dist .dist-dev
 
 # Build the UI for production
 ui-build:
-    cd crates/hypercolor-ui && trunk build --release
+    cd crates/hypercolor-ui && env -u NO_COLOR trunk build --release
 
 # Build UI and copy dist for daemon embedding
 ui-dist: ui-build
     @echo '✅ UI built at crates/hypercolor-ui/dist/'
+
+# Run the standalone UI crate tests
+ui-test:
+    cd crates/hypercolor-ui && cargo test
 
 # ─── SDK ─────────────────────────────────────────────────
 
@@ -236,9 +240,13 @@ sdk-dev:
 sdk-check:
     cd sdk && bun run typecheck
 
-# Lint & format SDK
+# Run SDK lint/format checks without modifying files
 sdk-lint:
     cd sdk && bun run check
+
+# Apply SDK lint fixes
+sdk-fix:
+    cd sdk && bun run check:fix
 
 # Build all SDK effects → effects/hypercolor/*.html
 effects-build:

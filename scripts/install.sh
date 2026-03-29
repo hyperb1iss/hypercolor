@@ -97,7 +97,7 @@ build_ui() {
   info "building web UI"
   (
     cd "${ROOT_DIR}/crates/hypercolor-ui"
-    trunk build --release
+    env -u NO_COLOR trunk build --release
   )
 }
 

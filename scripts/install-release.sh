@@ -7,7 +7,8 @@
 #   curl -fsSL https://install.hypercolor.dev | bash -s -- --uninstall
 #
 # Environment:
-#   HYPERCOLOR_INSTALL_DIR  Override install directory (default: ~/.local/bin)
+#   HYPERCOLOR_INSTALL_PREFIX  Override install prefix (default: ~/.local)
+#   HYPERCOLOR_INSTALL_DIR     Override install directory (default: <prefix>/bin)
 #   NO_COLOR                Disable colored output
 #
 # Flags:
@@ -23,22 +24,30 @@ set -euo pipefail
 GITHUB_REPO="hyperb1iss/hypercolor"
 GITHUB_API="https://api.github.com"
 GITHUB_DL="https://github.com/${GITHUB_REPO}/releases/download"
-INSTALL_DIR="${HYPERCOLOR_INSTALL_DIR:-${HOME}/.local/bin}"
+INSTALL_PREFIX="${HYPERCOLOR_INSTALL_PREFIX:-${HOME}/.local}"
+INSTALL_DIR="${HYPERCOLOR_INSTALL_DIR:-${INSTALL_PREFIX}/bin}"
+DATA_DIR="${INSTALL_PREFIX}/share/hypercolor"
+UI_DIR="${DATA_DIR}/ui"
+EFFECTS_DIR="${DATA_DIR}/effects/bundled"
+BASH_COMPLETION_DIR="${INSTALL_PREFIX}/share/bash-completion/completions"
+ZSH_COMPLETION_DIR="${INSTALL_PREFIX}/share/zsh/site-functions"
+FISH_COMPLETION_DIR="${HOME}/.config/fish/completions"
 
 SYSTEMD_DIR="${HOME}/.config/systemd/user"
-DESKTOP_DIR="${HOME}/.local/share/applications"
+DESKTOP_DIR="${INSTALL_PREFIX}/share/applications"
+ICONS_DIR="${INSTALL_PREFIX}/share/icons"
 LAUNCHD_DIR="${HOME}/Library/LaunchAgents"
 LAUNCHD_LABEL="tech.hyperbliss.hypercolor"
 LAUNCHD_PLIST="${LAUNCHD_DIR}/${LAUNCHD_LABEL}.plist"
 LOG_DIR="${HOME}/Library/Logs/hypercolor"
 
-UDEV_RULES_URL="https://raw.githubusercontent.com/${GITHUB_REPO}/main/udev/99-hypercolor.rules"
 UDEV_RULES_PATH="/etc/udev/rules.d/99-hypercolor.rules"
 
 VERSION=""
 NO_SERVICE=false
 UNINSTALL=false
 SKIP_CONFIRM=false
+RELEASE_DIR=""
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
 
@@ -120,8 +129,9 @@ Options:
   --help, -h        Show this help message
 
 Environment:
-  HYPERCOLOR_INSTALL_DIR   Override install directory (default: ~/.local/bin)
-  NO_COLOR                 Disable colored output
+  HYPERCOLOR_INSTALL_PREFIX  Override install prefix (default: ~/.local)
+  HYPERCOLOR_INSTALL_DIR     Override install directory (default: <prefix>/bin)
+  NO_COLOR                   Disable colored output
 USAGE
 }
 
@@ -184,21 +194,30 @@ fetch_latest_version() {
     info "Latest version: ${VERSION}"
 }
 
-download_binary() {
-    local name="$1" dest="$2"
-    local url="${GITHUB_DL}/${VERSION}/${name}-${ARTIFACT_SUFFIX}"
+download_release_artifact() {
+    local version_no_v="${VERSION#v}"
+    local tarball="hypercolor-${version_no_v}-${ARTIFACT_SUFFIX}.tar.gz"
+    local url="${GITHUB_DL}/${VERSION}/${tarball}"
+    local dest="${TMPDIR_INSTALL}/${tarball}"
 
-    info "Downloading ${name}..."
+    info "Downloading ${tarball}..."
     if ! curl -fsSL --progress-bar -o "$dest" "$url"; then
         fatal "Failed to download ${url}"
     fi
 
     if [[ ! -s "$dest" ]]; then
-        fatal "Downloaded file is empty: ${name}"
+        fatal "Downloaded file is empty: ${tarball}"
     fi
 
-    chmod +x "$dest"
-    success "Downloaded ${name}"
+    info "Extracting ${tarball}..."
+    tar -xzf "$dest" -C "$TMPDIR_INSTALL"
+
+    RELEASE_DIR="${TMPDIR_INSTALL}/hypercolor-${version_no_v}-${ARTIFACT_SUFFIX}"
+    if [[ ! -d "$RELEASE_DIR" ]]; then
+        fatal "Unexpected archive layout in ${tarball}"
+    fi
+
+    success "Downloaded release payload"
 }
 
 # ─── Temp directory with cleanup ──────────────────────────────────────────────
@@ -218,21 +237,37 @@ cleanup() {
 
 # ─── Install logic ────────────────────────────────────────────────────────────
 
-install_binaries() {
+install_release_payload() {
     mkdir -p "$INSTALL_DIR"
 
-    # Stop existing service before replacing binaries (idempotent)
+    # Stop existing service before replacing files (idempotent)
     stop_service_if_running
 
-    download_binary "hypercolor" "${TMPDIR_INSTALL}/hypercolor"
-    download_binary "hyper"      "${TMPDIR_INSTALL}/hyper"
-
-    # Atomic-ish install: copy to temp location in target dir, then rename
-    cp -f "${TMPDIR_INSTALL}/hypercolor" "${INSTALL_DIR}/hypercolor"
-    cp -f "${TMPDIR_INSTALL}/hyper"      "${INSTALL_DIR}/hyper"
-
+    local bin
+    for bin in hypercolor hyper hypercolor-tray hypercolor-tui hypercolor-open; do
+        if [[ -f "${RELEASE_DIR}/bin/${bin}" ]]; then
+            install -Dm755 "${RELEASE_DIR}/bin/${bin}" "${INSTALL_DIR}/${bin}"
+        fi
+    done
     success "Installed binaries to ${INSTALL_DIR}/"
 
+    if [[ -d "${RELEASE_DIR}/share/hypercolor/ui" ]]; then
+        rm -rf "$UI_DIR"
+        mkdir -p "$UI_DIR"
+        cp -R "${RELEASE_DIR}/share/hypercolor/ui/." "$UI_DIR/"
+        success "Installed bundled UI to ${UI_DIR}"
+    fi
+
+    if [[ -d "${RELEASE_DIR}/share/hypercolor/effects" ]]; then
+        rm -rf "${DATA_DIR}/effects"
+        mkdir -p "$(dirname "$EFFECTS_DIR")"
+        cp -R "${RELEASE_DIR}/share/hypercolor/effects/." "${DATA_DIR}/effects/"
+        success "Installed bundled effects to ${EFFECTS_DIR}"
+    fi
+
+    install_desktop_entry
+    install_icons
+    install_completions
     check_path
 }
 
@@ -279,7 +314,7 @@ install_systemd_service() {
 
     mkdir -p "$SYSTEMD_DIR"
 
-    cat > "${SYSTEMD_DIR}/hypercolor.service" <<'UNIT'
+    cat > "${SYSTEMD_DIR}/hypercolor.service" <<UNIT
 [Unit]
 Description=Hypercolor RGB Lighting Daemon
 Documentation=https://github.com/hyperb1iss/hypercolor
@@ -288,7 +323,7 @@ Wants=graphical-session.target
 
 [Service]
 Type=notify
-ExecStart=%h/.local/bin/hypercolor
+ExecStart=${INSTALL_DIR}/hypercolor --ui-dir ${UI_DIR}
 WatchdogSec=30
 Restart=on-failure
 RestartSec=3
@@ -298,7 +333,7 @@ MemoryMax=512M
 CPUQuota=25%
 ProtectHome=read-only
 ProtectSystem=strict
-ReadWritePaths=%h/.config/hypercolor %h/.local/share/hypercolor %h/.local/state/hypercolor
+ReadWritePaths=%h/.config/hypercolor ${DATA_DIR} %h/.local/state/hypercolor
 PrivateTmp=true
 NoNewPrivileges=true
 
@@ -318,23 +353,27 @@ UNIT
 # ─── Linux: desktop entry ────────────────────────────────────────────────────
 
 install_desktop_entry() {
+    local source="${RELEASE_DIR}/share/applications/hypercolor.desktop"
+    if [[ ! -f "$source" ]]; then
+        warn "Release payload does not contain a desktop entry, skipping"
+        return
+    fi
+
     mkdir -p "$DESKTOP_DIR"
-
-    cat > "${DESKTOP_DIR}/hypercolor.desktop" <<DESKTOP
-[Desktop Entry]
-Type=Application
-Name=Hypercolor
-GenericName=RGB Lighting Controller
-Comment=RGB lighting orchestration engine
-Exec=${INSTALL_DIR}/hypercolor-open
-Icon=hypercolor
-Terminal=false
-Categories=Utility;Settings;HardwareSettings;
-Keywords=RGB;LED;lighting;keyboard;mouse;
-StartupNotify=false
-DESKTOP
-
+    sed "s|Exec=/usr/bin/|Exec=${INSTALL_DIR}/|g" "$source" > "${DESKTOP_DIR}/hypercolor.desktop"
     success "Installed desktop entry to ${DESKTOP_DIR}/hypercolor.desktop"
+}
+
+install_icons() {
+    local source="${RELEASE_DIR}/share/icons"
+    if [[ ! -d "$source" ]]; then
+        warn "Release payload does not contain icons, skipping"
+        return
+    fi
+
+    mkdir -p "$ICONS_DIR"
+    cp -R "${source}/." "$ICONS_DIR/"
+    success "Installed icons to ${ICONS_DIR}"
 }
 
 # ─── Linux: udev rules ───────────────────────────────────────────────────────
@@ -359,14 +398,14 @@ prompt_udev_rules() {
         esac
     fi
 
-    local rules_tmp="${TMPDIR_INSTALL}/99-hypercolor.rules"
-    info "Downloading udev rules..."
-    if curl -fsSL -o "$rules_tmp" "$UDEV_RULES_URL" 2>/dev/null && [[ -s "$rules_tmp" ]]; then
-        sudo cp "$rules_tmp" "$UDEV_RULES_PATH"
-    else
-        warn "Could not download udev rules, skipping"
+    local rules_src="${RELEASE_DIR}/lib/udev/rules.d/99-hypercolor.rules"
+    if [[ ! -f "$rules_src" ]]; then
+        warn "Release payload does not contain udev rules, skipping"
         return
     fi
+
+    info "Installing udev rules..."
+    sudo install -Dm644 "$rules_src" "$UDEV_RULES_PATH"
 
     # Load i2c-dev module if not already loaded
     if ! lsmod 2>/dev/null | grep -q i2c_dev; then
@@ -374,8 +413,9 @@ prompt_udev_rules() {
     fi
 
     # Persist i2c-dev module across reboots
-    if [[ -d /etc/modules-load.d ]] && [[ ! -f /etc/modules-load.d/i2c-dev.conf ]]; then
-        echo "i2c-dev" | sudo tee /etc/modules-load.d/i2c-dev.conf >/dev/null
+    local module_src="${RELEASE_DIR}/etc/modules-load.d/i2c-dev.conf"
+    if [[ -f "$module_src" ]]; then
+        sudo install -Dm644 "$module_src" /etc/modules-load.d/i2c-dev.conf
     fi
 
     # Reload udev
@@ -396,7 +436,7 @@ install_launchd_agent() {
     mkdir -p "$LAUNCHD_DIR"
     mkdir -p "$LOG_DIR"
 
-    cat > "$LAUNCHD_PLIST" <<'PLIST'
+    cat > "$LAUNCHD_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -406,7 +446,9 @@ install_launchd_agent() {
     <string>tech.hyperbliss.hypercolor</string>
     <key>ProgramArguments</key>
     <array>
-        <string>~/.local/bin/hypercolor</string>
+        <string>${INSTALL_DIR}/hypercolor</string>
+        <string>--ui-dir</string>
+        <string>${UI_DIR}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -426,7 +468,7 @@ install_launchd_agent() {
         <key>HYPERCOLOR_LOG</key>
         <string>info</string>
         <key>PATH</key>
-        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:~/.local/bin</string>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:${INSTALL_DIR}</string>
     </dict>
     <key>ProcessType</key>
     <string>Standard</string>
@@ -445,50 +487,28 @@ PLIST
 # ─── Shell completions ────────────────────────────────────────────────────────
 
 install_completions() {
-    local hyper_bin="${INSTALL_DIR}/hyper"
-    if [[ ! -x "$hyper_bin" ]]; then
-        warn "hyper binary not found, skipping completions"
-        return
+    if [[ -f "${RELEASE_DIR}/share/bash-completion/completions/hyper" ]]; then
+        mkdir -p "$BASH_COMPLETION_DIR"
+        install -Dm644 \
+            "${RELEASE_DIR}/share/bash-completion/completions/hyper" \
+            "${BASH_COMPLETION_DIR}/hyper"
     fi
 
-    local shell_name=""
-    local comp_dir=""
-
-    # Detect current shell
-    case "${SHELL:-}" in
-        */bash)
-            shell_name="bash"
-            comp_dir="${HOME}/.local/share/bash-completion/completions"
-            ;;
-        */zsh)
-            shell_name="zsh"
-            comp_dir="${HOME}/.local/share/zsh/site-functions"
-            ;;
-        */fish)
-            shell_name="fish"
-            comp_dir="${HOME}/.config/fish/completions"
-            ;;
-        *)
-            info "Unknown shell (${SHELL:-unset}), skipping completions"
-            return
-            ;;
-    esac
-
-    mkdir -p "$comp_dir"
-
-    local comp_file
-    case "$shell_name" in
-        bash) comp_file="${comp_dir}/hyper" ;;
-        zsh)  comp_file="${comp_dir}/_hyper" ;;
-        fish) comp_file="${comp_dir}/hyper.fish" ;;
-    esac
-
-    if "$hyper_bin" completions "$shell_name" > "$comp_file" 2>/dev/null; then
-        success "Installed ${shell_name} completions to ${comp_file}"
-    else
-        warn "Could not generate ${shell_name} completions (hyper completions may not be available yet)"
-        rm -f "$comp_file"
+    if [[ -f "${RELEASE_DIR}/share/zsh/site-functions/_hyper" ]]; then
+        mkdir -p "$ZSH_COMPLETION_DIR"
+        install -Dm644 \
+            "${RELEASE_DIR}/share/zsh/site-functions/_hyper" \
+            "${ZSH_COMPLETION_DIR}/_hyper"
     fi
+
+    if [[ -f "${RELEASE_DIR}/share/fish/vendor_completions.d/hyper.fish" ]]; then
+        mkdir -p "$FISH_COMPLETION_DIR"
+        install -Dm644 \
+            "${RELEASE_DIR}/share/fish/vendor_completions.d/hyper.fish" \
+            "${FISH_COMPLETION_DIR}/hyper.fish"
+    fi
+
+    success "Installed available shell completions"
 }
 
 # ─── Main install flow ────────────────────────────────────────────────────────
@@ -499,17 +519,17 @@ do_install() {
     check_dependencies
     setup_tmpdir
     fetch_latest_version
+    download_release_artifact
 
     printf "\n"
-    info "Installing Hypercolor ${VERSION} to ${INSTALL_DIR}"
+    info "Installing Hypercolor ${VERSION} into ${INSTALL_PREFIX}"
     printf "\n"
 
-    install_binaries
+    install_release_payload
 
     case "$OS" in
         Linux)
             install_systemd_service
-            install_desktop_entry
             prompt_udev_rules
             ;;
         Darwin)
@@ -526,6 +546,8 @@ do_install() {
     printf "\n"
     printf "  ${DIM}Daemon:${RESET}  ${INSTALL_DIR}/hypercolor\n"
     printf "  ${DIM}CLI:${RESET}     ${INSTALL_DIR}/hyper\n"
+    printf "  ${DIM}Open UI:${RESET} ${INSTALL_DIR}/hypercolor-open\n"
+    printf "  ${DIM}TUI:${RESET}     ${INSTALL_DIR}/hypercolor-tui\n"
     printf "  ${DIM}Web UI:${RESET}  ${CYAN}http://localhost:9420${RESET}\n"
     printf "\n"
     printf "  ${DIM}Quick start:${RESET}\n"
@@ -550,6 +572,7 @@ do_uninstall() {
     printf "\n"
     printf "  This will remove:\n"
     printf "    - Binaries from ${INSTALL_DIR}\n"
+    printf "    - Bundled UI/effects from ${DATA_DIR}\n"
     printf "    - Service configuration (systemd/launchd)\n"
     printf "    - Desktop entry and shell completions\n"
     printf "\n"
@@ -625,14 +648,26 @@ do_uninstall() {
     info "Removing binaries..."
     rm -f "${INSTALL_DIR}/hypercolor"
     rm -f "${INSTALL_DIR}/hyper"
+    rm -f "${INSTALL_DIR}/hypercolor-tray"
+    rm -f "${INSTALL_DIR}/hypercolor-tui"
+    rm -f "${INSTALL_DIR}/hypercolor-open"
     success "Removed binaries from ${INSTALL_DIR}"
 
     # Remove completions
     info "Removing shell completions..."
-    rm -f "${HOME}/.local/share/bash-completion/completions/hyper"
-    rm -f "${HOME}/.local/share/zsh/site-functions/_hyper"
-    rm -f "${HOME}/.config/fish/completions/hyper.fish"
+    rm -f "${BASH_COMPLETION_DIR}/hyper"
+    rm -f "${ZSH_COMPLETION_DIR}/_hyper"
+    rm -f "${FISH_COMPLETION_DIR}/hyper.fish"
     success "Removed shell completions"
+
+    info "Removing bundled UI/effects and desktop assets..."
+    rm -rf "${DATA_DIR}"
+    rm -f "${DESKTOP_DIR}/hypercolor.desktop"
+    rm -f "${ICONS_DIR}/hicolor/scalable/apps/hypercolor.svg"
+    rm -f "${ICONS_DIR}/hicolor/48x48/apps/hypercolor.png"
+    rm -f "${ICONS_DIR}/hicolor/128x128/apps/hypercolor.png"
+    rm -f "${ICONS_DIR}/hicolor/256x256/apps/hypercolor.png"
+    success "Removed installed assets"
 
     printf "\n"
     success "Hypercolor has been uninstalled."

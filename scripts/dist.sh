@@ -5,6 +5,7 @@
 # Usage:
 #   ./scripts/dist.sh                    # release build for host platform
 #   ./scripts/dist.sh --target linux-amd64
+#   ./scripts/dist.sh --target x86_64-unknown-linux-gnu
 #   ./scripts/dist.sh --skip-effects     # skip SDK effect build
 #   ./scripts/dist.sh --ci               # CI mode: use pre-built web assets
 
@@ -24,18 +25,29 @@ ok()    { printf '\033[38;2;80;250;123m✅\033[0m %s\n' "$*"; }
 warn()  { printf '\033[38;2;241;250;140m⚠\033[0m  %s\n' "$*" >&2; }
 die()   { printf '\033[38;2;255;99;99m✗\033[0m %s\n' "$*" >&2; exit 1; }
 
+normalize_target() {
+  case "$1" in
+    linux-amd64) echo "x86_64-unknown-linux-gnu" ;;
+    linux-arm64) echo "aarch64-unknown-linux-gnu" ;;
+    macos-arm64) echo "aarch64-apple-darwin" ;;
+    macos-amd64) echo "x86_64-apple-darwin" ;;
+    *) echo "$1" ;;
+  esac
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --skip-effects)     SKIP_EFFECTS=1; shift ;;
     --ci)               CI_MODE=1; shift ;;
     --web-assets)       WEB_ASSETS_DIR="$2"; shift 2 ;;
-    --target)           RUST_TARGET="$2"; shift 2 ;;
+    --target)           RUST_TARGET="$(normalize_target "$2")"; shift 2 ;;
     -h|--help)
       cat <<'EOF'
 Usage: ./scripts/dist.sh [options]
 
 Options:
-  --target <triple>    Rust target triple (default: host)
+  --target <triple|alias>
+                       Rust target triple or release alias (default: host)
   --skip-effects       Skip SDK effect compilation
   --ci                 CI mode (expect --web-assets for pre-built UI/effects)
   --web-assets <dir>   Path to pre-built web assets (ui/ + effects/)
@@ -114,7 +126,7 @@ else
     if command -v rustup &>/dev/null; then
       rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
     fi
-    trunk build --release
+    env -u NO_COLOR trunk build --release
   )
 
   # Build effects
