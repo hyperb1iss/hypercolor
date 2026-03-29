@@ -10,7 +10,7 @@ use hypercolor_hal::drivers::corsair::{
 use hypercolor_hal::drivers::dygma::{DYGMA_VENDOR_ID, PID_DEFY_WIRED, PID_DEFY_WIRELESS};
 use hypercolor_hal::drivers::lianli::{
     LIANLI_ENE_INTERFACE, LIANLI_ENE_VENDOR_ID, LIANLI_TL_USAGE_PAGE, LIANLI_TL_VENDOR_ID,
-    PID_TL_FAN_HUB, PID_UNI_HUB_SL_INFINITY, TL_REPORT_ID,
+    PID_TL_FAN_HUB, PID_UNI_HUB_AL, PID_UNI_HUB_ORIGINAL, PID_UNI_HUB_SL_INFINITY, TL_REPORT_ID,
 };
 use hypercolor_hal::drivers::prismrgb::{
     NOLLIE_VENDOR_ID, PID_NOLLIE_8_V2, PID_PRISM_8, PID_PRISM_MINI, PID_PRISM_S,
@@ -146,6 +146,48 @@ fn lookup_returns_lianli_tl_fan_descriptor() {
     assert_eq!(protocol.name(), "Lian Li TL Fan Hub");
     assert_eq!(protocol.total_leds(), 0);
     assert!(protocol.zones().is_empty());
+}
+
+#[test]
+fn lookup_returns_lianli_original_descriptor() {
+    let descriptor = ProtocolDatabase::lookup(LIANLI_ENE_VENDOR_ID, PID_UNI_HUB_ORIGINAL)
+        .expect("original Lian Li UNI Hub descriptor should exist");
+
+    assert_eq!(descriptor.name, "Lian Li Uni Hub");
+    assert_eq!(descriptor.family, DeviceFamily::LianLi);
+    assert_eq!(descriptor.protocol.id, "lianli/original");
+    assert_eq!(descriptor.transport, TransportType::UsbVendor);
+
+    let protocol = (descriptor.protocol.build)();
+    assert_eq!(protocol.name(), "Lian Li UNI Hub");
+    assert_eq!(protocol.total_leds(), 256);
+    assert_eq!(protocol.zones().len(), 4);
+}
+
+#[test]
+fn lookup_with_firmware_routes_al_pid_to_correct_protocol_family() {
+    let al = ProtocolDatabase::lookup_with_firmware(
+        LIANLI_ENE_VENDOR_ID,
+        PID_UNI_HUB_AL,
+        Some("LianLi-UNI FAN-AL-v1.7"),
+    )
+    .expect("AL HID descriptor should resolve from product string");
+    assert_eq!(al.protocol.id, "lianli/al");
+    assert_eq!(
+        al.transport,
+        TransportType::UsbHid {
+            interface: LIANLI_ENE_INTERFACE,
+        }
+    );
+
+    let al10 = ProtocolDatabase::lookup_with_firmware(
+        LIANLI_ENE_VENDOR_ID,
+        PID_UNI_HUB_AL,
+        Some("LianLi-UNI FAN-AL-v1.0"),
+    )
+    .expect("AL10 fallback descriptor should resolve from product string");
+    assert_eq!(al10.protocol.id, "lianli/al10");
+    assert_eq!(al10.transport, TransportType::UsbVendor);
 }
 
 #[test]

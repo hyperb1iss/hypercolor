@@ -97,8 +97,11 @@ impl TransportScanner for UsbScanner {
         for usb in devices {
             let vendor_id = usb.vendor_id();
             let product_id = usb.product_id();
+            let firmware_hint = usb.product_string();
 
-            let Some(descriptor) = ProtocolDatabase::lookup(vendor_id, product_id) else {
+            let Some(descriptor) =
+                ProtocolDatabase::lookup_with_firmware(vendor_id, product_id, firmware_hint)
+            else {
                 continue;
             };
 
@@ -124,6 +127,9 @@ impl TransportScanner for UsbScanner {
             metadata.insert("product_id".to_owned(), format!("0x{product_id:04X}"));
             if let Some(serial) = usb.serial_number() {
                 metadata.insert("serial".to_owned(), serial.to_owned());
+            }
+            if let Some(product_string) = usb.product_string() {
+                metadata.insert("product_string".to_owned(), product_string.to_owned());
             }
             if !path.is_empty() {
                 metadata.insert("usb_path".to_owned(), path);

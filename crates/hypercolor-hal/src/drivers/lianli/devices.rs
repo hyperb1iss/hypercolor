@@ -5,6 +5,7 @@ use hypercolor_types::device::DeviceFamily;
 use crate::protocol::Protocol;
 use crate::registry::{DeviceDescriptor, HidRawReportMode, ProtocolBinding, TransportType};
 
+use super::legacy::LegacyUniHubProtocol;
 use super::protocol::{Ene6k77Protocol, LianLiHubVariant, TL_REPORT_ID, TlFanProtocol};
 
 /// ENE-based Lian Li vendor ID.
@@ -30,8 +31,29 @@ pub const PID_UNI_HUB_AL_V2: u16 = 0xA104;
 pub const PID_UNI_HUB_SL_V2A: u16 = 0xA105;
 /// UNI FAN SL Redragon PID.
 pub const PID_UNI_HUB_SL_REDRAGON: u16 = 0xA106;
+/// Original UNI Hub PID.
+pub const PID_UNI_HUB_ORIGINAL: u16 = 0x7750;
 /// TL Fan Hub PID.
 pub const PID_TL_FAN_HUB: u16 = 0x7372;
+
+fn firmware_matches(candidate: &str, expected: &str) -> bool {
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let token = trimmed.rsplit('-').next().unwrap_or(trimmed).trim();
+    let token = token.strip_prefix(['v', 'V']).unwrap_or(token);
+    token.eq_ignore_ascii_case(expected)
+}
+
+fn is_al_hid_firmware(candidate: &str) -> bool {
+    firmware_matches(candidate, "1.7")
+}
+
+fn is_al10_firmware(candidate: &str) -> bool {
+    firmware_matches(candidate, "1.0")
+}
 
 /// Build a UNI FAN SL protocol instance.
 pub fn build_uni_hub_sl_protocol() -> Box<dyn Protocol> {
@@ -68,6 +90,16 @@ pub fn build_tl_fan_protocol() -> Box<dyn Protocol> {
     Box::new(TlFanProtocol::new())
 }
 
+/// Build an original UNI Hub protocol instance.
+pub fn build_uni_hub_original_protocol() -> Box<dyn Protocol> {
+    Box::new(LegacyUniHubProtocol::original())
+}
+
+/// Build an AL10 fallback protocol instance.
+pub fn build_uni_hub_al10_protocol() -> Box<dyn Protocol> {
+    Box::new(LegacyUniHubProtocol::al10())
+}
+
 macro_rules! ene_descriptor {
     (
         pid: $pid:expr,
@@ -99,12 +131,32 @@ static LIANLI_DESCRIPTORS: &[DeviceDescriptor] = &[
         protocol_id: "lianli/sl",
         builder: build_uni_hub_sl_protocol
     ),
-    ene_descriptor!(
-        pid: PID_UNI_HUB_AL,
+    DeviceDescriptor {
+        vendor_id: LIANLI_ENE_VENDOR_ID,
+        product_id: PID_UNI_HUB_AL,
         name: "Lian Li Uni Hub - AL",
-        protocol_id: "lianli/al",
-        builder: build_uni_hub_al_protocol
-    ),
+        family: DeviceFamily::LianLi,
+        transport: TransportType::UsbHid {
+            interface: LIANLI_ENE_INTERFACE,
+        },
+        protocol: ProtocolBinding {
+            id: "lianli/al",
+            build: build_uni_hub_al_protocol,
+        },
+        firmware_predicate: Some(is_al_hid_firmware),
+    },
+    DeviceDescriptor {
+        vendor_id: LIANLI_ENE_VENDOR_ID,
+        product_id: PID_UNI_HUB_AL,
+        name: "Lian Li Uni Hub - AL10",
+        family: DeviceFamily::LianLi,
+        transport: TransportType::UsbVendor,
+        protocol: ProtocolBinding {
+            id: "lianli/al10",
+            build: build_uni_hub_al10_protocol,
+        },
+        firmware_predicate: Some(is_al10_firmware),
+    },
     ene_descriptor!(
         pid: PID_UNI_HUB_SL_INFINITY,
         name: "Lian Li Uni Hub - SL Infinity",
@@ -135,6 +187,18 @@ static LIANLI_DESCRIPTORS: &[DeviceDescriptor] = &[
         protocol_id: "lianli/sl-redragon",
         builder: build_uni_hub_sl_redragon_protocol
     ),
+    DeviceDescriptor {
+        vendor_id: LIANLI_ENE_VENDOR_ID,
+        product_id: PID_UNI_HUB_ORIGINAL,
+        name: "Lian Li Uni Hub",
+        family: DeviceFamily::LianLi,
+        transport: TransportType::UsbVendor,
+        protocol: ProtocolBinding {
+            id: "lianli/original",
+            build: build_uni_hub_original_protocol,
+        },
+        firmware_predicate: None,
+    },
     DeviceDescriptor {
         vendor_id: LIANLI_TL_VENDOR_ID,
         product_id: PID_TL_FAN_HUB,

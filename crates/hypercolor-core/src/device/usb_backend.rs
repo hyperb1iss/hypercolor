@@ -386,7 +386,7 @@ impl UsbBackend {
                     "SMBus transport 0x{address:02X} is not supported by the USB backend; use a dedicated SMBus backend"
                 );
             }
-            TransportType::UsbVendor => Ok(Box::new(UsbVendorTransport::new())),
+            TransportType::UsbVendor => Self::open_vendor_transport(pending, usb).await,
         }
     }
 
@@ -464,6 +464,14 @@ impl UsbBackend {
             )
         })?;
         Ok(Box::new(transport))
+    }
+
+    async fn open_vendor_transport(
+        pending: &PendingUsbDevice,
+        usb: &nusb::DeviceInfo,
+    ) -> Result<Box<dyn Transport>> {
+        let device = Self::open_usb_device(pending, usb).await?;
+        Ok(Box::new(UsbVendorTransport::new(device)))
     }
 
     fn open_serial_transport(
@@ -1479,7 +1487,14 @@ fn pending_from_discovered(
 ) -> Option<PendingUsbDevice> {
     let vendor_id = parse_u16_hex(discovered.metadata.get("vendor_id")?)?;
     let product_id = parse_u16_hex(discovered.metadata.get("product_id")?)?;
-    let descriptor = hypercolor_hal::database::ProtocolDatabase::lookup(vendor_id, product_id)?;
+    let descriptor = hypercolor_hal::database::ProtocolDatabase::lookup_with_firmware(
+        vendor_id,
+        product_id,
+        discovered
+            .metadata
+            .get("product_string")
+            .map(String::as_str),
+    )?;
 
     Some(PendingUsbDevice {
         vendor_id,

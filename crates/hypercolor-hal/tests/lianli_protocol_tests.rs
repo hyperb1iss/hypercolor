@@ -1,8 +1,9 @@
 use hypercolor_hal::drivers::lianli::{
-    ENE_COMMAND_DELAY, Ene6k77Protocol, LianLiHubVariant, TlFanProtocol, apply_al_white_limit,
-    apply_sum_white_limit, firmware_version_from_fine_tune,
+    ENE_COMMAND_DELAY, Ene6k77Protocol, LegacyUniHubProtocol, LianLiHubVariant, TlFanProtocol,
+    apply_al_white_limit, apply_sum_white_limit, firmware_version_from_fine_tune,
 };
 use hypercolor_hal::protocol::{Protocol, TransferType};
+use hypercolor_hal::transport::vendor::{VendorControlOperation, decode_operations};
 
 #[test]
 fn sl_frame_encodes_activate_color_commit_and_frame_commit() {
@@ -109,6 +110,171 @@ fn ene_fixed_speed_and_response_helpers_match_spec() {
         .parse_firmware_response(&[0xE0, 0x00, 0x00, 0x00, 0x00, 0x16])
         .expect("firmware response should parse");
     assert_eq!(firmware, "1.8");
+}
+
+#[test]
+fn legacy_original_init_sequence_programs_global_setup_and_fan_counts() {
+    let protocol = LegacyUniHubProtocol::original().with_fan_counts([2, 0, 1, 4]);
+    let commands = protocol.init_sequence();
+
+    assert_eq!(commands.len(), 1);
+    let operations = decode_operations(&commands[0].data)
+        .expect("legacy init command should decode into vendor-control operations");
+
+    assert!(matches!(
+        &operations[0],
+        VendorControlOperation::Write {
+            request: 0x80,
+            index: 0xE021,
+            data,
+            ..
+        } if data == &[0x34]
+    ));
+    assert!(matches!(
+        &operations[2],
+        VendorControlOperation::Write {
+            index: 0xE02F,
+            data,
+            ..
+        } if data == &[0x01]
+    ));
+    assert!(matches!(
+        &operations[4],
+        VendorControlOperation::Write {
+            index: 0xE021,
+            data,
+            ..
+        } if data == &[0x32, 0x01]
+    ));
+    assert!(matches!(
+        &operations[8],
+        VendorControlOperation::Write {
+            index: 0xE021,
+            data,
+            ..
+        } if data == &[0x32, 0x10]
+    ));
+    assert!(matches!(
+        &operations[20],
+        VendorControlOperation::Write {
+            index: 0xE021,
+            data,
+            ..
+        } if data == &[0x30, 0x00]
+    ));
+}
+
+#[test]
+fn legacy_original_frame_writes_rbg_color_mode_and_commit_registers() {
+    let protocol = LegacyUniHubProtocol::original().with_fan_counts([1, 0, 0, 0]);
+    let colors = vec![[10, 20, 30]; 16];
+
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 4);
+
+    let operations = decode_operations(&commands[0].data)
+        .expect("legacy original frame should decode into vendor-control operations");
+
+    assert!(matches!(
+        &operations[0],
+        VendorControlOperation::Write {
+            index: 0xE300,
+            data,
+            ..
+        } if data.len() == 192 && &data[..3] == [10, 30, 20]
+    ));
+    assert!(matches!(
+        &operations[2],
+        VendorControlOperation::Write {
+            index: 0xE021,
+            data,
+            ..
+        } if data == &[0x01]
+    ));
+    assert!(matches!(
+        &operations[4],
+        VendorControlOperation::Write {
+            index: 0xE022,
+            data,
+            ..
+        } if data == &[0x02]
+    ));
+    assert!(matches!(
+        &operations[10],
+        VendorControlOperation::Write {
+            index: 0xE02F,
+            data,
+            ..
+        } if data == &[0x01]
+    ));
+}
+
+#[test]
+fn legacy_al10_frame_splits_inner_and_outer_ring_packets() {
+    let protocol = LegacyUniHubProtocol::al10().with_fan_counts([1, 0, 0, 0]);
+    let mut colors = vec![[0, 0, 0]; 20];
+    colors[0] = [10, 20, 30];
+    colors[8] = [200, 200, 200];
+
+    let commands = protocol.encode_frame(&colors);
+    assert_eq!(commands.len(), 4);
+
+    let operations = decode_operations(&commands[0].data)
+        .expect("legacy AL10 frame should decode into vendor-control operations");
+
+    assert!(matches!(
+        &operations[0],
+        VendorControlOperation::Write {
+            index: 0xE500,
+            data,
+            ..
+        } if data.len() == 24 && &data[..3] == [10, 30, 20]
+    ));
+    assert!(matches!(
+        &operations[8],
+        VendorControlOperation::Write {
+            index: 0xE020,
+            data,
+            ..
+        } if data[0x01] == 0x01 && data[0x02] == 0x00 && data[0x03] == 0x00 && data[0x09] == 0x00
+    ));
+    assert!(matches!(
+        &operations[10],
+        VendorControlOperation::Write {
+            index: 0xE518,
+            data,
+            ..
+        } if data.len() == 36 && &data[..3] == [153, 153, 153]
+    ));
+    assert!(matches!(
+        &operations[18],
+        VendorControlOperation::Write {
+            index: 0xE030,
+            data,
+            ..
+        } if data[0x0F] == 0x01
+    ));
+}
+
+#[test]
+fn legacy_connection_diagnostics_reads_firmware_register() {
+    let protocol = LegacyUniHubProtocol::original();
+    let commands = protocol.connection_diagnostics();
+
+    assert_eq!(commands.len(), 1);
+    assert!(commands[0].expects_response);
+
+    let operations = decode_operations(&commands[0].data)
+        .expect("legacy diagnostics command should decode into vendor-control operations");
+    assert!(matches!(
+        &operations[0],
+        VendorControlOperation::Read {
+            request: 0x81,
+            index: 0xB500,
+            length: 5,
+            ..
+        }
+    ));
 }
 
 #[test]
