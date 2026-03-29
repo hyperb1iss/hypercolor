@@ -141,8 +141,7 @@ export default effect(
                     speed: 7,
                     turbulence: 90,
                 },
-                description:
-                    'Toxic vents split the earth open — acid-yellow flames dance over a field of black glass',
+                description: 'Toxic vents split the earth open — acid-yellow flames dance over a field of black glass',
                 name: 'Sulfur Rift',
             },
             {

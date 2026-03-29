@@ -14,7 +14,10 @@ export default effect(
         }),
         sparkle: num('Sparkle', [0, 100], 30, { group: 'Color' }),
         speed: num('Speed', [1, 10], 5, { group: 'Motion' }),
-        angle: num('Angle', [-60, 60], 0, { group: 'Motion', tooltip: 'Fall angle in degrees — negative drifts left, positive drifts right' }),
+        angle: num('Angle', [-60, 60], 0, {
+            group: 'Motion',
+            tooltip: 'Fall angle in degrees — negative drifts left, positive drifts right',
+        }),
         size: num('Size', [0, 100], 30, { group: 'Shape', tooltip: 'Star size — larger values create bold meteors' }),
         trails: num('Trails', [0, 100], 60, { group: 'Atmosphere' }),
     },

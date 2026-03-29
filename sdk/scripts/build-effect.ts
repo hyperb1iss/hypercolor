@@ -335,7 +335,16 @@ async function buildEffect(entryPath: string, outDir: string) {
     const jsBundle = await bundleEffect(entryPath)
 
     // 5. Generate HTML
-    const html = generateHTML(effectName, description, author, audioReactive, renderer, controlMetas, presetMetas, jsBundle)
+    const html = generateHTML(
+        effectName,
+        description,
+        author,
+        audioReactive,
+        renderer,
+        controlMetas,
+        presetMetas,
+        jsBundle,
+    )
 
     // 5. Write output
     mkdirSync(outDir, { recursive: true })

@@ -234,7 +234,7 @@ fn merge_metrics_into_daemon_state(
 ) -> Option<DaemonState> {
     let data = metrics.get("data").unwrap_or(metrics);
     let fps = data.get("fps")?;
-    let mut next = current.cloned().unwrap_or_else(|| DaemonState {
+    let mut next = current.cloned().unwrap_or(DaemonState {
         running: true,
         brightness: 100,
         fps_target: 0.0,
@@ -248,12 +248,12 @@ fn merge_metrics_into_daemon_state(
 
     next.fps_target = fps
         .get("target")
-        .and_then(serde_json::Value::as_f64)
-        .map_or(next.fps_target, |value| value as f32);
+        .and_then(json_f32)
+        .unwrap_or(next.fps_target);
     next.fps_actual = fps
         .get("actual")
-        .and_then(serde_json::Value::as_f64)
-        .map_or(next.fps_actual, |value| value as f32);
+        .and_then(json_f32)
+        .unwrap_or(next.fps_actual);
     next.device_count = data
         .get("devices")
         .and_then(|devices| devices.get("connected"))
@@ -268,6 +268,20 @@ fn merge_metrics_into_daemon_state(
         .unwrap_or(next.total_leds);
 
     Some(next)
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::as_conversions,
+    reason = "serde_json exposes numeric metrics as f64; values are range-checked before narrowing for TUI display state"
+)]
+fn json_f32(value: &serde_json::Value) -> Option<f32> {
+    let value = value.as_f64()?;
+    if !value.is_finite() || value < f64::from(f32::MIN) || value > f64::from(f32::MAX) {
+        return None;
+    }
+
+    Some(value as f32)
 }
 
 /// Parse the daemon state from the WebSocket hello message.

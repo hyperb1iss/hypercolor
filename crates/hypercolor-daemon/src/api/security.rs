@@ -327,11 +327,10 @@ pub async fn enforce_security(
         }
     }
 
-    request.extensions_mut().insert(
-        granted_tier
-            .map(RequestAuthContext::authenticated)
-            .unwrap_or_else(RequestAuthContext::preflight),
-    );
+    request.extensions_mut().insert(granted_tier.map_or_else(
+        RequestAuthContext::preflight,
+        RequestAuthContext::authenticated,
+    ));
 
     let operation = classify_operation(&method, &path);
     let client_id = client_identity(&request);

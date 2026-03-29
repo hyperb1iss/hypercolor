@@ -1,4 +1,4 @@
-import { DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, canvas, color, combo, num } from '@hypercolor/sdk'
+import { canvas, color, combo, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, num } from '@hypercolor/sdk'
 
 type ThemeName = 'Blacklight' | 'Bus Seat' | 'Laser Lime' | 'Cotton Candy' | 'Arcade Heat' | 'Custom'
 type SceneName = 'Pattern 1' | 'Pattern 2' | 'Pattern 3'

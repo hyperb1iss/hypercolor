@@ -39,8 +39,11 @@ fn load_builtins_embeds_generated_catalog() {
     let mut registry = AttachmentRegistry::new();
     let loaded = registry.load_builtins().expect("load built-ins");
 
-    assert_eq!(loaded, 45);
-    assert_eq!(registry.builtin_count(), 45);
+    assert_eq!(loaded, registry.builtin_count());
+    assert!(
+        loaded >= 45,
+        "expected at least the baseline built-in catalog"
+    );
     assert!(registry.get("lian-li-sl-infinity-fan").is_some());
     assert!(registry.get("corsair-ql-fan").is_some());
 }

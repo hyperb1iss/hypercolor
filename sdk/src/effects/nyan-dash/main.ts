@@ -1,4 +1,5 @@
-import { DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, canvas, combo, normalizeSpeed, num } from '@hypercolor/sdk'
+import type { DrawFn } from '@hypercolor/sdk'
+import { canvas, combo, DEFAULT_CANVAS_HEIGHT, DEFAULT_CANVAS_WIDTH, normalizeSpeed, num } from '@hypercolor/sdk'
 import { CAT_FRAME_SVG_TEMPLATES, CAT_SPRITE_HEIGHT, CAT_SPRITE_WIDTH } from './cat-frames'
 
 type MotionMode = 'Original' | 'Dash' | 'Hyper'
@@ -1005,7 +1006,7 @@ canvas(
             Mint: buildThemedCatFrames(CAT_THEMES_PALETTE.Mint),
         } satisfies Record<CatTheme, readonly HTMLCanvasElement[]>
 
-        return (ctx, time, controls) => {
+        const render: DrawFn = (ctx, time, controls) => {
             const width = ctx.canvas.width
             const height = ctx.canvas.height
             const speed = normalizeSpeed(controls.animationSpeed as number)
@@ -1069,6 +1070,8 @@ canvas(
                 drawFaceStyle(ctx, faceStyle, catPalette, spriteX, spriteY, spriteScale, frameIndex)
             }
         }
+
+        return render
     },
     {
         description:

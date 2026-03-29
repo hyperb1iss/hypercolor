@@ -1095,10 +1095,12 @@ pub async fn identify_attachment(
         match build_attachment_identify_frame(
             &profiles,
             &registry,
-            device_id,
-            &slot_id,
-            binding_index,
-            instance,
+            AttachmentIdentifyTarget {
+                binding_index,
+                device_id,
+                instance,
+                slot_id: &slot_id,
+            },
             total_leds,
             identify_color,
         ) {
@@ -2779,16 +2781,27 @@ fn build_zone_identify_frame(info: &DeviceInfo, zone_index: usize, color: [u8; 3
 }
 
 /// Build a full-device LED frame with only a single attachment component lit.
+#[derive(Clone, Copy)]
+struct AttachmentIdentifyTarget<'a> {
+    device_id: DeviceId,
+    slot_id: &'a str,
+    binding_index: usize,
+    instance: Option<u32>,
+}
+
 fn build_attachment_identify_frame(
     profiles: &crate::attachment_profiles::AttachmentProfileStore,
     registry: &hypercolor_core::attachment::AttachmentRegistry,
-    device_id: DeviceId,
-    slot_id: &str,
-    binding_index: usize,
-    instance: Option<u32>,
+    target: AttachmentIdentifyTarget<'_>,
     total_leds: usize,
     color: [u8; 3],
 ) -> Result<Vec<[u8; 3]>, String> {
+    let AttachmentIdentifyTarget {
+        device_id,
+        slot_id,
+        binding_index,
+        instance,
+    } = target;
     let device_key = device_id.to_string();
     let profile = profiles
         .get(&device_key)

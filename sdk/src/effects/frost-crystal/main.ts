@@ -176,13 +176,7 @@ function kochSubdivide(points: [number, number][], depth: number): [number, numb
     return edges
 }
 
-function kochSnowflake(
-    cx: number,
-    cy: number,
-    radius: number,
-    depth: number,
-    rotation: number,
-): [number, number][] {
+function kochSnowflake(cx: number, cy: number, radius: number, depth: number, rotation: number): [number, number][] {
     const triangle: [number, number][] = []
     for (let i = 0; i < 3; i++) {
         const angle = rotation + (TAU / 3) * i - Math.PI / 2
@@ -522,14 +516,34 @@ export default canvas.stateful(
                 const by = y + Math.sin(angle) * len * frac
 
                 drawDendriteBranch(
-                    ctx, bx, by, angle + branchOffset,
-                    subLength, subWidth, pal, alpha, glow, seed, t,
-                    depth + 1, maxDepth,
+                    ctx,
+                    bx,
+                    by,
+                    angle + branchOffset,
+                    subLength,
+                    subWidth,
+                    pal,
+                    alpha,
+                    glow,
+                    seed,
+                    t,
+                    depth + 1,
+                    maxDepth,
                 )
                 drawDendriteBranch(
-                    ctx, bx, by, angle - branchOffset,
-                    subLength, subWidth, pal, alpha, glow, seed, t,
-                    depth + 1, maxDepth,
+                    ctx,
+                    bx,
+                    by,
+                    angle - branchOffset,
+                    subLength,
+                    subWidth,
+                    pal,
+                    alpha,
+                    glow,
+                    seed,
+                    t,
+                    depth + 1,
+                    maxDepth,
                 )
             }
         }
@@ -550,10 +564,7 @@ export default canvas.stateful(
 
             for (let arm = 0; arm < 6; arm++) {
                 const baseAngle = (TAU / 6) * arm + seed * 0.2
-                drawDendriteBranch(
-                    ctx, cx, cy, baseAngle, armLength, baseWidth,
-                    pal, alpha, glow, seed, t, 0, 3,
-                )
+                drawDendriteBranch(ctx, cx, cy, baseAngle, armLength, baseWidth, pal, alpha, glow, seed, t, 0, 3)
             }
         }
 
@@ -591,10 +602,7 @@ export default canvas.stateful(
             // Fractal outline — bold for LED readability
             const colorT = Math.sin(t * 0.3 + seed * TAU) * 0.5 + 0.5
             ctx.lineWidth = edgeWidth
-            ctx.strokeStyle = toRgba(
-                mixRgb(pal.primary, pal.highlight, colorT),
-                alpha * (0.35 + glow * 0.45),
-            )
+            ctx.strokeStyle = toRgba(mixRgb(pal.primary, pal.highlight, colorT), alpha * (0.35 + glow * 0.45))
             ctx.lineJoin = 'round'
             ctx.beginPath()
             ctx.moveTo(points[0][0], points[0][1])
@@ -641,11 +649,8 @@ export default canvas.stateful(
             const STEPS = 36
 
             for (let i = 0; i < numRings; i++) {
-                const baseRadius =
-                    wavelength * (i + 0.5) +
-                    Math.sin(phaseShift + i * 0.5) * wavelength * 0.15
-                const ringAlpha =
-                    alpha * (0.12 + glow * 0.18) * (1 - (i / numRings) * 0.6)
+                const baseRadius = wavelength * (i + 0.5) + Math.sin(phaseShift + i * 0.5) * wavelength * 0.15
+                const ringAlpha = alpha * (0.12 + glow * 0.18) * (1 - (i / numRings) * 0.6)
 
                 if (ringAlpha < 0.02) continue
 
@@ -659,8 +664,7 @@ export default canvas.stateful(
                 // Angular modulation → hexagonal wave fronts
                 for (let s = 0; s <= STEPS; s++) {
                     const angle = (s / STEPS) * TAU
-                    const modulation =
-                        1 + angularMod * Math.cos(angle * 6 + seed * TAU + t * 0.3)
+                    const modulation = 1 + angularMod * Math.cos(angle * 6 + seed * TAU + t * 0.3)
                     const r = baseRadius * modulation
                     const px = cx + Math.cos(angle) * r
                     const py = cy + Math.sin(angle) * r

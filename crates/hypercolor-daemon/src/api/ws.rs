@@ -557,9 +557,8 @@ pub(crate) async fn ws_handler(
     State(state): State<Arc<AppState>>,
     auth_context: Option<Extension<RequestAuthContext>>,
 ) -> Response {
-    let auth_context = auth_context
-        .map(|Extension(context)| context)
-        .unwrap_or_else(RequestAuthContext::unsecured);
+    let auth_context =
+        auth_context.map_or_else(RequestAuthContext::unsecured, |Extension(context)| context);
     ws.protocols(["hypercolor-v1"])
         .on_upgrade(move |socket| handle_socket(socket, state, auth_context))
 }
