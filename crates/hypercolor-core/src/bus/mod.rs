@@ -6,6 +6,7 @@
 //!   Every subscriber sees every event via `tokio::sync::broadcast`.
 //! - **Frame data** — latest LED colors via `tokio::sync::watch`. Subscribers skip stale frames.
 //! - **Spectrum data** — latest audio analysis via `tokio::sync::watch`. Same semantics.
+//! - **Canvas previews** — latest render and screen-source canvases via `tokio::sync::watch`.
 //!
 //! The bus is `Send + Sync`, cloneable, and entirely lock-free.
 
@@ -180,6 +181,9 @@ pub struct HypercolorBus {
     /// Latest render canvas snapshot.
     canvas: watch::Sender<CanvasFrame>,
 
+    /// Latest screen-source canvas snapshot.
+    screen_canvas: watch::Sender<CanvasFrame>,
+
     /// Monotonic clock base for `mono_ms` timestamps.
     start_instant: Instant,
 }
@@ -192,12 +196,14 @@ impl HypercolorBus {
         let (frame, _) = watch::channel(FrameData::empty());
         let (spectrum, _) = watch::channel(SpectrumData::empty());
         let (canvas, _) = watch::channel(CanvasFrame::empty());
+        let (screen_canvas, _) = watch::channel(CanvasFrame::empty());
 
         Self {
             events,
             frame,
             spectrum,
             canvas,
+            screen_canvas,
             start_instant: Instant::now(),
         }
     }
@@ -286,6 +292,24 @@ impl HypercolorBus {
     #[must_use]
     pub fn canvas_receiver_count(&self) -> usize {
         self.canvas.receiver_count()
+    }
+
+    /// Access the screen-canvas watch sender (for source preview publication).
+    #[must_use]
+    pub fn screen_canvas_sender(&self) -> &watch::Sender<CanvasFrame> {
+        &self.screen_canvas
+    }
+
+    /// Subscribe to screen-canvas updates (latest-value semantics).
+    #[must_use]
+    pub fn screen_canvas_receiver(&self) -> watch::Receiver<CanvasFrame> {
+        self.screen_canvas.subscribe()
+    }
+
+    /// Number of active screen-canvas watch receivers.
+    #[must_use]
+    pub fn screen_canvas_receiver_count(&self) -> usize {
+        self.screen_canvas.receiver_count()
     }
 
     /// Number of active broadcast subscribers.

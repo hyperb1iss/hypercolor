@@ -34,6 +34,8 @@ const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
 const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
 const WS_METRICS_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const WS_CANVAS_BYTES_PER_PIXEL_RGBA: u64 = 4;
+const WS_CANVAS_HEADER: u8 = 0x03;
+const WS_SCREEN_CANVAS_HEADER: u8 = 0x05;
 
 static WS_CLIENT_COUNT: AtomicUsize = AtomicUsize::new(0);
 static WS_TOTAL_BYTES_SENT: AtomicU64 = AtomicU64::new(0);
@@ -61,15 +63,17 @@ enum WsChannel {
     Spectrum,
     Events,
     Canvas,
+    ScreenCanvas,
     Metrics,
 }
 
 impl WsChannel {
-    const SUPPORTED: [Self; 5] = [
+    const SUPPORTED: [Self; 6] = [
         Self::Frames,
         Self::Spectrum,
         Self::Events,
         Self::Canvas,
+        Self::ScreenCanvas,
         Self::Metrics,
     ];
 
@@ -79,6 +83,7 @@ impl WsChannel {
             Self::Spectrum => "spectrum",
             Self::Events => "events",
             Self::Canvas => "canvas",
+            Self::ScreenCanvas => "screen_canvas",
             Self::Metrics => "metrics",
         }
     }
@@ -89,6 +94,7 @@ impl WsChannel {
             "spectrum" => Some(Self::Spectrum),
             "events" => Some(Self::Events),
             "canvas" => Some(Self::Canvas),
+            "screen_canvas" => Some(Self::ScreenCanvas),
             "metrics" => Some(Self::Metrics),
             _ => None,
         }
@@ -121,6 +127,7 @@ struct ChannelConfig {
     frames: FramesConfig,
     spectrum: SpectrumConfig,
     canvas: CanvasConfig,
+    screen_canvas: CanvasConfig,
     metrics: MetricsConfig,
 }
 
@@ -171,6 +178,16 @@ impl ChannelConfig {
             }
         }
 
+        if let Some(screen_canvas) = patch.screen_canvas {
+            if let Some(fps) = screen_canvas.fps {
+                validate_range(fps, 1, 60, "config.screen_canvas.fps", "expected 1..=60")?;
+                self.screen_canvas.fps = fps;
+            }
+            if let Some(format) = screen_canvas.format {
+                self.screen_canvas.format = format;
+            }
+        }
+
         if let Some(metrics) = patch.metrics
             && let Some(interval_ms) = metrics.interval_ms
         {
@@ -195,6 +212,7 @@ impl ChannelConfig {
                 WsChannel::Frames => serde_json::to_value(&self.frames),
                 WsChannel::Spectrum => serde_json::to_value(&self.spectrum),
                 WsChannel::Canvas => serde_json::to_value(&self.canvas),
+                WsChannel::ScreenCanvas => serde_json::to_value(&self.screen_canvas),
                 WsChannel::Metrics => serde_json::to_value(&self.metrics),
                 WsChannel::Events => continue,
             };
@@ -307,6 +325,8 @@ struct ChannelConfigPatch {
     spectrum: Option<SpectrumConfigPatch>,
     #[serde(default)]
     canvas: Option<CanvasConfigPatch>,
+    #[serde(default)]
+    screen_canvas: Option<CanvasConfigPatch>,
     #[serde(default)]
     metrics: Option<MetricsConfigPatch>,
 }
@@ -599,6 +619,7 @@ async fn handle_socket(
     let frame_rx = state.event_bus.frame_receiver();
     let spectrum_rx = state.event_bus.spectrum_receiver();
     let canvas_rx = state.event_bus.canvas_receiver();
+    let screen_canvas_rx = state.event_bus.screen_canvas_receiver();
 
     // Split outbound traffic: both queues are bounded so slow clients cannot
     // grow daemon memory without limit.
@@ -628,6 +649,13 @@ async fn handle_socket(
         json_tx.clone(),
         binary_tx.clone(),
         canvas_subs,
+    ));
+    let screen_canvas_subs = Arc::clone(&subscriptions);
+    let screen_canvas_relay_handle = tokio::spawn(relay_screen_canvas(
+        screen_canvas_rx,
+        json_tx.clone(),
+        binary_tx.clone(),
+        screen_canvas_subs,
     ));
     let metrics_subs = Arc::clone(&subscriptions);
     let metrics_relay_handle =
@@ -721,6 +749,7 @@ async fn handle_socket(
     frame_relay_handle.abort();
     spectrum_relay_handle.abort();
     canvas_relay_handle.abort();
+    screen_canvas_relay_handle.abort();
     metrics_relay_handle.abort();
     debug!("WebSocket client disconnected");
 }
@@ -776,6 +805,7 @@ fn should_relay_event(
         hypercolor_types::event::HypercolorEvent::FrameRendered { .. }
     ) && (channels.contains(&WsChannel::Frames)
         || channels.contains(&WsChannel::Canvas)
+        || channels.contains(&WsChannel::ScreenCanvas)
         || channels.contains(&WsChannel::Metrics))
     {
         return false;
@@ -959,6 +989,74 @@ async fn relay_canvas(
                 {
                     enqueue_backpressure_notice(&json_tx, "canvas", canvas_config.fps);
                     debug!("Dropping binary canvas update for slow WebSocket consumer");
+                    continue;
+                }
+
+                last_sent_frame_number = Some(latest_canvas.frame_number);
+            }
+        }
+    }
+}
+
+/// Relay raw screen-source canvas updates to the WebSocket client.
+async fn relay_screen_canvas(
+    mut canvas_rx: watch::Receiver<hypercolor_core::bus::CanvasFrame>,
+    json_tx: tokio::sync::mpsc::Sender<String>,
+    binary_tx: tokio::sync::mpsc::Sender<Vec<u8>>,
+    subscriptions: Arc<RwLock<SubscriptionState>>,
+) {
+    let mut latest_canvas = canvas_rx.borrow().clone();
+    let mut last_sent_frame_number: Option<u32> = None;
+    let mut active_fps = 15_u32;
+    let mut ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        let canvas_config = {
+            let subs = subscriptions.read().await;
+            if subs.channels.contains(&WsChannel::ScreenCanvas) {
+                Some(subs.config.screen_canvas.clone())
+            } else {
+                None
+            }
+        };
+
+        let Some(canvas_config) = canvas_config else {
+            if canvas_rx.changed().await.is_err() {
+                break;
+            }
+            latest_canvas = canvas_rx.borrow().clone();
+            continue;
+        };
+
+        if canvas_config.fps != active_fps {
+            active_fps = canvas_config.fps.max(1);
+            ticker = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(active_fps)));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        }
+
+        tokio::select! {
+            changed = canvas_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                latest_canvas = canvas_rx.borrow().clone();
+            }
+            _ = ticker.tick() => {
+                if last_sent_frame_number == Some(latest_canvas.frame_number) {
+                    continue;
+                }
+
+                if binary_tx
+                    .try_send(encode_canvas_binary_with_header(
+                        &latest_canvas,
+                        canvas_config.format,
+                        WS_SCREEN_CANVAS_HEADER,
+                    ))
+                    .is_err()
+                {
+                    enqueue_backpressure_notice(&json_tx, "screen_canvas", canvas_config.fps);
+                    debug!("Dropping binary screen_canvas update for slow WebSocket consumer");
                     continue;
                 }
 
@@ -1413,6 +1511,14 @@ fn encode_canvas_binary(
     canvas: &hypercolor_core::bus::CanvasFrame,
     format: CanvasFormat,
 ) -> Vec<u8> {
+    encode_canvas_binary_with_header(canvas, format, WS_CANVAS_HEADER)
+}
+
+fn encode_canvas_binary_with_header(
+    canvas: &hypercolor_core::bus::CanvasFrame,
+    format: CanvasFormat,
+    header: u8,
+) -> Vec<u8> {
     let width_u16 = u16::try_from(canvas.width).unwrap_or(u16::MAX);
     let height_u16 = u16::try_from(canvas.height).unwrap_or(u16::MAX);
     let width = usize::from(width_u16);
@@ -1424,7 +1530,7 @@ fn encode_canvas_binary(
         CanvasFormat::Rgba => 4_usize,
     };
     let mut out = Vec::with_capacity(14_usize.saturating_add(px_count.saturating_mul(bpp)));
-    out.push(0x03);
+    out.push(header);
     out.extend_from_slice(&canvas.frame_number.to_le_bytes());
     out.extend_from_slice(&canvas.timestamp_ms.to_le_bytes());
     out.extend_from_slice(&width_u16.to_le_bytes());
@@ -1798,6 +1904,7 @@ mod tests {
             "frames".to_owned(),
             "spectrum".to_owned(),
             "canvas".to_owned(),
+            "screen_canvas".to_owned(),
             "metrics".to_owned(),
         ];
         let parsed = parse_channels(&channels).expect("events should parse");
@@ -1808,6 +1915,7 @@ mod tests {
                 WsChannel::Frames,
                 WsChannel::Spectrum,
                 WsChannel::Canvas,
+                WsChannel::ScreenCanvas,
                 WsChannel::Metrics
             ]
         );
@@ -1827,6 +1935,7 @@ mod tests {
             "frames": {"fps": 30, "format": "binary"},
             "spectrum": {"fps": 20, "bins": 32},
             "canvas": {"fps": 60, "format": "rgba"},
+            "screen_canvas": {"fps": 24, "format": "rgb"},
             "metrics": {"interval_ms": 500}
         }))
         .expect("valid json patch");
@@ -1838,6 +1947,8 @@ mod tests {
         let json = serde_json::to_value(config).expect("config serializes");
         assert_eq!(json["canvas"]["fps"], 60);
         assert_eq!(json["canvas"]["format"], "rgba");
+        assert_eq!(json["screen_canvas"]["fps"], 24);
+        assert_eq!(json["screen_canvas"]["format"], "rgb");
         assert_eq!(json["metrics"]["interval_ms"], 500);
     }
 
@@ -1850,6 +1961,7 @@ mod tests {
         assert_eq!(json["frames"]["format"], "binary");
         assert_eq!(json["spectrum"]["bins"], 64);
         assert_eq!(json["canvas"]["fps"], 15);
+        assert_eq!(json["screen_canvas"]["fps"], 15);
         assert_eq!(json["metrics"]["interval_ms"], 1000);
     }
 
@@ -1926,6 +2038,7 @@ mod tests {
         assert!(capabilities.contains(&"frames".to_owned()));
         assert!(capabilities.contains(&"spectrum".to_owned()));
         assert!(capabilities.contains(&"canvas".to_owned()));
+        assert!(capabilities.contains(&"screen_canvas".to_owned()));
         assert!(capabilities.contains(&"metrics".to_owned()));
         assert!(capabilities.contains(&"commands".to_owned()));
     }
@@ -2219,7 +2332,7 @@ mod tests {
         let frame = CanvasFrame::from_canvas(&canvas, 7, 99);
 
         let encoded = encode_canvas_binary(&frame, super::CanvasFormat::Rgb);
-        assert_eq!(encoded[0], 0x03);
+        assert_eq!(encoded[0], super::WS_CANVAS_HEADER);
         assert_eq!(
             u32::from_le_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]),
             7
@@ -2244,5 +2357,20 @@ mod tests {
         let encoded = encode_canvas_binary(&frame, super::CanvasFormat::Rgba);
         assert_eq!(encoded[13], 1);
         assert_eq!(&encoded[14..22], &[10, 20, 30, 255, 40, 50, 60, 200]);
+    }
+
+    #[test]
+    fn screen_canvas_binary_encoder_uses_distinct_header() {
+        let mut canvas = Canvas::new(1, 1);
+        canvas.set_pixel(0, 0, Rgba::new(90, 80, 70, 255));
+        let frame = CanvasFrame::from_canvas(&canvas, 5, 44);
+
+        let encoded = super::encode_canvas_binary_with_header(
+            &frame,
+            super::CanvasFormat::Rgb,
+            super::WS_SCREEN_CANVAS_HEADER,
+        );
+        assert_eq!(encoded[0], super::WS_SCREEN_CANVAS_HEADER);
+        assert_eq!(&encoded[14..17], &[90, 80, 70]);
     }
 }

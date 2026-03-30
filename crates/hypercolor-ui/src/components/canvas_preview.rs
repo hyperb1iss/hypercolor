@@ -211,6 +211,7 @@ pub fn CanvasPreview(
     #[prop(into)] fps_target: Signal<u32>,
     #[prop(default = "100%".to_string())] max_width: String,
     #[prop(optional)] aspect_ratio: Option<String>,
+    #[prop(optional)] consumer_count: Option<WriteSignal<u32>>,
 ) -> impl IntoView {
     let canvas_ref = NodeRef::<Canvas>::new();
     let latest_frame = Rc::new(RefCell::new(None::<CanvasFrame>));
@@ -220,6 +221,7 @@ pub fn CanvasPreview(
     let schedule_present: PresentScheduler = Rc::new(RefCell::new(None));
     let ws = use_context::<WsContext>();
     let preview_registered = Arc::new(AtomicBool::new(false));
+    let consumer_count = consumer_count.or_else(|| ws.map(|ws| ws.set_preview_consumers));
 
     {
         let schedule_canvas_ref = canvas_ref;
@@ -322,11 +324,10 @@ pub fn CanvasPreview(
         let preview_registered = Arc::clone(&preview_registered);
         move |_| {
             if canvas_ref.get().is_some()
-                && let Some(ws) = ws
+                && let Some(counter) = consumer_count
                 && !preview_registered.load(Ordering::Relaxed)
             {
-                ws.set_preview_consumers
-                    .update(|count| *count = count.saturating_add(1));
+                counter.update(|count| *count = count.saturating_add(1));
                 preview_registered.store(true, Ordering::Relaxed);
             }
         }
@@ -335,11 +336,10 @@ pub fn CanvasPreview(
     on_cleanup({
         let preview_registered = Arc::clone(&preview_registered);
         move || {
-            if let Some(ws) = ws
+            if let Some(counter) = consumer_count
                 && preview_registered.load(Ordering::Relaxed)
             {
-                ws.set_preview_consumers
-                    .update(|count| *count = count.saturating_sub(1));
+                counter.update(|count| *count = count.saturating_sub(1));
             }
         }
     });

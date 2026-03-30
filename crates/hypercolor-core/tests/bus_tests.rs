@@ -217,6 +217,21 @@ async fn canvas_receiver_count_tracks_drops() {
     assert_eq!(bus.canvas_receiver_count(), 0);
 }
 
+#[tokio::test]
+async fn screen_canvas_receiver_count_tracks_drops() {
+    let bus = HypercolorBus::new();
+    let rx1 = bus.screen_canvas_receiver();
+    let rx2 = bus.screen_canvas_receiver();
+
+    assert_eq!(bus.screen_canvas_receiver_count(), 2);
+
+    drop(rx1);
+    assert_eq!(bus.screen_canvas_receiver_count(), 1);
+
+    drop(rx2);
+    assert_eq!(bus.screen_canvas_receiver_count(), 0);
+}
+
 // ── No Subscribers ───────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -524,6 +539,37 @@ async fn canvas_watch_latest_value_semantics() {
     assert_eq!(latest.width, 2);
     assert_eq!(latest.height, 1);
     assert_eq!(latest.rgba_bytes()[..8], [1, 2, 3, 255, 4, 5, 6, 255]);
+}
+
+#[tokio::test]
+async fn screen_canvas_watch_latest_value_semantics() {
+    let bus = HypercolorBus::new();
+    let mut rx = bus.screen_canvas_receiver();
+
+    {
+        let canvas = rx.borrow_and_update();
+        assert_eq!(canvas.frame_number, 0);
+        assert_eq!(canvas.width, 0);
+        assert_eq!(canvas.height, 0);
+        assert!(canvas.rgba_bytes().is_empty());
+    }
+
+    let mut canvas = Canvas::new(2, 1);
+    canvas.set_pixel(0, 0, Rgba::new(7, 8, 9, 255));
+    canvas.set_pixel(1, 0, Rgba::new(10, 11, 12, 255));
+    bus.screen_canvas_sender()
+        .send_replace(CanvasFrame::from_canvas(&canvas, 12, 345));
+
+    timeout(Duration::from_secs(1), rx.changed())
+        .await
+        .expect("t/o")
+        .expect("changed");
+
+    let latest = rx.borrow_and_update();
+    assert_eq!(latest.frame_number, 12);
+    assert_eq!(latest.width, 2);
+    assert_eq!(latest.height, 1);
+    assert_eq!(latest.rgba_bytes()[..8], [7, 8, 9, 255, 10, 11, 12, 255]);
 }
 
 #[test]

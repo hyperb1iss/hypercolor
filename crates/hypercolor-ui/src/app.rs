@@ -80,11 +80,13 @@ fn effect_name_aliases(name: &str) -> Vec<String> {
 #[derive(Clone, Copy)]
 pub struct WsContext {
     pub canvas_frame: ReadSignal<Option<CanvasFrame>>,
+    pub screen_canvas_frame: ReadSignal<Option<CanvasFrame>>,
     pub connection_state: ReadSignal<ConnectionState>,
     pub preview_fps: ReadSignal<f32>,
     pub preview_target_fps: ReadSignal<u32>,
     pub set_preview_cap: WriteSignal<u32>,
     pub set_preview_consumers: WriteSignal<u32>,
+    pub set_screen_preview_consumers: WriteSignal<u32>,
     pub metrics: ReadSignal<Option<PerformanceMetrics>>,
     pub backpressure_notice: ReadSignal<Option<BackpressureNotice>>,
     pub active_effect: ReadSignal<Option<String>>,
@@ -305,11 +307,13 @@ pub fn App() -> impl IntoView {
 
     let ws_ctx = WsContext {
         canvas_frame: ws.canvas_frame,
+        screen_canvas_frame: ws.screen_canvas_frame,
         connection_state: ws.connection_state,
         preview_fps: ws.preview_fps,
         preview_target_fps: ws.preview_target_fps,
         set_preview_cap: ws.set_preview_cap,
         set_preview_consumers: ws.set_preview_consumers,
+        set_screen_preview_consumers: ws.set_screen_preview_consumers,
         metrics: ws.metrics,
         backpressure_notice: ws.backpressure_notice,
         active_effect: ws.active_effect,

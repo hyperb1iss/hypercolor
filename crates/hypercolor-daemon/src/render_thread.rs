@@ -220,6 +220,7 @@ struct FrameInputs {
     interaction: InteractionData,
     screen_data: Option<ScreenData>,
     screen_canvas: Option<Canvas>,
+    screen_preview_canvas: Option<Canvas>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +237,7 @@ impl FrameInputs {
             interaction: InteractionData::default(),
             screen_data: None,
             screen_canvas: None,
+            screen_preview_canvas: None,
         }
     }
 }
@@ -471,6 +473,7 @@ async fn execute_frame(
         recycled_frame,
         &inputs.audio,
         canvas,
+        inputs.screen_preview_canvas.clone(),
         frame_num_u32,
         elapsed_ms,
         last_audio_level_update_ms,
@@ -736,6 +739,7 @@ async fn maybe_sleep_throttle(
             recycled_frame,
             &AudioData::silence(),
             Canvas::new(state.canvas_width, state.canvas_height),
+            None,
             frame_num_u32,
             elapsed_ms,
             last_audio_level_update_ms,
@@ -798,6 +802,7 @@ async fn maybe_sleep_throttle(
         recycled_frame,
         &AudioData::silence(),
         canvas,
+        None,
         frame_num_u32,
         elapsed_ms,
         last_audio_level_update_ms,
@@ -922,12 +927,16 @@ async fn sample_inputs(state: &RenderThreadState, delta_secs: f32) -> FrameInput
     let screen_canvas = screen_data
         .as_ref()
         .and_then(|data| screen_data_to_canvas(data, state.canvas_width, state.canvas_height));
+    let screen_preview_canvas = screen_data
+        .as_ref()
+        .and_then(|data| data.canvas_downscale.clone());
 
     FrameInputs {
         audio,
         interaction,
         screen_data,
         screen_canvas,
+        screen_preview_canvas,
     }
 }
 
@@ -949,6 +958,7 @@ fn publish_frame_updates(
     recycled_frame: &mut FrameData,
     audio: &AudioData,
     canvas: Canvas,
+    screen_preview_canvas: Option<Canvas>,
     frame_number: u32,
     elapsed_ms: u32,
     last_audio_level_update_ms: &mut Option<u32>,
@@ -976,6 +986,11 @@ fn publish_frame_updates(
             frame_number,
             elapsed_ms,
         ));
+    let _ = state.event_bus.screen_canvas_sender().send(
+        screen_preview_canvas
+            .map(|canvas| CanvasFrame::from_owned_canvas(canvas, frame_number, elapsed_ms))
+            .unwrap_or_else(CanvasFrame::empty),
+    );
     state.event_bus.publish(HypercolorEvent::FrameRendered {
         frame_number,
         timing,

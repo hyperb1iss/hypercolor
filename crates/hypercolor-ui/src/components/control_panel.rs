@@ -14,8 +14,12 @@ use wasm_bindgen::prelude::*;
 use hypercolor_types::canvas::{linear_to_srgb, srgb_to_linear};
 use hypercolor_types::effect::{ControlDefinition, ControlKind, ControlType, ControlValue};
 
+use super::canvas_preview::CanvasPreview;
 use super::color_wheel::ColorWheel;
-use crate::control_geometry::{FrameHandle, FrameRect, clamp_frame_rect, drag_frame_rect, resize_frame_rect};
+use crate::app::WsContext;
+use crate::control_geometry::{
+    FrameHandle, FrameRect, clamp_frame_rect, drag_frame_rect, resize_frame_rect,
+};
 use crate::icons::*;
 
 const QUICK_COLOR_SWATCHES: [&str; 10] = [
@@ -207,6 +211,7 @@ fn ScreenCastFrameWidget(
 ) -> impl IntoView {
     let viewport_ref = NodeRef::<leptos::html::Div>::new();
     let (interaction, set_interaction) = signal(None::<ScreenCastInteractionState>);
+    let ws = use_context::<WsContext>();
 
     let frame_rect = Signal::derive(move || {
         control_values.with(|values| screen_cast_frame_rect(values, frame_config))
@@ -359,6 +364,20 @@ fn ScreenCastFrameWidget(
                         style="aspect-ratio: 16 / 9;"
                     >
                         <div class="absolute inset-0" style=preview_style />
+                        {ws.map(|ws| {
+                            view! {
+                                <div class="absolute inset-0">
+                                    <CanvasPreview
+                                        frame=Signal::derive(move || ws.screen_canvas_frame.get())
+                                        fps=Signal::derive(|| 0.0_f32)
+                                        fps_target=Signal::derive(|| 0_u32)
+                                        max_width="100%".to_string()
+                                        aspect_ratio="16 / 9".to_string()
+                                        consumer_count=ws.set_screen_preview_consumers
+                                    />
+                                </div>
+                            }
+                        })}
                         <div class="absolute inset-[7%] rounded-[1rem] border border-white/[0.05]" />
                         <div class="absolute left-1/2 top-0 bottom-0 w-px bg-white/[0.05] -translate-x-1/2" />
                         <div class="absolute top-1/2 left-0 right-0 h-px bg-white/[0.05] -translate-y-1/2" />
