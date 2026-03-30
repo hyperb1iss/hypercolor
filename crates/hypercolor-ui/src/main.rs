@@ -3,6 +3,7 @@ mod app;
 mod channel_names;
 mod components;
 mod compound_selection;
+mod control_geometry;
 mod icons;
 mod layout_geometry;
 mod layout_utils;
